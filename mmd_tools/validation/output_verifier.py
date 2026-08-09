@@ -1,4 +1,4 @@
-"""Maya-independent structural verification for PMX/PMD export output.
+"""Maya-independent structural verification for PMX export output.
 
 The verifier runs after a writer has produced a temporary file.  It checks
 the format header, parser acceptance, and the basic section counts that can be
@@ -80,14 +80,9 @@ def _compare_count(
 
 def _parse_output(file_path: Path, export_format: str):
     """Parse one output using the local format parser without native fallback."""
-    if export_format == "pmx":
-        from ..core.mmd_parser import parse_pmx_file
+    from ..core.mmd_parser import parse_pmx_file
 
-        return parse_pmx_file(str(file_path), use_native_pmx_parse=False)
-
-    from ..core.pmd_data import PmdData
-
-    return PmdData().parse_file(str(file_path))
+    return parse_pmx_file(str(file_path), use_native_pmx_parse=False)
 
 
 def verify_model_output(
@@ -95,11 +90,11 @@ def verify_model_output(
     export_format: str,
     model_data: Optional[Mapping] = None,
 ) -> ExportValidationReport:
-    """Verify a temporary PMX/PMD output before it replaces a target.
+    """Verify a temporary PMX output before it replaces a target.
 
     Args:
         file_path: Temporary output path written by the model exporter.
-        export_format: ``"pmx"`` or ``"pmd"``.
+        export_format: ``"pmx"``.
         model_data: Optional validated payload used for section-count checks.
 
     Returns:
@@ -107,7 +102,7 @@ def verify_model_output(
     """
     normalized_format = (export_format or "").lower().lstrip(".")
     issues: List[ExportValidationIssue] = []
-    if normalized_format not in {"pmx", "pmd"}:
+    if normalized_format != "pmx":
         issues.append(
             _issue(
                 "OUTPUT_FORMAT_UNSUPPORTED",
@@ -125,7 +120,7 @@ def verify_model_output(
         issues.append(_issue("OUTPUT_FILE_EMPTY", "output", "temporary output file is empty"))
         return ExportValidationReport(normalized_format, tuple(issues))
 
-    expected_header = b"PMX " if normalized_format == "pmx" else b"Pmd"
+    expected_header = b"PMX "
     header_size = len(expected_header)
     with output_path.open("rb") as handle:
         actual_header = handle.read(header_size)

@@ -1,13 +1,12 @@
-"""Maya-independent preflight validation for PMX/PMD model export.
+"""Maya-independent preflight validation for PMX model export.
 
 The validator intentionally covers the exporter's structural input boundary,
-not the complete PMX/PMD authoring schema.  It returns deterministic issue
+not the complete PMX authoring schema.  It returns deterministic issue
 objects so an action or a later report adapter can present the same findings.
 """
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
 from numbers import Integral, Number, Real
 import json
 import math
@@ -15,13 +14,6 @@ import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
-# PMD vertex indices are unsigned 16-bit values, so the count is one larger
-# than the maximum representable index.
-PMD_MAX_VERTEX_COUNT = 0xFFFF + 1
-PMD_MAX_BONE_COUNT = 0xFFFF
-PMD_MAX_BONE_WEIGHT = 100
-PMD_MAX_EDGE_FLAG = 0xFF
-PMD_MAX_TEXTURE_FILE_NAME_BYTES = 19
 UINT32_MAX = 0xFFFFFFFF
 
 _SEQUENCE_TYPES = (str, bytes, bytearray)
@@ -52,7 +44,6 @@ _PMX_UV_MORPH_TYPES = frozenset(
     {"uv", "additional_uv1", "additional_uv2", "additional_uv3", "additional_uv4"}
 )
 _PMX_21_MORPH_TYPES = frozenset({"flip", "impulse"})
-_PMD_BONE_TYPE_VALUES = frozenset(range(10))
 _PMX_IK_FLAG = 0x0020
 _PMX_CONNECT_BONE_FLAG = 0x0001
 _PMX_GRANT_FLAGS = 0x0300
@@ -173,7 +164,7 @@ def _build_issue_groups(
 
 @dataclass(frozen=True)
 class ExportValidationReport:
-    """Structured result of PMX/PMD model-data preflight."""
+    """Structured result of PMX model-data preflight."""
 
     export_format: Optional[str]
     issues: Tuple[ExportValidationIssue, ...]
@@ -675,38 +666,7 @@ def _validate_text_fields(
             )
 
 
-def _validate_pmd_texture_file_name(
-    mapping: Mapping,
-    path: str,
-    issues: List[ExportValidationIssue],
-) -> None:
-    """Reject PMD texture names that the fixed CP932 field would truncate."""
-    field_name = "texture_file_name"
-    if field_name not in mapping or not isinstance(mapping[field_name], str):
-        return
-    field_path = _path_for_key(path, field_name)
-    error = _pmd_texture_file_name_error(mapping[field_name])
-    if error:
-        _issue(
-            issues,
-            "FIELD_LENGTH",
-            field_path,
-            error,
-        )
-
-
-def _pmd_texture_file_name_error(value: str) -> Optional[str]:
-    """Return a fixed-field error for one PMD texture filename, if any."""
-    try:
-        encoded = value.encode("cp932")
-    except UnicodeEncodeError:
-        return "PMD texture_file_name must be encodable in CP932"
-    if len(encoded) > PMD_MAX_TEXTURE_FILE_NAME_BYTES:
-        return f"PMD texture_file_name must fit within {PMD_MAX_TEXTURE_FILE_NAME_BYTES} CP932 bytes"
-    return None
-
-
-def ensure_writer_safe_materials(model_data: Mapping, export_format: str) -> None:
+def ensure_writer_safe_materials(model_data: Mapping) -> None:
     """Reject collector semantics that low-level writers would otherwise default or truncate."""
     for material_index, material in enumerate(model_data.get("materials") or ()):
         if not isinstance(material, Mapping):
@@ -717,14 +677,6 @@ def ensure_writer_safe_materials(model_data: Mapping, export_format: str) -> Non
                 f"material {material_index} has incomplete semantic data: "
                 f"{', '.join(str(value) for value in missing)}"
             )
-        if export_format != "pmd":
-            continue
-        texture_name = material.get("texture_file_name")
-        if not isinstance(texture_name, str):
-            continue
-        error = _pmd_texture_file_name_error(texture_name)
-        if error:
-            raise ValueError(f"material {material_index}: {error}")
 
 
 def _validate_vector_field(
@@ -874,46 +826,22 @@ def _validate_vertices(
         _validate_vector_field(vertex, "normal", 3, vertex_path, issues)
         _validate_vector_field(vertex, "uv", 2, vertex_path, issues)
         _validate_numeric_sequence(vertex, "bone_weights", vertex_path, issues)
-        numeric_fields = ("edge_magnification",)
-        if export_format != "pmd":
-            numeric_fields += ("bone_weight", "edge_flag")
+        numeric_fields = ("edge_magnification", "bone_weight", "edge_flag")
         _validate_numeric_fields(
             vertex,
             numeric_fields,
             vertex_path,
             issues,
-            integer_fields=("edge_flag",) if export_format != "pmd" else (),
+            integer_fields=("edge_flag",),
         )
-        if export_format == "pmd":
-            _validate_integer_range_field(
-                vertex,
-                "bone_weight",
-                vertex_path,
-                0,
-                PMD_MAX_BONE_WEIGHT,
-                issues,
-                type_code="PMD_BONE_WEIGHT_TYPE",
-                range_code="PMD_BONE_WEIGHT_RANGE",
-            )
-            _validate_integer_range_field(
-                vertex,
-                "edge_flag",
-                vertex_path,
-                0,
-                PMD_MAX_EDGE_FLAG,
-                issues,
-                type_code="PMD_EDGE_FLAG_TYPE",
-                range_code="PMD_EDGE_FLAG_RANGE",
-            )
-        if export_format in ("pmx", "pmd"):
-            _validate_sequence_max_length(
-                vertex,
-                "bone_weights",
-                vertex_path,
-                2 if export_format == "pmd" else 4,
-                issues,
-                label="PMD bone_weights" if export_format == "pmd" else "PMX bone_weights",
-            )
+        _validate_sequence_max_length(
+            vertex,
+            "bone_weights",
+            vertex_path,
+            4,
+            issues,
+            label="PMX bone_weights",
+        )
 
         if "bone_indices" not in vertex:
             bone_indices = (0,)
@@ -923,19 +851,12 @@ def _validate_vertices(
             if not _is_sequence(bone_indices):
                 _issue(issues, "FIELD_NOT_SEQUENCE", field_path, "bone_indices must be an integer sequence")
                 continue
-            if export_format == "pmx" and len(bone_indices) not in (1, 2, 4):
+            if len(bone_indices) not in (1, 2, 4):
                 _issue(
                     issues,
                     "BONE_INDICES_LENGTH",
                     field_path,
                     "PMX bone_indices must contain 1, 2, or 4 values",
-                )
-            elif export_format == "pmd" and len(bone_indices) not in (1, 2):
-                _issue(
-                    issues,
-                    "BONE_INDICES_LENGTH",
-                    field_path,
-                    "PMD bone_indices must contain 1 or 2 values",
                 )
 
         if export_format == "pmx" and _is_integer(vertex.get("weight_transform_type")) and vertex.get(
@@ -1012,7 +933,6 @@ def _validate_bone_references(
     bone_path: str,
     bone_count: int,
     issues: List[ExportValidationIssue],
-    export_format: Optional[str],
 ) -> None:
     """Validate explicit bone references without adding cycle semantics."""
     for field_name in _BONE_REFERENCE_FIELDS:
@@ -1020,32 +940,6 @@ def _validate_bone_references(
             continue
         field_path = _path_for_key(bone_path, field_name)
         value = bone[field_name]
-        if export_format == "pmd" and field_name in {
-            "parent_index",
-            "tail_pos_bone_index",
-            "ik_parent_bone_index",
-        }:
-            if not _is_integer(value):
-                if not _is_non_finite_numeric(value):
-                    _issue(
-                        issues,
-                        "PMD_BONE_REFERENCE_TYPE",
-                        field_path,
-                        "PMD bone reference must be an integer",
-                    )
-                continue
-            if field_name == "parent_index":
-                is_sentinel = value in (-1, 0xFFFF)
-            else:
-                is_sentinel = value == 0xFFFF
-            if not is_sentinel and not 0 <= value < bone_count:
-                _issue(
-                    issues,
-                    "PMD_BONE_REFERENCE_OUT_OF_RANGE",
-                    field_path,
-                    f"PMD bone reference {value} is outside effective bone count {bone_count}",
-                )
-            continue
         if not _is_integer(value):
             # NaN/Inf/complex values are already reported by the recursive
             # scan; avoid adding a duplicate type issue for those values.
@@ -1251,36 +1145,9 @@ def _validate_bone_conditional_payload(
             )
 
 
-def _is_pmd_bone_type(value: Any) -> bool:
-    """Return whether *value* is a PMD bone type accepted by the writer."""
-    if _is_integer(value):
-        return int(value) in _PMD_BONE_TYPE_VALUES
-    if isinstance(value, Enum) and value.__class__.__name__ == "PmdBoneType":
-        return _is_integer(value.value) and int(value.value) in _PMD_BONE_TYPE_VALUES
-    return False
-
-
-def _validate_pmd_bone_type(
-    bone: Mapping,
-    bone_path: str,
-    issues: List[ExportValidationIssue],
-) -> None:
-    """Validate the PMD writer's one-byte bone type enum boundary."""
-    if "bone_type" not in bone:
-        return
-    if not _is_pmd_bone_type(bone["bone_type"]):
-        _issue(
-            issues,
-            "PMD_BONE_TYPE",
-            _path_for_key(bone_path, "bone_type"),
-            "PMD bone_type must be PmdBoneType or an integer in range [0, 9]",
-        )
-
-
 def _validate_bones(
     bones: Sequence,
     bone_count: int,
-    export_format: Optional[str],
     issues: List[ExportValidationIssue],
 ) -> None:
     """Validate explicit bone entries and their supported numeric payloads."""
@@ -1289,20 +1156,16 @@ def _validate_bones(
         if not isinstance(bone, Mapping):
             _issue(issues, "BONE_NOT_MAPPING", bone_path, "bone must be a mapping")
             continue
-        if export_format != "pmd":
-            _validate_bone_semantic_missing(bone, bone_path, issues)
-            _validate_bone_conditional_payload(bone, bone_path, issues)
+        _validate_bone_semantic_missing(bone, bone_path, issues)
+        _validate_bone_conditional_payload(bone, bone_path, issues)
         _validate_text_fields(bone, ("name", "name_english"), bone_path, issues)
         _validate_vector_field(bone, "position", 3, bone_path, issues)
         _validate_vector_field(bone, "connect_position_offset", 3, bone_path, issues)
         _validate_vector_field(bone, "axis_direction", 3, bone_path, issues)
         _validate_vector_field(bone, "x_axis_direction", 3, bone_path, issues)
         _validate_vector_field(bone, "z_axis_direction", 3, bone_path, issues)
-        _validate_bone_references(bone, bone_path, bone_count, issues, export_format)
-        if export_format == "pmd":
-            _validate_pmd_bone_type(bone, bone_path, issues)
-        if export_format != "pmd":
-            _validate_bone_ik_metadata(bone, bone_path, bone_count, issues)
+        _validate_bone_references(bone, bone_path, bone_count, issues)
+        _validate_bone_ik_metadata(bone, bone_path, bone_count, issues)
         _validate_numeric_fields(
             bone,
             (
@@ -1446,14 +1309,13 @@ def _validate_pmx_morph_offsets(
 
 def _validate_morphs(
     morphs: Any,
-    export_format: Optional[str],
     vertex_count: int,
     bone_count: int,
     material_count: int,
     rigid_body_count: int,
     issues: List[ExportValidationIssue],
 ) -> None:
-    """Validate PMX morph input or report PMD's unsupported/lossy path."""
+    """Validate PMX morph input."""
     if morphs is None:
         return
     if not _is_sequence(morphs):
@@ -1461,15 +1323,6 @@ def _validate_morphs(
         return
     if not morphs:
         return
-    if export_format == "pmd":
-        _issue(
-            issues,
-            "PMD_MORPHS_UNSUPPORTED",
-            "morphs",
-            "PMD export does not serialize morphs",
-        )
-        return
-
     for morph_index, morph in enumerate(morphs):
         morph_path = _path_for_index("morphs", morph_index)
         if not isinstance(morph, Mapping):
@@ -1733,23 +1586,12 @@ def _validate_pmx_vertex_additional_uvs(
 
 def _validate_textures(
     value: Any,
-    export_format: Optional[str],
     issues: List[ExportValidationIssue],
 ) -> Optional[Sequence]:
-    """Validate the optional texture table and PMD's lossy texture path."""
+    """Validate the optional PMX texture table."""
     textures = _optional_sequence(value, "textures", issues)
     if textures is None:
         return None
-    if export_format == "pmd":
-        if textures:
-            _issue(
-                issues,
-                "PMD_TEXTURES_UNSUPPORTED",
-                "textures",
-                "PMD export does not serialize the top-level texture table",
-            )
-        return textures
-
     for texture_index, texture in enumerate(textures):
         texture_path = _path_for_index("textures", texture_index)
         if not isinstance(texture, str) and not _is_non_finite_numeric(texture):
@@ -1764,19 +1606,17 @@ def _validate_textures(
 
 def _validate_unsupported_top_level_payloads(
     model_data: Mapping,
-    export_format: Optional[str],
     issues: List[ExportValidationIssue],
 ) -> None:
     """Reject meaningful top-level payloads ignored by the selected writer."""
-    format_name = "PMD" if export_format == "pmd" else "PMX"
     for field_name in ("ik_data", "soft_bodies", "additional_uv"):
         if field_name not in model_data or not _is_meaningful_payload(model_data[field_name]):
             continue
         _issue(
             issues,
-            f"{format_name}_{field_name.upper()}_UNSUPPORTED",
+            f"PMX_{field_name.upper()}_UNSUPPORTED",
             field_name,
-            f"{format_name} export does not retain top-level {field_name}",
+            f"PMX export does not retain top-level {field_name}",
         )
 
 
@@ -1963,7 +1803,6 @@ def _validate_joints(
 
 def _validate_materials(
     materials: Any,
-    export_format: Optional[str],
     texture_count: int,
     issues: List[ExportValidationIssue],
     expected_index_count: Optional[int] = None,
@@ -2003,20 +1842,13 @@ def _validate_materials(
                 _path_for_key(material_path, "semantic_missing"),
                 f"material semantic data is missing: {missing_fields}",
             )
-        if export_format == "pmd":
-            _validate_text_fields(material, ("texture_file_name",), material_path, issues)
-            _validate_pmd_texture_file_name(material, material_path, issues)
-        else:
-            _validate_text_fields(material, ("name", "name_english", "memo"), material_path, issues)
+        _validate_text_fields(material, ("name", "name_english", "memo"), material_path, issues)
         _validate_vector_field(material, "diffuse", 4, material_path, issues)
         _validate_vector_field(material, "specular", 3, material_path, issues)
         _validate_vector_field(material, "ambient", 3, material_path, issues)
         _validate_vector_field(material, "edge_color", 4, material_path, issues)
-        numeric_fields = ["specular_power", "specular_coefficient", "edge_size"]
-        integer_fields = []
-        if export_format != "pmd":
-            numeric_fields.append("edge_flag")
-            integer_fields.append("edge_flag")
+        numeric_fields = ["specular_power", "specular_coefficient", "edge_size", "edge_flag"]
+        integer_fields = ["edge_flag"]
         _validate_numeric_fields(
             material,
             numeric_fields,
@@ -2042,48 +1874,6 @@ def _validate_materials(
             has_invalid_face_count = True
         else:
             specified_total += face_count
-
-        if export_format == "pmd":
-            _validate_integer_range_field(
-                material,
-                "toon_texture_index",
-                material_path,
-                0,
-                0xFF,
-                issues,
-                type_code="MATERIAL_TOON_TEXTURE_INDEX_TYPE",
-                range_code="MATERIAL_TOON_TEXTURE_INDEX_RANGE",
-            )
-            _validate_integer_range_field(
-                material,
-                "edge_flag",
-                material_path,
-                0,
-                0xFF,
-                issues,
-                type_code="MATERIAL_EDGE_FLAG_TYPE",
-                range_code="MATERIAL_EDGE_FLAG_RANGE",
-            )
-            _validate_numeric_fields(
-                material,
-                (
-                    "texture_index",
-                    "sphere_texture_index",
-                    "sphere_mode",
-                    "shared_toon_flag",
-                    "draw_flag",
-                ),
-                material_path,
-                issues,
-                integer_fields=(
-                    "texture_index",
-                    "sphere_texture_index",
-                    "sphere_mode",
-                    "shared_toon_flag",
-                    "draw_flag",
-                ),
-            )
-            continue
 
         _validate_optional_reference(
             material,
@@ -2201,38 +1991,34 @@ def _effective_material_count(materials: Any) -> int:
     return 1
 
 
-def pmd_export_policy_report() -> ExportValidationReport:
-    """Return the explicit policy rejection for the unpublished PMD route."""
-    return ExportValidationReport(
-        "pmd",
-        (
-            ExportValidationIssue(
-                "PMD_EXPORT_POLICY_REJECT",
-                "fatal",
-                True,
-                "export_format",
-                "PMD export is not part of the published v0.7.0 export surface",
-            ),
-        ),
-    )
-
-
 def validate_model_data(
     model_data: Any,
     export_format: Optional[str] = None,
 ) -> ExportValidationReport:
-    """Validate collector-shaped PMX/PMD model data.
+    """Validate collector-shaped PMX model data.
 
     Args:
         model_data: Mapping containing ``vertices`` and ``faces``.
-        export_format: Optional ``"pmx"`` or ``"pmd"`` format selector.  PMD
-            applies its existing 16-bit vertex-count limit when selected.
+        export_format: Optional ``"pmx"`` format selector.
 
     Returns:
         A deterministic report.  A report with blocking issues must not be
-        passed to a PMX/PMD writer.
+        passed to a PMX writer.
     """
     normalized_format = export_format.lower().lstrip(".") if isinstance(export_format, str) else None
+    if normalized_format not in (None, "pmx"):
+        return ExportValidationReport(
+            normalized_format,
+            (
+                ExportValidationIssue(
+                    "EXPORT_FORMAT_UNSUPPORTED",
+                    "fatal",
+                    True,
+                    "export_format",
+                    f"model export format {normalized_format or 'empty'} is not supported",
+                ),
+            ),
+        )
     issues: List[ExportValidationIssue] = []
 
     if not isinstance(model_data, Mapping):
@@ -2275,31 +2061,16 @@ def validate_model_data(
                 _issue(issues, "BONES_EMPTY", "bones", "explicit bones must not be empty")
 
     if vertices is not None:
-        if normalized_format == "pmd" and len(vertices) > PMD_MAX_VERTEX_COUNT:
-            _issue(
-                issues,
-                "PMD_VERTEX_LIMIT",
-                "vertices",
-                f"PMD supports at most {PMD_MAX_VERTEX_COUNT} vertices, got {len(vertices)}",
-            )
         _validate_vertices(vertices, bone_count, normalized_format, issues)
     if faces is not None and vertices is not None:
         _validate_faces(faces, len(vertices), issues)
     if bones is not None:
-        if normalized_format == "pmd" and len(bones) > PMD_MAX_BONE_COUNT:
-            _issue(
-                issues,
-                "PMD_BONE_LIMIT",
-                "bones",
-                f"PMD supports at most {PMD_MAX_BONE_COUNT} bones, got {len(bones)}",
-            )
-        _validate_bones(bones, bone_count, normalized_format, issues)
-    textures = _validate_textures(model_data.get("textures"), normalized_format, issues)
+        _validate_bones(bones, bone_count, issues)
+    textures = _validate_textures(model_data.get("textures"), issues)
     texture_count = len(textures) if textures is not None else 0
     materials = model_data.get("materials")
     _validate_materials(
         materials,
-        normalized_format,
         texture_count,
         issues,
         _expected_index_count(faces),
@@ -2308,43 +2079,33 @@ def validate_model_data(
     morph_rigid_body_count = len(raw_rigid_bodies) if _is_sequence(raw_rigid_bodies) else 0
     _validate_morphs(
         model_data.get("morphs"),
-        normalized_format,
         len(vertices) if vertices is not None else 0,
         bone_count,
         _effective_material_count(materials),
         morph_rigid_body_count,
         issues,
     )
-    _validate_unsupported_top_level_payloads(model_data, normalized_format, issues)
+    _validate_unsupported_top_level_payloads(model_data, issues)
 
     display_frames = _optional_sequence(model_data.get("display_frames"), "display_frames", issues)
     rigid_bodies = _optional_sequence(model_data.get("rigid_bodies"), "rigid_bodies", issues)
     joints = _optional_sequence(model_data.get("joints"), "joints", issues)
     rigid_body_count = len(rigid_bodies) if rigid_bodies is not None else 0
-    if normalized_format == "pmd":
-        for value, field_name, message in (
-            (display_frames, "display_frames", "PMD export does not retain display frames"),
-            (rigid_bodies, "rigid_bodies", "PMD export does not retain rigid bodies"),
-            (joints, "joints", "PMD export does not retain joints"),
-        ):
-            if value:
-                _issue(issues, f"PMD_{field_name.upper()}_UNSUPPORTED", field_name, message)
-    else:
-        morphs = model_data.get("morphs")
-        morph_count = len(morphs) if _is_sequence(morphs) else 0
-        if display_frames:
-            _validate_display_frames(display_frames, bone_count, morph_count, issues)
-        if rigid_bodies:
-            _validate_rigid_bodies(rigid_bodies, bone_count, issues)
-        if joints:
-            if rigid_body_count == 0:
-                _issue(
-                    issues,
-                    "JOINTS_REQUIRE_RIGID_BODIES",
-                    "joints",
-                    "joints require at least one rigid body",
-                )
-            _validate_joints(joints, rigid_body_count, issues)
+    morphs = model_data.get("morphs")
+    morph_count = len(morphs) if _is_sequence(morphs) else 0
+    if display_frames:
+        _validate_display_frames(display_frames, bone_count, morph_count, issues)
+    if rigid_bodies:
+        _validate_rigid_bodies(rigid_bodies, bone_count, issues)
+    if joints:
+        if rigid_body_count == 0:
+            _issue(
+                issues,
+                "JOINTS_REQUIRE_RIGID_BODIES",
+                "joints",
+                "joints require at least one rigid body",
+            )
+        _validate_joints(joints, rigid_body_count, issues)
 
     return ExportValidationReport(normalized_format, tuple(issues))
 
@@ -2366,13 +2127,7 @@ __all__ = [
     "DEFAULT_MAX_DISPLAY_ISSUES",
     "ModelValidationIssue",
     "ModelValidationReport",
-    "PMD_MAX_BONE_COUNT",
-    "PMD_MAX_BONE_WEIGHT",
-    "PMD_MAX_EDGE_FLAG",
-    "PMD_MAX_TEXTURE_FILE_NAME_BYTES",
-    "PMD_MAX_VERTEX_COUNT",
     "ensure_writer_safe_materials",
-    "pmd_export_policy_report",
     "validate_export_model",
     "validate_model_data",
 ]

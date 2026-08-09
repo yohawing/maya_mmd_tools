@@ -64,7 +64,7 @@ class ExportTab(BaseTab):
         settings_form.addRow(self.tr("target_model", "fields"), self.target_combo)
 
         self.format_combo = QComboBox()
-        self.format_combo.addItems(["pmx", "pmd", "vmd"])
+        self.format_combo.addItems(["pmx", "vmd"])
         self.format_combo.currentTextChanged.connect(self._sync_mode_visibility)
         settings_form.addRow(self.tr("format", "fields"), self.format_combo)
 

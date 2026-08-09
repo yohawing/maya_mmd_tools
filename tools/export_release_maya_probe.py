@@ -2,9 +2,10 @@
 """Run the Maya-side v0.7 export release probes.
 
 The probe deliberately starts a fresh Maya scene for each import boundary.  It
-exports a small PMX fixture, verifies a representative PMX morph roundtrip,
+imports an independent PMD fixture as an import-only regression, exports a
+small PMX fixture, verifies a representative PMX morph roundtrip,
 verifies a representative rigid-body/joint PMX roundtrip, verifies PMX 2.1
-soft-body, SDEF, Flip, Impulse, and PMD public export policy rejections, and
+soft-body, SDEF, Flip, and Impulse policy rejections, and
 exports a VMD motion.
 The JSON output is consumed by
 :mod:`tools.export_release_gate`.
@@ -120,14 +121,6 @@ def _digest_json(value: Any) -> str:
     """Return a stable digest for a JSON-safe oracle fragment."""
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def _write_independent_pmd_fixture(path: Path) -> None:
-    """Write the repository's independent supported PMD fixture for this run."""
-    from tests.common.pmd_mock import PmdMock
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(PmdMock.create_minimal_pmd())
 
 
 def _prepare_physics_probe_fixture(source: Path, out_dir: Path) -> tuple[Path, list[dict[str, Any]]]:
@@ -1970,6 +1963,39 @@ def _import_options() -> dict[str, Any]:
     }
 
 
+def _write_independent_pmd_fixture(path: Path) -> None:
+    """Write the checked-in independent PMD import fixture for this run."""
+    from tests.common.pmd_mock import PmdMock
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(PmdMock.create_minimal_pmd())
+
+
+def _write_pmd_import_report(
+    out_dir: Path,
+    source_model: Path,
+    oracle_counts: Mapping[str, int],
+) -> tuple[Path, Path]:
+    """Write a canonical report pair for the PMD import-only oracle."""
+    from mmd_tools.validation.export_validator import ExportValidationReport
+    from mmd_tools.validation.report_artifacts import write_validation_report_artifacts
+
+    report = ExportValidationReport("pmd_import", (), mode="import")
+    artifacts = write_validation_report_artifacts(
+        report,
+        out_dir / "report",
+        target_identity="pmd_import",
+        provenance="Maya PMD import oracle",
+        evidence={
+            "format": "pmd",
+            "import_only": True,
+            "source": str(source_model),
+            "oracle_counts": dict(oracle_counts),
+        },
+    )
+    return artifacts.json_path, artifacts.markdown_path
+
+
 def _fresh_import(
     path: Path,
     *,
@@ -1993,6 +2019,75 @@ def _fresh_import(
     if not root:
         raise RuntimeError(f"Maya import returned no root: {path}")
     return str(root)
+
+
+def _run_pmd_import_case(source_model: Path, out_dir: Path) -> dict[str, Any]:
+    """Import one PMD fixture in Maya and assert all import oracle sections."""
+    source_root = _fresh_import(source_model)
+    oracle = _capture_scene_oracle(source_root, (0,))
+    meshes = oracle.get("mesh")
+    materials = oracle.get("materials")
+    morphs = oracle.get("morphs")
+    pose = oracle.get("pose")
+    physics = oracle.get("physics")
+    metadata = oracle.get("metadata")
+    if not isinstance(meshes, list) or not meshes:
+        raise AssertionError("PMD import produced no mesh oracle")
+    if any(not isinstance(mesh, Mapping) for mesh in meshes):
+        raise AssertionError("PMD import mesh oracle is malformed")
+    if any(
+        int(mesh.get("vertex_count", 0) or 0) <= 0
+        or int(mesh.get("face_count", 0) or 0) <= 0
+        for mesh in meshes
+    ):
+        raise AssertionError("PMD import mesh oracle has no positive geometry counts")
+    if not isinstance(materials, list) or not materials:
+        raise AssertionError("PMD import produced no material oracle")
+    if not isinstance(morphs, Mapping) or not isinstance(morphs.get("morphs"), list):
+        raise AssertionError("PMD import morph oracle is missing")
+    if not isinstance(pose, Mapping) or int(pose.get("joint_count", 0) or 0) <= 0:
+        raise AssertionError("PMD import produced no indexed pose oracle")
+    if not isinstance(pose.get("frames"), Mapping) or "0" not in pose["frames"]:
+        raise AssertionError("PMD import pose oracle is missing frame 0")
+    if not isinstance(physics, Mapping):
+        raise AssertionError("PMD import physics oracle is missing")
+    if not isinstance(physics.get("rigid_bodies"), list) or not isinstance(physics.get("joints"), list):
+        raise AssertionError("PMD import physics oracle is malformed")
+    if not isinstance(metadata, Mapping) or not isinstance(metadata.get("mmd_model_name"), str):
+        raise AssertionError("PMD import metadata oracle is missing model name")
+    if not metadata.get("mmd_model_name"):
+        raise AssertionError("PMD import metadata model name is empty")
+    if "mmd_display_frames_json" not in metadata:
+        raise AssertionError("PMD import metadata is missing display frames")
+
+    oracle_counts = {
+        "mesh_count": len(meshes),
+        "vertex_count": sum(int(mesh.get("vertex_count", 0) or 0) for mesh in meshes),
+        "face_count": sum(int(mesh.get("face_count", 0) or 0) for mesh in meshes),
+        "material_count": len(materials),
+        "morph_count": len(morphs["morphs"]),
+        "pose_joint_count": int(pose["joint_count"]),
+        "pose_frame_count": len(pose["frames"]),
+        "rigid_body_count": len(physics["rigid_bodies"]),
+        "joint_count": len(physics["joints"]),
+        "metadata_field_count": sum(value is not None for value in metadata.values()),
+    }
+    report_json, report_md = _write_pmd_import_report(out_dir, source_model, oracle_counts)
+    return {
+        "status": "pass",
+        "format": "pmd_import",
+        "source": str(source_model),
+        "output": None,
+        "report_json": str(report_json),
+        "report_md": str(report_md),
+        "import_oracles": oracle_counts,
+        "oracles": oracle,
+        "collection": {
+            "collector": "Maya PMD import pipeline",
+            "source_fresh_import": True,
+            "export_writer_called": False,
+        },
+    }
 
 
 def _run_model_case(
@@ -2046,54 +2141,6 @@ def _run_model_case(
         },
     )
     workflow = ExportWorkflowService()
-    if export_format == "pmd":
-        validation = workflow.validate(request)
-        policy_codes = [issue.code for issue in validation.report.issues]
-        if validation.state != "Blocked" or policy_codes != ["PMD_EXPORT_POLICY_REJECT"]:
-            raise AssertionError(
-                f"PMD policy probe expected one blocking rejection, got "
-                f"state={validation.state!r}, issues={policy_codes!r}"
-            )
-        report_dir.mkdir(parents=True, exist_ok=True)
-        evidence = request.options["validation_report_evidence"]
-        validation.report.write_canonical_json(
-            report_dir / "report.json",
-            target_identity=source_root,
-            provenance="ExportWorkflowService",
-            evidence=evidence,
-        )
-        validation.report.write_markdown(
-            report_dir / "report.md",
-            target_identity=source_root,
-            provenance="ExportWorkflowService",
-            evidence=evidence,
-        )
-        if output.exists():
-            raise AssertionError(f"PMD policy rejection created an output: {output}")
-        return {
-            "status": "policy-reject",
-            "format": export_format,
-            "source": str(source_model),
-            "output": None,
-            "report_json": str(report_dir / "report.json"),
-            "report_md": str(report_dir / "report.md"),
-            "policy_code": "PMD_EXPORT_POLICY_REJECT",
-            "import_oracles": {
-                "mesh": source_oracle["mesh"],
-                "materials": source_oracle["materials"],
-                "morphs": source_oracle["morphs"],
-                "pose": source_oracle["pose"],
-                "physics": source_oracle["physics"],
-                "metadata": source_oracle["metadata"],
-            },
-            "collection": {
-                "collector": "ExportWorkflowService validation -> PMD policy",
-                "target_model": source_root,
-                "source_fresh_import": True,
-                "export_writer_called": False,
-            },
-        }
-
     result = workflow.execute(request)
     if not result.succeeded:
         raise RuntimeError(f"{export_format} export failed: {result.error or result.report}")
@@ -4007,23 +4054,31 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
     pmd_path = out_dir / "fixtures" / "independent_minimal.pmd"
     _write_independent_pmd_fixture(pmd_path)
     cases = []
-    for export_format, source_model in (
-        ("pmx", pmx_path),
-        ("pmd", pmd_path),
-    ):
-        case_dir = out_dir / export_format
-        try:
-            case = _run_model_case(export_format, source_model, case_dir)
-            case["conversion_warnings"] = []
-        except Exception as exc:
-            case = {
+    try:
+        case = _run_model_case("pmx", pmx_path, out_dir / "pmx")
+        case["conversion_warnings"] = []
+    except Exception as exc:
+        case = {
+            "status": "fail",
+            "format": "pmx",
+            "source": str(pmx_path),
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(limit=12),
+        }
+    cases.append(case)
+    try:
+        cases.append(_run_pmd_import_case(pmd_path, out_dir / "pmd-import"))
+    except Exception as exc:
+        cases.append(
+            {
                 "status": "fail",
-                "format": export_format,
-                "source": str(source_model),
+                "format": "pmd_import",
+                "source": str(pmd_path),
+                "output": None,
                 "error": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc(limit=12),
             }
-        cases.append(case)
+        )
     try:
         cases.append(_run_morph_case(DEFAULT_MORPH_PMX, out_dir / "pmx-morph"))
     except Exception as exc:
@@ -4176,6 +4231,7 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
         "status": "pass" if all(case["status"] in accepted_case_statuses for case in cases) else "fail",
         "fixture": {
             "pmx": str(pmx_path),
+            "pmd_import": str(pmd_path),
             "pmx_morph": str(DEFAULT_MORPH_PMX),
             "pmx_bone_semantics": str(bone_fixture),
             "pmx_physics": str(DEFAULT_PHYSICS_PMX),
@@ -4183,7 +4239,6 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
             "pmx_sdef": str(sdef_fixture),
             "pmx_impulse": str(impulse_fixture),
             "pmx_flip": str(flip_fixture),
-            "pmd": str(pmd_path),
             "vmd": str(vmd_path),
             "vmd_mode_a": str(VMD_MODE_A_VMD),
             "vmd_model_tracks": str(VMD_MODEL_TRACK_VMD),

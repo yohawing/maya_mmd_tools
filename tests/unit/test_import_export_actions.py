@@ -346,7 +346,7 @@ class TestImportVmdAction(_ImportActionContract, unittest.TestCase):
 
 
 class TestExportModelAction(unittest.TestCase):
-    """PMX/PMD model export action の最小依存境界を検証する。"""
+    """PMX model export action の最小依存境界を検証する。"""
 
     def test_execute_exports_pmx_from_model_data(self):
         model_data = {
@@ -409,86 +409,6 @@ class TestExportModelAction(unittest.TestCase):
             self.assertTrue(result.validation_report.is_blocking)
             self.assertEqual(exporter.calls, [])
             self.assertFalse(output_path.exists())
-
-    def test_execute_rejects_pmd_before_collecting_or_writing(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = Path(temp_dir) / "out.pmd"
-            exporter = _FakePmdExporter()
-            collector_calls = []
-
-            def collector(options):
-                collector_calls.append(options)
-                raise AssertionError("PMD policy must reject before collection")
-
-            action = ExportModelAction(
-                pmd_exporter=exporter,
-                collector=collector,
-                output_verifier=None,
-            )
-
-            result = action.execute(
-                ExportModelRequest(
-                    file_path=str(output_path),
-                    options={"export_format": "pmd"},
-                )
-            )
-
-            self.assertFalse(result.succeeded)
-            self.assertIsInstance(result.error, ExportValidationError)
-            self.assertEqual(
-                [issue.code for issue in result.validation_report.issues],
-                ["PMD_EXPORT_POLICY_REJECT"],
-            )
-            self.assertEqual(collector_calls, [])
-            self.assertEqual(exporter.calls, [])
-            self.assertFalse(output_path.exists())
-
-    def test_execute_rejects_inferred_pmd_before_collecting(self):
-        received_options = []
-
-        def collector(options):
-            received_options.append(options)
-            raise AssertionError("PMD policy must reject before collection")
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = Path(temp_dir) / "out.pmd"
-            action = ExportModelAction(
-                pmd_exporter=_FakePmdExporter(),
-                collector=collector,
-                output_verifier=None,
-            )
-
-            result = action.execute(ExportModelRequest(file_path=str(output_path), options={}))
-
-        self.assertFalse(result.succeeded)
-        self.assertIsInstance(result.error, ExportValidationError)
-        self.assertEqual(received_options, [])
-        self.assertEqual(
-            [issue.code for issue in result.validation_report.issues],
-            ["PMD_EXPORT_POLICY_REJECT"],
-        )
-
-    def test_default_selection_collection_keeps_export_format(self):
-        received_options = []
-
-        class FakeCollector:
-            def collect(self, options):
-                received_options.append(options)
-                return {}
-
-        with (
-            mock.patch("maya.cmds.ls", return_value=["selectedMesh"]),
-            mock.patch(
-                "mmd_tools.converters.export_scene_collector.ExportSceneCollector",
-                FakeCollector,
-            ),
-        ):
-            _default_collect_model_data({"export_format": "pmd"})
-
-        self.assertEqual(
-            received_options,
-            [{"target_mesh": "selectedMesh", "export_format": "pmd"}],
-        )
 
     def test_default_collector_projects_authoring_spec_for_registry_root(self):
         oracle = {"vertices": [{"position": [0, 0, 0]}], "faces": [[0, 0, 0]], "marker": "oracle"}
@@ -707,7 +627,7 @@ class TestExportModelAction(unittest.TestCase):
 
         self.assertFalse(result.succeeded)
         self.assertIsInstance(result.error, ValueError)
-        self.assertIn("Unsupported model export format: obj", result.status_message)
+        self.assertIn("model export format obj is not supported", result.status_message)
 
     def test_request_preserves_options_for_future_exporter_boundary(self):
         options = {"file_path": "out.pmx", "export_format": "pmx", "apply_scale": False}
@@ -724,15 +644,6 @@ class _FakePmxExporter:
     def export_pmx_model(self, file_path, model_data):
         self.calls.append((file_path, model_data))
         Path(file_path).write_bytes(b"fake pmx bytes")
-
-
-class _FakePmdExporter:
-    def __init__(self):
-        self.calls = []
-
-    def export_pmd_model(self, file_path, model_data):
-        self.calls.append((file_path, model_data))
-        Path(file_path).write_bytes(b"fake pmd bytes")
 
 
 class TestExportVmdAction(unittest.TestCase):

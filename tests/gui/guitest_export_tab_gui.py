@@ -81,16 +81,16 @@ class TestExportTabGUI(GuiTestBase):
         app.sendPostedEvents(tab, QtCore.QEvent.DeferredDelete)
         app.processEvents()
 
-    def test_format_combo_has_three_formats_and_vmd_only_shows_mode(self):
-        """PMX/PMD/VMD の形式と VMD 専用 mode UI を確認する。"""
+    def test_format_combo_has_pmx_and_vmd_and_vmd_only_shows_mode(self):
+        """PMX/VMD の形式と VMD 専用 mode UI を確認する。"""
         tab = self._create_visible_tab()
         try:
             self.assertEqual(
                 [tab.format_combo.itemText(index) for index in range(tab.format_combo.count())],
-                ["pmx", "pmd", "vmd"],
+                ["pmx", "vmd"],
             )
 
-            for export_format in ("pmx", "pmd"):
+            for export_format in ("pmx",):
                 tab.format_combo.setCurrentText(export_format)
                 QApplication.processEvents()
                 self.assertFalse(tab.mode_label.isVisible(), export_format)

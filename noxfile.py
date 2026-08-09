@@ -1027,7 +1027,7 @@ def bundled_native_smoke(session: nox.Session) -> None:
 def native_export_smoke(session: nox.Session) -> None:
     """Verify native export writer symbols when the DLL is current.
 
-    PMX parts export is required. VMD/PMD JSON writer symbols are optional in
+    PMX parts export is required. VMD JSON writer symbols are optional in
     newer mmd-anim builds and are exercised only when present.
 
     Examples:
@@ -1118,7 +1118,7 @@ def model_authoring_gate(session: nox.Session) -> None:
 
 @nox.session(venv_backend="none")
 def export_release_gate(session: nox.Session) -> None:
-    """Run the reproducible v0.7 PMX/PMD/VMD export release summary.
+    """Run the reproducible v0.7 PMX/VMD export release summary.
 
     The session resolves the pinned external MMD-Anim CLI when the caller does
     not provide one. Maya probes and GUI tests are enabled by default; use

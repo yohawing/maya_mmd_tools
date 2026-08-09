@@ -24,7 +24,6 @@ from mmd_tools.converters.material_shader_parameters import (
     ATTR_MMD_DIFFUSE_ALPHA,
     ATTR_MMD_EDGE_ALPHA,
 )
-from mmd_tools.converters.mesh_material_properties import PMX_EDGE_DRAWING_DRAW_FLAG
 from mmd_tools.converters.morph_converter import (
     MorphConverter,
     _order_morphs_by_index_if_grouped,
@@ -46,7 +45,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_DRAW_FLAGS,
-    ATTR_MMD_EDGE_FLAG,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_IK_LIMIT_ANGLE,
@@ -561,46 +559,6 @@ def _apply_texture_table(model_data: dict, model_root: str | None) -> None:
             return
     _resolve_material_texture_indices(model_data.get("materials", []), texture_table)
     model_data["textures"] = texture_table
-
-
-def _is_default_pmd_display_frame(frame: dict) -> bool:
-    """Return whether one PMD-to-PMX synthetic display frame is present."""
-    name = frame.get("name", "")
-    elements = frame.get("elements", [])
-    if name == "Root":
-        return elements == [{"type": 0, "index": 0}]
-    if name in {"表情", "Exp"}:
-        return all(element.get("type") == 1 for element in elements)
-    return False
-
-
-def _apply_pmd_export_policy(model_data: dict, model_root: str | None) -> dict:
-    """Normalize only PMD-safe defaults without hiding unsupported source data.
-
-    PMD import is routed through a PMX scene representation, which necessarily
-    adds the standard ``Root``/``Exp`` display frames.  Those frames are
-    synthetic and are not PMD source data.  Custom PMD frames remain in the
-    payload and are rejected by the PMD validator instead of being discarded.
-    The collector also uses PMD's valid toon index sentinel for an untextured
-    material; PMD has no PMX ``-1`` index representation.
-    """
-    normalized = dict(model_data)
-    normalized["materials"] = [
-        {
-            **material,
-            "toon_texture_index": 0
-            if material.get("toon_texture_index") == -1
-            else material.get("toon_texture_index", 0),
-        }
-        for material in model_data.get("materials", [])
-    ]
-
-    source_path = _get_attr(model_root, "mmd_source_file", "") if model_root else ""
-    if str(Path(str(source_path))).lower().endswith(".pmd"):
-        frames = list(model_data.get("display_frames") or [])
-        if frames and all(_is_default_pmd_display_frame(frame) for frame in frames):
-            normalized["display_frames"] = []
-    return normalized
 
 
 def _maya_to_mmd_vector(values) -> list[float]:
@@ -1562,8 +1520,8 @@ def _read_shader_vector(shader: str, attr: str, size: int) -> tuple[bool, list[f
         return False, None
 
 
-def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
-    """Read persisted PMX or PMD semantic values from an MMD-tagged shader.
+def _collect_mmd_material_dict(shader: str) -> dict:
+    """Read persisted PMX semantic values from an MMD-tagged shader.
 
     Missing semantic values are omitted instead of being replaced with the
     ordinary Maya/default material values.  ``semantic_missing`` is kept in a
@@ -1573,24 +1531,22 @@ def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
     material = {}
     semantic_missing = []
 
-    if not is_pmd:
-        material_index_present, material_index = _read_shader_attr(
-            shader,
-            ATTR_MMD_MATERIAL_INDEX,
-        )
-        if (
-            material_index_present
-            and isinstance(material_index, int)
-            and not isinstance(material_index, bool)
-            and material_index >= 0
-        ):
-            material["source_material_index"] = material_index
-        else:
-            semantic_missing.append("source_material_index")
+    material_index_present, material_index = _read_shader_attr(
+        shader,
+        ATTR_MMD_MATERIAL_INDEX,
+    )
+    if (
+        material_index_present
+        and isinstance(material_index, int)
+        and not isinstance(material_index, bool)
+        and material_index >= 0
+    ):
+        material["source_material_index"] = material_index
+    else:
+        semantic_missing.append("source_material_index")
 
     string_fields = [("name", ATTR_MMD_MATERIAL_NAME)]
-    if not is_pmd:
-        string_fields.append(("name_english", ATTR_MMD_MATERIAL_NAME_EN))
+    string_fields.append(("name_english", ATTR_MMD_MATERIAL_NAME_EN))
     for payload_key, attr in string_fields:
         present, value = _read_shader_scalar(shader, attr, str)
         if present:
@@ -1616,29 +1572,19 @@ def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
         else:
             semantic_missing.append(payload_key)
 
-    scalar_fields = [("specular_power" if is_pmd else "specular_coefficient", ATTR_MMD_SHININESS, float)]
-    pmd_edge_from_draw_flags = False
-    if is_pmd:
-        edge_present, edge_value = _read_shader_scalar(shader, ATTR_MMD_EDGE_FLAG, int)
-        if edge_present:
-            material["edge_flag"] = edge_value
-        else:
-            scalar_fields.append(("edge_flag", ATTR_MMD_DRAW_FLAGS, int))
-            pmd_edge_from_draw_flags = True
-        scalar_fields.append(("toon_texture_index", ATTR_MMD_TOON_TEXTURE_INDEX, int))
-    else:
-        scalar_fields.extend(
-            (
-                ("draw_flag", ATTR_MMD_DRAW_FLAGS, int),
-                ("edge_size", ATTR_MMD_EDGE_SIZE, float),
-                ("texture_index", ATTR_MMD_TEXTURE_INDEX, int),
-                ("sphere_texture_index", ATTR_MMD_SPHERE_TEXTURE_INDEX, int),
-                ("sphere_mode", ATTR_MMD_SPHERE_MODE, int),
-                ("shared_toon_flag", ATTR_MMD_SHARED_TOON_FLAG, int),
-                ("toon_texture_index", ATTR_MMD_TOON_TEXTURE_INDEX, int),
-                ("memo", ATTR_MMD_MEMO, str),
-            )
+    scalar_fields = [("specular_coefficient", ATTR_MMD_SHININESS, float)]
+    scalar_fields.extend(
+        (
+            ("draw_flag", ATTR_MMD_DRAW_FLAGS, int),
+            ("edge_size", ATTR_MMD_EDGE_SIZE, float),
+            ("texture_index", ATTR_MMD_TEXTURE_INDEX, int),
+            ("sphere_texture_index", ATTR_MMD_SPHERE_TEXTURE_INDEX, int),
+            ("sphere_mode", ATTR_MMD_SPHERE_MODE, int),
+            ("shared_toon_flag", ATTR_MMD_SHARED_TOON_FLAG, int),
+            ("toon_texture_index", ATTR_MMD_TOON_TEXTURE_INDEX, int),
+            ("memo", ATTR_MMD_MEMO, str),
         )
+    )
     for payload_key, attr, converter in scalar_fields:
         present, value = _read_shader_scalar(shader, attr, converter)
         if present:
@@ -1646,16 +1592,12 @@ def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
         else:
             semantic_missing.append(payload_key)
 
-    if is_pmd:
-        if pmd_edge_from_draw_flags and "edge_flag" in material:
-            material["edge_flag"] = int(bool(material["edge_flag"] & PMX_EDGE_DRAWING_DRAW_FLAG))
+    edge_present, edge_color = _read_shader_vector(shader, ATTR_MMD_EDGE_COLOR, 3)
+    edge_alpha_present, edge_alpha = _read_shader_scalar(shader, ATTR_MMD_EDGE_ALPHA, float)
+    if edge_present and edge_alpha_present:
+        material["edge_color"] = edge_color + [edge_alpha]
     else:
-        edge_present, edge_color = _read_shader_vector(shader, ATTR_MMD_EDGE_COLOR, 3)
-        edge_alpha_present, edge_alpha = _read_shader_scalar(shader, ATTR_MMD_EDGE_ALPHA, float)
-        if edge_present and edge_alpha_present:
-            material["edge_color"] = edge_color + [edge_alpha]
-        else:
-            semantic_missing.append("edge_color")
+        semantic_missing.append("edge_color")
 
     # These paths are provenance only.  No texture table or index remapping is
     # inferred from them in this collector slice.
@@ -1667,7 +1609,7 @@ def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
     sphere_present, sphere_path, _ = _read_shader_texture_path(shader, ATTR_MMD_SPHERE_PATH)
     toon_present = False
     toon_path = None
-    if not is_pmd and material.get("shared_toon_flag") == 0:
+    if material.get("shared_toon_flag") == 0:
         toon_present, toon_path, _ = _read_shader_texture_path(shader, ATTR_MMD_TOON_PATH)
     if not texture_present and (texture_path or texture_connected):
         semantic_missing.append("texture_path")
@@ -1675,50 +1617,26 @@ def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
         semantic_missing.append("sphere_texture_path")
     if not toon_present and toon_path:
         semantic_missing.append("toon_texture_path")
-    if is_pmd:
-        texture_index_present, texture_index = _read_shader_scalar(shader, ATTR_MMD_TEXTURE_INDEX, int)
-        sphere_index_present, sphere_index = _read_shader_scalar(shader, ATTR_MMD_SPHERE_TEXTURE_INDEX, int)
-        if texture_present or sphere_present:
-            material["texture_file_name"] = (
-                f"{texture_path or ''}*{sphere_path}"
-                if sphere_present and sphere_path
-                else texture_path or ""
-            )
-        if (
-            texture_index_present
-            and texture_index >= 0
-            and not texture_present
-            and "texture_path" not in semantic_missing
-        ):
-            semantic_missing.append("texture_path")
-        if (
-            sphere_index_present
-            and sphere_index >= 0
-            and not sphere_present
-            and "sphere_texture_path" not in semantic_missing
-        ):
-            semantic_missing.append("sphere_texture_path")
-    else:
-        if texture_present:
-            material["texture_path"] = texture_path
-        if sphere_present:
-            material["sphere_texture_path"] = sphere_path
-        if toon_present:
-            material["toon_texture_path"] = toon_path
-        if texture_present and (
-            not isinstance(material.get("texture_index"), int)
-            or material["texture_index"] < 0
-        ) and "texture_table" not in semantic_missing:
-            semantic_missing.append("texture_table")
-        if sphere_present and (
-            not isinstance(material.get("sphere_texture_index"), int)
-            or material["sphere_texture_index"] < 0
-        ) and "texture_table" not in semantic_missing:
-            semantic_missing.append("texture_table")
+    if texture_present:
+        material["texture_path"] = texture_path
+    if sphere_present:
+        material["sphere_texture_path"] = sphere_path
+    if toon_present:
+        material["toon_texture_path"] = toon_path
+    if texture_present and (
+        not isinstance(material.get("texture_index"), int)
+        or material["texture_index"] < 0
+    ) and "texture_table" not in semantic_missing:
+        semantic_missing.append("texture_table")
+    if sphere_present and (
+        not isinstance(material.get("sphere_texture_index"), int)
+        or material["sphere_texture_index"] < 0
+    ) and "texture_table" not in semantic_missing:
+        semantic_missing.append("texture_table")
 
     # Root-level table resolution restores these authored indices later;
     # shared toon indices are built-in PMX values and remain usable.
-    texture_reference_fields = () if is_pmd else _PMX_TEXTURE_REFERENCE_FIELDS
+    texture_reference_fields = _PMX_TEXTURE_REFERENCE_FIELDS
     texture_table_missing = False
     for payload_key, source_key in texture_reference_fields:
         value = material.get(payload_key)
@@ -1735,7 +1653,7 @@ def _collect_mmd_material_dict(shader: str, is_pmd: bool = False) -> dict:
     return material
 
 
-def _collect_shader_material_dict(sg_node_name: str, is_pmd: bool = False) -> dict:
+def _collect_shader_material_dict(sg_node_name: str) -> dict:
     """Collect one SG material, preserving legacy behavior for untagged shaders."""
     shaders = cmds.listConnections(f"{sg_node_name}.surfaceShader") or []
     if not shaders:
@@ -1744,7 +1662,7 @@ def _collect_shader_material_dict(sg_node_name: str, is_pmd: bool = False) -> di
     shader = shaders[0]
     tagged, tag_value = _read_shader_attr(shader, ATTR_MMD_MATERIAL)
     if tagged and bool(tag_value):
-        return _collect_mmd_material_dict(shader, is_pmd=is_pmd)
+        return _collect_mmd_material_dict(shader)
     return _make_material_dict(_resolve_shader_name(sg_node_name, shader=shader))
 
 
@@ -1769,7 +1687,6 @@ def _resolve_shader_name(sg_node_name: str, shader: Optional[str] = None) -> str
 
 def _order_material_groups_by_source_index(
     material_groups: list[tuple[dict, list[list[int]]]],
-    is_pmd: bool = False,
 ) -> list[tuple[dict, list[list[int]]]]:
     """Order material/face groups by canonical PMX source material index.
 
@@ -1784,8 +1701,7 @@ def _order_material_groups_by_source_index(
         for material, _group_faces in material_groups
     ]
     indices_are_valid = (
-        not is_pmd
-        and source_indices
+        source_indices
         and all(
             isinstance(source_index, int)
             and not isinstance(source_index, bool)
@@ -1849,7 +1765,7 @@ def _material_face_groups(
     return groups
 
 
-def _collect_materials_per_face(shape: str, fn, is_pmd: bool = False) -> tuple:
+def _collect_materials_per_face(shape: str, fn) -> tuple:
     """Return ``(materials, faces)`` with polygons grouped by per-face material.
 
     Uses ``MFnMesh.getConnectedShaders`` to obtain the per-polygon shading-group
@@ -1915,14 +1831,14 @@ def _collect_materials_per_face(shape: str, fn, is_pmd: bool = False) -> tuple:
         mat = (
             _make_material_dict("Default")
             if sg_key == "__unassigned__"
-            else _collect_shader_material_dict(sg_key, is_pmd=is_pmd)
+            else _collect_shader_material_dict(sg_key)
         )
         group_faces = [list(reversed(face)) for face in group_faces]
         mat["face_count"] = sum(max(0, len(f) - 2) * 3 for f in group_faces)
 
         material_groups.append((mat, group_faces))
 
-    material_groups = _order_material_groups_by_source_index(material_groups, is_pmd=is_pmd)
+    material_groups = _order_material_groups_by_source_index(material_groups)
 
     materials = []
     faces = []
@@ -1958,24 +1874,17 @@ class ExportSceneCollector:
         ``target_mesh`` / ``export_mesh`` / ``mesh`` collect a single mesh.
         """
         model_root = options.get("target_model") or options.get("model_root")
-        export_format = options.get("export_format") or Path(str(options.get("file_path") or "")).suffix
-        is_pmd = str(export_format).lower().lstrip(".") == "pmd"
         if model_root:
-            model_data = self.collect_from_model_root(model_root, is_pmd=is_pmd)
+            return self.collect_from_model_root(model_root)
         else:
             target_mesh = options.get("target_mesh") or options.get("export_mesh") or options.get("mesh")
             if not target_mesh:
                 raise ValueError("ExportSceneCollector requires target_model, model_root, or target_mesh")
-            model_data = self.collect_from_mesh(target_mesh, is_pmd=is_pmd)
-
-        if is_pmd:
-            return _apply_pmd_export_policy(model_data, model_root)
-        return model_data
+            return self.collect_from_mesh(target_mesh)
 
     def collect_from_mesh(
         self,
         transform_or_shape: str,
-        is_pmd: bool = False,
         *,
         _resolve_texture_table: bool = True,
         expected_additional_uv_count: int | None = None,
@@ -2086,7 +1995,7 @@ class ExportSceneCollector:
             vertices.append(vertex_data)
 
         # Collect per-face material assignments and group faces contiguously.
-        materials, faces = _collect_materials_per_face(shape, fn, is_pmd=is_pmd)
+        materials, faces = _collect_materials_per_face(shape, fn)
 
         model_data = {
             "model_name": model_name,
@@ -2100,11 +2009,11 @@ class ExportSceneCollector:
         soft_body_payload = _read_soft_body_payload(transform, shape)
         if soft_body_payload is not None:
             model_data["soft_bodies"] = soft_body_payload
-        if not is_pmd and _resolve_texture_table:
+        if _resolve_texture_table:
             _apply_texture_table(model_data, None)
         return model_data
 
-    def collect_from_model_root(self, root: str, is_pmd: bool = False) -> dict:
+    def collect_from_model_root(self, root: str) -> dict:
         """Collect and merge all polygon meshes below an MMD model root.
 
         This keeps the same minimum-slice limitations as ``collect_from_mesh``:
@@ -2142,7 +2051,6 @@ class ExportSceneCollector:
             expected_additional_uv_count = None
         for shape in shapes:
             collect_kwargs = {
-                "is_pmd": is_pmd,
                 "_resolve_texture_table": False,
             }
             if expected_additional_uv_count is not None:
@@ -2244,8 +2152,7 @@ class ExportSceneCollector:
         soft_body_payload = _read_soft_body_payload(root)
         if soft_body_payload is not None:
             model_data["soft_bodies"] = soft_body_payload
-        if not is_pmd:
-            _apply_texture_table(model_data, root)
+        _apply_texture_table(model_data, root)
 
         if (
             can_reorder_material_groups
@@ -2255,7 +2162,6 @@ class ExportSceneCollector:
         ):
             ordered_material_groups = _order_material_groups_by_source_index(
                 merged_material_groups,
-                is_pmd=is_pmd,
             )
             model_data["materials"] = [
                 material for material, _group_faces in ordered_material_groups

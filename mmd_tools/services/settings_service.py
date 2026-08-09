@@ -174,7 +174,17 @@ class SettingsService:
     def export_settings_data(self):
         """Return the JSON-exportable settings categories."""
         all_settings = self.data
-        return {category: all_settings.get(category, {}) for category in _SETTINGS_EXPORT_CATEGORIES}
+        exported = {
+            category: copy.deepcopy(all_settings.get(category, {}))
+            for category in _SETTINGS_EXPORT_CATEGORIES
+        }
+        # ``export.general.export_format`` was a dead PMX/PMD selector.  Drop
+        # it from exported settings so stale PMD values cannot become a future
+        # export authority when a settings file is migrated.
+        export_general = exported.get("export", {}).get("general")
+        if isinstance(export_general, dict):
+            export_general.pop("export_format", None)
+        return exported
 
     def write_settings_json(self, file_path):
         """Write exportable settings to a JSON file."""
@@ -201,6 +211,15 @@ class SettingsService:
                 # the former animation-scoped value during JSON import.
                 model_settings.setdefault("create_mmd_control_rig", animation_settings["create_mmd_control_rig"])
                 animation_settings.pop("create_mmd_control_rig", None)
+
+        export_settings = normalized_data.get("export")
+        if isinstance(export_settings, dict):
+            export_general = export_settings.get("general")
+            if isinstance(export_general, dict):
+                # Legacy PMD/PMX export-format persistence is no longer part
+                # of the public settings contract.  The current Export tab
+                # owns its PMX/VMD choice, so never persist this stale key.
+                export_general.pop("export_format", None)
 
         for category in _SETTINGS_EXPORT_CATEGORIES:
             if category in normalized_data:
@@ -316,11 +335,3 @@ class SettingsService:
     def should_show_texture_issue_dialog(self):
         """Return whether post-import texture issue diagnostics should be shown."""
         return self.get(setting_keys.IMPORT_MODEL_SHOW_TEXTURE_ISSUE_DIALOG, True)
-
-    def build_export_options(self, file_path):
-        """Build PMX/PMD export options from persisted settings."""
-        return {
-            "file_path": file_path,
-            "export_format": self.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx"),
-            "apply_scale": self.get(setting_keys.EXPORT_GENERAL_APPLY_SCALE, True),
-        }

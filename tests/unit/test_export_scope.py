@@ -30,7 +30,6 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_DRAW_FLAGS,
-    ATTR_MMD_EDGE_FLAG,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_IK_LIMIT_ANGLE,
@@ -120,7 +119,7 @@ class TestExportScope(unittest.TestCase):
         self.assertIsNone(values)
         self.assertEqual(error, "additional_uvs_storage")
 
-    def _collect_single_material(self, attrs, is_pmd=False):
+    def _collect_single_material(self, attrs):
         """Collect one fake shading-group material through the Maya stubs."""
         attrs = dict(attrs)
 
@@ -159,7 +158,6 @@ class TestExportScope(unittest.TestCase):
             materials, faces = export_scene_collector_module._collect_materials_per_face(
                 "meshShape",
                 FakeMesh(),
-                is_pmd=is_pmd,
             )
 
         self.assertEqual(faces, [[2, 1, 0]])
@@ -1137,81 +1135,10 @@ class TestExportScope(unittest.TestCase):
         self.assertEqual(
             collect_from_mesh.call_args_list,
             [
-                mock.call("mesh_a", is_pmd=False, _resolve_texture_table=False),
-                mock.call("mesh_b", is_pmd=False, _resolve_texture_table=False),
+                mock.call("mesh_a", _resolve_texture_table=False),
+                mock.call("mesh_b", _resolve_texture_table=False),
             ],
         )
-
-    def test_pmd_toon_index_stays_embedded_and_pmd_fields_are_collected(self):
-        material = self._collect_single_material(
-            {
-                ATTR_MMD_MATERIAL: 1,
-                ATTR_MMD_MATERIAL_NAME: "PMD material",
-                ATTR_MMD_MATERIAL_NAME_EN: "PMD material",
-                ATTR_MMD_DIFFUSE_COLOR: (0.1, 0.2, 0.3),
-                ATTR_MMD_DIFFUSE_ALPHA: 1.0,
-                ATTR_MMD_SPECULAR_COLOR: (0.4, 0.5, 0.6),
-                ATTR_MMD_SHININESS: 4.0,
-                ATTR_MMD_AMBIENT_COLOR: (0.2, 0.3, 0.4),
-                ATTR_MMD_DRAW_FLAGS: 0x10,
-                ATTR_MMD_TOON_TEXTURE_INDEX: 3,
-                ATTR_MMD_SPHERE_TEXTURE_INDEX: 1,
-                ATTR_MMD_SPHERE_PATH: "textures/body.spa",
-                "mmd_texture_path": "textures/body.bmp",
-            },
-            is_pmd=True,
-        )
-
-        self.assertEqual(material["specular_power"], 4.0)
-        self.assertEqual(material["edge_flag"], 1)
-        self.assertEqual(material["toon_texture_index"], 3)
-        self.assertEqual(material["texture_file_name"], "textures/body.bmp*textures/body.spa")
-        self.assertNotIn("texture_table", material["semantic_missing"])
-        self.assertEqual(material["semantic_missing"], [])
-
-    def test_pmd_direct_edge_flag_is_used_when_present(self):
-        material = self._collect_single_material(
-            {
-                ATTR_MMD_MATERIAL: 1,
-                ATTR_MMD_EDGE_FLAG: 1,
-            },
-            is_pmd=True,
-        )
-
-        self.assertEqual(material["edge_flag"], 1)
-        self.assertNotIn("edge_flag", material["semantic_missing"])
-
-    def test_pmd_does_not_require_unused_english_material_name(self):
-        material = self._collect_single_material(
-            {
-                ATTR_MMD_MATERIAL: 1,
-                ATTR_MMD_MATERIAL_NAME: "PMD material",
-            },
-            is_pmd=True,
-        )
-
-        self.assertNotIn("name_english", material["semantic_missing"])
-
-    def test_pmd_missing_shader_path_uses_file_node_provenance(self):
-        with (
-            mock.patch.object(
-                maya_material_utils,
-                "find_material_texture_file_node",
-                return_value="file1",
-            ),
-            mock.patch.object(
-                maya_material_utils,
-                "get_mmd_original_texture_path",
-                return_value="textures/missing.bmp",
-            ),
-        ):
-            material = self._collect_single_material(
-                {ATTR_MMD_MATERIAL: 1},
-                is_pmd=True,
-            )
-
-        self.assertEqual(material["texture_file_name"], "textures/missing.bmp")
-        self.assertNotIn("texture_path", material["semantic_missing"])
 
     def test_connected_texture_without_provenance_is_fail_closed(self):
         with (
@@ -1228,7 +1155,6 @@ class TestExportScope(unittest.TestCase):
         ):
             material = self._collect_single_material(
                 {ATTR_MMD_MATERIAL: 1},
-                is_pmd=True,
             )
 
         self.assertIn("texture_path", material["semantic_missing"])
@@ -1241,22 +1167,8 @@ class TestExportScope(unittest.TestCase):
         ):
             material = self._collect_single_material(
                 {ATTR_MMD_MATERIAL: 1},
-                is_pmd=True,
             )
 
-        self.assertIn("texture_path", material["semantic_missing"])
-
-    def test_pmd_empty_texture_path_with_index_is_fail_closed(self):
-        material = self._collect_single_material(
-            {
-                ATTR_MMD_MATERIAL: 1,
-                ATTR_MMD_TEXTURE_INDEX: 2,
-                "mmd_texture_path": "",
-            },
-            is_pmd=True,
-        )
-
-        self.assertNotIn("texture_file_name", material)
         self.assertIn("texture_path", material["semantic_missing"])
 
     def test_absolute_texture_path_uses_file_node_provenance(self):
@@ -1372,14 +1284,13 @@ class TestExportScope(unittest.TestCase):
             ),
         ):
             payload = ExportSceneCollector().collect(
-                {"target_model": "|hero:model_ROOT", "export_format": "pmd"}
+                {"target_model": "|hero:model_ROOT", "export_format": "pmx"}
             )
 
         self.assertEqual(calls, [("|hero:model_ROOT", False)])
         self.assertEqual(payload["model_name"], "Hero")
         collect_from_mesh.assert_called_once_with(
             "mesh",
-            is_pmd=True,
             _resolve_texture_table=False,
         )
 

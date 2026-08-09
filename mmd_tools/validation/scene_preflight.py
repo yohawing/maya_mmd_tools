@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 from .export_validator import ExportValidationIssue, ExportValidationReport
 
 
-MODEL_FORMATS = frozenset({"pmx", "pmd"})
+MODEL_FORMATS = frozenset({"pmx"})
 VMD_FORMATS = frozenset({"vmd"})
 SUPPORTED_FORMATS = MODEL_FORMATS | VMD_FORMATS
 

@@ -339,35 +339,6 @@ class TestExportWorkflowService(unittest.TestCase):
         self.assertEqual(result.state, STATE_BLOCKED)
         self.assertEqual(result.report.issues[0].code, "SCENE_TARGET_MISSING")
 
-    def test_pmd_policy_rejects_before_collector(self):
-        payload = _valid_model_data()
-        action = _FakeModelAction(payload)
-        action._collector = lambda _options: (_ for _ in ()).throw(
-            AssertionError("PMD policy must reject before collection")
-        )
-        service = ExportWorkflowService(
-            scene_preflight=ScenePreflight(
-                scene_service=_SceneService(),
-                ownership_checker=lambda _target: {},
-            ),
-            model_action=action,
-            vmd_action=object(),
-        )
-
-        result = service.validate(
-            ExportWorkflowRequest(
-                "model.pmd",
-                {"export_format": "pmd", "target_model": "model_ROOT"},
-            )
-        )
-
-        self.assertEqual(result.state, STATE_BLOCKED)
-        self.assertEqual(
-            [issue.code for issue in result.report.issues],
-            ["PMD_EXPORT_POLICY_REJECT"],
-        )
-        self.assertEqual(action.calls, [])
-
     def test_collector_validation_error_preserves_report_and_wrapper(self):
         payload = _valid_model_data()
         action = _FakeModelAction(payload)

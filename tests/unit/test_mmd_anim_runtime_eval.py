@@ -1239,16 +1239,13 @@ class _FakeJsonExportLib:
     def mmd_runtime_export_pmx_model_json(self, json_payload, json_len):
         return self._export("pmx", json_payload, json_len)
 
-    def mmd_runtime_export_pmd_model_json(self, json_payload, json_len):
-        return self._export("pmd", json_payload, json_len)
-
     def mmd_runtime_byte_buffer_free(self, buf):
         self.free_calls += 1
 
 
 class TestJsonExportWrapper(unittest.TestCase):
     def test_availability_uses_format_symbol(self):
-        lib = _FakeJsonExportLib(missing_symbols={"mmd_runtime_export_pmd_model_json"})
+        lib = _FakeJsonExportLib()
         with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
             self.assertTrue(rt.is_native_json_export_available("vmd"))
             self.assertTrue(rt.is_native_json_export_available("pmx"))
@@ -1264,17 +1261,13 @@ class TestJsonExportWrapper(unittest.TestCase):
         self.assertEqual(lib.free_calls, 1)
         self.assertEqual(lib.calls, [{"symbol": "vmd", "payload": b'{"kind":"vmd","frames":[]}'}])
 
-    def test_export_pmx_and_pmd_json_select_distinct_symbols(self):
+    def test_export_pmx_json_selects_pmx_symbol(self):
         lib = _FakeJsonExportLib(payload=b"PMX")
         with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
             self.assertEqual(rt.export_pmx_model_json(b'{"kind":"pmx"}'), b"PMX")
 
-        lib.payload = b"PMD"
-        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
-            self.assertEqual(rt.export_pmd_model_json('{"kind":"pmd"}'), b"PMD")
-
-        self.assertEqual([call["symbol"] for call in lib.calls], ["pmx", "pmd"])
-        self.assertEqual(lib.free_calls, 2)
+        self.assertEqual([call["symbol"] for call in lib.calls], ["pmx"])
+        self.assertEqual(lib.free_calls, 1)
 
     def test_export_json_returns_none_when_symbol_missing_or_empty(self):
         missing = _FakeJsonExportLib(missing_symbols={"mmd_runtime_export_vmd_animation_json"})

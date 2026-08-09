@@ -1,4 +1,4 @@
-"""Action boundary for PMX/PMD model export execution."""
+"""Action boundary for PMX model export execution."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from ..validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
     validate_model_data,
-    pmd_export_policy_report,
 )
 from ..validation.output_verifier import verify_model_output
 from ..validation.mmd_anim_verifier import verify_mmd_anim_asset
@@ -28,7 +27,6 @@ from ..validation.report_artifacts import (
 from ..validation.snapshot import ExportValidationSnapshot
 
 if TYPE_CHECKING:
-    from ..io.pmd_exporter import PmdExporter
     from ..io.pmx_exporter import PmxExporter
 
 logger = get_logger(__name__)
@@ -125,7 +123,7 @@ def _project_authoring_payload(
 
 @dataclass
 class ExportModelRequest:
-    """Request data for exporting a PMX/PMD model."""
+    """Request data for exporting a PMX model."""
 
     file_path: str
     options: Dict[str, Any]
@@ -133,7 +131,7 @@ class ExportModelRequest:
 
 @dataclass
 class ExportModelResult:
-    """Result data returned by PMX/PMD model export."""
+    """Result data returned by PMX model export."""
 
     exported_path: Optional[str] = None
     succeeded: bool = False
@@ -146,10 +144,15 @@ class ExportModelResult:
 
 
 def _default_collect_model_data(options: Dict[str, Any]) -> dict:
-    """Collect minimum PMX/PMD-compatible model data from the requested mesh."""
+    """Collect minimum PMX-compatible model data from the requested mesh."""
     from maya import cmds
 
     from ..converters.export_scene_collector import ExportSceneCollector
+
+    export_format = str(options.get("export_format") or Path(str(options.get("file_path") or "")).suffix)
+    export_format = export_format.lower().lstrip(".")
+    if export_format != "pmx":
+        raise ValueError(f"model export format {export_format or 'empty'} is not supported")
 
     collector = ExportSceneCollector()
     if (
@@ -160,9 +163,6 @@ def _default_collect_model_data(options: Dict[str, Any]) -> dict:
         or options.get("mesh")
     ):
         oracle_payload = collector.collect(options)
-        export_format = str(options.get("export_format") or "").lower().lstrip(".")
-        if export_format != "pmx":
-            return oracle_payload
         semantics = options.get("authoring_semantics", "auto")
         if semantics not in {"auto", "legacy"}:
             raise ValueError("authoring_semantics must be 'auto' or 'legacy'")
@@ -178,7 +178,6 @@ def _default_collect_model_data(options: Dict[str, Any]) -> dict:
         target = selection[0] if selection else None
     if target is None:
         raise ValueError("Model export requires model_data, target_model, target_mesh, or a selected mesh")
-    export_format = str(options.get("export_format") or "").lower().lstrip(".")
     semantics = options.get("authoring_semantics", "auto")
     if semantics not in {"auto", "legacy"}:
         raise ValueError("authoring_semantics must be 'auto' or 'legacy'")
@@ -186,7 +185,7 @@ def _default_collect_model_data(options: Dict[str, Any]) -> dict:
     adapter = None
     selected_options = {**options, "target_mesh": target, "_selected_target": True}
     selected_root = None
-    if export_format == "pmx" and semantics == "auto":
+    if semantics == "auto":
         from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
 
         adapter = MayaCmdsAdapter()
@@ -205,8 +204,6 @@ def _default_collect_model_data(options: Dict[str, Any]) -> dict:
     oracle_payload = collector.collect(
         collector_options
     )
-    if export_format != "pmx":
-        return oracle_payload
     if semantics == "legacy":
         return oracle_payload
     if adapter is None:
@@ -222,18 +219,16 @@ def _default_collect_model_data(options: Dict[str, Any]) -> dict:
 
 
 class ExportModelAction:
-    """Execute PMX/PMD model export from collected or scene-collected data."""
+    """Execute PMX model export from collected or scene-collected data."""
 
     def __init__(
         self,
         pmx_exporter: Optional[PmxExporter] = None,
-        pmd_exporter: Optional[PmdExporter] = None,
         collector: Optional[Callable[[Dict[str, Any]], dict]] = _DEFAULT_COLLECTOR,
         output_verifier: Any = _DEFAULT_OUTPUT_VERIFIER,
         validator: Any = _DEFAULT_VALIDATOR,
     ):
         self._pmx_exporter = pmx_exporter
-        self._pmd_exporter = pmd_exporter
         if collector is _DEFAULT_COLLECTOR:
             self._collector = _default_collect_model_data
         else:
@@ -269,7 +264,7 @@ class ExportModelAction:
         )
 
     def execute(self, request: ExportModelRequest) -> ExportModelResult:
-        """Export a PMX/PMD model and return a small result object."""
+        """Export a PMX model and return a small result object."""
         validation_report: Optional[ExportValidationReport] = None
         payload_fingerprint: Optional[str] = None
         validation_report_artifacts: Optional[ValidationReportArtifactPaths] = None
@@ -306,10 +301,19 @@ class ExportModelAction:
             if not export_format:
                 export_format = Path(request.file_path).suffix.lower().lstrip(".") or "pmx"
 
-            if export_format not in ("pmx", "pmd"):
-                raise ValueError(f"Unsupported model export format: {export_format}")
-            if export_format == "pmd":
-                validation_report = pmd_export_policy_report()
+            if export_format != "pmx":
+                validation_report = ExportValidationReport(
+                    export_format or None,
+                    (
+                        ExportValidationIssue(
+                            "EXPORT_FORMAT_UNSUPPORTED",
+                            "fatal",
+                            True,
+                            "export_format",
+                            f"model export format {export_format or 'empty'} is not supported",
+                        ),
+                    ),
+                )
                 validation_error = ExportValidationError(validation_report)
                 logger.error("Model export preflight failed: %s", validation_error)
                 return build_result(
@@ -466,12 +470,8 @@ class ExportModelAction:
 
                     self._pmx_exporter = PmxExporter()
                 self._pmx_exporter.export_pmx_model(temporary_path, writer_model_data)
-            else:
-                if self._pmd_exporter is None:
-                    from ..io.pmd_exporter import PmdExporter
-
-                    self._pmd_exporter = PmdExporter()
-                self._pmd_exporter.export_pmd_model(temporary_path, writer_model_data)
+            else:  # pragma: no cover - guarded by the format preflight above
+                raise ValueError(f"Unsupported model export format: {export_format}")
 
             if self._output_verifier is not None:
                 output_report = self._output_verifier(temporary_path, export_format, writer_model_data)

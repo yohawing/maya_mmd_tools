@@ -69,7 +69,6 @@
     "_comment": "Settings related to exporting to MMD formats",
     "general": {
       "_comment": "General export settings",
-      "export_format": "pmx",
       "apply_scale": true
     }
   },

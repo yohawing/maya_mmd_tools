@@ -68,7 +68,7 @@ class ValidationReportArtifactTests(unittest.TestCase):
             self.assertIn('"fixture": "face-too-short"', markdown_text)
 
     def test_artifacts_are_byte_deterministic_for_equal_inputs(self):
-        report = validate_model_data(_valid_model_data(), "pmd")
+        report = validate_model_data(_valid_model_data(), "pmx")
 
         with tempfile.TemporaryDirectory() as directory:
             first = write_validation_report_artifacts(

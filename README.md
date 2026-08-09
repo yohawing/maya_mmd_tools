@@ -22,7 +22,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 | Feature | Status | Notes |
 |---|---|---|
 | Mesh | ℹ️ | QDEF and SDEF are not supported. The PMX 2.0 export path preserves additional UV channels as metadata; UV morph runtime evaluation in Maya is not verified. |
-| Materials & textures | ℹ️ | MMD toon shaders are implemented for DX11 and OpenGL. Supported PMX material fields, including shared toon indices and non-shared custom toon path/index authoring, have focused import/edit/export/fresh-import checks. PMD material import/display/edit is supported, but PMD export is rejected. Reproduction fidelity is limited by Viewport 2.0 constraints. |
+| Materials & textures | ℹ️ | MMD toon shaders are implemented for DX11 and OpenGL. Supported PMX material fields, including shared toon indices and non-shared custom toon path/index authoring, have focused import/edit/export/fresh-import checks. PMD material import/display/edit is supported. Reproduction fidelity is limited by Viewport 2.0 constraints. |
 | Maya name resolution | ✅ | Names are converted to safe Maya names using a dictionary or a hash. Texture paths are also resolved automatically to safe paths. |
 | Edge / outline flags | ℹ️ | Can be enabled as an option, subject to Viewport 2.0 constraints. |
 | Bones, skeleton & rig (IK / append / local axis) | ℹ️ | Partially supported. PMX 2.0 export preserves and fresh-import verifies the canonical IK target/loop/angle/link subset plus flag-dependent append, tail, fixed/local-axis, after-physics, and external-parent metadata. Malformed or unresolved references fail closed; complex runtime rigs can still have known issues. |
@@ -30,7 +30,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 | Morphs (vertex / bone / material / group / UV) | ℹ️ | Vertex, bone, material, and group morphs are supported. PMX 2.0 UV/additional-UV morph metadata (types 3–7) is preserved through export and fresh import, but does not currently deform Maya UV sets. |
 | Physics (rigid bodies & joints) | ℹ️ | Some physics editing operations remain unsupported. PMX/PMD physics data is imported by default; object creation, duplication, and deletion are not yet supported. |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
-| Export | ℹ️ | PMX 2.0 export is available from the Export workflow for the validated fields above. Validation is fail-closed and preserves an existing output on rejection. PMD export, SDEF, and PMX 2.1-only features such as Flip morphs, Impulse morphs, and soft bodies are intentionally unsupported; retained import provenance only supports a stable policy rejection and is not feature support. Full PMX field or visual parity is not claimed. |
+| Export | ℹ️ | PMX 2.0 export is available from the Export workflow for the validated fields above. Validation is fail-closed and preserves an existing output on rejection. SDEF and PMX 2.1-only features such as Flip morphs, Impulse morphs, and soft bodies are intentionally unsupported. Full PMX field or visual parity is not claimed. PMD is import-only. |
 
 ### Animation (VMD)
 
@@ -51,7 +51,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 - **Detailed documentation is not written yet.** This is an alpha release, and development speed is prioritized over documentation maintenance.
 - **Various features are still incomplete.** This is an experimental alpha release; feedback is welcome.
 - **QDEF and SDEF are not supported.** Meshes may appear thinner with some model and motion combinations.
-- **Export supports a bounded, validated scope.** PMX 2.0 additional UV channels, UV/additional-UV morph metadata, and the documented canonical bone/IK subset are preserved through fresh import, but UV morphs are not evaluated on Maya UV sets. PMD, SDEF, and PMX 2.1-only Flip morph, Impulse morph, and soft-body export are rejected fail-closed. VMD Mode C densely bakes model, camera, and light tracks without raw interpolation preservation; self-shadow is unsupported. VMD Mode A is limited to bone keys and 64-byte bone interpolation from unedited motions with matching provenance and fails closed after edits; other Mode A tracks are outside the validated raw-preservation scope. These gates do not claim complete PMX field coverage or visual parity.
+- **Export supports a bounded, validated scope.** PMX 2.0 additional UV channels, UV/additional-UV morph metadata, and the documented canonical bone/IK subset are preserved through fresh import, but UV morphs are not evaluated on Maya UV sets. SDEF and PMX 2.1-only Flip morph, Impulse morph, and soft-body export are rejected fail-closed; PMD is import-only. VMD Mode C densely bakes model, camera, and light tracks without raw interpolation preservation; self-shadow is unsupported. VMD Mode A is limited to bone keys and 64-byte bone interpolation from unedited motions with matching provenance and fails closed after edits; other Mode A tracks are outside the validated raw-preservation scope. These gates do not claim complete PMX field coverage or visual parity.
 - **HumanIK is published as an experimental feature.** Only the minimum workflow is exposed. Try it from `MMD > HumanIK (Experimental)`.
 - **Leg rotations and bones that conflict with bone morphs work only under the Control Rig.** Bones may become immovable when their connections conflict with bone morphs.
 
@@ -106,7 +106,7 @@ The UI fields follow PMX Editor conventions. Many fields are not yet implemented
 
 ### Import a Model
 
-1. In the Import/Export tab, choose a PMX or PMD file.
+1. In the Import tab, choose a PMX or PMD file to import.
 2. Click `Import Model`.
 
 If textures fail to load due to multi-byte characters in the path, enable the automatic texture repair option. The textures will be copied automatically and renamed to loadable names.

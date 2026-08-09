@@ -228,7 +228,6 @@ class ExportReleaseGateTests(unittest.TestCase):
             {fixture["name"] for fixture in result["fixtures"]},
             {
                 "invalid_pmx",
-                "invalid_pmd",
                 "invalid_vmd_quaternion",
                 "warning_ack_boundary",
             },
@@ -239,7 +238,7 @@ class ExportReleaseGateTests(unittest.TestCase):
             fixture for fixture in result["fixtures"] if fixture["name"] == "warning_ack_boundary"
         )
         self.assertEqual(warning_fixture["first_issue_codes"], ["VMD_MODE_C_RAW_LOSS"])
-        self.assertEqual(len(result["report_paths"]), 5)
+        self.assertEqual(len(result["report_paths"]), 4)
 
     def test_maya_probe_report_is_required_and_validated(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -258,6 +257,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                     }
                     for export_format in (
                         "pmx",
+                        "pmd_import",
                         "pmx_morph",
                         "pmx_bone_semantics",
                         "pmx_physics",
@@ -265,7 +265,6 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "pmx_sdef",
                         "pmx_impulse",
                         "pmx_flip",
-                        "pmd",
                         "vmd",
                         "vmd_mode_a",
                         "vmd_model_tracks",
@@ -273,10 +272,26 @@ class ExportReleaseGateTests(unittest.TestCase):
                     )
                 ],
             }
-            pmd_case = next(case for case in report["cases"] if case["format"] == "pmd")
-            pmd_case.update(
-                status="policy-reject",
-                policy_code="PMD_EXPORT_POLICY_REJECT",
+            pmd_import_case = next(case for case in report["cases"] if case["format"] == "pmd_import")
+            pmd_import_case.update(
+                output=None,
+                import_oracles={
+                    "mesh_count": 1,
+                    "vertex_count": 8,
+                    "face_count": 12,
+                    "material_count": 1,
+                    "morph_count": 0,
+                    "pose_joint_count": 3,
+                    "pose_frame_count": 1,
+                    "rigid_body_count": 0,
+                    "joint_count": 0,
+                    "metadata_field_count": 3,
+                },
+                collection={
+                    "collector": "Maya PMD import pipeline",
+                    "source_fresh_import": True,
+                    "export_writer_called": False,
+                },
             )
             physics_case = next(case for case in report["cases"] if case["format"] == "pmx_physics")
             physics_case.update(
@@ -807,6 +822,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                 {path.parent.name for path in report_paths},
                 {
                     "pmx",
+                    "pmd_import",
                     "pmx_morph",
                     "pmx_bone_semantics",
                     "pmx_physics",
@@ -814,7 +830,6 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "pmx_sdef",
                     "pmx_impulse",
                     "pmx_flip",
-                    "pmd",
                     "vmd",
                     "vmd_mode_a",
                     "vmd_model_tracks",

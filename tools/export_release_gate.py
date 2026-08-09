@@ -501,11 +501,6 @@ class _SpyModelExporter:
         self.calls.append((path, data))
         Path(path).write_bytes(b"writer-output")
 
-    def export_pmd_model(self, path: str, data: Any) -> None:
-        self.calls.append((path, data))
-        Path(path).write_bytes(b"writer-output")
-
-
 class _SpyVmdExporter:
     """Writer spy for VMD fail-closed and warning-ack cases."""
 
@@ -546,7 +541,7 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
     report_paths: list[str] = []
     invalid_model = _valid_model_data()
     invalid_model["faces"] = [[0, 0]]
-    for export_format in ("pmx", "pmd"):
+    for export_format in ("pmx",):
         case_dir = out_dir / f"invalid-{export_format}"
         case_dir.mkdir(parents=True, exist_ok=True)
         target = case_dir / f"existing.{export_format}"
@@ -555,7 +550,6 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
         writer = _SpyModelExporter()
         result = ExportModelAction(
             pmx_exporter=writer,
-            pmd_exporter=writer,
             output_verifier=None,
         ).execute(
             ExportModelRequest(
@@ -1795,6 +1789,7 @@ def _validate_maya_probe_report(
     )
     required_formats = {
         "pmx",
+        "pmd_import",
         "pmx_morph",
         "pmx_bone_semantics",
         "pmx_physics",
@@ -1802,7 +1797,6 @@ def _validate_maya_probe_report(
         "pmx_sdef",
         "pmx_impulse",
         "pmx_flip",
-        "pmd",
         "vmd",
         "vmd_mode_a",
         "vmd_model_tracks",
@@ -1820,13 +1814,38 @@ def _validate_maya_probe_report(
     for export_format in sorted(required_formats):
         case = by_format.get(export_format)
         allowed_statuses = {"pass"}
-        if export_format in {"pmd", "pmx_soft_body", "pmx_sdef", "pmx_impulse", "pmx_flip"}:
+        if export_format in {"pmx_soft_body", "pmx_sdef", "pmx_impulse", "pmx_flip"}:
             allowed_statuses.add("policy-reject")
         if not isinstance(case, dict) or case.get("status") not in allowed_statuses:
             failures.append(f"{export_format}.status={case.get('status') if isinstance(case, dict) else None!r}")
             continue
-        if export_format == "pmd" and case.get("policy_code") != "PMD_EXPORT_POLICY_REJECT":
-            failures.append("pmd.policy_code='PMD_EXPORT_POLICY_REJECT' expected")
+        if export_format == "pmd_import":
+            import_oracles = case.get("import_oracles")
+            if not isinstance(import_oracles, dict):
+                failures.append("pmd_import.import_oracles_missing")
+            else:
+                for field in ("mesh_count", "vertex_count", "face_count", "material_count", "pose_joint_count"):
+                    value = import_oracles.get(field)
+                    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                        failures.append(f"pmd_import.import_oracles.{field} must be positive")
+                for field in ("morph_count", "rigid_body_count", "joint_count"):
+                    value = import_oracles.get(field)
+                    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                        failures.append(f"pmd_import.import_oracles.{field} must be non-negative")
+                if not isinstance(import_oracles.get("metadata_field_count"), int) or import_oracles.get(
+                    "metadata_field_count", 0
+                ) <= 0:
+                    failures.append("pmd_import.import_oracles.metadata_field_count must be positive")
+            collection = case.get("collection")
+            if not isinstance(collection, dict):
+                failures.append("pmd_import.collection_missing")
+            else:
+                if collection.get("source_fresh_import") is not True:
+                    failures.append("pmd_import.collection.source_fresh_import must be true")
+                if collection.get("export_writer_called") is not False:
+                    failures.append("pmd_import.collection.export_writer_called must be false")
+            if case.get("output") is not None:
+                failures.append("pmd_import.output must be null")
         if export_format == "pmx_soft_body" and case.get("policy_code") != "PMX_SOFT_BODIES_UNSUPPORTED":
             failures.append("pmx_soft_body.policy_code='PMX_SOFT_BODIES_UNSUPPORTED' expected")
         if export_format == "pmx_soft_body":
@@ -2050,7 +2069,6 @@ def build_release_summary(
             "tests/unit/test_export_workflow.py",
             "tests/unit/test_export_model_validation.py",
             "tests/unit/test_pmd_parser.py",
-            "tests/unit/test_pmd_export.py",
             "tests/unit/test_vmd_validation.py",
             "tests/unit/test_validation_report_catalog.py",
             "tests/unit/test_validation_report_artifacts.py",
@@ -2251,7 +2269,7 @@ def build_release_summary(
         step["status"] == "pass" for step in gui_steps
     )
     coverage_proven = [
-        "13-case PMX/PMD/VMD probe with fresh-import or policy-reject output-safety evidence",
+        "13-case PMX/VMD export plus PMD import probe with fresh-import or policy-reject evidence",
         "PMX 2.0 additional UV channels 1-4 and UV/additional-UV morph field oracle",
         "PMX IK and non-IK bone semantic fields across Maya import/export boundaries",
         "PMX 2.1 soft-body, SDEF, Flip, and Impulse provenance with stable policy-reject",
@@ -2262,7 +2280,7 @@ def build_release_summary(
         "canonical JSON/Markdown validation-report consistency",
     ]
     coverage_outside = [
-        "full PMX/PMD material/morph field parity beyond representative oracle fields",
+        "full PMX material/morph field parity beyond representative oracle fields",
         "visual/runtime parity claims for UV morphs and VMD camera/light tracks",
         "VMD self-shadow support (explicitly excluded by the camera/light case)",
     ]
