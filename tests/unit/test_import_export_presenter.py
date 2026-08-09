@@ -22,6 +22,7 @@ from mmd_tools.core.constants import (  # noqa: E402
 )
 from mmd_tools.core.settings import settings  # noqa: E402
 from mmd_tools.actions.export_model_action import ExportModelResult  # noqa: E402
+from mmd_tools.actions.create_model_action import CreateModelRequest  # noqa: E402
 from mmd_tools.actions.export_vmd_action import ExportVmdResult  # noqa: E402
 from mmd_tools.actions.import_model_action import ImportModelResult  # noqa: E402
 from mmd_tools.actions.import_vmd_action import ImportVmdResult  # noqa: E402
@@ -54,6 +55,28 @@ class _RecordingSignal:
 class _RecordingButton:
     def __init__(self):
         self.clicked = _RecordingSignal()
+        self.enabled = True
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
+
+
+class _FakeComboBox:
+    def __init__(self):
+        self.items = []
+        self.current_index = 0
+
+    def clear(self):
+        self.items.clear()
+
+    def addItem(self, label, data):
+        self.items.append((label, data))
+
+    def count(self):
+        return len(self.items)
+
+    def currentData(self):
+        return self.items[self.current_index][1] if self.items else None
 
 
 class _FakeLineEdit:
@@ -108,6 +131,7 @@ class _FakeAppState:
         self.statuses = []
         self.progress = []
         self.scene_model_service = scene_model_service
+        self.refresh_count = 0
 
     def emit_status(self, message):
         self.statuses.append(message)
@@ -116,7 +140,7 @@ class _FakeAppState:
         self.progress.append(value)
 
     def refresh_model_list(self):
-        pass
+        self.refresh_count += 1
 
 
 class _FakeSceneModelService:
@@ -281,6 +305,79 @@ class TestImportExportPresenter(unittest.TestCase):
         settings.set("import.rig.bake_mode", self._old_bake_mode)
         settings.set("ui.general.development_mode", self._old_dev_mode)
         settings.set("import.model.show_texture_issue_dialog", self._old_texture_dialog)
+
+    @staticmethod
+    def _create_model_view():
+        view = _FakeView()
+        view.create_model_button = _RecordingButton()
+        view.create_model_template_combo = _FakeComboBox()
+        view.create_model_name_jp_edit = _FakeLineEdit("モデル")
+        view.create_model_name_en_edit = _FakeLineEdit("Model")
+        return view
+
+    def test_create_model_is_disabled_without_injected_action(self):
+        view = self._create_model_view()
+
+        ImportExportPresenter(
+            view,
+            _FakeAppState(),
+            model_template_loader=lambda: (
+                SimpleNamespace(template_id="pmx20-basic-v1", label="PMX 2.0 Basic"),
+            ),
+        )
+
+        self.assertEqual(
+            view.create_model_template_combo.items,
+            [("PMX 2.0 Basic", "pmx20-basic-v1")],
+        )
+        self.assertFalse(view.create_model_button.enabled)
+
+    def test_create_model_routes_request_and_publishes_new_root(self):
+        view = self._create_model_view()
+        app_state = _FakeAppState()
+        action = MagicMock()
+        action.execute.return_value = SimpleNamespace(root="|new_model")
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            create_model_action=action,
+            model_template_loader=lambda: (
+                SimpleNamespace(template_id="pmx20-basic-v1", label="PMX 2.0 Basic"),
+            ),
+        )
+
+        self.assertTrue(view.create_model_button.enabled)
+        self.assertTrue(presenter.create_model())
+
+        request = action.execute.call_args.args[0]
+        self.assertIsInstance(request, CreateModelRequest)
+        self.assertEqual(request.template_id, "pmx20-basic-v1")
+        self.assertEqual(request.model_name, "モデル")
+        self.assertEqual(request.model_name_english, "Model")
+        self.assertEqual(app_state.refresh_count, 1)
+        self.assertEqual(app_state.current_model_root, "|new_model")
+        self.assertIn("|new_model", app_state.statuses[-1])
+
+    def test_create_model_failure_keeps_current_model_and_reports_status(self):
+        view = self._create_model_view()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "|existing"
+        action = MagicMock()
+        action.execute.side_effect = RuntimeError("template failed")
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            create_model_action=action,
+            model_template_loader=lambda: (
+                SimpleNamespace(template_id="pmx20-basic-v1", label="PMX 2.0 Basic"),
+            ),
+        )
+
+        self.assertFalse(presenter.create_model())
+
+        self.assertEqual(app_state.current_model_root, "|existing")
+        self.assertEqual(app_state.refresh_count, 0)
+        self.assertIn("template failed", app_state.statuses[-1])
 
     def test_vmd_reduction_summary_is_localized_and_concise(self):
         presenter = ImportExportPresenter(_FakeView(), _FakeAppState())

@@ -22,6 +22,11 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_TOON_PATH,
     ATTR_MMD_TOON_TEXTURE_INDEX,
 )
+from mmd_tools.core.model_authoring_spec import (  # noqa: E402
+    MmdMaterialSpec,
+    MmdModelAuthoringSpec,
+    MmdModelSpec,
+)
 
 
 class TestMaterialPresenter(unittest.TestCase):
@@ -53,6 +58,10 @@ class TestMaterialPresenter(unittest.TestCase):
                 "edge_size_spin",
                 "search_edit",
                 "refresh_btn",
+                "create_btn",
+                "duplicate_btn",
+                "delete_btn",
+                "assign_btn",
                 "apply_btn",
                 "reset_btn",
                 "both_face_check",
@@ -98,6 +107,18 @@ class TestMaterialPresenter(unittest.TestCase):
             maya_adapter=self.mock_maya_adapter,
         )
 
+    def _make_authoring_presenter(self):
+        coordinator = Mock()
+        self.mock_app_state.current_model_root = "|model_root"
+        self.mock_maya_adapter.object_exists.return_value = True
+        presenter = MaterialPresenter(
+            self.mock_view,
+            self.mock_app_state,
+            maya_adapter=self.mock_maya_adapter,
+            authoring_coordinator=coordinator,
+        )
+        return presenter, coordinator
+
     def tearDown(self):
         """テスト後のクリーンアップ"""
         pass
@@ -134,6 +155,209 @@ class TestMaterialPresenter(unittest.TestCase):
         ]:
             checkbox.isChecked.return_value = False
 
+    def test_authoring_buttons_fail_closed_without_injected_coordinator(self):
+        self.mock_view.create_btn.setEnabled.assert_called_with(False)
+        self.mock_view.duplicate_btn.setEnabled.assert_called_with(False)
+        self.mock_view.delete_btn.setEnabled.assert_called_with(False)
+        self.mock_view.assign_btn.setEnabled.assert_called_with(False)
+
+    def test_authoring_selection_preserves_maya_targets_and_enables_indexed_actions(self):
+        presenter, _coordinator = self._make_authoring_presenter()
+        item = Mock()
+        item.text.return_value = "1:Material"
+        item.data.side_effect = lambda role: "shader1" if role == Qt.UserRole else 3
+
+        with patch.object(presenter, "load_material_properties") as load_properties:
+            presenter.on_material_selected(item, None)
+
+        self.assertEqual(presenter.current_material_index, 3)
+        self.mock_maya_adapter.select.assert_not_called()
+        load_properties.assert_called_once_with("shader1")
+        self.mock_view.duplicate_btn.setEnabled.assert_called_with(True)
+        self.mock_view.delete_btn.setEnabled.assert_called_with(True)
+        self.mock_view.assign_btn.setEnabled.assert_called_with(True)
+
+    def test_authoring_apply_replaces_complete_spec_without_direct_maya_writes(self):
+        """Authoring Apply routes one complete immutable replacement through the coordinator."""
+        from dataclasses import replace
+
+        prior = MmdMaterialSpec(
+            name="旧い材質",
+            name_english="Old",
+            index=2,
+            diffuse=(0.1, 0.2, 0.3, 0.9),
+            specular=(0.2, 0.3, 0.4),
+            specular_coefficient=0.25,
+            ambient=(0.05, 0.06, 0.07),
+            draw_flags=0x03,
+            edge_color=(0.1, 0.1, 0.1, 0.7),
+            edge_size=1.25,
+            texture_path="textures/顔.png",
+            resolved_texture_path=r"C:\old\顔.png",
+            sphere_texture_path="sphere.spa",
+            resolved_sphere_texture_path=r"C:\old\sphere.spa",
+            sphere_mode=1,
+            shared_toon=False,
+            toon_texture_index=2,
+            toon_texture_path="toon.png",
+            resolved_toon_texture_path=r"C:\old\toon.png",
+            memo="保持するメモ",
+            binding_identity="shader|材質",
+        )
+        current = MmdModelAuthoringSpec(
+            model=MmdModelSpec("モデル", "Model", "", ""),
+            materials=(prior,),
+        )
+
+        class Coordinator:
+            def __init__(self):
+                self.current = current
+                self.read_calls = []
+                self.replace_calls = []
+
+            def read_spec(self, root):
+                self.read_calls.append(root)
+                return self.current
+
+            def replace_material(self, root, material):
+                self.replace_calls.append((root, material))
+                self.current = replace(self.current, materials=(material,))
+                return self.current
+
+        coordinator = Coordinator()
+        self.presenter.authoring_coordinator = coordinator
+        self.presenter.current_material = "shader|材質"
+        self.presenter.current_material_index = 2
+        self.presenter.app_state.current_model_root = "|model_root"
+        self.presenter.material_data = {
+            "diffuse": (0.8, 0.7, 0.6),
+            "specular": (0.5, 0.4, 0.3),
+            "ambient": (0.2, 0.1, 0.0),
+            "edge_color": (0.9, 0.8, 0.7),
+            "edge_alpha": 0.35,
+            "original_pmx_texture_path": "textures/顔.png",
+        }
+        self.mock_view.material_jp_name_edit.text.return_value = "新しい材質_日本語"
+        self.mock_view.material_en_name_edit.text.return_value = "New Material"
+        self.mock_view.transparency_spin.value.return_value = 0.25
+        self.mock_view.specular_coefficient_spin.value.return_value = 0.75
+        self.mock_view.edge_size_spin.value.return_value = 1.5
+        self.mock_view.texture_path_edit.text.return_value = r"C:\new\顔.png"
+        self.mock_view.sphere_map_path_edit.text.return_value = "sphere-new.spa"
+        self.mock_view.sphere_mode_combo.currentIndex.return_value = 2
+        self.mock_view.toon_sharing_check.isChecked.return_value = False
+        self.mock_view.toon_texture_index_spin.value.return_value = 5
+        self.mock_view.toon_texture_path_edit.text.return_value = "toon-new.png"
+        for bit_name, value in (
+            ("both_face_check", True),
+            ("ground_shadow_check", False),
+            ("self_shadow_map_check", True),
+            ("self_shadow_check", False),
+            ("edge_draw_check", True),
+            ("vertex_color_check", True),
+            ("point_draw_check", False),
+            ("line_draw_check", True),
+        ):
+            getattr(self.mock_view, bit_name).isChecked.return_value = value
+
+        with patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils") as attrs:
+            result = self.presenter.apply_changes()
+
+        self.assertIs(result, coordinator.current)
+        self.assertEqual(coordinator.read_calls, ["|model_root", "|model_root"])
+        self.assertEqual(len(coordinator.replace_calls), 1)
+        root, replacement = coordinator.replace_calls[0]
+        self.assertEqual(root, "|model_root")
+        self.assertEqual(replacement.index, prior.index)
+        self.assertEqual(replacement.binding_identity, prior.binding_identity)
+        self.assertEqual(replacement.name, "新しい材質_日本語")
+        self.assertEqual(replacement.diffuse, (0.8, 0.7, 0.6, 0.75))
+        self.assertEqual(replacement.specular, (0.5, 0.4, 0.3))
+        self.assertEqual(replacement.ambient, (0.2, 0.1, 0.0))
+        self.assertEqual(replacement.draw_flags, 0xB5)
+        self.assertEqual(replacement.edge_color, (0.9, 0.8, 0.7, 0.35))
+        self.assertEqual(replacement.texture_path, prior.texture_path)
+        self.assertEqual(replacement.resolved_texture_path, r"C:\new\顔.png")
+        self.assertEqual(replacement.sphere_texture_path, "sphere-new.spa")
+        self.assertIsNone(replacement.resolved_sphere_texture_path)
+        self.assertEqual(replacement.toon_texture_path, "toon-new.png")
+        self.assertIsNone(replacement.resolved_toon_texture_path)
+        self.assertEqual(replacement.toon_texture_index, 5)
+        self.assertEqual(replacement.memo, prior.memo)
+        attrs.set_attribute.assert_not_called()
+        attrs.set_custom_attributes.assert_not_called()
+        self.assertFalse(self.presenter.has_unsaved_changes)
+        self.assertEqual(self.presenter.material_data["_authoring_fingerprint"], result.fingerprint())
+
+    def test_authoring_apply_invalid_controls_do_not_write_or_call_replace(self):
+        """Malformed UI input fails before the coordinator transaction boundary."""
+        prior = MmdMaterialSpec(name="Material", index=0, binding_identity="shader")
+        current = MmdModelAuthoringSpec(
+            model=MmdModelSpec("Model", "Model", "", ""), materials=(prior,)
+        )
+        coordinator = Mock()
+        coordinator.read_spec.return_value = current
+        self.presenter.authoring_coordinator = coordinator
+        self.presenter.current_material = "shader"
+        self.presenter.current_material_index = 0
+        self.presenter.app_state.current_model_root = "|model_root"
+        self.presenter.material_data = {"diffuse": (1.0, 0.5)}
+
+        with patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils") as attrs:
+            self.presenter.apply_changes()
+
+        coordinator.replace_material.assert_not_called()
+        attrs.set_attribute.assert_not_called()
+        attrs.set_custom_attributes.assert_not_called()
+        self.assertTrue(self.mock_app_state.emit_status.called)
+
+    def test_create_and_duplicate_route_explicit_root_index_and_raw_selection(self):
+        presenter, coordinator = self._make_authoring_presenter()
+        presenter.current_material_index = 4
+        self.mock_maya_adapter.ls.return_value = ["|model_root|mesh.f[2]"]
+        with patch.object(presenter, "load_materials"):
+            self.assertTrue(presenter.create_material())
+            self.assertTrue(presenter.duplicate_material())
+
+        coordinator.create_material.assert_called_once_with(
+            "|model_root", ("|model_root|mesh.f[2]",)
+        )
+        coordinator.duplicate_material.assert_called_once_with(
+            "|model_root", 4, ("|model_root|mesh.f[2]",)
+        )
+
+    def test_assign_requires_selection_but_delegates_root_ownership_validation(self):
+        presenter, coordinator = self._make_authoring_presenter()
+        presenter.current_material_index = 2
+        self.mock_maya_adapter.ls.return_value = []
+        self.assertFalse(presenter.assign_material())
+        coordinator.assign_material.assert_not_called()
+
+        self.mock_maya_adapter.ls.return_value = ["|other_root|mesh"]
+        coordinator.assign_material.side_effect = RuntimeError("outside model root")
+        with patch.object(presenter, "load_materials"):
+            self.assertFalse(presenter.assign_material())
+        coordinator.assign_material.assert_called_once_with(
+            "|model_root", 2, ("|other_root|mesh",)
+        )
+        statuses = [call.args[0] for call in self.mock_app_state.emit_status.call_args_list]
+        self.assertTrue(any("outside model root" in status for status in statuses))
+
+    @patch("mmd_tools.ui.qt_compat.QMessageBox.question")
+    def test_delete_requires_confirmation_and_routes_index(self, question):
+        from mmd_tools.ui.qt_compat import QMessageBox
+
+        presenter, coordinator = self._make_authoring_presenter()
+        presenter.current_material_index = 5
+        question.return_value = QMessageBox.No
+        self.assertFalse(presenter.delete_material())
+        coordinator.delete_material.assert_not_called()
+
+        question.return_value = QMessageBox.Yes
+        with patch.object(presenter, "load_materials"):
+            self.assertTrue(presenter.delete_material())
+        coordinator.delete_material.assert_called_once_with("|model_root", 5)
+
     @patch("mmd_tools.ui.presenters.material_presenter.maya_material_utils")
     def test_load_texture_provenance_uses_material_utils(self, mock_maya_material_utils):
         self.mock_maya_adapter.attribute_exists.return_value = True
@@ -162,6 +386,26 @@ class TestMaterialPresenter(unittest.TestCase):
         # プレースホルダーが表示されることを確認
         self.mock_view._show_placeholder.assert_called_once()
 
+    @patch("mmd_tools.ui.presenters.material_presenter.list_model_registry_members_from_adapter")
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_load_materials_uses_registry_for_unassigned_authoring_material(
+        self, mock_maya_attribute_utils, registry_members
+    ):
+        self.mock_app_state.current_model_root = "|model_root"
+        self.mock_maya_adapter.object_exists.return_value = True
+        registry_members.return_value = ["unassigned_shader"]
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: {
+            ATTR_MMD_MATERIAL_NAME: "未割り当て材質",
+            ATTR_MMD_MATERIAL_NAME_EN: "Unassigned",
+        }.get(attr)
+
+        self.presenter.load_materials()
+
+        self.mock_maya_adapter.list_relatives.assert_not_called()
+        self.mock_view.material_list.addItem.assert_called_once()
+        added_item = self.mock_view.material_list.addItem.call_args.args[0]
+        self.assertEqual(added_item.data(Qt.UserRole), "unassigned_shader")
+
     @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
     def test_load_materials_with_model(self, mock_maya_attribute_utils, mock_logger):
@@ -181,7 +425,9 @@ class TestMaterialPresenter(unittest.TestCase):
 
         self.mock_maya_adapter.list_connections.side_effect = mock_list_connections
         self.mock_maya_adapter.ls.return_value = ["mat1"]
-        self.mock_maya_adapter.attribute_exists.return_value = True
+        self.mock_maya_adapter.attribute_exists.side_effect = (
+            lambda attr, _node: attr == ATTR_MMD_MATERIAL_NAME
+        )
         mock_maya_attribute_utils.get_attribute.side_effect = lambda node, attr: {
             "mmd_material_name": "Material 1",
             "mmd_material_name_en": "Material 1 EN",
@@ -224,7 +470,9 @@ class TestMaterialPresenter(unittest.TestCase):
             ["SG"] if kwargs.get("type") == "shadingEngine" else [material]
         )
         self.mock_maya_adapter.ls.return_value = [material]
-        self.mock_maya_adapter.attribute_exists.return_value = True
+        self.mock_maya_adapter.attribute_exists.side_effect = (
+            lambda attr, _node: attr == ATTR_MMD_MATERIAL_NAME
+        )
         mock_maya_attribute_utils.get_attribute.side_effect = lambda node, attr: {
             ATTR_MMD_MATERIAL_NAME: "顔材質",
             ATTR_MMD_MATERIAL_NAME_EN: "Face",

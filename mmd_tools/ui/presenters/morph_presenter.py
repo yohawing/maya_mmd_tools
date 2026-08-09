@@ -1,3 +1,6 @@
+"""Present runtime preview and coordinator-routed PMX morph authoring UI."""
+
+from dataclasses import replace
 import json
 import re
 
@@ -12,7 +15,9 @@ from ...core.morph_metadata_reader import (
     group_morph_names_by_panel,
     morph_info_from_presenter_entry,
     parse_blendshape_morph_entries,
+    PMX_MORPH_TYPE_NAMES,
 )
+from ...core.model_authoring_spec import MmdMorphSpec
 from ...core.model_registry import (
     REGISTRY_CATEGORY_MORPH,
     list_model_registry_members_from_adapter,
@@ -58,13 +63,40 @@ _DIRECT_RUNTIME_MORPH_CAPABILITIES = {
     9: False,  # flip
     10: False, # impulse
 }
+_CREATE_MORPH_TYPES = (
+    "vertex",
+    "uv",
+    "additional_uv1",
+    "additional_uv2",
+    "additional_uv3",
+    "additional_uv4",
+    "bone",
+    "material",
+    "group",
+    "flip",
+    "impulse",
+)
+_EDITABLE_OFFSET_TYPES = frozenset({"vertex", "bone", "group", "material"})
+_ROUNDTRIP_ONLY_OFFSET_TYPES = frozenset(
+    {"uv", "additional_uv1", "additional_uv2", "additional_uv3", "additional_uv4"}
+)
+_UNSUPPORTED_AUTHORING_TYPES = frozenset({"flip", "impulse"})
 
 
 class MorphPresenter:
-    def __init__(self, view, app_state, maya_adapter=None):
+    def __init__(
+        self,
+        view,
+        app_state,
+        maya_adapter=None,
+        authoring_coordinator=None,
+        material_morph_work=None,
+    ):
         self.view = view
         self.app_state = app_state
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
+        self.authoring_coordinator = authoring_coordinator
+        self.material_morph_work = material_morph_work
         self.blend_shape_node = None
         self.current_morph = None
         self.morph_data = {}  # MMDモーフデータのキャッシュ
@@ -73,10 +105,14 @@ class MorphPresenter:
         self._morphs_by_index = {}
         self._loaded_model_root = None
         self._morph_controller = None
+        self._authoring_spec = None
+        self._authoring_morphs_by_index = {}
+        self._authoring_ready = False
         self.group_morphs = {}  # グループごとのモーフリスト
         self.is_updating = False
 
         self.connect_signals()
+        self._set_authoring_available()
 
         # 既に選択されているモデルがある場合はロード
         if self.app_state.current_model_root:
@@ -103,6 +139,25 @@ class MorphPresenter:
         self.view.apply_btn.clicked.connect(self.apply_changes)
         self.view.reset_btn.clicked.connect(self.reset_changes)
 
+        # Semantic authoring is optional at composition time.  Runtime preview
+        # remains usable when no coordinator has been injected.
+        optional_signals = (
+            ("create_morph_btn", "clicked", self.create_morph),
+            ("delete_morph_btn", "clicked", self.delete_current_morph),
+            ("move_morph_up_btn", "clicked", lambda: self.move_current_morph(-1)),
+            ("move_morph_down_btn", "clicked", lambda: self.move_current_morph(1)),
+            ("reindex_morphs_btn", "clicked", self.reindex_displayed_morphs),
+            ("apply_offsets_btn", "clicked", self.apply_offsets),
+            ("create_work_material_btn", "clicked", self.create_work_material),
+            ("apply_work_material_btn", "clicked", self.apply_work_material),
+            ("clear_work_material_btn", "clicked", self.clear_work_material),
+        )
+        for widget_name, signal_name, callback in optional_signals:
+            widget = getattr(self.view, widget_name, None)
+            signal = getattr(widget, signal_name, None)
+            if signal is not None:
+                signal.connect(callback)
+
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
         reload_for_current_model_change(logger, "MorphPresenter", model_root, self.load_morphs)
@@ -120,6 +175,9 @@ class MorphPresenter:
         self._blendshape_metadata_bindings.clear()
         self._morph_capability_cache.clear()
         self._morphs_by_index.clear()
+        self._authoring_spec = None
+        self._authoring_morphs_by_index.clear()
+        self._authoring_ready = False
         self.group_morphs.clear()
         self.current_morph = None
         self.view.set_morph_details_enabled(False)
@@ -128,7 +186,12 @@ class MorphPresenter:
         if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
             self._loaded_model_root = None
             self._morph_controller = None
+            setter = getattr(self.view, "set_authoring_controls_enabled", None)
+            if callable(setter):
+                setter(False, "Select an MMD model to author morphs")
             return
+
+        self._read_authoring_spec(current_model_root)
 
         controllers = []
         if self.maya_adapter.attribute_exists("mmd_morph_controller", current_model_root):
@@ -147,6 +210,8 @@ class MorphPresenter:
         # bone/material/group morph の network node を検索
         self._load_network_morphs(current_model_root, allow_metadata_entries=allow_metadata_entries)
 
+        self._merge_authoring_morphs()
+
         # Strip the legacy custom annotation once at the input boundary.
         for data in self.morph_data.values():
             data.pop("group", None)
@@ -162,6 +227,84 @@ class MorphPresenter:
         self._loaded_model_root = current_model_root
 
         logger.debug(f"Loaded {self.view.morph_list.count()} morphs for model: {current_model_root}")
+
+    def _set_authoring_available(self):
+        """Disable semantic widgets until a complete coordinator is injected."""
+        required = (
+            "read_spec",
+            "create_morph",
+            "replace_morph",
+            "replace_morph_offsets",
+            "delete_morph",
+            "move_morph",
+            "reindex_morphs",
+        )
+        available = self.authoring_coordinator is not None and all(
+            callable(getattr(self.authoring_coordinator, method, None)) for method in required
+        )
+        setter = getattr(self.view, "set_authoring_controls_enabled", None)
+        if callable(setter):
+            setter(bool(available), "" if available else "Authoring coordinator is not available")
+        self._authoring_available = bool(available)
+        self._configure_create_type_capabilities()
+        self._authoring_ready = False
+
+    def _read_authoring_spec(self, root):
+        if not self._authoring_available:
+            return
+        try:
+            spec = self.authoring_coordinator.read_spec(root)
+            self._authoring_spec = spec
+            self._authoring_morphs_by_index = {morph.index: morph for morph in spec.morphs}
+            self._authoring_ready = True
+            setter = getattr(self.view, "set_authoring_controls_enabled", None)
+            if callable(setter):
+                setter(True, "")
+            self._configure_create_type_capabilities()
+        except Exception as exc:
+            logger.error("Failed to read morph authoring spec: %s", exc, exc_info=True)
+            self._authoring_spec = None
+            self._authoring_morphs_by_index = {}
+            self._authoring_ready = False
+            setter = getattr(self.view, "set_authoring_controls_enabled", None)
+            if callable(setter):
+                setter(False, f"Authoring metadata unavailable: {exc}")
+
+    def _merge_authoring_morphs(self):
+        """Overlay immutable semantic names/types/offsets by global PMX index."""
+        for morph in self._authoring_morphs_by_index.values():
+            key = next(
+                (
+                    candidate
+                    for candidate, data in self.morph_data.items()
+                    if int(data.get("index", -1)) == morph.index
+                ),
+                None,
+            )
+            if key is None:
+                key = morph.name or f"Morph [{morph.index}]"
+                while key in self.morph_data:
+                    key += "#"
+                self.morph_data[key] = {}
+            data = self.morph_data[key]
+            pmx_type = next(
+                (value for value, name in PMX_MORPH_TYPE_NAMES.items() if name == morph.morph_type),
+                1,
+            )
+            data.update(
+                {
+                    "name_jp": morph.name,
+                    "name_en": morph.name_english,
+                    "panel": morph.panel,
+                    "type": pmx_type,
+                    "index": morph.index,
+                    "offsets": morph.to_mapping()["offsets"],
+                    "mmd_morph_type": morph.morph_type,
+                    "_pmx_type_raw": True,
+                }
+            )
+            if morph.binding_identity:
+                data.setdefault("morph_node", morph.binding_identity)
 
     def _load_mmd_morphs(self, model_root):
         """MMDモーフデータをロード"""
@@ -764,6 +907,20 @@ class MorphPresenter:
             else int(stored_type)
         )
         self.view.morph_type_combo.setCurrentIndex(ui_type)
+        set_type_enabled = getattr(self.view.morph_type_combo, "setEnabled", None)
+        if callable(set_type_enabled):
+            set_type_enabled(False)
+            self.view.morph_type_combo.setToolTip(
+                "Morph type is fixed after creation; create a new morph to change type"
+            )
+
+        semantic = self._semantic_morph(data)
+        offsets_edit = getattr(self.view, "offsets_edit", None)
+        if offsets_edit is not None:
+            offsets = semantic.to_mapping()["offsets"] if semantic else data.get("offsets", [])
+            offsets_edit.setPlainText(json.dumps(offsets, ensure_ascii=False, indent=2))
+        self._update_offset_policy(semantic)
+        self._update_work_material_policy(semantic)
 
         # 現在の適用率
         blend_shape_node = data.get("blend_shape_node")
@@ -784,6 +941,49 @@ class MorphPresenter:
         self.view.set_morph_controls_enabled(supported, tooltip)
 
         self.is_updating = False
+
+    def _semantic_morph(self, data=None):
+        data = data or self.morph_data.get(self.current_morph, {})
+        try:
+            return self._authoring_morphs_by_index.get(int(data.get("index", -1)))
+        except (TypeError, ValueError):
+            return None
+
+    def _update_offset_policy(self, morph):
+        setter = getattr(self.view, "set_offsets_editable", None)
+        if not callable(setter):
+            return
+        if not self._authoring_ready or morph is None:
+            setter(False, "Authoring coordinator is not available")
+            return
+        data = self.morph_data.get(self.current_morph, {})
+        if morph.morph_type == "vertex" and not data.get("blend_shape_targets"):
+            setter(False, "Vertex offsets require an exact imported blendShape target binding")
+        elif morph.morph_type in _EDITABLE_OFFSET_TYPES:
+            setter(True, "Canonical PMX offsets (JSON)")
+        elif morph.morph_type in _ROUNDTRIP_ONLY_OFFSET_TYPES:
+            setter(False, "Round-trip metadata only; runtime editing is not supported")
+        else:
+            setter(False, "PMX 2.1 Flip/Impulse authoring is rejected by policy")
+
+    def _update_work_material_policy(self, morph):
+        setter = getattr(self.view, "set_work_material_controls", None)
+        if not callable(setter):
+            return
+        if (
+            not self._authoring_ready
+            or self.material_morph_work is None
+            or morph is None
+            or morph.morph_type != "material"
+        ):
+            setter(False, (), "Select a material morph with an injected work-material service")
+            return
+        offsets = []
+        for offset_index, offset in enumerate(morph.offsets):
+            target = offset.get("material_index", "?")
+            operation = {0: "multiply", 1: "add"}.get(offset.get("operation_type"), "unsupported")
+            offsets.append((offset_index, f"Offset {offset_index}: material {target} ({operation})"))
+        setter(bool(offsets), offsets, "Temporary work shader; raw offsets change only on Apply")
 
     def on_morph_slider_changed(self, value):
         """スライダーが変更されたときの処理"""
@@ -853,8 +1053,33 @@ class MorphPresenter:
         if not self.current_morph:
             return
 
-        # モーフデータを更新
+        current_model_root = self.app_state.current_model_root
         data = self.morph_data[self.current_morph]
+        morph = self._semantic_morph(data)
+        if not self._authoring_ready:
+            # Compatibility for old scenes/tests.  The real MorphTab disables
+            # this button when no coordinator is injected, so users cannot
+            # enter this legacy metadata-only path from the authoring UI.
+            self._apply_legacy_changes(data, current_model_root)
+            return
+        if not current_model_root or morph is None:
+            return
+        updated = replace(
+            morph,
+            name=self.view.morph_name_jp_edit.text(),
+            name_english=self.view.morph_name_en_edit.text(),
+            panel=self.view.panel_combo.currentIndex(),
+        )
+        if self._run_authoring(
+            "replace morph",
+            self.authoring_coordinator.replace_morph,
+            current_model_root,
+            updated,
+            select_index=morph.index,
+        ):
+            logger.info("Applied semantic changes to morph index %s", morph.index)
+
+    def _apply_legacy_changes(self, data, current_model_root):
         data["name_jp"] = self.view.morph_name_jp_edit.text()
         data["name_en"] = self.view.morph_name_en_edit.text()
         data["panel"] = self.view.panel_combo.currentIndex()
@@ -865,20 +1090,246 @@ class MorphPresenter:
             else ui_type
         )
         data.pop("group", None)
-
-        # MMDアトリビュートに保存
-        current_model_root = self.app_state.current_model_root
         if current_model_root and self.maya_adapter.object_exists(current_model_root):
             self._save_mmd_morph_data(current_model_root)
-
-        # Type changes alter this morph and any group that references it.
         self._cache_morph_capabilities()
-
-        # グループを再整理
         self._organize_morphs_by_group()
+        logger.info("Applied legacy changes to morph '%s'", self.current_morph)
+        self.app_state.emit_status(
+            tr_message_format("morph_changes_applied", morph=self.current_morph)
+        )
 
-        logger.info(f"Applied changes to morph '{self.current_morph}'")
-        self.app_state.emit_status(tr_message_format("morph_changes_applied", morph=self.current_morph))
+    def create_morph(self):
+        """Create a semantic morph of the explicitly selected toolbar type."""
+        root = self.app_state.current_model_root
+        combo = getattr(self.view, "create_type_combo", None)
+        if not self._authoring_ready or not root or combo is None:
+            return
+        index = int(combo.currentIndex())
+        if index < 0 or index >= len(_CREATE_MORPH_TYPES):
+            return
+        morph_type = _CREATE_MORPH_TYPES[index]
+        if morph_type == "vertex" and not self._owned_mesh_shapes():
+            self._emit_authoring_error("vertex target creation requires at least one owned mesh")
+            return
+        if morph_type in _UNSUPPORTED_AUTHORING_TYPES:
+            self._emit_authoring_error(f"{morph_type} morph authoring is rejected by policy")
+            return
+        morph = MmdMorphSpec(name="New Morph", name_english="New Morph", panel=4, morph_type=morph_type)
+        self._run_authoring(
+            "create morph",
+            self.authoring_coordinator.create_morph,
+            root,
+            morph,
+            select_index="last",
+        )
+
+    def _configure_create_type_capabilities(self):
+        setter = getattr(self.view, "set_create_type_enabled", None)
+        if not callable(setter):
+            return
+        disabled = {
+            "flip": "PMX 2.1 Flip authoring is rejected by policy",
+            "impulse": "PMX 2.1 Impulse authoring is rejected by policy",
+        }
+        owned_meshes = self._owned_mesh_shapes()
+        if not owned_meshes:
+            disabled["vertex"] = "Vertex target creation requires at least one owned mesh"
+        for index, morph_type in enumerate(_CREATE_MORPH_TYPES):
+            setter(index, self._authoring_available and morph_type not in disabled, disabled.get(morph_type, ""))
+
+    def _owned_mesh_shapes(self):
+        root = self.app_state.current_model_root
+        try:
+            candidates = tuple(
+                self.maya_adapter.list_relatives(root, allDescendents=True, type="mesh")
+                if root
+                else ()
+            )
+            return tuple(
+                shape
+                for shape in candidates
+                if not bool(self.maya_adapter.get_attr(f"{shape}.intermediateObject"))
+            )
+        except Exception:
+            return ()
+
+    def delete_current_morph(self):
+        morph = self._semantic_morph()
+        root = self.app_state.current_model_root
+        if self._authoring_ready and root and morph is not None:
+            self._run_authoring(
+                "delete morph",
+                self.authoring_coordinator.delete_morph,
+                root,
+                morph.index,
+                select_index=max(0, morph.index - 1),
+            )
+
+    def move_current_morph(self, delta):
+        morph = self._semantic_morph()
+        root = self.app_state.current_model_root
+        if not self._authoring_ready or not root or morph is None or self._authoring_spec is None:
+            return
+        target = max(0, min(len(self._authoring_spec.morphs) - 1, morph.index + int(delta)))
+        if target != morph.index:
+            self._run_authoring(
+                "move morph",
+                self.authoring_coordinator.move_morph,
+                root,
+                morph.index,
+                target,
+                select_index=target,
+            )
+
+    def reindex_displayed_morphs(self):
+        root = self.app_state.current_model_root
+        if not self._authoring_ready or not root:
+            return
+        ordered = []
+        for row in range(self.view.morph_list.count()):
+            key = self.view.morph_list.item(row).data(Qt.UserRole)
+            try:
+                ordered.append(int(self.morph_data[key]["index"]))
+            except (KeyError, TypeError, ValueError):
+                self._emit_authoring_error("Displayed morph list contains an invalid index")
+                return
+        current = self._semantic_morph()
+        self._run_authoring(
+            "reindex morphs",
+            self.authoring_coordinator.reindex_morphs,
+            root,
+            ordered,
+            select_index=current.index if current else None,
+        )
+
+    def apply_offsets(self):
+        """Persist canonical raw offsets without changing preview weight."""
+        root = self.app_state.current_model_root
+        morph = self._semantic_morph()
+        editor = getattr(self.view, "offsets_edit", None)
+        if not self._authoring_ready or not root or morph is None or editor is None:
+            return
+        if morph.morph_type not in _EDITABLE_OFFSET_TYPES:
+            self._emit_authoring_error(f"{morph.morph_type} offsets are read-only")
+            return
+        try:
+            offsets = json.loads(editor.toPlainText())
+        except (TypeError, ValueError) as exc:
+            self._emit_authoring_error(f"Invalid offsets JSON: {exc}")
+            return
+        if not isinstance(offsets, list):
+            self._emit_authoring_error("Offsets JSON must be a list")
+            return
+        self._run_authoring(
+            "replace morph offsets",
+            self.authoring_coordinator.replace_morph_offsets,
+            root,
+            morph.index,
+            offsets,
+            select_index=morph.index,
+        )
+
+    def _selected_work_offset_index(self):
+        combo = getattr(self.view, "work_offset_combo", None)
+        if combo is None or combo.currentIndex() < 0:
+            return None
+        current_data = getattr(combo, "currentData", None)
+        value = (
+            current_data()
+            if callable(current_data)
+            else combo.itemData(combo.currentIndex())
+        )
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return int(combo.currentIndex())
+
+    def create_work_material(self):
+        """Create an owned temporary shader; canonical raw offsets stay unchanged."""
+        root = self.app_state.current_model_root
+        morph = self._semantic_morph()
+        offset_index = self._selected_work_offset_index()
+        if not root or morph is None or offset_index is None or self.material_morph_work is None:
+            return
+        self._run_work_action(
+            "create material morph work",
+            self.material_morph_work.create,
+            root,
+            morph.index,
+            offset_index,
+        )
+
+    def apply_work_material(self):
+        """Apply work shader values through the canonical coordinator transaction."""
+        root = self.app_state.current_model_root
+        morph = self._semantic_morph()
+        offset_index = self._selected_work_offset_index()
+        if not root or morph is None or offset_index is None or self.material_morph_work is None:
+            return
+        self._run_authoring(
+            "apply material morph work",
+            self.material_morph_work.apply,
+            root,
+            morph.index,
+            offset_index,
+            select_index=morph.index,
+        )
+
+    def clear_work_material(self):
+        """Delete the temporary binding without touching canonical raw offsets."""
+        root = self.app_state.current_model_root
+        if not root or self.material_morph_work is None:
+            return
+        self._run_work_action(
+            "clear material morph work",
+            self.material_morph_work.clear,
+            root,
+        )
+
+    def _run_work_action(self, operation, callback, *args):
+        try:
+            callback(*args)
+        except Exception as exc:
+            logger.error("Morph work action failed (%s): %s", operation, exc, exc_info=True)
+            self._emit_authoring_error(f"{operation} failed: {exc}")
+            return False
+        self.app_state.emit_status(f"{operation} completed")
+        return True
+
+    def _run_authoring(self, operation, callback, *args, select_index=None):
+        try:
+            result = callback(*args)
+        except Exception as exc:
+            logger.error("Morph authoring failed (%s): %s", operation, exc, exc_info=True)
+            self._emit_authoring_error(f"{operation} failed: {exc}")
+            return False
+        self.load_morphs()
+        if select_index == "last" and getattr(result, "morphs", None):
+            select_index = max(item.index for item in result.morphs)
+        if isinstance(select_index, int):
+            self._select_morph_index(select_index)
+        self.app_state.emit_status(f"{operation} completed")
+        return True
+
+    def _select_morph_index(self, index):
+        """Restore list selection by semantic PMX index after a refresh."""
+        for row in range(self.view.morph_list.count()):
+            item = self.view.morph_list.item(row)
+            key = item.data(Qt.UserRole)
+            try:
+                candidate = int(self.morph_data[key].get("index", -1))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if candidate == index:
+                self.view.morph_list.setCurrentItem(item)
+                return
+
+    def _emit_authoring_error(self, message):
+        try:
+            self.app_state.emit_status(message, level="error")
+        except TypeError:
+            self.app_state.emit_status(message)
 
     def _save_mmd_morph_data(self, model_root):
         """MMDモーフデータを保存"""

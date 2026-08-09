@@ -1,3 +1,10 @@
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import replace
+import math
+from typing import Protocol
+
 from mmd_tools.core import maya_attribute_utils
 from mmd_tools.core import maya_material_utils
 from mmd_tools.converters.material_shader_parameters import (
@@ -17,6 +24,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_ORIGINAL_TEXTURE_PATH,
     ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_SPHERE_MODE,
@@ -30,6 +38,11 @@ from mmd_tools.actions import (
 )
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
+from ...core.model_registry import (
+    REGISTRY_CATEGORY_MATERIAL,
+    list_model_registry_members_from_adapter,
+)
+from ...core.model_authoring_spec import MmdMaterialSpec, MmdModelAuthoringSpec
 from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt
 from ..translations import UITranslator
 from .list_presenter_helpers import (
@@ -42,17 +55,38 @@ from .list_presenter_helpers import (
 
 logger = get_logger(__name__)
 
+MATERIAL_INDEX_ROLE = Qt.UserRole + 1
+
+
+class MaterialAuthoringCoordinator(Protocol):
+    """Transactional semantic/binding boundary used by Material Tab CRUD."""
+
+    def create_material(self, model_root: str, targets: Sequence[str]) -> object: ...
+
+    def duplicate_material(self, model_root: str, source_index: int, targets: Sequence[str]) -> object: ...
+
+    def delete_material(self, model_root: str, material_index: int) -> object: ...
+
+    def assign_material(self, model_root: str, material_index: int, targets: Sequence[str]) -> object: ...
+
+    def read_spec(self, model_root: str) -> MmdModelAuthoringSpec: ...
+
+    def replace_material(self, model_root: str, material: MmdMaterialSpec) -> MmdModelAuthoringSpec: ...
+
 
 class MaterialPresenter:
-    def __init__(self, view, app_state, maya_adapter=None):
+    def __init__(self, view, app_state, maya_adapter=None, authoring_coordinator=None):
         self.view = view
         self.app_state = app_state
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
+        self.authoring_coordinator = authoring_coordinator
         self.current_material = None
+        self.current_material_index = None
         self.material_data = {}  # Store original material data for reset
         self.has_unsaved_changes = False
         self._loading_properties = False  # Flag to prevent change tracking during loading
         self.connect_signals()
+        self._update_authoring_actions()
 
         # 既に選択されているモデルがある場合はロード
         if self.app_state.current_model_root:
@@ -67,6 +101,15 @@ class MaterialPresenter:
         self.view.material_list.itemSelectionChanged.connect(self.on_selection_changed_maya)
         self.view.refresh_btn.clicked.connect(self.load_materials)
         self.view.search_edit.textChanged.connect(self.on_search_text_changed)
+        for button_name, handler in (
+            ("create_btn", self.create_material),
+            ("duplicate_btn", self.duplicate_material),
+            ("delete_btn", self.delete_material),
+            ("assign_btn", self.assign_material),
+        ):
+            button = getattr(self.view, button_name, None)
+            if button is not None:
+                button.clicked.connect(handler)
 
         # Color widgets (clickable)
         self.view.diffuse_color_widget.mousePressEvent = lambda e: self.pick_color("diffuse")
@@ -130,6 +173,7 @@ class MaterialPresenter:
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
         reload_for_current_model_change(logger, "MaterialPresenter", model_root, self.load_materials)
+        self._update_authoring_actions()
 
     def tr_message(self, key: str) -> str:
         """Translate a material presenter message key."""
@@ -137,20 +181,28 @@ class MaterialPresenter:
 
     def load_materials(self):
         self.view.material_list.clear()
+        self.current_material = None
+        self.current_material_index = None
 
         current_model_root = self.app_state.current_model_root
         if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
             self.view._set_details_enabled(False)
             self.view._show_placeholder()
+            self._update_authoring_actions()
             return
 
         try:
             # MMDマテリアルノードを探す
-            # モデルルートにアトリビュートとして保存されているマテリアルリストを確認
-            mmd_materials = []
+            # Registry ownership keeps newly-created/unassigned materials
+            # discoverable. Legacy roots retain mesh/SG discovery below.
+            registry_materials = list_model_registry_members_from_adapter(
+                self.maya_adapter,
+                current_model_root,
+                REGISTRY_CATEGORY_MATERIAL,
+            )
+            mmd_materials = list(registry_materials or [])
 
-            # 方法3: mmd_material_name属性を持つマテリアルを検索
-            if not mmd_materials:
+            if registry_materials is None:
                 shapes = self.maya_adapter.list_relatives(current_model_root, allDescendents=True, type="mesh")
                 if shapes:
                     shading_groups = self.maya_adapter.list_connections(shapes, type="shadingEngine")
@@ -167,19 +219,31 @@ class MaterialPresenter:
             # 重複を削除
             unique_materials = list(set(mmd_materials))
 
-            # Add materials to list with index, Japanese and English names
-            for idx, mat in enumerate(sorted(unique_materials)):
+            indexed_materials = []
+            for ordinal, mat in enumerate(sorted(unique_materials)):
+                material_index = (
+                    self._read_material_index(mat)
+                    if self.authoring_coordinator is not None
+                    else None
+                )
+                indexed_materials.append(
+                    (material_index if material_index is not None else ordinal, mat, material_index)
+                )
+
+            # Add materials in semantic index order when canonical indices are available.
+            for display_index, mat, material_index in sorted(indexed_materials):
                 # 日本語名と英語名を取得
                 jp_name = maya_attribute_utils.get_attribute(mat, ATTR_MMD_MATERIAL_NAME)
                 en_name = maya_attribute_utils.get_attribute(mat, ATTR_MMD_MATERIAL_NAME_EN)
 
-                display_text = format_indexed_node_label(idx + 1, jp_name, mat, en_name)
+                display_text = format_indexed_node_label(display_index + 1, jp_name, mat, en_name)
 
                 # リストに追加
                 from ..qt_compat import QListWidgetItem
 
                 item = QListWidgetItem(display_text)
                 item.setData(Qt.UserRole, mat)  # 実際のマテリアル名を保存
+                item.setData(MATERIAL_INDEX_ROLE, material_index)
                 item.setToolTip(mat)
                 self.view.material_list.addItem(item)
 
@@ -188,6 +252,7 @@ class MaterialPresenter:
                 self.view._show_placeholder()
 
             logger.debug(f"Loaded {self.view.material_list.count()} MMD materials for model: {current_model_root}")
+            self._update_authoring_actions()
 
         except Exception as e:
             logger.error(f"Failed to load materials: {e}", exc_info=True)
@@ -232,12 +297,21 @@ class MaterialPresenter:
         logger.debug(f"Selected material: {material_name}")
 
         self.current_material = material_name
+        material_index = current.data(MATERIAL_INDEX_ROLE)
+        self.current_material_index = material_index if type(material_index) is int else self._read_material_index(
+            material_name
+        )
         # 変更フラグを事前にリセットして、ロード中の変更検知を無効化
         self.has_unsaved_changes = False
         self.view._set_details_enabled(True)
 
         # Mayaでマテリアルを選択
         try:
+            if self.authoring_coordinator is not None:
+                # Preserve the current mesh/face selection for Assign.
+                self._update_authoring_actions()
+                self.load_material_properties(material_name)
+                return
             self.maya_adapter.select(material_name, replace=True)
             logger.debug(f"Selected material in Maya: {material_name}")
 
@@ -248,6 +322,102 @@ class MaterialPresenter:
             logger.warning(f"Could not select material in Maya: {e}")
 
         self.load_material_properties(material_name)
+
+    def _read_material_index(self, material):
+        """Read a binding index for UI routing, never as semantic authority."""
+        try:
+            if not self.maya_adapter.attribute_exists(ATTR_MMD_MATERIAL_INDEX, material):
+                return None
+            value = self.maya_adapter.get_attr(f"{material}.{ATTR_MMD_MATERIAL_INDEX}")
+            return value if type(value) is int and value >= 0 else None
+        except Exception:
+            return None
+
+    def _update_authoring_actions(self):
+        root = self.app_state.current_model_root
+        has_root = bool(root and self.maya_adapter.object_exists(root))
+        available = self.authoring_coordinator is not None and has_root
+        selected = available and type(self.current_material_index) is int
+        for button_name, enabled in (
+            ("create_btn", available),
+            ("duplicate_btn", selected),
+            ("delete_btn", selected),
+            ("assign_btn", selected),
+        ):
+            button = getattr(self.view, button_name, None)
+            if button is not None:
+                button.setEnabled(bool(enabled))
+
+    def _selection_targets(self):
+        try:
+            return tuple(self.maya_adapter.ls(selection=True, long=True, flatten=True) or ())
+        except Exception:
+            return ()
+
+    def _authoring_root(self):
+        root = self.app_state.current_model_root
+        if not root or not self.maya_adapter.object_exists(root):
+            self.app_state.emit_status(self.tr_message("material_authoring_root_missing"))
+            return None
+        if self.authoring_coordinator is None:
+            self.app_state.emit_status(self.tr_message("material_authoring_unavailable"))
+            return None
+        return root
+
+    def _run_authoring(self, operation, *args):
+        root = self._authoring_root()
+        if root is None:
+            return False
+        try:
+            getattr(self.authoring_coordinator, operation)(root, *args)
+        except Exception as exc:
+            logger.error("Material authoring %s failed", operation, exc_info=True)
+            self.app_state.emit_status(
+                tr_message_format("material_authoring_failed", operation=operation, error=str(exc))
+            )
+            return False
+        self.load_materials()
+        self.app_state.emit_status(self.tr_message(f"material_{operation}_succeeded"))
+        return True
+
+    def create_material(self):
+        """Request one transactional semantic material creation."""
+        return self._run_authoring("create_material", self._selection_targets())
+
+    def duplicate_material(self):
+        """Request duplication of the selected semantic material."""
+        if type(self.current_material_index) is not int:
+            return False
+        return self._run_authoring(
+            "duplicate_material", self.current_material_index, self._selection_targets()
+        )
+
+    def delete_material(self):
+        """Confirm and request transactional deletion of the selected material."""
+        if type(self.current_material_index) is not int:
+            return False
+        from ..qt_compat import QMessageBox
+
+        reply = QMessageBox.question(
+            self.view,
+            self.tr_message("material_delete_title"),
+            self.tr_message("material_delete_confirm"),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return False
+        return self._run_authoring("delete_material", self.current_material_index)
+
+    def assign_material(self):
+        """Request assignment; root ownership validation remains in the binding."""
+        if type(self.current_material_index) is not int:
+            return False
+        targets = self._selection_targets()
+        if not targets:
+            self.app_state.emit_status(self.tr_message("material_authoring_selection_missing"))
+            return False
+        return self._run_authoring("assign_material", self.current_material_index, targets)
 
     def load_material_properties(self, material_name):
         """Load material properties from Maya material"""
@@ -711,6 +881,17 @@ class MaterialPresenter:
         if not self.current_material:
             return
 
+        # An injected coordinator is the semantic authoring boundary.  Keep
+        # this branch before every legacy Maya write so a failed spec build or
+        # transaction cannot partially mutate individual shader attributes.
+        if self.authoring_coordinator is not None:
+            try:
+                return self._apply_authoring_changes()
+            except Exception as e:
+                logger.error(f"Failed to apply authoring material changes: {e}", exc_info=True)
+                self.app_state.emit_status(tr_message_format("material_changes_failed", error=str(e)))
+                return None
+
         try:
             self.current_material = ensure_material_shader_backend(self.current_material)
             # Apply names
@@ -929,6 +1110,232 @@ class MaterialPresenter:
         except Exception as e:
             logger.error(f"Failed to apply material changes: {e}", exc_info=True)
             self.app_state.emit_status(tr_message_format("material_changes_failed", error=str(e)))
+
+    def _apply_authoring_changes(self):
+        """Build and replace one complete semantic material specification.
+
+        The coordinator owns the scene transaction and binding writes.  This
+        presenter only translates the current controls into an immutable
+        :class:`MmdMaterialSpec`, then performs a strict read-back.
+        """
+        root = self.app_state.current_model_root
+        if not isinstance(root, str) or not root.strip():
+            raise ValueError("authoring material apply requires an explicit model root")
+        coordinator = self.authoring_coordinator
+        read_spec = getattr(coordinator, "read_spec", None)
+        replace_material = getattr(coordinator, "replace_material", None)
+        if not callable(read_spec) or not callable(replace_material):
+            raise TypeError("authoring coordinator must expose read_spec and replace_material")
+
+        current = read_spec(root)
+        if type(current) is not MmdModelAuthoringSpec:
+            raise TypeError("authoring coordinator read_spec returned an invalid spec")
+        index = self.current_material_index
+        if type(index) is not int or index < 0:
+            raise ValueError("an indexed material must be selected before Apply")
+        try:
+            prior = next(material for material in current.materials if material.index == index)
+        except StopIteration as exc:
+            raise ValueError(f"material index {index} is not present in the current spec") from exc
+
+        replacement = self._material_from_authoring_controls(prior)
+        result = replace_material(root, replacement)
+        if type(result) is not MmdModelAuthoringSpec:
+            raise TypeError("authoring coordinator replace_material returned an invalid spec")
+        reloaded = read_spec(root)
+        if type(reloaded) is not MmdModelAuthoringSpec:
+            raise TypeError("authoring coordinator strict reload returned an invalid spec")
+
+        # Keep the fingerprint available for UI/application diagnostics while
+        # avoiding a second, legacy attribute read path.
+        self.material_data["_authoring_fingerprint"] = reloaded.fingerprint()
+        self.has_unsaved_changes = False
+        self.app_state.emit_status(
+            tr_message_format("material_changes_applied", material=self.current_material)
+        )
+        return reloaded
+
+    def _material_from_authoring_controls(self, prior: MmdMaterialSpec) -> MmdMaterialSpec:
+        """Return a complete replacement spec from the current Material tab."""
+        diffuse_rgb = self._authoring_vector(
+            self.material_data.get("diffuse", prior.diffuse[:3]), 3, "diffuse"
+        )
+        specular = self._authoring_vector(
+            self.material_data.get("specular", prior.specular), 3, "specular"
+        )
+        ambient = self._authoring_vector(
+            self.material_data.get("ambient", prior.ambient), 3, "ambient"
+        )
+        edge_rgb = self._authoring_vector(
+            self.material_data.get("edge_color", prior.edge_color[:3]), 3, "edge_color"
+        )
+        transparency = self._authoring_number(
+            self.view.transparency_spin.value(), "transparency"
+        )
+        specular_coefficient = self._authoring_number(
+            self.view.specular_coefficient_spin.value(), "specular_coefficient"
+        )
+        edge_size = self._authoring_number(self.view.edge_size_spin.value(), "edge_size")
+        diffuse_alpha = 1.0 - transparency
+
+        texture_source, resolved_texture = self._authoring_main_texture_paths(prior)
+        sphere_source, resolved_sphere = self._authoring_aux_texture_paths(
+            prior.sphere_texture_path,
+            prior.resolved_sphere_texture_path,
+            self._authoring_text("sphere_map_path_edit"),
+        )
+        shared_toon = bool(self._authoring_toon_shared(prior))
+        toon_index = self._authoring_toon_index(prior, shared_toon)
+        if shared_toon:
+            toon_source = None
+            resolved_toon = None
+        else:
+            toon_source, resolved_toon = self._authoring_aux_texture_paths(
+                prior.toon_texture_path,
+                prior.resolved_toon_texture_path,
+                self._authoring_text("toon_texture_path_edit"),
+            )
+
+        return replace(
+            prior,
+            name=self._authoring_text("material_jp_name_edit"),
+            name_english=self._authoring_text("material_en_name_edit"),
+            diffuse=(*diffuse_rgb, diffuse_alpha),
+            specular=specular,
+            specular_coefficient=specular_coefficient,
+            ambient=ambient,
+            draw_flags=self._authoring_draw_flags(prior.draw_flags),
+            edge_color=(
+                *edge_rgb,
+                self._authoring_number(
+                    self.material_data.get("edge_alpha", prior.edge_color[3]),
+                    "edge_alpha",
+                ),
+            ),
+            edge_size=edge_size,
+            texture_path=texture_source,
+            resolved_texture_path=resolved_texture,
+            sphere_texture_path=sphere_source,
+            resolved_sphere_texture_path=resolved_sphere,
+            sphere_mode=self.view.sphere_mode_combo.currentIndex(),
+            shared_toon=shared_toon,
+            toon_texture_index=toon_index,
+            toon_texture_path=toon_source,
+            resolved_toon_texture_path=resolved_toon,
+        )
+
+    def _authoring_main_texture_paths(self, prior: MmdMaterialSpec) -> tuple[str | None, str | None]:
+        """Translate the resolved main-texture editor without clobbering source provenance."""
+        value = self._authoring_text("texture_path_edit", optional=True)
+        source = prior.texture_path
+        if value is None:
+            return source, None
+        original = self.material_data.get("original_pmx_texture_path")
+        if value == source or value == original:
+            # The field can display source provenance when no file graph is
+            # connected.  Never reinterpret that source string as a resolved
+            # Maya path, even when a stale resolved value is persisted.
+            return source, prior.resolved_texture_path
+        if prior.resolved_texture_path and value == prior.resolved_texture_path:
+            return source, prior.resolved_texture_path
+        # The editable field is the resolved Maya path when a file graph is
+        # present.  Preserve source-relative PMX provenance separately.
+        return source, value
+
+    @staticmethod
+    def _authoring_aux_texture_paths(
+        source: str | None,
+        resolved: str | None,
+        value: str | None,
+    ) -> tuple[str | None, str | None]:
+        """Translate source-path controls and clear stale resolved paths on edits."""
+        if value is None:
+            return None, None
+        if value == source:
+            return source, resolved
+        if resolved and value == resolved:
+            return source, resolved
+        return value, None
+
+    def _authoring_toon_shared(self, prior: MmdMaterialSpec) -> bool:
+        control = getattr(self.view, "toon_sharing_check", None)
+        if control is None:
+            return prior.shared_toon
+        value = control.isChecked()
+        if not isinstance(value, bool):
+            raise TypeError("toon sharing control must return bool")
+        return value
+
+    def _authoring_toon_index(self, prior: MmdMaterialSpec, shared: bool) -> int | None:
+        control = (
+            getattr(self.view, "toon_texture_combo", None)
+            if shared
+            else getattr(self.view, "toon_texture_index_spin", None)
+        )
+        if control is None:
+            return prior.toon_texture_index
+        value = control.currentIndex() if shared else control.value()
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError("toon texture index control must return an integer")
+        return value if value >= 0 else None
+
+    def _authoring_draw_flags(self, prior: int) -> int:
+        """Build PMX draw flags from the explicit checkbox controls."""
+        flags = 0
+        for bit, name in (
+            (0x01, "both_face_check"),
+            (0x02, "ground_shadow_check"),
+            (0x04, "self_shadow_map_check"),
+            (0x08, "self_shadow_check"),
+            (0x10, "edge_draw_check"),
+            (0x20, "vertex_color_check"),
+            (0x40, "point_draw_check"),
+            (0x80, "line_draw_check"),
+        ):
+            control = getattr(self.view, name, None)
+            if control is None:
+                enabled = bool(prior & bit)
+            else:
+                value = control.isChecked()
+                if not isinstance(value, bool):
+                    raise TypeError(f"{name} must return bool")
+                enabled = value
+            if enabled:
+                flags |= bit
+        return flags
+
+    def _authoring_text(self, control_name: str, *, optional: bool = False) -> str | None:
+        """Read one text control while preserving Unicode and empty-path semantics."""
+        control = getattr(self.view, control_name, None)
+        if control is None:
+            if optional:
+                return None
+            raise AttributeError(f"missing authoring control: {control_name}")
+        value = control.text()
+        if not isinstance(value, str):
+            raise TypeError(f"{control_name} must return text")
+        if optional and value == "":
+            return None
+        return value
+
+    @staticmethod
+    def _authoring_vector(value, size: int, field: str) -> tuple:
+        """Validate one UI vector shape without coercing mutable or boolean values."""
+        if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
+            raise TypeError(f"{field} must be a sequence")
+        if len(value) != size:
+            raise ValueError(f"{field} must contain exactly {size} values")
+        return tuple(value)
+
+    @staticmethod
+    def _authoring_number(value, field: str) -> float:
+        """Validate a finite numeric control without bool coercion."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"{field} must be a number")
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            raise ValueError(f"{field} must be finite")
+        return numeric
 
     def _apply_hardware_base_values(self, values, shader_type):
         """Write base values only when no evaluator owns the final plug."""
@@ -1194,6 +1601,9 @@ class MaterialPresenter:
 
     def on_selection_changed_maya(self):
         """リスト選択が変更されたときにMayaでも選択する"""
+        if self.authoring_coordinator is not None:
+            # Keep explicit mesh/face targets selected for Assign.
+            return
         select_existing_user_role_nodes(
             self.view.material_list,
             self.maya_adapter,

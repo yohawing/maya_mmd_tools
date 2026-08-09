@@ -377,6 +377,33 @@ class ImportExportTab(BaseTab):
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
 
+        # Create Model Group (packaged templates only; no arbitrary file path)
+        self.create_model_group = QGroupBox(self.tr("create_mmd_model", "groups"))
+        create_model_layout = QFormLayout()
+        self.create_model_template_combo = QComboBox()
+        self.create_model_template_label = QLabel(self.tr("model_template", "fields"))
+        create_model_layout.addRow(
+            self.create_model_template_label,
+            self.create_model_template_combo,
+        )
+        self.create_model_name_jp_edit = QLineEdit()
+        self.create_model_name_jp_label = QLabel(self.tr("model_name_jp", "fields"))
+        create_model_layout.addRow(
+            self.create_model_name_jp_label,
+            self.create_model_name_jp_edit,
+        )
+        self.create_model_name_en_edit = QLineEdit()
+        self.create_model_name_en_label = QLabel(self.tr("model_name_en", "fields"))
+        create_model_layout.addRow(
+            self.create_model_name_en_label,
+            self.create_model_name_en_edit,
+        )
+        self.create_model_button = QPushButton(self.tr("create_mmd_model", "actions"))
+        self.create_model_button.setEnabled(False)
+        create_model_layout.addRow(self.create_model_button)
+        self.create_model_group.setLayout(create_model_layout)
+        right_layout.addWidget(self.create_model_group)
+
         # Model Import Group (PMX/PMD)
         self.model_import_group = QGroupBox(self.tr("model_import", "groups"))
         model_import_layout = QFormLayout()
@@ -771,6 +798,11 @@ class ImportExportTab(BaseTab):
         self.import_button.setText(self.tr("import_model", "actions"))
         self.import_vmd_button.setText(self.tr("import_animation", "actions"))
         self.export_button.setText(self.tr("export", "buttons"))
+        self.create_model_group.setTitle(self.tr("create_mmd_model", "groups"))
+        self.create_model_template_label.setText(self.tr("model_template", "fields"))
+        self.create_model_name_jp_label.setText(self.tr("model_name_jp", "fields"))
+        self.create_model_name_en_label.setText(self.tr("model_name_en", "fields"))
+        self.create_model_button.setText(self.tr("create_mmd_model", "actions"))
 
         # Tab widget texts
         if hasattr(self, "animation_settings_group"):

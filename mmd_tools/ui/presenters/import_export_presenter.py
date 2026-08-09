@@ -1,6 +1,7 @@
 import math
 
 from ..qt_compat import QObject, QFileDialog
+from ...actions.create_model_action import CreateModelRequest
 from ...actions.export_model_action import ExportModelAction, ExportModelRequest
 from ...actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
 from ...actions.import_model_action import ImportModelAction, ImportModelRequest
@@ -16,6 +17,7 @@ from ...core.model_registry import (
     REGISTRY_CATEGORY_TEXTURE,
     list_model_registry_members_from_adapter,
 )
+from ...core.model_template import list_model_templates
 from ...services.settings_service import SettingsService
 from ..model_readme_dialog import ModelReadmeDialogAdapter, read_model_readme
 from .list_presenter_helpers import tr_message, tr_message_format
@@ -36,6 +38,8 @@ class ImportExportPresenter(QObject):
         settings_service=None,
         maya_adapter=None,
         model_readme_adapter=None,
+        create_model_action=None,
+        model_template_loader=None,
     ):
         super().__init__()
         self.view = view
@@ -49,8 +53,11 @@ class ImportExportPresenter(QObject):
         self.model_readme_adapter = model_readme_adapter or ModelReadmeDialogAdapter(
             development_mode_getter=self.settings_service.is_development_mode,
         )
+        self.create_model_action = create_model_action
+        self.model_template_loader = model_template_loader or list_model_templates
         self.view.presenter = self
         self.connect_signals()
+        self._populate_create_model_templates()
 
     def connect_signals(self):
         self.view.import_path_button.clicked.connect(self.select_import_file)
@@ -60,6 +67,65 @@ class ImportExportPresenter(QObject):
         # VMD import signals
         self.view.vmd_path_button.clicked.connect(self.select_vmd_file)
         self.view.import_vmd_button.clicked.connect(self.import_vmd_file)
+        create_button = getattr(self.view, "create_model_button", None)
+        if create_button is not None:
+            create_button.clicked.connect(self.create_model)
+
+    def _populate_create_model_templates(self):
+        """Populate the selector from curated packaged template metadata only."""
+        combo = getattr(self.view, "create_model_template_combo", None)
+        button = getattr(self.view, "create_model_button", None)
+        if combo is None or button is None:
+            return
+        combo.clear()
+        try:
+            templates = tuple(self.model_template_loader() or ())
+        except Exception:
+            logger.error("Failed to load packaged model templates", exc_info=True)
+            templates = ()
+        for template in templates:
+            template_id = getattr(template, "template_id", None)
+            label = getattr(template, "label", None)
+            if isinstance(template_id, str) and template_id and isinstance(label, str):
+                combo.addItem(label, template_id)
+        action_available = callable(getattr(self.create_model_action, "execute", None))
+        button.setEnabled(action_available and combo.count() > 0)
+
+    def create_model(self):
+        """Execute one packaged Create Model request and publish its new root."""
+        action = self.create_model_action
+        if not callable(getattr(action, "execute", None)):
+            self.app_state.emit_status(tr_message("create_model_unavailable"))
+            return False
+        combo = getattr(self.view, "create_model_template_combo", None)
+        template_id = combo.currentData() if combo is not None else None
+        if not isinstance(template_id, str) or not template_id:
+            self.app_state.emit_status(tr_message("create_model_template_required"))
+            return False
+        request = CreateModelRequest(
+            template_id=template_id,
+            model_name=self.view.create_model_name_jp_edit.text().strip(),
+            model_name_english=self.view.create_model_name_en_edit.text().strip(),
+        )
+        try:
+            result = action.execute(request)
+            root = getattr(result, "root", None)
+            if not isinstance(root, str) or not root:
+                raise RuntimeError("Create Model returned no model root")
+            refresh_models = getattr(self.app_state, "refresh_model_list", None)
+            if callable(refresh_models):
+                refresh_models()
+            self.app_state.current_model_root = root
+            self.app_state.emit_status(
+                tr_message_format("create_model_succeeded", root=root)
+            )
+            return True
+        except Exception as exc:
+            logger.error("Create Model failed", exc_info=True)
+            self.app_state.emit_status(
+                tr_message_format("create_model_failed", error=str(exc))
+            )
+            return False
 
     def select_import_file(self):
         file_path, _ = QFileDialog.getOpenFileName(

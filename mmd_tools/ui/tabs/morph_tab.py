@@ -1,3 +1,5 @@
+"""Morph preview and coordinator-gated semantic authoring tab widgets."""
+
 from ..qt_compat import (
     QWidget,
     QVBoxLayout,
@@ -15,6 +17,7 @@ from ..qt_compat import (
     QTabWidget,
     QSplitter,
     QCheckBox,
+    QTextEdit,
 )
 from ..base_tab import BaseTab
 from .translation_registry import apply_translation_registry
@@ -63,6 +66,7 @@ class MorphTab(BaseTab):
         splitter.setSizes([350, 650])
 
         main_layout.addWidget(splitter)
+        self.set_work_material_controls(False)
 
     def _create_morph_list_section(self):
         """モーフリストセクションを作成"""
@@ -79,6 +83,25 @@ class MorphTab(BaseTab):
         self.refresh_morphs_btn = QPushButton(self.tr("refresh", "buttons"))
         self.refresh_morphs_btn.setMaximumWidth(60)
         toolbar_layout.addWidget(self.refresh_morphs_btn)
+        self.create_type_combo = QComboBox()
+        self.create_type_combo.addItems(
+            [
+                "Vertex", "UV", "Additional UV1", "Additional UV2",
+                "Additional UV3", "Additional UV4", "Bone", "Material",
+                "Group", "Flip", "Impulse",
+            ]
+        )
+        self.create_morph_btn = QPushButton("+")
+        self.delete_morph_btn = QPushButton("-")
+        self.move_morph_up_btn = QPushButton("↑")
+        self.move_morph_down_btn = QPushButton("↓")
+        self.reindex_morphs_btn = QPushButton("Reindex")
+        toolbar_layout.addWidget(self.create_type_combo)
+        toolbar_layout.addWidget(self.create_morph_btn)
+        toolbar_layout.addWidget(self.delete_morph_btn)
+        toolbar_layout.addWidget(self.move_morph_up_btn)
+        toolbar_layout.addWidget(self.move_morph_down_btn)
+        toolbar_layout.addWidget(self.reindex_morphs_btn)
         toolbar_layout.addStretch()
         morph_list_layout.addLayout(toolbar_layout)
 
@@ -112,6 +135,7 @@ class MorphTab(BaseTab):
 
         # 基本情報タブ
         self.detail_tabs.addTab(self._create_basic_info_tab(), self.tr("basic_information", "tabs"))
+        self.detail_tabs.addTab(self._create_offsets_tab(), "Offsets")
 
         layout.addWidget(self.detail_tabs)
 
@@ -171,6 +195,36 @@ class MorphTab(BaseTab):
         button_layout.addWidget(self.reset_btn)
         layout.addLayout(button_layout)
 
+        return widget
+
+    def _create_offsets_tab(self):
+        """Create the raw canonical offset JSON editor."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        self.offset_policy_label = QLabel("")
+        self.offset_policy_label.setWordWrap(True)
+        layout.addWidget(self.offset_policy_label)
+        self.offsets_edit = QTextEdit()
+        self.offsets_edit.setAcceptRichText(False)
+        layout.addWidget(self.offsets_edit)
+        self.apply_offsets_btn = QPushButton("Apply Offsets")
+        layout.addWidget(self.apply_offsets_btn)
+        work_layout = QHBoxLayout()
+        self.work_offset_combo = QComboBox()
+        self.create_work_material_btn = QPushButton(
+            self.tr("create_work_material", "buttons")
+        )
+        self.apply_work_material_btn = QPushButton(
+            self.tr("apply_work_material", "buttons")
+        )
+        self.clear_work_material_btn = QPushButton(
+            self.tr("clear_work_material", "buttons")
+        )
+        work_layout.addWidget(self.work_offset_combo)
+        work_layout.addWidget(self.create_work_material_btn)
+        work_layout.addWidget(self.apply_work_material_btn)
+        work_layout.addWidget(self.clear_work_material_btn)
+        layout.addLayout(work_layout)
         return widget
 
     def _create_basic_info_tab(self):
@@ -249,6 +303,63 @@ class MorphTab(BaseTab):
             widget.setEnabled(enabled)
             widget.setToolTip(tooltip)
 
+    def set_authoring_controls_enabled(self, enabled, tooltip=""):
+        """Enable semantic authoring separately from preview weights."""
+        for widget in (
+            self.create_type_combo,
+            self.create_morph_btn,
+            self.delete_morph_btn,
+            self.move_morph_up_btn,
+            self.move_morph_down_btn,
+            self.reindex_morphs_btn,
+            self.morph_name_jp_edit,
+            self.morph_name_en_edit,
+            self.panel_combo,
+            self.morph_type_combo,
+            self.offsets_edit,
+            self.apply_offsets_btn,
+            self.apply_btn,
+        ):
+            widget.setEnabled(enabled)
+            widget.setToolTip(tooltip)
+
+    def set_offsets_editable(self, editable, policy_text=""):
+        """Keep round-trip JSON visible when policy disables editing."""
+        self.offsets_edit.setReadOnly(not editable)
+        self.apply_offsets_btn.setEnabled(editable)
+        self.offset_policy_label.setText(policy_text)
+
+    def set_work_material_controls(self, enabled, offsets=(), tooltip=""):
+        """Populate work-offset choices and gate temporary material actions."""
+        self.work_offset_combo.blockSignals(True)
+        self.work_offset_combo.clear()
+        for offset_index, label in offsets:
+            self.work_offset_combo.addItem(label, offset_index)
+        self.work_offset_combo.blockSignals(False)
+        active = bool(enabled and self.work_offset_combo.count())
+        for widget in (
+            self.work_offset_combo,
+            self.create_work_material_btn,
+            self.apply_work_material_btn,
+            self.clear_work_material_btn,
+        ):
+            widget.setEnabled(active)
+            widget.setToolTip(tooltip)
+
+    def set_create_type_enabled(self, index, enabled, policy_text=""):
+        """Expose per-type structural authoring capability in the create selector."""
+        item = self.create_type_combo.model().item(int(index))
+        if item is None:
+            return
+        item.setEnabled(bool(enabled))
+        item.setToolTip(policy_text)
+        if not enabled and self.create_type_combo.currentIndex() == int(index):
+            for candidate in range(self.create_type_combo.count()):
+                candidate_item = self.create_type_combo.model().item(candidate)
+                if candidate_item is not None and candidate_item.isEnabled():
+                    self.create_type_combo.setCurrentIndex(candidate)
+                    break
+
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
@@ -256,6 +367,11 @@ class MorphTab(BaseTab):
         # Tab widget texts
         if self.detail_tabs.count() >= 1:
             self.detail_tabs.setTabText(0, self.tr("basic_information", "tabs"))
+        if self.detail_tabs.count() >= 2:
+            self.detail_tabs.setTabText(1, "Offsets")
+        self.create_work_material_btn.setText(self.tr("create_work_material", "buttons"))
+        self.apply_work_material_btn.setText(self.tr("apply_work_material", "buttons"))
+        self.clear_work_material_btn.setText(self.tr("clear_work_material", "buttons"))
 
         # ComboBox items - Panel
         self.panel_combo.clear()
