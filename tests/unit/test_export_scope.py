@@ -997,6 +997,57 @@ class TestExportScope(unittest.TestCase):
         )
         self.assertEqual(payload["faces"], [[3, 4, 5], [0, 1, 2]])
 
+    def test_model_root_coalesces_same_material_binding_across_mesh_shapes(self):
+        """One Maya SG used by two shapes remains one PMX material group."""
+        shared_material = {
+            "name": "Shared Material",
+            "source_material_index": 0,
+            "face_count": 3,
+            "semantic_missing": [],
+            "_source_shading_engine": "sharedSG",
+        }
+        payload = self._collect_mock_model_root(
+            {
+                "mesh_a": self._mock_root_mesh(dict(shared_material)),
+                "mesh_b": self._mock_root_mesh(dict(shared_material)),
+            }
+        )
+
+        self.assertEqual(len(payload["materials"]), 1)
+        self.assertEqual(payload["materials"][0]["source_material_index"], 0)
+        self.assertEqual(payload["materials"][0]["face_count"], 6)
+        self.assertNotIn("_source_shading_engine", payload["materials"][0])
+        self.assertEqual(payload["faces"], [[0, 1, 2], [3, 4, 5]])
+
+    def test_model_root_rejects_duplicate_index_from_different_material_bindings(self):
+        """Different Maya SGs cannot claim one semantic PMX material index."""
+        base_material = {
+            "name": "Same Semantic Payload",
+            "source_material_index": 0,
+            "face_count": 3,
+            "semantic_missing": [],
+        }
+        material_a = {**base_material, "_source_shading_engine": "materialASG"}
+        material_b = {**base_material, "_source_shading_engine": "materialBSG"}
+        payload = self._collect_mock_model_root(
+            {
+                "mesh_a": self._mock_root_mesh(material_a),
+                "mesh_b": self._mock_root_mesh(material_b),
+            }
+        )
+
+        self.assertEqual(len(payload["materials"]), 2)
+        self.assertTrue(
+            all(
+                "source_material_index" in material["semantic_missing"]
+                for material in payload["materials"]
+            )
+        )
+        self.assertTrue(
+            all("_source_shading_engine" not in material for material in payload["materials"])
+        )
+        self.assertEqual(payload["faces"], [[0, 1, 2], [3, 4, 5]])
+
     def test_model_root_source_index_order_is_fail_closed_for_duplicate_or_malformed(self):
         """Root merge retains DAG order when source provenance is ambiguous."""
         duplicate_payload = self._collect_mock_model_root(
@@ -1135,8 +1186,16 @@ class TestExportScope(unittest.TestCase):
         self.assertEqual(
             collect_from_mesh.call_args_list,
             [
-                mock.call("mesh_a", _resolve_texture_table=False),
-                mock.call("mesh_b", _resolve_texture_table=False),
+                mock.call(
+                    "mesh_a",
+                    _resolve_texture_table=False,
+                    _preserve_material_bindings=True,
+                ),
+                mock.call(
+                    "mesh_b",
+                    _resolve_texture_table=False,
+                    _preserve_material_bindings=True,
+                ),
             ],
         )
 
@@ -1292,6 +1351,7 @@ class TestExportScope(unittest.TestCase):
         collect_from_mesh.assert_called_once_with(
             "mesh",
             _resolve_texture_table=False,
+            _preserve_material_bindings=True,
         )
 
     def test_network_morph_collection_passes_selected_root(self):

@@ -1731,6 +1731,65 @@ def _order_material_groups_by_source_index(
     return material_groups
 
 
+_SOURCE_MATERIAL_BINDING_KEY = "_source_shading_engine"
+
+
+def _coalesce_repeated_material_groups(
+    material_groups: list[tuple[dict, list[list[int]]]],
+) -> list[tuple[dict, list[list[int]]]]:
+    """Merge repeated PMX material groups only when their Maya binding agrees.
+
+    One shadingEngine can be assigned to faces on several mesh shapes.  Maya
+    reports that assignment once per shape, while PMX expects one material
+    record whose face count covers every assigned face.  Repeated source
+    indices are therefore safe to merge only when both the shadingEngine
+    identity and the complete semantic payload are identical.  Ambiguous
+    duplicates are left intact for ``_order_material_groups_by_source_index``
+    to mark fail-closed.
+    """
+    result: list[tuple[dict, list[list[int]]]] = []
+    first_group_by_index: dict[int, int] = {}
+    for group in material_groups:
+        material = group[0]
+        source_index = material.get("source_material_index")
+        is_valid = (
+            isinstance(source_index, int)
+            and not isinstance(source_index, bool)
+            and source_index >= 0
+            and "source_material_index" not in (material.get("semantic_missing") or [])
+        )
+        if not is_valid or source_index not in first_group_by_index:
+            if is_valid:
+                first_group_by_index[source_index] = len(result)
+            result.append(group)
+            continue
+
+        first_position = first_group_by_index[source_index]
+        first_material, first_faces = result[first_position]
+        binding = first_material.get(_SOURCE_MATERIAL_BINDING_KEY)
+        ignored = {"face_count", _SOURCE_MATERIAL_BINDING_KEY}
+        if (
+            not isinstance(binding, str)
+            or not binding
+            or material.get(_SOURCE_MATERIAL_BINDING_KEY) != binding
+            or {key: value for key, value in material.items() if key not in ignored}
+            != {key: value for key, value in first_material.items() if key not in ignored}
+        ):
+            result.append(group)
+            continue
+
+        combined_material = dict(first_material)
+        combined_material["face_count"] += material["face_count"]
+        result[first_position] = (combined_material, [*first_faces, *group[1]])
+    return result
+
+
+def _strip_material_binding_provenance(materials: list[dict]) -> None:
+    """Remove collector-private Maya binding identities from export payloads."""
+    for material in materials:
+        material.pop(_SOURCE_MATERIAL_BINDING_KEY, None)
+
+
 def _material_face_groups(
     materials: list[dict],
     faces: list[list[int]],
@@ -1833,6 +1892,8 @@ def _collect_materials_per_face(shape: str, fn) -> tuple:
             if sg_key == "__unassigned__"
             else _collect_shader_material_dict(sg_key)
         )
+        if sg_key != "__unassigned__":
+            mat[_SOURCE_MATERIAL_BINDING_KEY] = sg_key
         group_faces = [list(reversed(face)) for face in group_faces]
         mat["face_count"] = sum(max(0, len(f) - 2) * 3 for f in group_faces)
 
@@ -1887,6 +1948,7 @@ class ExportSceneCollector:
         transform_or_shape: str,
         *,
         _resolve_texture_table: bool = True,
+        _preserve_material_bindings: bool = False,
         expected_additional_uv_count: int | None = None,
     ) -> dict:
         """Collect scene data from a single polygon mesh transform or shape.
@@ -1906,6 +1968,8 @@ class ExportSceneCollector:
             _resolve_texture_table: Resolve complete PMX material texture
                 provenance for direct collection.  Model-root collection
                 disables this until all mesh materials have been merged.
+            _preserve_material_bindings: Retain collector-private shadingEngine
+                provenance for model-root material coalescing.
             expected_additional_uv_count: Optional PMX channel count recorded on
                 an imported model root.  A missing or mismatched mesh payload
                 is treated as semantic loss when this is non-zero.
@@ -2011,6 +2075,8 @@ class ExportSceneCollector:
             model_data["soft_bodies"] = soft_body_payload
         if _resolve_texture_table:
             _apply_texture_table(model_data, None)
+        if not _preserve_material_bindings:
+            _strip_material_binding_provenance(materials)
         return model_data
 
     def collect_from_model_root(self, root: str) -> dict:
@@ -2052,6 +2118,7 @@ class ExportSceneCollector:
         for shape in shapes:
             collect_kwargs = {
                 "_resolve_texture_table": False,
+                "_preserve_material_bindings": True,
             }
             if expected_additional_uv_count is not None:
                 collect_kwargs["expected_additional_uv_count"] = expected_additional_uv_count
@@ -2161,7 +2228,7 @@ class ExportSceneCollector:
             == len(merged_faces)
         ):
             ordered_material_groups = _order_material_groups_by_source_index(
-                merged_material_groups,
+                _coalesce_repeated_material_groups(merged_material_groups),
             )
             model_data["materials"] = [
                 material for material, _group_faces in ordered_material_groups
@@ -2171,4 +2238,5 @@ class ExportSceneCollector:
                 for _material, group_faces in ordered_material_groups
                 for face in group_faces
             ]
+        _strip_material_binding_provenance(model_data["materials"])
         return model_data

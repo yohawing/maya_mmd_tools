@@ -205,6 +205,7 @@ def test_sparse_material_provenance_fills_leading_middle_and_tail_holes() -> Non
         [4],
         [-1],
         [True],
+        ["0"],
     ],
 )
 def test_sparse_material_provenance_rejects_duplicate_or_invalid_indices(source_indices) -> None:
