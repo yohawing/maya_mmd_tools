@@ -115,8 +115,7 @@ class TestImportExportTabDevModeVisibility(unittest.TestCase):
         scale_row = _FakeWidget()
         cpp_rig_nodes_check = _FakeWidget()
         motion_scale_row = _FakeWidget()
-        export_settings_tab = _FakeWidget()
-        tab._dev_only_widgets = [scale_row, cpp_rig_nodes_check, motion_scale_row, export_settings_tab]
+        tab._dev_only_widgets = [scale_row, cpp_rig_nodes_check, motion_scale_row]
         tab.scale_spin = _FakeSpinBox(value=2.5)
         tab.settings_service = _FakeSettingsService(
             {
@@ -129,15 +128,12 @@ class TestImportExportTabDevModeVisibility(unittest.TestCase):
         self.assertFalse(scale_row.visible)
         self.assertFalse(cpp_rig_nodes_check.visible)
         self.assertFalse(motion_scale_row.visible)
-        self.assertFalse(export_settings_tab.visible)
 
         tab.settings_service.set("ui.general.development_mode", True)
         import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
         self.assertTrue(scale_row.visible)
         self.assertTrue(cpp_rig_nodes_check.visible)
         self.assertTrue(motion_scale_row.visible)
-        self.assertTrue(export_settings_tab.visible)
-
     def test_normal_mode_hides_scale_row_and_displays_one_without_writing_settings(self):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
         scale_row = _FakeWidget()
@@ -323,48 +319,6 @@ class TestImportExportTabReducedBakeVisibility(unittest.TestCase):
         self.assertFalse(tab.vmd_rotation_time_curve_check.enabled)
 
 
-class TestImportExportTabExportVisibility(unittest.TestCase):
-    def _make_tab(self, development_mode=True):
-        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
-        tab.export_group = _FakeWidget()
-        tab.settings_service = _FakeSettingsService(
-            {"ui.general.development_mode": development_mode}
-        )
-        return tab
-
-    def test_export_group_is_shown_for_pmx_format_in_dev_mode(self):
-        tab = self._make_tab(development_mode=True)
-
-        tab.settings_service.set("export.general.export_format", "pmx")
-        import_export_tab.ImportExportTab._apply_export_visibility(tab)
-
-        self.assertTrue(tab.export_group.visible)
-
-    def test_export_group_is_shown_for_vmd_format_in_dev_mode(self):
-        tab = self._make_tab(development_mode=True)
-
-        tab.settings_service.set("export.general.export_format", "vmd")
-        import_export_tab.ImportExportTab._apply_export_visibility(tab)
-
-        self.assertTrue(tab.export_group.visible)
-
-    def test_export_group_is_hidden_in_normal_mode(self):
-        tab = self._make_tab(development_mode=False)
-
-        tab.settings_service.set("export.general.export_format", "pmx")
-        import_export_tab.ImportExportTab._apply_export_visibility(tab)
-
-        self.assertFalse(tab.export_group.visible)
-
-    def test_export_format_change_updates_settings_and_visibility(self):
-        tab = self._make_tab(development_mode=True)
-
-        import_export_tab.ImportExportTab._on_export_format_changed(tab, "vmd")
-
-        self.assertEqual(tab.settings_service.get("export.general.export_format"), "vmd")
-        self.assertTrue(tab.export_group.visible)
-
-
 class _FakeQSettings:
     def __init__(self, values=None):
         self.values = dict(values or {})
@@ -485,6 +439,24 @@ class TestImportExportViewState(unittest.TestCase):
             self.assertEqual(store.values["import_path_history"], "[]")
             self.assertEqual(store.values["vmd_path_history"], "[]")
 
+    def test_import_history_clear_preserves_hidden_export_history(self):
+        with TemporaryDirectory() as temp_dir:
+            model_path = str(Path(temp_dir) / "model.pmx")
+            export_path = str(Path(temp_dir) / "export.pmx")
+            for path in (model_path, export_path):
+                Path(path).write_text("", encoding="utf-8")
+            store = _FakeQSettings()
+            view_state = ImportExportViewState(store)
+            view_state.save_file_history("import", model_path)
+            view_state.save_file_history("export", export_path)
+
+            view_state.clear_file_history(("import", "vmd"))
+
+            self.assertEqual(
+                view_state.load_file_history(),
+                [{"path": export_path, "type": "export"}],
+            )
+
 
 class TestNormalModeVisibilitySourceInspection(unittest.TestCase):
     """Verify supported model import controls remain available in normal mode."""
@@ -512,6 +484,17 @@ class TestNormalModeVisibilitySourceInspection(unittest.TestCase):
         dev_only_end = self.source.index("]", dev_only_start)
 
         self.assertNotIn("self.separate_meshes_check", self.source[dev_only_start:dev_only_end])
+
+    def test_import_tab_has_no_export_controls(self):
+        for name in (
+            "export_group",
+            "export_path_edit",
+            "export_path_button",
+            "export_button",
+            "export_format_combo",
+            "apply_scale_check",
+        ):
+            self.assertNotIn(f"self.{name}", self.source)
 
 
 class TestControlRigSettingSourceInspection(unittest.TestCase):

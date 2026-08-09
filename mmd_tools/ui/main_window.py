@@ -255,7 +255,7 @@ class MainWindow(QMainWindow):
         current_language = self.settings_service.get(setting_keys.UI_GENERAL_LANGUAGE, "ja")
         translator.set_language(current_language)
 
-        # File I/O Tab
+        # Import Tab
         import_export_tab = ImportExportTab()
         self.import_export_tab = import_export_tab
         self.import_export_presenter = ImportExportPresenter(
@@ -265,8 +265,7 @@ class MainWindow(QMainWindow):
         )
         self.tab_widget.addTab(import_export_tab, translator.translate("file_io", "tabs"))
 
-        # Export workflow tab: import settings remain in File I/O while all
-        # public export decisions and the Validation Console live here.
+        # Export workflow tab: all public export decisions and the Validation Console live here.
         export_tab = ExportTab(settings_service=self.settings_service)
         self.export_tab = export_tab
         self.export_presenter = ExportPresenter(

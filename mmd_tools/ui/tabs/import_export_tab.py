@@ -340,37 +340,7 @@ class ImportExportTab(BaseTab):
 
         model_settings_layout.addStretch()
 
-        # Export Settings
-        self._export_settings_tab = QScrollArea()
-        self._export_settings_tab.setWidgetResizable(True)
-        self._export_settings_tab.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        export_settings_widget = QWidget()
-        export_settings_layout = QVBoxLayout(export_settings_widget)
-
-        # Export format
-        format_layout = QHBoxLayout()
-        self.format_label = QLabel(self.tr("format", "fields"))
-        format_layout.addWidget(self.format_label)
-        self.export_format_combo = QComboBox()
-        # PMD エクスポートは実装済みだが、UI ではリリース対象形式だけを表示する。
-        self.export_format_combo.addItems(["pmx", "vmd"])
-        current_format = self.settings_service.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx")
-        self.export_format_combo.setCurrentText(current_format)
-        self.export_format_combo.currentTextChanged.connect(self._on_export_format_changed)
-        format_layout.addWidget(self.export_format_combo)
-        format_layout.addStretch()
-        export_settings_layout.addLayout(format_layout)
-
-        # Apply scale checkbox
-        self.apply_scale_check = self._bind_checkbox(
-            "apply_scale", setting_keys.EXPORT_GENERAL_APPLY_SCALE, True, export_settings_layout
-        )
-
-        export_settings_layout.addStretch()
-        self._export_settings_tab.setWidget(export_settings_widget)
-        model_settings_layout.addWidget(self._export_settings_tab)
-
-        # 右側：インポート/エクスポートセクション
+        # 右側：インポートセクション
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -448,28 +418,6 @@ class ImportExportTab(BaseTab):
         self.animation_group.setLayout(animation_layout)
         right_layout.addWidget(self.animation_group)
 
-        # Export Group
-        self.export_group = QGroupBox(self.tr("export", "buttons"))
-        export_layout = QFormLayout()
-
-        self.export_path_edit = QLineEdit()
-        saved_export_path = self.view_state.get("export_path", "")
-        self.export_path_edit.setText(saved_export_path)
-        self.export_path_button = QPushButton(self.tr("browse", "buttons"))
-        export_path_layout = QHBoxLayout()
-        export_path_layout.addWidget(self.export_path_edit)
-        export_path_layout.addWidget(self.export_path_button)
-        self.export_path_label = QLabel(self.tr("file_path", "labels"))
-        export_layout.addRow(self.export_path_label, export_path_layout)
-
-        self.export_path_edit.textChanged.connect(lambda text: self.view_state.set("export_path", text))
-
-        self.export_button = QPushButton(self.tr("export", "buttons"))
-        export_layout.addRow(self.export_button)
-
-        self.export_group.setLayout(export_layout)
-        right_layout.addWidget(self.export_group)
-
         # 統合履歴表示エリア
         self._setup_unified_history_area(right_layout)
 
@@ -495,7 +443,6 @@ class ImportExportTab(BaseTab):
         self.import_models_check.setVisible(False)
 
         # Dev-only controls: shown only when development_mode=True.
-        # Export UI/entry is also develop-mode only (export_group via _apply_export_visibility).
         self._dev_only_widgets = [
             self.scale_row,
             self.disable_backface_culling_check,
@@ -508,7 +455,6 @@ class ImportExportTab(BaseTab):
             self.use_cpp_rig_nodes_check,
             self.motion_scale_row,
             self.vmd_rotation_time_curve_check,
-            self._export_settings_tab,
         ]
         self._apply_dev_mode_visibility()
 
@@ -597,8 +543,6 @@ class ImportExportTab(BaseTab):
         # Import scale: normal mode displays 1.0 without overwriting the persisted value.
         self._sync_import_scale_control(is_dev)
         self._sync_reduce_bake_quality_control()
-        # Export entry also depends on develop mode.
-        self._apply_export_visibility()
 
     def _sync_import_scale_control(self, is_dev):
         """Sync scale spin display for the current mode without clobbering settings.
@@ -637,19 +581,6 @@ class ImportExportTab(BaseTab):
         finally:
             self.reduce_quality_slider.blockSignals(blocked)
 
-    def _on_export_format_changed(self, export_format):
-        """エクスポート形式を保存し、利用可能な export UI だけを表示する。"""
-        self.settings_service.set(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, export_format)
-        self._apply_export_visibility()
-
-    def _apply_export_visibility(self):
-        """Develop モードかつ対応済み export 形式のときだけ export UI を表示する。"""
-        if not hasattr(self, "export_group"):
-            return
-        is_dev = self.settings_service.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
-        export_format = self.settings_service.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx")
-        self.export_group.setVisible(bool(is_dev) and export_format in {"pmx", "vmd"})
-
     def get_custom_namespace(self):
         """カスタムnamespace名を取得"""
         if (
@@ -675,14 +606,10 @@ class ImportExportTab(BaseTab):
             self.vmd_fps_label.setText(self.tr("vmd_fps", "fields"))
         if hasattr(self, "motion_scale_label"):
             self.motion_scale_label.setText(self.tr("motion_scale", "fields"))
-        if hasattr(self, "format_label"):
-            self.format_label.setText(self.tr("format", "fields"))
         if hasattr(self, "import_path_label"):
             self.import_path_label.setText(self.tr("file_path", "labels"))
         if hasattr(self, "vmd_file_label"):
             self.vmd_file_label.setText(self.tr("vmd_file", "fields"))
-        if hasattr(self, "export_path_label"):
-            self.export_path_label.setText(self.tr("file_path", "labels"))
 
 
         # GroupBoxes
@@ -700,8 +627,6 @@ class ImportExportTab(BaseTab):
             self.model_import_group.setTitle(self.tr("model_import", "groups"))
         if hasattr(self, "animation_group"):
             self.animation_group.setTitle(self.tr("animation_import", "groups"))
-        if hasattr(self, "export_group"):
-            self.export_group.setTitle(self.tr("export", "buttons"))
         if hasattr(self, "history_group"):
             self.history_group.setTitle(self.tr("file_history", "groups"))
         if hasattr(self, "clear_history_button"):
@@ -736,7 +661,6 @@ class ImportExportTab(BaseTab):
         self.use_cpp_vp2_ownership_check.setText(
             self.tr("use_cpp_vp2_ownership", "checkboxes")
         )
-        self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
 
         # Tooltips
@@ -772,11 +696,9 @@ class ImportExportTab(BaseTab):
         # Buttons
         self.import_path_button.setText(self.tr("browse", "buttons"))
         self.vmd_path_button.setText(self.tr("browse", "buttons"))
-        self.export_path_button.setText(self.tr("browse", "buttons"))
         self.import_button.setText(self.tr("import_model", "actions"))
         self.new_model_button.setText(self.tr("new_mmd_model", "actions"))
         self.import_vmd_button.setText(self.tr("import_animation", "actions"))
-        self.export_button.setText(self.tr("export", "buttons"))
 
         # Tab widget texts
         if hasattr(self, "animation_settings_group"):
@@ -816,12 +738,10 @@ class ImportExportTab(BaseTab):
             self.import_path_edit.setText(file_path)
         elif file_type == "vmd":
             self.vmd_path_edit.setText(file_path)
-        elif file_type == "export":
-            self.export_path_edit.setText(file_path)
 
     def _clear_all_history(self):
-        """すべての履歴をクリア"""
-        self.view_state.clear_file_history()
+        """Importタブで表示するモデル／VMD履歴だけをクリアする。"""
+        self.view_state.clear_file_history(("import", "vmd"))
         self.refresh_unified_history()
 
     def refresh_unified_history(self):
@@ -829,12 +749,15 @@ class ImportExportTab(BaseTab):
         self.unified_history_list.clear()
 
         history_limit = self.settings_service.resolve_file_history_limit()
-        all_items = self.view_state.load_file_history(history_limit)
-        display_prefixes = {
-            "import": "Model",
-            "vmd": "Animation",
-            "export": "Export",
-        }
+        # Export history may still exist in legacy QSettings for rollback, but
+        # this Import tab deliberately ignores it. The dedicated Export tab
+        # owns all export history and output controls.
+        all_items = [
+            item
+            for item in self.view_state.load_file_history(history_limit)
+            if item.get("type") in {"import", "vmd"}
+        ]
+        display_prefixes = {"import": "Model", "vmd": "Animation"}
 
         # リストに追加（最新のものから表示）
         for item_data in all_items:
@@ -849,8 +772,6 @@ class ImportExportTab(BaseTab):
                 item.setForeground(QColor(100, 200, 255))  # 水色
             elif item_data["type"] == "vmd":
                 item.setForeground(QColor(255, 200, 100))  # オレンジ
-            elif item_data["type"] == "export":
-                item.setForeground(QColor(100, 255, 100))  # 緑
 
             self.unified_history_list.addItem(item)
 
@@ -863,11 +784,5 @@ class ImportExportTab(BaseTab):
     def add_vmd_path_to_history(self, path):
         """アニメーションパスを履歴に追加"""
         self.view_state.save_file_history("vmd", path)
-        # 履歴リストを更新
-        self.refresh_unified_history()
-
-    def add_export_path_to_history(self, path):
-        """エクスポートパスを履歴に追加"""
-        self.view_state.save_file_history("export", path)
         # 履歴リストを更新
         self.refresh_unified_history()

@@ -95,15 +95,25 @@ class TestMainWindow(GuiTestBase):
         self.assertIsNotNone(self.window.tab_widget)
 
         # Physics is available in normal mode as well as Development Mode.
-        self.assertEqual(self.window.tab_widget.count(), 8)
-        self.assertEqual(self.window.tab_widget.indexOf(self.window.display_pane_tab), 5)
-        self.assertEqual(self.window.tab_widget.indexOf(self.window.physics_tab), 6)
+        self.assertEqual(self.window.tab_widget.count(), 9)
+        self.assertEqual(self.window.tab_widget.indexOf(self.window.display_pane_tab), 6)
+        self.assertEqual(self.window.tab_widget.indexOf(self.window.physics_tab), 7)
 
         # 各タブのタイトルを確認（翻訳辞書から期待値を導出し、UI 言語に依存しない）
         from mmd_tools.ui.translations import UITranslator
 
         translator = UITranslator.instance()
-        tab_keys = ["file_io", "info", "material", "bone", "morph", "display_pane", "physics", "settings"]
+        tab_keys = [
+            "file_io",
+            "export_workflow",
+            "info",
+            "material",
+            "bone",
+            "morph",
+            "display_pane",
+            "physics",
+            "settings",
+        ]
         expected_titles = [translator.translate(key, "tabs") for key in tab_keys]
 
         for i, title in enumerate(expected_titles):
@@ -135,7 +145,7 @@ class TestMainWindow(GuiTestBase):
         dev_window = None
         try:
             dev_window = MainWindow()
-            self.assertEqual(dev_window.tab_widget.count(), 8)
+            self.assertEqual(dev_window.tab_widget.count(), 9)
             self.assertIsNotNone(dev_window.physics_tab)
             self.assertIsNotNone(dev_window.physics_presenter)
 

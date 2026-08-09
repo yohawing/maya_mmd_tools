@@ -2,12 +2,10 @@ import math
 
 from ..qt_compat import QObject, QFileDialog
 from ...actions.create_model_action import CreateModelRequest
-from ...actions.export_model_action import ExportModelAction, ExportModelRequest
-from ...actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
 from ...actions.import_model_action import ImportModelAction, ImportModelRequest
 from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
-from ...core import maya_attribute_utils, maya_material_utils, settings_keys as setting_keys
+from ...core import maya_attribute_utils, maya_material_utils
 from ...core.constants import (
     ATTR_MMD_ORIGINAL_TEXTURE_PATH,
     ATTR_MMD_TEXTURE_CACHE_PATH,
@@ -34,8 +32,6 @@ class ImportExportPresenter(QObject):
         app_state,
         import_model_action=None,
         import_vmd_action=None,
-        export_model_action=None,
-        export_vmd_action=None,
         settings_service=None,
         maya_adapter=None,
         model_readme_adapter=None,
@@ -48,8 +44,6 @@ class ImportExportPresenter(QObject):
         self.app_state = app_state
         self.import_model_action = import_model_action or ImportModelAction()
         self.import_vmd_action = import_vmd_action or ImportVmdAction()
-        self.export_model_action = export_model_action or ExportModelAction()
-        self.export_vmd_action = export_vmd_action or ExportVmdAction()
         self.settings_service = settings_service or SettingsService()
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
         self.model_readme_adapter = model_readme_adapter or ModelReadmeDialogAdapter(
@@ -65,9 +59,7 @@ class ImportExportPresenter(QObject):
 
     def connect_signals(self):
         self.view.import_path_button.clicked.connect(self.select_import_file)
-        self.view.export_path_button.clicked.connect(self.select_export_file)
         self.view.import_button.clicked.connect(self.import_file)
-        self.view.export_button.clicked.connect(self.export_file)
         # VMD import signals
         self.view.vmd_path_button.clicked.connect(self.select_vmd_file)
         self.view.import_vmd_button.clicked.connect(self.import_vmd_file)
@@ -158,18 +150,6 @@ class ImportExportPresenter(QObject):
         )
         if file_path:
             self.view.import_path_edit.setText(file_path)
-
-    def select_export_file(self):
-        export_format = self.settings_service.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx")
-        if export_format == "vmd":
-            title = "Save VMD File"
-            filter_text = "VMD Files (*.vmd);;All Files (*)"
-        else:
-            title = "Save PMX File"
-            filter_text = "PMX Files (*.pmx);;All Files (*)"
-        file_path, _ = QFileDialog.getSaveFileName(self.view, title, "", filter_text)
-        if file_path:
-            self.view.export_path_edit.setText(file_path)
 
     def select_vmd_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self.view, "Select VMD File", "", "VMD Files (*.vmd);;All Files (*)")
@@ -405,10 +385,6 @@ class ImportExportPresenter(QObject):
         self.app_state.emit_status(message)
         return {"resolved": resolved, "unresolved": unresolved}
 
-    def _build_export_options(self):
-        """PMX/PMD export用の基本オプションを設定から組み立てる。"""
-        return self.settings_service.build_export_options(self.view.export_path_edit.text().strip())
-
     def _resolve_import_outcome(self, result):
         """Resolve success / partial / fatal from an import action result.
 
@@ -635,38 +611,6 @@ class ImportExportPresenter(QObject):
             logger.error(f"Import failed: {e}", exc_info=True)
             self.app_state.emit_status(tr_message_format("import_error", error=str(e)))
             self.app_state.emit_progress(0)
-
-    def export_file(self):
-        if not self.settings_service.is_development_mode():
-            # Export is intentionally develop-mode only; UI is also hidden in normal mode.
-            self.app_state.emit_status(tr_message("export_dev_mode_required"))
-            return
-
-        file_path = self.view.export_path_edit.text().strip()
-        if not file_path:
-            self.app_state.emit_status(tr_message("enter_file_path"))
-            return
-
-        export_options = self._build_export_options()
-        logger.debug(f"Export options: {export_options}")
-
-        if export_options.get("export_format") == "vmd":
-            request = ExportVmdRequest(file_path=file_path, options=export_options)
-            result = self.export_vmd_action.execute(request)
-        else:
-            request = ExportModelRequest(file_path=file_path, options=export_options)
-            result = self.export_model_action.execute(request)
-        if result.error:
-            logger.error(f"Export failed: {result.error}")
-            self.app_state.emit_status(tr_message_format("export_error", error=str(result.error)))
-            return
-        if getattr(result, "succeeded", False):
-            if hasattr(self.view, "add_export_path_to_history"):
-                self.view.add_export_path_to_history(file_path)
-            self.app_state.emit_status(tr_message_format("export_complete_file", file_path=file_path))
-            return
-        if result.status_message:
-            self.app_state.emit_status(result.status_message)
 
     def import_vmd_file(self):
         """VMDファイルのインポート"""

@@ -53,10 +53,7 @@ class TestImportExportTabGUI(GuiTestBase):
 
         # パスを設定
         test_import_path = "/test/import/model.pmx"
-        test_export_path = "/test/export/model.pmx"
-
         tab1.import_path_edit.setText(test_import_path)
-        tab1.export_path_edit.setText(test_export_path)
 
         # タブを削除
         tab1.deleteLater()
@@ -66,7 +63,6 @@ class TestImportExportTabGUI(GuiTestBase):
 
         # 保存されたパスが読み込まれていることを確認
         self.assertEqual(tab2.import_path_edit.text(), test_import_path)
-        self.assertEqual(tab2.export_path_edit.text(), test_export_path)
 
         # クリーンアップ
         tab2.deleteLater()
@@ -144,16 +140,24 @@ class TestImportExportTabGUI(GuiTestBase):
         finally:
             tab.deleteLater()
 
-    def test_export_format_combo_excludes_pmd(self):
-        """エクスポート形式に未実装の 'pmd' が含まれないことを確認する（B-3）。"""
+    def test_import_tab_contains_only_import_controls(self):
+        """Export workflow controls are owned by the dedicated Export tab."""
         tab = self._create_tab()
-        items = [tab.export_format_combo.itemText(i) for i in range(tab.export_format_combo.count())]
-        self.assertIn("pmx", items)
-        self.assertNotIn("pmd", items)
-        tab.deleteLater()
+        try:
+            for attr in (
+                "export_group",
+                "export_path_edit",
+                "export_path_button",
+                "export_button",
+                "export_format_combo",
+                "apply_scale_check",
+            ):
+                self.assertFalse(hasattr(tab, attr), attr)
+        finally:
+            tab.deleteLater()
 
     def test_vpd_ui_is_not_in_import_export_tab(self):
-        """VPD は pose apply / D&D 導線で扱い、Import/Export タブには置かない（B-3）。"""
+        """VPD は pose apply / D&D 導線で扱い、Import タブには置かない（B-3）。"""
         tab = self._create_tab()
         self.assertFalse(hasattr(tab, "vpd_group"))
         self.assertFalse(hasattr(tab, "vpd_not_implemented"))
