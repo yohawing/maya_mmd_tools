@@ -349,7 +349,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
             (1.0, 2.0, 3.0),
         )
         self.assertIn("Reset Pose (2 joints)", app_state.status_messages[-1])
-        self.assertIsNone(view.details_enabled)
+        self.assertFalse(view.details_enabled)
 
     def test_load_bones_clears_and_returns_when_no_model(self):
         presenter, view, _, adapter = _make_presenter()
