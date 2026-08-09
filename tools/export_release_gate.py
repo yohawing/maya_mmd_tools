@@ -142,11 +142,11 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _capture_release_provenance() -> dict[str, Any]:
+def _capture_release_provenance(*, run_id: str | None = None) -> dict[str, Any]:
     """Capture the source/worktree identity before the gate writes artifacts."""
     started_at = datetime.now(timezone.utc)
     provenance: dict[str, Any] = {
-        "run_id": f"{started_at.strftime('%Y%m%dT%H%M%S%fZ')}-{uuid4().hex[:8]}",
+        "run_id": run_id or f"{started_at.strftime('%Y%m%dT%H%M%S%fZ')}-{uuid4().hex[:8]}",
         "timestamp": started_at.isoformat(),
         "branch": "",
         "head_sha": "",
@@ -2205,10 +2205,12 @@ def build_release_summary(
     start_failures = _validate_release_provenance(start_provenance)
     if start_provenance.get("dirty") is True:
         start_failures.append("worktree was dirty at gate start")
-    end_provenance = _capture_release_provenance()
+    end_provenance = _capture_release_provenance(run_id=start_provenance.get("run_id"))
     end_failures = _validate_release_provenance(end_provenance)
     if start_provenance.get("head_sha") != end_provenance.get("head_sha"):
         end_failures.append("HEAD changed during gate")
+    if start_provenance.get("run_id") != end_provenance.get("run_id"):
+        end_failures.append("run ID changed during gate")
     if start_provenance.get("dirty") != end_provenance.get("dirty"):
         end_failures.append("dirty state changed during gate")
     provenance_failures = start_failures + [f"end: {failure}" for failure in end_failures]
@@ -2274,6 +2276,8 @@ def build_release_summary(
         "schema_version": 1,
         "gate": "V070-EXPORT-RELEASE-GATE-1",
         "status": "pass" if not blockers and not unexecuted else "fail",
+        "run_id": start_provenance.get("run_id"),
+        "timestamp": start_provenance.get("timestamp"),
         "provenance": {
             "start": start_provenance,
             "end": end_provenance,

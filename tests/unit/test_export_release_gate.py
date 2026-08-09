@@ -110,6 +110,11 @@ class ExportReleaseGateTests(unittest.TestCase):
         self.assertFalse(provenance["git_capture"]["head_sha"])
         self.assertTrue(provenance["git_capture"]["status"])
 
+    def test_release_provenance_reuses_one_run_id_for_end_snapshot(self):
+        provenance = _capture_release_provenance(run_id="run-identity")
+
+        self.assertEqual(provenance["run_id"], "run-identity")
+
     def test_binding_artifact_rejects_malformed_schema(self):
         with tempfile.TemporaryDirectory() as directory:
             report_path = Path(directory) / "binding.json"
@@ -1052,6 +1057,11 @@ class ExportReleaseGateTests(unittest.TestCase):
             self.assertEqual(summary["gui_scope"], "not_run")
             self.assertIsInstance(summary["provenance"]["start"]["dirty"], bool)
             self.assertIn("end", summary["provenance"])
+            self.assertEqual(summary["run_id"], summary["provenance"]["start"]["run_id"])
+            self.assertEqual(
+                summary["provenance"]["start"]["run_id"],
+                summary["provenance"]["end"]["run_id"],
+            )
             self.assertEqual(summary["mmd_anim_provenance"]["binding"]["gate_status"], "pass")
             self.assertTrue(any(step["name"] == "mmd_anim_python_bindings" for step in summary["steps"]))
             self.assertTrue(any(step["name"] == "mmd_anim_binding_gate" for step in summary["steps"]))
