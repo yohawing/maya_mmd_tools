@@ -109,7 +109,6 @@ class TestExportPresenter(unittest.TestCase):
         app_state.current_model_changed.emit("OtherModel_ROOT")
 
         self.assertEqual(view.invalidations, 1)
-        presenter.deleteLater()
 
 
 if __name__ == "__main__":
