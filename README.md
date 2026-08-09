@@ -44,14 +44,14 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 | Physics | ℹ️ | Supports Bullet-based real-time physics and physics bake. Live evaluation is off by default and can be enabled from the Physics tab. Accuracy is still limited. |
 | HumanIK / retargeting | 🧪 | Experimental support for retargeting between imported MMD models. Try it from `MMD > HumanIK (Experimental)`. |
 | Control Rig | 🧪 | A Control Rig is generated automatically based on the semi-standard bone layout. |
-| Export | ⛔ | Public VMD export is not available. Development Mode C is gated; Mode A requires raw imported key/interpolation provenance, and routes without it must reject or use Mode C. |
+| Export | ⛔ | Public VMD export is not available. Development Mode C is gated. Mode A has Maya 2024/2026 raw-provenance round-trip evidence for an unedited imported motion; edited or mismatched raw blocks fail closed, and routes without provenance must reject or use Mode C. |
 
 ## Known Limitations
 
 - **Detailed documentation is not written yet.** This is an alpha release, and development speed is prioritized over documentation maintenance.
 - **Various features are still incomplete.** This is an experimental alpha release; feedback is welcome.
 - **QDEF and SDEF are not supported.** Meshes may appear thinner with some model and motion combinations.
-- **Export remains development-only.** PMX 2.0 additional UV channels, UV/additional-UV morph metadata, and the documented canonical bone/IK subset are preserved in development-path round trips; UV morphs are not evaluated on Maya UV sets. PMX 2.1 Flip morphs, Impulse morphs, and soft bodies are intentionally rejected in a fail-closed manner; import provenance may be retained only to make that rejection observable. PMD export is rejected. VMD Mode C has development evidence for model, camera, and light tracks but does not preserve raw interpolation; self-shadow is unsupported. VMD Mode A requires raw imported key/interpolation provenance.
+- **Export remains development-only.** PMX 2.0 additional UV channels, UV/additional-UV morph metadata, and the documented canonical bone/IK subset are preserved in development-path round trips; UV morphs are not evaluated on Maya UV sets. PMX 2.1 Flip morphs, Impulse morphs, and soft bodies are intentionally rejected in a fail-closed manner; import provenance may be retained only to make that rejection observable. PMD export is rejected. VMD Mode C has development evidence for model, camera, and light tracks but does not preserve raw interpolation; self-shadow is unsupported. VMD Mode A is limited to unedited motions with matching raw key/interpolation provenance and fails closed after edits.
 - **HumanIK is published as an experimental feature.** Only the minimum workflow is exposed. Try it from `MMD > HumanIK (Experimental)`.
 - **Leg rotations and bones that conflict with bone morphs work only under the Control Rig.** Bones may become immovable when their connections conflict with bone morphs.
 
