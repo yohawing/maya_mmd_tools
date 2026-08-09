@@ -15,6 +15,7 @@ from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import (
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_TEXTURE_TABLE_JSON,
 )
@@ -273,6 +274,7 @@ class TestPmxImporter(MayaTestBase):
                 )
 
                 self.assertTrue(result)
+                self.assertAlmostEqual(cmds.getAttr(f"{result}.{ATTR_MMD_IMPORT_SCALE}"), scale)
                 matches = [
                     joint
                     for joint in (cmds.ls(type="joint", long=True) or [])
@@ -288,6 +290,20 @@ class TestPmxImporter(MayaTestBase):
                 )
                 for actual, expected_value in zip(world_pos, expected):
                     self.assertAlmostEqual(actual, expected_value, places=5)
+
+    def test_invalid_import_scale_fails_before_scene_mutation(self):
+        """Invalid scale never creates a root or other Maya nodes."""
+        pmx_file = self.fixture_provider.get_pmx_file("mmt_test_model")
+        parser = parse_pmx_file(pmx_file)
+        nodes_before = set(cmds.ls(long=True) or [])
+
+        for scale in (0.0, -1.0, float("inf"), float("nan"), True):
+            with self.subTest(scale=scale), self.assertRaisesRegex(
+                MMDImportException, "finite positive"
+            ):
+                import_pmx_file(parser, pmx_file, scale=scale)
+
+        self.assertEqual(set(cmds.ls(long=True) or []), nodes_before)
 
     def test_invalid_local_axis_fails_before_real_import_scene_mutation(self):
         """Importer rejects degenerate LOCAL_AXIS before root or mesh creation."""

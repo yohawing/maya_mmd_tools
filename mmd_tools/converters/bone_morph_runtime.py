@@ -83,6 +83,13 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
         joints_by_index,
         result["skipped"],
     )
+    existing_by_joint = {
+        joint: node
+        for joint, node in _collect_existing_accumulators().items()
+        if joint in set(joints_by_index.values())
+    }
+    for joint in sorted(set(existing_by_joint) - set(contributions_by_joint)):
+        _remove_accumulator(joint, existing_by_joint[joint])
     if not contributions_by_joint:
         result["skipped"].append("no_bone_morph_contributions")
         return result
@@ -109,7 +116,6 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
             )
         )
 
-    existing_by_joint = _collect_existing_accumulators()
     for joint, contributions in contributions_by_joint.items():
         node = existing_by_joint.get(joint)
         if node and _is_valid_accumulator(node):
@@ -446,13 +452,43 @@ def _collect_existing_accumulators() -> Dict[str, str]:
             continue
         if not cmds.attributeQuery("mmd_target_joint", node=node, exists=True):
             continue
+        if not cmds.attributeQuery("mmd_bone_morph_accum", node=node, exists=True):
+            continue
         try:
+            if not cmds.getAttr(f"{node}.mmd_bone_morph_accum"):
+                continue
             joint = cmds.getAttr(f"{node}.mmd_target_joint") or ""
         except Exception:
             continue
         if joint and cmds.objExists(joint):
             accumulators[joint] = node
     return accumulators
+
+
+def _remove_accumulator(joint: str, node: str) -> None:
+    """Restore pre-morph inputs and delete one owned accumulator."""
+    for attr_kind, base_name, output_name in (
+        ("rotate", "baseRotate", "outputRotate"),
+        ("translate", "baseTranslate", "outputTranslate"),
+    ):
+        destination = _destination_upstream_of_append(joint, attr_kind)
+        base_attr = f"{node}.{base_name}"
+        output_attr = f"{node}.{output_name}"
+        if _is_connected(output_attr, destination):
+            cmds.disconnectAttr(output_attr, destination)
+            _copy_current_compound_value(base_attr, destination)
+        for axis in ("X", "Y", "Z"):
+            base_axis = _compound_axis_plug(base_attr, axis)
+            destination_axis = _compound_axis_plug(destination, axis)
+            if not base_axis or not destination_axis:
+                continue
+            for source in cmds.listConnections(base_axis, s=True, d=False, p=True) or []:
+                cmds.disconnectAttr(source, base_axis)
+                _connect_if_needed(source, destination_axis, force=True)
+        for source in cmds.listConnections(base_attr, s=True, d=False, p=True) or []:
+            cmds.disconnectAttr(source, base_attr)
+            _connect_if_needed(source, destination, force=True)
+    cmds.delete(node)
 
 
 def _create_accumulator(joint: str) -> Optional[str]:

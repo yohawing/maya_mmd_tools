@@ -3,6 +3,7 @@ PMXファイルをMayaシーンにインポートするためのモジュール�
 """
 
 import json
+import math
 import os
 import time
 from typing import Any, Callable, Dict, Optional
@@ -21,6 +22,7 @@ from ..core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_MORPH_DATA,
@@ -32,6 +34,16 @@ from ..core.namespace_utils import NamespaceUtils
 
 # ロガーを取得
 logger = get_logger("mmd_tools.io.pmx_importer")
+
+
+def _require_effective_import_scale(value: Any) -> float:
+    """Return a finite positive PMX-to-Maya scale before scene mutation."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise MMDImportException("PMX import scale must be a finite positive number")
+    scale = float(value)
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise MMDImportException("PMX import scale must be a finite positive number")
+    return scale
 
 
 def _validate_morph_runtime_requirements(morph_converter: Any, pmx_data: Any) -> None:
@@ -135,6 +147,7 @@ def import_pmx_file(
     Raises:
         MMDImportException: PMX/PMD 変換済みデータのインポートに失敗した場合。
     """
+    scale = _require_effective_import_scale(scale)
     if options is None:
         options = {}
     pipeline = ModelImportPipeline(
@@ -176,6 +189,7 @@ def import_pmx_file(
                 {
                     ATTR_MMD_MODEL_NAME: parser.header.model_name,
                     ATTR_MMD_MODEL_NAME_EN: parser.header.model_name_english,
+                    ATTR_MMD_IMPORT_SCALE: scale,
                     ATTR_MMD_COMMENT: parser.header.comment,
                     ATTR_MMD_COMMENT_EN: parser.header.comment_english,
                     ATTR_MMD_DISPLAY_FRAMES_JSON: display_frames_to_json(
@@ -199,6 +213,11 @@ def import_pmx_file(
             mesh_converter = MeshConverter(filepath, scale=scale)
             phase_start = time.perf_counter()
             mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group, is_pmd=is_pmd)
+            pipeline.connect_shader_nodes_to_root(
+                root_group,
+                mesh_converter.created_shaders,
+                model_registry=model_registry,
+            )
             pipeline.connect_texture_nodes_to_root(
                 root_group,
                 mesh_converter.created_texture_file_nodes,

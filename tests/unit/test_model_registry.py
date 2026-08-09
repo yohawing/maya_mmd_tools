@@ -38,6 +38,42 @@ class TestModelRegistry(unittest.TestCase):
             ],
         )
 
+    def test_material_category_uses_material_members_message_array(self):
+        self.assertEqual(
+            model_registry.registry_category_attribute(
+                model_registry.REGISTRY_CATEGORY_MATERIAL
+            ),
+            "materialMembers",
+        )
+        with (
+            mock.patch.object(model_registry.cmds, "objExists", return_value=True),
+            mock.patch.object(model_registry.cmds, "listConnections", return_value=[]),
+            mock.patch.object(model_registry.cmds, "getAttr", return_value=[]),
+            mock.patch.object(model_registry, "_ensure_message_attr") as ensure_attr,
+            mock.patch.object(model_registry, "_validate_registry_node", return_value="|Model_root"),
+            mock.patch.object(model_registry, "_canonical_node", side_effect=lambda node: node),
+            mock.patch.object(model_registry.cmds, "connectAttr") as connect_attr,
+        ):
+            result = model_registry.register_model_members(
+                "ModelRegistry",
+                model_registry.REGISTRY_CATEGORY_MATERIAL,
+                ["dx11Shader1", "glslShader1"],
+            )
+
+        self.assertEqual(result, ["dx11Shader1", "glslShader1"])
+        ensure_attr.assert_called_once_with(
+            "ModelRegistry",
+            "materialMembers",
+            multi=True,
+        )
+        self.assertEqual(
+            [call.args for call in connect_attr.call_args_list],
+            [
+                ("dx11Shader1.message", "ModelRegistry.materialMembers[0]"),
+                ("glslShader1.message", "ModelRegistry.materialMembers[1]"),
+            ],
+        )
+
     def test_new_registry_has_one_root_connection(self):
         with (
             mock.patch.object(model_registry, "_canonical_root", return_value="|Model_root"),
@@ -77,6 +113,75 @@ class TestModelRegistry(unittest.TestCase):
         ):
             with self.assertRaises(model_registry.ModelRegistryError):
                 model_registry._validate_registry_node("ModelRegistry")
+
+    def test_unregister_members_disconnects_only_requested_category_members(self):
+        with (
+            mock.patch.object(model_registry, "_validate_registry_node"),
+            mock.patch.object(model_registry.cmds, "listConnections", return_value=["shaderA", "shaderB"]),
+            mock.patch.object(model_registry, "_canonical_node", side_effect=lambda node: node),
+            mock.patch.object(model_registry.cmds, "disconnectAttr") as disconnect_attr,
+        ):
+            remaining = model_registry.unregister_model_members(
+                "ModelRegistry",
+                model_registry.REGISTRY_CATEGORY_MATERIAL,
+                ["shaderB"],
+            )
+
+        self.assertEqual(remaining, ["shaderA"])
+        disconnect_attr.assert_called_once_with(
+            "shaderB.message",
+            "ModelRegistry.materialMembers[1]",
+        )
+
+    def test_unregister_members_uses_actual_sparse_destination_plug(self):
+        def list_connections(_endpoint, **kwargs):
+            if kwargs.get("connections") and kwargs.get("plugs"):
+                return [
+                    "shaderA.message",
+                    "ModelRegistry.materialMembers[0]",
+                    "shaderB.message",
+                    "ModelRegistry.materialMembers[2]",
+                ]
+            return ["shaderA", "shaderB"]
+
+        with (
+            mock.patch.object(model_registry, "_validate_registry_node"),
+            mock.patch.object(model_registry.cmds, "listConnections", side_effect=list_connections),
+            mock.patch.object(model_registry, "_canonical_node", side_effect=lambda node: node),
+            mock.patch.object(model_registry.cmds, "disconnectAttr") as disconnect_attr,
+        ):
+            remaining = model_registry.unregister_model_members(
+                "ModelRegistry",
+                model_registry.REGISTRY_CATEGORY_MATERIAL,
+                ["shaderB"],
+            )
+
+        self.assertEqual(remaining, ["shaderA"])
+        disconnect_attr.assert_called_once_with(
+            "shaderB.message",
+            "ModelRegistry.materialMembers[2]",
+        )
+
+    def test_unregister_members_rejects_unknown_requested_member(self):
+        def list_connections(_endpoint, **kwargs):
+            if kwargs.get("connections") and kwargs.get("plugs"):
+                return ["shaderA.message", "ModelRegistry.materialMembers[4]"]
+            return ["shaderA"]
+
+        with (
+            mock.patch.object(model_registry, "_validate_registry_node"),
+            mock.patch.object(model_registry.cmds, "listConnections", side_effect=list_connections),
+            mock.patch.object(model_registry, "_canonical_node", side_effect=lambda node: node),
+            mock.patch.object(model_registry.cmds, "disconnectAttr") as disconnect_attr,
+        ):
+            with self.assertRaises(model_registry.ModelRegistryError):
+                model_registry.unregister_model_members(
+                    "ModelRegistry",
+                    model_registry.REGISTRY_CATEGORY_MATERIAL,
+                    ["shaderMissing"],
+                )
+
+        disconnect_attr.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

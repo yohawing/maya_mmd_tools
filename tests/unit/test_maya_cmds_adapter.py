@@ -81,6 +81,17 @@ class TestMayaCmdsAdapter(unittest.TestCase):
         self.cmds.getAttr.assert_called_once_with("pCube1.translateX")
         self.assertEqual(result, 3.0)
 
+    def test_get_attr_forwards_multi_indices_query(self):
+        self.cmds.getAttr.return_value = [5500, 6000]
+
+        result = self.adapter.get_attr("blendShape1.inputTargetItem", multiIndices=True)
+
+        self.cmds.getAttr.assert_called_once_with(
+            "blendShape1.inputTargetItem",
+            multiIndices=True,
+        )
+        self.assertEqual(result, [5500, 6000])
+
     def test_is_attr_settable_queries_get_attr(self):
         self.cmds.getAttr.return_value = True
 

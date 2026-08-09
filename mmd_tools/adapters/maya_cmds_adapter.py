@@ -41,9 +41,9 @@ class MayaCmdsAdapter:
                 maximum = float(values[0])
         return minimum, maximum
 
-    def get_attr(self, attr_path):
+    def get_attr(self, attr_path, **kwargs):
         """Pass through to maya.cmds.getAttr."""
-        return self._cmds.getAttr(attr_path)
+        return self._cmds.getAttr(attr_path, **kwargs)
 
     def is_attr_settable(self, attr_path):
         """Return whether a Maya plug is unlocked and has no blocking input."""
@@ -180,6 +180,22 @@ class MayaCmdsAdapter:
     def connect_attr(self, *args, **kwargs):
         """Pass through to maya.cmds.connectAttr."""
         return self._cmds.connectAttr(*args, **kwargs)
+
+    def disconnect_attr(self, *args, **kwargs):
+        """Pass through to maya.cmds.disconnectAttr."""
+        return self._cmds.disconnectAttr(*args, **kwargs)
+
+    def sets(self, *args, **kwargs):
+        """Pass through to maya.cmds.sets."""
+        return self._cmds.sets(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        """Pass through to maya.cmds.delete."""
+        return self._cmds.delete(*args, **kwargs)
+
+    def remove_multi_instance(self, *args, **kwargs):
+        """Pass through to maya.cmds.removeMultiInstance."""
+        return self._cmds.removeMultiInstance(*args, **kwargs)
 
     def hyper_shade(self, *args, **kwargs):
         """Pass through to maya.cmds.hyperShade."""

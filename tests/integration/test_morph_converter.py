@@ -18,6 +18,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
+    ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
 )
 from mmd_tools.core.logger import get_logger
@@ -885,6 +886,17 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(result.get("morphs_converted"), 2)
         self.assertEqual(result.get("vertex_morphs_skipped_by_material"), 2)
         self.assertEqual(len(result.get("blend_shape_nodes", [])), 2)
+        vertex_nodes = result.get("vertex_morph_nodes", [])
+        self.assertEqual(len(vertex_nodes), 2)
+        self.assertEqual(len(set(vertex_nodes)), 2)
+        self.assertEqual(
+            [cmds.getAttr(f"{node}.mmd_morph_index") for node in vertex_nodes],
+            [0, 1],
+        )
+        self.assertEqual(
+            json.loads(cmds.getAttr(f"{vertex_nodes[0]}.{ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON}")),
+            [{"vertex_index": 1, "position_offset": [0.1, 0.0, 0.0]}],
+        )
 
         mesh_a_aliases = cmds.aliasAttr(result["blend_shape_nodes"][0], query=True) or []
         mesh_b_aliases = cmds.aliasAttr(result["blend_shape_nodes"][1], query=True) or []
@@ -892,6 +904,58 @@ class TestMorphConverter(MayaTestBase):
         self.assertNotIn("mat1_only", mesh_a_aliases)
         self.assertIn("mat1_only", mesh_b_aliases)
         self.assertNotIn("mat0_only", mesh_b_aliases)
+
+    def test_vertex_morph_metadata_rejects_malformed_offsets(self):
+        """Malformed source offsets fail before the per-mesh preview path can skip them."""
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = "malformed_vertex"
+            name_english = ""
+            panel = 1
+            morph_type = PmxMorphType.VertexMorph
+            offsets = [{"vertex_index": True, "position_offset": (0.1, 0.0, 0.0)}]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {"faces": [], "materials": [], "morphs": [FakeVertexMorph()]},
+        )()
+
+        with self.assertRaises(ValueError):
+            MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+    def test_vertex_morph_metadata_rejects_unknown_offset_fields(self):
+        """Unknown fields are not silently discarded from the semantic record."""
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = "unknown_field_vertex"
+            name_english = ""
+            panel = 1
+            morph_type = PmxMorphType.VertexMorph
+            offsets = [
+                {
+                    "vertex_index": 0,
+                    "position_offset": (0.0, 0.0, 0.0),
+                    "unexpected": 1,
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {"faces": [], "materials": [], "morphs": [FakeVertexMorph()]},
+        )()
+
+        with self.assertRaises(ValueError):
+            MorphConverter().convert_pmx_morphs(fake_data, mesh)
 
     def test_compact_material_split_mesh_maps_vertex_morph_source_indices(self):
         """compact split mesh では PMX source vertex index を local vertex index に写して morph を適用する。"""

@@ -1,0 +1,827 @@
+"""Maya material binding operations for immutable MMD material specs.
+
+This adapter owns only the Maya node/binding side of material authoring.  It
+never infers PMX semantics from a shader and never uses active selection;
+callers provide an explicit model root and mesh/face targets.  Scene-level
+undo transactions remain the responsibility of the caller.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
+import json
+from typing import Any
+
+from mmd_tools.core import model_registry
+from mmd_tools.core.constants import (
+    ATTR_MMD_AMBIENT_COLOR,
+    ATTR_MMD_DIFFUSE_COLOR,
+    ATTR_MMD_DRAW_FLAGS,
+    ATTR_MMD_EDGE_COLOR,
+    ATTR_MMD_EDGE_FLAG,
+    ATTR_MMD_EDGE_SIZE,
+    ATTR_MMD_MATERIAL,
+    ATTR_MMD_MATERIAL_INDEX,
+    ATTR_MMD_MATERIAL_NAME,
+    ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_MEMO,
+    ATTR_MMD_ORIGINAL_TEXTURE_PATH,
+    ATTR_MMD_SHARED_TOON_FLAG,
+    ATTR_MMD_SHININESS,
+    ATTR_MMD_SPHERE_MODE,
+    ATTR_MMD_SPECULAR_COLOR,
+    ATTR_MMD_SPHERE_PATH,
+    ATTR_MMD_SPHERE_TEXTURE_INDEX,
+    ATTR_MMD_TEXTURE_INDEX,
+    ATTR_MMD_TOON_PATH,
+    ATTR_MMD_TOON_TEXTURE_INDEX,
+)
+from mmd_tools.core.model_authoring_spec import MmdMaterialSpec, MmdModelAuthoringSpec
+
+
+REGISTRY_CATEGORY_MATERIAL = "material"
+
+
+ATTR_MMD_TEXTURE_PATH = "mmd_texture_path"
+ATTR_MMD_RESOLVED_TEXTURE_PATH = "mmd_resolved_texture_path"
+ATTR_MMD_RESOLVED_SPHERE_TEXTURE_PATH = "mmd_resolved_sphere_texture_path"
+ATTR_MMD_RESOLVED_TOON_TEXTURE_PATH = "mmd_resolved_toon_texture_path"
+ATTR_MMD_TOON_TEXTURE_PATH = ATTR_MMD_TOON_PATH
+ATTR_MMD_DIFFUSE_ALPHA = "mmd_diffuse_alpha"
+ATTR_MMD_EDGE_ALPHA = "mmd_edge_alpha"
+ATTR_MMD_MATERIAL_MORPH_OFFSETS = "mmd_material_morph_offsets_json"
+
+
+class MayaMaterialAuthoringError(RuntimeError):
+    """Raised when a material binding operation cannot fail closed."""
+
+
+class MayaMaterialAuthoring:
+    """Create, resolve, assign, and delete MMD material shader bindings."""
+
+    def __init__(
+        self,
+        cmds_adapter: Any,
+        registry_api: Any = model_registry,
+        *,
+        runtime_rebuilders: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._cmds = cmds_adapter
+        self._registry = registry_api
+        if runtime_rebuilders is None:
+            self._runtime_rebuilders = {"material": self._default_material_rebuilder}
+        else:
+            self._runtime_rebuilders = dict(runtime_rebuilders)
+
+    def create_material(self, model_root: str, material: MmdMaterialSpec) -> tuple[MmdMaterialSpec, str, str]:
+        """Create or resolve a standardSurface shader and its shading group.
+
+        The returned material is a fresh spec carrying the canonical shader
+        identity, so callers can persist that binding in their semantic spec.
+        """
+        root = self._require_root(model_root)
+        self._require_material(material)
+        existing = self._resolve_material(root, material)
+        if existing is not None:
+            shader, shading_group = existing
+            self._bind_texture_graph(shader, material)
+            self._rebuild_material_morph_graph(root)
+            return replace(material, binding_identity=shader), shader, shading_group
+
+        shader: str | None = None
+        shading_group: str | None = None
+        try:
+            # Keep Maya node names ASCII and deterministic; semantic Unicode
+            # names remain lossless in the canonical attributes below.
+            name = f"mmdMaterial_{material.index}"
+            shader = self._canonical_node(
+                str(self._call("shading_node", "standardSurface", asShader=True, name=name))
+            )
+            shading_group = str(
+                self._call(
+                    "sets",
+                    renderable=True,
+                    noSurfaceShader=True,
+                    empty=True,
+                    name=f"{name}_SG",
+                )
+            )
+            self._call("connect_attr", f"{shader}.outColor", f"{shading_group}.surfaceShader", force=True)
+            bound_material = replace(material, binding_identity=shader)
+            self._write_material_attrs(shader, bound_material)
+            registry = self._registry.ensure_model_registry(root)
+            self._registry.register_model_members(
+                registry,
+                REGISTRY_CATEGORY_MATERIAL,
+                [shader],
+            )
+            self._rebuild_material_morph_graph(root)
+            return bound_material, shader, shading_group
+        except Exception as exc:
+            if shader:
+                try:
+                    registry = self._registry.ensure_model_registry(root)
+                    self._registry.unregister_model_members(
+                        registry,
+                        REGISTRY_CATEGORY_MATERIAL,
+                        [shader],
+                    )
+                except Exception:
+                    pass
+            for node in (shading_group, shader):
+                if node:
+                    try:
+                        self._call("delete", node)
+                    except Exception:
+                        pass
+            raise MayaMaterialAuthoringError(
+                f"failed to create material {material.index} under root {root!r}: {exc}"
+            ) from exc
+
+    def resolve_material(self, model_root: str, material: MmdMaterialSpec) -> tuple[str, str] | None:
+        """Resolve an existing shader only when binding identity and index agree."""
+        root = self._require_root(model_root)
+        self._require_material(material)
+        return self._resolve_material(root, material)
+
+    def replace_material(
+        self,
+        model_root: str,
+        old_spec: MmdModelAuthoringSpec,
+        new_spec: MmdModelAuthoringSpec,
+    ) -> MmdModelAuthoringSpec:
+        """Replace material fields while preserving the canonical Maya binding.
+
+        The caller computes ``new_spec`` before opening its transaction.  This
+        method writes the complete existing shader attributes and refreshes all
+        registry-owned material morph evaluators in that same transaction.
+        """
+        return self.apply_material_spec_change(
+            model_root,
+            old_spec,
+            new_spec,
+            allow_material_edits=True,
+        )
+
+    def assign_material(
+        self,
+        model_root: str,
+        material: MmdMaterialSpec,
+        targets: Sequence[str],
+    ) -> tuple[str, str]:
+        """Assign a resolved material to explicit mesh/face targets below ``model_root``."""
+        root = self._require_root(model_root)
+        self._require_material(material)
+        if isinstance(targets, (str, bytes, bytearray)) or not isinstance(targets, Sequence) or not targets:
+            raise MayaMaterialAuthoringError("targets must be a non-empty sequence")
+        binding = self._resolve_material(root, material)
+        if binding is None:
+            raise MayaMaterialAuthoringError(
+                f"material {material.index} is not registered under root {root!r}"
+            )
+        shader, shading_group = binding
+        validated_targets = [self._validate_target(root, target) for target in targets]
+        try:
+            for target in validated_targets:
+                self._call("sets", target, e=True, forceElement=shading_group)
+        except Exception as exc:
+            raise MayaMaterialAuthoringError(
+                f"failed to assign material {material.index} under root {root!r}: {exc}"
+            ) from exc
+        return shader, shading_group
+
+    def delete_material(
+        self,
+        model_root: str,
+        material: MmdMaterialSpec | str,
+        replacement_shader: str,
+    ) -> None:
+        """Reassign old shading-group members, then delete old shader/SG.
+
+        ``replacement_shader`` is an explicit existing shading group (or a
+        shader node with exactly one connected shading group).  Deletion is
+        rejected unless replacement is supplied and valid.
+        """
+        root = self._require_root(model_root)
+        if not isinstance(replacement_shader, str) or not replacement_shader.strip():
+            raise MayaMaterialAuthoringError("replacement_shader must be a non-empty string")
+        old_shader, old_sg = self._resolve_delete_target(root, material)
+        replacement_sg = self._resolve_replacement_sg(replacement_shader)
+        if replacement_sg == old_sg:
+            raise MayaMaterialAuthoringError("replacement_shader must differ from deleted material")
+        members = list(self._call("sets", old_sg, query=True) or [])
+        validated_members = [self._validate_target(root, member) for member in members]
+        try:
+            for member in validated_members:
+                self._call("sets", member, e=True, forceElement=replacement_sg)
+            registry = self._registry.ensure_model_registry(root)
+            self._registry.unregister_model_members(
+                registry,
+                REGISTRY_CATEGORY_MATERIAL,
+                [old_shader],
+            )
+            self._call("disconnect_attr", f"{old_shader}.outColor", f"{old_sg}.surfaceShader")
+            self._call("delete", old_sg)
+            self._call("delete", old_shader)
+            self._rebuild_material_morph_graph(root)
+        except Exception as exc:
+            raise MayaMaterialAuthoringError(
+                f"failed to delete material under root {root!r}: {exc}"
+            ) from exc
+
+    def apply_material_spec_change(
+        self,
+        model_root: str,
+        old_spec: MmdModelAuthoringSpec,
+        new_spec: MmdModelAuthoringSpec,
+        replacement_shader: str | None = None,
+        *,
+        allow_material_edits: bool = False,
+    ) -> MmdModelAuthoringSpec:
+        """Apply a validated material edit/reindex/delete plan to Maya bindings.
+
+        The pure material authoring layer must produce ``new_spec`` first.
+        This method then updates survivor indices, remaps material-morph raw
+        JSON, and optionally replaces/deletes one removed material binding.
+        It never opens an undo chunk; callers own the surrounding transaction.
+        """
+        root = self._require_root(model_root)
+        self._require_model_spec(old_spec, "old_spec")
+        self._require_model_spec(new_spec, "new_spec")
+        self._validate_material_spec_shape(
+            old_spec,
+            new_spec,
+            allow_material_edits=allow_material_edits,
+        )
+
+        registry = self._registry.ensure_model_registry(root)
+        registry_members = self._registry.list_model_registry_members(
+            root, REGISTRY_CATEGORY_MATERIAL
+        ) or []
+        owned_materials = {
+            self._canonical_node(str(member)) for member in registry_members
+        }
+        old_by_binding = self._material_bindings(old_spec)
+        if owned_materials != set(old_by_binding):
+            raise MayaMaterialAuthoringError(
+                f"material registry membership does not exactly match old_spec under root {root!r}"
+            )
+        new_by_binding = self._material_bindings(new_spec)
+        unknown = set(new_by_binding) - set(old_by_binding)
+        if unknown:
+            raise MayaMaterialAuthoringError(
+                f"new_spec contains unknown material bindings: {sorted(unknown)!r}"
+            )
+        deleted = sorted(set(old_by_binding) - set(new_by_binding))
+        if len(deleted) > 1:
+            raise MayaMaterialAuthoringError(
+                "one material binding may be deleted per structural transaction"
+            )
+
+        morph_updates = self._material_morph_updates(root, old_spec, new_spec)
+        old_shader: str | None = None
+        old_shading_group: str | None = None
+        replacement_sg: str | None = None
+        validated_members: list[str] = []
+        if deleted:
+            if not isinstance(replacement_shader, str) or not replacement_shader.strip():
+                raise MayaMaterialAuthoringError(
+                    "replacement_shader is required when deleting a material binding"
+                )
+            deleted_binding = deleted[0]
+            old_material = old_by_binding[deleted_binding]
+            binding = self._resolve_material(root, old_material)
+            if binding is None:
+                raise MayaMaterialAuthoringError(
+                    f"deleted material {old_material.index} is not resolvable"
+                )
+            old_shader, old_shading_group = binding
+            replacement_sg = self._resolve_replacement_sg(replacement_shader)
+            if replacement_sg == old_shading_group:
+                raise MayaMaterialAuthoringError(
+                    "replacement_shader must differ from deleted material"
+                )
+            members = list(self._call("sets", old_shading_group, query=True) or [])
+            validated_members = [
+                self._validate_target(root, member) for member in members
+            ]
+
+        try:
+            for binding, material in new_by_binding.items():
+                prior = old_by_binding[binding]
+                if allow_material_edits and self._material_fields_changed(prior, material):
+                    self._write_material_attrs(binding, material)
+                elif material.index != prior.index:
+                    self._set_attr(
+                        binding,
+                        ATTR_MMD_MATERIAL_INDEX,
+                        material.index,
+                        "long",
+                    )
+            for node, payload in morph_updates:
+                self._set_attr(
+                    node,
+                    ATTR_MMD_MATERIAL_MORPH_OFFSETS,
+                    payload,
+                    "string",
+                )
+            if deleted and old_shader is not None and old_shading_group is not None:
+                for member in validated_members:
+                    self._call("sets", member, e=True, forceElement=replacement_sg)
+                self._registry.unregister_model_members(
+                    registry,
+                    REGISTRY_CATEGORY_MATERIAL,
+                    [old_shader],
+                )
+                self._call(
+                    "disconnect_attr",
+                    f"{old_shader}.outColor",
+                    f"{old_shading_group}.surfaceShader",
+                )
+                self._call("delete", old_shading_group)
+                self._call("delete", old_shader)
+            self._rebuild_material_morph_graph(root)
+        except Exception as exc:
+            raise MayaMaterialAuthoringError(
+                f"failed to apply material structural change under root {root!r}: {exc}"
+            ) from exc
+        return new_spec
+
+    def _validate_material_spec_shape(
+        self,
+        old_spec: MmdModelAuthoringSpec,
+        new_spec: MmdModelAuthoringSpec,
+        *,
+        allow_material_edits: bool = False,
+    ) -> None:
+        if old_spec.schema_version != new_spec.schema_version:
+            raise MayaMaterialAuthoringError("material structural change cannot change schema version")
+        if old_spec.model.to_mapping() != new_spec.model.to_mapping():
+            raise MayaMaterialAuthoringError("material structural change cannot change model metadata")
+        if old_spec.bones != new_spec.bones:
+            raise MayaMaterialAuthoringError("material structural change cannot change bone metadata")
+        old_materials = {material.binding_identity: material for material in old_spec.materials}
+        new_materials = {material.binding_identity: material for material in new_spec.materials}
+        if None in old_materials or None in new_materials:
+            raise MayaMaterialAuthoringError(
+                "material structural change requires binding identities on every material"
+            )
+        for binding in set(old_materials) & set(new_materials):
+            old_mapping = old_materials[binding].to_mapping()
+            new_mapping = new_materials[binding].to_mapping()
+            for field in ("index", "binding_identity"):
+                old_mapping.pop(field, None)
+                new_mapping.pop(field, None)
+            if not allow_material_edits and old_mapping != new_mapping:
+                raise MayaMaterialAuthoringError(
+                    f"material binding {binding!r} changed fields beyond index"
+                )
+        old_morphs = {morph.binding_identity: morph for morph in old_spec.morphs}
+        new_morphs = {morph.binding_identity: morph for morph in new_spec.morphs}
+        if None in old_morphs or None in new_morphs:
+            raise MayaMaterialAuthoringError(
+                "material structural change requires binding identities on every morph"
+            )
+        if set(old_morphs) != set(new_morphs):
+            raise MayaMaterialAuthoringError(
+                "material structural change cannot create or delete morph bindings"
+            )
+        for binding in old_morphs:
+            old_mapping = old_morphs[binding].to_mapping()
+            new_mapping = new_morphs[binding].to_mapping()
+            allowed = {"offsets"} if old_morphs[binding].morph_type == "material" else set()
+            for field in allowed:
+                old_mapping.pop(field, None)
+                new_mapping.pop(field, None)
+            if old_mapping != new_mapping:
+                raise MayaMaterialAuthoringError(
+                    f"morph binding {binding!r} changed outside material offsets"
+                )
+
+    def _material_bindings(
+        self,
+        spec: MmdModelAuthoringSpec,
+    ) -> dict[str, MmdMaterialSpec]:
+        result: dict[str, MmdMaterialSpec] = {}
+        for material in spec.materials:
+            if not material.binding_identity:
+                raise MayaMaterialAuthoringError(
+                    f"material {material.index} has no binding identity"
+                )
+            binding = self._canonical_node(material.binding_identity)
+            if binding in result:
+                raise MayaMaterialAuthoringError(
+                    f"duplicate material binding identity: {binding!r}"
+                )
+            result[binding] = material
+        return result
+
+    def _material_morph_updates(
+        self,
+        root: str,
+        old_spec: MmdModelAuthoringSpec,
+        new_spec: MmdModelAuthoringSpec,
+    ) -> list[tuple[str, str]]:
+        old_by_binding = {
+            morph.binding_identity: morph
+            for morph in old_spec.morphs
+            if morph.morph_type == "material"
+        }
+        new_by_binding = {
+            morph.binding_identity: morph
+            for morph in new_spec.morphs
+            if morph.morph_type == "material"
+        }
+        if not old_by_binding:
+            return []
+        registry_members = self._registry.list_model_registry_members(
+            root, "morph"
+        ) or []
+        owned = {self._canonical_node(str(member)) for member in registry_members}
+        required = {binding for binding in old_by_binding if binding}
+        if not required.issubset(owned):
+            raise MayaMaterialAuthoringError(
+                f"material morph bindings are not registry-owned under root {root!r}"
+            )
+        material_indices = {
+            material.index for material in new_spec.materials
+        }
+        old_material_indices = {
+            material.index for material in old_spec.materials
+        }
+        # The deleted-index set is derived directly from old/new bindings so a
+        # pure delete cannot be bypassed by manually rewriting an offset.
+        old_material_bindings = {
+            material.binding_identity: material for material in old_spec.materials
+        }
+        new_material_bindings = {
+            material.binding_identity: material for material in new_spec.materials
+        }
+        deleted_indices = {
+            old_material_bindings[binding].index
+            for binding in set(old_material_bindings) - set(new_material_bindings)
+            if binding is not None
+        }
+        updates: list[tuple[str, str]] = []
+        for binding, old_morph in old_by_binding.items():
+            if binding is None:
+                continue
+            new_morph = new_by_binding[binding]
+            for offset_number, offset in enumerate(old_morph.offsets):
+                self._validate_material_morph_offset(
+                    offset,
+                    deleted_indices,
+                    f"morph {old_morph.index} offset {offset_number}",
+                    valid_indices=old_material_indices,
+                )
+            for offset_number, offset in enumerate(new_morph.offsets):
+                self._validate_material_morph_offset(
+                    offset,
+                    set(),
+                    f"new morph {new_morph.index} offset {offset_number}",
+                    valid_indices=material_indices,
+                )
+            if old_morph.offsets == new_morph.offsets:
+                continue
+            payload = json.dumps(
+                new_morph.to_mapping()["offsets"],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            updates.append((self._canonical_node(str(binding)), payload))
+        return updates
+
+    @staticmethod
+    def _material_fields_changed(old: MmdMaterialSpec, new: MmdMaterialSpec) -> bool:
+        """Return whether a material changed outside its explicit index."""
+        old_mapping = old.to_mapping()
+        new_mapping = new.to_mapping()
+        for field in ("index", "binding_identity"):
+            old_mapping.pop(field, None)
+            new_mapping.pop(field, None)
+        return old_mapping != new_mapping
+
+    @staticmethod
+    def _default_material_rebuilder(root: str) -> Any:
+        """Build all material-morph evaluators through the production runtime."""
+        from mmd_tools.converters.material_morph_runtime import build_material_morph_graph
+
+        return build_material_morph_graph(root)
+
+    def _rebuild_material_morph_graph(self, root: str) -> None:
+        """Refresh the complete material-morph graph for this model root."""
+        rebuilder = self._runtime_rebuilders.get("material")
+        if not callable(rebuilder):
+            raise MayaMaterialAuthoringError(
+                "material morph runtime rebuild requires an explicit rebuilder"
+            )
+        try:
+            result = rebuilder(root)
+        except Exception as exc:
+            raise MayaMaterialAuthoringError(
+                f"material morph runtime graph rebuild failed under root {root!r}: {exc}"
+            ) from exc
+        if isinstance(result, Mapping) and result.get("success") is False:
+            raise MayaMaterialAuthoringError(
+                f"material morph runtime graph rebuild reported failure: {result!r}"
+            )
+
+    @staticmethod
+    def _validate_material_morph_offset(
+        offset: Any,
+        deleted_indices: set[int],
+        context: str,
+        *,
+        valid_indices: set[int] | None = None,
+    ) -> None:
+        if not isinstance(offset, Mapping) or set(offset) != {
+            "material_index",
+            "operation_type",
+            "diffuse",
+            "specular",
+            "specular_coefficient",
+            "ambient",
+            "edge_color",
+            "edge_size",
+            "texture_factor",
+            "sphere_texture_factor",
+            "toon_texture_factor",
+        }:
+            raise MayaMaterialAuthoringError(f"{context} has malformed material offset")
+        material_index = offset["material_index"]
+        if isinstance(material_index, bool) or not isinstance(material_index, int):
+            raise MayaMaterialAuthoringError(
+                f"{context}.material_index must be an integer"
+            )
+        if material_index in deleted_indices:
+            raise MayaMaterialAuthoringError(
+                f"{context} references a deleted material {material_index}"
+            )
+        if valid_indices is not None and material_index != -1 and material_index not in valid_indices:
+            raise MayaMaterialAuthoringError(
+                f"{context} references unknown material {material_index}"
+            )
+
+    def _resolve_material(self, root: str, material: MmdMaterialSpec) -> tuple[str, str] | None:
+        self._registry.ensure_model_registry(root)
+        members = self._registry.list_model_registry_members(root, REGISTRY_CATEGORY_MATERIAL) or []
+        matches: list[str] = []
+        for member in members:
+            shader = self._canonical_node(str(member))
+            if material.binding_identity is None or shader != material.binding_identity:
+                continue
+            index = self._get_attr(shader, ATTR_MMD_MATERIAL_INDEX)
+            if type(index) is int and index == material.index:
+                matches.append(shader)
+        if len(matches) > 1:
+            raise MayaMaterialAuthoringError(
+                f"material {material.index} has ambiguous bindings under root {root!r}"
+            )
+        if not matches:
+            return None
+        shader = matches[0]
+        shading_groups = list(self._call("list_connections", shader, type="shadingEngine") or [])
+        if len(shading_groups) != 1:
+            raise MayaMaterialAuthoringError(f"shader {shader!r} must have exactly one shading group")
+        return shader, str(shading_groups[0])
+
+    def _resolve_delete_target(self, root: str, material: MmdMaterialSpec | str) -> tuple[str, str]:
+        if isinstance(material, MmdMaterialSpec):
+            binding = self._resolve_material(root, material)
+            if binding is None:
+                raise MayaMaterialAuthoringError(f"material {material.index} is not registered")
+            return binding
+        if not isinstance(material, str) or not material.strip():
+            raise MayaMaterialAuthoringError("material must be MmdMaterialSpec or shader identity")
+        shader = material
+        members = self._registry.list_model_registry_members(root, REGISTRY_CATEGORY_MATERIAL) or []
+        if shader not in members:
+            raise MayaMaterialAuthoringError(f"shader {shader!r} is not owned by root {root!r}")
+        groups = list(self._call("list_connections", shader, type="shadingEngine") or [])
+        if len(groups) != 1:
+            raise MayaMaterialAuthoringError(f"shader {shader!r} must have exactly one shading group")
+        return shader, str(groups[0])
+
+    def _resolve_replacement_sg(self, replacement: str) -> str:
+        if not self._object_exists(replacement):
+            raise MayaMaterialAuthoringError(f"replacement shader does not exist: {replacement!r}")
+        node_type = self._call("node_type", replacement)
+        if node_type == "shadingEngine":
+            return replacement
+        if node_type in {"standardSurface", "lambert", "blinn", "phong"}:
+            groups = list(self._call("list_connections", replacement, type="shadingEngine") or [])
+            if len(groups) == 1:
+                return str(groups[0])
+        raise MayaMaterialAuthoringError("replacement_shader must resolve to exactly one shading group")
+
+    def _write_material_attrs(self, shader: str, material: MmdMaterialSpec) -> None:
+        vectors = {
+            ATTR_MMD_DIFFUSE_COLOR: material.diffuse[:3],
+            ATTR_MMD_SPECULAR_COLOR: material.specular,
+            ATTR_MMD_AMBIENT_COLOR: material.ambient,
+            ATTR_MMD_EDGE_COLOR: material.edge_color[:3],
+        }
+        scalars = {
+            ATTR_MMD_MATERIAL: 1,
+            ATTR_MMD_MATERIAL_INDEX: material.index,
+            # MmdMaterialSpec stores source-relative paths rather than a
+            # complete PMX texture table.  Preserve an existing table index
+            # only when its source path agrees; otherwise use the explicit
+            # unresolved sentinel while retaining path provenance in strings.
+            ATTR_MMD_TEXTURE_INDEX: self._texture_index_for_write(
+                shader,
+                ATTR_MMD_TEXTURE_INDEX,
+                ATTR_MMD_TEXTURE_PATH,
+                material.texture_path,
+            ),
+            ATTR_MMD_SPHERE_TEXTURE_INDEX: self._texture_index_for_write(
+                shader,
+                ATTR_MMD_SPHERE_TEXTURE_INDEX,
+                ATTR_MMD_SPHERE_PATH,
+                material.sphere_texture_path,
+            ),
+            ATTR_MMD_SHININESS: material.specular_coefficient,
+            ATTR_MMD_DRAW_FLAGS: material.draw_flags,
+            ATTR_MMD_EDGE_FLAG: bool(material.draw_flags & 0x10),
+            ATTR_MMD_EDGE_SIZE: material.edge_size,
+            ATTR_MMD_SPHERE_MODE: material.sphere_mode,
+            ATTR_MMD_SHARED_TOON_FLAG: int(material.shared_toon),
+            ATTR_MMD_TOON_TEXTURE_INDEX: -1 if material.toon_texture_index is None else material.toon_texture_index,
+            ATTR_MMD_DIFFUSE_ALPHA: material.diffuse[3],
+            ATTR_MMD_EDGE_ALPHA: material.edge_color[3],
+        }
+        strings = {
+            ATTR_MMD_MATERIAL_NAME: material.name,
+            ATTR_MMD_MATERIAL_NAME_EN: material.name_english,
+            ATTR_MMD_MEMO: material.memo,
+            ATTR_MMD_TEXTURE_PATH: material.texture_path or "",
+            ATTR_MMD_ORIGINAL_TEXTURE_PATH: material.texture_path or "",
+            ATTR_MMD_RESOLVED_TEXTURE_PATH: material.resolved_texture_path or "",
+            ATTR_MMD_SPHERE_PATH: material.sphere_texture_path or "",
+            ATTR_MMD_RESOLVED_SPHERE_TEXTURE_PATH: material.resolved_sphere_texture_path or "",
+            ATTR_MMD_TOON_TEXTURE_PATH: "" if material.shared_toon else material.toon_texture_path or "",
+            ATTR_MMD_RESOLVED_TOON_TEXTURE_PATH: (
+                "" if material.shared_toon else material.resolved_toon_texture_path or ""
+            ),
+        }
+        for attr, value in vectors.items():
+            self._set_attr(shader, attr, value, "double3")
+        integral_attrs = {
+            ATTR_MMD_MATERIAL,
+            ATTR_MMD_MATERIAL_INDEX,
+            ATTR_MMD_DRAW_FLAGS,
+            ATTR_MMD_TEXTURE_INDEX,
+            ATTR_MMD_SPHERE_TEXTURE_INDEX,
+            ATTR_MMD_SPHERE_MODE,
+            ATTR_MMD_SHARED_TOON_FLAG,
+            ATTR_MMD_TOON_TEXTURE_INDEX,
+        }
+        for attr, value in scalars.items():
+            if isinstance(value, bool):
+                attr_type = "bool"
+            elif attr in integral_attrs:
+                attr_type = "long"
+            else:
+                attr_type = "double"
+            self._set_attr(shader, attr, value, attr_type)
+        for attr, value in strings.items():
+            self._set_attr(shader, attr, value, "string")
+        # StandardSurface exposes baseColor as a Maya float3 compound; the
+        # canonical semantic color attrs above remain custom double3 fields.
+        self._set_attr(shader, "baseColor", material.diffuse[:3], "float3")
+        self._bind_texture_graph(shader, material)
+
+    def _set_attr(self, node: str, attr: str, value: Any, attr_type: str) -> None:
+        if not self._has_attr(node, attr):
+            kwargs = {"long_name": attr, "attribute_type": attr_type}
+            if attr_type == "string":
+                kwargs = {"longName": attr, "dataType": "string"}
+            elif attr_type in {"double3", "float3"}:
+                kwargs = {"longName": attr, "attributeType": attr_type}
+            else:
+                kwargs = {"longName": attr, "attributeType": attr_type}
+            self._call("add_attr", node, **kwargs)
+            if attr_type in {"double3", "float3"}:
+                child_type = "double" if attr_type == "double3" else "float"
+                for suffix in ("X", "Y", "Z"):
+                    self._call(
+                        "add_attr",
+                        node,
+                        longName=f"{attr}{suffix}",
+                        attributeType=child_type,
+                        parent=attr,
+                    )
+        path = f"{node}.{attr}"
+        if attr_type in {"double3", "float3"}:
+            self._call("set_attr", path, *value, type=attr_type)
+        elif attr_type == "bool":
+            self._call("set_attr", path, bool(value))
+        elif attr_type == "string":
+            self._call("set_attr", path, value, type="string")
+        else:
+            self._call("set_attr", path, value)
+
+    def _texture_index_for_write(
+        self,
+        shader: str,
+        index_attr: str,
+        path_attr: str,
+        source_path: str | None,
+    ) -> int:
+        """Preserve a table index only when its source-path provenance agrees."""
+        if not source_path:
+            return -1
+        if not self._has_attr(shader, index_attr) or not self._has_attr(shader, path_attr):
+            return -1
+        prior_path = self._get_attr(shader, path_attr)
+        prior_index = self._get_attr(shader, index_attr)
+        if (
+            prior_path == source_path
+            and isinstance(prior_index, int)
+            and not isinstance(prior_index, bool)
+            and prior_index >= 0
+        ):
+            return prior_index
+        return -1
+
+    def _bind_texture_graph(self, shader: str, material: MmdMaterialSpec) -> None:
+        """Create or reuse one file node for the resolved main texture path."""
+        file_nodes = [
+            self._canonical_node(str(node))
+            for node in (self._call("list_connections", shader, type="file") or [])
+        ]
+        if len(file_nodes) > 1:
+            raise MayaMaterialAuthoringError(f"shader {shader!r} has ambiguous main texture file nodes")
+        if not material.resolved_texture_path:
+            if file_nodes:
+                file_node = file_nodes[0]
+                self._call("disconnect_attr", f"{file_node}.outColor", f"{shader}.baseColor")
+                self._call("delete", file_node)
+            return
+        if file_nodes:
+            file_node = file_nodes[0]
+        else:
+            file_node = self._canonical_node(
+                str(
+                    self._call(
+                        "shading_node",
+                        "file",
+                        asTexture=True,
+                        isColorManaged=True,
+                        name=f"mmdMaterial_{material.index}_File",
+                    )
+                )
+            )
+        self._set_attr(file_node, "fileTextureName", material.resolved_texture_path, "string")
+        self._set_attr(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH, material.texture_path or "", "string")
+        self._call("connect_attr", f"{file_node}.outColor", f"{shader}.baseColor", force=True)
+
+    def _require_root(self, model_root: str) -> str:
+        if not isinstance(model_root, str) or not model_root.strip() or not self._object_exists(model_root):
+            raise MayaMaterialAuthoringError(f"invalid model root: {model_root!r}")
+        roots = list(self._call("ls", model_root, long=True) or [])
+        if len(roots) != 1 or not isinstance(roots[0], str) or not roots[0].startswith("|"):
+            raise MayaMaterialAuthoringError(f"model root is not a unique canonical path: {model_root!r}")
+        return roots[0]
+
+    def _validate_target(self, root: str, target: str) -> str:
+        if not isinstance(target, str) or not target.strip():
+            raise MayaMaterialAuthoringError("targets must contain non-empty strings")
+        node = target.split(".", 1)[0]
+        paths = list(self._call("ls", node, long=True) or [])
+        if len(paths) != 1 or not paths[0].startswith(root + "|"):
+            raise MayaMaterialAuthoringError(f"target is outside model root {root!r}: {target!r}")
+        return target
+
+    def _object_exists(self, node: str) -> bool:
+        return bool(self._call("object_exists", node))
+
+    def _canonical_node(self, node: str) -> str:
+        paths = list(self._call("ls", node, long=True) or [])
+        if len(paths) != 1 or not isinstance(paths[0], str) or not paths[0]:
+            raise MayaMaterialAuthoringError(f"node is not a unique canonical path: {node!r}")
+        return paths[0]
+
+    def _has_attr(self, node: str, attr: str) -> bool:
+        return bool(self._call("attribute_exists", attr, node))
+
+    def _get_attr(self, node: str, attr: str) -> Any:
+        return self._call("get_attr", f"{node}.{attr}")
+
+    def _require_material(self, material: Any) -> None:
+        if type(material) is not MmdMaterialSpec:
+            raise MayaMaterialAuthoringError("material must be an MmdMaterialSpec")
+
+    def _require_model_spec(self, spec: Any, field: str) -> None:
+        if type(spec) is not MmdModelAuthoringSpec:
+            raise MayaMaterialAuthoringError(f"{field} must be an MmdModelAuthoringSpec")
+
+    def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return getattr(self._cmds, method)(*args, **kwargs)
+        except Exception as exc:
+            raise MayaMaterialAuthoringError(f"Maya adapter call {method} failed: {exc}") from exc
+
+
+__all__ = ["MayaMaterialAuthoringError", "MayaMaterialAuthoring"]

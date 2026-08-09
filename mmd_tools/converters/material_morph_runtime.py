@@ -222,6 +222,13 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
         shaders_by_index,
         result["skipped"],
     )
+    existing_by_shader = {
+        shader: node
+        for shader, node in _collect_existing_evaluators().items()
+        if shader in set(shaders_by_index.values())
+    }
+    for shader in sorted(set(existing_by_shader) - set(contributions_by_shader)):
+        _remove_evaluator(shader, existing_by_shader[shader])
     if not contributions_by_shader:
         result["skipped"].append("no_material_morph_contributions")
         return result
@@ -229,7 +236,6 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
     # Detect VP2 API once per graph build; standard materials ignore it.
     vp2_api = detect_effective_vp2_draw_api()
 
-    existing_by_shader = _collect_existing_evaluators()
     for shader, contributions in contributions_by_shader.items():
         node = existing_by_shader.get(shader)
         if node and _is_valid_evaluator(node):
@@ -413,13 +419,64 @@ def _collect_existing_evaluators() -> Dict[str, str]:
             continue
         if not cmds.attributeQuery("mmd_target_shader", node=node, exists=True):
             continue
+        if not cmds.attributeQuery("mmd_material_morph_eval", node=node, exists=True):
+            continue
         try:
+            if not cmds.getAttr(f"{node}.mmd_material_morph_eval"):
+                continue
             shader = cmds.getAttr(f"{node}.mmd_target_shader") or ""
         except Exception:
             continue
         if shader and cmds.objExists(shader):
             evaluators[shader] = node
     return evaluators
+
+
+def _remove_evaluator(shader: str, node: str) -> None:
+    """Restore base inputs and delete one owned material-morph evaluator."""
+    shader_type = cmds.nodeType(shader)
+    bindings: list[tuple[str, Optional[str], str, int]] = []
+    if shader_type in {"dx11Shader", "GLSLShader"}:
+        bindings = [
+            (route.uniform, route.evaluator_base, route.evaluator_output, route.size)
+            for route in hardware_morph_routes(shader_type)
+        ]
+        try:
+            bindings = _expand_route_bindings(shader, node, bindings)
+        except Exception:
+            logger.warning("Could not expand evaluator cleanup routes for %s", shader, exc_info=True)
+            raise
+    else:
+        route = resolve_shader_color_route(shader)
+        if route.attr_name:
+            bindings = [(route.attr_name, "baseDiffuse", "outputDiffuse", 3)]
+
+    for _shader_name, base_name, output_name, _size in bindings:
+        output = f"{node}.{output_name}"
+        destinations = cmds.listConnections(output, s=False, d=True, p=True) or []
+        for destination in destinations:
+            cmds.disconnectAttr(output, destination)
+            if base_name is None:
+                continue
+            base = f"{node}.{base_name}"
+            sources = cmds.listConnections(base, s=True, d=False, p=True) or []
+            if sources:
+                for source in sources:
+                    cmds.disconnectAttr(source, base)
+                    _connect_if_needed(source, destination, force=True)
+            else:
+                value = cmds.getAttr(base)
+                destination_type = cmds.getAttr(destination, type=True)
+                while (
+                    isinstance(value, (list, tuple))
+                    and len(value) == 1
+                    and isinstance(value[0], (list, tuple))
+                ):
+                    value = value[0]
+                if destination_type in {"double3", "float3"} and isinstance(value, (list, tuple)):
+                    value = value[:3]
+                _set_plug_value(destination, value, destination_type)
+    cmds.delete(node)
 
 
 def _create_evaluator(shader: str) -> Optional[str]:

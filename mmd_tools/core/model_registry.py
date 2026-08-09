@@ -18,6 +18,8 @@ from .constants import (
     ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_MODEL_REGISTRY,
     ATTR_MMD_REGISTRY_MORPH_MEMBERS,
+    ATTR_MMD_REGISTRY_MATERIAL_MEMBERS,
+    ATTR_MMD_REGISTRY_MATERIAL_MORPH_WORK_MEMBERS,
     ATTR_MMD_REGISTRY_PHYSICS_MEMBERS,
     ATTR_MMD_REGISTRY_ROOT,
     ATTR_MMD_REGISTRY_SCHEMA,
@@ -30,11 +32,15 @@ REGISTRY_SCHEMA_VERSION = "1"
 REGISTRY_CATEGORY_MORPH = "morph"
 REGISTRY_CATEGORY_TEXTURE = "texture"
 REGISTRY_CATEGORY_PHYSICS = "physics"
+REGISTRY_CATEGORY_MATERIAL = "material"
+REGISTRY_CATEGORY_MATERIAL_MORPH_WORK = "material_morph_work"
 
 _CATEGORY_ATTRIBUTES: Dict[str, str] = {
     REGISTRY_CATEGORY_MORPH: ATTR_MMD_REGISTRY_MORPH_MEMBERS,
     REGISTRY_CATEGORY_TEXTURE: ATTR_MMD_REGISTRY_TEXTURE_MEMBERS,
     REGISTRY_CATEGORY_PHYSICS: ATTR_MMD_REGISTRY_PHYSICS_MEMBERS,
+    REGISTRY_CATEGORY_MATERIAL: ATTR_MMD_REGISTRY_MATERIAL_MEMBERS,
+    REGISTRY_CATEGORY_MATERIAL_MORPH_WORK: ATTR_MMD_REGISTRY_MATERIAL_MORPH_WORK_MEMBERS,
 }
 
 
@@ -141,6 +147,138 @@ def register_model_members(
         registered.append(str(member))
         existing_names.add(canonical)
     return registered
+
+
+def unregister_model_members(
+    registry: str,
+    category: str,
+    members: Iterable[str],
+) -> List[str]:
+    """Disconnect exactly the requested owned members from one category.
+
+    The destination plug is resolved from the actual message connection rather
+    than inferred from iteration order.  Unknown requested members are
+    rejected before any disconnect so callers cannot accidentally report a
+    partially applied ownership update.
+    """
+    member_attr = registry_category_attribute(category)
+    _validate_registry_node(registry)
+    connections, current = _registry_member_connections(registry, member_attr)
+
+    if isinstance(members, (str, bytes, bytearray)):
+        raise ModelRegistryError("members must be an iterable of node names")
+    requested_values = list(members or [])
+    requested: set[str] = set()
+    for member in requested_values:
+        if not isinstance(member, str) or not member.strip():
+            raise ModelRegistryError(f"requested registry member is invalid: {member!r}")
+        try:
+            canonical = _canonical_node(member)
+        except Exception as exc:
+            raise ModelRegistryError(
+                f"requested registry member cannot be resolved: {member!r}"
+            ) from exc
+        if canonical is None:
+            raise ModelRegistryError(f"requested registry member is not a valid node: {member!r}")
+        requested.add(canonical)
+
+    owned = {canonical for canonical in connections}
+    unknown = requested - owned
+    if unknown:
+        raise ModelRegistryError(
+            f"requested registry members are not owned by {registry}: {sorted(unknown)!r}"
+        )
+
+    remaining: List[str] = []
+    for member in current:
+        canonical = _canonical_node(member)
+        if canonical in requested:
+            source_plug, destination_plug = connections[canonical]
+            cmds.disconnectAttr(source_plug, destination_plug)
+        else:
+            remaining.append(str(member))
+    return remaining
+
+
+def _registry_member_connections(
+    registry: str,
+    member_attr: str,
+) -> tuple[Dict[str, tuple[str, str]], List[str]]:
+    """Return canonical member to source/destination plug mappings.
+
+    Maya's ``connections=True, plugs=True`` result is an alternating source /
+    destination list.  A compact fallback retains compatibility with command
+    adapters that expose only node names; in that case actual sparse indices
+    are read from ``multiIndices`` when available.
+    """
+    endpoint = f"{registry}.{member_attr}"
+    records: Dict[str, tuple[str, str]] = {}
+    try:
+        raw_pairs = cmds.listConnections(
+            endpoint,
+            source=True,
+            destination=False,
+            connections=True,
+            plugs=True,
+        ) or []
+    except (TypeError, RuntimeError):
+        raw_pairs = []
+
+    values = [str(value) for value in raw_pairs]
+    for left, right in zip(values[::2], values[1::2]):
+        if left.endswith(".message") and right.startswith(endpoint + "["):
+            source_plug, destination_plug = left, right
+        elif right.endswith(".message") and left.startswith(endpoint + "["):
+            source_plug, destination_plug = right, left
+        else:
+            continue
+        member = source_plug.rsplit(".", 1)[0]
+        canonical = _canonical_node(member)
+        if canonical is None:
+            continue
+        if canonical in records and records[canonical][1] != destination_plug:
+            raise ModelRegistryError(f"registry member connection is ambiguous: {member}")
+        records[canonical] = (source_plug, destination_plug)
+
+    current_raw = list(cmds.listConnections(endpoint, source=True, destination=False) or [])
+    if records:
+        def destination_index(item: tuple[str, tuple[str, str]]) -> int:
+            destination = item[1][1]
+            try:
+                return int(destination.rsplit("[", 1)[1].rstrip("]"))
+            except (IndexError, ValueError) as exc:
+                raise ModelRegistryError(
+                    f"registry member destination plug is malformed: {destination!r}"
+                ) from exc
+
+        ordered = sorted(
+            records.items(),
+            key=destination_index,
+        )
+        return dict(records), [source.rsplit(".", 1)[0] for _, (source, _) in ordered]
+
+    current = [str(member) for member in current_raw]
+    indices: list[int] = []
+    try:
+        raw_indices = cmds.getAttr(endpoint, multiIndices=True) or []
+        if isinstance(raw_indices, (list, tuple)) and all(
+            type(index) is int and index >= 0 for index in raw_indices
+        ):
+            indices = list(raw_indices)
+    except (TypeError, RuntimeError, ValueError):
+        indices = []
+    if len(indices) != len(current):
+        indices = list(range(len(current)))
+    for member, index in zip(current, indices):
+        canonical = _canonical_node(member)
+        if canonical is None:
+            continue
+        destination = f"{endpoint}[{index}]"
+        source = f"{member}.message"
+        if canonical in records and records[canonical][1] != destination:
+            raise ModelRegistryError(f"registry member connection is ambiguous: {member}")
+        records[canonical] = (source, destination)
+    return records, current
 
 
 def list_model_registry_members(model_root: str, category: str) -> Optional[List[str]]:
@@ -337,6 +475,7 @@ def _has_attr(node: str, attribute: str) -> bool:
 __all__ = [
     "ModelRegistryError",
     "REGISTRY_CATEGORY_MORPH",
+    "REGISTRY_CATEGORY_MATERIAL",
     "REGISTRY_CATEGORY_PHYSICS",
     "REGISTRY_CATEGORY_TEXTURE",
     "REGISTRY_SCHEMA_VERSION",
@@ -345,5 +484,6 @@ __all__ = [
     "list_model_registry_members",
     "list_model_registry_members_from_adapter",
     "register_model_members",
+    "unregister_model_members",
     "registry_category_attribute",
 ]

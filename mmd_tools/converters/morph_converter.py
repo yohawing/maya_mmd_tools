@@ -21,6 +21,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
+    ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
 )
 from mmd_tools.core.morph_metadata_reader import PMX_MORPH_TYPE_NAMES
@@ -31,6 +32,15 @@ from mmd_tools.converters.morph_scene_metadata import (
 )
 
 _OPT_IMPORT_MORPHS = "import_morphs"
+
+
+def pmx_vertex_offset_to_maya_tuple(position_offset, scale: float = 1.0) -> tuple[float, float, float]:
+    """Convert one PMX vertex delta to Maya object-space coordinates."""
+    return (
+        float(position_offset[0]) * float(scale),
+        float(position_offset[1]) * float(scale),
+        -float(position_offset[2]) * float(scale),
+    )
 
 
 def _is_group_morph_payload(morph: Dict[str, Any]) -> bool:
@@ -170,6 +180,7 @@ class MorphConverter:
         material_morph_nodes = []
         uv_morph_nodes = []
         flip_impulse_morph_nodes = []
+        vertex_morph_nodes = []
         converted_bone_morphs = set()
         converted_group_morphs = set()
         converted_material_morphs = set()
@@ -177,6 +188,38 @@ class MorphConverter:
         converted_flip_impulse_morphs = set()
         material_vertex_sets = self._build_pmx_material_vertex_sets(pmx_data)
         skipped_vertex_morphs_by_material = 0
+
+        # Preserve one lossless semantic metadata node for every PMX vertex
+        # morph before touching any mesh.  The blendShape targets below remain
+        # the live preview binding; these network nodes are only the semantic
+        # authority for the original PMX offsets and are intentionally not
+        # connected to the morph controller.
+        vertex_morph_metadata = []
+        for morph_index, morph in enumerate(pmx_data.morphs):
+            if morph.morph_type != PmxMorphType.VertexMorph:
+                continue
+            offsets = self._normalize_vertex_morph_offsets(morph, morph_index)
+            vertex_morph_metadata.append((morph_index, morph, offsets))
+
+        for morph_index, morph, offsets in vertex_morph_metadata:
+            morph_name = self._raw_morph_name(morph)
+            morph_node = self._create_or_get_morph_network_node(morph_name, "vertex")
+            maya_attribute_utils.set_custom_attributes(
+                morph_node,
+                {
+                    "mmd_morph_name": str(morph_name),
+                    "mmd_morph_name_en": str(getattr(morph, "name_english", "")),
+                    "mmd_morph_type": "vertex",
+                    "mmd_morph_index": int(morph_index),
+                    "mmd_morph_panel": int(getattr(morph, "panel", 0)),
+                    ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON: json.dumps(
+                        offsets,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                },
+            )
+            vertex_morph_nodes.append(morph_node)
 
         for mn in mesh_nodes:
             mesh_material_index = self._get_mesh_material_index(mn)
@@ -274,6 +317,7 @@ class MorphConverter:
             "material_morph_nodes": material_morph_nodes,
             "uv_morph_nodes": uv_morph_nodes,
             "flip_impulse_morph_nodes": flip_impulse_morph_nodes,
+            "vertex_morph_nodes": vertex_morph_nodes,
             "vertex_morphs_skipped_by_material": skipped_vertex_morphs_by_material,
             "results": results,
         }
@@ -455,6 +499,75 @@ class MorphConverter:
             if vertex_index in vertex_indices:
                 return True
         return False
+
+    @staticmethod
+    def _normalize_vertex_morph_offsets(morph, morph_index: int) -> List[Dict[str, Any]]:
+        """Validate and normalize PMX vertex offsets for semantic metadata.
+
+        The PMX offsets are kept in source space.  Unlike the blendShape path,
+        this metadata path must not coerce malformed values: booleans, missing
+        fields, non-finite numbers, and malformed vectors are rejected so the
+        importer cannot silently publish a lossy semantic record.
+        """
+        raw_offsets = getattr(morph, "offsets", None)
+        if not isinstance(raw_offsets, (list, tuple)):
+            raise ValueError(f"Vertex morph {morph_index} offsets must be a list")
+
+        offsets: List[Dict[str, Any]] = []
+        for offset_index, offset in enumerate(raw_offsets):
+            if not isinstance(offset, dict):
+                raise ValueError(f"Vertex morph {morph_index} offset {offset_index} must be a mapping")
+            unexpected_keys = set(offset) - {"vertex_index", "position_offset"}
+            if unexpected_keys:
+                raise ValueError(
+                    f"Vertex morph {morph_index} offset {offset_index} has unsupported fields: "
+                    f"{sorted(unexpected_keys)!r}"
+                )
+            if "vertex_index" not in offset:
+                raise ValueError(
+                    f"Vertex morph {morph_index} offset {offset_index} is missing vertex_index"
+                )
+            if "position_offset" not in offset:
+                raise ValueError(
+                    f"Vertex morph {morph_index} offset {offset_index} is missing position_offset"
+                )
+
+            vertex_index = offset["vertex_index"]
+            if isinstance(vertex_index, bool) or not isinstance(vertex_index, int) or vertex_index < 0:
+                raise ValueError(
+                    f"Vertex morph {morph_index} offset {offset_index} vertex_index "
+                    "must be a non-negative integer"
+                )
+
+            position_offset = offset["position_offset"]
+            if not isinstance(position_offset, (list, tuple)) or len(position_offset) != 3:
+                raise ValueError(
+                    f"Vertex morph {morph_index} offset {offset_index} position_offset "
+                    "must contain exactly three values"
+                )
+
+            normalized_position = []
+            for component_index, component in enumerate(position_offset):
+                if isinstance(component, bool) or not isinstance(component, (int, float)):
+                    raise ValueError(
+                        f"Vertex morph {morph_index} offset {offset_index} position_offset "
+                        f"component {component_index} must be a real number"
+                    )
+                component = float(component)
+                if not math.isfinite(component):
+                    raise ValueError(
+                        f"Vertex morph {morph_index} offset {offset_index} position_offset "
+                        f"component {component_index} must be finite"
+                    )
+                normalized_position.append(component)
+
+            offsets.append(
+                {
+                    "vertex_index": vertex_index,
+                    "position_offset": normalized_position,
+                }
+            )
+        return offsets
 
     def collect_morphs_from_scene_for_export(
         self,
@@ -1057,11 +1170,7 @@ class MorphConverter:
     @staticmethod
     def _pmx_vertex_offset_to_maya_vector(position_offset, scale: float = 1.0) -> om.MVector:
         """Return a PMX vertex morph offset converted into Maya mesh space."""
-        return om.MVector(
-            float(position_offset[0]) * scale,
-            float(position_offset[1]) * scale,
-            -float(position_offset[2]) * scale,
-        )
+        return om.MVector(*pmx_vertex_offset_to_maya_tuple(position_offset, scale))
 
     @staticmethod
     def cleanup_vertex_morph_template(template_ctx: Dict[str, Any]) -> None:
