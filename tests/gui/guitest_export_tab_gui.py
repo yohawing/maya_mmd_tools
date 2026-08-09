@@ -67,13 +67,19 @@ class TestExportTabGUI(GuiTestBase):
 
     def _delete_tab(self, tab):
         """テストで生成した widget を Maya の Qt 階層から確実に外す。"""
+        tab.hide()
         tab.close()
+        # ExportTab は親なしのトップレベル widget として生成されるため、
+        # 次のテストへ Maya/Qt の所有権を持ち越さないよう明示的に切り離す。
+        tab.setParent(None)
         tab.deleteLater()
         app = QApplication.instance()
         if app is None:
             return
-        app.processEvents()
+        # 生成した widget 自身の DeferredDelete を先に処理してから、
+        # Maya の通常イベントを一度だけ進める。他の所有者の queue は触らない。
         app.sendPostedEvents(tab, QtCore.QEvent.DeferredDelete)
+        app.processEvents()
 
     def test_format_combo_has_three_formats_and_vmd_only_shows_mode(self):
         """PMX/PMD/VMD の形式と VMD 専用 mode UI を確認する。"""
@@ -239,7 +245,9 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(tab.state_label.text(), STATE_SUCCEEDED)
         finally:
             presenter.deleteLater()
-            QApplication.processEvents()
+            app = QApplication.instance()
+            if app is not None:
+                app.sendPostedEvents(presenter, QtCore.QEvent.DeferredDelete)
             self._delete_tab(tab)
 
     def test_validate_and_export_buttons_emit_workflow_requests(self):
