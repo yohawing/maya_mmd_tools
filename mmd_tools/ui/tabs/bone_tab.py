@@ -19,7 +19,7 @@ from ..qt_compat import (
 )
 from ..base_tab import BaseTab
 from .translation_registry import apply_translation_registry
-from ..components.symbol_tool_button import MaterialSymbolToolButton
+from ..components.authoring_toolbar import AuthoringToolbar
 
 
 class BoneTab(BaseTab):
@@ -108,26 +108,33 @@ class BoneTab(BaseTab):
 
         # ツールバー
         toolbar_layout = QHBoxLayout()
-        self.refresh_btn = MaterialSymbolToolButton("refresh", self.tr("refresh", "buttons"))
-        toolbar_layout.addWidget(self.refresh_btn)
-        toolbar_layout.addStretch()
-
+        self.bone_authoring_toolbar = AuthoringToolbar(
+            actions=("refresh", "move_up", "move_down"),
+            labels={
+                "refresh": self.tr("refresh", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            parent=self,
+        )
+        self.refresh_btn = self.bone_authoring_toolbar.button("refresh")
+        self.reindex_up_btn = self.bone_authoring_toolbar.button("move_up")
+        self.reindex_down_btn = self.bone_authoring_toolbar.button("move_down")
+        toolbar_layout.addWidget(self.bone_authoring_toolbar)
         bone_tree_layout.addLayout(toolbar_layout)
 
         authoring_toolbar = QHBoxLayout()
-        self.reindex_up_btn = QPushButton("↑")
-        self.reindex_down_btn = QPushButton("↓")
-        authoring_toolbar.addWidget(self.reindex_up_btn)
-        authoring_toolbar.addWidget(self.reindex_down_btn)
         self.reset_authoring_btn = QPushButton(self.tr("reset_authoring", "buttons"))
         authoring_toolbar.addWidget(self.reset_authoring_btn)
         authoring_toolbar.addStretch()
-        for button in (
-            self.reindex_up_btn,
-            self.reindex_down_btn,
-            self.reset_authoring_btn,
-        ):
-            button.setEnabled(False)
+        for action in ("move_up", "move_down"):
+            self.bone_authoring_toolbar.set_action_enabled(
+                action,
+                False,
+                self.tr("authoring_selection_required", "tooltips"),
+                "authoring_selection_required",
+            )
+        self.reset_authoring_btn.setEnabled(False)
         bone_tree_layout.addLayout(authoring_toolbar)
 
         self.animation_warning_label = QLabel()
@@ -341,16 +348,21 @@ class BoneTab(BaseTab):
 
         # ツールバー
         links_toolbar = QHBoxLayout()
-        self.add_ik_link_btn = QPushButton(self.tr("add", "buttons"))
-        self.remove_ik_link_btn = QPushButton(self.tr("delete", "buttons"))
-        self.move_up_btn = QPushButton("↑")
-        self.move_down_btn = QPushButton("↓")
-
-        links_toolbar.addWidget(self.add_ik_link_btn)
-        links_toolbar.addWidget(self.remove_ik_link_btn)
-        links_toolbar.addWidget(self.move_up_btn)
-        links_toolbar.addWidget(self.move_down_btn)
-        links_toolbar.addStretch()
+        self.ik_authoring_toolbar = AuthoringToolbar(
+            actions=("create", "delete", "move_up", "move_down"),
+            labels={
+                "create": self.tr("add", "buttons"),
+                "delete": self.tr("delete", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            parent=self,
+        )
+        self.add_ik_link_btn = self.ik_authoring_toolbar.button("create")
+        self.remove_ik_link_btn = self.ik_authoring_toolbar.button("delete")
+        self.move_up_btn = self.ik_authoring_toolbar.button("move_up")
+        self.move_down_btn = self.ik_authoring_toolbar.button("move_down")
+        links_toolbar.addWidget(self.ik_authoring_toolbar)
 
         links_layout.addLayout(links_toolbar)
 
@@ -548,6 +560,23 @@ class BoneTab(BaseTab):
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
         self.animation_warning_label.setText("")
         self.reset_authoring_btn.setText(self.tr("reset_authoring", "buttons"))
+        self.bone_authoring_toolbar.retranslate(
+            {
+                "refresh": self.tr("refresh", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            reason_resolver=lambda key: self.tr(key, "tooltips"),
+        )
+        self.ik_authoring_toolbar.retranslate(
+            {
+                "create": self.tr("add", "buttons"),
+                "delete": self.tr("delete", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            reason_resolver=lambda key: self.tr(key, "tooltips"),
+        )
 
         # Table headers - IK Links
         self.ik_links_table.setHorizontalHeaderLabels(

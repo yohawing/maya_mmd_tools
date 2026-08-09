@@ -20,6 +20,7 @@ from ..qt_compat import (
     QTextEdit,
 )
 from ..base_tab import BaseTab
+from ..components.authoring_toolbar import AuthoringToolbar
 from .translation_registry import apply_translation_registry
 
 
@@ -80,9 +81,13 @@ class MorphTab(BaseTab):
 
         # ツールバー
         toolbar_layout = QHBoxLayout()
-        self.refresh_morphs_btn = QPushButton(self.tr("refresh", "buttons"))
-        self.refresh_morphs_btn.setMaximumWidth(60)
-        toolbar_layout.addWidget(self.refresh_morphs_btn)
+        self.morph_refresh_toolbar = AuthoringToolbar(
+            actions=("refresh",),
+            labels={"refresh": self.tr("refresh", "buttons")},
+            parent=self,
+        )
+        self.refresh_morphs_btn = self.morph_refresh_toolbar.button("refresh")
+        toolbar_layout.addWidget(self.morph_refresh_toolbar)
         self.create_type_combo = QComboBox()
         self.create_type_combo.addItems(
             [
@@ -91,16 +96,23 @@ class MorphTab(BaseTab):
                 "Group", "Flip", "Impulse",
             ]
         )
-        self.create_morph_btn = QPushButton("+")
-        self.delete_morph_btn = QPushButton("-")
-        self.move_morph_up_btn = QPushButton("↑")
-        self.move_morph_down_btn = QPushButton("↓")
+        self.morph_authoring_toolbar = AuthoringToolbar(
+            actions=("create", "delete", "move_up", "move_down"),
+            labels={
+                "create": self.tr("create", "buttons"),
+                "delete": self.tr("delete", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            parent=self,
+        )
+        self.create_morph_btn = self.morph_authoring_toolbar.button("create")
+        self.delete_morph_btn = self.morph_authoring_toolbar.button("delete")
+        self.move_morph_up_btn = self.morph_authoring_toolbar.button("move_up")
+        self.move_morph_down_btn = self.morph_authoring_toolbar.button("move_down")
         self.reindex_morphs_btn = QPushButton("Reindex")
         toolbar_layout.addWidget(self.create_type_combo)
-        toolbar_layout.addWidget(self.create_morph_btn)
-        toolbar_layout.addWidget(self.delete_morph_btn)
-        toolbar_layout.addWidget(self.move_morph_up_btn)
-        toolbar_layout.addWidget(self.move_morph_down_btn)
+        toolbar_layout.addWidget(self.morph_authoring_toolbar)
         toolbar_layout.addWidget(self.reindex_morphs_btn)
         toolbar_layout.addStretch()
         morph_list_layout.addLayout(toolbar_layout)
@@ -303,14 +315,10 @@ class MorphTab(BaseTab):
             widget.setEnabled(enabled)
             widget.setToolTip(tooltip)
 
-    def set_authoring_controls_enabled(self, enabled, tooltip=""):
+    def set_authoring_controls_enabled(self, enabled, tooltip="", reason_key=""):
         """Enable semantic authoring separately from preview weights."""
         for widget in (
             self.create_type_combo,
-            self.create_morph_btn,
-            self.delete_morph_btn,
-            self.move_morph_up_btn,
-            self.move_morph_down_btn,
             self.reindex_morphs_btn,
             self.morph_name_jp_edit,
             self.morph_name_en_edit,
@@ -322,6 +330,8 @@ class MorphTab(BaseTab):
         ):
             widget.setEnabled(enabled)
             widget.setToolTip(tooltip)
+        for action in ("create", "delete", "move_up", "move_down"):
+            self.morph_authoring_toolbar.set_action_enabled(action, enabled, tooltip, reason_key)
 
     def set_offsets_editable(self, editable, policy_text=""):
         """Keep round-trip JSON visible when policy disables editing."""
@@ -363,6 +373,20 @@ class MorphTab(BaseTab):
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
+
+        self.morph_refresh_toolbar.retranslate(
+            {"refresh": self.tr("refresh", "buttons")},
+            reason_resolver=lambda key: self.tr(key, "tooltips"),
+        )
+        self.morph_authoring_toolbar.retranslate(
+            {
+                "create": self.tr("create", "buttons"),
+                "delete": self.tr("delete", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            reason_resolver=lambda key: self.tr(key, "tooltips"),
+        )
 
         # Tab widget texts
         if self.detail_tabs.count() >= 1:

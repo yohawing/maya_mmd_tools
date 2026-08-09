@@ -24,7 +24,7 @@ from ..qt_compat import (
 )
 from ..base_tab import BaseTab
 from .translation_registry import apply_translation_registry
-from ..components.symbol_tool_button import MaterialSymbolToolButton
+from ..components.symbol_tool_button import SymbolToolButton
 
 
 class Vec3Editor(QWidget):
@@ -244,7 +244,7 @@ class PhysicsTab(BaseTab):
         group_layout = QVBoxLayout()
 
         toolbar_layout = QHBoxLayout()
-        self.refresh_btn = MaterialSymbolToolButton("refresh", self.tr("refresh", "buttons"))
+        self.refresh_btn = SymbolToolButton("refresh", self.tr("refresh", "buttons"))
         self.create_btn = QPushButton(self.tr("create", "buttons"))
         self.create_btn.setMaximumWidth(60)
         self.create_btn.setEnabled(False)

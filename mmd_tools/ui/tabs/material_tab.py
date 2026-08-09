@@ -19,7 +19,7 @@ from ..qt_compat import (
     QSlider,
 )
 from ..base_tab import BaseTab
-from ..components.symbol_tool_button import MaterialSymbolToolButton
+from ..components.authoring_toolbar import AuthoringToolbar
 
 
 class MaterialTab(BaseTab):
@@ -62,21 +62,31 @@ class MaterialTab(BaseTab):
 
         # ツールバー
         toolbar_layout = QHBoxLayout()
-        self.refresh_btn = MaterialSymbolToolButton("refresh", self.tr("refresh", "buttons"))
-        self.create_btn = QPushButton(self.tr("create", "buttons"))
-        self.duplicate_btn = QPushButton(self.tr("duplicate", "buttons"))
-        self.delete_btn = QPushButton(self.tr("delete", "buttons"))
-
-        toolbar_layout.addWidget(self.refresh_btn)
-        toolbar_layout.addWidget(self.create_btn)
-        toolbar_layout.addWidget(self.duplicate_btn)
-        toolbar_layout.addWidget(self.delete_btn)
-        toolbar_layout.addStretch()
+        self.authoring_toolbar = AuthoringToolbar(
+            actions=("refresh", "create", "duplicate", "delete"),
+            labels={
+                "refresh": self.tr("refresh", "buttons"),
+                "create": self.tr("create", "buttons"),
+                "duplicate": self.tr("duplicate", "buttons"),
+                "delete": self.tr("delete", "buttons"),
+            },
+            parent=self,
+        )
+        self.refresh_btn = self.authoring_toolbar.button("refresh")
+        self.create_btn = self.authoring_toolbar.button("create")
+        self.duplicate_btn = self.authoring_toolbar.button("duplicate")
+        self.delete_btn = self.authoring_toolbar.button("delete")
+        toolbar_layout.addWidget(self.authoring_toolbar)
 
         # MaterialPresenter enables writes only after a semantic coordinator
         # has been injected for a valid model root.
-        for button in (self.create_btn, self.duplicate_btn, self.delete_btn):
-            button.setEnabled(False)
+        for action in ("create", "duplicate", "delete"):
+            self.authoring_toolbar.set_action_enabled(
+                action,
+                False,
+                self.tr("authoring_unavailable", "tooltips"),
+                "authoring_unavailable",
+            )
 
         material_list_layout.addLayout(toolbar_layout)
 
@@ -382,16 +392,16 @@ class MaterialTab(BaseTab):
             self.edge_group.setTitle(self.tr("edge_properties", "groups"))
 
         # Buttons
-        if hasattr(self, "refresh_btn"):
-            self.refresh_btn.setText(self.tr("refresh", "buttons"))
-        for button_name, translation_key in (
-            ("create_btn", "create"),
-            ("duplicate_btn", "duplicate"),
-            ("delete_btn", "delete"),
-        ):
-            button = getattr(self, button_name, None)
-            if button is not None:
-                button.setText(self.tr(translation_key, "buttons"))
+        if hasattr(self, "authoring_toolbar"):
+            self.authoring_toolbar.retranslate(
+                {
+                    "refresh": self.tr("refresh", "buttons"),
+                    "create": self.tr("create", "buttons"),
+                    "duplicate": self.tr("duplicate", "buttons"),
+                    "delete": self.tr("delete", "buttons"),
+                },
+                reason_resolver=lambda key: self.tr(key, "tooltips"),
+            )
         if hasattr(self, "import_path_button"):
             self.import_path_button.setText(self.tr("browse", "buttons"))
         if hasattr(self, "texture_browse_btn"):

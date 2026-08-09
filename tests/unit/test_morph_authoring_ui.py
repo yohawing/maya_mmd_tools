@@ -112,7 +112,7 @@ def _view():
     view.create_type_capabilities = {}
     view.work_controls = (False, (), "")
 
-    def set_authoring_controls_enabled(enabled, tooltip=""):
+    def set_authoring_controls_enabled(enabled, tooltip="", reason_key=""):
         view.authoring_enabled = (enabled, tooltip)
 
     def set_offsets_editable(editable, policy=""):

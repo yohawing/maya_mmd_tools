@@ -187,7 +187,7 @@ class MorphPresenter:
             self._morph_controller = None
             setter = getattr(self.view, "set_authoring_controls_enabled", None)
             if callable(setter):
-                setter(False, "Select an MMD model to author morphs")
+                setter(False, "Select an MMD model to author morphs", "authoring_selection_required")
             return
 
         self._read_authoring_spec(current_model_root)
@@ -243,7 +243,11 @@ class MorphPresenter:
         )
         setter = getattr(self.view, "set_authoring_controls_enabled", None)
         if callable(setter):
-            setter(bool(available), "" if available else "Authoring coordinator is not available")
+            setter(
+                bool(available),
+                "" if available else "Authoring coordinator is not available",
+                "" if available else "authoring_unavailable",
+            )
         self._authoring_available = bool(available)
         self._configure_create_type_capabilities()
         self._authoring_ready = False
@@ -258,7 +262,7 @@ class MorphPresenter:
             self._authoring_ready = True
             setter = getattr(self.view, "set_authoring_controls_enabled", None)
             if callable(setter):
-                setter(True, "")
+                setter(True, "", "")
             self._configure_create_type_capabilities()
         except Exception as exc:
             logger.error("Failed to read morph authoring spec: %s", exc, exc_info=True)
@@ -267,7 +271,7 @@ class MorphPresenter:
             self._authoring_ready = False
             setter = getattr(self.view, "set_authoring_controls_enabled", None)
             if callable(setter):
-                setter(False, f"Authoring metadata unavailable: {exc}")
+                setter(False, f"Authoring metadata unavailable: {exc}", "authoring_unavailable")
 
     def _merge_authoring_morphs(self):
         """Overlay immutable semantic names/types/offsets by global PMX index."""

@@ -396,13 +396,23 @@ class MaterialPresenter:
         has_root = bool(root and self.maya_adapter.object_exists(root))
         available = self.authoring_coordinator is not None and has_root
         selected = available and type(self.current_material_index) is int
-        for button_name, enabled in (
-            ("create_btn", available),
-            ("duplicate_btn", selected),
-            ("delete_btn", selected),
+        translate = getattr(self.view, "tr", None)
+        if callable(translate):
+            reason_unavailable = translate("authoring_unavailable", "tooltips")
+            reason_selection = translate("authoring_selection_required", "tooltips")
+        else:
+            reason_unavailable = "Authoring coordinator is not available"
+            reason_selection = "Select an item first"
+        for button_name, enabled, reason, reason_key in (
+            ("create_btn", available, "" if available else reason_unavailable, "" if available else "authoring_unavailable"),
+            ("duplicate_btn", selected, "" if selected else (reason_selection if available else reason_unavailable), "" if selected else ("authoring_selection_required" if available else "authoring_unavailable")),
+            ("delete_btn", selected, "" if selected else (reason_selection if available else reason_unavailable), "" if selected else ("authoring_selection_required" if available else "authoring_unavailable")),
         ):
             button = getattr(self.view, button_name, None)
             if button is not None:
+                set_reason = getattr(button, "set_disabled_reason", None)
+                if callable(set_reason):
+                    set_reason(reason, reason_key)
                 button.setEnabled(bool(enabled))
 
     def _authoring_root(self):

@@ -315,19 +315,29 @@ class BonePresenter:
     def _update_authoring_actions(self):
         available = self._authoring_available() and self._model_root_valid
         registered = available and type(self.current_bone_index) is int
-        for button_name, enabled in (
-            ("reindex_up_btn", registered),
-            ("reindex_down_btn", registered),
-            ("reset_authoring_btn", available),
+        translate = getattr(self.view, "tr", None)
+        if callable(translate):
+            reason_unavailable = translate("authoring_unavailable", "tooltips")
+            reason_selection = translate("authoring_selection_required", "tooltips")
+        else:
+            reason_unavailable = "Authoring coordinator is not available"
+            reason_selection = "Select an item first"
+        for button_name, enabled, reason, reason_key in (
+            ("reindex_up_btn", registered, "" if registered else (reason_selection if available else reason_unavailable), "" if registered else ("authoring_selection_required" if available else "authoring_unavailable")),
+            ("reindex_down_btn", registered, "" if registered else (reason_selection if available else reason_unavailable), "" if registered else ("authoring_selection_required" if available else "authoring_unavailable")),
+            ("reset_authoring_btn", available, "" if available else reason_unavailable, "" if available else "authoring_unavailable"),
             # Compatibility for injected legacy views; BoneTab no longer
             # creates these individual-operation buttons.
-            ("register_joint_btn", False),
-            ("capture_rest_btn", False),
-            ("apply_reindex_btn", False),
-            ("unregister_btn", False),
+            ("register_joint_btn", False, reason_unavailable, "authoring_unavailable"),
+            ("capture_rest_btn", False, reason_unavailable, "authoring_unavailable"),
+            ("apply_reindex_btn", False, reason_unavailable, "authoring_unavailable"),
+            ("unregister_btn", False, reason_unavailable, "authoring_unavailable"),
         ):
             button = getattr(self.view, button_name, None)
             if button is not None:
+                set_reason = getattr(button, "set_disabled_reason", None)
+                if callable(set_reason):
+                    set_reason(reason, reason_key)
                 button.setEnabled(bool(enabled))
 
     def _authoring_available(self):
