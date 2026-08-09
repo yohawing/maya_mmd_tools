@@ -92,6 +92,16 @@ def wait_for_maya_python_ready(marker_path, timeout=MAYA_PYTHON_READY_TIMEOUT):
     raise TimeoutError(f"Timed out waiting for Maya Python readiness marker: {marker_path}")
 
 
+def maya_python_ready_timeout(version):
+    """Return the readiness timeout for a Maya version's cold-start behavior."""
+    try:
+        if int(version) >= 2026:
+            return TEST_EXECUTION_TIMEOUT
+    except (TypeError, ValueError):
+        pass
+    return MAYA_PYTHON_READY_TIMEOUT
+
+
 def main():
     """
     Main function to orchestrate the test run.
@@ -174,7 +184,10 @@ Path({str(readiness_marker)!r}).write_text("ready", encoding="utf-8")
             readiness_command,
             label="<maya-commandport-readiness>",
         )
-        wait_for_maya_python_ready(readiness_marker)
+        wait_for_maya_python_ready(
+            readiness_marker,
+            timeout=maya_python_ready_timeout(args.maya_version),
+        )
         logger.info("Maya Python commandPort readiness marker found: %s", readiness_marker)
 
         # 2. Prepare and send the test execution command

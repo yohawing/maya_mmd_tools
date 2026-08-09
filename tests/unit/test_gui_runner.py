@@ -113,6 +113,20 @@ class GuiTestRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(TimeoutError, "readiness marker"):
                 run_gui_tests.wait_for_maya_python_ready(marker_path, timeout=0.01)
 
+    def test_maya_python_readiness_timeout_allows_modern_cold_start(self):
+        self.assertEqual(
+            run_gui_tests.TEST_EXECUTION_TIMEOUT,
+            run_gui_tests.maya_python_ready_timeout("2026"),
+        )
+        self.assertEqual(
+            run_gui_tests.TEST_EXECUTION_TIMEOUT,
+            run_gui_tests.maya_python_ready_timeout("2027"),
+        )
+        self.assertEqual(
+            run_gui_tests.MAYA_PYTHON_READY_TIMEOUT,
+            run_gui_tests.maya_python_ready_timeout("2024"),
+        )
+
     def test_explorer_cleanup_quits_without_process_handle(self):
         with mock.patch.object(sys, "platform", "win32"), \
              mock.patch.object(run_gui_tests.maya_commandport, "maya_exe", return_value=Path("maya.exe")), \
