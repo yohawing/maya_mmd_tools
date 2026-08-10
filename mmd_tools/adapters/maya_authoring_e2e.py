@@ -248,7 +248,13 @@ def _edit_material(
     old = next((item for item in current.materials if item.index == material_index), None)
     if not isinstance(old, MmdMaterialSpec):
         raise MayaAuthoringE2EError(f"material index {material_index} was not created")
-    edited = replace(old, name=f"{old.name} (edited)", name_english=f"{old.name_english} edited")
+    edited = replace(
+        old,
+        name=f"{old.name} (edited)",
+        name_english=f"{old.name_english} edited",
+        sphere_texture_path="textures/e2e_sphere.spa",
+        toon_texture_path="textures/e2e_toon.bmp",
+    )
     target = replace(
         current,
         materials=tuple(edited if item.index == material_index else item for item in current.materials),
