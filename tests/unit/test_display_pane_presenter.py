@@ -130,8 +130,7 @@ class _View:
             "delete_frame_btn",
             "move_frame_up_btn",
             "move_frame_down_btn",
-            "add_bone_btn",
-            "add_morph_btn",
+            "add_element_btn",
             "delete_item_btn",
             "move_item_up_btn",
             "move_item_down_btn",
@@ -263,21 +262,27 @@ class TestDisplayPanePresenter(unittest.TestCase):
         self.assertEqual(len(self.presenter.frames), 3)
         self.assertIn("cannot be deleted", self.view.status_label.value)
 
-    def test_add_item_uses_global_index_and_rejects_duplicates_in_same_frame(self):
+    def test_add_item_uses_type_and_global_index_and_excludes_duplicates(self):
         self.view.frame_list.setCurrentRow(2)
         self.presenter.add_item(0)
         self.assertEqual(self.presenter.frames[2]["elements"], [{"type": 0, "index": 1}])
         self.presenter.add_item(0)
-        self.assertEqual(len(self.presenter.frames[2]["elements"]), 1)
-        self.assertIn("already belongs", self.view.status_label.value)
+        self.assertEqual(self.presenter.frames[2]["elements"], [
+            {"type": 0, "index": 1},
+            {"type": 0, "index": 0},
+        ])
+        self.presenter.add_item(0)
+        self.assertEqual(len(self.presenter.frames[2]["elements"]), 2)
+        self.assertIn("要素", self.view.status_label.value)
 
     def test_same_item_can_belong_to_multiple_frames(self):
-        self.view.frame_list.setCurrentRow(1)
-        self.presenter.add_item(0)
         self.view.frame_list.setCurrentRow(2)
         self.presenter.add_item(0)
-        self.assertIn({"type": 0, "index": 1}, self.presenter.frames[1]["elements"])
+        self.presenter.add_frame()
+        self.view.frame_list.setCurrentRow(3)
+        self.presenter.add_item(0)
         self.assertIn({"type": 0, "index": 1}, self.presenter.frames[2]["elements"])
+        self.assertIn({"type": 0, "index": 1}, self.presenter.frames[3]["elements"])
 
     def test_apply_writes_one_string_attribute_and_undo_chunk(self):
         self.view.frame_list.setCurrentRow(2)

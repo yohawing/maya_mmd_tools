@@ -135,9 +135,8 @@ def test_display_pane_toolbars_precede_their_lists(qapp):
 
     assert item_toolbar_layout is not None
     assert items_layout.itemAt(1).widget() is tab.item_table
-    assert item_toolbar_layout.indexOf(tab.item_bone_toolbar) == 0
-    assert item_toolbar_layout.indexOf(tab.item_morph_toolbar) == 1
-    assert item_toolbar_layout.indexOf(tab.item_authoring_toolbar) == 2
+    assert item_toolbar_layout.indexOf(tab.item_element_toolbar) == 0
+    assert item_toolbar_layout.indexOf(tab.item_authoring_toolbar) == 1
 
     tab.set_editor_enabled(False)
     assert not tab.frame_list.isEnabled()
@@ -161,11 +160,7 @@ def test_disabled_reason_retranslates_and_display_add_actions_fail_closed(qapp):
         assert "編集コーディネーターを利用できません" in material.create_btn.toolTip()
 
         display = DisplayPaneTab()
-        for button in (
-            display.add_frame_btn,
-            display.add_bone_btn,
-            display.add_morph_btn,
-        ):
+        for button in (display.add_frame_btn, display.add_element_btn):
             assert not button.isEnabled()
             assert "先に項目を選択してください" in button.toolTip()
     finally:

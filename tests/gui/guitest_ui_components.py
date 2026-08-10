@@ -201,8 +201,7 @@ class TestMainWindow(GuiTestBase):
             "special_frame_check",
             "item_table",
             "add_frame_btn",
-            "add_bone_btn",
-            "add_morph_btn",
+            "add_element_btn",
             "apply_btn",
             "reset_btn",
         ):
@@ -258,7 +257,7 @@ class TestMainWindow(GuiTestBase):
         tab.frame_list.setCurrentRow(2)
         tab.name_jp_edit.setText("アクセサリ")
         presenter._choice_provider = lambda _title, choices: choices[-1]
-        presenter.add_item(1)
+        presenter.add_item()
         self.assertTrue(presenter.apply())
 
         applied = json.loads(cmds.getAttr(f"{root}.mmd_display_frames_json"))

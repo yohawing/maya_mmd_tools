@@ -81,6 +81,7 @@
     "reset_authoring": "Reset Bones",
     "add_frame": "Add Frame",
     "delete_frame": "Delete Frame",
+    "add_element": "Add Element",
     "add_bone": "Add Bone",
     "add_morph": "Add Morph",
     "delete_item": "Delete Item",
@@ -106,6 +107,8 @@
     "humanik_restore": "Restore MMD Rig"
   },
   "labels": {
+    "pmx_index": "PMX index:",
+    "pmx_index_unselected": "PMX index: —",
     "file_path": "File Path:",
     "scale": "Scale:",
     "model_name": "Model Name:",
@@ -193,6 +196,12 @@
     "use_cpp_rig_nodes": "Use experimental C++ rig nodes for IK/append constraints. Falls back to Python nodes when unavailable"
   },
   "messages": {
+    "display_element_added": "Added {element_type} (PMX index {index})",
+    "no_display_element_candidates": "No display-frame element candidates are available",
+    "duplicate_display_element": "That element already belongs to this display frame",
+    "invalid_display_element": "The selected display-frame element is invalid",
+    "select_display_element": "Select an enabled display-frame element",
+    "facial_display_frame_morph_only": "The Facial display frame can contain only morphs",
     "import_success": "Import completed successfully",
     "export_success": "Export completed successfully",
     "export_mmd_asset": "Export MMD asset",
@@ -462,6 +471,8 @@
     "enable_physics": "Enable Physics"
   },
   "fields": {
+    "display_element_type_bone": "Bone",
+    "display_element_type_morph": "Morph",
     "display_frame_name_jp": "Japanese Name:",
     "display_frame_name_en": "English Name:",
     "special_display_frame": "Special frame (Root / Facial)",
@@ -593,6 +604,7 @@
     "import_settings": "Import Settings"
   },
   "placeholders": {
+    "search_display_element": "Search bones and morphs...",
     "no_mmd_models": "No MMD models found",
     "no_model_loaded": "No model loaded. Import a PMX/PMD file to see model information.",
     "search_material_name": "Search material name...",

@@ -81,6 +81,7 @@
     "reset_authoring": "ボーンをリセット",
     "add_frame": "枠を追加",
     "delete_frame": "枠を削除",
+    "add_element": "要素を追加",
     "add_bone": "ボーンを追加",
     "add_morph": "モーフを追加",
     "delete_item": "項目を削除",
@@ -106,6 +107,8 @@
     "humanik_restore": "MMDリグを復元"
   },
   "labels": {
+    "pmx_index": "PMXインデックス:",
+    "pmx_index_unselected": "PMXインデックス: —",
     "file_path": "ファイルパス:",
     "scale": "スケール:",
     "model_name": "モデル名:",
@@ -193,6 +196,12 @@
     "use_cpp_rig_nodes": "IK/付与制約に実験的なC++リグノードを使います。利用できない場合はPythonノードにフォールバックします"
   },
   "messages": {
+    "display_element_added": "{element_type}（PMXインデックス {index}）を追加しました",
+    "no_display_element_candidates": "表示枠に追加できる要素がありません",
+    "duplicate_display_element": "その要素は既にこの表示枠にあります",
+    "invalid_display_element": "選択した表示枠要素が不正です",
+    "select_display_element": "有効な表示枠要素を選択してください",
+    "facial_display_frame_morph_only": "表情枠にはモーフのみ追加できます",
     "import_success": "インポートが完了しました",
     "export_success": "エクスポートが完了しました",
     "export_mmd_asset": "MMDアセットをエクスポート",
@@ -462,6 +471,8 @@
     "enable_physics": "物理を有効化"
   },
   "fields": {
+    "display_element_type_bone": "ボーン",
+    "display_element_type_morph": "モーフ",
     "display_frame_name_jp": "日本語名:",
     "display_frame_name_en": "英語名:",
     "special_display_frame": "特殊枠（Root／表情）",
@@ -593,6 +604,7 @@
     "import_settings": "設定をインポート"
   },
   "placeholders": {
+    "search_display_element": "ボーン／モーフを検索...",
     "no_mmd_models": "MMDモデルが見つかりません",
     "no_model_loaded": "モデルがロードされていません。PMX/PMDファイルをインポートしてモデル情報を表示してください。",
     "search_material_name": "マテリアル名を検索...",

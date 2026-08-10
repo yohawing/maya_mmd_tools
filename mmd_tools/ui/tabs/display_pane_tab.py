@@ -94,14 +94,9 @@ class DisplayPaneTab(BaseTab):
         self.item_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.item_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         item_toolbar = QHBoxLayout()
-        self.item_bone_toolbar = AuthoringToolbar(
+        self.item_element_toolbar = AuthoringToolbar(
             actions=("create",),
-            labels={"create": self.tr("add_bone", "buttons")},
-            parent=self,
-        )
-        self.item_morph_toolbar = AuthoringToolbar(
-            actions=("create",),
-            labels={"create": self.tr("add_morph", "buttons")},
+            labels={"create": self.tr("add_element", "buttons")},
             parent=self,
         )
         self.item_authoring_toolbar = AuthoringToolbar(
@@ -113,13 +108,11 @@ class DisplayPaneTab(BaseTab):
             },
             parent=self,
         )
-        self.add_bone_btn = self.item_bone_toolbar.button("create")
-        self.add_morph_btn = self.item_morph_toolbar.button("create")
+        self.add_element_btn = self.item_element_toolbar.button("create")
         self.delete_item_btn = self.item_authoring_toolbar.button("delete")
         self.move_item_up_btn = self.item_authoring_toolbar.button("move_up")
         self.move_item_down_btn = self.item_authoring_toolbar.button("move_down")
-        item_toolbar.addWidget(self.item_bone_toolbar)
-        item_toolbar.addWidget(self.item_morph_toolbar)
+        item_toolbar.addWidget(self.item_element_toolbar)
         item_toolbar.addWidget(self.item_authoring_toolbar)
         item_toolbar.addStretch(1)
         items_layout.addLayout(item_toolbar)
@@ -155,8 +148,7 @@ class DisplayPaneTab(BaseTab):
         self.frame_authoring_toolbar.set_action_enabled("move_down", enabled, reason, reason_key)
         for action in ("delete", "move_up", "move_down"):
             self.item_authoring_toolbar.set_action_enabled(action, enabled, reason, reason_key)
-        self.item_bone_toolbar.set_action_enabled("create", enabled, reason, reason_key)
-        self.item_morph_toolbar.set_action_enabled("create", enabled, reason, reason_key)
+        self.item_element_toolbar.set_action_enabled("create", enabled, reason, reason_key)
 
     def retranslateUi(self):
         """現在の言語で表示テキストを更新する。"""
@@ -182,12 +174,8 @@ class DisplayPaneTab(BaseTab):
             },
             reason_resolver=lambda key: self.tr(key, "tooltips"),
         )
-        self.item_bone_toolbar.retranslate(
-            {"create": self.tr("add_bone", "buttons")},
-            reason_resolver=lambda key: self.tr(key, "tooltips"),
-        )
-        self.item_morph_toolbar.retranslate(
-            {"create": self.tr("add_morph", "buttons")},
+        self.item_element_toolbar.retranslate(
+            {"create": self.tr("add_element", "buttons")},
             reason_resolver=lambda key: self.tr(key, "tooltips"),
         )
         self.item_authoring_toolbar.retranslate(
