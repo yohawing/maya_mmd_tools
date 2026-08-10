@@ -384,14 +384,10 @@ def test_presenter_narrow_apply_updates_selected_row_without_list_reload() -> No
     assert item.text().find("Edited") >= 0
 
 
-def test_presenter_group_offset_structural_route_uses_existing_full_coordinator() -> None:
+def test_presenter_has_no_raw_offset_edit_route() -> None:
     from tests.unit.test_morph_authoring_ui import _presenter
 
-    presenter, view, _state, _adapter, coordinator = _presenter(
+    presenter, _view, _state, _adapter, _coordinator = _presenter(
         "group", ({"morph_index": 1, "morph_rate": 0.5},)
     )
-    coordinator.read_morph_value = lambda _root, _index, _binding: coordinator.spec.morphs[0]
-    coordinator.apply_morph_value_patch = lambda *_args: (_ for _ in ()).throw(AssertionError("narrow group route forbidden"))
-    view.offsets_edit.setPlainText('[{"morph_index":1,"morph_rate":0.8}]')
-    presenter.apply_offsets()
-    assert coordinator.calls[-1][0] == "offsets"
+    assert not hasattr(presenter, "apply_offsets")

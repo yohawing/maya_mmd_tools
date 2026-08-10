@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any
@@ -24,6 +25,8 @@ class FakeCmds:
         self.node_types: dict[str, str] = {"|root": "transform"}
         self.connections: dict[tuple[str, str | None], list[str]] = {}
         self.history: dict[str, list[str]] = {}
+        self.parents: dict[str, list[str]] = {}
+        self.aliases: dict[str, list[str]] = {}
         self.long_names: dict[str, str] = {}
         self.undo_enabled = True
         self.undo_snapshot: dict[tuple[str, str], Any] | None = None
@@ -36,6 +39,8 @@ class FakeCmds:
         return node in self.nodes
 
     def list_relatives(self, node: str, **kwargs: Any) -> list[str]:
+        if kwargs.get("parent"):
+            return list(self.parents.get(node, []))
         assert node == "|root"
         assert kwargs.get("allDescendents") is True
         node_type = kwargs.get("type")
@@ -48,9 +53,27 @@ class FakeCmds:
     def attribute_exists(self, attr: str, node: str) -> bool:
         return (node, attr) in self.attrs
 
-    def get_attr(self, path: str) -> Any:
+    def get_attr(self, path: str, **kwargs: Any) -> Any:
         node, attr = path.rsplit(".", 1)
+        if kwargs.get("multiIndices"):
+            return self.attrs.get((node, attr), [])
         return self.attrs[(node, attr)]
+
+    def poly_evaluate(self, node: str, **kwargs: Any) -> int:
+        assert kwargs.get("vertex") is True
+        return int(self.attrs[(node, "vertexCount")])
+
+    def blend_shape(self, node: str, **kwargs: Any) -> list[Any]:
+        assert kwargs.get("query") is True
+        if kwargs.get("geometry"):
+            return list(self.attrs[(node, "geometry")])
+        if kwargs.get("geometryIndices"):
+            return list(self.attrs[(node, "geometryIndices")])
+        raise AssertionError(f"unexpected blend_shape query: {kwargs!r}")
+
+    def alias_attr(self, node: str, **kwargs: Any) -> list[str]:
+        assert kwargs.get("query") is True
+        return list(self.aliases.get(node, []))
 
     def list_connections(self, query: Any, **kwargs: Any) -> list[str]:
         node_type = kwargs.get("type")
@@ -270,6 +293,52 @@ def _morph(
     if legacy_root:
         cmds.attrs[(node, "mmd_model_root")] = True
         cmds.connections[(f"{node}.mmd_model_root", None)] = ["|root"]
+
+
+def _vertex_scene(
+    *,
+    source_mapping: Any = None,
+    parent_source_mapping: Any = None,
+    vertex_count: int = 2,
+    destination: str = "bs.weight[3]",
+    alias_pairs: list[str] | None = None,
+) -> tuple[FakeCmds, MayaSceneMetadataBackend]:
+    cmds, backend = _backend()
+    _morph(cmds, "morph", "vertex", [])
+    _registry(cmds, morph_members=["morph"])
+    cmds.nodes.update({"controller", "bs", "mesh", "meshTransform"})
+    cmds.node_types.update(
+        {
+            "controller": "mmdMorphController",
+            "bs": "blendShape",
+            "mesh": "mesh",
+            "meshTransform": "transform",
+        }
+    )
+    cmds.attrs[("|root", "mmd_import_scale")] = 1.0
+    cmds.connections[("|root.mmd_morph_controller", None)] = ["controller"]
+    cmds.connections[("controller.outputWeight[0]", None)] = [destination]
+    if alias_pairs is not None:
+        cmds.aliases["bs"] = alias_pairs
+    cmds.attrs[("bs", "mmd_blendshape_morph_names_json")] = json.dumps(
+        {"3": {"name": "モーフ0", "index": 0}}, ensure_ascii=False
+    )
+    cmds.attrs[("bs", "geometry")] = ["mesh"]
+    cmds.attrs[("bs", "geometryIndices")] = [0]
+    cmds.attrs[("mesh", "vertexCount")] = vertex_count
+    cmds.attrs[("bs.inputTarget[0].inputTargetGroup[3]", "inputTargetItem")] = [6000]
+    cmds.attrs[("bs.inputTarget[0].inputTargetGroup[3].inputTargetItem[6000]", "inputPointsTarget")] = [
+        (1.0, 2.0, 3.0)
+    ]
+    cmds.attrs[("bs.inputTarget[0].inputTargetGroup[3].inputTargetItem[6000]", "inputComponentsTarget")] = [
+        "vtx[1]"
+    ]
+    if source_mapping is not None:
+        cmds.attrs[("mesh", "mmd_source_vertex_indices")] = source_mapping
+    if parent_source_mapping is not None:
+        cmds.parents["mesh"] = ["meshTransform"]
+        cmds.attrs[("meshTransform", "mmd_source_vertex_indices")] = parent_source_mapping
+    return cmds, backend
 
 
 def test_unicode_model_and_ordinary_two_bone_metadata() -> None:
@@ -694,7 +763,6 @@ def test_duplicate_material_index_fails_closed() -> None:
 @pytest.mark.parametrize(
     ("morph_type", "offset"),
     [
-        ("vertex", {"vertex_index": 3, "position_offset": [0.1, -0.2, 0.3]}),
         ("bone", {"bone_index": 1, "translation": [1, 2, 3], "rotation": [0, 0, 0, 1]}),
         ("group", {"morph_index": 0, "morph_rate": 0.5}),
         (
@@ -754,6 +822,56 @@ def test_legacy_morph_discovery_is_limited_to_exact_root_ownership() -> None:
     assert [item["binding_identity"] for item in backend.iter_morph_metadata("|root")] == ["owned"]
 
 
+def test_vertex_blendshape_source_mapping_falls_back_to_identity() -> None:
+    _cmds, backend = _vertex_scene()
+
+    metadata = list(backend.iter_morph_metadata("|root"))[0]
+
+    assert metadata["offsets"] == [
+        {"vertex_index": 1, "position_offset": [1.0, 2.0, -3.0]}
+    ]
+
+
+def test_vertex_blendshape_offsets_canonicalize_signed_zero() -> None:
+    cmds, backend = _vertex_scene()
+    item = "bs.inputTarget[0].inputTargetGroup[3].inputTargetItem[6000]"
+    cmds.attrs[(item, "inputPointsTarget")] = [(0.0, 0.25, 0.0)]
+
+    offset = list(backend.iter_morph_metadata("|root"))[0]["offsets"][0]
+
+    assert offset["position_offset"] == [0.0, 0.25, 0.0]
+    assert all(math.copysign(1.0, value) > 0.0 for value in offset["position_offset"] if value == 0.0)
+
+
+def test_vertex_blendshape_alias_destination_resolves_weight_index() -> None:
+    _cmds, backend = _vertex_scene(
+        destination="bs.VertexAlias",
+        alias_pairs=["VertexAlias", "weight[3]"],
+    )
+
+    metadata = list(backend.iter_morph_metadata("|root"))[0]
+
+    assert metadata["offsets"][0]["vertex_index"] == 1
+
+
+def test_vertex_blendshape_source_mapping_reads_nested_parent_array() -> None:
+    _cmds, backend = _vertex_scene(parent_source_mapping=((10, 20),))
+
+    metadata = list(backend.iter_morph_metadata("|root"))[0]
+
+    assert metadata["offsets"] == [
+        {"vertex_index": 20, "position_offset": [1.0, 2.0, -3.0]}
+    ]
+
+
+@pytest.mark.parametrize("source_mapping", ([1], [1, 1], [True, 2], [1.0, 2.0]))
+def test_vertex_blendshape_invalid_source_mapping_fails_closed(source_mapping: Any) -> None:
+    _cmds, backend = _vertex_scene(source_mapping=source_mapping)
+
+    with pytest.raises(MayaSceneMetadataError, match="source vertex"):
+        list(backend.iter_morph_metadata("|root"))
+
+
 def test_registry_morph_binding_and_index_duplicates_fail_closed() -> None:
     cmds, backend = _backend()
     _morph(cmds, "morph", "group", [{"morph_index": 0, "morph_rate": 1.0}])
@@ -769,50 +887,7 @@ def test_registry_morph_binding_and_index_duplicates_fail_closed() -> None:
         list(backend.iter_morph_metadata("|root"))
 
 
-@pytest.mark.parametrize(
-    ("mutate", "error"),
-    [
-        (lambda cmds: cmds.attrs.pop(("morph", "mmd_vertex_morph_offsets_raw_json")), "is required"),
-        (
-            lambda cmds: cmds.attrs.__setitem__(
-                ("morph", "mmd_vertex_morph_offsets_raw_json"),
-                '[{"vertex_index":1,"position_offset":[0,0,0],"extra":0}]',
-            ),
-            "unknown",
-        ),
-        (
-            lambda cmds: cmds.attrs.__setitem__(
-                ("morph", "mmd_vertex_morph_offsets_raw_json"),
-                '[{"vertex_index":true,"position_offset":[0,0,0]}]',
-            ),
-            "integer",
-        ),
-        (
-            lambda cmds: cmds.attrs.__setitem__(
-                ("morph", "mmd_vertex_morph_offsets_raw_json"),
-                '[{"vertex_index":1,"position_offset":[NaN,0,0]}]',
-            ),
-            "finite",
-        ),
-        (
-            lambda cmds: cmds.attrs.__setitem__(
-                ("morph", "mmd_vertex_morph_offsets_raw_json"),
-                '[{"vertex_index":1,"vertex_index":2,"position_offset":[0,0,0]}]',
-            ),
-            "duplicate JSON field",
-        ),
-    ],
-)
-def test_morph_raw_json_is_strict_and_vertex_legacy_gap_is_explicit(mutate: Any, error: str) -> None:
-    cmds, backend = _backend()
-    _morph(cmds, "morph", "vertex", [{"vertex_index": 1, "position_offset": [0, 0, 0]}])
-    _registry(cmds, morph_members=["morph"])
-    mutate(cmds)
-    with pytest.raises(MayaSceneMetadataError, match=error):
-        list(backend.iter_morph_metadata("|root"))
-
-
-def test_legacy_vertex_network_without_raw_offsets_fails_instead_of_becoming_empty() -> None:
+def test_vertex_network_without_blendshape_binding_fails_closed() -> None:
     cmds, backend = _backend()
     _morph(
         cmds,
@@ -823,7 +898,7 @@ def test_legacy_vertex_network_without_raw_offsets_fails_instead_of_becoming_emp
     )
     cmds.attrs.pop(("legacyVertex", "mmd_vertex_morph_offsets_raw_json"))
 
-    with pytest.raises(MayaSceneMetadataError, match="mmd_vertex_morph_offsets_raw_json is required"):
+    with pytest.raises(MayaSceneMetadataError, match="blendShape|controller"):
         list(backend.iter_morph_metadata("|root"))
 
 

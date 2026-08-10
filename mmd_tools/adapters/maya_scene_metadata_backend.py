@@ -1,9 +1,10 @@
 """Read strict normalized model, material, bone, and morph metadata through Maya.
 
 This is deliberately a narrow, read-only Maya integration boundary.  Semantic
-values are taken only from persisted ``mmd_*`` attributes; ordinary Maya
-display plugs and evaluated morph results are never treated as PMX authoring
-data.
+values come from persisted ``mmd_*`` attributes, except Vertex Morph offsets,
+which are read from their exact controller-owned blendShape targets. Ordinary
+Maya display plugs and evaluated morph results are never treated as PMX
+authoring data.
 """
 
 from __future__ import annotations
@@ -48,6 +49,9 @@ from mmd_tools.core.constants import (
     ATTR_MMD_Z_AXIS_DIRECTION,
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
+    ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+    ATTR_MMD_IMPORT_SCALE,
+    ATTR_MMD_SOURCE_VERTEX_INDICES,
     ATTR_MMD_MODEL_ROOT,
     ATTR_MMD_MODEL_REGISTRY,
     ATTR_MMD_REGISTRY_ROOT,
@@ -75,7 +79,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
-    ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON,
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core.model_authoring_spec import (
@@ -231,7 +234,7 @@ class MayaSceneMetadataBackend:
         root = self._material_identity(model_root)
         node = self._material_identity(binding)
         self._require_selected_morph(root, node, index)
-        return MmdMorphSpec.from_mapping(self._read_morph(node))
+        return MmdMorphSpec.from_mapping(self._read_morph(node, root=root))
 
     def iter_bone_metadata(self, root: str) -> Iterable[Mapping[str, Any]]:
         """Yield canonical PMX bone mappings for tagged descendant joints."""
@@ -874,7 +877,7 @@ class MayaSceneMetadataBackend:
         self._require_selected_morph(root, node, old_morph.index)
         if not bool(self._call_adapter("undo_info", query=True, state=True)):
             raise MayaSceneMetadataError("Maya undo must be enabled for morph value patches")
-        original = self._morph_value_attrs(MmdMorphSpec.from_mapping(self._read_morph(node)))
+        original = self._morph_value_attrs(MmdMorphSpec.from_mapping(self._read_morph(node, root=root)))
         expected_old = self._morph_value_attrs(old_morph)
         if original != expected_old:
             raise MayaSceneMetadataError(
@@ -912,7 +915,7 @@ class MayaSceneMetadataBackend:
         if morph.index != transaction["index"] or morph.binding_identity != node:
             raise MayaSceneMetadataError("morph value patch commit index/binding mismatch")
         self._require_selected_morph(transaction["root"], node, transaction["index"])
-        actual = self._morph_value_attrs(MmdMorphSpec.from_mapping(self._read_morph(node)))
+        actual = self._morph_value_attrs(MmdMorphSpec.from_mapping(self._read_morph(node, root=transaction["root"])))
         expected = dict(transaction["target_values"])
         if actual != expected:
             raise MayaSceneMetadataError(
@@ -1549,7 +1552,9 @@ class MayaSceneMetadataBackend:
                 transaction["root"], transaction["binding"], transaction["index"]
             )
             actual = self._morph_value_attrs(
-                MmdMorphSpec.from_mapping(self._read_morph(transaction["binding"]))
+                MmdMorphSpec.from_mapping(
+                    self._read_morph(transaction["binding"], root=transaction["root"])
+                )
             )
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("morph value patch rollback fingerprint mismatch")
@@ -1584,7 +1589,7 @@ class MayaSceneMetadataBackend:
             seen_bindings.add(identity)
             if self._node_type(identity) != "network":
                 raise MayaSceneMetadataError(f"{identity!r}: morph binding must be a network node")
-            metadata = self._read_morph(identity)
+            metadata = self._read_morph(identity, root=root)
             index = metadata["index"]
             previous = seen_indices.get(index)
             if previous is not None:
@@ -1650,10 +1655,9 @@ class MayaSceneMetadataBackend:
                 members.append(identity)
         return members
 
-    def _read_morph(self, node: str) -> dict[str, Any]:
+    def _read_morph(self, node: str, *, root: str | None = None) -> dict[str, Any]:
         morph_type = self._required_string(node, "mmd_morph_type")
         attr_by_type = {
-            "vertex": ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON,
             "bone": ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
             "group": "mmd_group_morph_offsets_json",
             "material": "mmd_material_morph_offsets_json",
@@ -1665,11 +1669,19 @@ class MayaSceneMetadataBackend:
             "flip": ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
             "impulse": ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
         }
-        try:
-            offsets_attr = attr_by_type[morph_type]
-        except KeyError as exc:
-            raise MayaSceneMetadataError(f"{node}.mmd_morph_type is unknown: {morph_type!r}") from exc
-        offsets = self._required_morph_offsets(node, offsets_attr, morph_type)
+        if morph_type == "vertex":
+            if not isinstance(root, str) or not root:
+                raise MayaSceneMetadataError(
+                    f"{node} vertex morph requires an explicit model root for blendShape binding"
+                )
+            index = self._required_int(node, "mmd_morph_index", minimum=0)
+            offsets = self._read_vertex_blendshape_offsets(root, node, index)
+        else:
+            try:
+                offsets_attr = attr_by_type[morph_type]
+            except KeyError as exc:
+                raise MayaSceneMetadataError(f"{node}.mmd_morph_type is unknown: {morph_type!r}") from exc
+            offsets = self._required_morph_offsets(node, offsets_attr, morph_type)
         unsupported = morph_type in {"flip", "impulse"}
         return {
             "name": self._required_string(node, "mmd_morph_name"),
@@ -1682,6 +1694,233 @@ class MayaSceneMetadataBackend:
             "runtime_capability": "unsupported" if unsupported else "supported",
             "loss_policy": "reject" if unsupported else "none",
         }
+
+    def _read_vertex_blendshape_offsets(
+        self,
+        root: str,
+        binding: str,
+        morph_index: int,
+    ) -> list[dict[str, Any]]:
+        """Read sparse PMX deltas from the exact controller-owned blendShapes.
+
+        Vertex network nodes intentionally do not carry a JSON offset copy.
+        Their controller output destinations and the blendShape target data
+        are the sole source of truth.  Any missing or ambiguous ownership or
+        source-index mapping fails closed before a spec is published.
+        """
+        controllers = tuple(
+            self._list_connections(
+                f"{root}.mmd_morph_controller", source=True, destination=False
+            )
+        )
+        if len(controllers) != 1:
+            raise MayaSceneMetadataError(
+                f"{root}.mmd_morph_controller must have exactly one controller for vertex morphs"
+            )
+        controller = self._material_identity(controllers[0])
+        destinations = tuple(
+            self._list_connections(
+                f"{controller}.outputWeight[{morph_index}]",
+                source=False,
+                destination=True,
+                plugs=True,
+            )
+        )
+        if not destinations:
+            raise MayaSceneMetadataError(
+                f"vertex morph {binding!r} has no blendShape output binding"
+            )
+
+        scale = self._required_number(root, ATTR_MMD_IMPORT_SCALE)
+        if scale <= 0.0:
+            raise MayaSceneMetadataError(f"{root}.{ATTR_MMD_IMPORT_SCALE} must be positive")
+        offsets: dict[int, tuple[float, float, float]] = {}
+        target_seen = False
+        for destination in destinations:
+            destination = str(destination)
+            if "." not in destination:
+                raise MayaSceneMetadataError(
+                    f"vertex morph {morph_index} output is not a blendShape plug: {destination!r}"
+                )
+            blend_shape, target_index = self._resolve_vertex_weight_destination(
+                destination, morph_index
+            )
+            mapping = self._read_vertex_target_mapping(blend_shape)
+            entry = mapping.get(str(target_index))
+            if not isinstance(entry, Mapping) or entry.get("index") != morph_index:
+                raise MayaSceneMetadataError(
+                    f"blendShape {blend_shape!r} target {target_index} metadata does not match morph {morph_index}"
+                )
+            geometries = tuple(
+                self._call_adapter("blend_shape", blend_shape, query=True, geometry=True) or ()
+            )
+            geometry_indices = tuple(
+                self._call_adapter("blend_shape", blend_shape, query=True, geometryIndices=True) or ()
+            )
+            if len(geometries) != len(geometry_indices):
+                raise MayaSceneMetadataError(
+                    f"blendShape {blend_shape!r} geometry/index topology is ambiguous"
+            )
+            for geometry, geometry_index in zip(geometries, geometry_indices):
+                geometry = self._material_identity(str(geometry))
+                source_indices = self._read_vertex_source_indices(geometry)
+                group = (
+                    f"{blend_shape}.inputTarget[{int(geometry_index)}]."
+                    f"inputTargetGroup[{target_index}]"
+                )
+                item_indices = self._call_adapter(
+                    "get_attr", f"{group}.inputTargetItem", multiIndices=True
+                ) or ()
+                if 6000 not in {int(value) for value in item_indices}:
+                    continue
+                target_seen = True
+                item = f"{group}.inputTargetItem[6000]"
+                points = self._call_adapter("get_attr", f"{item}.inputPointsTarget") or ()
+                components = self._call_adapter("get_attr", f"{item}.inputComponentsTarget") or ()
+                if len(points) != len(components):
+                    raise MayaSceneMetadataError(
+                        f"{item} points/components lengths differ"
+                    )
+                for point, component in zip(points, components):
+                    component_match = re.search(r"(?:^|\.)vtx\[(\d+)\]$", str(component))
+                    if component_match is None:
+                        raise MayaSceneMetadataError(
+                            f"{item} contains invalid component {component!r}"
+                        )
+                    local_index = int(component_match.group(1))
+                    if not 0 <= local_index < len(source_indices):
+                        raise MayaSceneMetadataError(
+                            f"{item} component index {local_index} is out of range"
+                        )
+                    try:
+                        delta = tuple(float(point[axis]) / scale for axis in range(3))
+                    except (IndexError, TypeError, ValueError) as exc:
+                        raise MayaSceneMetadataError(
+                            f"{item} contains invalid point data {point!r}"
+                        ) from exc
+                    if not all(math.isfinite(value) for value in delta):
+                        raise MayaSceneMetadataError(f"{item} contains non-finite point data")
+                    pmx_delta = tuple(
+                        0.0 if value == 0.0 else value
+                        for value in (delta[0], delta[1], -delta[2])
+                    )
+                    source_index = source_indices[local_index]
+                    if source_index in offsets:
+                        raise MayaSceneMetadataError(
+                            f"vertex morph {morph_index} maps source vertex {source_index} more than once"
+                        )
+                    offsets[source_index] = pmx_delta
+        if not target_seen:
+            raise MayaSceneMetadataError(
+                f"vertex morph {morph_index} has no full-weight blendShape target"
+            )
+        return [
+            {"vertex_index": index, "position_offset": list(offsets[index])}
+            for index in sorted(offsets)
+            if any(abs(value) > 1e-8 for value in offsets[index])
+        ]
+
+    def _resolve_vertex_weight_destination(
+        self, destination: str, morph_index: int
+    ) -> tuple[str, int]:
+        """Resolve an explicit weight plug or one unique blendShape alias."""
+        if "." not in destination:
+            raise MayaSceneMetadataError(
+                f"vertex morph {morph_index} has invalid output {destination!r}"
+            )
+        raw_node, plug_or_alias = destination.rsplit(".", 1)
+        node = self._material_identity(raw_node)
+        explicit = re.fullmatch(r"(?:weight|w)\[(\d+)\]", plug_or_alias)
+        if explicit is not None:
+            if self._node_type(node) != "blendShape":
+                raise MayaSceneMetadataError(
+                    f"vertex morph {morph_index} has non-blendShape output {destination!r}"
+                )
+            return node, int(explicit.group(1))
+        if self._node_type(node) != "blendShape":
+            raise MayaSceneMetadataError(
+                f"vertex morph {morph_index} has non-blendShape output {destination!r}"
+            )
+        flat = list(self._call_adapter("alias_attr", node, query=True) or ())
+        matches: list[int] = []
+        for candidate_alias, plug in zip(flat[0::2], flat[1::2]):
+            if str(candidate_alias) != plug_or_alias:
+                continue
+            plug_match = re.fullmatch(r"(?:weight|w)\[(\d+)\]", str(plug))
+            if plug_match is not None:
+                matches.append(int(plug_match.group(1)))
+        if len(matches) != 1:
+            raise MayaSceneMetadataError(
+                f"vertex morph {morph_index} alias output is ambiguous: {destination!r}"
+            )
+        return node, matches[0]
+
+    def _read_vertex_source_indices(self, geometry: str) -> list[int]:
+        """Resolve local vertex order to PMX source indices.
+
+        Imported meshes only persist ``mmd_source_vertex_indices`` when a
+        split/compaction changed local order.  An untagged mesh therefore uses
+        the identity mapping, matching ``maya_morph_authoring._source_vertex_map``.
+        """
+        owner = geometry
+        if not self._has_attr(owner, ATTR_MMD_SOURCE_VERTEX_INDICES):
+            parents = tuple(
+                self._call_adapter("list_relatives", geometry, parent=True, fullPath=True) or ()
+            )
+            if len(parents) > 1:
+                raise MayaSceneMetadataError(f"geometry {geometry!r} has ambiguous parents")
+            if parents:
+                owner = self._material_identity(str(parents[0]))
+
+        vertex_count = self._call_adapter("poly_evaluate", geometry, vertex=True)
+        if isinstance(vertex_count, bool) or not isinstance(vertex_count, int) or vertex_count < 0:
+            raise MayaSceneMetadataError(f"geometry {geometry!r} returned an invalid vertex count")
+        if not self._has_attr(owner, ATTR_MMD_SOURCE_VERTEX_INDICES):
+            return list(range(vertex_count))
+
+        raw = self._call_adapter("get_attr", f"{owner}.{ATTR_MMD_SOURCE_VERTEX_INDICES}")
+        if isinstance(raw, tuple) and len(raw) == 1 and isinstance(raw[0], (list, tuple)):
+            raw = raw[0]
+        if isinstance(raw, (str, bytes, bytearray)) or not isinstance(raw, (list, tuple)):
+            raise MayaSceneMetadataError(
+                f"geometry {geometry!r} has invalid source vertex mapping"
+            )
+        if len(raw) != vertex_count:
+            raise MayaSceneMetadataError(
+                f"geometry {geometry!r} has invalid source vertex mapping"
+            )
+        source_indices: list[int] = []
+        seen: set[int] = set()
+        for source_index in raw:
+            if isinstance(source_index, bool) or not isinstance(source_index, int) or source_index < 0:
+                raise MayaSceneMetadataError(
+                    f"geometry {geometry!r} has invalid source vertex index"
+                )
+            if source_index in seen:
+                raise MayaSceneMetadataError(
+                    f"geometry {geometry!r} maps source vertex {source_index} more than once"
+                )
+            seen.add(source_index)
+            source_indices.append(source_index)
+        return source_indices
+
+    def _read_vertex_target_mapping(self, blend_shape: str) -> dict[str, Any]:
+        if not self._has_attr(blend_shape, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON):
+            raise MayaSceneMetadataError(
+                f"blendShape {blend_shape!r} is missing {ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}"
+            )
+        raw = self._required_string(blend_shape, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON)
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise MayaSceneMetadataError(
+                f"{blend_shape}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON} must contain JSON"
+            ) from exc
+        if not isinstance(value, Mapping):
+            raise MayaSceneMetadataError(
+                f"{blend_shape}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON} must contain an object"
+            )
+        return dict(value)
 
     def _required_morph_offsets(self, node: str, attr: str, morph_type: str) -> list[dict[str, Any]]:
         raw = self._required_string(node, attr)

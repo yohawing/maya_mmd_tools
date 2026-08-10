@@ -416,7 +416,11 @@ class MmdBoneSpec(metaclass=_ReloadCompatibleSpecMeta):
 
 @dataclass(frozen=True)
 class MmdMorphSpec(metaclass=_ReloadCompatibleSpecMeta):
-    """PMX morph definition with immutable raw offsets and loss policy."""
+    """PMX morph definition with immutable offsets-shaped writer payload.
+
+    Vertex offsets are transient scene-read/export values sourced from the
+    owned blendShape target; they are not persisted as a second JSON copy.
+    """
 
     name: str
     name_english: str = ""

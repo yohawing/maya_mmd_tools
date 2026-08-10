@@ -17,7 +17,6 @@ from ..qt_compat import (
     QTabWidget,
     QSplitter,
     QCheckBox,
-    QTextEdit,
     QMenu,
 )
 from ..base_tab import BaseTab
@@ -137,9 +136,9 @@ class MorphTab(BaseTab):
 
         # 基本情報タブ
         self.detail_tabs.addTab(self._create_basic_info_tab(), self.tr("basic_information", "tabs"))
-        self.detail_tabs.addTab(self._create_offsets_tab(), "Offsets")
 
         layout.addWidget(self.detail_tabs)
+        layout.addWidget(self._create_work_material_controls())
 
         # プレビューセクション
         self.preview_group = QGroupBox(self.tr("preview", "groups"))
@@ -199,18 +198,15 @@ class MorphTab(BaseTab):
 
         return widget
 
-    def _create_offsets_tab(self):
-        """Create the raw canonical offset JSON editor."""
+    def _create_work_material_controls(self):
+        """Create the material-morph work shader controls.
+
+        Raw offset JSON is intentionally not part of the user-facing morph
+        tab.  Material morph editing remains available through the dedicated
+        temporary work-material workflow below the semantic details.
+        """
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        self.offset_policy_label = QLabel("")
-        self.offset_policy_label.setWordWrap(True)
-        layout.addWidget(self.offset_policy_label)
-        self.offsets_edit = QTextEdit()
-        self.offsets_edit.setAcceptRichText(False)
-        layout.addWidget(self.offsets_edit)
-        self.apply_offsets_btn = QPushButton("Apply Offsets")
-        layout.addWidget(self.apply_offsets_btn)
         work_layout = QHBoxLayout()
         self.work_offset_combo = QComboBox()
         self.create_work_material_btn = QPushButton(
@@ -312,20 +308,12 @@ class MorphTab(BaseTab):
             self.morph_name_en_edit,
             self.panel_combo,
             self.morph_type_combo,
-            self.offsets_edit,
-            self.apply_offsets_btn,
             self.apply_btn,
         ):
             widget.setEnabled(enabled)
             widget.setToolTip(tooltip)
         for action in ("create", "delete", "move_up", "move_down"):
             self.morph_authoring_toolbar.set_action_enabled(action, enabled, tooltip, reason_key)
-
-    def set_offsets_editable(self, editable, policy_text=""):
-        """Keep round-trip JSON visible when policy disables editing."""
-        self.offsets_edit.setReadOnly(not editable)
-        self.apply_offsets_btn.setEnabled(editable)
-        self.offset_policy_label.setText(policy_text)
 
     def set_work_material_controls(self, enabled, offsets=(), tooltip=""):
         """Populate work-offset choices and gate temporary material actions."""
@@ -386,8 +374,6 @@ class MorphTab(BaseTab):
         # Tab widget texts
         if self.detail_tabs.count() >= 1:
             self.detail_tabs.setTabText(0, self.tr("basic_information", "tabs"))
-        if self.detail_tabs.count() >= 2:
-            self.detail_tabs.setTabText(1, "Offsets")
         self.create_work_material_btn.setText(self.tr("create_work_material", "buttons"))
         self.apply_work_material_btn.setText(self.tr("apply_work_material", "buttons"))
         self.clear_work_material_btn.setText(self.tr("clear_work_material", "buttons"))

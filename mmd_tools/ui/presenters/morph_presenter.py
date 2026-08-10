@@ -81,10 +81,6 @@ _CREATE_MORPH_TYPES = (
     "flip",
     "impulse",
 )
-_EDITABLE_OFFSET_TYPES = frozenset({"vertex", "bone", "group", "material"})
-_ROUNDTRIP_ONLY_OFFSET_TYPES = frozenset(
-    {"uv", "additional_uv1", "additional_uv2", "additional_uv3", "additional_uv4"}
-)
 class MorphPresenter:
     def __init__(
         self,
@@ -148,7 +144,6 @@ class MorphPresenter:
             ("delete_morph_btn", "clicked", self.delete_current_morph),
             ("move_morph_up_btn", "clicked", lambda: self.move_current_morph(-1)),
             ("move_morph_down_btn", "clicked", lambda: self.move_current_morph(1)),
-            ("apply_offsets_btn", "clicked", self.apply_offsets),
             ("create_work_material_btn", "clicked", self.create_work_material),
             ("apply_work_material_btn", "clicked", self.apply_work_material),
             ("clear_work_material_btn", "clicked", self.clear_work_material),
@@ -235,7 +230,6 @@ class MorphPresenter:
             "read_spec",
             "create_morph",
             "replace_morph",
-            "replace_morph_offsets",
             "delete_morph",
             "move_morph",
             "reindex_morphs",
@@ -918,11 +912,6 @@ class MorphPresenter:
             )
 
         semantic = self._semantic_morph(data)
-        offsets_edit = getattr(self.view, "offsets_edit", None)
-        if offsets_edit is not None:
-            offsets = semantic.to_mapping()["offsets"] if semantic else data.get("offsets", [])
-            offsets_edit.setPlainText(json.dumps(offsets, ensure_ascii=False, indent=2))
-        self._update_offset_policy(semantic)
         self._update_work_material_policy(semantic)
 
         # 現在の適用率
@@ -951,23 +940,6 @@ class MorphPresenter:
             return self._authoring_morphs_by_index.get(int(data.get("index", -1)))
         except (TypeError, ValueError):
             return None
-
-    def _update_offset_policy(self, morph):
-        setter = getattr(self.view, "set_offsets_editable", None)
-        if not callable(setter):
-            return
-        if not self._authoring_ready or morph is None:
-            setter(False, "Authoring coordinator is not available")
-            return
-        data = self.morph_data.get(self.current_morph, {})
-        if morph.morph_type == "vertex" and not data.get("blend_shape_targets"):
-            setter(False, "Vertex offsets require an exact imported blendShape target binding")
-        elif morph.morph_type in _EDITABLE_OFFSET_TYPES:
-            setter(True, "Canonical PMX offsets (JSON)")
-        elif morph.morph_type in _ROUNDTRIP_ONLY_OFFSET_TYPES:
-            setter(False, "Round-trip metadata only; runtime editing is not supported")
-        else:
-            setter(False, "PMX 2.1 Flip/Impulse authoring is rejected by policy")
 
     def _update_work_material_policy(self, morph):
         setter = getattr(self.view, "set_work_material_controls", None)
@@ -1376,48 +1348,6 @@ class MorphPresenter:
                             )
                         )
                     break
-
-    def apply_offsets(self):
-        """Persist canonical raw offsets without changing preview weight."""
-        root = self.app_state.current_model_root
-        morph = self._semantic_morph()
-        editor = getattr(self.view, "offsets_edit", None)
-        if not self._authoring_ready or not root or morph is None or editor is None:
-            return
-        if morph.morph_type not in _EDITABLE_OFFSET_TYPES:
-            self._emit_authoring_error(f"{morph.morph_type} offsets are read-only")
-            return
-        try:
-            offsets = json.loads(editor.toPlainText())
-        except (TypeError, ValueError) as exc:
-            self._emit_authoring_error(f"Invalid offsets JSON: {exc}")
-            return
-        if not isinstance(offsets, list):
-            self._emit_authoring_error("Offsets JSON must be a list")
-            return
-        selected_reader = getattr(self.authoring_coordinator, "read_morph_value", None)
-        selected_writer = getattr(self.authoring_coordinator, "apply_morph_value_patch", None)
-        try:
-            if callable(selected_reader) and callable(selected_writer):
-                prior = selected_reader(root, morph.index, morph.binding_identity)
-                replacement = replace(prior, offsets=tuple(offsets))
-                route = classify_morph_change(prior, replacement)
-                if route in {"value", "noop"}:
-                    result = prior if route == "noop" else selected_writer(root, replacement)
-                    self._update_selected_row_after_patch(result)
-                    self.load_morph_details(self.current_morph)
-                    self.app_state.emit_status("replace morph offsets completed")
-                    return
-            self._run_authoring(
-                "replace morph offsets",
-                self.authoring_coordinator.replace_morph_offsets,
-                root,
-                morph.index,
-                offsets,
-                select_index=morph.index,
-            )
-        except Exception as exc:
-            self._emit_authoring_error(f"replace morph offsets failed: {exc}")
 
     def _selected_work_offset_index(self):
         combo = getattr(self.view, "work_offset_combo", None)

@@ -21,7 +21,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
-    ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
 )
 from mmd_tools.core.morph_metadata_reader import PMX_MORPH_TYPE_NAMES
@@ -189,11 +188,11 @@ class MorphConverter:
         material_vertex_sets = self._build_pmx_material_vertex_sets(pmx_data)
         skipped_vertex_morphs_by_material = 0
 
-        # Preserve one lossless semantic metadata node for every PMX vertex
-        # morph before touching any mesh.  The blendShape targets below remain
-        # the live preview binding; these network nodes are only the semantic
-        # authority for the original PMX offsets and are intentionally not
-        # connected to the morph controller.
+        # Keep one semantic metadata node for every PMX vertex morph before
+        # touching any mesh.  The blendShape target is the sole authority for
+        # vertex offsets; this network node carries only the stable PMX
+        # name/index/panel/type binding metadata used by the controller and
+        # authoring registry.
         vertex_morph_metadata = []
         for morph_index, morph in enumerate(pmx_data.morphs):
             if morph.morph_type != PmxMorphType.VertexMorph:
@@ -212,11 +211,6 @@ class MorphConverter:
                     "mmd_morph_type": "vertex",
                     "mmd_morph_index": int(morph_index),
                     "mmd_morph_panel": int(getattr(morph, "panel", 0)),
-                    ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON: json.dumps(
-                        offsets,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
                 },
             )
             vertex_morph_nodes.append(morph_node)

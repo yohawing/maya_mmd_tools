@@ -5,9 +5,9 @@ This module mutates registry-owned morph network nodes and the fixed-index
 the scene metadata coordinator must call it inside the same transaction that
 persists the resulting :class:`MmdModelAuthoringSpec`.
 
-Vertex morph offsets remain coupled to imported blendShape targets.  Until a
-blendShape target rebuilder is available, any change which would invalidate
-that oracle is rejected before the first Maya write.
+Vertex morph offsets remain coupled to imported blendShape targets.  The
+blendShape target is the sole value authority; registry nodes retain only the
+stable PMX binding metadata needed to locate that target.
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
-    ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
     ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
@@ -41,7 +40,9 @@ from mmd_tools.converters.morph_converter import pmx_vertex_offset_to_maya_tuple
 REGISTRY_CATEGORY_MORPH = "morph"
 _UNSUPPORTED_TYPES = {"flip", "impulse"}
 _OFFSET_ATTRS = {
-    "vertex": (ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON,),
+    # Vertex offsets live in the owned blendShape target.  Keep no duplicate
+    # JSON attribute on the registry node; the remaining entries are the raw
+    # metadata used by non-Vertex morph evaluators/export.
     "bone": (ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON, "mmd_bone_morph_offsets_json"),
     "group": ("mmd_group_morph_offsets_json",),
     "material": ("mmd_material_morph_offsets_json",),
@@ -1527,9 +1528,10 @@ def _write_morph(adapter: Any, node: str, morph: MmdMorphSpec) -> None:
         "mmd_morph_index": ("long", morph.index),
         "mmd_morph_panel": ("long", morph.panel),
     }
-    payload = json.dumps(morph.to_mapping()["offsets"], ensure_ascii=False, separators=(",", ":"))
-    for attr in _OFFSET_ATTRS[morph.morph_type]:
-        values[attr] = ("string", payload)
+    if morph.morph_type != "vertex":
+        payload = json.dumps(morph.to_mapping()["offsets"], ensure_ascii=False, separators=(",", ":"))
+        for attr in _OFFSET_ATTRS[morph.morph_type]:
+            values[attr] = ("string", payload)
     count_attr = _OFFSET_COUNT_ATTRS.get(morph.morph_type)
     if count_attr is not None:
         values[count_attr] = ("long", len(morph.offsets))
@@ -1552,6 +1554,10 @@ def _write_morph_values(
     if "panel" in changed:
         _set_typed(adapter, node, "mmd_morph_panel", "long", new.panel)
     if "offsets" in changed:
+        if old.morph_type == "vertex":
+            # Vertex values are written to blendShape inputTarget data by the
+            # runtime patch below; never recreate a persisted JSON shadow.
+            return
         payload = json.dumps(new.to_mapping()["offsets"], ensure_ascii=False, separators=(",", ":"))
         for attr in _OFFSET_ATTRS[old.morph_type]:
             _set_typed(adapter, node, attr, "string", payload)
@@ -1749,7 +1755,7 @@ def _patch_vertex_runtime_values(
     for destination in destinations:
         node, target_index = _resolve_vertex_weight_destination(adapter, str(destination), new.index)
         if _call(adapter, "node_type", node) != "blendShape":
-            continue
+            _fail(f"selected vertex morph {binding!r} has non-blendShape output {destination!r}")
         geometries = tuple(_call(adapter, "blend_shape", node, query=True, geometry=True) or ())
         geometry_indices = tuple(
             _call(adapter, "blend_shape", node, query=True, geometryIndices=True) or ()

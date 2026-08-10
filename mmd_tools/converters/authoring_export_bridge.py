@@ -44,9 +44,6 @@ class AuthoringExportIntegrationError(ValueError):
 
 
 _MISSING = object()
-_VERTEX_OFFSET_TOLERANCE = 1e-6
-
-
 def _fail(message: str) -> None:
     raise AuthoringExportIntegrationError(message)
 
@@ -296,69 +293,41 @@ def _project_material_texture_fields(
     return texture_table
 
 
-def _offset_components(offset: Mapping[str, Any], *, field: str) -> tuple[int, tuple[float, float, float]]:
-    vertex_index = _require_index(offset.get("vertex_index", _MISSING), field=f"{field}.vertex_index")
-    position = offset.get("position_offset", _MISSING)
-    if isinstance(position, (str, bytes, bytearray)) or not isinstance(position, Sequence) or len(position) != 3:
-        _fail(f"{field}.position_offset must contain exactly three numbers")
-    normalized: list[float] = []
-    for component_index, component in enumerate(position):
-        if isinstance(component, bool) or not isinstance(component, (int, float)):
-            _fail(f"{field}.position_offset[{component_index}] must be a number")
-        value = float(component)
-        if not math.isfinite(value):
-            _fail(f"{field}.position_offset[{component_index}] must be finite")
-        normalized.append(value)
-    return vertex_index, (normalized[0], normalized[1], normalized[2])
-
-
-def _vertex_offsets_match(expected: Sequence[Any], actual: Sequence[Any], *, field: str) -> bool:
-    expected_values = [_offset_components(_require_mapping(item, field=f"{field}.spec[{i}]"), field=f"{field}.spec[{i}]") for i, item in enumerate(expected)]
-    actual_values = [_offset_components(_require_mapping(item, field=f"{field}.oracle[{i}]"), field=f"{field}.oracle[{i}]") for i, item in enumerate(actual)]
-    if len(expected_values) != len(actual_values):
-        return False
-    unmatched = list(actual_values)
-    for vertex_index, position in expected_values:
-        match = next(
-            (
-                candidate
-                for candidate in unmatched
-                if candidate[0] == vertex_index
-                and all(abs(left - right) <= _VERTEX_OFFSET_TOLERANCE for left, right in zip(position, candidate[1]))
-            ),
-            None,
-        )
-        if match is None:
-            return False
-        unmatched.remove(match)
-    return not unmatched
-
-
-def _validate_vertex_morph_offsets(spec_morph: Any, oracle_morph: Mapping[str, Any], *, index: int) -> None:
-    if spec_morph.morph_type != "vertex":
-        return
-    oracle_offsets = oracle_morph.get("offsets", _MISSING)
-    if oracle_offsets is _MISSING:
-        _fail(f"morphs[{index}] is missing oracle vertex offsets")
-    oracle_offsets = _require_sequence(oracle_offsets, field=f"morphs[{index}].oracle.offsets")
-    if not _vertex_offsets_match(spec_morph.offsets, oracle_offsets, field=f"morphs[{index}].vertex_offsets"):
-        raise AuthoringExportIntegrationError(
-            f"morphs[{index}] vertex offsets differ from blendShape oracle beyond tolerance "
-            f"{_VERTEX_OFFSET_TOLERANCE}",
-            code="AUTHORING_ORACLE_MISMATCH",
-            path=f"morphs[{index}].offsets",
-        )
-
-
 def _overlay_morph(oracle: Mapping[str, Any], morph: Any) -> dict[str, Any]:
     result = dict(oracle)
+    if morph.morph_type == "vertex":
+        # blendShape inputTarget data is the only vertex-offset authority.
+        # The immutable spec still carries an offsets-shaped writer payload,
+        # but that value is intentionally ignored here.
+        oracle_offsets = oracle.get("offsets", _MISSING)
+        if oracle_offsets is _MISSING:
+            _fail("vertex morph oracle is missing blendShape offsets")
+        oracle_offsets = _require_sequence(oracle_offsets, field="oracle.vertex.offsets")
+        result_offsets = []
+        for offset_index, raw_offset in enumerate(oracle_offsets):
+            field = f"oracle.vertex.offsets[{offset_index}]"
+            offset = _require_mapping(raw_offset, field=field)
+            _require_index(offset.get("vertex_index", _MISSING), field=f"{field}.vertex_index")
+            position = offset.get("position_offset", _MISSING)
+            if isinstance(position, (str, bytes, bytearray)) or not isinstance(position, Sequence) or len(position) != 3:
+                _fail(f"{field}.position_offset must contain exactly three numbers")
+            if any(
+                isinstance(component, bool)
+                or not isinstance(component, (int, float))
+                or not math.isfinite(component)
+                for component in position
+            ):
+                _fail(f"{field}.position_offset must contain only finite numbers")
+            result_offsets.append(dict(offset))
+    else:
+        result_offsets = [dict(offset) for offset in morph.offsets]
     result.update(
         {
             "type": morph.morph_type,
             "name": morph.name,
             "name_english": morph.name_english,
             "panel": morph.panel,
-            "offsets": [dict(offset) for offset in morph.offsets],
+            "offsets": result_offsets,
         }
     )
     return result
@@ -433,7 +402,8 @@ def project_authoring_spec(
     projected_morphs: list[dict[str, Any]] = []
     for index, morph in enumerate(spec.morphs):
         oracle_morph = morph_by_index[index]
-        _validate_vertex_morph_offsets(morph, oracle_morph, index=index)
+        if oracle_morph.get("type", _MISSING) != morph.morph_type:
+            _fail(f"oracle.morphs[{index}].type does not match spec morph type")
         projected_morphs.append(_overlay_morph(oracle_morph, morph))
     result["morphs"] = projected_morphs
     result["textures"] = _project_material_texture_fields(

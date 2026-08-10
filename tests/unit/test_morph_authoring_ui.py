@@ -21,29 +21,6 @@ from tests.unit.test_morph_presenter_headless import (  # noqa: E402
 )
 
 
-class _FakeTextEdit:
-    def __init__(self):
-        self.text = "[]"
-        self.read_only = False
-        self.enabled = True
-        self.tooltip = ""
-
-    def setPlainText(self, text):
-        self.text = text
-
-    def toPlainText(self):
-        return self.text
-
-    def setReadOnly(self, value):
-        self.read_only = bool(value)
-
-    def setEnabled(self, value):
-        self.enabled = bool(value)
-
-    def setToolTip(self, value):
-        self.tooltip = value
-
-
 @dataclass
 class _Coordinator:
     spec: MmdModelAuthoringSpec
@@ -103,26 +80,17 @@ def _view():
     view.delete_morph_btn = _FakeButton()
     view.move_morph_up_btn = _FakeButton()
     view.move_morph_down_btn = _FakeButton()
-    view.apply_offsets_btn = _FakeButton()
     view.work_offset_combo = _FakeComboBox()
     view.create_work_material_btn = _FakeButton()
     view.apply_work_material_btn = _FakeButton()
     view.clear_work_material_btn = _FakeButton()
-    view.offsets_edit = _FakeTextEdit()
-    view.offset_policy = (False, "")
     view.authoring_enabled = None
     view.work_controls = (False, (), "")
 
     def set_authoring_controls_enabled(enabled, tooltip="", reason_key=""):
         view.authoring_enabled = (enabled, tooltip)
 
-    def set_offsets_editable(editable, policy=""):
-        view.offset_policy = (editable, policy)
-        view.offsets_edit.setReadOnly(not editable)
-        view.apply_offsets_btn.setEnabled(editable)
-
     view.set_authoring_controls_enabled = set_authoring_controls_enabled
-    view.set_offsets_editable = set_offsets_editable
     view.set_work_material_controls = (
         lambda enabled, offsets=(), tooltip="": setattr(
             view, "work_controls", (enabled, tuple(offsets), tooltip)
@@ -171,18 +139,9 @@ def test_injected_coordinator_enables_semantic_controls_and_metadata_replace():
     assert not any(call[0] == "set_attr" for call in adapter.calls)
 
 
-def test_offset_json_routes_separately_without_touching_preview_weight():
-    presenter, view, _state, adapter, coordinator = _presenter()
-    view.offsets_edit.setPlainText(
-        '[{"bone_index":0,"translation":[0,0,0],"rotation":[0,0,0,1]}]'
-    )
-
-    presenter.apply_offsets()
-
-    assert coordinator.calls[-1][0] == "offsets"
-    assert coordinator.calls[-1][1][1] == 0
-    assert coordinator.calls[-1][1][2][0]["bone_index"] == 0
-    assert not any(call[0] == "set_attr" for call in adapter.calls)
+def test_raw_offset_json_editor_is_removed_from_presenter():
+    presenter, _view, _state, _adapter, _coordinator = _presenter()
+    assert not hasattr(presenter, "apply_offsets")
 
 
 def test_uv_is_visible_roundtrip_only_and_flip_create_is_policy_rejected():
@@ -190,10 +149,6 @@ def test_uv_is_visible_roundtrip_only_and_flip_create_is_policy_rejected():
         "uv", ({"vertex_index": 0, "uv_offset": (0, 0, 0, 0)},)
     )
     presenter.load_morph_details("key")
-
-    assert view.offsets_edit.read_only is True
-    assert "Round-trip" in view.offset_policy[1]
-    assert "vertex_index" in view.offsets_edit.toPlainText()
 
     view.create_type_choice = "flip"
     presenter.create_morph()
@@ -252,12 +207,10 @@ def test_vertex_create_is_disabled_and_rejected_before_coordinator_call():
     assert "at least one owned mesh" in vertex[2]
 
 
-def test_vertex_offsets_without_exact_blendshape_binding_show_validation_reason():
-    presenter, view, _state, _adapter, _coordinator = _presenter("vertex")
+def test_vertex_offsets_have_no_user_facing_json_policy():
+    presenter, _view, _state, _adapter, _coordinator = _presenter("vertex")
     presenter.load_morph_details("key")
-
-    assert view.offset_policy[0] is False
-    assert "exact imported blendShape target" in view.offset_policy[1]
+    assert not hasattr(presenter, "apply_offsets")
 
 
 def test_missing_coordinator_disables_authoring_but_keeps_presenter_constructible():

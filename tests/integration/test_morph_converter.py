@@ -18,7 +18,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
-    ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
 )
 from mmd_tools.core.logger import get_logger
@@ -893,9 +892,12 @@ class TestMorphConverter(MayaTestBase):
             [cmds.getAttr(f"{node}.mmd_morph_index") for node in vertex_nodes],
             [0, 1],
         )
-        self.assertEqual(
-            json.loads(cmds.getAttr(f"{vertex_nodes[0]}.{ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON}")),
-            [{"vertex_index": 1, "position_offset": [0.1, 0.0, 0.0]}],
+        self.assertFalse(
+            cmds.attributeQuery(
+                "mmd_vertex_morph_offsets_raw_json",
+                node=vertex_nodes[0],
+                exists=True,
+            )
         )
 
         mesh_a_aliases = cmds.aliasAttr(result["blend_shape_nodes"][0], query=True) or []

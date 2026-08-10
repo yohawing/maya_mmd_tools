@@ -104,7 +104,7 @@ def test_projection_overlays_semantics_and_retains_oracle_payload() -> None:
     assert oracle == original
 
 
-def test_vertex_offsets_compare_as_unordered_values_with_tolerance() -> None:
+def test_vertex_offsets_are_taken_from_blendshape_oracle() -> None:
     morph = MmdMorphSpec(
         name="Vertex",
         index=0,
@@ -127,7 +127,30 @@ def test_vertex_offsets_compare_as_unordered_values_with_tolerance() -> None:
         ]
     )
     projected = project_authoring_spec(_spec(morphs=(morph,)), oracle)
-    assert projected["morphs"][0]["offsets"][0]["vertex_index"] == 2
+    assert projected["morphs"][0]["offsets"][0]["vertex_index"] == 1
+
+
+def test_vertex_oracle_without_explicit_index_uses_collection_position() -> None:
+    morph = MmdMorphSpec(name="Vertex", index=0, morph_type="vertex", offsets=())
+    oracle = _oracle(morphs=[{"type": "vertex", "offsets": []}])
+
+    projected = project_authoring_spec(_spec(morphs=(morph,)), oracle)
+
+    assert projected["morphs"][0]["offsets"] == []
+
+
+@pytest.mark.parametrize(
+    "oracle_morph, match",
+    [
+        ({"index": 1, "type": "vertex", "offsets": []}, "index must equal collection position"),
+        ({"index": 0, "type": "flip", "offsets": []}, "type does not match"),
+        ({"index": 0, "type": "vertex", "offsets": [{"vertex_index": 0, "position_offset": [0.0]}]}, "position_offset"),
+    ],
+)
+def test_vertex_oracle_rejects_invalid_binding_type_or_offsets(oracle_morph, match) -> None:
+    morph = MmdMorphSpec(name="Vertex", index=0, morph_type="vertex", offsets=())
+    with pytest.raises(AuthoringExportIntegrationError, match=match):
+        project_authoring_spec(_spec(morphs=(morph,)), _oracle(morphs=[oracle_morph]))
 
 
 def test_collector_shape_morph_without_explicit_index_uses_position() -> None:
@@ -139,16 +162,13 @@ def test_collector_shape_morph_without_explicit_index_uses_position() -> None:
     assert projected["morphs"][0]["collector_only"] is True
 
 
-def test_vertex_offset_mismatch_fails_closed() -> None:
+def test_stale_vertex_offsets_in_spec_are_ignored() -> None:
     morph = MmdMorphSpec(
         name="Vertex", index=0, morph_type="vertex", offsets=({"vertex_index": 0, "position_offset": (1.0, 0.0, 0.0)},)
     )
     oracle = _oracle(morphs=[{"index": 0, "type": "vertex", "offsets": [{"vertex_index": 0, "position_offset": [1.1, 0.0, 0.0]}]}])
-    with pytest.raises(AuthoringExportIntegrationError, match="vertex offsets differ") as exc_info:
-        project_authoring_spec(_spec(morphs=(morph,)), oracle)
-    assert exc_info.value.report.is_blocking
-    assert exc_info.value.report.issues[0].code == "AUTHORING_ORACLE_MISMATCH"
-    assert exc_info.value.report.issues[0].path == "morphs[0].offsets"
+    projected = project_authoring_spec(_spec(morphs=(morph,)), oracle)
+    assert projected["morphs"][0]["offsets"] == oracle["morphs"][0]["offsets"]
 
 
 @pytest.mark.parametrize(
