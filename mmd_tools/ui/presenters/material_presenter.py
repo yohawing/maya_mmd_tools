@@ -1026,7 +1026,7 @@ class MaterialPresenter:
             raise TypeError("authoring coordinator must expose read_spec and replace_material")
 
         current = read_spec(root)
-        if type(current) is not MmdModelAuthoringSpec:
+        if not isinstance(current, MmdModelAuthoringSpec):
             raise TypeError("authoring coordinator read_spec returned an invalid spec")
         index = self.current_material_index
         if type(index) is not int or index < 0:
@@ -1038,10 +1038,10 @@ class MaterialPresenter:
 
         replacement = self._material_from_authoring_controls(prior)
         result = replace_material(root, replacement)
-        if type(result) is not MmdModelAuthoringSpec:
+        if not isinstance(result, MmdModelAuthoringSpec):
             raise TypeError("authoring coordinator replace_material returned an invalid spec")
         reloaded = read_spec(root)
-        if type(reloaded) is not MmdModelAuthoringSpec:
+        if not isinstance(reloaded, MmdModelAuthoringSpec):
             raise TypeError("authoring coordinator strict reload returned an invalid spec")
 
         # Keep the fingerprint available for UI/application diagnostics while

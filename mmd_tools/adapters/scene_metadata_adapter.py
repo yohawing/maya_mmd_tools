@@ -13,14 +13,7 @@ from collections.abc import Iterable, Mapping
 import copy
 from typing import Any, Protocol
 
-from mmd_tools.core.model_authoring_spec import (
-    SCHEMA_VERSION,
-    MmdBoneSpec,
-    MmdMaterialSpec,
-    MmdModelAuthoringSpec,
-    MmdModelSpec,
-    MmdMorphSpec,
-)
+from mmd_tools.core import model_authoring_spec as _authoring_spec
 
 
 class SceneMetadataError(ValueError):
@@ -74,7 +67,11 @@ class SceneMetadataAdapter:
     def __init__(self, backend: SceneMetadataBackend) -> None:
         self._backend = backend
 
-    def write_spec(self, model_root: str, spec: MmdModelAuthoringSpec) -> None:
+    def write_spec(
+        self,
+        model_root: str,
+        spec: _authoring_spec.MmdModelAuthoringSpec,
+    ) -> None:
         """Persist one immutable authoring spec through a backend transaction.
 
         Validation and serialization happen before ``begin_write`` so invalid
@@ -91,7 +88,7 @@ class SceneMetadataAdapter:
                 commit, or rollback fails.
         """
         self._validate_root(model_root)
-        if not isinstance(spec, MmdModelAuthoringSpec):
+        if not isinstance(spec, _authoring_spec.MmdModelAuthoringSpec):
             raise SceneMetadataError("spec must be an MmdModelAuthoringSpec")
         try:
             payload = spec.to_mapping()
@@ -138,7 +135,7 @@ class SceneMetadataAdapter:
                 f"{original_error}; rollback failed for root {model_root!r}: {rollback_error}"
             ) from rollback_error
 
-    def read_spec(self, model_root: str) -> MmdModelAuthoringSpec:
+    def read_spec(self, model_root: str) -> _authoring_spec.MmdModelAuthoringSpec:
         """Read and strictly validate one model root's semantic metadata.
 
         Backend iteration order is not semantic order.  Parsed collections are
@@ -158,17 +155,27 @@ class SceneMetadataAdapter:
         """
         self._validate_root(model_root)
         model = self._read_model(model_root)
-        bones = self._read_collection(model_root, "bones", "iter_bone_metadata", MmdBoneSpec.from_mapping)
+        bones = self._read_collection(
+            model_root,
+            "bones",
+            "iter_bone_metadata",
+            _authoring_spec.MmdBoneSpec.from_mapping,
+        )
         materials = self._read_collection(
             model_root,
             "materials",
             "iter_material_metadata",
-            MmdMaterialSpec.from_mapping,
+            _authoring_spec.MmdMaterialSpec.from_mapping,
         )
-        morphs = self._read_collection(model_root, "morphs", "iter_morph_metadata", MmdMorphSpec.from_mapping)
+        morphs = self._read_collection(
+            model_root,
+            "morphs",
+            "iter_morph_metadata",
+            _authoring_spec.MmdMorphSpec.from_mapping,
+        )
         try:
-            return MmdModelAuthoringSpec(
-                schema_version=SCHEMA_VERSION,
+            return _authoring_spec.MmdModelAuthoringSpec(
+                schema_version=_authoring_spec.SCHEMA_VERSION,
                 model=model,
                 bones=tuple(sorted(bones, key=lambda item: item.index)),
                 materials=tuple(sorted(materials, key=lambda item: item.index)),
@@ -177,7 +184,7 @@ class SceneMetadataAdapter:
         except Exception as exc:
             raise SceneMetadataError(f"invalid semantic metadata for model root {model_root!r}: {exc}") from exc
 
-    def _read_model(self, model_root: str) -> MmdModelSpec:
+    def _read_model(self, model_root: str) -> _authoring_spec.MmdModelSpec:
         try:
             reader = getattr(self._backend, "read_model_metadata")
             raw = reader(model_root)
@@ -186,7 +193,7 @@ class SceneMetadataAdapter:
         if not isinstance(raw, Mapping):
             raise SceneMetadataError(f"model metadata for root {model_root!r} must be a mapping")
         try:
-            return MmdModelSpec.from_mapping(raw)
+            return _authoring_spec.MmdModelSpec.from_mapping(raw)
         except Exception as exc:
             raise SceneMetadataError(f"invalid model metadata for root {model_root!r}: {exc}") from exc
 

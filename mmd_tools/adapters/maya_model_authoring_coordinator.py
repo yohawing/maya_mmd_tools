@@ -10,7 +10,7 @@ specification with fingerprint verification.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import is_dataclass, replace
 import math
 from typing import Any, Callable
 
@@ -46,6 +46,11 @@ from mmd_tools.core.morph_authoring import (
     replace_morph_offsets as replace_morph_offsets_spec,
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+from mmd_tools.core.logger import get_logger
+
+
+logger = get_logger(__name__)
+_REHYDRATED_SPEC_TYPE_IDS: set[int] = set()
 
 
 class MayaModelAuthoringCoordinatorError(RuntimeError):
@@ -161,7 +166,7 @@ class MayaModelAuthoringCoordinator:
     ) -> MmdModelAuthoringSpec:
         """Replace one material through a single binding/metadata transaction."""
         current = self._read_current(model_root, "replace_material")
-        if type(material) is not MmdMaterialSpec:
+        if not isinstance(material, MmdMaterialSpec):
             raise MayaModelAuthoringCoordinatorError(
                 "replace_material requires an MmdMaterialSpec"
             )
@@ -184,7 +189,7 @@ class MayaModelAuthoringCoordinator:
 
         def bind() -> MmdModelAuthoringSpec:
             result = structural_replace(model_root, current, target)
-            if type(result) is not MmdModelAuthoringSpec:
+            if not isinstance(result, MmdModelAuthoringSpec):
                 raise TypeError("material binding replacement returned an invalid spec")
             return result
 
@@ -216,7 +221,7 @@ class MayaModelAuthoringCoordinator:
                 target,
                 replacement_shader,
             )
-            if type(result) is not MmdModelAuthoringSpec:
+            if not isinstance(result, MmdModelAuthoringSpec):
                 raise TypeError("apply_material_spec_change returned an invalid spec")
             return result
 
@@ -241,7 +246,7 @@ class MayaModelAuthoringCoordinator:
 
         def bind() -> MmdModelAuthoringSpec:
             result = structural_change(model_root, current, target, None)
-            if type(result) is not MmdModelAuthoringSpec:
+            if not isinstance(result, MmdModelAuthoringSpec):
                 raise TypeError("apply_material_spec_change returned an invalid spec")
             return result
 
@@ -279,7 +284,7 @@ class MayaModelAuthoringCoordinator:
     def register_bone(self, model_root: str, bone: MmdBoneSpec) -> MmdModelAuthoringSpec:
         """Register an existing descendant joint and persist its long identity."""
         current = self._read_current(model_root, "register_bone")
-        if type(bone) is not MmdBoneSpec or bone.binding_identity is None:
+        if not isinstance(bone, MmdBoneSpec) or bone.binding_identity is None:
             raise MayaModelAuthoringCoordinatorError(
                 "register_bone requires an MmdBoneSpec with binding_identity"
             )
@@ -349,7 +354,7 @@ class MayaModelAuthoringCoordinator:
     ) -> MmdModelAuthoringSpec:
         """Replace one bone and its Maya position in one undo transaction."""
         current = self._read_current(model_root, "replace_bone")
-        if type(bone) is not MmdBoneSpec:
+        if not isinstance(bone, MmdBoneSpec):
             raise MayaModelAuthoringCoordinatorError("replace_bone requires an MmdBoneSpec")
         previous = self._bone(current, bone.index)
         if bone.binding_identity is None:
@@ -406,7 +411,7 @@ class MayaModelAuthoringCoordinator:
         transaction.  Reset is the sole operation that captures transforms.
         """
         current = self._read_current(model_root, "replace_bone_semantic")
-        if type(bone) is not MmdBoneSpec:
+        if not isinstance(bone, MmdBoneSpec):
             raise MayaModelAuthoringCoordinatorError(
                 "replace_bone_semantic requires an MmdBoneSpec"
             )
@@ -606,7 +611,7 @@ class MayaModelAuthoringCoordinator:
 
         def bind() -> MmdModelAuthoringSpec:
             result = apply_structure(model_root, plan, self._cmds)
-            if type(result) is not MmdModelAuthoringSpec:
+            if not isinstance(result, MmdModelAuthoringSpec):
                 raise TypeError("bone reset structural operation returned an invalid spec")
             return result
 
@@ -626,7 +631,7 @@ class MayaModelAuthoringCoordinator:
             self._backend.begin_write(model_root)
             started = True
             bound_target = structural_write()
-            if type(bound_target) is not MmdModelAuthoringSpec:
+            if not isinstance(bound_target, MmdModelAuthoringSpec):
                 raise TypeError("structural binding operation returned an invalid spec")
             self._backend.rebase_write_bindings(model_root, bound_target)
             payload = bound_target.to_mapping()
@@ -659,9 +664,42 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 f"{operation} read failed for root {model_root!r}: {exc}"
             ) from exc
-        if type(current) is not MmdModelAuthoringSpec:
-            raise MayaModelAuthoringCoordinatorError("metadata adapter returned an invalid spec")
-        return current
+        if type(current) is MmdModelAuthoringSpec:
+            return current
+        observed_type = type(current)
+        expected_fields = tuple(MmdModelAuthoringSpec.__dataclass_fields__)
+        observed_fields = tuple(getattr(observed_type, "__dataclass_fields__", ()))
+        is_reload_generation = (
+            observed_type.__module__ == MmdModelAuthoringSpec.__module__
+            and observed_type.__qualname__ == MmdModelAuthoringSpec.__qualname__
+            and is_dataclass(current)
+            and observed_fields == expected_fields
+        )
+        if not is_reload_generation:
+            raise MayaModelAuthoringCoordinatorError(
+                "metadata adapter returned an invalid spec "
+                f"({observed_type.__module__}.{observed_type.__qualname__})"
+            )
+        try:
+            canonical = MmdModelAuthoringSpec.from_mapping(current.to_mapping())
+        except Exception as exc:
+            raise MayaModelAuthoringCoordinatorError(
+                f"{operation} reload-spec normalization failed for root {model_root!r}: {exc}"
+            ) from exc
+        observed_type_id = id(observed_type)
+        if observed_type_id not in _REHYDRATED_SPEC_TYPE_IDS:
+            _REHYDRATED_SPEC_TYPE_IDS.add(observed_type_id)
+            logger.warning(
+                "Rehydrated authoring spec after module reload: actual=%s.%s "
+                "actual_class_id=%s current_class_id=%s schema=%s fingerprint=%s",
+                observed_type.__module__,
+                observed_type.__qualname__,
+                observed_type_id,
+                id(MmdModelAuthoringSpec),
+                canonical.schema_version,
+                canonical.fingerprint(),
+            )
+        return canonical
 
     @staticmethod
     def _pure(operation: str, mutation: Callable[[], MmdModelAuthoringSpec]) -> MmdModelAuthoringSpec:
@@ -669,7 +707,7 @@ class MayaModelAuthoringCoordinator:
             target = mutation()
         except Exception as exc:
             raise MayaModelAuthoringCoordinatorError(f"{operation} preflight failed: {exc}") from exc
-        if type(target) is not MmdModelAuthoringSpec:
+        if not isinstance(target, MmdModelAuthoringSpec):
             raise MayaModelAuthoringCoordinatorError(f"{operation} returned an invalid target spec")
         return target
 

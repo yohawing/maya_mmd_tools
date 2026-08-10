@@ -264,7 +264,7 @@ def _edit_material(
     if not callable(replace_material):
         raise MayaAuthoringE2EError("material edit requires coordinator.replace_material")
     result = replace_material(root, edited)
-    if type(result) is not MmdModelAuthoringSpec:
+    if not isinstance(result, MmdModelAuthoringSpec):
         raise MayaAuthoringE2EError("material edit returned an invalid spec")
     observed = coordinator.read_spec(root)
     if observed.materials != target.materials:
@@ -605,7 +605,7 @@ def run_authoring_e2e(
     operations.append(_operation("morph.reindex", details={"order": order, "types": expected_types}))
 
     before_spec = metadata_adapter.read_spec(root)
-    if type(before_spec) is not MmdModelAuthoringSpec:
+    if not isinstance(before_spec, MmdModelAuthoringSpec):
         raise MayaAuthoringE2EError("pre-export metadata read did not return strict Spec")
 
     # Export and parse --------------------------------------------------
@@ -657,7 +657,7 @@ def run_authoring_e2e(
         raise MayaAuthoringE2EError("fresh PMX import returned no model root")
     operations.append(_operation("import.fresh_scene", details={"root": fresh_root}))
     after_spec = metadata_adapter.read_spec(fresh_root)
-    if type(after_spec) is not MmdModelAuthoringSpec:
+    if not isinstance(after_spec, MmdModelAuthoringSpec):
         raise MayaAuthoringE2EError("fresh scene metadata read did not return strict Spec")
     operations.append(_operation("spec.read", details={"root": fresh_root}))
 

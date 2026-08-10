@@ -810,11 +810,11 @@ class MayaMaterialAuthoring:
         return self._call("get_attr", f"{node}.{attr}")
 
     def _require_material(self, material: Any) -> None:
-        if type(material) is not MmdMaterialSpec:
+        if not isinstance(material, MmdMaterialSpec):
             raise MayaMaterialAuthoringError("material must be an MmdMaterialSpec")
 
     def _require_model_spec(self, spec: Any, field: str) -> None:
-        if type(spec) is not MmdModelAuthoringSpec:
+        if not isinstance(spec, MmdModelAuthoringSpec):
             raise MayaMaterialAuthoringError(f"{field} must be an MmdModelAuthoringSpec")
 
     def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:

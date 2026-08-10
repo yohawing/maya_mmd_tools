@@ -209,7 +209,7 @@ class MayaSceneMetadataBackend:
         transaction = self._active_transaction(model_root)
         if transaction["bindings_rebased"]:
             raise MayaSceneMetadataError("write bindings have already been rebased")
-        if type(target_spec) is not MmdModelAuthoringSpec:
+        if not isinstance(target_spec, MmdModelAuthoringSpec):
             raise MayaSceneMetadataError("target_spec must be an MmdModelAuthoringSpec")
 
         try:

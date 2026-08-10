@@ -52,7 +52,7 @@ def _fail(message: str) -> None:
 
 
 def _require_spec(spec: Any) -> MmdModelAuthoringSpec:
-    if type(spec) is not MmdModelAuthoringSpec:
+    if not isinstance(spec, MmdModelAuthoringSpec):
         _fail("spec must be an MmdModelAuthoringSpec")
     return spec
 

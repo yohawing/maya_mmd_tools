@@ -23,14 +23,14 @@ class MaterialAuthoringError(ValueError):
 
 def _require_spec(spec: Any) -> MmdModelAuthoringSpec:
     """Validate and return an exact model authoring spec instance."""
-    if type(spec) is not MmdModelAuthoringSpec:
+    if not isinstance(spec, MmdModelAuthoringSpec):
         raise MaterialAuthoringError("spec must be an MmdModelAuthoringSpec")
     return spec
 
 
 def _require_material(material: Any) -> MmdMaterialSpec:
     """Validate and return an exact material spec instance."""
-    if type(material) is not MmdMaterialSpec:
+    if not isinstance(material, MmdMaterialSpec):
         raise MaterialAuthoringError("material must be an MmdMaterialSpec")
     return material
 

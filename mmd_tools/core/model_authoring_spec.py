@@ -17,6 +17,30 @@ from mmd_tools.validation.snapshot import fingerprint_payload
 
 
 SCHEMA_VERSION = 1
+
+
+class _ReloadCompatibleSpecMeta(type):
+    """Accept only strictly equivalent dataclasses from an older reload generation."""
+
+    def __instancecheck__(cls, instance: Any) -> bool:
+        if type(instance) is cls:
+            return True
+        observed_type = type(instance)
+        if (
+            observed_type.__module__ != cls.__module__
+            or observed_type.__qualname__ != cls.__qualname__
+            or tuple(getattr(observed_type, "__dataclass_fields__", ()))
+            != tuple(getattr(cls, "__dataclass_fields__", ()))
+        ):
+            return False
+        serializer = getattr(instance, "to_mapping", None)
+        if not callable(serializer):
+            return False
+        try:
+            cls.from_mapping(serializer())
+        except Exception:
+            return False
+        return True
 _RUNTIME_CAPABILITIES = {"supported", "unsupported", "lossy", "experimental"}
 _LOSS_POLICIES = {"none", "reject", "warn", "preserve"}
 _MORPH_TYPES = {
@@ -167,7 +191,7 @@ def _optional_index(value: Any, *, path: str, allow_parent_root: bool = False) -
 
 
 @dataclass(frozen=True)
-class MmdModelSpec:
+class MmdModelSpec(metaclass=_ReloadCompatibleSpecMeta):
     """PMX model-level names and comments."""
 
     name: str
@@ -195,7 +219,7 @@ class MmdModelSpec:
 
 
 @dataclass(frozen=True)
-class MmdMaterialSpec:
+class MmdMaterialSpec(metaclass=_ReloadCompatibleSpecMeta):
     """Semantic PMX material data, independent of Maya shader nodes."""
 
     name: str
@@ -299,7 +323,7 @@ class MmdMaterialSpec:
 
 
 @dataclass(frozen=True)
-class MmdBoneSpec:
+class MmdBoneSpec(metaclass=_ReloadCompatibleSpecMeta):
     """Semantic PMX bone definition and its optional Maya binding identity."""
 
     name: str
@@ -391,7 +415,7 @@ class MmdBoneSpec:
 
 
 @dataclass(frozen=True)
-class MmdMorphSpec:
+class MmdMorphSpec(metaclass=_ReloadCompatibleSpecMeta):
     """PMX morph definition with immutable raw offsets and loss policy."""
 
     name: str
@@ -459,7 +483,7 @@ class MmdMorphSpec:
 
 
 @dataclass(frozen=True)
-class MmdModelAuthoringSpec:
+class MmdModelAuthoringSpec(metaclass=_ReloadCompatibleSpecMeta):
     """Core immutable semantic authoring payload for one MMD model."""
 
     model: MmdModelSpec

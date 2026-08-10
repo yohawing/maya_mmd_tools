@@ -36,7 +36,7 @@ _ALL_TYPES = _SUPPORTED_TYPES | _UNSUPPORTED_TYPES
 
 
 def _require_spec(spec: Any) -> MmdModelAuthoringSpec:
-    if type(spec) is not MmdModelAuthoringSpec:
+    if not isinstance(spec, MmdModelAuthoringSpec):
         raise TypeError("spec must be an MmdModelAuthoringSpec")
     return spec
 
@@ -189,7 +189,7 @@ def _validate_policy(morph: MmdMorphSpec) -> None:
 
 
 def _validated_morph(spec: MmdModelAuthoringSpec, morph: MmdMorphSpec) -> MmdMorphSpec:
-    if type(morph) is not MmdMorphSpec:
+    if not isinstance(morph, MmdMorphSpec):
         raise TypeError("morph must be an MmdMorphSpec")
     _validate_policy(morph)
     offsets = tuple(_canonical_offset(spec, morph.morph_type, offset, index) for index, offset in enumerate(morph.offsets))

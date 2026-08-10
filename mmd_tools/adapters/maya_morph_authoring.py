@@ -929,7 +929,7 @@ def _canonical_node(adapter: Any, node: str) -> str:
 
 
 def _require_model_spec(value: Any, field: str) -> None:
-    if type(value) is not MmdModelAuthoringSpec:
+    if not isinstance(value, MmdModelAuthoringSpec):
         _fail(f"{field} must be an MmdModelAuthoringSpec")
 
 

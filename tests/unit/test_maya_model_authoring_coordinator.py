@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import pytest
@@ -109,6 +109,30 @@ class FakeMetadataAdapter:
 
     def read_spec(self, _root: str) -> MmdModelAuthoringSpec:
         return self.backend.scene
+
+
+@dataclass(frozen=True)
+class _ReloadGenerationSpec:
+    """Old module-generation shape used to reproduce Maya UI reload drift."""
+
+    model: Any
+    bones: tuple[Any, ...] = ()
+    materials: tuple[Any, ...] = ()
+    morphs: tuple[Any, ...] = ()
+    schema_version: int = 1
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "model": self.model.to_mapping(),
+            "bones": [item.to_mapping() for item in self.bones],
+            "materials": [item.to_mapping() for item in self.materials],
+            "morphs": [item.to_mapping() for item in self.morphs],
+        }
+
+
+_ReloadGenerationSpec.__module__ = MmdModelAuthoringSpec.__module__
+_ReloadGenerationSpec.__qualname__ = MmdModelAuthoringSpec.__qualname__
 
 
 class FakeMaterialAuthoring:
@@ -282,6 +306,48 @@ def _assert_one_successful_transaction(backend: FakeBackend) -> None:
     assert backend.rollback_count == 0
     assert backend.events.count("begin") == 1
     assert backend.events[-1] == "commit"
+
+
+def test_read_spec_rehydrates_a_strict_previous_module_generation() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    current = backend.scene
+    backend.scene = _ReloadGenerationSpec(
+        model=current.model,
+        bones=current.bones,
+        materials=current.materials,
+        morphs=current.morphs,
+    )
+
+    result = coordinator.read_spec("|root")
+
+    assert type(result) is MmdModelAuthoringSpec
+    assert result.to_mapping() == current.to_mapping()
+
+
+def test_read_spec_rejects_reload_generation_with_schema_drift() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    current = backend.scene
+    backend.scene = _ReloadGenerationSpec(
+        model=current.model,
+        bones=current.bones,
+        materials=current.materials,
+        morphs=current.morphs,
+        schema_version=999,
+    )
+
+    with pytest.raises(
+        MayaModelAuthoringCoordinatorError,
+        match="reload-spec normalization failed.*unsupported schema_version",
+    ):
+        coordinator.read_spec("|root")
+
+
+def test_read_spec_rejects_unrelated_duck_typed_value() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    backend.scene = type("DuckSpec", (), {"to_mapping": _spec().to_mapping})()
+
+    with pytest.raises(MayaModelAuthoringCoordinatorError, match="invalid spec.*DuckSpec"):
+        coordinator.read_spec("|root")
 
 
 def test_create_and_duplicate_material_generate_fresh_binding_identities() -> None:
