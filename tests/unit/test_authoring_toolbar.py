@@ -111,6 +111,32 @@ def test_authoring_tabs_expose_shared_icon_operations(qapp):
     assert all(not button.icon().isNull() for row in buttons for button in row)
 
 
+def test_display_pane_toolbars_precede_their_lists(qapp):
+    from mmd_tools.ui.tabs.display_pane_tab import DisplayPaneTab
+
+    tab = DisplayPaneTab()
+    frames_layout = tab.frames_group.layout()
+    items_layout = tab.items_group.layout()
+    frame_toolbar_layout = frames_layout.itemAt(0).layout()
+    item_toolbar_layout = items_layout.itemAt(0).layout()
+
+    assert frame_toolbar_layout is not None
+    assert frames_layout.itemAt(1).widget() is tab.frame_list
+    assert frame_toolbar_layout.indexOf(tab.frame_authoring_toolbar) == 0
+    assert frame_toolbar_layout.indexOf(tab.refresh_toolbar) == 1
+
+    assert item_toolbar_layout is not None
+    assert items_layout.itemAt(1).widget() is tab.item_table
+    assert item_toolbar_layout.indexOf(tab.item_bone_toolbar) == 0
+    assert item_toolbar_layout.indexOf(tab.item_morph_toolbar) == 1
+    assert item_toolbar_layout.indexOf(tab.item_authoring_toolbar) == 2
+
+    tab.set_editor_enabled(False)
+    assert not tab.frame_list.isEnabled()
+    assert not tab.add_frame_btn.isEnabled()
+    assert tab.refresh_btn.isEnabled()
+
+
 def test_disabled_reason_retranslates_and_display_add_actions_fail_closed(qapp):
     from mmd_tools.ui.tabs.display_pane_tab import DisplayPaneTab
     from mmd_tools.ui.tabs.material_tab import MaterialTab

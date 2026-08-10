@@ -38,7 +38,6 @@ class DisplayPaneTab(BaseTab):
         self.frames_group = QGroupBox()
         frames_group_layout = QVBoxLayout(self.frames_group)
         self.frame_list = QListWidget()
-        frames_group_layout.addWidget(self.frame_list, 1)
         frame_toolbar = QHBoxLayout()
         self.frame_authoring_toolbar = AuthoringToolbar(
             actions=("create", "delete", "move_up", "move_down"),
@@ -55,7 +54,17 @@ class DisplayPaneTab(BaseTab):
         self.move_frame_up_btn = self.frame_authoring_toolbar.button("move_up")
         self.move_frame_down_btn = self.frame_authoring_toolbar.button("move_down")
         frame_toolbar.addWidget(self.frame_authoring_toolbar)
+        self.refresh_toolbar = AuthoringToolbar(
+            actions=("refresh",),
+            labels={"refresh": self.tr("refresh", "buttons")},
+            parent=self,
+        )
+        self.footer_toolbar = self.refresh_toolbar
+        self.refresh_btn = self.refresh_toolbar.button("refresh")
+        frame_toolbar.addWidget(self.refresh_toolbar)
+        frame_toolbar.addStretch(1)
         frames_group_layout.addLayout(frame_toolbar)
+        frames_group_layout.addWidget(self.frame_list, 1)
         frame_layout.addWidget(self.frames_group)
         splitter.addWidget(frame_widget)
 
@@ -84,7 +93,6 @@ class DisplayPaneTab(BaseTab):
         self.item_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.item_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.item_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        items_layout.addWidget(self.item_table, 1)
         item_toolbar = QHBoxLayout()
         self.item_bone_toolbar = AuthoringToolbar(
             actions=("create",),
@@ -113,7 +121,9 @@ class DisplayPaneTab(BaseTab):
         item_toolbar.addWidget(self.item_bone_toolbar)
         item_toolbar.addWidget(self.item_morph_toolbar)
         item_toolbar.addWidget(self.item_authoring_toolbar)
+        item_toolbar.addStretch(1)
         items_layout.addLayout(item_toolbar)
+        items_layout.addWidget(self.item_table, 1)
         editor_layout.addWidget(self.items_group, 1)
         splitter.addWidget(editor_widget)
         splitter.setSizes([260, 520])
@@ -121,15 +131,8 @@ class DisplayPaneTab(BaseTab):
         footer = QHBoxLayout()
         self.status_label = QLabel()
         footer.addWidget(self.status_label, 1)
-        self.footer_toolbar = AuthoringToolbar(
-            actions=("refresh",),
-            labels={"refresh": self.tr("refresh", "buttons")},
-            parent=self,
-        )
-        self.refresh_btn = self.footer_toolbar.button("refresh")
         self.apply_btn = QPushButton()
         self.reset_btn = QPushButton()
-        footer.addWidget(self.footer_toolbar)
         footer.addWidget(self.apply_btn)
         footer.addWidget(self.reset_btn)
         root_layout.addLayout(footer)
@@ -139,7 +142,7 @@ class DisplayPaneTab(BaseTab):
 
     def set_editor_enabled(self, enabled: bool) -> None:
         """モデル／枠の有無に応じて編集領域を切り替える。"""
-        self.frames_group.setEnabled(enabled)
+        self.frame_list.setEnabled(enabled)
         self.properties_group.setEnabled(enabled)
         self.items_group.setEnabled(enabled)
         reason = "" if enabled else self.tr("authoring_selection_required", "tooltips")
@@ -195,7 +198,7 @@ class DisplayPaneTab(BaseTab):
             },
             reason_resolver=lambda key: self.tr(key, "tooltips"),
         )
-        self.footer_toolbar.retranslate(
+        self.refresh_toolbar.retranslate(
             {"refresh": self.tr("refresh", "buttons")},
             reason_resolver=lambda key: self.tr(key, "tooltips"),
         )
