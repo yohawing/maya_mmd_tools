@@ -239,7 +239,6 @@ class MaterialPresenter:
 
                 display_text = format_indexed_node_label(display_index + 1, jp_name, mat, en_name)
                 assignment_summary = assignment_summaries.get(mat, "meshes=0, faces=0")
-                display_text = f"{display_text} [{assignment_summary}]"
 
                 # リストに追加
                 from ..qt_compat import QListWidgetItem
@@ -248,7 +247,7 @@ class MaterialPresenter:
                 item.setData(Qt.UserRole, mat)  # 実際のマテリアル名を保存
                 item.setData(MATERIAL_INDEX_ROLE, material_index)
                 item.setData(MATERIAL_ASSIGNMENT_ROLE, assignment_summary)
-                item.setToolTip(f"{mat}\n{assignment_summary}")
+                item.setToolTip(mat)
                 self.view.material_list.addItem(item)
 
             # Show placeholder if no materials

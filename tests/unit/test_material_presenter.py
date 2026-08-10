@@ -438,8 +438,10 @@ class TestMaterialPresenter(unittest.TestCase):
         self.presenter.load_materials()
 
         item = self.mock_view.material_list.addItem.call_args.args[0]
-        self.assertIn("meshes=1, faces=3", item.text())
+        self.assertNotIn("meshes=", item.text())
+        self.assertNotIn("faces=", item.text())
         self.assertEqual(item.data(Qt.UserRole + 2), "meshes=1, faces=3")
+        self.assertEqual(item.toolTip(), "shader1")
         self.mock_maya_adapter.sets.assert_called_once_with("|model_root|meshSG", query=True)
 
         # Maya standard-set membership is changed externally; Refresh must
@@ -447,7 +449,8 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.sets.return_value = []
         self.presenter.load_materials()
         refreshed_item = self.mock_view.material_list.addItem.call_args.args[0]
-        self.assertIn("meshes=0, faces=0", refreshed_item.text())
+        self.assertNotIn("meshes=", refreshed_item.text())
+        self.assertEqual(refreshed_item.data(Qt.UserRole + 2), "meshes=0, faces=0")
 
     @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
@@ -526,9 +529,10 @@ class TestMaterialPresenter(unittest.TestCase):
         self.presenter.load_materials()
 
         item = self.mock_view.material_list.addItem.call_args[0][0]
-        self.assertEqual(item.text(), "1:顔材質（face_material） [Face] [meshes=0, faces=?]")
+        self.assertEqual(item.text(), "1:顔材質（face_material） [Face]")
         self.assertEqual(item.data(Qt.UserRole), material)
-        self.assertEqual(item.toolTip(), f"{material}\nmeshes=0, faces=?")
+        self.assertEqual(item.data(Qt.UserRole + 2), "meshes=0, faces=?")
+        self.assertEqual(item.toolTip(), material)
 
     @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
