@@ -8,6 +8,7 @@ from tests.common.maya_stub import install_headless_ui_stubs
 install_headless_ui_stubs()
 
 from mmd_tools.ui.presenters.display_pane_presenter import DisplayPanePresenter
+from mmd_tools.ui.translations import UITranslator
 
 
 class _Signal:
@@ -273,7 +274,10 @@ class TestDisplayPanePresenter(unittest.TestCase):
         ])
         self.presenter.add_item(0)
         self.assertEqual(len(self.presenter.frames[2]["elements"]), 2)
-        self.assertIn("要素", self.view.status_label.value)
+        expected_status = UITranslator.instance().translate(
+            "no_display_element_candidates", "messages"
+        )
+        self.assertEqual(self.view.status_label.value, expected_status)
 
     def test_same_item_can_belong_to_multiple_frames(self):
         self.view.frame_list.setCurrentRow(2)
