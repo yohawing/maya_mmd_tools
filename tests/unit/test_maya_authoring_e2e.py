@@ -8,7 +8,7 @@ import pytest
 
 from mmd_tools.adapters import maya_authoring_e2e
 from mmd_tools.core.bone_authoring import capture_rest, register_bone, reindex_bones, unregister_bone
-from mmd_tools.core.material_authoring import create_material, delete_material, reindex_materials
+from mmd_tools.core.material_authoring import create_material, delete_material, move_material
 from mmd_tools.core.model_authoring_spec import (
     MmdBoneSpec,
     MmdMaterialSpec,
@@ -16,9 +16,11 @@ from mmd_tools.core.model_authoring_spec import (
     MmdModelSpec,
 )
 from mmd_tools.core.morph_authoring import (
+    MorphReindexResult,
     create_morph,
     reindex_morphs,
     replace_morph_offsets,
+    swap_adjacent_morphs,
 )
 
 
@@ -98,8 +100,9 @@ def test_unassigned_material_parse_evidence_fails_closed(materials) -> None:
 
 
 class _FakeCmds:
-    def __init__(self):
+    def __init__(self, coordinator=None):
         self.set_calls = []
+        self.coordinator = coordinator
 
     def list_relatives(self, node, **kwargs):
         if kwargs.get("type") == "mesh":
@@ -125,6 +128,15 @@ class _FakeCmds:
         assert kwargs.get("forceElement")
         self.set_calls.append((node, kwargs["forceElement"]))
 
+    def xform(self, _node, **kwargs):
+        assert kwargs == {"translation": (2.0, 3.0, 4.0), "worldSpace": True}
+
+    def undo(self):
+        self.coordinator.undo()
+
+    def redo(self):
+        self.coordinator.redo()
+
 
 class _FakeMaterialAuthoring:
     def resolve_material(self, _root, material):
@@ -139,6 +151,8 @@ class _FakeCoordinator:
     def __init__(self):
         self.spec = _spec()
         self.material_serial = 0
+        self.undo_spec = None
+        self.redo_spec = None
 
     def read_spec(self, _root):
         return self.spec
@@ -152,6 +166,7 @@ class _FakeCoordinator:
         return self._set(structural_write())
 
     def create_material(self, _root):
+        self.undo_spec = self.spec
         value = create_material(self.spec)
         material = max(value.materials, key=lambda item: item.index)
         self.material_serial += 1
@@ -164,7 +179,8 @@ class _FakeCoordinator:
                 for item in value.materials
             ),
         )
-        return self._set(value)
+        self._set(value)
+        return next(item for item in self.spec.materials if item.index == material.index)
 
     def replace_material(self, _root, material):
         self.spec = replace(
@@ -175,12 +191,30 @@ class _FakeCoordinator:
         )
         return self.spec
 
+    def read_material_value(self, _root, index, binding):
+        return next(
+            item
+            for item in self.spec.materials
+            if item.index == index and item.binding_identity == binding
+        )
+
+    def apply_material_value_patch(self, _root, material):
+        self.undo_spec = self.spec
+        self.replace_material(_root, material)
+        return material
+
+    def undo(self):
+        self.redo_spec, self.spec = self.spec, self.undo_spec
+
+    def redo(self):
+        self.undo_spec, self.spec = self.spec, self.redo_spec
+
     def delete_material(self, _root, index):
         value = delete_material(self.spec, index)
         return self._set(value)
 
-    def reindex_materials(self, _root, order):
-        return self._set(reindex_materials(self.spec, order))
+    def move_material(self, _root, index, new_position):
+        return self._set(move_material(self.spec, index, new_position))
 
     def register_selected_joint(self, _root, joint):
         bone = MmdBoneSpec(
@@ -190,10 +224,21 @@ class _FakeCoordinator:
             parent_index=-1,
             binding_identity=joint,
         )
-        return self._set(register_bone(self.spec, bone))
+        self.undo_spec = self.spec
+        self.spec = register_bone(self.spec, bone)
+        return bone
+
+    def read_bone_value(self, _root, index, binding):
+        return next(
+            item
+            for item in self.spec.bones
+            if item.index == index and item.binding_identity == binding
+        )
 
     def capture_rest(self, _root, index, _joint):
-        return self._set(capture_rest(self.spec, index, (0.0, 0.0, 0.0)))
+        self.undo_spec = self.spec
+        self._set(capture_rest(self.spec, index, (2.0, 3.0, -4.0)))
+        return next(item for item in self.spec.bones if item.index == index)
 
     def reindex_bones(self, _root, order):
         return self._set(reindex_bones(self.spec, order))
@@ -202,13 +247,48 @@ class _FakeCoordinator:
         return self._set(unregister_bone(self.spec, index))
 
     def create_morph(self, _root, morph):
-        return self._set(create_morph(self.spec, morph))
+        self.undo_spec = self.spec
+        value = create_morph(self.spec, morph)
+        created = max(value.morphs, key=lambda item: item.index)
+        bound = replace(created, binding_identity=f"morph{created.index}")
+        self._set(
+            replace(
+                value,
+                morphs=tuple(bound if item.index == created.index else item for item in value.morphs),
+            )
+        )
+        return bound
+
+    def read_morph_value(self, _root, index, binding):
+        return next(
+            item
+            for item in self.spec.morphs
+            if item.index == index and item.binding_identity == binding
+        )
+
+    def apply_morph_value_patch(self, _root, morph):
+        self.undo_spec = self.spec
+        self.spec = replace(
+            self.spec,
+            morphs=tuple(morph if item.index == morph.index else item for item in self.spec.morphs),
+        )
+        return morph
 
     def replace_morph_offsets(self, _root, index, offsets):
         return self._set(replace_morph_offsets(self.spec, index, offsets))
 
     def reindex_morphs(self, _root, order):
         return self._set(reindex_morphs(self.spec, order))
+
+    def move_morph(self, _root, index, new_position):
+        self.undo_spec = self.spec
+        self._set(swap_adjacent_morphs(self.spec, index, new_position))
+        bindings = tuple(
+            (item.index, item.binding_identity)
+            for item in self.spec.morphs
+            if item.index in {index, new_position}
+        )
+        return MorphReindexResult(index, new_position, (index, new_position), bindings)
 
 
 class _FakeMetadata:
@@ -269,7 +349,7 @@ def test_run_authoring_e2e_executes_all_operations_with_injected_dependencies(mo
         asset_paths={},
         coordinator=coordinator,
         metadata_adapter=metadata,
-        cmds_adapter=_FakeCmds(),
+        cmds_adapter=_FakeCmds(coordinator),
         material_authoring=_FakeMaterialAuthoring(),
         export_action=_FakeExport(),
         pmx_parser=parser,

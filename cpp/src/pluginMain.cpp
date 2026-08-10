@@ -43,6 +43,7 @@ static bool sCppRegisteredMmdRenderShape = false;
 static bool sCppRegisteredMmdRenderOverride = false;
 static bool sCppRegisteredMmdRenderWitnessCommand = false;
 static bool sCppRegisteredMmdRenderQueueUpdateCommand = false;
+static bool sCppRegisteredMmdRenderQueueReindexCommand = false;
 static bool sCppRegisteredMmdNativeCasterOverride = false;
 static bool sCppRegisteredMmdNativeCasterWitnessCommand = false;
 static MmdNativeCasterRenderOverride* sMmdNativeCasterOverride = nullptr;
@@ -117,6 +118,14 @@ MStatus initializePlugin(MObject obj)
             }
             sCppRegisteredMmdRenderQueueUpdateCommand = false;
         }
+        if (sCppRegisteredMmdRenderQueueReindexCommand) {
+            cleanupStatus = plugin.deregisterCommand("mmdRenderQueueReindex");
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdRenderQueueReindex command.");
+            }
+            sCppRegisteredMmdRenderQueueReindexCommand = false;
+        }
         if (sCppRegisteredMmdRenderOverride) {
             cleanupStatus = MHWRender::MDrawRegistry::deregisterGeometryOverrideCreator(
                 MmdRenderShape::drawDbClassification,
@@ -176,6 +185,15 @@ MStatus initializePlugin(MObject obj)
         return status;
     }
     sCppRegisteredMmdRenderQueueUpdateCommand = true;
+
+    status = plugin.registerCommand("mmdRenderQueueReindex",
+                                    MmdRenderQueueReindexCommand::creator,
+                                    MmdRenderQueueReindexCommand::newSyntax);
+    if (!status) {
+        cleanupMmdRenderWitness();
+        return status;
+    }
+    sCppRegisteredMmdRenderQueueReindexCommand = true;
 
     // mmdAppend 登録 (Python 版と統一した typeName)
     // Python 版が同じ typeId で登録済みの場合はスキップ
@@ -299,6 +317,15 @@ MStatus uninitializePlugin(MObject obj)
                 "Failed to deregister mmdRenderQueueUpdate command.");
         }
         sCppRegisteredMmdRenderQueueUpdateCommand = false;
+    }
+
+    if (sCppRegisteredMmdRenderQueueReindexCommand) {
+        status = plugin.deregisterCommand("mmdRenderQueueReindex");
+        if (!status) {
+            MGlobal::displayWarning(
+                "Failed to deregister mmdRenderQueueReindex command.");
+        }
+        sCppRegisteredMmdRenderQueueReindexCommand = false;
     }
 
     if (sCppRegisteredMmdNativeCasterWitnessCommand) {

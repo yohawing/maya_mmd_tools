@@ -60,6 +60,167 @@ class SceneMetadataBackend(Protocol):
     def rollback_write(self, model_root: str) -> None:
         """Roll back the active write transaction."""
 
+    def begin_material_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        old_material: _authoring_spec.MmdMaterialSpec,
+        new_material: _authoring_spec.MmdMaterialSpec,
+    ) -> None:
+        """Begin a selected-shader-only patch transaction."""
+
+    def read_material_value_by_index(
+        self,
+        model_root: str,
+        index: int,
+    ) -> _authoring_spec.MmdMaterialSpec:
+        """Read one registry-owned material selected by PMX index."""
+
+    def next_material_index(self, model_root: str) -> int:
+        """Return the next trailing material index."""
+
+    def begin_material_create(self, model_root: str, index: int) -> None:
+        """Begin a selected-material-only create transaction."""
+
+    def commit_material_create(
+        self,
+        model_root: str,
+        material: _authoring_spec.MmdMaterialSpec,
+    ) -> None:
+        """Verify and commit a selected-material-only create transaction."""
+
+    def read_bone_value(
+        self,
+        model_root: str,
+        binding: str,
+        index: int | None = None,
+    ) -> _authoring_spec.MmdBoneSpec:
+        """Read one selected bone without enumerating model metadata."""
+        ...
+
+    def begin_bone_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        old_bone: _authoring_spec.MmdBoneSpec,
+        new_bone: _authoring_spec.MmdBoneSpec,
+    ) -> None:
+        """Begin a selected-bone-only patch transaction."""
+
+    def begin_bone_register(
+        self,
+        model_root: str,
+        bone: _authoring_spec.MmdBoneSpec,
+    ) -> None:
+        """Begin a selected-joint-only bone registration transaction."""
+        ...
+
+    def read_material_value(
+        self,
+        model_root: str,
+        binding: str,
+        index: int | None = None,
+    ) -> _authoring_spec.MmdMaterialSpec:
+        """Read one selected material without enumerating other metadata."""
+
+    def read_morph_value(
+        self,
+        model_root: str,
+        binding: str,
+        index: int | None = None,
+    ) -> _authoring_spec.MmdMorphSpec:
+        """Read one selected morph without enumerating other metadata."""
+        ...
+
+    def begin_morph_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        old_morph: _authoring_spec.MmdMorphSpec,
+        new_morph: _authoring_spec.MmdMorphSpec,
+    ) -> None:
+        """Begin a selected-morph-only patch transaction."""
+        ...
+
+    def commit_morph_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        morph: _authoring_spec.MmdMorphSpec,
+    ) -> None:
+        """Verify and commit a selected-morph-only patch transaction."""
+        ...
+
+    def commit_material_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        material: _authoring_spec.MmdMaterialSpec,
+    ) -> None:
+        """Verify and commit a selected-shader-only patch transaction."""
+
+    def commit_bone_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        bone: _authoring_spec.MmdBoneSpec,
+    ) -> None:
+        """Verify and commit a selected-bone-only patch transaction."""
+        ...
+
+    def commit_bone_register(
+        self,
+        model_root: str,
+        bone: _authoring_spec.MmdBoneSpec,
+    ) -> None:
+        """Verify and commit a selected-joint-only bone registration."""
+        ...
+
+    def commit_material_reindex(
+        self,
+        model_root: str,
+        spec: _authoring_spec.MmdModelAuthoringSpec,
+    ) -> None:
+        """Verify and commit a narrow adjacent-material transaction.
+
+        The backend must validate the complete resulting spec but must not
+        invoke any full model/bone/material/morph metadata write hooks.
+        """
+        ...
+
+    def commit_morph_reindex(
+        self,
+        model_root: str,
+        result: Any,
+    ) -> None:
+        """Verify and commit a narrow adjacent-morph transaction."""
+        ...
+
+    def begin_morph_reindex(
+        self,
+        model_root: str,
+        index: int,
+        new_position: int,
+    ) -> None:
+        """Begin a narrow adjacent-morph transaction."""
+        ...
+
+    def commit_morph_create(
+        self,
+        model_root: str,
+        morph: _authoring_spec.MmdMorphSpec,
+    ) -> None:
+        """Verify and commit a narrow morph creation transaction."""
+        ...
+
+    def begin_morph_create(
+        self,
+        model_root: str,
+        morph: _authoring_spec.MmdMorphSpec,
+    ) -> int:
+        """Begin a narrow morph creation transaction and return its index."""
+        ...
+
 
 class SceneMetadataAdapter:
     """Build immutable authoring specs from an injected normalized backend."""
@@ -134,6 +295,245 @@ class SceneMetadataAdapter:
             raise SceneMetadataError(
                 f"{original_error}; rollback failed for root {model_root!r}: {rollback_error}"
             ) from rollback_error
+
+    def commit_material_reindex(
+        self,
+        model_root: str,
+        spec: _authoring_spec.MmdModelAuthoringSpec,
+    ) -> None:
+        """Commit an adjacent material swap after narrow Maya writes.
+
+        The backend performs a strict full-spec read/fingerprint check.  No
+        semantic metadata section is written here; the shader/Material Morph
+        and native queue writes have already happened inside the same undo
+        chunk.
+        """
+        self._validate_root(model_root)
+        if not isinstance(spec, _authoring_spec.MmdModelAuthoringSpec):
+            raise SceneMetadataError("spec must be an MmdModelAuthoringSpec")
+        try:
+            self._backend.commit_material_reindex(model_root, spec)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to commit material reindex for root {model_root!r}: {exc}"
+            ) from exc
+
+    def commit_morph_reindex(self, model_root: str, result: Any) -> None:
+        """Commit an adjacent morph swap after strict selected readback."""
+        self._validate_root(model_root)
+        if result is None or not hasattr(result, "swapped_indices"):
+            raise SceneMetadataError("morph reindex commit requires a narrow result")
+        try:
+            self._backend.commit_morph_reindex(model_root, result)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to commit morph reindex for root {model_root!r}: {exc}"
+            ) from exc
+
+    def commit_morph_create(
+        self,
+        model_root: str,
+        morph: _authoring_spec.MmdMorphSpec,
+    ) -> None:
+        """Commit one narrow morph creation after strict readback."""
+        self._validate_root(model_root)
+        if not isinstance(morph, _authoring_spec.MmdMorphSpec):
+            raise SceneMetadataError("morph creation commit requires an MmdMorphSpec")
+        try:
+            self._backend.commit_morph_create(model_root, morph)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to commit morph creation for root {model_root!r}: {exc}"
+            ) from exc
+
+    def commit_material_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        material: _authoring_spec.MmdMaterialSpec,
+    ) -> None:
+        """Commit a selected-shader value patch after strict readback."""
+        self._validate_root(model_root)
+        if not isinstance(binding, str) or not binding.strip():
+            raise SceneMetadataError("material value patch binding must be a non-empty string")
+        if not isinstance(material, _authoring_spec.MmdMaterialSpec):
+            raise SceneMetadataError("material value patch requires an MmdMaterialSpec")
+        try:
+            self._backend.commit_material_value_patch(model_root, binding, material)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to commit material value patch for root {model_root!r}: {exc}"
+            ) from exc
+
+    def read_material_value_by_index(
+        self,
+        model_root: str,
+        index: int,
+    ) -> _authoring_spec.MmdMaterialSpec:
+        """Read one selected material by index through the narrow backend."""
+        self._validate_root(model_root)
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise SceneMetadataError("material index must be a non-negative integer")
+        try:
+            material = self._backend.read_material_value_by_index(model_root, index)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to read selected material index {index} for root {model_root!r}: {exc}"
+            ) from exc
+        if not isinstance(material, _authoring_spec.MmdMaterialSpec):
+            raise SceneMetadataError("backend returned an invalid selected material")
+        if material.index != index:
+            raise SceneMetadataError("backend returned the wrong selected material index")
+        return material
+
+    def next_material_index(self, model_root: str) -> int:
+        """Read only registry material indices to allocate a trailing index."""
+        self._validate_root(model_root)
+        try:
+            index = self._backend.next_material_index(model_root)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to allocate next material index for root {model_root!r}: {exc}"
+            ) from exc
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise SceneMetadataError("backend returned an invalid next material index")
+        return index
+
+    def commit_material_create(
+        self,
+        model_root: str,
+        material: _authoring_spec.MmdMaterialSpec,
+    ) -> None:
+        """Commit a selected-material create after strict shader readback."""
+        self._validate_root(model_root)
+        if not isinstance(material, _authoring_spec.MmdMaterialSpec):
+            raise SceneMetadataError("material create commit requires an MmdMaterialSpec")
+        try:
+            self._backend.commit_material_create(model_root, material)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to commit material create for root {model_root!r}: {exc}"
+            ) from exc
+
+    def read_bone_value(
+        self,
+        model_root: str,
+        binding: str,
+        index: int | None = None,
+    ) -> _authoring_spec.MmdBoneSpec:
+        """Read one selected bone through the normalized backend."""
+        self._validate_root(model_root)
+        if not isinstance(binding, str) or not binding.strip():
+            raise SceneMetadataError("bone value binding must be a non-empty string")
+        if index is not None and (isinstance(index, bool) or not isinstance(index, int)):
+            raise SceneMetadataError("bone value index must be an integer")
+        try:
+            bone = self._backend.read_bone_value(model_root, binding, index)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to read selected bone value for root {model_root!r}: {exc}"
+            ) from exc
+        if not isinstance(bone, _authoring_spec.MmdBoneSpec):
+            raise SceneMetadataError("backend returned an invalid selected bone")
+        return bone
+
+    def commit_bone_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        bone: _authoring_spec.MmdBoneSpec,
+    ) -> None:
+        """Commit a selected-bone value patch after strict readback."""
+        self._validate_root(model_root)
+        if not isinstance(binding, str) or not binding.strip():
+            raise SceneMetadataError("bone value patch binding must be a non-empty string")
+        if not isinstance(bone, _authoring_spec.MmdBoneSpec):
+            raise SceneMetadataError("bone value patch requires an MmdBoneSpec")
+        try:
+            self._backend.commit_bone_value_patch(model_root, binding, bone)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to commit bone value patch for root {model_root!r}: {exc}"
+            ) from exc
+
+    def commit_bone_register(
+        self,
+        model_root: str,
+        bone: _authoring_spec.MmdBoneSpec,
+    ) -> None:
+        """Commit a selected-joint-only registration after strict readback."""
+        self._validate_root(model_root)
+        if not isinstance(bone, _authoring_spec.MmdBoneSpec):
+            raise SceneMetadataError("bone registration requires an MmdBoneSpec")
+        try:
+            self._backend.commit_bone_register(model_root, bone)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to commit bone registration for root {model_root!r}: {exc}"
+            ) from exc
+
+    def read_material_value(
+        self,
+        model_root: str,
+        binding: str,
+        index: int | None = None,
+    ) -> _authoring_spec.MmdMaterialSpec:
+        """Read one selected material through the normalized backend."""
+        self._validate_root(model_root)
+        if not isinstance(binding, str) or not binding.strip():
+            raise SceneMetadataError("material value binding must be a non-empty string")
+        if index is not None and (isinstance(index, bool) or not isinstance(index, int)):
+            raise SceneMetadataError("material value index must be an integer")
+        try:
+            material = self._backend.read_material_value(model_root, binding, index)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to read selected material value for root {model_root!r}: {exc}"
+            ) from exc
+        if not isinstance(material, _authoring_spec.MmdMaterialSpec):
+            raise SceneMetadataError("backend returned an invalid selected material")
+        return material
+
+    def read_morph_value(
+        self,
+        model_root: str,
+        binding: str,
+        index: int | None = None,
+    ) -> _authoring_spec.MmdMorphSpec:
+        """Read one selected morph through the normalized backend."""
+        self._validate_root(model_root)
+        if not isinstance(binding, str) or not binding.strip():
+            raise SceneMetadataError("morph value binding must be a non-empty string")
+        if index is not None and (isinstance(index, bool) or not isinstance(index, int)):
+            raise SceneMetadataError("morph value index must be an integer")
+        try:
+            morph = self._backend.read_morph_value(model_root, binding, index)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to read selected morph value for root {model_root!r}: {exc}"
+            ) from exc
+        if not isinstance(morph, _authoring_spec.MmdMorphSpec):
+            raise SceneMetadataError("backend returned an invalid selected morph")
+        return morph
+
+    def commit_morph_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        morph: _authoring_spec.MmdMorphSpec,
+    ) -> None:
+        """Commit a selected-morph value patch after strict readback."""
+        self._validate_root(model_root)
+        if not isinstance(binding, str) or not binding.strip():
+            raise SceneMetadataError("morph value patch binding must be a non-empty string")
+        if not isinstance(morph, _authoring_spec.MmdMorphSpec):
+            raise SceneMetadataError("morph value patch requires an MmdMorphSpec")
+        try:
+            self._backend.commit_morph_value_patch(model_root, binding, morph)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to commit morph value patch for root {model_root!r}: {exc}"
+            ) from exc
 
     def read_spec(self, model_root: str) -> _authoring_spec.MmdModelAuthoringSpec:
         """Read and strictly validate one model root's semantic metadata.

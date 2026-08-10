@@ -54,6 +54,43 @@ class FakeBackend:
         self.begin_count += 1
         self.events.append("begin")
 
+    def begin_bone_value_patch(
+        self,
+        _root: str,
+        _binding: str,
+        _old: MmdBoneSpec,
+        _new: MmdBoneSpec,
+    ) -> None:
+        if self.active:
+            raise RuntimeError("nested transaction")
+        self.active = True
+        self.snapshot = self.scene
+        self.events.append("begin:bone_value")
+
+    def begin_bone_register(self, _root: str, _bone: MmdBoneSpec) -> None:
+        if self.active:
+            raise RuntimeError("nested transaction")
+        self.active = True
+        self.snapshot = self.scene
+        self.events.append("begin:bone_register")
+
+    def begin_material_create(self, _root: str, _index: int) -> None:
+        if self.active:
+            raise RuntimeError("nested transaction")
+        self.active = True
+        self.snapshot = self.scene
+        self.events.append("begin:material_create")
+        self.begin_count += 1
+
+    def begin_morph_create(self, _root: str, morph: MmdMorphSpec) -> int:
+        if self.active:
+            raise RuntimeError("nested transaction")
+        self.active = True
+        self.snapshot = self.scene
+        self.events.append("begin:morph_create")
+        self.begin_count += 1
+        return len(self.scene.morphs)
+
     def rebase_write_bindings(self, _root: str, target: MmdModelAuthoringSpec) -> None:
         assert self.active
         assert self.rebase_count == 0
@@ -110,6 +147,66 @@ class FakeMetadataAdapter:
     def read_spec(self, _root: str) -> MmdModelAuthoringSpec:
         return self.backend.scene
 
+    def read_bone_value(self, _root: str, binding: str, index: int) -> MmdBoneSpec:
+        return next(
+            bone
+            for bone in self.backend.scene.bones
+            if bone.binding_identity == binding and bone.index == index
+        )
+
+    def commit_bone_value_patch(self, _root: str, _binding: str, bone: MmdBoneSpec) -> None:
+        assert self.backend.active
+        self.backend.scene = replace(
+            self.backend.scene,
+            bones=tuple(bone if item.index == bone.index else item for item in self.backend.scene.bones),
+        )
+        self.backend.active = False
+        self.backend.commit_count += 1
+        self.backend.events.append("commit:bone_value")
+
+    def commit_bone_register(self, _root: str, bone: MmdBoneSpec) -> None:
+        assert self.backend.active
+        self.backend.scene = replace(
+            self.backend.scene,
+            bones=self.backend.scene.bones + (bone,),
+        )
+        self.backend.active = False
+        self.backend.commit_count += 1
+        self.backend.events.append("commit:bone_register")
+
+    def commit_material_reindex(self, _root: str, target: MmdModelAuthoringSpec) -> None:
+        assert self.backend.active
+        self.backend.scene = target
+        self.backend.active = False
+        self.backend.commit_count += 1
+        self.backend.events.append("commit:material_reindex")
+
+    def commit_material_create(self, _root: str, material: MmdMaterialSpec) -> None:
+        assert self.backend.active
+        self.backend.scene = replace(
+            self.backend.scene,
+            materials=self.backend.scene.materials + (material,),
+        )
+        self.backend.active = False
+        self.backend.commit_count += 1
+        self.backend.events.append("commit:material_create")
+
+    def commit_morph_create(self, _root: str, morph: MmdMorphSpec) -> None:
+        assert self.backend.active
+        self.backend.scene = replace(
+            self.backend.scene,
+            morphs=self.backend.scene.morphs + (morph,),
+        )
+        self.backend.active = False
+        self.backend.commit_count += 1
+        self.backend.events.append("commit:morph_create")
+
+    def next_material_index(self, _root: str) -> int:
+        return max((item.index for item in self.backend.scene.materials), default=-1) + 1
+
+    def read_material_value_by_index(self, _root: str, index: int) -> MmdMaterialSpec:
+        return next(item for item in self.backend.scene.materials if item.index == index)
+
 
 @dataclass(frozen=True)
 class _ReloadGenerationSpec:
@@ -141,15 +238,22 @@ class FakeMaterialAuthoring:
         self.assignments: list[tuple[int, tuple[str, ...]]] = []
         self.fail_create = False
 
-    def create_material(self, _root: str, material: MmdMaterialSpec) -> tuple[MmdMaterialSpec, str, str]:
+    def create_material(
+        self,
+        _root: str,
+        material: MmdMaterialSpec,
+        *,
+        narrow: bool = False,
+    ) -> tuple[MmdMaterialSpec, str, str]:
         if self.fail_create:
             raise RuntimeError("create failed")
         binding = f"material{material.index}"
         bound = replace(material, binding_identity=binding)
-        self.backend.scene = replace(
-            self.backend.scene,
-            materials=self.backend.scene.materials + (bound,),
-        )
+        if not narrow:
+            self.backend.scene = replace(
+                self.backend.scene,
+                materials=self.backend.scene.materials + (bound,),
+            )
         return bound, binding, f"{binding}SG"
 
     def resolve_material(self, _root: str, material: MmdMaterialSpec) -> tuple[str, str] | None:
@@ -186,6 +290,15 @@ class FakeMaterialAuthoring:
         self.backend.scene = new
         return new
 
+    def apply_material_reindex(
+        self,
+        _root: str,
+        _old: MmdModelAuthoringSpec,
+        new: MmdModelAuthoringSpec,
+    ) -> MmdModelAuthoringSpec:
+        self.backend.scene = new
+        return new
+
 
 class FakeBoneApi:
     def __init__(self, backend: FakeBackend) -> None:
@@ -199,14 +312,41 @@ class FakeBoneApi:
         assert scale == 2.0
         return (2.0, 3.0, 4.0)
 
+    def apply_bone_value_patch(
+        self,
+        _root: str,
+        _old: MmdBoneSpec,
+        new: MmdBoneSpec,
+        _adapter: Any,
+    ) -> MmdBoneSpec:
+        self.events.append("patch")
+        self.backend.scene = replace(
+            self.backend.scene,
+            bones=tuple(new if item.index == new.index else item for item in self.backend.scene.bones),
+        )
+        return new
+
+    def prepare_selected_joint_registration(self, _root: str, joint: str, _adapter: Any) -> MmdBoneSpec:
+        self.events.append("prepare_register")
+        return MmdBoneSpec(
+            "newJoint",
+            index=2,
+            parent_index=0,
+            rest_position=(0.0, 0.0, 0.0),
+            tail_offset=(0.0, 0.0, 0.0),
+            binding_identity=joint,
+        )
+
+    def register_selected_joint(self, _root: str, bone: MmdBoneSpec, _adapter: Any) -> MmdBoneSpec:
+        if self.fail_register:
+            raise RuntimeError("register failed")
+        self.events.append("register")
+        return bone
+
     def register_existing_joint(self, _root: str, bone: MmdBoneSpec, _adapter: Any) -> None:
         if self.fail_register:
             raise RuntimeError("register failed")
         self.events.append("register")
-        self.backend.scene = replace(
-            self.backend.scene,
-            bones=self.backend.scene.bones + (bone,),
-        )
 
     def apply_bone_reindex(
         self,
@@ -275,6 +415,9 @@ class FakeMorphAuthoring:
         )
         self.backend.scene = bound
         return bound
+
+    def apply_morph_create(self, _root: str, morph: MmdMorphSpec, _cmds: Any) -> MmdMorphSpec:
+        return replace(morph, binding_identity=f"morph{morph.index}")
 
 
 def _coordinator() -> tuple[
@@ -353,14 +496,14 @@ def test_read_spec_rejects_unrelated_duck_typed_value() -> None:
 def test_create_and_duplicate_material_generate_fresh_binding_identities() -> None:
     coordinator, backend, materials, _ = _coordinator()
     created = coordinator.create_material("|root")
-    assert created.materials[-1].binding_identity == "material1"
+    assert created.binding_identity == "material1"
     assert materials.assignments == []
-    _assert_one_successful_transaction(backend)
+    assert backend.events == ["begin:material_create", "commit:material_create"]
 
     backend.rebase_count = 0
     duplicated = coordinator.duplicate_material("|root", 0)
-    assert duplicated.materials[-1].binding_identity == "material2"
-    assert duplicated.materials[-1].binding_identity != duplicated.materials[0].binding_identity
+    assert duplicated.binding_identity == "material2"
+    assert duplicated.binding_identity != backend.scene.materials[0].binding_identity
     assert materials.assignments == []
     assert backend.begin_count == 2
     assert backend.commit_count == 2
@@ -369,12 +512,12 @@ def test_create_and_duplicate_material_generate_fresh_binding_identities() -> No
 def test_create_and_duplicate_allow_registry_owned_unassigned_materials() -> None:
     coordinator, backend, materials, _ = _coordinator()
     created = coordinator.create_material("|root")
-    assert created.materials[-1].binding_identity == "material1"
+    assert created.binding_identity == "material1"
     assert materials.assignments == []
 
     backend.rebase_count = 0
     duplicated = coordinator.duplicate_material("|root", 0)
-    assert duplicated.materials[-1].binding_identity == "material2"
+    assert duplicated.binding_identity == "material2"
     assert materials.assignments == []
 
 
@@ -405,6 +548,22 @@ def test_reindex_materials_uses_one_binding_transaction() -> None:
     assert backend.commit_count == 2
 
 
+def test_move_material_uses_narrow_transaction_without_full_metadata_hooks() -> None:
+    coordinator, backend, _materials, _ = _coordinator()
+    coordinator.create_material("|root")
+    backend.events.clear()
+    backend.rebase_count = 0
+
+    result = coordinator.move_material("|root", 1, 0)
+
+    assert [(item.index, item.binding_identity) for item in result.materials] == [
+        (0, "material1"),
+        (1, "material0"),
+    ]
+    assert backend.events == ["begin", "commit:material_reindex"]
+    assert backend.rebase_count == 0
+
+
 def test_delete_material_uses_injected_structural_change_and_one_transaction() -> None:
     coordinator, backend, _, _ = _coordinator()
     coordinator.create_material("|root")
@@ -432,35 +591,36 @@ def test_register_bone_canonicalizes_binding_and_persists_generated_identity() -
     coordinator, backend, _, bones = _coordinator()
     result = coordinator.register_bone(
         "|root",
-        MmdBoneSpec("new", parent_index=0, binding_identity="newJoint"),
+        MmdBoneSpec("new", index=2, parent_index=0, binding_identity="newJoint"),
     )
 
-    assert result.bones[-1].binding_identity == "|root|newJoint"
+    assert result.binding_identity == "|root|newJoint"
     assert bones.events == ["register"]
-    _assert_one_successful_transaction(backend)
+    assert backend.events == ["begin:bone_register", "commit:bone_register"]
 
 
 def test_register_selected_joint_uses_zero_rest_and_registered_parent() -> None:
     coordinator, backend, _, bones = _coordinator()
     result = coordinator.register_selected_joint("|root", "newJoint")
 
-    registered = result.bones[-1]
+    registered = result
     assert registered.name == "newJoint"
     assert registered.parent_index == 0
     assert registered.rest_position == (0.0, 0.0, 0.0)
     assert registered.binding_identity == "|root|newJoint"
-    assert bones.events == ["register"]
-    _assert_one_successful_transaction(backend)
+    assert bones.events == ["prepare_register", "register"]
+    assert backend.events == ["begin:bone_register", "commit:bone_register"]
+    assert backend.rollback_count == 0
 
 
 def test_capture_rest_is_preflighted_before_begin_and_then_fully_applied() -> None:
     coordinator, backend, _, bones = _coordinator()
     result = coordinator.capture_rest("|root", 1, "|root|spare")
 
-    assert bones.events == ["capture"]
-    assert result.bones[1].rest_position == (2.0, 3.0, 4.0)
-    assert backend.events[0] == "begin"
-    _assert_one_successful_transaction(backend)
+    assert bones.events == ["capture", "patch"]
+    assert result.rest_position == (2.0, 3.0, 4.0)
+    assert backend.events == ["begin:bone_value", "commit:bone_value"]
+    assert backend.rollback_count == 0
 
 
 def test_replace_bone_updates_semantics_and_world_position_in_one_transaction() -> None:
@@ -527,13 +687,13 @@ def test_morph_crud_uses_injected_structural_writer_and_canonical_binding() -> N
         "|root",
         MmdMorphSpec("Smile", morph_type="bone", panel=1),
     )
-    assert created.morphs[0].binding_identity == "morph0"
-    assert coordinator.read_spec("|root") == created
+    assert created.binding_identity == "morph0"
+    assert coordinator.read_spec("|root").morphs[0] == created
 
     backend.rebase_count = 0
     replaced = coordinator.replace_morph(
         "|root",
-        replace(created.morphs[0], name="Smile Wide"),
+        replace(created, name="Smile Wide"),
     )
     assert replaced.morphs[0].name == "Smile Wide"
     backend.rebase_count = 0
@@ -546,12 +706,13 @@ def test_morph_crud_uses_injected_structural_writer_and_canonical_binding() -> N
 def test_morph_change_without_structural_writer_fails_before_transaction() -> None:
     coordinator, backend, _, _ = _coordinator()
     coordinator._morphs = None
-    with pytest.raises(MayaModelAuthoringCoordinatorError, match="structural writer"):
+    backend.begin_morph_create = None
+    with pytest.raises(MayaModelAuthoringCoordinatorError, match="narrow morph transaction"):
         coordinator.create_morph("|root", MmdMorphSpec("Smile", morph_type="bone"))
     assert backend.begin_count == 0
 
 
-def test_morph_offsets_move_and_reindex_share_the_transaction_boundary() -> None:
+def test_morph_offsets_move_requires_narrow_path_and_reindex_remains_full() -> None:
     coordinator, backend, _, _ = _coordinator()
     coordinator.create_morph("|root", MmdMorphSpec("A", morph_type="bone"))
     backend.rebase_count = 0
@@ -572,13 +733,13 @@ def test_morph_offsets_move_and_reindex_share_the_transaction_boundary() -> None
     assert updated.morphs[0].offsets[0]["bone_index"] == 0
     backend.rebase_count = 0
 
-    moved = coordinator.move_morph("|root", 0, 1)
-    assert [morph.name for morph in moved.morphs] == ["B", "A"]
+    with pytest.raises(MayaModelAuthoringCoordinatorError, match="narrow morph reindex"):
+        coordinator.move_morph("|root", 0, 1)
     backend.rebase_count = 0
     reindexed = coordinator.reindex_morphs("|root", (1, 0))
-    assert [morph.name for morph in reindexed.morphs] == ["A", "B"]
-    assert backend.begin_count == 5
-    assert backend.commit_count == 5
+    assert [morph.name for morph in reindexed.morphs] == ["B", "A"]
+    assert backend.begin_count == 4
+    assert backend.commit_count == 4
 
 
 def test_reindex_and_unregister_bones_use_structural_api_then_one_full_apply() -> None:
@@ -605,15 +766,10 @@ def test_pure_preflight_failure_performs_no_maya_write() -> None:
     assert backend.events == []
 
 
-@pytest.mark.parametrize("failure", ["structure", "materials"])
-def test_structural_or_full_apply_failure_rolls_back_original_spec(failure: str) -> None:
+def test_material_create_failure_rolls_back_original_spec() -> None:
     coordinator, backend, materials, _ = _coordinator()
     original = backend.scene
-    if failure == "structure":
-        materials.fail_create = True
-    else:
-        backend.fail_section = "materials"
-
+    materials.fail_create = True
     with pytest.raises(MayaModelAuthoringCoordinatorError, match="create_material failed"):
         coordinator.create_material("|root")
 

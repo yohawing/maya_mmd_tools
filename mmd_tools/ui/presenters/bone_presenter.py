@@ -57,9 +57,13 @@ class BoneAuthoringCoordinator(Protocol):
 
     def register_bone(self, model_root: str, bone: MmdBoneSpec) -> object: ...
 
-    def capture_rest(self, model_root: str, bone_index: int, joint: str) -> object: ...
+    def capture_rest(self, model_root: str, bone_index: int, joint: str) -> MmdBoneSpec: ...
 
     def read_spec(self, model_root: str) -> object: ...
+
+    def read_bone_value(self, model_root: str, bone_index: int, binding: str) -> MmdBoneSpec: ...
+
+    def apply_bone_value_patch(self, model_root: str, bone: MmdBoneSpec) -> MmdBoneSpec: ...
 
     def replace_bone(
         self,
@@ -386,7 +390,7 @@ class BonePresenter:
         return True
 
     def register_selected_joint(self):
-        """Register exactly one selected Maya joint without capturing rest again."""
+        """Register exactly one selected Maya joint and append its row."""
         try:
             selected = tuple(
                 self.maya_adapter.ls(selection=True, type="joint", long=True) or ()
@@ -397,18 +401,68 @@ class BonePresenter:
             self.app_state.emit_status(tr_message("bone_register_selection_required"))
             return False
         joint = selected[0]
-        leaf_name = joint.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
-        return self._run_authoring(
-            "register_bone",
-            MmdBoneSpec(name=leaf_name, binding_identity=joint),
+        root = self._authoring_root()
+        if root is None:
+            return False
+        try:
+            result = self.authoring_coordinator.register_selected_joint(root, joint)
+        except Exception as exc:
+            logger.error("Bone authoring register_selected_joint failed", exc_info=True)
+            self.app_state.emit_status(
+                tr_message_format(
+                    "bone_authoring_failed", operation="register_selected_joint", error=str(exc)
+                )
+            )
+            return False
+        if not isinstance(result, MmdBoneSpec) or not result.binding_identity:
+            self.app_state.emit_status(
+                tr_message_format(
+                    "bone_authoring_failed",
+                    operation="register_selected_joint",
+                    error="invalid registered bone result",
+                )
+            )
+            return False
+        binding = result.binding_identity
+        item = QListWidgetItem(
+            format_indexed_node_label(result.index, result.name, binding, result.name_english)
         )
+        item.setData(Qt.UserRole, binding)
+        item.setToolTip(binding)
+        self.view.bone_list.addItem(item)
+        self.bone_list_items[binding] = item
+        self.all_bones.append(binding)
+        self._registered_indices[binding] = result.index
+        self._pending_order.append(binding)
+        self.current_bone = binding
+        self.current_bone_index = result.index
+        self.view.bone_list.setCurrentItem(item)
+        self.view.set_bone_details_enabled(True)
+        self._update_authoring_actions()
+        self.app_state.emit_status(tr_message("bone_register_selected_joint_succeeded"))
+        return result
 
     def capture_rest(self):
         """Capture rest separately for the currently registered bone."""
         if type(self.current_bone_index) is not int or not self.current_bone:
             self.app_state.emit_status(tr_message("bone_registered_selection_required"))
             return False
-        return self._run_authoring("capture_rest", self.current_bone_index, self.current_bone)
+        root = self._authoring_root()
+        if root is None:
+            return False
+        try:
+            result = self.authoring_coordinator.capture_rest(
+                root, self.current_bone_index, self.current_bone
+            )
+        except Exception as exc:
+            logger.error("Bone authoring capture_rest failed", exc_info=True)
+            self.app_state.emit_status(
+                tr_message_format("bone_authoring_failed", operation="capture_rest", error=str(exc))
+            )
+            return False
+        self._update_selected_row_after_patch(result)
+        self.app_state.emit_status(tr_message("bone_capture_rest_succeeded"))
+        return result
 
     def move_reindex(self, direction):
         """Move one registered row in the explicit pending reindex order."""
@@ -748,6 +802,7 @@ class BonePresenter:
             "name_en": self.view.bone_name_en_edit.text(),
             "deform_layer": self.view.deform_layer_spin.value(),
             "flags": int(self._get_bone_flags(self.current_bone)),
+            "structural": self._structural_ui_state(),
             "all_settings": self._gather_all_settings(),
         }
 
@@ -849,7 +904,7 @@ class BonePresenter:
         self.view.ik_links_table.setCurrentCell(new_row, 0)
 
     def apply_changes(self):
-        """Apply the complete semantic bone through the shared transaction boundary."""
+        """Apply selected value edits narrowly; keep structural edits on full route."""
         if not self.current_bone or not self.maya_adapter.object_exists(self.current_bone):
             return
 
@@ -857,6 +912,80 @@ class BonePresenter:
             root = self._authoring_root()
             if root is None or type(self.current_bone_index) is not int:
                 return
+            selected_reader = getattr(self.authoring_coordinator, "read_bone_value", None)
+            selected_writer = getattr(self.authoring_coordinator, "apply_bone_value_patch", None)
+            if callable(selected_reader) and callable(selected_writer):
+                existing = selected_reader(root, self.current_bone_index, self.current_bone)
+                if not isinstance(existing, MmdBoneSpec):
+                    existing = None
+            if callable(selected_reader) and callable(selected_writer) and isinstance(existing, MmdBoneSpec):
+                ui_flags = self._calculate_bone_flags(existing.flags)
+                structural_mask = int(
+                    PmxBoneFlag.CONNECT_BONE
+                    | PmxBoneFlag.IK
+                    | PmxBoneFlag.LOCAL
+                    | PmxBoneFlag.GRANT_PARENT_ROTATE
+                    | PmxBoneFlag.GRANT_PARENT_MOVE
+                    | PmxBoneFlag.EXTERNAL_PARENT_DEFORM
+                )
+                value_mask = int(
+                    PmxBoneFlag.ROTATABLE
+                    | PmxBoneFlag.MOVABLE
+                    | PmxBoneFlag.DISPLAY
+                    | PmxBoneFlag.OPERATABLE
+                    | PmxBoneFlag.AXIS_FIXED
+                    | PmxBoneFlag.LOCAL_AXIS
+                    | PmxBoneFlag.DEFORM_AFTER_PHYSICS
+                )
+                structural_changed = (
+                    (int(existing.flags) ^ int(ui_flags)) & structural_mask
+                ) or (
+                    (int(existing.flags) ^ int(ui_flags)) & ~(structural_mask | value_mask)
+                ) or self._structural_ui_state() != self.bone_data.get("structural")
+                if not structural_changed:
+                    flags = (int(existing.flags) & ~value_mask) | (int(ui_flags) & value_mask)
+                    replacement = replace(
+                        existing,
+                        name=self.view.bone_name_jp_edit.text(),
+                        name_english=self.view.bone_name_en_edit.text(),
+                        transform_layer=self.view.deform_layer_spin.value(),
+                        flags=flags,
+                        fixed_axis=(
+                            (
+                                self.view.fixed_axis_x_spin.value(),
+                                self.view.fixed_axis_y_spin.value(),
+                                self.view.fixed_axis_z_spin.value(),
+                            )
+                            if flags & PmxBoneFlag.AXIS_FIXED
+                            else None
+                        ),
+                        local_axis_x=(
+                            (
+                                self.view.local_x_axis_x_spin.value(),
+                                self.view.local_x_axis_y_spin.value(),
+                                self.view.local_x_axis_z_spin.value(),
+                            )
+                            if flags & PmxBoneFlag.LOCAL_AXIS
+                            else None
+                        ),
+                        local_axis_z=(
+                            (
+                                self.view.local_z_axis_x_spin.value(),
+                                self.view.local_z_axis_y_spin.value(),
+                                self.view.local_z_axis_z_spin.value(),
+                            )
+                            if flags & PmxBoneFlag.LOCAL_AXIS
+                            else None
+                        ),
+                    )
+                    result = selected_writer(root, replacement)
+                    self._update_selected_row_after_patch(result)
+                    logger.info("Applied narrow value changes to bone '%s'", self.current_bone)
+                    self.app_state.emit_status(
+                        tr_message_format("bone_changes_applied", bone=self.current_bone)
+                    )
+                    return
+
             spec = self.authoring_coordinator.read_spec(root)
             existing = next(
                 (bone for bone in spec.bones if bone.index == self.current_bone_index),
@@ -978,6 +1107,57 @@ class BonePresenter:
         except Exception as e:
             logger.error(f"Failed to apply bone changes: {e}", exc_info=True)
             self.app_state.emit_status(tr_message_format("bone_changes_failed", error=str(e)))
+
+    def _structural_ui_state(self):
+        """Return only controls that require reference/topology resolution."""
+        existing_flags = self._get_bone_flags(self.current_bone) if self.current_bone else 0
+        flags = self._calculate_bone_flags(existing_flags)
+        links = []
+        for row in range(self.view.ik_links_table.rowCount()):
+            values = []
+            for col in range(self.view.ik_links_table.columnCount()):
+                if col == 1:
+                    widget = self.view.ik_links_table.cellWidget(row, col)
+                    values.append(bool(widget.isChecked()) if widget else False)
+                else:
+                    item = self.view.ik_links_table.item(row, col)
+                    values.append(item.text() if item else "")
+            links.append(tuple(values))
+        return {
+            "flags": int(flags)
+            & int(
+                PmxBoneFlag.CONNECT_BONE
+                | PmxBoneFlag.IK
+                | PmxBoneFlag.LOCAL
+                | PmxBoneFlag.GRANT_PARENT_ROTATE
+                | PmxBoneFlag.GRANT_PARENT_MOVE
+                | PmxBoneFlag.EXTERNAL_PARENT_DEFORM
+            ),
+            "grant_parent": self.view.grant_parent_edit.text(),
+            "grant_rate": self.view.grant_rate_spin.value(),
+            "ik_target": self.view.ik_target_edit.text(),
+            "ik_loop": self.view.ik_loop_spin.value(),
+            "ik_limit": self.view.ik_limit_angle_spin.value(),
+            "ik_links": tuple(links),
+            "external_parent_key": self.view.external_parent_key_spin.value(),
+            "parent": self.view.parent_bone_edit.text(),
+        }
+
+    def _update_selected_row_after_patch(self, result):
+        """Refresh only the selected row/state after a narrow value patch."""
+        if isinstance(result, MmdBoneSpec):
+            bone = result
+        else:
+            bone = None
+        item = self.bone_list_items.get(self.current_bone)
+        if item is not None and bone is not None:
+            item.setText(
+                format_indexed_node_label(
+                    bone.index, bone.name, self.current_bone, bone.name_english
+                )
+            )
+        self._registered_indices[self.current_bone] = self.current_bone_index
+        self._store_bone_data()
 
     def _resolve_bone_reference(self, spec, display_name, field):
         """Resolve one UI label to a unique registered semantic bone index."""

@@ -1,0 +1,484 @@
+"""Focused tests for the selected-material value patch transaction."""
+
+from dataclasses import replace
+from unittest.mock import Mock
+
+import pytest
+
+from tests.common.maya_stub import install_maya_stub, install_headless_ui_stubs
+
+install_maya_stub()
+install_headless_ui_stubs()
+
+from mmd_tools.adapters.maya_scene_metadata_backend import (  # noqa: E402
+    MayaSceneMetadataBackend,
+    MayaSceneMetadataError,
+)
+from mmd_tools.adapters.maya_material_authoring import MayaMaterialAuthoring  # noqa: E402
+from mmd_tools.core.material_authoring import classify_material_change  # noqa: E402
+from mmd_tools.core.model_authoring_spec import (  # noqa: E402
+    MmdMaterialSpec,
+    MmdModelAuthoringSpec,
+    MmdModelSpec,
+)
+from tests.unit.test_material_presenter import TestMaterialPresenter  # noqa: E402
+from tests.unit.test_maya_material_authoring import (  # noqa: E402
+    FakeCmdsAdapter,
+    FakeRegistry,
+    _authoring,
+    _material,
+)
+from tests.unit.test_maya_model_authoring_coordinator import _coordinator  # noqa: E402
+from tests.unit.test_maya_scene_metadata_backend import _material as _backend_material  # noqa: E402
+from tests.unit.test_maya_scene_metadata_backend import _writable_scene  # noqa: E402
+
+
+def test_classifier_routes_noop_value_binding_and_mixed_changes() -> None:
+    prior = MmdMaterialSpec("A", index=0, binding_identity="shader")
+    assert classify_material_change(prior, prior) == "noop"
+    assert classify_material_change(prior, replace(prior, name="B")) == "value"
+    assert classify_material_change(prior, replace(prior, resolved_texture_path="C:/a.png")) == "binding"
+    assert classify_material_change(
+        prior,
+        replace(prior, name="B", resolved_texture_path="C:/a.png"),
+    ) == "binding"
+
+
+def test_adapter_writes_only_changed_values_and_keeps_texture_graph_untouched() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    bound, shader, _ = adapter.create_material("|Model_root", _material())
+    old = bound
+
+    cmds.calls.clear()
+    adapter.apply_material_value_patch(
+        "|Model_root",
+        old,
+        replace(bound, name="edited"),
+    )
+    assert {
+        call[1][0].rsplit(".", 1)[1]
+        for call in cmds.calls
+        if call[0] == "set_attr"
+    } == {"mmd_material_name"}
+    assert not any(call[0] == "shading_node" for call in cmds.calls)
+    assert not any(
+        call[0] == "list_connections" and call[2].get("type") == "file"
+        for call in cmds.calls
+    )
+
+    cmds.calls.clear()
+    adapter.apply_material_value_patch(
+        "|Model_root",
+        old,
+        replace(bound, diffuse=(0.2, 0.3, 0.4, 1.0)),
+    )
+    written = {
+        call[1][0].rsplit(".", 1)[1]
+        for call in cmds.calls
+        if call[0] == "set_attr"
+    }
+    assert written == {"diffuse_color", "mmd_diffuse_alpha"}
+    assert "baseColor" not in written  # resolved main texture owns the graph
+
+
+def test_adapter_diffuse_patch_updates_base_color_without_resolved_texture() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    source = replace(_material(), texture_path=None, resolved_texture_path=None)
+    bound, _shader, _ = adapter.create_material("|Model_root", source)
+    old = bound
+    cmds.calls.clear()
+    adapter.apply_material_value_patch(
+        "|Model_root",
+        old,
+        replace(bound, diffuse=(0.2, 0.3, 0.4, 1.0)),
+    )
+    written = {
+        call[1][0].rsplit(".", 1)[1]
+        for call in cmds.calls
+        if call[0] == "set_attr"
+    }
+    assert "baseColor" in written
+
+
+def test_adapter_narrow_create_skips_runtime_rebuild_but_clones_local_texture() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    adapter = MayaMaterialAuthoring(
+        cmds,
+        registry,
+        runtime_rebuilders={"material": lambda _root: (_ for _ in ()).throw(AssertionError("runtime rebuild"))},
+    )
+    source = replace(_material(), index=0, binding_identity=None)
+    bound, shader, _ = adapter.create_material("|Model_root", source, narrow=True)
+    assert bound.binding_identity == shader
+    assert any(call[0] == "shading_node" and call[1][0] == "file" for call in cmds.calls)
+    # The narrow create is not allowed to rebuild the model-wide Material Morph graph.
+    assert not any("material_morph" in str(call) for call in cmds.calls)
+
+
+def test_coordinator_material_create_uses_only_narrow_hooks() -> None:
+    coordinator, backend, _materials, _ = _coordinator()
+    backend.events.clear()
+    coordinator._metadata.read_spec = lambda _root: (_ for _ in ()).throw(AssertionError("full read"))
+
+    created = coordinator.create_material("|root")
+
+    assert isinstance(created, MmdMaterialSpec)
+    assert created.index == 1
+    assert backend.events == ["begin:material_create", "commit:material_create"]
+    assert backend.rebase_count == 0
+
+
+def test_backend_material_create_strict_registry_shader_sg_readback() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    backend.begin_material_create("|root", 1)
+    _backend_material(cmds, "mat2", 1)
+    cmds.connections[("mat2", "shadingEngine")] = ["mat2SG"]
+    cmds.nodes.add("mat2SG")
+    cmds.node_types["mat2SG"] = "shadingEngine"
+    cmds.connections[("registry.materialMembers", None)].append("mat2")
+    actual = MmdMaterialSpec.from_mapping(backend._read_material("mat2"))
+
+    backend.commit_material_create("|root", actual)
+
+    assert cmds.undo_chunk_open is False
+
+
+def test_coordinator_material_create_commit_failure_rolls_back_without_full_read() -> None:
+    coordinator, backend, _materials, _ = _coordinator()
+    coordinator._metadata.commit_material_create = lambda *_args: (_ for _ in ()).throw(
+        RuntimeError("readback mismatch")
+    )
+    coordinator._metadata.read_spec = lambda _root: (_ for _ in ()).throw(AssertionError("full read"))
+
+    with pytest.raises(Exception, match="create_material failed"):
+        coordinator.create_material("|root")
+
+    assert backend.rollback_count == 1
+    assert backend.events[-1] == "rollback"
+
+
+def test_adapter_value_patch_writes_changed_color_coefficient_and_flags_only() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    bound, _shader, _ = adapter.create_material("|Model_root", _material())
+    old = bound
+    updated = replace(
+        bound,
+        specular=(0.1, 0.2, 0.3),
+        specular_coefficient=0.4,
+        ambient=(0.2, 0.3, 0.4),
+        draw_flags=0x10,
+        edge_color=(0.5, 0.6, 0.7, 0.8),
+        edge_size=2.0,
+    )
+    cmds.calls.clear()
+    adapter.apply_material_value_patch("|Model_root", old, updated)
+    written = {
+        call[1][0].rsplit(".", 1)[1]
+        for call in cmds.calls
+        if call[0] == "set_attr"
+    }
+    assert written == {
+        "specular_color",
+        "shininess",
+        "ambient_color",
+        "mmd_draw_flags",
+        "edge_flag",
+        "mmd_edge_color",
+        "mmd_edge_alpha",
+        "mmd_edge_size",
+    }
+
+
+def test_coordinator_narrow_path_does_not_call_full_read_or_metadata_hooks() -> None:
+    coordinator, backend, materials, _ = _coordinator()
+    prior = backend.scene.materials[0]
+    target = replace(prior, name="edited")
+    full_reads: list[str] = []
+    def full_read(root: str) -> None:
+        full_reads.append(root)
+
+    def selected_read(_root: str, _binding: str, _index: int) -> MmdMaterialSpec:
+        return prior
+
+    def begin_value(*_args: object) -> None:
+        backend.events.append("begin:value")
+
+    def commit_value(*_args: object) -> None:
+        backend.events.append("commit:value")
+
+    def patch_value(_root: str, _old: MmdMaterialSpec, new: MmdMaterialSpec) -> MmdMaterialSpec:
+        return new
+
+    coordinator._metadata.read_spec = full_read  # type: ignore[method-assign]
+    coordinator._metadata.read_material_value = selected_read
+    coordinator._backend.begin_material_value_patch = begin_value
+    coordinator._metadata.commit_material_value_patch = commit_value
+    materials.apply_material_value_patch = patch_value
+
+    result = coordinator.apply_material_value_patch("|root", target)
+
+    assert isinstance(result, MmdMaterialSpec)
+    assert result.name == "edited"
+    assert full_reads == []
+    assert backend.events == ["begin:value", "commit:value"]
+
+
+def test_coordinator_narrow_failure_rolls_back_without_full_hooks() -> None:
+    coordinator, backend, materials, _ = _coordinator()
+    prior = backend.scene.materials[0]
+    def selected_read(_root: str, _binding: str, _index: int) -> MmdMaterialSpec:
+        return prior
+
+    def begin_value(*_args: object) -> None:
+        backend.events.append("begin:value")
+
+    def commit_value(*_args: object) -> None:
+        raise RuntimeError("fingerprint mismatch")
+
+    def rollback(_root: str) -> None:
+        backend.events.append("rollback:value")
+
+    def patch_value(_root: str, _old: MmdMaterialSpec, new: MmdMaterialSpec) -> MmdMaterialSpec:
+        return new
+
+    coordinator._metadata.read_material_value = selected_read
+    coordinator._backend.begin_material_value_patch = begin_value
+    coordinator._metadata.commit_material_value_patch = commit_value
+    backend.rollback_write = rollback
+    materials.apply_material_value_patch = patch_value
+
+    with pytest.raises(Exception, match="apply_material_value_patch failed"):
+        coordinator.apply_material_value_patch("|root", replace(prior, name="edited"))
+    assert backend.events == ["begin:value", "rollback:value"]
+
+
+def test_coordinator_noop_does_not_open_a_narrow_transaction() -> None:
+    coordinator, backend, _materials, _ = _coordinator()
+    prior = backend.scene.materials[0]
+    coordinator._metadata.read_material_value = lambda _root, _binding, _index: prior  # noqa: E731
+    backend.begin_material_value_patch = lambda *_args: backend.events.append("begin:value")  # noqa: E731
+    coordinator._metadata.commit_material_value_patch = lambda *_args: backend.events.append("commit:value")  # noqa: E731
+    result = coordinator.apply_material_value_patch("|root", prior)
+    assert result == prior
+    assert backend.events == []
+
+
+class _SelectedMaterialCmds:
+    def __init__(self, root: str, shader: str) -> None:
+        self.root = root
+        self.shader = shader
+        self.attrs: dict[tuple[str, str], object] = {}
+
+    def ls(self, node: str, **_kwargs: object) -> list[str]:
+        return [node]
+
+    def attribute_exists(self, attr: str, node: str) -> bool:
+        return (node, attr) in self.attrs
+
+    def get_attr(self, path: str) -> object:
+        node, attr = path.rsplit(".", 1)
+        return self.attrs[(node, attr)]
+
+    def list_connections(self, _query: str, **_kwargs: object) -> list[str]:
+        return []
+
+    def undo_info(self, **kwargs: object) -> bool:
+        return bool(kwargs.get("query"))
+
+
+def test_selected_reader_requires_registry_ownership_and_matching_index() -> None:
+    root, shader = "|root", "shader"
+    cmds = _SelectedMaterialCmds(root, shader)
+    backend = MayaSceneMetadataBackend(cmds)
+    def members(_root: str) -> list[str]:
+        return [shader]
+
+    backend._registry_material_members = members  # type: ignore[method-assign]
+    material = MmdMaterialSpec("A", index=3, binding_identity=shader)
+    from mmd_tools.core.constants import ATTR_MMD_MATERIAL_INDEX
+
+    cmds.attrs[(shader, ATTR_MMD_MATERIAL_INDEX)] = 3
+    def read_material(_shader: str) -> dict[str, object]:
+        return material.to_mapping()
+
+    backend._read_material = read_material  # type: ignore[method-assign]
+    assert backend.read_material_value(root, shader, 3) == material
+    with pytest.raises(MayaSceneMetadataError, match="index mismatch"):
+        backend.read_material_value(root, shader, 4)
+    def no_members(_root: str) -> list[str]:
+        return []
+
+    backend._registry_material_members = no_members  # type: ignore[method-assign]
+    with pytest.raises(MayaSceneMetadataError, match="not owned"):
+        backend.read_material_value(root, shader, 3)
+
+
+def test_backend_canonicalizes_base_color_to_maya_float3_precision() -> None:
+    assert MayaSceneMetadataBackend._maya_float3((0.72, 0.48, 0.36)) == (
+        0.7200000286102295,
+        0.47999998927116394,
+        0.36000001430511475,
+    )
+
+
+def test_backend_value_commit_mismatch_rolls_back_selected_preimage() -> None:
+    class UndoCmds(FakeCmdsAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self._undo_attrs: dict[tuple[str, str], object] | None = None
+
+        def undo_info(self, **kwargs: object) -> bool:
+            if kwargs.get("query"):
+                return True
+            if kwargs.get("openChunk"):
+                self._undo_attrs = dict(self.attrs)
+            return True
+
+        def undo(self) -> None:
+            if self._undo_attrs is not None:
+                self.attrs = self._undo_attrs
+
+    cmds = UndoCmds()
+    registry = FakeRegistry()
+    authoring = _authoring(cmds, registry)
+    bound, shader, _ = authoring.create_material("|Model_root", _material())
+    backend = MayaSceneMetadataBackend(cmds)
+    backend._registry_material_members = lambda _root: [shader]  # noqa: E731
+    old = bound
+    new = replace(old, name="edited")
+    backend.begin_material_value_patch("|Model_root", shader, old, new)
+    cmds.set_attr(f"{shader}.mmd_material_name", "wrong", type="string")
+    with pytest.raises(MayaSceneMetadataError, match="fingerprint mismatch"):
+        backend.commit_material_value_patch("|Model_root", shader, new)
+    backend.rollback_write("|Model_root")
+    assert cmds.attrs[(shader, "mmd_material_name")] == old.name
+
+
+def test_presenter_value_apply_uses_selected_row_without_full_reload() -> None:
+    fixture = TestMaterialPresenter()
+    fixture.setUp()
+    presenter = fixture.presenter
+    prior = MmdMaterialSpec("A", name_english="A", index=0, binding_identity="shader")
+    coordinator = Mock()
+    def selected_read(_root: str, _index: int, _binding: str) -> MmdMaterialSpec:
+        return prior
+
+    def apply_value(_root: str, material: MmdMaterialSpec) -> MmdMaterialSpec:
+        return material
+
+    coordinator.read_material_value.side_effect = selected_read
+    coordinator.apply_material_value_patch.side_effect = apply_value
+    coordinator.read_spec.side_effect = AssertionError("full read is forbidden")
+    coordinator.replace_material.side_effect = AssertionError("full replace is forbidden")
+    presenter.load_materials = Mock(side_effect=AssertionError("full list reload is forbidden"))
+    presenter.authoring_coordinator = coordinator
+    presenter.current_material = "shader"
+    presenter.current_material_index = 0
+    presenter.app_state.current_model_root = "|root"
+    presenter.material_data = {
+        "diffuse": (1.0, 1.0, 1.0),
+        "specular": (0.0, 0.0, 0.0),
+        "ambient": (0.0, 0.0, 0.0),
+        "edge_color": (0.0, 0.0, 0.0),
+        "edge_alpha": 1.0,
+    }
+    presenter.view.material_jp_name_edit.text.return_value = "B"
+    presenter.view.material_en_name_edit.text.return_value = "A"
+    presenter.view.texture_path_edit.text.return_value = ""
+    presenter.view.sphere_map_path_edit.text.return_value = ""
+    presenter.view.transparency_spin.value.return_value = 0.0
+    presenter.view.specular_coefficient_spin.value.return_value = 0.0
+    presenter.view.edge_size_spin.value.return_value = 1.0
+    presenter.view.sphere_mode_combo.currentIndex.return_value = 0
+    presenter.view.toon_sharing_check.isChecked.return_value = False
+    presenter.view.toon_texture_index_spin.value.return_value = -1
+    presenter.view.toon_texture_path_edit.text.return_value = ""
+    for name in (
+        "both_face_check",
+        "ground_shadow_check",
+        "self_shadow_map_check",
+        "self_shadow_check",
+        "edge_draw_check",
+        "vertex_color_check",
+        "point_draw_check",
+        "line_draw_check",
+    ):
+        getattr(presenter.view, name).isChecked.return_value = False
+
+    row = Mock()
+    row.data.side_effect = lambda role: "shader" if role == 256 else None
+    presenter.view.material_list.count.return_value = 1
+    presenter.view.material_list.item.return_value = row
+
+    result = presenter._apply_authoring_changes()
+
+    assert isinstance(result, MmdMaterialSpec)
+    coordinator.read_spec.assert_not_called()
+    coordinator.replace_material.assert_not_called()
+    presenter.load_materials.assert_not_called()
+    row.setText.assert_called_once()
+    assert presenter.has_unsaved_changes is False
+
+
+def test_presenter_texture_edit_uses_full_binding_route() -> None:
+    fixture = TestMaterialPresenter()
+    fixture.setUp()
+    presenter = fixture.presenter
+    prior = MmdMaterialSpec(
+        "A",
+        name_english="A",
+        index=0,
+        sphere_texture_path="sphere.png",
+        binding_identity="shader",
+    )
+    current = MmdModelAuthoringSpec(model=MmdModelSpec("Model"), materials=(prior,))
+    coordinator = Mock()
+    coordinator.read_material_value.side_effect = lambda _root, _index, _binding: prior  # noqa: E731
+    coordinator.read_spec.return_value = current
+    coordinator.replace_material.return_value = current
+    presenter.authoring_coordinator = coordinator
+    presenter.current_material = "shader"
+    presenter.current_material_index = 0
+    presenter.app_state.current_model_root = "|root"
+    presenter.material_data = {
+        "diffuse": (1.0, 1.0, 1.0),
+        "specular": (0.0, 0.0, 0.0),
+        "ambient": (0.0, 0.0, 0.0),
+        "edge_color": (0.0, 0.0, 0.0),
+        "edge_alpha": 1.0,
+    }
+    presenter.view.material_jp_name_edit.text.return_value = "A"
+    presenter.view.material_en_name_edit.text.return_value = "A"
+    presenter.view.texture_path_edit.text.return_value = ""
+    presenter.view.sphere_map_path_edit.text.return_value = ""
+    presenter.view.transparency_spin.value.return_value = 0.0
+    presenter.view.specular_coefficient_spin.value.return_value = 0.0
+    presenter.view.edge_size_spin.value.return_value = 1.0
+    presenter.view.sphere_mode_combo.currentIndex.return_value = 0
+    presenter.view.toon_sharing_check.isChecked.return_value = False
+    presenter.view.toon_texture_index_spin.value.return_value = -1
+    presenter.view.toon_texture_path_edit.text.return_value = ""
+    for name in (
+        "both_face_check",
+        "ground_shadow_check",
+        "self_shadow_map_check",
+        "self_shadow_check",
+        "edge_draw_check",
+        "vertex_color_check",
+        "point_draw_check",
+        "line_draw_check",
+    ):
+        getattr(presenter.view, name).isChecked.return_value = False
+
+    presenter._apply_authoring_changes()
+
+    coordinator.replace_material.assert_called_once()
+    coordinator.read_spec.assert_called()
+    coordinator.apply_material_value_patch.assert_not_called()

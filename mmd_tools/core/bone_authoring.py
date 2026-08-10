@@ -27,6 +27,61 @@ class BoneAuthoringError(ValueError):
     """Raised for any malformed or semantically invalid bone operation."""
 
 
+# Bone fields that may be changed without changing a Maya binding or any
+# reference/topology data.  Keep this allowlist explicit: a mixed edit must
+# retain the established full transaction rather than being guessed into the
+# narrow path.
+BONE_VALUE_FIELDS = frozenset(
+    {
+        "name",
+        "name_english",
+        "transform_layer",
+        "rest_position",
+        "fixed_axis",
+        "local_axis_x",
+        "local_axis_z",
+    }
+)
+
+_BONE_VALUE_FLAG_MASK = int(
+    PmxBoneFlag.ROTATABLE
+    | PmxBoneFlag.MOVABLE
+    | PmxBoneFlag.DISPLAY
+    | PmxBoneFlag.OPERATABLE
+    | PmxBoneFlag.AXIS_FIXED
+    | PmxBoneFlag.LOCAL_AXIS
+    | PmxBoneFlag.DEFORM_AFTER_PHYSICS
+)
+
+
+def classify_bone_change(old: MmdBoneSpec, new: MmdBoneSpec) -> str:
+    """Classify one bone replacement for transaction routing.
+
+    Returns ``"noop"`` for an identical semantic bone, ``"value"`` when all
+    changed fields are in the explicit patch-safe allowlist (plus proven
+    display/non-reference flag bits), and ``"structural"`` for index,
+    binding, reference, IK, grant, or any uncertain field changes.  Mixed
+    edits intentionally stay structural.
+    """
+    old = _require_bone(old)
+    new = _require_bone(new)
+    old_mapping = old.to_mapping()
+    new_mapping = new.to_mapping()
+    changed = {
+        field
+        for field in old_mapping
+        if old_mapping[field] != new_mapping[field]
+    }
+    if not changed:
+        return "noop"
+    if "flags" in changed:
+        changed_bits = int(old.flags) ^ int(new.flags)
+        if changed_bits & ~_BONE_VALUE_FLAG_MASK:
+            return "structural"
+        changed.remove("flags")
+    return "value" if changed.issubset(BONE_VALUE_FIELDS) else "structural"
+
+
 @dataclass(frozen=True)
 class BoneResetPlan:
     """Immutable preflight result for one scene-as-authority bone reset.
@@ -590,6 +645,8 @@ def make_bone_reset_plan(
 
 __all__ = [
     "BoneAuthoringError",
+    "BONE_VALUE_FIELDS",
+    "classify_bone_change",
     "register_bone",
     "replace_bone",
     "replace_bone_semantic",

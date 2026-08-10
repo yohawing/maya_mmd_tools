@@ -17,17 +17,16 @@ from typing import Any, Callable
 from mmd_tools.adapters import maya_bone_authoring
 from mmd_tools.core.bone_authoring import (
     BoneResetPlan,
-    capture_rest,
-    register_bone,
+    classify_bone_change,
     reindex_bones,
     replace_bone as replace_bone_spec,
     replace_bone_semantic as replace_bone_semantic_spec,
     unregister_bone,
 )
 from mmd_tools.core.material_authoring import (
-    create_material,
+    classify_material_change,
     delete_material,
-    duplicate_material,
+    move_material as move_material_spec,
     reindex_materials,
     replace_material,
 )
@@ -38,9 +37,9 @@ from mmd_tools.core.model_authoring_spec import (
     MmdMorphSpec,
 )
 from mmd_tools.core.morph_authoring import (
-    create_morph as create_morph_spec,
+    classify_morph_change,
     delete_morph as delete_morph_spec,
-    move_morph as move_morph_spec,
+    MorphReindexResult,
     reindex_morphs as reindex_morphs_spec,
     replace_morph as replace_morph_spec,
     replace_morph_offsets as replace_morph_offsets_spec,
@@ -118,46 +117,236 @@ class MayaModelAuthoringCoordinator:
         """Read the current strict scene specification for UI refreshes."""
         return self._read_current(model_root, "read_spec")
 
+    def read_material_value(
+        self,
+        model_root: str,
+        index: int,
+        binding: str,
+    ) -> MmdMaterialSpec:
+        """Read one selected material without reading unrelated metadata."""
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise MayaModelAuthoringCoordinatorError("material index must be a non-negative integer")
+        if not isinstance(binding, str) or not binding.strip():
+            raise MayaModelAuthoringCoordinatorError("material binding must be a non-empty string")
+        reader = getattr(self._metadata, "read_material_value", None)
+        if not callable(reader):
+            raise MayaModelAuthoringCoordinatorError(
+                "read_material_value requires a selected-material metadata reader"
+            )
+        try:
+            material = reader(model_root, binding, index)
+        except Exception as exc:
+            raise MayaModelAuthoringCoordinatorError(
+                f"read_material_value failed for root {model_root!r}: {exc}"
+            ) from exc
+        if not isinstance(material, MmdMaterialSpec):
+            raise MayaModelAuthoringCoordinatorError("selected-material reader returned an invalid material")
+        if material.index != index or material.binding_identity != binding:
+            raise MayaModelAuthoringCoordinatorError("selected-material reader returned the wrong binding")
+        return material
+
+    def read_bone_value(
+        self,
+        model_root: str,
+        index: int,
+        binding: str,
+    ) -> MmdBoneSpec:
+        """Read one selected bone without reading unrelated model metadata."""
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise MayaModelAuthoringCoordinatorError("bone index must be a non-negative integer")
+        if not isinstance(binding, str) or not binding.strip():
+            raise MayaModelAuthoringCoordinatorError("bone binding must be a non-empty string")
+        reader = getattr(self._metadata, "read_bone_value", None)
+        if not callable(reader):
+            raise MayaModelAuthoringCoordinatorError(
+                "read_bone_value requires a selected-bone metadata reader"
+            )
+        try:
+            bone = reader(model_root, binding, index)
+        except Exception as exc:
+            raise MayaModelAuthoringCoordinatorError(
+                f"read_bone_value failed for root {model_root!r}: {exc}"
+            ) from exc
+        if not isinstance(bone, MmdBoneSpec):
+            raise MayaModelAuthoringCoordinatorError("selected-bone reader returned an invalid bone")
+        if bone.index != index or bone.binding_identity != binding:
+            raise MayaModelAuthoringCoordinatorError("selected-bone reader returned the wrong binding")
+        return bone
+
+    def apply_bone_value_patch(
+        self,
+        model_root: str,
+        bone: MmdBoneSpec,
+    ) -> MmdBoneSpec:
+        """Apply one selected-bone value edit in a narrow undo chunk."""
+        if not isinstance(bone, MmdBoneSpec):
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_bone_value_patch requires an MmdBoneSpec"
+            )
+        binding = bone.binding_identity
+        if not isinstance(binding, str) or not binding:
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_bone_value_patch requires a bone binding identity"
+            )
+        previous = self.read_bone_value(model_root, bone.index, binding)
+        route = classify_bone_change(previous, bone)
+        if route == "noop":
+            return previous
+        if route != "value":
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_bone_value_patch received structural fields"
+            )
+        structural_patch = getattr(self._bones, "apply_bone_value_patch", None)
+        begin = getattr(self._backend, "begin_bone_value_patch", None)
+        commit = getattr(self._metadata, "commit_bone_value_patch", None)
+        if not callable(structural_patch) or not callable(begin) or not callable(commit):
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_bone_value_patch requires narrow bone binding/metadata APIs; "
+                "no Maya writes were performed"
+            )
+
+        def bind() -> MmdBoneSpec:
+            result = structural_patch(model_root, previous, bone, self._cmds)
+            if not isinstance(result, MmdBoneSpec):
+                raise TypeError("bone value patch binding operation returned an invalid bone")
+            return result
+
+        return self._execute_bone_value_patch(
+            model_root,
+            "apply_bone_value_patch",
+            previous,
+            bone,
+            binding,
+            begin,
+            bind,
+            commit,
+        )
+
+    def read_morph_value(
+        self,
+        model_root: str,
+        index: int,
+        binding: str,
+    ) -> MmdMorphSpec:
+        """Read one selected morph without enumerating the model spec."""
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise MayaModelAuthoringCoordinatorError("morph index must be a non-negative integer")
+        if not isinstance(binding, str) or not binding.strip():
+            raise MayaModelAuthoringCoordinatorError("morph binding must be a non-empty string")
+        reader = getattr(self._metadata, "read_morph_value", None)
+        if not callable(reader):
+            raise MayaModelAuthoringCoordinatorError(
+                "read_morph_value requires a selected-morph metadata reader"
+            )
+        try:
+            morph = reader(model_root, binding, index)
+        except Exception as exc:
+            raise MayaModelAuthoringCoordinatorError(
+                f"read_morph_value failed for root {model_root!r}: {exc}"
+            ) from exc
+        if not isinstance(morph, MmdMorphSpec):
+            raise MayaModelAuthoringCoordinatorError("selected-morph reader returned an invalid morph")
+        if morph.index != index or morph.binding_identity != binding:
+            raise MayaModelAuthoringCoordinatorError("selected-morph reader returned the wrong binding")
+        return morph
+
+    def apply_morph_value_patch(
+        self,
+        model_root: str,
+        morph: MmdMorphSpec,
+    ) -> MmdMorphSpec:
+        """Apply one selected morph's patch-safe values in a narrow undo chunk."""
+        if not isinstance(morph, MmdMorphSpec):
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_morph_value_patch requires an MmdMorphSpec"
+            )
+        binding = morph.binding_identity
+        if not isinstance(binding, str) or not binding:
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_morph_value_patch requires a morph binding identity"
+            )
+        previous = self.read_morph_value(model_root, morph.index, binding)
+        route = classify_morph_change(previous, morph)
+        if route == "noop":
+            return previous
+        if route != "value":
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_morph_value_patch received structural fields"
+            )
+        begin = getattr(self._backend, "begin_morph_value_patch", None)
+        commit = getattr(self._metadata, "commit_morph_value_patch", None)
+        if not callable(begin) or not callable(commit):
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_morph_value_patch requires narrow morph metadata APIs; "
+                "no Maya writes were performed"
+            )
+
+        def bind() -> MmdMorphSpec:
+            patch = getattr(self._morphs, "apply_morph_value_patch", None)
+            if callable(patch):
+                result = patch(model_root, previous, morph, self._cmds)
+            else:
+                # Production composition injects a closure for structural
+                # morph writes.  The narrow implementation is kept on the
+                # adapter module so this path never falls back to that closure
+                # (which would rebuild the full controller graph).
+                from mmd_tools.adapters import maya_morph_authoring
+
+                result = maya_morph_authoring.apply_morph_value_patch(
+                    model_root, previous, morph, self._cmds
+                )
+            if not isinstance(result, MmdMorphSpec):
+                raise TypeError("morph value patch binding operation returned an invalid morph")
+            return result
+
+        return self._execute_morph_value_patch(
+            model_root,
+            "apply_morph_value_patch",
+            previous,
+            morph,
+            binding,
+            begin,
+            bind,
+            commit,
+        )
+
     # Material operations -------------------------------------------------
     def create_material(
         self,
         model_root: str,
-    ) -> MmdModelAuthoringSpec:
-        """Create one default material without changing Maya set membership."""
-        current = self._read_current(model_root, "create_material")
-        target = self._pure("create_material", lambda: create_material(current))
-        created = max(target.materials, key=lambda item: item.index)
-        unbound = replace(created, binding_identity=None)
-        target = replace_material(target, unbound)
-
-        def bind() -> MmdModelAuthoringSpec:
-            bound, _shader, _shading_group = self._materials.create_material(model_root, unbound)
-            return replace_material(target, bound)
-
-        return self._execute(model_root, "create_material", target, bind)
+    ) -> MmdMaterialSpec:
+        """Create one default material through a material-only transaction."""
+        next_index = self._narrow_next_material_index(model_root, "create_material")
+        material = MmdMaterialSpec(
+            name=f"Material {next_index}",
+            name_english=f"Material {next_index}",
+            index=next_index,
+        )
+        return self._execute_material_create(model_root, "create_material", material)
 
     def duplicate_material(
         self,
         model_root: str,
         source_index: int,
-    ) -> MmdModelAuthoringSpec:
-        """Duplicate one material without changing Maya set membership."""
-        current = self._read_current(model_root, "duplicate_material")
-        target = self._pure(
-            "duplicate_material",
-            lambda: duplicate_material(current, source_index),
+    ) -> MmdMaterialSpec:
+        """Duplicate one selected material through a material-only transaction."""
+        try:
+            source = self._metadata.read_material_value_by_index(model_root, source_index)
+            next_index = self._metadata.next_material_index(model_root)
+        except Exception as exc:
+            raise MayaModelAuthoringCoordinatorError(
+                f"duplicate_material narrow read failed for root {model_root!r}: {exc}"
+            ) from exc
+        if not isinstance(source, MmdMaterialSpec):
+            raise MayaModelAuthoringCoordinatorError("selected material reader returned an invalid material")
+        duplicated = replace(
+            source,
+            index=next_index,
+            name=f"{source.name} Copy",
+            name_english=f"{source.name_english} Copy",
+            binding_identity=None,
         )
-        duplicated = max(target.materials, key=lambda item: item.index)
-        # Pure duplication deliberately copies all semantic fields.  A Maya
-        # binding identity is not semantic material data and must be replaced.
-        unbound = replace(duplicated, binding_identity=None)
-        target = replace_material(target, unbound)
-
-        def bind() -> MmdModelAuthoringSpec:
-            bound, _shader, _shading_group = self._materials.create_material(model_root, unbound)
-            return replace_material(target, bound)
-
-        return self._execute(model_root, "duplicate_material", target, bind)
+        return self._execute_material_create(model_root, "duplicate_material", duplicated)
 
     def replace_material(
         self,
@@ -194,6 +383,63 @@ class MayaModelAuthoringCoordinator:
             return result
 
         return self._execute(model_root, "replace_material", target, bind)
+
+    def apply_material_value_patch(
+        self,
+        model_root: str,
+        material: MmdMaterialSpec,
+    ) -> MmdMaterialSpec:
+        """Apply one patch-safe material value edit in a narrow undo chunk."""
+        if not isinstance(material, MmdMaterialSpec):
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_material_value_patch requires an MmdMaterialSpec"
+            )
+        binding = material.binding_identity
+        if not isinstance(binding, str) or not binding:
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_material_value_patch requires a material binding identity"
+            )
+        previous = self.read_material_value(model_root, material.index, binding)
+        if material.binding_identity is None:
+            material = replace(material, binding_identity=previous.binding_identity)
+        if material.binding_identity != previous.binding_identity:
+            raise MayaModelAuthoringCoordinatorError(
+                f"material {material.index} binding identity cannot change"
+            )
+        route = classify_material_change(previous, material)
+        if route == "noop":
+            return previous
+        if route != "value":
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_material_value_patch received binding-sensitive fields"
+            )
+        structural_patch = getattr(self._materials, "apply_material_value_patch", None)
+        if not callable(structural_patch):
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_material_value_patch requires a narrow material binding API; no Maya writes were performed"
+            )
+        begin = getattr(self._backend, "begin_material_value_patch", None)
+        commit = getattr(self._metadata, "commit_material_value_patch", None)
+        if not callable(begin) or not callable(commit):
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_material_value_patch requires a narrow metadata transaction; no Maya writes were performed"
+            )
+        def bind() -> MmdMaterialSpec:
+            result = structural_patch(model_root, previous, material)
+            if not isinstance(result, MmdMaterialSpec):
+                raise TypeError("material value patch binding operation returned an invalid material")
+            return result
+
+        return self._execute_material_value_patch(
+            model_root,
+            "apply_material_value_patch",
+            previous,
+            material,
+            binding,
+            begin,
+            bind,
+            commit,
+        )
 
     def delete_material(self, model_root: str, index: int) -> MmdModelAuthoringSpec:
         """Delete and compact one binding when the structural API is available."""
@@ -252,38 +498,71 @@ class MayaModelAuthoringCoordinator:
 
         return self._execute(model_root, "reindex_materials", target, bind)
 
-    # Bone operations -----------------------------------------------------
-    def register_selected_joint(self, model_root: str, joint: str) -> MmdModelAuthoringSpec:
-        """Register one selected joint with conservative default PMX metadata."""
-        current = self._read_current(model_root, "register_selected_joint")
-        canonical = self._canonical_existing_node(joint)
-        parent_index = -1
-        parents = self._cmds.list_relatives(canonical, parent=True, fullPath=True, type="joint") or []
-        if len(parents) > 1:
-            raise MayaModelAuthoringCoordinatorError("selected joint has multiple joint parents")
-        if parents:
-            parent = self._canonical_existing_node(parents[0])
-            registered_parent = next(
-                (bone for bone in current.bones if bone.binding_identity == parent),
-                None,
-            )
-            if registered_parent is not None:
-                parent_index = registered_parent.index
-        name = canonical.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
-        bone = MmdBoneSpec(
-            name=name,
-            name_english=name,
-            index=len(current.bones),
-            parent_index=parent_index,
-            tail_offset=(0.0, 0.0, 0.0),
-            rest_position=(0.0, 0.0, 0.0),
-            binding_identity=canonical,
+    def move_material(
+        self,
+        model_root: str,
+        index: int,
+        new_position: int,
+    ) -> MmdModelAuthoringSpec:
+        """Move one material to an adjacent position through a narrow transaction."""
+        current = self._read_current(model_root, "move_material")
+        target = self._pure(
+            "move_material",
+            lambda: move_material_spec(current, index, new_position),
         )
-        return self._register_bone(model_root, current, bone, "register_selected_joint")
+        structural_change = getattr(self._materials, "apply_material_reindex", None)
+        if not callable(structural_change):
+            raise MayaModelAuthoringCoordinatorError(
+                "move_material requires apply_material_reindex; no Maya writes were performed"
+            )
+        commit = getattr(self._metadata, "commit_material_reindex", None)
+        if not callable(commit):
+            raise MayaModelAuthoringCoordinatorError(
+                "move_material requires a narrow metadata reindex commit; no Maya writes were performed"
+            )
 
-    def register_bone(self, model_root: str, bone: MmdBoneSpec) -> MmdModelAuthoringSpec:
-        """Register an existing descendant joint and persist its long identity."""
-        current = self._read_current(model_root, "register_bone")
+        def bind() -> MmdModelAuthoringSpec:
+            result = structural_change(model_root, current, target)
+            if not isinstance(result, MmdModelAuthoringSpec):
+                raise TypeError("material reindex binding operation returned an invalid spec")
+            return result
+
+        return self._execute_material_reindex(model_root, "move_material", bind, commit)
+
+    # Bone operations -----------------------------------------------------
+    def register_selected_joint(self, model_root: str, joint: str) -> MmdBoneSpec:
+        """Register one selected joint through a bone-only transaction."""
+        canonical = self._canonical_existing_node(joint)
+        prepare = getattr(self._bones, "prepare_selected_joint_registration", None)
+        begin = getattr(self._backend, "begin_bone_register", None)
+        commit = getattr(self._metadata, "commit_bone_register", None)
+        writer = getattr(self._bones, "register_selected_joint", None)
+        if not all(callable(item) for item in (prepare, begin, commit, writer)):
+            raise MayaModelAuthoringCoordinatorError(
+                "register_selected_joint requires narrow bone registration APIs; "
+                "no Maya writes were performed"
+            )
+        try:
+            bone = prepare(model_root, canonical, self._cmds)
+        except Exception as exc:
+            raise MayaModelAuthoringCoordinatorError(
+                f"register_selected_joint preflight failed for root {model_root!r}: {exc}"
+            ) from exc
+        if not isinstance(bone, MmdBoneSpec) or bone.binding_identity != canonical:
+            raise MayaModelAuthoringCoordinatorError(
+                "selected-joint registration preflight returned an invalid bone"
+            )
+
+        def bind() -> MmdBoneSpec:
+            result = writer(model_root, bone, self._cmds)
+            if not isinstance(result, MmdBoneSpec):
+                raise TypeError("selected-joint registration returned an invalid bone")
+            return result
+
+        return self._execute_bone_register(model_root, "register_selected_joint", bone, begin, bind, commit)
+
+    def register_bone(self, model_root: str, bone: MmdBoneSpec) -> MmdBoneSpec:
+        """Register an existing descendant joint through a narrow transaction."""
         if not isinstance(bone, MmdBoneSpec) or bone.binding_identity is None:
             raise MayaModelAuthoringCoordinatorError(
                 "register_bone requires an MmdBoneSpec with binding_identity"
@@ -297,36 +576,33 @@ class MayaModelAuthoringCoordinator:
                 else (0.0, 0.0, 0.0)
             )
             bound_bone = replace(bound_bone, tail_offset=default_tail)
-        return self._register_bone(model_root, current, bound_bone, "register_bone")
+        begin = getattr(self._backend, "begin_bone_register", None)
+        commit = getattr(self._metadata, "commit_bone_register", None)
+        writer = getattr(self._bones, "register_existing_joint", None)
+        if not callable(begin) or not callable(commit) or not callable(writer):
+            raise MayaModelAuthoringCoordinatorError(
+                "register_bone requires narrow bone registration APIs; no Maya writes were performed"
+            )
 
-    def _register_bone(
-        self,
-        model_root: str,
-        current: MmdModelAuthoringSpec,
-        bone: MmdBoneSpec,
-        operation: str,
-    ) -> MmdModelAuthoringSpec:
-        target = self._pure(operation, lambda: register_bone(current, bone))
-        registered = self._bone(target, max(item.index for item in target.bones))
+        def bind() -> MmdBoneSpec:
+            writer(model_root, bound_bone, self._cmds)
+            return bound_bone
 
-        def bind() -> MmdModelAuthoringSpec:
-            self._bones.register_existing_joint(model_root, registered, self._cmds)
-            return target
-
-        return self._execute(model_root, operation, target, bind)
+        return self._execute_bone_register(
+            model_root, "register_bone", bound_bone, begin, bind, commit
+        )
 
     def capture_rest(
         self,
         model_root: str,
         index: int,
         joint: str,
-    ) -> MmdModelAuthoringSpec:
-        """Capture one joint's PMX-space rest position before starting writes."""
-        current = self._read_current(model_root, "capture_rest")
-        bone = self._bone(current, index)
+    ) -> MmdBoneSpec:
+        """Capture one selected joint through the narrow value transaction."""
+        canonical = self._canonical_existing_node(joint)
+        bone = self.read_bone_value(model_root, index, canonical)
         if bone.binding_identity is None:
             raise MayaModelAuthoringCoordinatorError(f"bone {index} has no Maya binding identity")
-        canonical = self._canonical_existing_node(joint)
         if canonical != bone.binding_identity:
             raise MayaModelAuthoringCoordinatorError(
                 f"joint {canonical!r} is not the binding for bone {index}"
@@ -343,8 +619,34 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 f"capture_rest preflight failed for root {model_root!r}: {exc}"
             ) from exc
-        target = self._pure("capture_rest", lambda: capture_rest(current, index, position))
-        return self._execute(model_root, "capture_rest", target, lambda: target)
+        target = replace(bone, rest_position=position)
+        if classify_bone_change(bone, target) == "noop":
+            return bone
+        structural_patch = getattr(self._bones, "apply_bone_value_patch", None)
+        begin = getattr(self._backend, "begin_bone_value_patch", None)
+        commit = getattr(self._metadata, "commit_bone_value_patch", None)
+        if not callable(structural_patch) or not callable(begin) or not callable(commit):
+            raise MayaModelAuthoringCoordinatorError(
+                "capture_rest requires narrow bone binding/metadata APIs; "
+                "no Maya writes were performed"
+            )
+
+        def bind() -> MmdBoneSpec:
+            result = structural_patch(model_root, bone, target, self._cmds)
+            if not isinstance(result, MmdBoneSpec):
+                raise TypeError("bone value patch binding operation returned an invalid bone")
+            return result
+
+        return self._execute_bone_value_patch(
+            model_root,
+            "capture_rest",
+            bone,
+            target,
+            bone.binding_identity,
+            begin,
+            bind,
+            commit,
+        )
 
     def replace_bone(
         self,
@@ -449,11 +751,66 @@ class MayaModelAuthoringCoordinator:
         return float(scale)
 
     # Morph operations ----------------------------------------------------
-    def create_morph(self, model_root: str, morph: MmdMorphSpec) -> MmdModelAuthoringSpec:
-        """Create one morph and its canonical Maya binding."""
-        current = self._read_current(model_root, "create_morph")
-        target = self._pure("create_morph", lambda: create_morph_spec(current, morph))
-        return self._execute_morph_change(model_root, "create_morph", current, target)
+    def create_morph(self, model_root: str, morph: MmdMorphSpec) -> MmdMorphSpec:
+        """Create one empty-offset morph through a narrow transaction."""
+        if not isinstance(morph, MmdMorphSpec):
+            raise MayaModelAuthoringCoordinatorError("create_morph requires an MmdMorphSpec")
+        if morph.binding_identity is not None or morph.offsets:
+            raise MayaModelAuthoringCoordinatorError(
+                "create_morph accepts only an unbound empty-offset morph"
+            )
+        begin = getattr(self._backend, "begin_morph_create", None)
+        commit = getattr(self._metadata, "commit_morph_create", None)
+        if not callable(begin) or not callable(commit):
+            raise MayaModelAuthoringCoordinatorError(
+                "create_morph requires narrow morph transaction APIs; no Maya writes were performed"
+            )
+        structural_change = getattr(self._morphs, "apply_morph_create", None)
+        direct_change = False
+        if not callable(structural_change):
+            from mmd_tools.adapters.maya_morph_authoring import apply_morph_create
+
+            structural_change = apply_morph_create
+            direct_change = True
+
+        started = False
+        try:
+            new_index = begin(model_root, morph)
+            started = True
+            if isinstance(new_index, bool) or not isinstance(new_index, int) or new_index < 0:
+                raise TypeError("morph creation transaction returned an invalid index")
+            candidate = replace(morph, index=new_index)
+            if direct_change:
+                result = structural_change(
+                    model_root,
+                    candidate,
+                    self._cmds,
+                    model_scale_resolver=self._model_scale_resolver,
+                )
+            else:
+                result = structural_change(model_root, candidate, self._cmds)
+            if (
+                not isinstance(result, MmdMorphSpec)
+                or result.index != new_index
+                or result.binding_identity is None
+                or result.offsets
+            ):
+                raise TypeError("morph creation binding operation returned an invalid morph")
+            commit(model_root, result)
+            started = False
+            return result
+        except Exception as exc:
+            if started:
+                try:
+                    self._backend.rollback_write(model_root)
+                except Exception as rollback_exc:
+                    raise MayaModelAuthoringCoordinatorError(
+                        f"create_morph failed for root {model_root!r}: {exc}; "
+                        f"rollback failed: {rollback_exc}"
+                    ) from rollback_exc
+            raise MayaModelAuthoringCoordinatorError(
+                f"create_morph failed for root {model_root!r}: {exc}"
+            ) from exc
 
     def replace_morph(self, model_root: str, morph: MmdMorphSpec) -> MmdModelAuthoringSpec:
         """Replace one morph's semantic metadata and runtime binding state."""
@@ -481,14 +838,52 @@ class MayaModelAuthoringCoordinator:
         target = self._pure("delete_morph", lambda: delete_morph_spec(current, index))
         return self._execute_morph_change(model_root, "delete_morph", current, target)
 
-    def move_morph(self, model_root: str, index: int, new_position: int) -> MmdModelAuthoringSpec:
-        """Move one morph and remap dependent morph indices."""
-        current = self._read_current(model_root, "move_morph")
-        target = self._pure(
+    def move_morph(self, model_root: str, index: int, new_position: int) -> MorphReindexResult:
+        """Swap adjacent morph bindings through the dedicated narrow route.
+
+        This UI operation intentionally does not read or write the complete
+        model specification.  Arbitrary permutations remain available via
+        :meth:`reindex_morphs`, which is the explicit full transaction.
+        """
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or index < 0
+            or isinstance(new_position, bool)
+            or not isinstance(new_position, int)
+            or new_position < 0
+            or abs(index - new_position) != 1
+        ):
+            raise MayaModelAuthoringCoordinatorError(
+                "move_morph requires two adjacent non-negative indices; no Maya writes were performed"
+            )
+        begin = getattr(self._backend, "begin_morph_reindex", None)
+        commit = getattr(self._metadata, "commit_morph_reindex", None)
+        if not callable(begin) or not callable(commit):
+            raise MayaModelAuthoringCoordinatorError(
+                "move_morph requires narrow morph reindex transaction APIs; no Maya writes were performed"
+            )
+        structural_change = getattr(self._morphs, "apply_morph_reindex", None)
+        if not callable(structural_change):
+            from mmd_tools.adapters.maya_morph_authoring import apply_morph_reindex
+
+            structural_change = apply_morph_reindex
+
+        def bind() -> MorphReindexResult:
+            result = structural_change(model_root, index, new_position, self._cmds)
+            if not isinstance(result, MorphReindexResult):
+                raise TypeError("morph reindex binding operation returned an invalid result")
+            return result
+
+        return self._execute_morph_reindex(
+            model_root,
             "move_morph",
-            lambda: move_morph_spec(current, index, new_position),
+            index,
+            new_position,
+            begin,
+            bind,
+            commit,
         )
-        return self._execute_morph_change(model_root, "move_morph", current, target)
 
     def reindex_morphs(
         self,
@@ -619,6 +1014,101 @@ class MayaModelAuthoringCoordinator:
 
 
     # Transaction core ----------------------------------------------------
+    def _narrow_next_material_index(self, model_root: str, operation: str) -> int:
+        """Read only registry material indices for a trailing allocation."""
+        reader = getattr(self._metadata, "next_material_index", None)
+        if not callable(reader):
+            raise MayaModelAuthoringCoordinatorError(
+                f"{operation} requires a narrow material index reader; no Maya writes were performed"
+            )
+        try:
+            index = reader(model_root)
+        except Exception as exc:
+            raise MayaModelAuthoringCoordinatorError(
+                f"{operation} material index read failed for root {model_root!r}: {exc}"
+            ) from exc
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise MayaModelAuthoringCoordinatorError("narrow material index reader returned an invalid index")
+        return index
+
+    def _execute_material_create(
+        self,
+        model_root: str,
+        operation: str,
+        material: MmdMaterialSpec,
+    ) -> MmdMaterialSpec:
+        """Run create/duplicate without full spec reads or metadata hooks."""
+        if not isinstance(material, MmdMaterialSpec):
+            raise MayaModelAuthoringCoordinatorError("material create requires an MmdMaterialSpec")
+        begin = getattr(self._backend, "begin_material_create", None)
+        commit = getattr(self._metadata, "commit_material_create", None)
+        if not callable(begin) or not callable(commit):
+            raise MayaModelAuthoringCoordinatorError(
+                f"{operation} requires narrow material transaction APIs; no Maya writes were performed"
+            )
+        structural = getattr(self._materials, "create_material", None)
+        if not callable(structural):
+            raise MayaModelAuthoringCoordinatorError(
+                f"{operation} requires a material binding creation API; no Maya writes were performed"
+            )
+        started = False
+        try:
+            begin(model_root, material.index)
+            started = True
+            result = structural(model_root, material, narrow=True)
+            if isinstance(result, tuple):
+                bound = result[0]
+            else:
+                bound = result
+            if not isinstance(bound, MmdMaterialSpec):
+                raise TypeError("material creation binding operation returned an invalid material")
+            commit(model_root, bound)
+            started = False
+            return bound
+        except Exception as exc:
+            if started:
+                try:
+                    self._backend.rollback_write(model_root)
+                except Exception as rollback_exc:
+                    raise MayaModelAuthoringCoordinatorError(
+                        f"{operation} failed for root {model_root!r}: {exc}; rollback failed: {rollback_exc}"
+                    ) from rollback_exc
+            raise MayaModelAuthoringCoordinatorError(
+                f"{operation} failed for root {model_root!r}: {exc}"
+            ) from exc
+
+    def _execute_bone_register(
+        self,
+        model_root: str,
+        operation: str,
+        bone: MmdBoneSpec,
+        begin: Callable[[str, MmdBoneSpec], Any],
+        structural_write: Callable[[], MmdBoneSpec],
+        commit: Callable[[str, MmdBoneSpec], Any],
+    ) -> MmdBoneSpec:
+        """Run selected-joint registration without full metadata hooks."""
+        started = False
+        try:
+            begin(model_root, bone)
+            started = True
+            bound = structural_write()
+            if not isinstance(bound, MmdBoneSpec):
+                raise TypeError("selected-joint registration returned an invalid bone")
+            commit(model_root, bound)
+            started = False
+            return bound
+        except Exception as exc:
+            if started:
+                try:
+                    self._backend.rollback_write(model_root)
+                except Exception as rollback_exc:
+                    raise MayaModelAuthoringCoordinatorError(
+                        f"{operation} failed for root {model_root!r}: {exc}; rollback failed: {rollback_exc}"
+                    ) from rollback_exc
+            raise MayaModelAuthoringCoordinatorError(
+                f"{operation} failed for root {model_root!r}: {exc}"
+            ) from exc
+
     def _execute(
         self,
         model_root: str,
@@ -640,6 +1130,176 @@ class MayaModelAuthoringCoordinator:
             self._backend.apply_material_metadata(model_root, payload["materials"])
             self._backend.apply_morph_metadata(model_root, payload["morphs"])
             self._backend.commit_write(model_root)
+            started = False
+            return bound_target
+        except Exception as exc:
+            if started:
+                try:
+                    self._backend.rollback_write(model_root)
+                except Exception as rollback_exc:
+                    raise MayaModelAuthoringCoordinatorError(
+                        f"{operation} failed for root {model_root!r}: {exc}; "
+                        f"rollback failed: {rollback_exc}"
+                    ) from rollback_exc
+            raise MayaModelAuthoringCoordinatorError(
+                f"{operation} failed for root {model_root!r}: {exc}"
+            ) from exc
+
+    def _execute_material_reindex(
+        self,
+        model_root: str,
+        operation: str,
+        structural_write: Callable[[], MmdModelAuthoringSpec],
+        commit: Callable[[str, MmdModelAuthoringSpec], Any],
+    ) -> MmdModelAuthoringSpec:
+        """Run the adjacent-material path without full-list metadata hooks."""
+        started = False
+        try:
+            self._backend.begin_write(model_root)
+            started = True
+            bound_target = structural_write()
+            if not isinstance(bound_target, MmdModelAuthoringSpec):
+                raise TypeError("material reindex binding operation returned an invalid spec")
+            commit(model_root, bound_target)
+            started = False
+            return bound_target
+        except Exception as exc:
+            if started:
+                try:
+                    self._backend.rollback_write(model_root)
+                except Exception as rollback_exc:
+                    raise MayaModelAuthoringCoordinatorError(
+                        f"{operation} failed for root {model_root!r}: {exc}; "
+                        f"rollback failed: {rollback_exc}"
+                    ) from rollback_exc
+            raise MayaModelAuthoringCoordinatorError(
+                f"{operation} failed for root {model_root!r}: {exc}"
+            ) from exc
+
+    def _execute_morph_reindex(
+        self,
+        model_root: str,
+        operation: str,
+        index: int,
+        new_position: int,
+        begin: Callable[[str, int, int], Any],
+        structural_write: Callable[[], MorphReindexResult],
+        commit: Callable[[str, MorphReindexResult], Any],
+    ) -> MorphReindexResult:
+        """Run adjacent morph swap without generic metadata hooks."""
+        started = False
+        try:
+            begin(model_root, index, new_position)
+            started = True
+            result = structural_write()
+            if not isinstance(result, MorphReindexResult):
+                raise TypeError("morph reindex binding operation returned an invalid result")
+            commit(model_root, result)
+            started = False
+            return result
+        except Exception as exc:
+            if started:
+                try:
+                    self._backend.rollback_write(model_root)
+                except Exception as rollback_exc:
+                    raise MayaModelAuthoringCoordinatorError(
+                        f"{operation} failed for root {model_root!r}: {exc}; "
+                        f"rollback failed: {rollback_exc}"
+                    ) from rollback_exc
+            raise MayaModelAuthoringCoordinatorError(
+                f"{operation} failed for root {model_root!r}: {exc}"
+            ) from exc
+
+    def _execute_material_value_patch(
+        self,
+        model_root: str,
+        operation: str,
+        old_material: MmdMaterialSpec,
+        new_material: MmdMaterialSpec,
+        binding: str,
+        begin: Callable[[str, str, MmdMaterialSpec, MmdMaterialSpec], Any],
+        structural_write: Callable[[], MmdMaterialSpec],
+        commit: Callable[[str, str, MmdMaterialSpec], Any],
+    ) -> MmdMaterialSpec:
+        """Run a selected-shader value patch with no full metadata hooks."""
+        started = False
+        try:
+            begin(model_root, binding, old_material, new_material)
+            started = True
+            bound_target = structural_write()
+            if not isinstance(bound_target, MmdMaterialSpec):
+                raise TypeError("material value patch binding operation returned an invalid material")
+            commit(model_root, binding, new_material)
+            started = False
+            return bound_target
+        except Exception as exc:
+            if started:
+                try:
+                    self._backend.rollback_write(model_root)
+                except Exception as rollback_exc:
+                    raise MayaModelAuthoringCoordinatorError(
+                        f"{operation} failed for root {model_root!r}: {exc}; "
+                        f"rollback failed: {rollback_exc}"
+                    ) from rollback_exc
+            raise MayaModelAuthoringCoordinatorError(
+                f"{operation} failed for root {model_root!r}: {exc}"
+            ) from exc
+
+    def _execute_bone_value_patch(
+        self,
+        model_root: str,
+        operation: str,
+        old_bone: MmdBoneSpec,
+        new_bone: MmdBoneSpec,
+        binding: str,
+        begin: Callable[[str, str, MmdBoneSpec, MmdBoneSpec], Any],
+        structural_write: Callable[[], MmdBoneSpec],
+        commit: Callable[[str, str, MmdBoneSpec], Any],
+    ) -> MmdBoneSpec:
+        """Run a selected-bone value patch without full metadata hooks."""
+        started = False
+        try:
+            begin(model_root, binding, old_bone, new_bone)
+            started = True
+            bound_target = structural_write()
+            if not isinstance(bound_target, MmdBoneSpec):
+                raise TypeError("bone value patch binding operation returned an invalid bone")
+            commit(model_root, binding, new_bone)
+            started = False
+            return bound_target
+        except Exception as exc:
+            if started:
+                try:
+                    self._backend.rollback_write(model_root)
+                except Exception as rollback_exc:
+                    raise MayaModelAuthoringCoordinatorError(
+                        f"{operation} failed for root {model_root!r}: {exc}; "
+                        f"rollback failed: {rollback_exc}"
+                    ) from rollback_exc
+            raise MayaModelAuthoringCoordinatorError(
+                f"{operation} failed for root {model_root!r}: {exc}"
+            ) from exc
+
+    def _execute_morph_value_patch(
+        self,
+        model_root: str,
+        operation: str,
+        old_morph: MmdMorphSpec,
+        new_morph: MmdMorphSpec,
+        binding: str,
+        begin: Callable[[str, str, MmdMorphSpec, MmdMorphSpec], Any],
+        structural_write: Callable[[], MmdMorphSpec],
+        commit: Callable[[str, str, MmdMorphSpec], Any],
+    ) -> MmdMorphSpec:
+        """Run a selected-morph patch without full metadata hooks."""
+        started = False
+        try:
+            begin(model_root, binding, old_morph, new_morph)
+            started = True
+            bound_target = structural_write()
+            if not isinstance(bound_target, MmdMorphSpec):
+                raise TypeError("morph value patch binding operation returned an invalid morph")
+            commit(model_root, binding, new_morph)
             started = False
             return bound_target
         except Exception as exc:

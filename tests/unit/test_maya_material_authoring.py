@@ -401,6 +401,136 @@ def test_apply_material_spec_change_reindexes_survivors_and_material_morph_offse
     assert not any(call[0] == "delete" for call in cmds.calls)
 
 
+def test_apply_material_reindex_fast_path_writes_only_swapped_indices_and_morph_json() -> None:
+    cmds = FakeCmdsAdapter(
+        attrs={
+            ("shaderA", ATTR_MMD_MATERIAL_INDEX): 0,
+            ("shaderB", ATTR_MMD_MATERIAL_INDEX): 1,
+            ("shaderC", ATTR_MMD_MATERIAL_INDEX): 2,
+            ("morphNode", ATTR_MMD_MATERIAL_MORPH_OFFSETS): json.dumps(
+                [_material_offset(0)], separators=(",", ":")
+            ),
+        },
+        types={
+            "|Model_root": "transform",
+            "shaderA": "standardSurface",
+            "shaderB": "standardSurface",
+            "shaderC": "standardSurface",
+            "morphNode": "network",
+        },
+    )
+    registry = FakeRegistry(
+        members=["shaderA", "shaderB", "shaderC"], morph_members=["morphNode"]
+    )
+    material_a = replace(_material(), index=0, binding_identity="shaderA", name="A")
+    material_b = replace(_material(), index=1, binding_identity="shaderB", name="B")
+    material_c = replace(_material(), index=2, binding_identity="shaderC", name="C")
+    morph = MmdMorphSpec(
+        name="material morph",
+        index=0,
+        morph_type="material",
+        offsets=(_material_offset(0),),
+        binding_identity="morphNode",
+    )
+    old_spec = _authoring_spec((material_a, material_b, material_c), (morph,))
+    new_spec = _authoring_spec(
+        (replace(material_a, index=1), replace(material_b, index=0), material_c),
+        (replace(morph, offsets=(_material_offset(1),)),),
+    )
+    queue_calls: list[tuple[str, int, int]] = []
+    rebuild_calls: list[str] = []
+    adapter = MayaMaterialAuthoring(
+        cmds,
+        registry,
+        runtime_rebuilders={"material": lambda root: rebuild_calls.append(root)},
+        native_queue_reindexer=lambda root, first, second: queue_calls.append(
+            (root, first, second)
+        ),
+    )
+
+    result = adapter.apply_material_reindex("|Model_root", old_spec, new_spec)
+
+    assert result == new_spec
+    assert cmds.attrs[("shaderA", ATTR_MMD_MATERIAL_INDEX)] == 1
+    assert cmds.attrs[("shaderB", ATTR_MMD_MATERIAL_INDEX)] == 0
+    assert cmds.attrs[("shaderC", ATTR_MMD_MATERIAL_INDEX)] == 2
+    assert json.loads(cmds.attrs[("morphNode", ATTR_MMD_MATERIAL_MORPH_OFFSETS)])[0][
+        "material_index"
+    ] == 1
+    assert queue_calls == [("|Model_root", 0, 1)]
+    assert rebuild_calls == []
+    written_attrs = {
+        call[1][0].rsplit(".", 1)[1]
+        for call in cmds.calls
+        if call[0] == "set_attr"
+    }
+    assert written_attrs == {ATTR_MMD_MATERIAL_INDEX, ATTR_MMD_MATERIAL_MORPH_OFFSETS}
+
+
+def test_native_queue_reindex_fails_closed_on_descendant_discovery_error() -> None:
+    class FailingDescendantCmds(FakeCmdsAdapter):
+        def all_node_types(self) -> list[str]:
+            return ["transform", "mmdRenderShape"]
+
+        def list_relatives(self, *_args: Any, **_kwargs: Any) -> list[str]:
+            raise RuntimeError("descendant query failed")
+
+        def mmd_render_queue_reindex(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("native updater must not run after discovery failure")
+
+    adapter = _authoring(FailingDescendantCmds(), FakeRegistry())
+
+    with pytest.raises(MayaMaterialAuthoringError, match="failed to discover native render shapes"):
+        adapter._update_native_render_queue("|Model_root", 0, 1)
+
+
+def test_native_queue_reindex_fails_closed_on_non_sequence_and_accepts_empty() -> None:
+    class InvalidDescendantCmds(FakeCmdsAdapter):
+        def all_node_types(self) -> list[str]:
+            return ["transform", "mmdRenderShape"]
+
+        def list_relatives(self, *_args: Any, **_kwargs: Any) -> object:
+            return object()
+
+        def mmd_render_queue_reindex(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("native updater must not run for an invalid listing")
+
+    with pytest.raises(MayaMaterialAuthoringError, match="must be a sequence"):
+        _authoring(InvalidDescendantCmds(), FakeRegistry())._update_native_render_queue(
+            "|Model_root", 0, 1
+        )
+
+    class EmptyDescendantCmds(FakeCmdsAdapter):
+        def all_node_types(self) -> list[str]:
+            return ["transform", "mmdRenderShape"]
+
+        def list_relatives(self, *_args: Any, **_kwargs: Any) -> list[str]:
+            return []
+
+        def mmd_render_queue_reindex(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("native updater must not run for an empty listing")
+
+    _authoring(EmptyDescendantCmds(), FakeRegistry())._update_native_render_queue(
+        "|Model_root", 0, 1
+    )
+
+
+def test_native_queue_reindex_skips_discovery_when_type_is_unregistered() -> None:
+    class UnregisteredNativeCmds(FakeCmdsAdapter):
+        def all_node_types(self) -> list[str]:
+            return ["transform", "mesh"]
+
+        def list_relatives(self, *_args: Any, **_kwargs: Any) -> list[str]:
+            raise AssertionError("descendant discovery is invalid for an unregistered type")
+
+        def mmd_render_queue_reindex(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("native updater must not run for an unregistered type")
+
+    _authoring(UnregisteredNativeCmds(), FakeRegistry())._update_native_render_queue(
+        "|Model_root", 0, 1
+    )
+
+
 def test_apply_material_spec_change_rejects_deleted_material_reference_before_writes() -> None:
     cmds = FakeCmdsAdapter(
         attrs={

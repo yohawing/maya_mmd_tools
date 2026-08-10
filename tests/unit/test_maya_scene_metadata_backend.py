@@ -869,6 +869,56 @@ def test_transactional_write_updates_existing_bindings_and_verifies_fingerprint(
     assert cmds.attrs[("morph", "mmd_morph_name")] == "更新モーフ"
 
 
+def test_material_reindex_commit_verifies_without_full_metadata_hooks() -> None:
+    cmds, backend, adapter = _writable_scene()
+    _material(cmds, "mat2", 1)
+    cmds.connections[("registry.materialMembers", None)].append("mat2")
+    original = adapter.read_spec("|root")
+    target = replace(
+        original,
+        materials=(
+            replace(original.materials[0], index=1),
+            replace(original.materials[1], index=0),
+        ),
+    )
+
+    backend.begin_write("|root")
+    writes_before = len(cmds.write_history)
+    cmds.set_attr("mat.mmd_material_index", 1)
+    cmds.set_attr("mat2.mmd_material_index", 0)
+    backend.commit_material_reindex("|root", target)
+
+    assert adapter.read_spec("|root").fingerprint() == target.fingerprint()
+    assert cmds.undo_chunk_open is False
+    assert cmds.write_history[writes_before:] == [
+        "mat.mmd_material_index",
+        "mat2.mmd_material_index",
+    ]
+
+
+def test_material_reindex_commit_mismatch_rolls_back_original_spec() -> None:
+    cmds, backend, adapter = _writable_scene()
+    _material(cmds, "mat2", 1)
+    cmds.connections[("registry.materialMembers", None)].append("mat2")
+    original = adapter.read_spec("|root")
+    target = replace(
+        original,
+        materials=(
+            replace(original.materials[0], index=1),
+            replace(original.materials[1], index=0),
+        ),
+    )
+
+    backend.begin_write("|root")
+    cmds.set_attr("mat.mmd_material_index", 1)
+    with pytest.raises(MayaSceneMetadataError, match="failed to verify material reindex"):
+        backend.commit_material_reindex("|root", target)
+    backend.rollback_write("|root")
+
+    assert adapter.read_spec("|root").fingerprint() == original.fingerprint()
+    assert cmds.undo_chunk_open is False
+
+
 def test_bone_optional_payloads_clear_and_can_be_reenabled_transactionally() -> None:
     cmds, _, adapter = _writable_scene()
     optional_flags = int(

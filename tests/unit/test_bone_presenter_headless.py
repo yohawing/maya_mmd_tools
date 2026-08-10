@@ -390,6 +390,32 @@ class TestBonePresenterHeadless(unittest.TestCase):
         coordinator.register_bone.assert_not_called()
         self.assertTrue(app_state.status_messages)
 
+    def test_register_selected_joint_appends_and_selects_without_reload(self):
+        coordinator = Mock()
+        coordinator.register_selected_joint.return_value = MmdBoneSpec(
+            "new_joint",
+            name_english="new_joint",
+            index=2,
+            binding_identity="|model|new_joint",
+        )
+        adapter = _FakeMayaAdapter(selection=["|model|new_joint"])
+        presenter, view, app_state, _ = _make_presenter(adapter, coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+
+        with patch.object(presenter, "load_bones") as reload:
+            result = presenter.register_selected_joint()
+
+        self.assertIsInstance(result, MmdBoneSpec)
+        coordinator.register_selected_joint.assert_called_once_with(
+            TEST_MODEL, "|model|new_joint"
+        )
+        reload.assert_not_called()
+        self.assertEqual(presenter.all_bones, ["|model|new_joint"])
+        self.assertEqual(presenter.current_bone, "|model|new_joint")
+        self.assertEqual(presenter.current_bone_index, 2)
+        self.assertEqual(view.bone_list.current_row, 0)
+
     def test_capture_rest_routes_current_registered_index_and_joint(self):
         coordinator = Mock()
         presenter, view, app_state, _ = _make_presenter(coordinator=coordinator)
@@ -401,8 +427,9 @@ class TestBonePresenterHeadless(unittest.TestCase):
         with patch.object(bone_presenter_module, "object_exists", return_value=True):
             with patch.object(presenter, "load_bone_properties"):
                 presenter.on_bone_selected(item, None)
-        with patch.object(presenter, "load_bones"):
+        with patch.object(presenter, "load_bones") as reload:
             self.assertTrue(presenter.capture_rest())
+        reload.assert_not_called()
 
         self.assertFalse(view.capture_rest_btn.enabled)
 
@@ -739,6 +766,55 @@ class TestBonePresenterHeadless(unittest.TestCase):
             [("object_exists", TEST_BONE), ("object_exists", TEST_MODEL)],
         )
         self.assertEqual(app_state.status_messages, ["Applied bone changes: center_jnt"])
+
+    def test_apply_changes_value_patch_updates_selected_row_without_full_reload(self):
+        coordinator = Mock()
+        existing = MmdBoneSpec("center", index=3, binding_identity=TEST_BONE)
+        coordinator.read_bone_value.return_value = existing
+        coordinator.apply_bone_value_patch.side_effect = lambda _root, bone: bone
+        presenter, view, app_state, _adapter = _make_presenter(
+            adapter=_FakeMayaAdapter(), coordinator=coordinator
+        )
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+        presenter.current_bone = TEST_BONE
+        presenter.current_bone_index = 3
+        presenter.bone_data = {"structural": presenter._structural_ui_state()}
+        item = _FakeListItem("3:center", TEST_BONE)
+        presenter.bone_list_items[TEST_BONE] = item
+
+        with patch.object(presenter, "load_bones") as reload:
+            presenter.apply_changes()
+
+        reload.assert_not_called()
+        coordinator.read_spec.assert_not_called()
+        coordinator.apply_bone_value_patch.assert_called_once()
+        self.assertIn("3:センター", item.text())
+
+    def test_apply_changes_structural_edit_keeps_full_route(self):
+        coordinator = Mock()
+        existing = MmdBoneSpec("center", index=3, binding_identity=TEST_BONE)
+        coordinator.read_bone_value.return_value = existing
+        coordinator.read_spec.return_value = MmdModelAuthoringSpec(
+            model=MmdModelSpec("Model"),
+            bones=(existing,),
+        )
+        presenter, view, app_state, _adapter = _make_presenter(
+            adapter=_FakeMayaAdapter(), coordinator=coordinator
+        )
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+        presenter.current_bone = TEST_BONE
+        presenter.current_bone_index = 3
+        presenter.bone_data = {"structural": presenter._structural_ui_state()}
+        view.external_parent_check.setChecked(True)
+
+        with patch.object(presenter, "load_bones"):
+            presenter.apply_changes()
+
+        coordinator.read_spec.assert_called_once_with(TEST_MODEL)
+        coordinator.replace_bone_semantic.assert_called_once()
+        coordinator.apply_bone_value_patch.assert_not_called()
 
 
 if __name__ == "__main__":

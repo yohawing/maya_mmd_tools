@@ -246,3 +246,15 @@ class MayaCmdsAdapter:
     def undo(self):
         """Undo the most recent Maya operation or closed chunk."""
         return self._cmds.undo()
+
+    def redo(self):
+        """Redo the most recently undone Maya operation or closed chunk."""
+        return self._cmds.redo()
+
+    def mmd_render_queue_reindex(self, node, first_index, second_index):
+        """Swap two material indices in one native ``mmdRenderShape`` queue."""
+        return self._cmds.mmdRenderQueueReindex(
+            node=node,
+            firstMaterialIndex=int(first_index),
+            secondMaterialIndex=int(second_index),
+        )

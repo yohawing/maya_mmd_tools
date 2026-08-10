@@ -37,6 +37,7 @@ from ...core.model_registry import (
     list_model_registry_members_from_adapter,
 )
 from ...core.model_authoring_spec import MmdMaterialSpec, MmdModelAuthoringSpec
+from ...core.material_authoring import classify_material_change
 from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt
 from ..translations import UITranslator
 from .list_presenter_helpers import (
@@ -56,17 +57,21 @@ MATERIAL_ASSIGNMENT_ROLE = Qt.UserRole + 2
 class MaterialAuthoringCoordinator(Protocol):
     """Transactional semantic/binding boundary used by Material Tab CRUD."""
 
-    def create_material(self, model_root: str) -> object: ...
+    def create_material(self, model_root: str) -> MmdMaterialSpec: ...
 
-    def duplicate_material(self, model_root: str, source_index: int) -> object: ...
+    def duplicate_material(self, model_root: str, source_index: int) -> MmdMaterialSpec: ...
 
     def delete_material(self, model_root: str, material_index: int) -> object: ...
 
     def reindex_materials(self, model_root: str, ordered_indices: Sequence[int]) -> object: ...
 
+    def move_material(self, model_root: str, index: int, new_position: int) -> object: ...
+
     def read_spec(self, model_root: str) -> MmdModelAuthoringSpec: ...
 
     def replace_material(self, model_root: str, material: MmdMaterialSpec) -> MmdModelAuthoringSpec: ...
+
+    def apply_material_value_patch(self, model_root: str, material: MmdMaterialSpec) -> object: ...
 
 
 class MaterialPresenter:
@@ -473,15 +478,60 @@ class MaterialPresenter:
         self.app_state.emit_status(self.tr_message(f"material_{operation}_succeeded"))
         return True
 
+    def _run_material_create(self, operation, *args):
+        """Run create/duplicate and append exactly one selected list row."""
+        root = self._authoring_root()
+        if root is None:
+            return False
+        try:
+            result = getattr(self.authoring_coordinator, operation)(root, *args)
+            if not isinstance(result, MmdMaterialSpec):
+                raise TypeError("material creation returned an invalid material")
+            self._append_material_row(result)
+        except Exception as exc:
+            logger.error("Material authoring %s failed", operation, exc_info=True)
+            self.app_state.emit_status(
+                tr_message_format("material_authoring_failed", operation=operation, error=str(exc))
+            )
+            return False
+        self.app_state.emit_status(self.tr_message(f"material_{operation}_succeeded"))
+        return True
+
+    def _append_material_row(self, material: MmdMaterialSpec) -> None:
+        """Append and select one newly-created row without reloading the list."""
+        from ..qt_compat import QListWidgetItem
+
+        binding = material.binding_identity
+        if not isinstance(binding, str) or not binding:
+            raise TypeError("created material has no Maya binding identity")
+        item = QListWidgetItem(
+            format_indexed_node_label(
+                material.index + 1,
+                material.name,
+                binding,
+                material.name_english,
+            )
+        )
+        item.setData(Qt.UserRole, binding)
+        item.setData(MATERIAL_INDEX_ROLE, material.index)
+        item.setData(MATERIAL_ASSIGNMENT_ROLE, "meshes=0, faces=0")
+        item.setToolTip(binding)
+        self.view.material_list.addItem(item)
+        self.view.material_list.setCurrentItem(item)
+        self.current_material = binding
+        self.current_material_index = material.index
+        self.has_unsaved_changes = False
+        self._update_authoring_actions()
+
     def create_material(self):
         """Request one transactional semantic material creation."""
-        return self._run_authoring("create_material")
+        return self._run_material_create("create_material")
 
     def duplicate_material(self):
         """Request duplication of the selected semantic material."""
         if type(self.current_material_index) is not int:
             return False
-        return self._run_authoring("duplicate_material", self.current_material_index)
+        return self._run_material_create("duplicate_material", self.current_material_index)
 
     def delete_material(self):
         """Confirm and request transactional deletion of the selected material."""
@@ -501,8 +551,8 @@ class MaterialPresenter:
         return self._run_authoring("delete_material", self.current_material_index)
 
     def move_material(self, direction):
-        """Move the selected semantic material by one index transactionally."""
-        if direction not in (-1, 1) or type(self.current_material_index) is not int:
+        """Swap the selected material with one adjacent row transactionally."""
+        if type(direction) is not int or direction not in (-1, 1) or type(self.current_material_index) is not int:
             return False
         root = self._authoring_root()
         if root is None:
@@ -516,25 +566,85 @@ class MaterialPresenter:
                 return False
             ordered[position], ordered[target] = ordered[target], ordered[position]
             selected_binding = self.current_material
-            self.authoring_coordinator.reindex_materials(root, tuple(ordered))
+            move = getattr(self.authoring_coordinator, "move_material", None)
+            if not callable(move):
+                raise TypeError("material authoring coordinator lacks move_material")
+            move(root, self.current_material_index, target)
         except Exception as exc:
             logger.error("Material authoring reindex_materials failed", exc_info=True)
             self.app_state.emit_status(
                 tr_message_format(
                     "material_authoring_failed",
-                    operation="reindex_materials",
+                    operation="move_material",
                     error=str(exc),
                 )
             )
             return False
-        self.load_materials()
+        self._swap_material_rows(position, target)
+        self.current_material_index = target
         for row in range(self.view.material_list.count()):
             item = self.view.material_list.item(row)
             if item.data(Qt.UserRole) == selected_binding:
                 self.view.material_list.setCurrentItem(item)
                 break
+        self._update_authoring_actions()
         self.app_state.emit_status(self.tr_message("material_reindex_materials_succeeded"))
         return True
+
+    def _swap_material_rows(self, first_row: int, second_row: int) -> None:
+        """Swap two existing list items and refresh only their index labels."""
+        material_list = self.view.material_list
+        if first_row == second_row:
+            return
+        count = material_list.count()
+        if type(count) is int and (first_row < 0 or second_row < 0 or max(first_row, second_row) >= count):
+            raise RuntimeError("material list rows disappeared during reindex")
+        if type(count) is not int:
+            # Headless/legacy views may not expose real list rows.  The
+            # semantic transaction has already succeeded; retain selection
+            # state without triggering a full list reload.
+            return
+        low, high = sorted((first_row, second_row))
+        take_item = getattr(material_list, "takeItem", None)
+        insert_item = getattr(material_list, "insertItem", None)
+        if callable(take_item) and callable(insert_item):
+            high_item = take_item(high)
+            low_item = take_item(low)
+            if high_item is None or low_item is None:
+                raise RuntimeError("material list rows disappeared during reindex")
+            insert_item(low, high_item)
+            insert_item(high, low_item)
+            first_item = material_list.item(first_row)
+            second_item = material_list.item(second_row)
+        else:
+            first_item = material_list.item(first_row)
+            second_item = material_list.item(second_row)
+            swap = getattr(material_list, "swapItemsAt", None)
+            if not callable(swap):
+                raise RuntimeError("material list does not support row swapping")
+            swap(first_row, second_row)
+            first_item = material_list.item(first_row)
+            second_item = material_list.item(second_row)
+
+        for row, item in ((first_row, first_item), (second_row, second_item)):
+            if item is None:
+                raise RuntimeError("material list row is missing after reindex")
+            binding = item.data(Qt.UserRole)
+            if not isinstance(binding, str) or not binding:
+                raise RuntimeError("material list row has no material binding")
+            semantic_index = row
+            item.setData(MATERIAL_INDEX_ROLE, semantic_index)
+            try:
+                jp_name = maya_attribute_utils.get_attribute(binding, ATTR_MMD_MATERIAL_NAME)
+                en_name = maya_attribute_utils.get_attribute(binding, ATTR_MMD_MATERIAL_NAME_EN)
+                item.setText(format_indexed_node_label(semantic_index + 1, jp_name, binding, en_name))
+            except Exception:
+                # Keep the existing label text when a headless adapter cannot
+                # read optional display metadata; only its numeric prefix is
+                # stale after the local row swap.
+                prior_text = item.text()
+                suffix = prior_text.split(":", 1)[1] if ":" in prior_text else prior_text
+                item.setText(f"{semantic_index + 1}:{suffix}")
 
     def load_material_properties(self, material_name):
         """Load material properties from Maya material"""
@@ -1022,36 +1132,115 @@ class MaterialPresenter:
         coordinator = self.authoring_coordinator
         read_spec = getattr(coordinator, "read_spec", None)
         replace_material = getattr(coordinator, "replace_material", None)
-        if not callable(read_spec) or not callable(replace_material):
-            raise TypeError("authoring coordinator must expose read_spec and replace_material")
-
-        current = read_spec(root)
-        if not isinstance(current, MmdModelAuthoringSpec):
-            raise TypeError("authoring coordinator read_spec returned an invalid spec")
         index = self.current_material_index
         if type(index) is not int or index < 0:
             raise ValueError("an indexed material must be selected before Apply")
-        try:
-            prior = next(material for material in current.materials if material.index == index)
-        except StopIteration as exc:
-            raise ValueError(f"material index {index} is not present in the current spec") from exc
-
-        replacement = self._material_from_authoring_controls(prior)
-        result = replace_material(root, replacement)
-        if not isinstance(result, MmdModelAuthoringSpec):
-            raise TypeError("authoring coordinator replace_material returned an invalid spec")
-        reloaded = read_spec(root)
-        if not isinstance(reloaded, MmdModelAuthoringSpec):
-            raise TypeError("authoring coordinator strict reload returned an invalid spec")
-
-        # Keep the fingerprint available for UI/application diagnostics while
-        # avoiding a second, legacy attribute read path.
-        self.material_data["_authoring_fingerprint"] = reloaded.fingerprint()
+        read_material_value = getattr(coordinator, "read_material_value", None)
+        narrow_patch = getattr(coordinator, "apply_material_value_patch", None)
+        if callable(read_material_value):
+            if not callable(narrow_patch):
+                raise TypeError("authoring coordinator lacks apply_material_value_patch")
+            prior = read_material_value(root, index, self.current_material)
+            if not isinstance(prior, MmdMaterialSpec):
+                raise TypeError("selected-material reader returned an invalid material")
+            replacement = self._material_from_authoring_controls(prior)
+            route = classify_material_change(prior, replacement)
+            if route in {"value", "noop"}:
+                # A failed narrow transaction is surfaced to the user; it must
+                # not silently fall back to the full binding transaction.
+                result = prior if route == "noop" else narrow_patch(root, replacement)
+                if not isinstance(result, MmdMaterialSpec):
+                    raise TypeError("material value patch returned an invalid material")
+                reloaded = result
+                self.material_data["_authoring_material"] = reloaded.to_mapping()
+            else:
+                # Binding-sensitive edits deliberately re-read the complete
+                # semantic spec and use the existing unified transaction.
+                if not callable(read_spec) or not callable(replace_material):
+                    raise TypeError("authoring coordinator must expose read_spec and replace_material")
+                current = read_spec(root)
+                if not isinstance(current, MmdModelAuthoringSpec):
+                    raise TypeError("authoring coordinator read_spec returned an invalid spec")
+                prior = next(
+                    (material for material in current.materials if material.index == index),
+                    None,
+                )
+                if prior is None:
+                    raise ValueError(f"material index {index} is not present in the current spec")
+                replacement = self._material_from_authoring_controls(prior)
+                result = replace_material(root, replacement)
+                if not isinstance(result, MmdModelAuthoringSpec):
+                    raise TypeError("material binding transaction returned an invalid spec")
+                reloaded = read_spec(root)
+                if not isinstance(reloaded, MmdModelAuthoringSpec):
+                    raise TypeError("authoring coordinator strict reload returned an invalid spec")
+                self.material_data["_authoring_fingerprint"] = reloaded.fingerprint()
+        else:
+            if not callable(read_spec) or not callable(replace_material):
+                raise TypeError("authoring coordinator must expose read_spec and replace_material")
+            current = read_spec(root)
+            if not isinstance(current, MmdModelAuthoringSpec):
+                raise TypeError("authoring coordinator read_spec returned an invalid spec")
+            prior = next(
+                (material for material in current.materials if material.index == index),
+                None,
+            )
+            if prior is None:
+                raise ValueError(f"material index {index} is not present in the current spec")
+            replacement = self._material_from_authoring_controls(prior)
+            route = classify_material_change(prior, replacement)
+            if route == "noop":
+                reloaded = current
+            else:
+                result = replace_material(root, replacement)
+                if not isinstance(result, MmdModelAuthoringSpec):
+                    raise TypeError("material binding transaction returned an invalid spec")
+                reloaded = read_spec(root)
+                if not isinstance(reloaded, MmdModelAuthoringSpec):
+                    raise TypeError("authoring coordinator strict reload returned an invalid spec")
+            self.material_data["_authoring_fingerprint"] = reloaded.fingerprint()
         self.has_unsaved_changes = False
+        self._update_selected_material_row(reloaded, replacement.binding_identity)
         self.app_state.emit_status(
             tr_message_format("material_changes_applied", material=self.current_material)
         )
         return reloaded
+
+    def _update_selected_material_row(
+        self,
+        spec: MmdModelAuthoringSpec | MmdMaterialSpec,
+        binding_identity: str | None,
+    ) -> None:
+        """Update only the selected material row after a successful Apply."""
+        if not isinstance(binding_identity, str) or not binding_identity:
+            return
+        if isinstance(spec, MmdMaterialSpec):
+            material = spec if spec.binding_identity == binding_identity else None
+        else:
+            material = next(
+                (item for item in spec.materials if item.binding_identity == binding_identity),
+                None,
+            )
+        if material is None:
+            return
+        material_list = self.view.material_list
+        count = material_list.count()
+        if type(count) is not int:
+            return
+        for row in range(count):
+            item = material_list.item(row)
+            if item is None or item.data(Qt.UserRole) != binding_identity:
+                continue
+            item.setData(MATERIAL_INDEX_ROLE, material.index)
+            item.setText(
+                format_indexed_node_label(
+                    material.index + 1,
+                    material.name,
+                    binding_identity,
+                    material.name_english,
+                )
+            )
+            break
 
     def _material_from_authoring_controls(self, prior: MmdMaterialSpec) -> MmdMaterialSpec:
         """Return a complete replacement spec from the current Material tab."""
@@ -1148,6 +1337,8 @@ class MaterialPresenter:
     ) -> tuple[str | None, str | None]:
         """Translate source-path controls and clear stale resolved paths on edits."""
         if value is None:
+            return None, None
+        if value == "" and source is None:
             return None, None
         if value == source:
             return source, resolved

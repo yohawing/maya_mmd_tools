@@ -388,6 +388,22 @@ def _pmx_quat_to_maya(values) -> Tuple[float, float, float, float]:
     return (-float(values[0]), -float(values[1]), float(values[2]), float(values[3]))
 
 
+def pmx_bone_offset_to_runtime_values(
+    translation: Tuple[float, float, float],
+    rotation: Tuple[float, float, float, float],
+    joint: str,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float, float]]:
+    """Convert one PMX bone offset to the accumulator's runtime basis.
+
+    This small public helper is shared by the selected-morph patch path so a
+    direct contribution update uses exactly the same handedness reflection and
+    bind-orientation conjugation as the full runtime graph builder.
+    """
+    translate = (float(translation[0]), float(translation[1]), -float(translation[2]))
+    rotate = _pmx_quat_to_joint_rotate(_pmx_quat_to_maya(rotation), joint, {})
+    return translate, rotate
+
+
 def _pmx_quat_to_joint_rotate(
     maya_quat: Tuple[float, float, float, float],
     joint: str,

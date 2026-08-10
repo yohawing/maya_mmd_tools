@@ -9,6 +9,7 @@ from mmd_tools.core.material_authoring import (
     create_material,
     delete_material,
     duplicate_material,
+    move_material,
     reindex_materials,
     replace_material,
 )
@@ -131,6 +132,30 @@ def test_reindex_requires_one_exact_material_index_permutation(ordered):
     spec = _spec(_material(0), _material(1), _material(2))
     with pytest.raises(MaterialAuthoringError):
         reindex_materials(spec, ordered)
+
+
+def test_move_material_swaps_adjacent_identity_and_material_morph_reference_only():
+    materials = (_material(0, "A"), _material(1, "B"), _material(2, "C"))
+    morph = MmdMorphSpec(
+        name="材質モーフ",
+        morph_type="material",
+        offsets=({"material_index": 1},),
+    )
+    spec = _spec(materials, morphs=(morph,))
+
+    result = move_material(spec, 1, 0)
+
+    assert [(item.index, item.name) for item in result.materials] == [(0, "B"), (1, "A"), (2, "C")]
+    assert [offset["material_index"] for offset in result.morphs[0].offsets] == [0]
+    assert [item.binding_identity for item in result.materials] == [None, None, None]
+    assert [(item.index, item.name) for item in spec.materials] == [(0, "A"), (1, "B"), (2, "C")]
+
+
+@pytest.mark.parametrize("index,new_position", ((1, 1), (0, 2), (1, -1), (9, 0)))
+def test_move_material_rejects_non_adjacent_or_invalid_position(index, new_position):
+    spec = _spec(_material(0), _material(1), _material(2))
+    with pytest.raises(MaterialAuthoringError):
+        move_material(spec, index, new_position)
 
 
 def test_delete_reindexes_and_remaps_material_morph_offsets_and_preserves_all_sentinel():

@@ -9,7 +9,7 @@ transactional.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import math
 from typing import Any
 
@@ -18,6 +18,105 @@ from mmd_tools.core.model_authoring_spec import MmdModelAuthoringSpec, MmdMorphS
 
 class MorphAuthoringError(ValueError):
     """Raised when a morph authoring operation would violate the PMX contract."""
+
+
+@dataclass(frozen=True)
+class MorphReindexResult:
+    """Identity-only result returned by the narrow adjacent reindex route."""
+
+    moved_index: int
+    new_position: int
+    swapped_indices: tuple[int, int]
+    bindings: tuple[tuple[int, str], ...]
+
+
+def swap_adjacent_morphs(
+    spec: MmdModelAuthoringSpec,
+    index: int,
+    new_position: int,
+) -> MmdModelAuthoringSpec:
+    """Apply one adjacent morph swap through the pure semantic model."""
+    spec = _require_spec(spec)
+    _integer(index, field="morph index")
+    _integer(new_position, field="new_position", maximum=max(0, len(spec.morphs) - 1))
+    if abs(index - new_position) != 1:
+        raise MorphAuthoringError("adjacent morph reindex requires neighboring positions")
+    return move_morph(spec, index, new_position)
+
+
+# Morph fields which can be persisted without changing the fixed controller
+# topology or the identity of an existing runtime binding.  Offset payloads
+# are handled separately by :func:`classify_morph_change`: target indices and
+# collection shape are topology, while numeric values are patch-safe.
+MORPH_VALUE_FIELDS = frozenset({"name", "name_english", "panel"})
+_OFFSET_IDENTITY_FIELDS = {
+    "vertex": frozenset({"vertex_index"}),
+    "uv": frozenset({"vertex_index"}),
+    "additional_uv1": frozenset({"vertex_index"}),
+    "additional_uv2": frozenset({"vertex_index"}),
+    "additional_uv3": frozenset({"vertex_index"}),
+    "additional_uv4": frozenset({"vertex_index"}),
+    "bone": frozenset({"bone_index"}),
+    "group": frozenset({"morph_index"}),
+    "flip": frozenset({"morph_index"}),
+    "material": frozenset({"material_index", "operation_type"}),
+    "impulse": frozenset({"rigid_body_index"}),
+}
+_OFFSET_RUNTIME_PATCH_TYPES = frozenset({"vertex", "bone", "material"})
+
+
+def classify_morph_change(old: MmdMorphSpec, new: MmdMorphSpec) -> str:
+    """Classify one morph replacement for narrow transaction routing.
+
+    ``"value"`` is reserved for name/panel edits and offset numeric payloads
+    whose list shape and target identities remain unchanged.  Any index,
+    binding identity, type/policy, controller topology, or mixed/ambiguous
+    edit is structural and must use the established full morph transaction.
+    """
+    old = _require_morph(old)
+    new = _require_morph(new)
+    old_mapping = old.to_mapping()
+    new_mapping = new.to_mapping()
+    changed = {
+        field for field in old_mapping if old_mapping[field] != new_mapping[field]
+    }
+    if not changed:
+        return "noop"
+    if {"index", "binding_identity", "morph_type", "runtime_capability", "loss_policy"} & changed:
+        return "structural"
+    if "offsets" in changed:
+        if old.morph_type != new.morph_type or not _offset_values_patch_safe(old, new):
+            return "structural"
+        changed.remove("offsets")
+    return "value" if changed.issubset(MORPH_VALUE_FIELDS) else "structural"
+
+
+def _offset_values_patch_safe(old: MmdMorphSpec, new: MmdMorphSpec) -> bool:
+    """Return whether offsets differ only in numeric/value payloads."""
+    identities = _OFFSET_IDENTITY_FIELDS.get(old.morph_type)
+    if (
+        old.morph_type not in _OFFSET_RUNTIME_PATCH_TYPES
+        or identities is None
+        or len(old.offsets) != len(new.offsets)
+    ):
+        return False
+    for previous, candidate in zip(old.offsets, new.offsets):
+        if set(previous) != set(candidate):
+            return False
+        if any(previous.get(field) != candidate.get(field) for field in identities):
+            return False
+        for field, value in candidate.items():
+            if field in identities:
+                continue
+            values = value if isinstance(value, (list, tuple)) else (value,)
+            if any(
+                isinstance(item, bool)
+                or not isinstance(item, (int, float))
+                or not math.isfinite(float(item))
+                for item in values
+            ):
+                return False
+    return True
 
 
 _SUPPORTED_TYPES = {
@@ -39,6 +138,12 @@ def _require_spec(spec: Any) -> MmdModelAuthoringSpec:
     if not isinstance(spec, MmdModelAuthoringSpec):
         raise TypeError("spec must be an MmdModelAuthoringSpec")
     return spec
+
+
+def _require_morph(morph: Any) -> MmdMorphSpec:
+    if not isinstance(morph, MmdMorphSpec):
+        raise MorphAuthoringError("morph must be an MmdMorphSpec")
+    return morph
 
 
 def _integer(value: Any, *, field: str, minimum: int = 0, maximum: int | None = None) -> int:
@@ -312,10 +417,14 @@ def move_morph(spec: MmdModelAuthoringSpec, index: int, new_position: int) -> Mm
 
 __all__ = [
     "MorphAuthoringError",
+    "MorphReindexResult",
+    "MORPH_VALUE_FIELDS",
+    "classify_morph_change",
     "create_morph",
     "replace_morph",
     "replace_morph_offsets",
     "delete_morph",
     "reindex_morphs",
     "move_morph",
+    "swap_adjacent_morphs",
 ]

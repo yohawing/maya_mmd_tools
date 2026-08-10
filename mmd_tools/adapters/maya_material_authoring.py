@@ -14,6 +14,7 @@ import json
 from typing import Any
 
 from mmd_tools.core import model_registry
+from mmd_tools.core.material_authoring import classify_material_change
 from mmd_tools.core.constants import (
     ATTR_MMD_AMBIENT_COLOR,
     ATTR_MMD_DIFFUSE_COLOR,
@@ -66,6 +67,7 @@ class MayaMaterialAuthoring:
         registry_api: Any = model_registry,
         *,
         runtime_rebuilders: Mapping[str, Any] | None = None,
+        native_queue_reindexer: Any | None = None,
     ) -> None:
         self._cmds = cmds_adapter
         self._registry = registry_api
@@ -73,8 +75,15 @@ class MayaMaterialAuthoring:
             self._runtime_rebuilders = {"material": self._default_material_rebuilder}
         else:
             self._runtime_rebuilders = dict(runtime_rebuilders)
+        self._native_queue_reindexer = native_queue_reindexer
 
-    def create_material(self, model_root: str, material: MmdMaterialSpec) -> tuple[MmdMaterialSpec, str, str]:
+    def create_material(
+        self,
+        model_root: str,
+        material: MmdMaterialSpec,
+        *,
+        narrow: bool = False,
+    ) -> tuple[MmdMaterialSpec, str, str]:
         """Create or resolve a standardSurface shader and its shading group.
 
         The returned material is a fresh spec carrying the canonical shader
@@ -82,7 +91,7 @@ class MayaMaterialAuthoring:
         """
         root = self._require_root(model_root)
         self._require_material(material)
-        existing = self._resolve_material(root, material)
+        existing = None if narrow else self._resolve_material(root, material)
         if existing is not None:
             shader, shading_group = existing
             self._bind_texture_graph(shader, material)
@@ -109,14 +118,18 @@ class MayaMaterialAuthoring:
             )
             self._call("connect_attr", f"{shader}.outColor", f"{shading_group}.surfaceShader", force=True)
             bound_material = replace(material, binding_identity=shader)
-            self._write_material_attrs(shader, bound_material)
+            # A duplicate may carry a resolved main texture; binding that one
+            # local file node is part of cloning the selected shader.  The
+            # narrow route still skips the model-wide Material Morph rebuild.
+            self._write_material_attrs(shader, bound_material, bind_texture_graph=True)
             registry = self._registry.ensure_model_registry(root)
             self._registry.register_model_members(
                 registry,
                 REGISTRY_CATEGORY_MATERIAL,
                 [shader],
             )
-            self._rebuild_material_morph_graph(root)
+            if not narrow:
+                self._rebuild_material_morph_graph(root)
             return bound_material, shader, shading_group
         except Exception as exc:
             if shader:
@@ -163,6 +176,111 @@ class MayaMaterialAuthoring:
             new_spec,
             allow_material_edits=True,
         )
+
+    def apply_material_value_patch(
+        self,
+        model_root: str,
+        old_material: MmdMaterialSpec,
+        new_material: MmdMaterialSpec,
+    ) -> MmdMaterialSpec:
+        """Write only patch-safe values on the one changed shader binding.
+
+        This path intentionally does not bind textures, rebuild Material
+        Morph runtime nodes, enumerate other bindings, or write scene
+        metadata.  The coordinator owns the surrounding undo transaction and
+        the narrow metadata backend verifies the selected attributes after
+        these writes.
+        """
+        root = self._require_root(model_root)
+        self._require_material(old_material)
+        self._require_material(new_material)
+        if old_material.binding_identity != new_material.binding_identity:
+            raise MayaMaterialAuthoringError("material value patch cannot change binding identity")
+        route = classify_material_change(old_material, new_material)
+        if route == "noop":
+            return new_material
+        if route != "value":
+            raise MayaMaterialAuthoringError(
+                "material value patch contains binding-sensitive fields"
+            )
+        binding = old_material.binding_identity
+        if not isinstance(binding, str) or not binding:
+            raise MayaMaterialAuthoringError("material value patch requires a binding identity")
+        resolved = self._resolve_material_value_binding(root, old_material)
+        if resolved is None or resolved[0] != binding:
+            raise MayaMaterialAuthoringError(
+                f"material {old_material.index} binding is not resolvable under root {root!r}"
+            )
+        self._write_material_value_attrs(binding, old_material, new_material)
+        return new_material
+
+    def _resolve_material_value_binding(
+        self,
+        root: str,
+        material: MmdMaterialSpec,
+    ) -> tuple[str, str] | None:
+        """Resolve only the selected shader without creating registry metadata."""
+        members = self._registry.list_model_registry_members(root, REGISTRY_CATEGORY_MATERIAL) or []
+        shader = self._canonical_node(str(material.binding_identity))
+        matches: list[str] = []
+        if shader in {str(member) for member in members}:
+            index = self._get_attr(shader, ATTR_MMD_MATERIAL_INDEX)
+            if type(index) is int and index == material.index:
+                matches.append(shader)
+        if len(matches) > 1:
+            raise MayaMaterialAuthoringError(
+                f"material {material.index} has ambiguous bindings under root {root!r}"
+            )
+        if not matches:
+            return None
+        shader = matches[0]
+        shading_groups = list(self._call("list_connections", shader, type="shadingEngine") or [])
+        if len(shading_groups) != 1:
+            raise MayaMaterialAuthoringError(f"shader {shader!r} must have exactly one shading group")
+        return shader, str(shading_groups[0])
+
+    def _write_material_value_attrs(
+        self,
+        shader: str,
+        old: MmdMaterialSpec,
+        new: MmdMaterialSpec,
+    ) -> None:
+        """Write only changed semantic/final value attributes on ``shader``."""
+        old_mapping = old.to_mapping()
+        new_mapping = new.to_mapping()
+        changed = {
+            field
+            for field in old_mapping
+            if old_mapping[field] != new_mapping[field]
+        }
+        if "name" in changed:
+            self._set_attr(shader, ATTR_MMD_MATERIAL_NAME, new.name, "string")
+        if "name_english" in changed:
+            self._set_attr(shader, ATTR_MMD_MATERIAL_NAME_EN, new.name_english, "string")
+        if "diffuse" in changed:
+            self._set_attr(shader, ATTR_MMD_DIFFUSE_COLOR, new.diffuse[:3], "double3")
+            self._set_attr(shader, ATTR_MMD_DIFFUSE_ALPHA, new.diffuse[3], "double")
+            # With no resolved texture graph, keep the standardSurface final
+            # color in sync.  A resolved texture path means baseColor is a
+            # graph destination; leave that connection untouched.
+            if not (old.resolved_texture_path or old.texture_path):
+                self._set_attr(shader, "baseColor", new.diffuse[:3], "float3")
+        if "specular" in changed:
+            self._set_attr(shader, ATTR_MMD_SPECULAR_COLOR, new.specular, "double3")
+        if "specular_coefficient" in changed:
+            self._set_attr(shader, ATTR_MMD_SHININESS, new.specular_coefficient, "double")
+        if "ambient" in changed:
+            self._set_attr(shader, ATTR_MMD_AMBIENT_COLOR, new.ambient, "double3")
+        if "draw_flags" in changed:
+            self._set_attr(shader, ATTR_MMD_DRAW_FLAGS, new.draw_flags, "long")
+            self._set_attr(shader, ATTR_MMD_EDGE_FLAG, bool(new.draw_flags & 0x10), "bool")
+        if "edge_color" in changed:
+            self._set_attr(shader, ATTR_MMD_EDGE_COLOR, new.edge_color[:3], "double3")
+            self._set_attr(shader, ATTR_MMD_EDGE_ALPHA, new.edge_color[3], "double")
+        if "edge_size" in changed:
+            self._set_attr(shader, ATTR_MMD_EDGE_SIZE, new.edge_size, "double")
+        if "memo" in changed:
+            self._set_attr(shader, ATTR_MMD_MEMO, new.memo, "string")
 
     def assign_material(
         self,
@@ -347,6 +465,132 @@ class MayaMaterialAuthoring:
                 f"failed to apply material structural change under root {root!r}: {exc}"
             ) from exc
         return new_spec
+
+    def apply_material_reindex(
+        self,
+        model_root: str,
+        old_spec: MmdModelAuthoringSpec,
+        new_spec: MmdModelAuthoringSpec,
+    ) -> MmdModelAuthoringSpec:
+        """Apply one adjacent material swap without rebuilding material graphs.
+
+        Only the two survivor shader ``mmd_material_index`` attributes, the
+        Material Morph JSON attributes whose offsets changed, and native
+        ``mmdRenderShape`` queue ordering are touched.  The coordinator owns
+        the surrounding Maya undo chunk and rolls these writes back if any
+        operation fails.
+        """
+        root = self._require_root(model_root)
+        self._require_model_spec(old_spec, "old_spec")
+        self._require_model_spec(new_spec, "new_spec")
+        first_index, second_index = self._validate_adjacent_reindex(old_spec, new_spec)
+
+        registry_members = self._registry.list_model_registry_members(
+            root, REGISTRY_CATEGORY_MATERIAL
+        ) or []
+        owned_materials = {self._canonical_node(str(member)) for member in registry_members}
+        old_by_binding = self._material_bindings(old_spec)
+        if owned_materials != set(old_by_binding):
+            raise MayaMaterialAuthoringError(
+                f"material registry membership does not exactly match old_spec under root {root!r}"
+            )
+        morph_updates = self._material_morph_updates(root, old_spec, new_spec)
+
+        try:
+            for binding, material in self._material_bindings(new_spec).items():
+                prior = old_by_binding[binding]
+                if material.index != prior.index:
+                    self._set_attr(binding, ATTR_MMD_MATERIAL_INDEX, material.index, "long")
+            for node, payload in morph_updates:
+                self._set_attr(node, ATTR_MMD_MATERIAL_MORPH_OFFSETS, payload, "string")
+            self._update_native_render_queue(root, first_index, second_index)
+        except Exception as exc:
+            raise MayaMaterialAuthoringError(
+                f"failed to apply adjacent material reindex under root {root!r}: {exc}"
+            ) from exc
+        return new_spec
+
+    def _validate_adjacent_reindex(
+        self,
+        old_spec: MmdModelAuthoringSpec,
+        new_spec: MmdModelAuthoringSpec,
+    ) -> tuple[int, int]:
+        """Validate that exactly two adjacent material indices were swapped."""
+        self._validate_material_spec_shape(old_spec, new_spec, allow_material_edits=False)
+        old_by_binding = self._material_bindings(old_spec)
+        new_by_binding = self._material_bindings(new_spec)
+        if set(old_by_binding) != set(new_by_binding):
+            raise MayaMaterialAuthoringError("material reindex cannot create or delete bindings")
+        changed = [
+            (old_by_binding[binding].index, new_by_binding[binding].index)
+            for binding in old_by_binding
+            if old_by_binding[binding].index != new_by_binding[binding].index
+        ]
+        if len(changed) != 2:
+            raise MayaMaterialAuthoringError("material reindex must change exactly two indices")
+        old_indices = {old for old, _new in changed}
+        new_indices = {new for _old, new in changed}
+        if old_indices != new_indices:
+            raise MayaMaterialAuthoringError("material reindex must preserve the swapped index set")
+        first_index, second_index = sorted(old_indices)
+        if second_index - first_index != 1:
+            raise MayaMaterialAuthoringError("material reindex indices must be adjacent")
+        if {(old, new) for old, new in changed} != {
+            (first_index, second_index),
+            (second_index, first_index),
+        }:
+            raise MayaMaterialAuthoringError("material reindex must swap adjacent indices")
+        return first_index, second_index
+
+    def _update_native_render_queue(self, root: str, first_index: int, second_index: int) -> None:
+        """Reindex native shape queues when the optional command surface exists."""
+        updater = self._native_queue_reindexer
+        if callable(updater):
+            result = updater(root, first_index, second_index)
+            if result is False:
+                raise MayaMaterialAuthoringError("native render queue reindex was rejected")
+            return
+
+        updater = getattr(self._cmds, "mmd_render_queue_reindex", None)
+        if not callable(updater):
+            return
+        try:
+            node_types = self._call("all_node_types")
+        except Exception as exc:
+            raise MayaMaterialAuthoringError(
+                f"failed to query Maya node types before native render queue reindex: {exc}"
+            ) from exc
+        if isinstance(node_types, (str, bytes, bytearray)) or not isinstance(node_types, Sequence):
+            raise MayaMaterialAuthoringError("Maya node type listing must be a sequence")
+        if "mmdRenderShape" not in node_types:
+            return
+        try:
+            shapes = self._call(
+                "list_relatives",
+                root,
+                allDescendents=True,
+                fullPath=True,
+                type="mmdRenderShape",
+            ) or []
+        except Exception as exc:
+            # A callable native updater means queue state is part of this
+            # transaction.  If model-root descendant discovery fails, do not
+            # silently leave an existing native queue stale.
+            raise MayaMaterialAuthoringError(
+                f"failed to discover native render shapes under root {root!r}: {exc}"
+            ) from exc
+        if isinstance(shapes, (str, bytes, bytearray)):
+            raise MayaMaterialAuthoringError("native render shape listing must be a sequence")
+        if not isinstance(shapes, Sequence):
+            raise MayaMaterialAuthoringError("native render shape listing must be a sequence")
+        for shape in shapes:
+            if not isinstance(shape, str) or not shape.strip():
+                raise MayaMaterialAuthoringError("native render shape listing contains an invalid node")
+            result = updater(shape, first_index, second_index)
+            if result is False:
+                raise MayaMaterialAuthoringError(
+                    f"native render queue reindex was rejected for {shape!r}"
+                )
 
     def _validate_material_spec_shape(
         self,
@@ -615,7 +859,13 @@ class MayaMaterialAuthoring:
                 return str(groups[0])
         raise MayaMaterialAuthoringError("replacement_shader must resolve to exactly one shading group")
 
-    def _write_material_attrs(self, shader: str, material: MmdMaterialSpec) -> None:
+    def _write_material_attrs(
+        self,
+        shader: str,
+        material: MmdMaterialSpec,
+        *,
+        bind_texture_graph: bool = True,
+    ) -> None:
         vectors = {
             ATTR_MMD_DIFFUSE_COLOR: material.diffuse[:3],
             ATTR_MMD_SPECULAR_COLOR: material.specular,
@@ -690,7 +940,8 @@ class MayaMaterialAuthoring:
         # StandardSurface exposes baseColor as a Maya float3 compound; the
         # canonical semantic color attrs above remain custom double3 fields.
         self._set_attr(shader, "baseColor", material.diffuse[:3], "float3")
-        self._bind_texture_graph(shader, material)
+        if bind_texture_graph:
+            self._bind_texture_graph(shader, material)
 
     def _set_attr(self, node: str, attr: str, value: Any, attr_type: str) -> None:
         if not self._has_attr(node, attr):

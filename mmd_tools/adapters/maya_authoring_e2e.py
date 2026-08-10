@@ -15,14 +15,17 @@ from dataclasses import replace
 import copy
 import os
 from pathlib import Path
+import time
 from typing import Any
 
 from mmd_tools.actions.export_model_action import ExportModelAction, ExportModelRequest
 from mmd_tools.core.model_authoring_spec import (
+    MmdBoneSpec,
     MmdMaterialSpec,
     MmdModelAuthoringSpec,
     MmdMorphSpec,
 )
+from mmd_tools.core.morph_authoring import MorphReindexResult
 from mmd_tools.validation.snapshot import fingerprint_payload
 
 
@@ -240,19 +243,50 @@ def _canonical_joint(cmds_adapter: Any, created: Any) -> str:
 
 def _edit_material(
     coordinator: Any,
+    cmds_adapter: Any,
     material_authoring: Any,
     root: str,
     material_index: int,
-) -> MmdModelAuthoringSpec:
+) -> tuple[MmdModelAuthoringSpec, float]:
     """Perform a real semantic material edit through the coordinator boundary."""
     current = coordinator.read_spec(root)
     old = next((item for item in current.materials if item.index == material_index), None)
     if not isinstance(old, MmdMaterialSpec):
         raise MayaAuthoringE2EError(f"material index {material_index} was not created")
-    edited = replace(
+
+    value_patch = getattr(coordinator, "apply_material_value_patch", None)
+    read_material_value = getattr(coordinator, "read_material_value", None)
+    if not callable(value_patch) or not callable(read_material_value):
+        raise MayaAuthoringE2EError("material edit requires the selected-material value patch API")
+    value_edited = replace(
         old,
         name=f"{old.name} (edited)",
         name_english=f"{old.name_english} edited",
+        diffuse=(0.72, 0.48, 0.36, 0.85),
+        specular_coefficient=18.0,
+        draw_flags=old.draw_flags ^ 0x10,
+    )
+    patch_started = time.perf_counter()
+    patched = value_patch(root, value_edited)
+    patch_elapsed_ms = (time.perf_counter() - patch_started) * 1000.0
+    if not isinstance(patched, MmdMaterialSpec) or patched != value_edited:
+        raise MayaAuthoringE2EError("material value patch returned an invalid material")
+    selected = read_material_value(root, material_index, old.binding_identity)
+    if selected != value_edited:
+        raise MayaAuthoringE2EError("material value patch did not persist selected shader values")
+    undo = getattr(cmds_adapter, "undo", None)
+    redo = getattr(cmds_adapter, "redo", None)
+    if not callable(undo) or not callable(redo):
+        raise MayaAuthoringE2EError("material value patch E2E requires Maya undo and redo")
+    undo()
+    if read_material_value(root, material_index, old.binding_identity) != old:
+        raise MayaAuthoringE2EError("material value patch undo did not restore the selected shader")
+    redo()
+    if read_material_value(root, material_index, old.binding_identity) != value_edited:
+        raise MayaAuthoringE2EError("material value patch redo did not restore the edited shader")
+
+    edited = replace(
+        value_edited,
         sphere_texture_path="textures/e2e_sphere.spa",
         toon_texture_path="textures/e2e_toon.bmp",
     )
@@ -269,7 +303,7 @@ def _edit_material(
     observed = coordinator.read_spec(root)
     if observed.materials != target.materials:
         raise MayaAuthoringE2EError("material edit did not persist semantic values")
-    return observed
+    return observed, patch_elapsed_ms
 
 
 def _assign_material_with_standard_maya_sets(
@@ -393,14 +427,58 @@ def run_authoring_e2e(
     operations: list[dict[str, Any]] = []
 
     # Material CRUD -----------------------------------------------------
-    current = coordinator.create_material(root)
-    created_material = max(current.materials, key=lambda item: item.index)
+    material_create_started = time.perf_counter()
+    created_material = coordinator.create_material(root)
+    material_create_elapsed_ms = (time.perf_counter() - material_create_started) * 1000.0
+    if not isinstance(created_material, MmdMaterialSpec):
+        raise MayaAuthoringE2EError("material.create did not return a material")
     if created_material.index == 0 or not created_material.binding_identity:
         raise MayaAuthoringE2EError("material.create did not create a bound material")
-    operations.append(_operation("material.create", details={"index": created_material.index}))
-    current = _edit_material(coordinator, material_authoring, root, created_material.index)
-    operations.append(_operation("material.edit", details={"index": created_material.index}))
-    reordered = coordinator.reindex_materials(root, (created_material.index, 0))
+    cmds_adapter.undo()
+    try:
+        coordinator.read_material_value(
+            root, created_material.index, created_material.binding_identity
+        )
+    except Exception:
+        pass
+    else:
+        raise MayaAuthoringE2EError("material.create undo did not remove the new binding")
+    cmds_adapter.redo()
+    if coordinator.read_material_value(
+        root, created_material.index, created_material.binding_identity
+    ) != created_material:
+        raise MayaAuthoringE2EError("material.create redo did not restore the new binding")
+    operations.append(
+        _operation(
+            "material.create",
+            details={
+                "index": created_material.index,
+                "elapsed_ms": material_create_elapsed_ms,
+                "undo_redo_verified": True,
+            },
+        )
+    )
+    current, value_patch_elapsed_ms = _edit_material(
+        coordinator,
+        cmds_adapter,
+        material_authoring,
+        root,
+        created_material.index,
+    )
+    operations.append(
+        _operation(
+            "material.edit",
+            details={
+                "index": created_material.index,
+                "value_patch_elapsed_ms": value_patch_elapsed_ms,
+                "routes": ["selected_shader_value_patch", "binding_transaction"],
+                "undo_redo_verified": True,
+            },
+        )
+    )
+    reindex_started = time.perf_counter()
+    reordered = coordinator.move_material(root, created_material.index, 0)
+    reindex_elapsed_ms = (time.perf_counter() - reindex_started) * 1000.0
     created_material = next(
         item
         for item in reordered.materials
@@ -411,7 +489,11 @@ def run_authoring_e2e(
     operations.append(
         _operation(
             "material.reindex",
-            details={"binding": created_material.binding_identity, "index": created_material.index},
+            details={
+                "binding": created_material.binding_identity,
+                "index": created_material.index,
+                "elapsed_ms": reindex_elapsed_ms,
+            },
         )
     )
     _assign_material_with_standard_maya_sets(
@@ -440,8 +522,9 @@ def run_authoring_e2e(
     # Keep one registry-owned, zero-face material through export.  The export
     # bridge must synthesize its missing oracle provenance instead of blocking
     # PMX projection.
-    unassigned = coordinator.create_material(root)
-    unassigned_material = max(unassigned.materials, key=lambda item: item.index)
+    unassigned_material = coordinator.create_material(root)
+    if not isinstance(unassigned_material, MmdMaterialSpec):
+        raise MayaAuthoringE2EError("material.create did not return a material")
     if unassigned_material.index == 0 or not unassigned_material.binding_identity:
         raise MayaAuthoringE2EError("material.create did not preserve an unassigned binding")
 
@@ -450,19 +533,58 @@ def run_authoring_e2e(
         cmds_adapter,
         cmds_adapter.create_node("joint", name="e2eBone", parent=root),
     )
-    current = coordinator.register_selected_joint(root, joint)
-    registered = next((item for item in current.bones if item.binding_identity == joint), None)
-    if registered is None:
+    bone_register_started = time.perf_counter()
+    registered = coordinator.register_selected_joint(root, joint)
+    bone_register_elapsed_ms = (time.perf_counter() - bone_register_started) * 1000.0
+    if not isinstance(registered, MmdBoneSpec) or registered.binding_identity != joint:
         raise MayaAuthoringE2EError("bone.register did not persist the new joint")
-    operations.append(_operation("bone.register", details={"index": registered.index}))
-    current = coordinator.capture_rest(root, registered.index, joint)
-    captured = next(item for item in current.bones if item.binding_identity == joint)
-    if captured.rest_position == (0.0, 0.0, 0.0):
-        # The deterministic fixture joint is at the origin, so a zero value is
-        # valid.  Verify the operation's observable read-back instead.
-        if not isinstance(captured.rest_position, tuple):
-            raise MayaAuthoringE2EError("bone.capture_rest returned a malformed position")
-    operations.append(_operation("bone.capture_rest", details={"index": registered.index}))
+    read_bone_value = getattr(coordinator, "read_bone_value", None)
+    if not callable(read_bone_value):
+        raise MayaAuthoringE2EError("bone.capture_rest requires the selected-bone reader")
+    cmds_adapter.undo()
+    try:
+        read_bone_value(root, registered.index, joint)
+    except Exception:
+        pass
+    else:
+        raise MayaAuthoringE2EError("bone.register undo did not remove the new binding")
+    cmds_adapter.redo()
+    if read_bone_value(root, registered.index, joint) != registered:
+        raise MayaAuthoringE2EError("bone.register redo did not restore the new binding")
+    operations.append(
+        _operation(
+            "bone.register",
+            details={
+                "index": registered.index,
+                "elapsed_ms": bone_register_elapsed_ms,
+                "undo_redo_verified": True,
+            },
+        )
+    )
+    before_capture = read_bone_value(root, registered.index, joint)
+    cmds_adapter.xform(joint, translation=(2.0, 3.0, 4.0), worldSpace=True)
+    capture_started = time.perf_counter()
+    captured = coordinator.capture_rest(root, registered.index, joint)
+    capture_elapsed_ms = (time.perf_counter() - capture_started) * 1000.0
+    if not isinstance(captured, MmdBoneSpec) or captured.rest_position == before_capture.rest_position:
+        raise MayaAuthoringE2EError("bone.capture_rest did not patch the selected Rest value")
+    cmds_adapter.undo()
+    if read_bone_value(root, registered.index, joint) != before_capture:
+        raise MayaAuthoringE2EError("bone.capture_rest undo did not restore the selected bone")
+    cmds_adapter.redo()
+    if read_bone_value(root, registered.index, joint) != captured:
+        raise MayaAuthoringE2EError("bone.capture_rest redo did not restore the captured Rest value")
+    operations.append(
+        _operation(
+            "bone.capture_rest",
+            details={
+                "index": registered.index,
+                "elapsed_ms": capture_elapsed_ms,
+                "undo_redo_verified": True,
+            },
+        )
+    )
+    current = coordinator.read_spec(root)
     current = coordinator.reindex_bones(root, [registered.index, 0])
     if [item.index for item in current.bones] != [0, 1]:
         raise MayaAuthoringE2EError("bone.reindex did not produce canonical indices")
@@ -472,29 +594,40 @@ def run_authoring_e2e(
         raise MayaAuthoringE2EError("bone.unregister did not compact the survivor")
     operations.append(_operation("bone.unregister", details={"removed": 0}))
 
-    # Supported morph CRUD.  The fixture intentionally covers the semantic
-    # offset families that the current Maya runtime can author without a
-    # blendShape target oracle.  Vertex morph creation/edit remains a strict
-    # fail-closed operation and is covered by the separate vertex-authoring
-    # gate when that topology is available.
+    # Create empty Morph bindings through the narrow route; offset payloads
+    # are a separate follow-up edit operation.
     morph_a = MmdMorphSpec(
         name="E2E Morph A",
         name_english="E2E Morph A",
         panel=4,
         morph_type="bone",
-        offsets=({"bone_index": 0, "translation": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},),
     )
-    current = coordinator.create_morph(root, morph_a)
+    morph_create_started = time.perf_counter()
+    created_morph_a = coordinator.create_morph(root, morph_a)
+    morph_create_elapsed_ms = (time.perf_counter() - morph_create_started) * 1000.0
+    if not isinstance(created_morph_a, MmdMorphSpec) or not created_morph_a.binding_identity:
+        raise MayaAuthoringE2EError("morph.create did not return a bound morph")
+    cmds_adapter.undo()
+    try:
+        coordinator.read_morph_value(root, created_morph_a.index, created_morph_a.binding_identity)
+    except Exception:
+        pass
+    else:
+        raise MayaAuthoringE2EError("morph.create undo did not remove the new binding")
+    cmds_adapter.redo()
+    if coordinator.read_morph_value(
+        root, created_morph_a.index, created_morph_a.binding_identity
+    ) != created_morph_a:
+        raise MayaAuthoringE2EError("morph.create redo did not restore the new binding")
     morph_b = replace(morph_a, name="E2E Morph B", name_english="E2E Morph B")
-    current = coordinator.create_morph(root, morph_b)
-    current = coordinator.create_morph(
+    coordinator.create_morph(root, morph_b)
+    coordinator.create_morph(
         root,
         MmdMorphSpec(
             name="E2E Vertex",
             name_english="E2E Vertex",
             panel=4,
             morph_type="vertex",
-            offsets=({"vertex_index": 0, "position_offset": [0.0, 0.125, 0.0]},),
         ),
     )
     morph_group = MmdMorphSpec(
@@ -502,9 +635,8 @@ def run_authoring_e2e(
         name_english="E2E Group",
         panel=4,
         morph_type="group",
-        offsets=({"morph_index": 0, "morph_rate": 0.5},),
     )
-    current = coordinator.create_morph(root, morph_group)
+    coordinator.create_morph(root, morph_group)
     material_offset = {
         "material_index": 0,
         "operation_type": 0,
@@ -518,55 +650,92 @@ def run_authoring_e2e(
         "sphere_texture_factor": [1.0, 1.0, 1.0, 1.0],
         "toon_texture_factor": [1.0, 1.0, 1.0, 1.0],
     }
-    current = coordinator.create_morph(
+    coordinator.create_morph(
         root,
         MmdMorphSpec(
             name="E2E Material",
             name_english="E2E Material",
             panel=4,
             morph_type="material",
-            offsets=(material_offset,),
         ),
     )
-    current = coordinator.create_morph(
+    coordinator.create_morph(
         root,
         MmdMorphSpec(
             name="E2E UV",
             name_english="E2E UV",
             panel=4,
             morph_type="uv",
-            offsets=({"vertex_index": 0, "uv_offset": [0.0, 0.0, 0.0, 0.0]},),
         ),
     )
-    current = coordinator.create_morph(
+    coordinator.create_morph(
         root,
         MmdMorphSpec(
             name="E2E Additional UV1",
             name_english="E2E Additional UV1",
             panel=4,
             morph_type="additional_uv1",
-            offsets=({"vertex_index": 0, "uv_offset": [0.0, 0.0, 0.0, 0.0]},),
         ),
     )
+    current = coordinator.read_spec(root)
     expected_types = ["bone", "bone", "vertex", "group", "material", "uv", "additional_uv1"]
     if len(current.morphs) != len(expected_types) or [item.morph_type for item in current.morphs] != expected_types:
         raise MayaAuthoringE2EError("morph.create did not persist all supported fixture types")
     operations.append(
         _operation(
             "morph.create",
-            details={"count": len(current.morphs), "created_types": expected_types},
+            details={
+                "count": len(current.morphs),
+                "created_types": expected_types,
+                "elapsed_ms": morph_create_elapsed_ms,
+                "undo_redo_verified": True,
+            },
         )
     )
 
-    # Edit one representative offset from every supported family.
+    # Edit the existing Bone Morph payload through the selected-binding value
+    # transaction, then exercise the structural routes for the remaining
+    # families which do not all expose a selected-only runtime contract.
+    read_morph_value = getattr(coordinator, "read_morph_value", None)
+    apply_morph_value_patch = getattr(coordinator, "apply_morph_value_patch", None)
+    if not callable(read_morph_value) or not callable(apply_morph_value_patch):
+        raise MayaAuthoringE2EError("morph.edit requires the selected-morph value patch API")
     current = coordinator.replace_morph_offsets(
         root,
         0,
-        ({"bone_index": 0, "translation": [0.125, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},),
+        (
+            {
+                "bone_index": 0,
+                "translation": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+            },
+        ),
     )
-    edited = next(item for item in current.morphs if item.index == 0)
-    if edited.offsets[0]["translation"] != (0.125, 0.0, 0.0):
-        raise MayaAuthoringE2EError("morph.edit did not persist offsets")
+    old_bone_morph = read_morph_value(root, 0, current.morphs[0].binding_identity)
+    edited_bone_morph = replace(
+        old_bone_morph,
+        offsets=(
+            {
+                "bone_index": 0,
+                "translation": [0.125, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+            },
+        ),
+    )
+    morph_patch_started = time.perf_counter()
+    patched_bone_morph = apply_morph_value_patch(root, edited_bone_morph)
+    morph_patch_elapsed_ms = (time.perf_counter() - morph_patch_started) * 1000.0
+    if not isinstance(patched_bone_morph, MmdMorphSpec) or patched_bone_morph != edited_bone_morph:
+        raise MayaAuthoringE2EError("morph value patch returned an invalid morph")
+    if read_morph_value(root, 0, old_bone_morph.binding_identity) != edited_bone_morph:
+        raise MayaAuthoringE2EError("morph value patch did not persist selected offsets")
+    cmds_adapter.undo()
+    if read_morph_value(root, 0, old_bone_morph.binding_identity) != old_bone_morph:
+        raise MayaAuthoringE2EError("morph value patch undo did not restore selected offsets")
+    cmds_adapter.redo()
+    if read_morph_value(root, 0, old_bone_morph.binding_identity) != edited_bone_morph:
+        raise MayaAuthoringE2EError("morph value patch redo did not restore selected offsets")
+    current = coordinator.read_spec(root)
     current = coordinator.replace_morph_offsets(
         root,
         2,
@@ -595,14 +764,41 @@ def run_authoring_e2e(
             details={
                 "edited_types": edited_types,
                 "roundtrip_types": roundtrip_types,
+                "value_patch_elapsed_ms": morph_patch_elapsed_ms,
+                "undo_redo_verified": True,
             },
         )
     )
-    order = list(reversed(range(len(expected_types))))
-    current = coordinator.reindex_morphs(root, order)
-    if [item.index for item in current.morphs] != list(range(len(expected_types))):
-        raise MayaAuthoringE2EError("morph.reindex did not produce canonical indices")
-    operations.append(_operation("morph.reindex", details={"order": order, "types": expected_types}))
+    before_move = coordinator.read_spec(root)
+    old_first, old_second = before_move.morphs[0], before_move.morphs[1]
+    move_started = time.perf_counter()
+    move_result = coordinator.move_morph(root, 0, 1)
+    move_elapsed_ms = (time.perf_counter() - move_started) * 1000.0
+    if not isinstance(move_result, MorphReindexResult) or move_result.swapped_indices != (0, 1):
+        raise MayaAuthoringE2EError("morph.reindex did not return the adjacent swap result")
+    moved_first = read_morph_value(root, 1, old_first.binding_identity)
+    moved_second = read_morph_value(root, 0, old_second.binding_identity)
+    if moved_first.name != old_first.name or moved_second.name != old_second.name:
+        raise MayaAuthoringE2EError("morph.reindex did not preserve binding identity")
+    cmds_adapter.undo()
+    if read_morph_value(root, 0, old_first.binding_identity) != old_first:
+        raise MayaAuthoringE2EError("morph.reindex undo did not restore the first morph")
+    if read_morph_value(root, 1, old_second.binding_identity) != old_second:
+        raise MayaAuthoringE2EError("morph.reindex undo did not restore the second morph")
+    cmds_adapter.redo()
+    if read_morph_value(root, 1, old_first.binding_identity) != moved_first:
+        raise MayaAuthoringE2EError("morph.reindex redo did not restore the adjacent swap")
+    current = coordinator.read_spec(root)
+    operations.append(
+        _operation(
+            "morph.reindex",
+            details={
+                "swapped_indices": [0, 1],
+                "elapsed_ms": move_elapsed_ms,
+                "undo_redo_verified": True,
+            },
+        )
+    )
 
     before_spec = metadata_adapter.read_spec(root)
     if not isinstance(before_spec, MmdModelAuthoringSpec):

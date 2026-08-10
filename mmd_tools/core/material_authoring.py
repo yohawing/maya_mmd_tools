@@ -21,6 +21,49 @@ class MaterialAuthoringError(ValueError):
     """Raised when a material mutation would produce an invalid model spec."""
 
 
+# Material fields which can be changed without changing a Maya binding or
+# texture graph.  Keep this allowlist explicit: a mixed edit must take the
+# existing binding transaction rather than being guessed into the narrow
+# path.
+MATERIAL_VALUE_FIELDS = frozenset(
+    {
+        "name",
+        "name_english",
+        "diffuse",
+        "specular",
+        "specular_coefficient",
+        "ambient",
+        "draw_flags",
+        "edge_color",
+        "edge_size",
+        "memo",
+    }
+)
+
+
+def classify_material_change(old: MmdMaterialSpec, new: MmdMaterialSpec) -> str:
+    """Classify one material replacement for transaction routing.
+
+    Returns ``"noop"`` for an identical semantic material, ``"value"`` when
+    every changed field is in :data:`MATERIAL_VALUE_FIELDS`, and
+    ``"binding"`` for texture/provenance, toon/sphere binding, index, or
+    binding-identity changes.  The latter category deliberately includes
+    mixed edits so callers retain the established full binding transaction.
+    """
+    old = _require_material(old)
+    new = _require_material(new)
+    old_mapping = old.to_mapping()
+    new_mapping = new.to_mapping()
+    changed = {
+        field
+        for field in old_mapping
+        if old_mapping[field] != new_mapping[field]
+    }
+    if not changed:
+        return "noop"
+    return "value" if changed.issubset(MATERIAL_VALUE_FIELDS) else "binding"
+
+
 def _require_spec(spec: Any) -> MmdModelAuthoringSpec:
     """Validate and return an exact model authoring spec instance."""
     if not isinstance(spec, MmdModelAuthoringSpec):
@@ -216,6 +259,39 @@ def reindex_materials(
     )
 
 
+def move_material(
+    spec: MmdModelAuthoringSpec,
+    index: int,
+    new_position: int,
+) -> MmdModelAuthoringSpec:
+    """Move one material by exactly one adjacent position.
+
+    Material reordering in the authoring UI is intentionally narrower than
+    the general permutation API.  Restricting this pure operation to an
+    adjacent swap lets the Maya binding layer update only the two affected
+    shader indices and any Material Morph offsets that reference them.
+    """
+    spec = _require_spec(spec)
+    index = _require_index(index, field="material index")
+    new_position = _require_index(new_position, field="new_position")
+    ordered = [material.index for material in sorted(spec.materials, key=lambda item: item.index)]
+    try:
+        current_position = ordered.index(index)
+    except ValueError as exc:
+        raise MaterialAuthoringError(f"material index does not exist: {index}") from exc
+    if new_position < 0 or new_position >= len(ordered):
+        raise MaterialAuthoringError(
+            f"new_position must be within 0..{max(0, len(ordered) - 1)}"
+        )
+    if abs(current_position - new_position) != 1:
+        raise MaterialAuthoringError("material move must target an adjacent position")
+    ordered[current_position], ordered[new_position] = (
+        ordered[new_position],
+        ordered[current_position],
+    )
+    return reindex_materials(spec, ordered)
+
+
 def delete_material(spec: MmdModelAuthoringSpec, index: int) -> MmdModelAuthoringSpec:
     """Delete and contiguously reindex one material with morph remapping."""
     spec = _require_spec(spec)
@@ -239,9 +315,12 @@ def delete_material(spec: MmdModelAuthoringSpec, index: int) -> MmdModelAuthorin
 
 __all__ = [
     "MaterialAuthoringError",
+    "MATERIAL_VALUE_FIELDS",
+    "classify_material_change",
     "create_material",
     "duplicate_material",
     "replace_material",
     "reindex_materials",
+    "move_material",
     "delete_material",
 ]

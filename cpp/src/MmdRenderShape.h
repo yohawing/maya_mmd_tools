@@ -14,6 +14,7 @@
 
 #include <maya/MBoundingBox.h>
 #include <maya/MObject.h>
+#include <maya/MObjectHandle.h>
 #include <maya/MPxCommand.h>
 #include <maya/MPxSurfaceShape.h>
 #include <maya/MSelectionMask.h>
@@ -63,6 +64,9 @@ public:
 
     /** Update one material's effective alpha and rebuild the ordered items. */
     bool updateMaterialAlpha(std::size_t materialIndex, float diffuseAlpha);
+
+    /** Swap two adjacent material indices without rebuilding geometry buffers. */
+    bool reindexMaterialQueue(std::size_t firstIndex, std::size_t secondIndex);
 
     struct QueueGeometry {
         mmd::MmdRenderQueueEntry entry;
@@ -195,4 +199,23 @@ public:
 
     MStatus doIt(const MArgList& args) override;
     bool isUndoable() const override;
+};
+
+/** Native queue ordering update used by the Material reindex fast path. */
+class MmdRenderQueueReindexCommand : public MPxCommand {
+public:
+    static void* creator();
+    static MSyntax newSyntax();
+
+    MStatus doIt(const MArgList& args) override;
+    MStatus redoIt() override;
+    MStatus undoIt() override;
+    bool isUndoable() const override;
+
+private:
+    MStatus applySwap();
+
+    MObjectHandle nodeHandle_;
+    std::size_t firstIndex_ = 0U;
+    std::size_t secondIndex_ = 0U;
 };

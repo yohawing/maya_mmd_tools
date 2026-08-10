@@ -12,7 +12,7 @@ that oracle is rejected before the first Maya write.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 import json
 import math
@@ -28,9 +28,13 @@ from mmd_tools.core.constants import (
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
     ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
+    ATTR_MMD_IMPORT_SCALE,
+    ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_MODEL_REGISTRY,
 )
 from mmd_tools.core import maya_name_utils
 from mmd_tools.core.model_authoring_spec import MmdModelAuthoringSpec, MmdMorphSpec
+from mmd_tools.core.morph_authoring import MorphReindexResult, classify_morph_change
 from mmd_tools.converters.morph_converter import pmx_vertex_offset_to_maya_tuple
 
 
@@ -65,6 +69,648 @@ _OFFSET_COUNT_ATTRS = {
 
 class MayaMorphAuthoringError(RuntimeError):
     """Raised when a morph binding edit cannot preserve Maya runtime parity."""
+
+
+def apply_morph_value_patch(
+    root: str,
+    old_morph: MmdMorphSpec,
+    new_morph: MmdMorphSpec,
+    adapter: Any,
+    registry_api: Any = model_registry,
+) -> MmdMorphSpec:
+    """Write one selected morph's patch-safe values in place.
+
+    This path intentionally never touches the controller input/output arrays,
+    registry membership, or another morph binding.  Bone/material runtime
+    contribution constants are updated directly when their existing evaluator
+    nodes expose a contribution driven by the selected ``binding.weight``.
+    """
+    if not isinstance(old_morph, MmdMorphSpec) or not isinstance(new_morph, MmdMorphSpec):
+        _fail("old_morph and new_morph must be MmdMorphSpec values")
+    binding = old_morph.binding_identity
+    if not isinstance(binding, str) or not binding or new_morph.binding_identity != binding:
+        _fail("morph binding identity cannot change in a value patch")
+    if old_morph.index != new_morph.index:
+        _fail("morph index cannot change in a value patch")
+    route = classify_morph_change(old_morph, new_morph)
+    if route == "noop":
+        return new_morph
+    if route != "value":
+        _fail("morph value patch received structural fields")
+    root = _require_root(adapter, root)
+    try:
+        owned = {
+            _canonical_node(adapter, str(node))
+            for node in registry_api.list_model_registry_members(root, REGISTRY_CATEGORY_MORPH)
+        }
+    except Exception as exc:
+        raise MayaMorphAuthoringError(
+            f"selected morph registry ownership read failed for {root!r}: {exc}"
+        ) from exc
+    canonical = _canonical_node(adapter, binding)
+    if canonical not in owned:
+        _fail(f"morph binding {canonical!r} is not registry-owned")
+    if _call(adapter, "node_type", canonical) != "network":
+        _fail(f"morph binding {canonical!r} must be a network node")
+    if _read_int(adapter, canonical, "mmd_morph_index") != old_morph.index:
+        _fail(f"morph binding {canonical!r} index does not match selected morph")
+    if _read_string(adapter, canonical, "mmd_morph_type") != old_morph.morph_type:
+        _fail(f"morph binding {canonical!r} type does not match selected morph")
+
+    changed = {
+        field
+        for field in old_morph.to_mapping()
+        if old_morph.to_mapping()[field] != new_morph.to_mapping()[field]
+    }
+    _write_morph_values(adapter, canonical, old_morph, new_morph, changed)
+    if "offsets" in changed:
+        _update_selected_runtime_values(adapter, root, canonical, old_morph, new_morph)
+    return new_morph
+
+
+def apply_morph_reindex(
+    root: str,
+    index: int,
+    new_position: int,
+    adapter: Any,
+    registry_api: Any = model_registry,
+) -> MorphReindexResult:
+    """Swap two adjacent morph bindings without a model-wide transaction."""
+    root = _require_root(adapter, root)
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        _fail("morph index must be a non-negative integer")
+    if isinstance(new_position, bool) or not isinstance(new_position, int) or new_position < 0:
+        _fail("new_position must be a non-negative integer")
+    if abs(index - new_position) != 1:
+        _fail("morph reindex narrow path requires an adjacent swap")
+    try:
+        members = tuple(
+            _canonical_node(adapter, str(node))
+            for node in registry_api.list_model_registry_members(root, REGISTRY_CATEGORY_MORPH)
+        )
+    except Exception as exc:
+        raise MayaMorphAuthoringError(f"morph registry preflight failed: {exc}") from exc
+    if len(set(members)) != len(members):
+        _fail("morph registry contains duplicate binding identities")
+    records: list[dict[str, Any]] = []
+    for binding in members:
+        if _call(adapter, "node_type", binding) != "network":
+            _fail(f"morph binding {binding!r} must be a network node")
+        morph_index = _read_int(adapter, binding, "mmd_morph_index")
+        morph_type = _read_string(adapter, binding, "mmd_morph_type")
+        records.append({"binding": binding, "index": morph_index, "morph_type": morph_type})
+    by_index = {record["index"]: record for record in records}
+    if len(by_index) != len(records) or set(by_index) != set(range(len(records))):
+        _fail("morph indices must be a contiguous registry-owned range")
+    if index not in by_index or new_position not in by_index:
+        _fail("morph adjacent swap index is not registry-owned")
+    swap = {index: new_position, new_position: index}
+
+    controller = _resolve_controller(adapter, root, allow_missing=False)
+    if controller is None:
+        _fail("morph reindex requires an existing morph controller")
+    controller_state = _capture_controller_slots(adapter, controller, (index, new_position), records)
+    topology = _capture_json_attr(adapter, controller, "groupTopology", required=False)
+    display_frames = _capture_json_attr(adapter, root, ATTR_MMD_DISPLAY_FRAMES_JSON, required=False)
+    morph_payloads = _capture_morph_reindex_payloads(adapter, records)
+    remapped_payloads = _remap_morph_reindex_payloads(morph_payloads, swap)
+    remapped_topology = (
+        _remap_group_topology(topology, swap) if topology is not None else None
+    )
+    remapped_display = (
+        _remap_display_frames_json(display_frames, swap)
+        if display_frames is not None
+        else None
+    )
+    vertex_state = _capture_vertex_reindex_state(adapter, records, controller_state)
+    runtime_state = _capture_runtime_reindex_state(adapter, records, swap)
+
+    # Every preflight above completes before the first Maya write.
+    _apply_controller_swap(adapter, controller, controller_state)
+    for record in records:
+        old_index = record["index"]
+        new_index = swap.get(old_index, old_index)
+        if new_index != old_index:
+            _set_typed(adapter, record["binding"], "mmd_morph_index", "long", new_index)
+    _write_morph_reindex_payloads(adapter, remapped_payloads)
+    _apply_vertex_reindex_state(adapter, vertex_state, swap)
+    if topology is not None:
+        _call(adapter, "set_attr", f"{controller}.groupTopology", lock=False)
+        _write_json_attr(adapter, controller, "groupTopology", remapped_topology)
+        _call(adapter, "set_attr", f"{controller}.groupTopology", lock=True)
+    if display_frames is not None:
+        _write_json_attr(adapter, root, ATTR_MMD_DISPLAY_FRAMES_JSON, remapped_display)
+    _apply_runtime_reindex_state(adapter, runtime_state, swap)
+
+    bindings = tuple(
+        sorted(
+            (
+                (swap[record["index"]], record["binding"])
+                for record in records
+                if record["index"] in swap
+            ),
+            key=lambda item: item[0],
+        )
+    )
+    return MorphReindexResult(
+        moved_index=index,
+        new_position=new_position,
+        swapped_indices=(index, new_position),
+        bindings=bindings,
+    )
+
+
+def apply_morph_create(
+    root: str,
+    morph: MmdMorphSpec,
+    adapter: Any,
+    registry_api: Any = model_registry,
+    model_scale_resolver: Any | None = None,
+) -> MmdMorphSpec:
+    """Create one empty-offset morph through a narrow Maya transaction.
+
+    Offset authoring is intentionally a follow-up operation.  This keeps
+    creation local to the registry, one network binding, and one controller
+    slot; no complete model specification or runtime graph is rebuilt.
+    """
+    root = _require_root(adapter, root)
+    if not isinstance(morph, MmdMorphSpec):
+        _fail("morph must be an MmdMorphSpec")
+    if morph.binding_identity is not None:
+        _fail("new morph must not supply a binding identity")
+    if morph.offsets:
+        _fail("morph creation requires empty offsets; apply offsets separately")
+    if morph.morph_type in _UNSUPPORTED_TYPES:
+        _fail(f"{morph.morph_type} morph authoring is policy-rejected")
+    try:
+        members = tuple(
+            _canonical_node(adapter, str(node))
+            for node in registry_api.list_model_registry_members(root, REGISTRY_CATEGORY_MORPH)
+        )
+    except Exception as exc:
+        raise MayaMorphAuthoringError(f"morph registry preflight failed: {exc}") from exc
+    if len(set(members)) != len(members):
+        _fail("morph registry contains duplicate binding identities")
+    records: list[dict[str, Any]] = []
+    for binding in members:
+        if _call(adapter, "node_type", binding) != "network":
+            _fail(f"morph binding {binding!r} must be a network node")
+        records.append(
+            {
+                "binding": binding,
+                "index": _read_int(adapter, binding, "mmd_morph_index"),
+                "morph_type": _read_string(adapter, binding, "mmd_morph_type"),
+            }
+        )
+    existing_indices = {record["index"] for record in records}
+    if len(existing_indices) != len(records) or existing_indices != set(range(len(records))):
+        _fail("morph indices must be a contiguous registry-owned range")
+    new_index = len(records)
+    candidate = replace(morph, index=new_index)
+    controller = _resolve_controller(adapter, root, allow_missing=True)
+    if controller is not None:
+        _preflight_new_controller_slot(adapter, controller, new_index)
+    elif "mmdMorphController" not in tuple(_call(adapter, "all_node_types") or ()):
+        _fail("required node type 'mmdMorphController' is unavailable")
+    registry = _resolve_registry_for_write(adapter, root)
+    vertex_plan = ()
+    if candidate.morph_type == "vertex":
+        if not callable(model_scale_resolver):
+            _fail("vertex morph creation requires a model scale resolver")
+        vertex_plan = tuple(
+            _new_vertex_target_plans(adapter, root, [candidate], model_scale_resolver)
+        )
+    node = _canonical_node(
+        adapter,
+        str(_call(adapter, "create_node", "network", name=f"mmdMorph_{new_index}")),
+    )
+    _ensure_attr(adapter, node, "weight", "double", default=0.0, keyable=True)
+    bound = replace(candidate, binding_identity=node)
+    _write_morph(adapter, node, bound)
+    registry_api.register_model_members(registry, REGISTRY_CATEGORY_MORPH, [node])
+    if controller is None:
+        controller = _create_controller(adapter, root)
+    input_plug = f"{controller}.inputWeight[{new_index}]"
+    _call(adapter, "set_attr", input_plug, 0.0)
+    _call(adapter, "set_attr", input_plug, keyable=True)
+    _call(adapter, "alias_attr", f"morph_{new_index}", input_plug)
+    if bound.morph_type != "vertex":
+        _call(
+            adapter,
+            "connect_attr",
+            f"{controller}.outputWeight[{new_index}]",
+            f"{node}.weight",
+            force=True,
+        )
+    if vertex_plan:
+        _apply_new_vertex_targets(adapter, controller, vertex_plan[0])
+    return bound
+
+
+def _resolve_registry_for_write(adapter: Any, root: str) -> str:
+    if not _has_attr(adapter, root, ATTR_MMD_MODEL_REGISTRY):
+        _fail("morph creation requires an existing model registry")
+    registries = tuple(
+        _call(
+            adapter,
+            "list_connections",
+            f"{root}.{ATTR_MMD_MODEL_REGISTRY}",
+            source=True,
+            destination=False,
+        )
+        or ()
+    )
+    if len(registries) != 1:
+        _fail("model root must have exactly one registry connection")
+    return _canonical_node(adapter, str(registries[0]))
+
+
+def _preflight_new_controller_slot(adapter: Any, controller: str, index: int) -> None:
+    input_plug = f"{controller}.inputWeight[{index}]"
+    output_plug = f"{controller}.outputWeight[{index}]"
+    incoming = tuple(
+        _call(adapter, "list_connections", input_plug, source=True, destination=False, plugs=True)
+        or ()
+    )
+    outgoing = tuple(
+        _call(adapter, "list_connections", output_plug, source=False, destination=True, plugs=True)
+        or ()
+    )
+    if incoming or outgoing:
+        _fail(f"controller slot {index} is already occupied")
+    aliases = list(_call(adapter, "alias_attr", controller, query=True) or ())
+    if len(aliases) % 2:
+        _fail("controller aliases must be alias/plug pairs")
+    for alias, plug in zip(aliases[0::2], aliases[1::2]):
+        plug_text = str(plug).rsplit(".", 1)[-1]
+        if str(alias) == f"morph_{index}" or plug_text == f"inputWeight[{index}]":
+            _fail(f"controller slot {index} alias is already occupied")
+
+
+def _capture_controller_slots(
+    adapter: Any,
+    controller: str,
+    indices: tuple[int, int],
+    records: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    aliases = list(_call(adapter, "alias_attr", controller, query=True) or ())
+    if len(aliases) % 2:
+        _fail("controller aliases must be alias/plug pairs")
+    alias_by_plug: dict[str, str] = {}
+    for alias, plug in zip(aliases[0::2], aliases[1::2]):
+        if not isinstance(alias, str) or not isinstance(plug, str):
+            _fail("controller aliases must be strings")
+        plug_text = str(plug)
+        if plug_text.startswith("inputWeight["):
+            if plug_text in alias_by_plug:
+                _fail(f"controller input alias is ambiguous: {plug_text!r}")
+            if str(alias) in alias_by_plug.values():
+                _fail(f"controller input alias name is ambiguous: {alias!r}")
+            alias_by_plug[plug_text] = str(alias)
+    state: dict[int, dict[str, Any]] = {}
+    records_by_index = {int(record["index"]): record for record in records}
+    for index in indices:
+        input_plug = f"{controller}.inputWeight[{index}]"
+        output_plug = f"{controller}.outputWeight[{index}]"
+        sources = tuple(
+            str(item)
+            for item in (_call(adapter, "list_connections", input_plug, source=True, destination=False, plugs=True) or ())
+        )
+        if len(sources) > 1:
+            _fail(f"{input_plug} has ambiguous incoming connections")
+        destinations = tuple(
+            str(item)
+            for item in (_call(adapter, "list_connections", output_plug, source=False, destination=True, plugs=True) or ())
+        )
+        record = records_by_index[index]
+        binding = str(record["binding"])
+        if record["morph_type"] != "vertex" and f"{binding}.weight" not in destinations:
+            _fail(f"controller output {index} is not connected to {binding}.weight")
+        if record["morph_type"] == "vertex" and not destinations:
+            _fail(f"controller output {index} has no blendShape destination")
+        value = _call(adapter, "get_attr", input_plug)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            _fail(f"{input_plug} has an invalid numeric value")
+        value = float(value)
+        alias = alias_by_plug.get(f"inputWeight[{index}]")
+        state[index] = {
+            "source": sources[0] if sources else None,
+            "destinations": destinations,
+            "value": value,
+            "alias": alias,
+        }
+    return state
+
+
+def _apply_controller_swap(adapter: Any, controller: str, state: Mapping[int, Mapping[str, Any]]) -> None:
+    indices = tuple(sorted(state))
+    if len(indices) != 2:
+        _fail("controller swap requires exactly two preflighted slots")
+    first, second = indices
+    for index in indices:
+        input_plug = f"{controller}.inputWeight[{index}]"
+        source = state[index]["source"]
+        if source:
+            _call(adapter, "disconnect_attr", source, input_plug)
+        for destination in state[index]["destinations"]:
+            _call(adapter, "disconnect_attr", f"{controller}.outputWeight[{index}]", destination)
+        alias = state[index].get("alias")
+        if alias:
+            _call(adapter, "alias_attr", input_plug, remove=True)
+    for target, source_index in ((first, second), (second, first)):
+        source = state[source_index]["source"]
+        input_plug = f"{controller}.inputWeight[{target}]"
+        if source:
+            _call(adapter, "connect_attr", source, input_plug, force=True)
+        else:
+            _call(adapter, "set_attr", input_plug, state[source_index]["value"])
+        alias = state[source_index].get("alias")
+        if alias:
+            _call(adapter, "alias_attr", alias, input_plug)
+        output_plug = f"{controller}.outputWeight[{target}]"
+        for destination in state[source_index]["destinations"]:
+            _call(adapter, "connect_attr", output_plug, destination, force=True)
+
+
+def _capture_morph_reindex_payloads(adapter: Any, records: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], ...]:
+    payloads: list[dict[str, Any]] = []
+    for record in records:
+        morph_type = str(record["morph_type"])
+        if morph_type not in {"group", "flip"}:
+            continue
+        attr = _OFFSET_ATTRS[morph_type][0]
+        raw = _call(adapter, "get_attr", f"{record['binding']}.{attr}")
+        if not isinstance(raw, str):
+            _fail(f"{record['binding']}.{attr} must contain JSON text")
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            _fail(f"{record['binding']}.{attr} contains invalid JSON: {exc}")
+        if not isinstance(parsed, list):
+            _fail(f"{record['binding']}.{attr} must contain a JSON list")
+        payloads.append({"binding": record["binding"], "morph_type": morph_type, "attr": attr, "value": parsed})
+    return tuple(payloads)
+
+
+def _remap_morph_reindex_payloads(
+    payloads: Sequence[Mapping[str, Any]],
+    swap: Mapping[int, int],
+) -> tuple[dict[str, Any], ...]:
+    """Validate and remap Group/Flip payloads before any Maya write."""
+    result: list[dict[str, Any]] = []
+    for payload in payloads:
+        value = json.loads(json.dumps(payload["value"]))
+        changed = False
+        for offset in value:
+            if not isinstance(offset, Mapping) or "morph_index" not in offset:
+                _fail(f"{payload['binding']} has an invalid group/flip offset")
+            current = _strict_index(offset["morph_index"], f"{payload['binding']} morph_index")
+            replacement = swap.get(current, current)
+            if replacement != current:
+                offset["morph_index"] = replacement
+                changed = True
+        result.append({**dict(payload), "value": value, "changed": changed})
+    return tuple(result)
+
+
+def _write_morph_reindex_payloads(
+    adapter: Any, payloads: Sequence[Mapping[str, Any]]
+) -> None:
+    for payload in payloads:
+        if payload.get("changed"):
+            _write_json_attr(adapter, str(payload["binding"]), str(payload["attr"]), payload["value"])
+
+
+def _capture_json_attr(adapter: Any, node: str, attr: str, *, required: bool) -> Any:
+    if not _has_attr(adapter, node, attr):
+        if required:
+            _fail(f"{node}.{attr} is required")
+        return None
+    raw = _call(adapter, "get_attr", f"{node}.{attr}")
+    if not isinstance(raw, str):
+        _fail(f"{node}.{attr} must contain JSON text")
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        _fail(f"{node}.{attr} contains invalid JSON: {exc}")
+
+
+def _write_json_attr(adapter: Any, node: str, attr: str, value: Any) -> None:
+    _call(
+        adapter,
+        "set_attr",
+        f"{node}.{attr}",
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+        type="string",
+    )
+
+
+def _remap_group_topology(value: Any, swap: Mapping[int, int]) -> Any:
+    if not isinstance(value, Mapping):
+        _fail("controller groupTopology must contain a JSON object")
+    result: dict[str, Any] = {}
+    for target, sources in value.items():
+        if isinstance(target, str) and re.fullmatch(r"(?:0|[1-9]\d*)", target):
+            target_index = int(target)
+        elif isinstance(target, int) and not isinstance(target, bool):
+            target_index = _strict_index(target, "groupTopology target")
+        else:
+            _fail("groupTopology target must be a non-negative integer key")
+        if not isinstance(sources, list):
+            _fail("controller groupTopology entries must be lists")
+        remapped = []
+        for source in sources:
+            if not isinstance(source, list) or len(source) != 2:
+                _fail("controller groupTopology source entries must be [index, rate]")
+            source_index = _strict_index(source[0], "groupTopology source")
+            remapped.append([swap.get(source_index, source_index), source[1]])
+        result[str(swap.get(target_index, target_index))] = remapped
+    return result
+
+
+def _remap_display_frames_json(value: Any, swap: Mapping[int, int]) -> Any:
+    if not isinstance(value, list):
+        _fail("display frame metadata must contain a JSON list")
+    result = json.loads(json.dumps(value))
+    for frame in result:
+        if not isinstance(frame, Mapping):
+            _fail("display frame entries must be mappings")
+        elements = frame.get("elements", [])
+        if not isinstance(elements, list):
+            _fail("display frame elements must be a list")
+        for element in elements:
+            if not isinstance(element, Mapping):
+                _fail("display frame elements must be mappings")
+            element_type = _strict_index(element.get("type"), "display frame element type")
+            if element_type not in {0, 1}:
+                _fail("display frame element type must be 0 or 1")
+            element_index = _strict_index(element.get("index"), "display frame element index")
+            if element_type == 1:
+                element["index"] = swap.get(element_index, element_index)
+    return result
+
+
+def _strict_index(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        _fail(f"{field} must be a non-negative integer")
+    return int(value)
+
+
+def _capture_vertex_reindex_state(
+    adapter: Any,
+    records: Sequence[Mapping[str, Any]],
+    controller_state: Mapping[int, Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    captured: list[dict[str, Any]] = []
+    for record in records:
+        if record["morph_type"] != "vertex":
+            continue
+        index = int(record["index"])
+        if index not in controller_state:
+            continue
+        for destination in controller_state[index]["destinations"]:
+            node, target_index = _resolve_vertex_weight_destination(adapter, str(destination), index)
+            if _call(adapter, "node_type", node) != "blendShape":
+                continue
+            mapping = _read_vertex_name_mapping(adapter, node)
+            entry = mapping.get(str(target_index))
+            entry_index = entry.get("index") if isinstance(entry, Mapping) else None
+            if (
+                not isinstance(entry_index, int)
+                or isinstance(entry_index, bool)
+                or entry_index != index
+            ):
+                _fail(f"vertex target {node}.weight[{target_index}] metadata does not match index {index}")
+            captured.append({"node": node, "target_index": target_index, "mapping": mapping})
+    return tuple(captured)
+
+
+def _apply_vertex_reindex_state(
+    adapter: Any,
+    state: Sequence[Mapping[str, Any]],
+    swap: Mapping[int, int],
+) -> None:
+    mappings: dict[str, dict[str, Any]] = {}
+    for item in state:
+        node = str(item["node"])
+        mapping = mappings.setdefault(node, dict(item["mapping"]))
+        key = str(int(item["target_index"]))
+        entry = dict(mapping[key])
+        current_index = entry.get("index")
+        if isinstance(current_index, bool) or not isinstance(current_index, int):
+            _fail(f"vertex target {node}.weight[{key}] index is not an integer")
+        entry["index"] = swap.get(current_index, current_index)
+        mapping[key] = entry
+    for node, mapping in mappings.items():
+        _write_vertex_name_mapping(adapter, node, mapping)
+
+
+def _capture_runtime_reindex_state(
+    adapter: Any,
+    records: Sequence[Mapping[str, Any]],
+    swap: Mapping[int, int],
+) -> tuple[dict[str, Any], ...]:
+    binding_by_node = {str(record["binding"]): int(record["index"]) for record in records}
+    expected_counts: dict[str, tuple[str, int]] = {}
+    for record in records:
+        if record["morph_type"] not in {"bone", "material"}:
+            continue
+        morph_type = str(record["morph_type"])
+        attr = _OFFSET_ATTRS[morph_type][0]
+        raw = _call(adapter, "get_attr", f"{record['binding']}.{attr}")
+        if not isinstance(raw, str):
+            _fail(f"{record['binding']}.{attr} must contain JSON text")
+        try:
+            offsets = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            _fail(f"{record['binding']}.{attr} contains invalid JSON: {exc}")
+        if not isinstance(offsets, list):
+            _fail(f"{record['binding']}.{attr} must contain a JSON list")
+        expected_counts[str(record["binding"])] = (morph_type, len(offsets))
+    observed_counts: dict[str, int] = {}
+    captured: list[dict[str, Any]] = []
+    available_runtime_types: set[str] = set()
+    for node_type in ("mmdBoneMorphAccum", "mmdMaterialMorphEval"):
+        nodes = _runtime_nodes(adapter, node_type)
+        if nodes:
+            available_runtime_types.add(node_type)
+        for node in nodes:
+            indices = _call(adapter, "get_attr", f"{node}.contribution", multiIndices=True) or ()
+            for raw_index in indices:
+                if isinstance(raw_index, bool) or not isinstance(raw_index, int) or raw_index < 0:
+                    _fail(f"{node}.contribution multi-index must be a non-negative integer")
+                slot = raw_index
+                sources = tuple(
+                    str(item)
+                    for item in (
+                        _call(
+                            adapter,
+                            "list_connections",
+                            f"{node}.contribution[{slot}].weight",
+                            source=True,
+                            destination=False,
+                            plugs=True,
+                        )
+                        or ()
+                    )
+                )
+                if len(sources) > 1:
+                    _fail(f"{node}.contribution[{slot}].weight has ambiguous sources")
+                if not sources:
+                    continue
+                source_node = sources[0].split(".", 1)[0]
+                if source_node not in binding_by_node:
+                    continue
+                old_index = binding_by_node[source_node]
+                current_order = _call(
+                    adapter,
+                    "get_attr",
+                    f"{node}.contribution[{slot}].morphOrder",
+                )
+                if isinstance(current_order, bool) or not isinstance(current_order, int):
+                    _fail(f"{node}.contribution[{slot}].morphOrder must be an integer")
+                if current_order != old_index:
+                    _fail(
+                        f"{node}.contribution[{slot}].morphOrder mismatch: "
+                        f"expected {old_index}, got {current_order}"
+                    )
+                observed_counts[source_node] = observed_counts.get(source_node, 0) + 1
+                captured.append(
+                    {
+                        "node": node,
+                        "slot": slot,
+                        "old_index": old_index,
+                        "new_index": swap.get(old_index, old_index),
+                    }
+                )
+    for binding, (morph_type, expected) in expected_counts.items():
+        observed = observed_counts.get(binding, 0)
+        runtime_node_type = (
+            "mmdBoneMorphAccum" if morph_type == "bone" else "mmdMaterialMorphEval"
+        )
+        if expected and runtime_node_type in available_runtime_types and observed != expected:
+            _fail(
+                f"{morph_type} morph runtime contribution count mismatch for {binding!r}: "
+                f"expected {expected}, got {observed}"
+            )
+    return tuple(captured)
+
+
+def _apply_runtime_reindex_state(
+    adapter: Any,
+    state: Sequence[Mapping[str, Any]],
+    swap: Mapping[int, int],
+) -> None:
+    del swap
+    for item in state:
+        if int(item["old_index"]) == int(item["new_index"]):
+            continue
+        _call(
+            adapter,
+            "set_attr",
+            f"{item['node']}.contribution[{int(item['slot'])}].morphOrder",
+            int(item["new_index"]),
+        )
 
 
 def maya_runtime_rebuilders() -> dict[str, Any]:
@@ -891,6 +1537,295 @@ def _write_morph(adapter: Any, node: str, morph: MmdMorphSpec) -> None:
         _set_typed(adapter, node, attr, attr_type, value)
 
 
+def _write_morph_values(
+    adapter: Any,
+    node: str,
+    old: MmdMorphSpec,
+    new: MmdMorphSpec,
+    changed: set[str],
+) -> None:
+    """Write only selected-node attrs which changed in the patch-safe route."""
+    if "name" in changed:
+        _set_typed(adapter, node, "mmd_morph_name", "string", new.name)
+    if "name_english" in changed:
+        _set_typed(adapter, node, "mmd_morph_name_en", "string", new.name_english)
+    if "panel" in changed:
+        _set_typed(adapter, node, "mmd_morph_panel", "long", new.panel)
+    if "offsets" in changed:
+        payload = json.dumps(new.to_mapping()["offsets"], ensure_ascii=False, separators=(",", ":"))
+        for attr in _OFFSET_ATTRS[old.morph_type]:
+            _set_typed(adapter, node, attr, "string", payload)
+
+
+def _update_selected_runtime_values(
+    adapter: Any,
+    root: str,
+    binding: str,
+    old: MmdMorphSpec,
+    new: MmdMorphSpec,
+) -> None:
+    """Refresh existing evaluator contribution constants for one morph.
+
+    Runtime nodes are discovered by type and matched through their incoming
+    ``contribution[*].weight`` connection.  No controller or unrelated
+    contribution is rebuilt.  Morph types without a selected-only runtime
+    contract are classified structural before this function is reached.
+    """
+    if old.morph_type == "bone":
+        _patch_bone_runtime_values(adapter, binding, old, new)
+    elif old.morph_type == "material":
+        _patch_material_runtime_values(adapter, binding, new)
+    elif old.morph_type == "vertex":
+        _patch_vertex_runtime_values(adapter, root, binding, old, new)
+
+
+def _runtime_nodes(adapter: Any, node_type: str) -> tuple[str, ...]:
+    node_types = getattr(adapter, "all_node_types", None)
+    if callable(node_types):
+        try:
+            available = tuple(str(value) for value in (node_types() or ()))
+        except Exception as exc:
+            _fail(f"failed to inspect available Maya node types: {exc}")
+        if node_type not in available:
+            return ()
+    lister = getattr(adapter, "ls", None)
+    if not callable(lister):
+        return ()
+    try:
+        return tuple(str(node) for node in (lister(type=node_type, long=True) or ()))
+    except Exception as exc:
+        _fail(f"failed to inspect {node_type} runtime nodes: {exc}")
+    return ()
+
+
+def _selected_contribution_slots(adapter: Any, node: str, binding: str) -> list[int]:
+    try:
+        indices = _call(adapter, "get_attr", f"{node}.contribution", multiIndices=True) or ()
+    except Exception as exc:
+        _fail(f"failed to inspect runtime contributions on {node!r}: {exc}")
+    selected: list[int] = []
+    for raw_index in indices:
+        try:
+            index = int(raw_index)
+            sources = _call(
+                adapter,
+                "list_connections",
+                f"{node}.contribution[{index}].weight",
+                source=True,
+                destination=False,
+                plugs=True,
+            ) or ()
+        except Exception as exc:
+            _fail(f"failed to inspect runtime contribution {node}[{raw_index}]: {exc}")
+        if any(str(source).split(".", 1)[0] == binding for source in sources):
+            selected.append(index)
+    return selected
+
+
+def _patch_bone_runtime_values(adapter: Any, binding: str, old: MmdMorphSpec, new: MmdMorphSpec) -> None:
+    del old
+    slots_written = 0
+    for node in _runtime_nodes(adapter, "mmdBoneMorphAccum"):
+        slots = _selected_contribution_slots(adapter, node, binding)
+        if not slots:
+            continue
+        target_joint = _call(adapter, "get_attr", f"{node}.mmd_target_joint")
+        target_index = _runtime_target_index(adapter, str(target_joint), "mmd_bone_index")
+        offsets = tuple(
+            offset for offset in new.offsets if int(offset["bone_index"]) == target_index
+        )
+        if len(slots) != len(offsets):
+            _fail(
+                f"selected bone morph {binding!r} runtime contribution count mismatch: "
+                f"slots={len(slots)} offsets={len(offsets)}"
+            )
+        for slot, offset in zip(slots, offsets):
+            prefix = f"{node}.contribution[{slot}]"
+            translation = offset["translation"]
+            rotation = offset["rotation"]
+            from mmd_tools.converters.bone_morph_runtime import pmx_bone_offset_to_runtime_values
+
+            translated, converted_rotation = pmx_bone_offset_to_runtime_values(
+                tuple(translation), tuple(rotation), str(target_joint)
+            )
+            _call(
+                adapter,
+                "set_attr",
+                f"{prefix}.translateOffset",
+                *translated,
+                type="double3",
+            )
+            _call(
+                adapter,
+                "set_attr",
+                f"{prefix}.rotateOffsetQuat",
+                *converted_rotation,
+                type="double4",
+            )
+            slots_written += 1
+    if new.offsets and slots_written == 0 and _runtime_nodes(adapter, "mmdBoneMorphAccum"):
+        _fail(f"selected bone morph {binding!r} has no runtime contribution binding")
+
+
+def _patch_material_runtime_values(adapter: Any, binding: str, new: MmdMorphSpec) -> None:
+    slots_written = 0
+    for node in _runtime_nodes(adapter, "mmdMaterialMorphEval"):
+        slots = _selected_contribution_slots(adapter, node, binding)
+        if not slots:
+            continue
+        target_shader = _call(adapter, "get_attr", f"{node}.mmd_target_shader")
+        target_index = _runtime_target_index(adapter, str(target_shader), "mmd_material_index")
+        offsets = tuple(
+            offset
+            for offset in new.offsets
+            if int(offset["material_index"]) in {target_index, -1}
+        )
+        if len(slots) != len(offsets):
+            _fail(
+                f"selected material morph {binding!r} runtime contribution count mismatch: "
+                f"slots={len(slots)} offsets={len(offsets)}"
+            )
+        for slot, offset in zip(slots, offsets):
+            prefix = f"{node}.contribution[{slot}]"
+            vectors = {
+                "diffuseOffset": tuple(offset["diffuse"]),
+                "specularOffset": tuple(offset["specular"]),
+                "specularCoefficientOffset": (float(offset["specular_coefficient"]),),
+                "ambientOffset": tuple(offset["ambient"]),
+                "edgeColorOffset": tuple(offset["edge_color"]),
+                "edgeSizeOffset": (float(offset["edge_size"]),),
+                "textureOffset": tuple(offset["texture_factor"]),
+                "sphereTextureOffset": tuple(offset["sphere_texture_factor"]),
+                "toonTextureOffset": tuple(offset["toon_texture_factor"]),
+            }
+            for attr, values in vectors.items():
+                if len(values) == 1:
+                    _call(adapter, "set_attr", f"{prefix}.{attr}", values[0])
+                elif len(values) == 3:
+                    _call(adapter, "set_attr", f"{prefix}.{attr}", *values, type="double3")
+                else:
+                    for axis, value in zip("RGBA", values):
+                        _call(adapter, "set_attr", f"{prefix}.{attr}{axis}", value)
+            slots_written += 1
+    if new.offsets and slots_written == 0 and _runtime_nodes(adapter, "mmdMaterialMorphEval"):
+        _fail(f"selected material morph {binding!r} has no runtime contribution binding")
+
+
+def _runtime_target_index(adapter: Any, node: str, attr: str) -> int:
+    if not node or not _has_attr(adapter, node, attr):
+        _fail(f"runtime target {node!r} is missing {attr}")
+    return _read_int(adapter, node, attr)
+
+
+def _patch_vertex_runtime_values(
+    adapter: Any,
+    root: str,
+    binding: str,
+    old: MmdMorphSpec,
+    new: MmdMorphSpec,
+) -> None:
+    """Update selected imported blendShape target point arrays in place."""
+    controllers = tuple(
+        _call(adapter, "list_connections", f"{root}.mmd_morph_controller", source=True, destination=False)
+        or ()
+    )
+    if len(controllers) != 1:
+        _fail(f"selected vertex morph {binding!r} has no unique morph controller")
+    controller = str(controllers[0])
+    destinations = tuple(
+        _call(
+            adapter,
+            "list_connections",
+            f"{controller}.outputWeight[{new.index}]",
+            source=False,
+            destination=True,
+            plugs=True,
+        )
+        or ()
+    )
+    scale = _read_model_scale(adapter, root)
+    covered: set[int] = set()
+    target_count = 0
+    for destination in destinations:
+        node, target_index = _resolve_vertex_weight_destination(adapter, str(destination), new.index)
+        if _call(adapter, "node_type", node) != "blendShape":
+            continue
+        geometries = tuple(_call(adapter, "blend_shape", node, query=True, geometry=True) or ())
+        geometry_indices = tuple(
+            _call(adapter, "blend_shape", node, query=True, geometryIndices=True) or ()
+        )
+        if len(geometries) != len(geometry_indices) or not geometries:
+            _fail(f"blendShape {node!r} has ambiguous geometry indices")
+        mapping = _read_vertex_name_mapping(adapter, node)
+        entry = mapping.get(str(target_index))
+        if new.name != old.name:
+            aliases = list(_call(adapter, "alias_attr", node, query=True) or ())
+            old_alias = None
+            for alias, plug in zip(aliases[0::2], aliases[1::2]):
+                if str(plug) in {f"weight[{target_index}]", f"w[{target_index}]"}:
+                    old_alias = str(alias)
+                    break
+            replacement = maya_name_utils.sanitize_unique_name(
+                new.name,
+                {str(value) for value in aliases[0::2] if str(value) != old_alias},
+                fallback=f"morph_{new.index}",
+            )
+            if old_alias:
+                _call(adapter, "alias_attr", f"{node}.weight[{target_index}]", remove=True)
+            _call(adapter, "alias_attr", replacement, f"{node}.weight[{target_index}]")
+        if not isinstance(entry, Mapping) or entry.get("name") != new.name or entry.get("index") != new.index:
+            # Name edits are persisted on the network binding; update the
+            # selected blendShape annotation before writing point values.
+            mapping[str(target_index)] = {"name": new.name, "index": new.index}
+            _write_vertex_name_mapping(adapter, node, mapping)
+        for geometry, geometry_index in zip(geometries, geometry_indices):
+            geometry = _canonical_node(adapter, str(geometry))
+            source_to_local = _source_vertex_map(adapter, geometry)
+            components: list[str] = []
+            points: list[tuple[float, float, float, float]] = []
+            for offset in new.offsets:
+                source_index = int(offset["vertex_index"])
+                local_index = source_to_local.get(source_index)
+                if local_index is None:
+                    _fail(f"vertex morph {new.index} references unmapped source index {source_index}")
+                covered.add(source_index)
+                components.append(f"vtx[{local_index}]")
+                points.append((*pmx_vertex_offset_to_maya_tuple(offset["position_offset"], scale), 1.0))
+            item = (
+                f"{node}.inputTarget[{int(geometry_index)}].inputTargetGroup[{target_index}]"
+                ".inputTargetItem[6000]"
+            )
+            _call(
+                adapter,
+                "set_attr",
+                f"{item}.inputComponentsTarget",
+                len(components),
+                *components,
+                type="componentList",
+            )
+            _call(
+                adapter,
+                "set_attr",
+                f"{item}.inputPointsTarget",
+                len(points),
+                *points,
+                type="pointArray",
+            )
+            target_count += 1
+    expected = {int(offset["vertex_index"]) for offset in new.offsets}
+    if target_count == 0 or covered != expected:
+        _fail(f"selected vertex morph {binding!r} has no exact blendShape target binding")
+
+
+def _read_model_scale(adapter: Any, root: str) -> float:
+    if not _has_attr(adapter, root, ATTR_MMD_IMPORT_SCALE):
+        _fail(f"vertex morph runtime patch requires {ATTR_MMD_IMPORT_SCALE} on {root!r}")
+    value = _call(adapter, "get_attr", f"{root}.{ATTR_MMD_IMPORT_SCALE}")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) <= 0:
+        _fail(f"{root}.{ATTR_MMD_IMPORT_SCALE} must be a finite positive number")
+    return float(value)
+
+
 def _set_typed(adapter: Any, node: str, attr: str, attr_type: str, value: Any) -> None:
     _ensure_attr(adapter, node, attr, attr_type)
     if attr_type == "string":
@@ -966,6 +1901,8 @@ def _fail(message: str) -> None:
 
 __all__ = [
     "MayaMorphAuthoringError",
+    "apply_morph_create",
+    "apply_morph_value_patch",
     "apply_morph_spec_change",
     "maya_runtime_rebuilders",
 ]

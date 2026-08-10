@@ -49,7 +49,11 @@ from mmd_tools.core.constants import (
     ATTR_MMD_X_AXIS_DIRECTION,
     ATTR_MMD_Z_AXIS_DIRECTION,
 )
-from mmd_tools.core.bone_authoring import BoneResetPlan, make_bone_reset_plan
+from mmd_tools.core.bone_authoring import (
+    BoneResetPlan,
+    classify_bone_change,
+    make_bone_reset_plan,
+)
 from mmd_tools.core.model_authoring_spec import MmdBoneSpec, MmdModelAuthoringSpec
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
@@ -194,6 +198,16 @@ def _require_root_joint(adapter: Any, root: str, joint: str) -> None:
         _fail(f"joint {joint!r} is not a descendant of root {root!r}")
 
 
+def _require_selected_joint(adapter: Any, root: str, joint: str) -> None:
+    """Validate one selected joint without enumerating the model hierarchy."""
+    _require_string(root, field="root")
+    _require_string(joint, field="joint")
+    if not _call(adapter, "object_exists", root) or not _call(adapter, "object_exists", joint):
+        _fail("root and joint must exist")
+    if joint == root or not joint.startswith(root.rstrip("|") + "|"):
+        _fail(f"joint {joint!r} is not a descendant of root {root!r}")
+
+
 def _set_attr(adapter: Any, node: str, attr: str, kind: str, value: Any) -> None:
     if not _exists(adapter, node, attr):
         if kind == "string":
@@ -331,6 +345,76 @@ def capture_rest_position(root: str, joint: str, model_scale: float, adapter: An
     return (x / scale, y / scale, -z / scale)
 
 
+def apply_bone_value_patch(
+    root: str,
+    old_bone: MmdBoneSpec,
+    new_bone: MmdBoneSpec,
+    adapter: Any,
+) -> MmdBoneSpec:
+    """Write only changed patch-safe attributes on one selected joint.
+
+    The caller owns the undo chunk and selected-joint preimage/commit checks.
+    This adapter performs a second fail-closed ownership/index check before
+    touching Maya and never rebuilds reference, display, physics, or morph
+    metadata.
+    """
+    if not isinstance(old_bone, MmdBoneSpec) or not isinstance(new_bone, MmdBoneSpec):
+        _fail("old_bone and new_bone must be MmdBoneSpec values")
+    binding = old_bone.binding_identity
+    if not isinstance(binding, str) or not binding or new_bone.binding_identity != binding:
+        _fail("bone binding identity cannot change in a value patch")
+    if old_bone.index != new_bone.index:
+        _fail("bone index cannot change in a value patch")
+    route = classify_bone_change(old_bone, new_bone)
+    if route == "noop":
+        return new_bone
+    if route != "value":
+        _fail("bone value patch received structural fields")
+    _require_selected_joint(adapter, root, binding)
+    if not _exists(adapter, binding, ATTR_MMD_BONE_INDEX):
+        _fail(f"joint {binding!r} is not registered")
+    if _read_int(adapter, binding, ATTR_MMD_BONE_INDEX, minimum=0) != old_bone.index:
+        _fail(f"joint {binding!r} index does not match selected bone")
+
+    changed = {
+        field
+        for field in old_bone.to_mapping()
+        if getattr(old_bone, field) != getattr(new_bone, field)
+    }
+    if "flags" in changed:
+        _set_attr(adapter, binding, ATTR_MMD_BONE_FLAGS, "long", new_bone.flags)
+    if "name" in changed:
+        _set_attr(adapter, binding, ATTR_MMD_BONE_NAME, "string", new_bone.name)
+    if "name_english" in changed:
+        _set_attr(adapter, binding, ATTR_MMD_BONE_NAME_EN, "string", new_bone.name_english)
+    if "transform_layer" in changed:
+        _set_attr(adapter, binding, ATTR_MMD_DEFORM_LAYER, "long", new_bone.transform_layer)
+    if "rest_position" in changed:
+        _set_attr(adapter, binding, ATTR_MMD_PMX_REST_POSITION, "vector", new_bone.rest_position)
+    if "fixed_axis" in changed:
+        value = new_bone.fixed_axis or (0.0, 0.0, 1.0)
+        _set_attr(adapter, binding, ATTR_MMD_FIXED_AXIS, "vector", value)
+        if new_bone.fixed_axis is not None:
+            _set_attr(adapter, binding, ATTR_MMD_AXIS_DIRECTION, "vector", value)
+        elif _exists(adapter, binding, ATTR_MMD_AXIS_DIRECTION):
+            _call(adapter, "delete_attr", f"{binding}.{ATTR_MMD_AXIS_DIRECTION}")
+    if "local_axis_x" in changed:
+        value = new_bone.local_axis_x or (1.0, 0.0, 0.0)
+        _set_attr(adapter, binding, ATTR_MMD_LOCAL_X_AXIS, "vector", value)
+        if new_bone.local_axis_x is not None:
+            _set_attr(adapter, binding, ATTR_MMD_X_AXIS_DIRECTION, "vector", value)
+        elif _exists(adapter, binding, ATTR_MMD_X_AXIS_DIRECTION):
+            _call(adapter, "delete_attr", f"{binding}.{ATTR_MMD_X_AXIS_DIRECTION}")
+    if "local_axis_z" in changed:
+        value = new_bone.local_axis_z or (0.0, 0.0, 1.0)
+        _set_attr(adapter, binding, ATTR_MMD_LOCAL_Z_AXIS, "vector", value)
+        if new_bone.local_axis_z is not None:
+            _set_attr(adapter, binding, ATTR_MMD_Z_AXIS_DIRECTION, "vector", value)
+        elif _exists(adapter, binding, ATTR_MMD_Z_AXIS_DIRECTION):
+            _call(adapter, "delete_attr", f"{binding}.{ATTR_MMD_Z_AXIS_DIRECTION}")
+    return new_bone
+
+
 def register_existing_joint(root: str, bone: MmdBoneSpec, adapter: Any) -> None:
     """Register one existing descendant joint using only canonical Spec data."""
     if not isinstance(bone, MmdBoneSpec):
@@ -437,6 +521,69 @@ def register_existing_joint(root: str, bone: MmdBoneSpec, adapter: Any) -> None:
         _set_attr(adapter, joint, ATTR_MMD_IK_LOOP, "long", bone.ik_loop_count)
         _set_attr(adapter, joint, ATTR_MMD_IK_LIMIT_ANGLE, "double", bone.ik_limit_radian or 0.0)
         _set_attr(adapter, joint, ATTR_MMD_IK_LINKS, "string", json.dumps([dict(link) for link in bone.ik_links], ensure_ascii=False))
+
+
+def prepare_selected_joint_registration(root: str, joint: str, adapter: Any) -> MmdBoneSpec:
+    """Build the default metadata for one unregistered selected joint.
+
+    This preflight intentionally reads only the selected joint, its direct
+    parent, and descendant index plugs needed to allocate the trailing index.
+    It does not read a model spec or any unrelated bone payload.
+    """
+    _require_selected_joint(adapter, root, joint)
+    if _exists(adapter, joint, ATTR_MMD_BONE_INDEX):
+        _fail(f"joint {joint!r} is already registered")
+    descendants = _descendant_joints(adapter, root)
+    indices = {
+        _read_int(adapter, item, ATTR_MMD_BONE_INDEX, minimum=0)
+        for item in descendants
+        if _exists(adapter, item, ATTR_MMD_BONE_INDEX)
+    }
+    if len(indices) != sum(
+        1 for item in descendants if _exists(adapter, item, ATTR_MMD_BONE_INDEX)
+    ):
+        _fail("root contains duplicate bone indices")
+    parents = _call(adapter, "list_relatives", joint, parent=True, fullPath=True, type="joint") or []
+    if isinstance(parents, (str, bytes, bytearray)) or len(parents) > 1:
+        _fail("selected joint has multiple joint parents")
+    parent_index = -1
+    if parents:
+        parent = _canonical_identity(adapter, parents[0])
+        if _exists(adapter, parent, ATTR_MMD_BONE_INDEX):
+            parent_index = _read_int(adapter, parent, ATTR_MMD_BONE_INDEX, minimum=0)
+    name = joint.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+    return MmdBoneSpec(
+        name=name,
+        name_english=name,
+        index=max(indices, default=-1) + 1,
+        parent_index=parent_index,
+        tail_offset=(0.0, 0.0, 0.0),
+        rest_position=(0.0, 0.0, 0.0),
+        binding_identity=joint,
+    )
+
+
+def register_selected_joint(root: str, bone: MmdBoneSpec, adapter: Any) -> MmdBoneSpec:
+    """Add only the base metadata required to register one selected joint."""
+    if not isinstance(bone, MmdBoneSpec):
+        _fail("bone must be an MmdBoneSpec")
+    joint = _require_string(bone.binding_identity, field="bone.binding_identity")
+    _require_selected_joint(adapter, root, joint)
+    if _exists(adapter, joint, ATTR_MMD_BONE_INDEX):
+        _fail(f"joint {joint!r} is already registered")
+    if bone.index < 0 or bone.parent_index < -1:
+        _fail("bone indices must be non-negative and parent_index >= -1")
+    if int(bone.flags) != 0:
+        _fail("selected-joint registration only supports default bone flags")
+    _set_attr(adapter, joint, ATTR_MMD_BONE_NAME, "string", bone.name)
+    _set_attr(adapter, joint, ATTR_MMD_BONE_NAME_EN, "string", bone.name_english)
+    _set_attr(adapter, joint, ATTR_MMD_BONE_INDEX, "long", bone.index)
+    _set_attr(adapter, joint, ATTR_MMD_BONE_PARENT_INDEX, "long", bone.parent_index)
+    _set_attr(adapter, joint, ATTR_MMD_PMX_REST_POSITION, "vector", bone.rest_position)
+    _set_attr(adapter, joint, ATTR_MMD_DEFORM_LAYER, "long", bone.transform_layer)
+    _set_attr(adapter, joint, ATTR_MMD_BONE_FLAGS, "long", bone.flags)
+    _set_attr(adapter, joint, ATTR_MMD_BONE_OFFSET, "vector", bone.tail_offset or (0.0, 0.0, 0.0))
+    return bone
 
 
 def register_existing_joints(root: str, bones: Sequence[MmdBoneSpec], adapter: Any) -> None:
@@ -1346,9 +1493,12 @@ def apply_bone_reset_structure(
 
 __all__ = [
     "MayaBoneAuthoringError",
+    "prepare_selected_joint_registration",
+    "register_selected_joint",
     "register_existing_joint",
     "register_existing_joints",
     "capture_rest_position",
+    "apply_bone_value_patch",
     "apply_bone_reindex",
     "unregister_existing_joint",
     "plan_bone_reset",

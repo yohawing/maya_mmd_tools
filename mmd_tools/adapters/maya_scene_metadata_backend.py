@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import json
 import math
+import re
+import struct
+from copy import deepcopy
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
@@ -52,6 +55,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_AMBIENT_COLOR,
     ATTR_MMD_EDGE_COLOR,
+    ATTR_MMD_EDGE_FLAG,
     ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_DRAW_FLAGS,
     ATTR_MMD_MEMO,
@@ -67,13 +71,19 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SHARED_TOON_FLAG,
     ATTR_MMD_TOON_TEXTURE_INDEX,
     ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
+    ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
     ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON,
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
-from mmd_tools.core.model_authoring_spec import MmdModelAuthoringSpec
+from mmd_tools.core.model_authoring_spec import (
+    MmdBoneSpec,
+    MmdMaterialSpec,
+    MmdModelAuthoringSpec,
+    MmdMorphSpec,
+)
 
 
 class MayaSceneMetadataError(SceneMetadataError):
@@ -93,6 +103,49 @@ class MayaSceneMetadataBackend:
     _EXPLICIT_RESOLVED_TOON_PATH = "mmd_resolved_toon_texture_path"
     _ORIGINAL_TEXTURE_PATH = "mmd_original_texture_path"
     _FILE_TEXTURE_NAME = "fileTextureName"
+    _BONE_REGISTER_ATTRS = (
+        ATTR_MMD_BONE_NAME,
+        ATTR_MMD_BONE_NAME_EN,
+        ATTR_MMD_BONE_INDEX,
+        ATTR_MMD_BONE_PARENT_INDEX,
+        ATTR_MMD_PMX_REST_POSITION,
+        ATTR_MMD_PMX_REST_POSITION + "X",
+        ATTR_MMD_PMX_REST_POSITION + "Y",
+        ATTR_MMD_PMX_REST_POSITION + "Z",
+        ATTR_MMD_DEFORM_LAYER,
+        ATTR_MMD_BONE_FLAGS,
+        ATTR_MMD_BONE_OFFSET,
+        ATTR_MMD_BONE_OFFSET + "X",
+        ATTR_MMD_BONE_OFFSET + "Y",
+        ATTR_MMD_BONE_OFFSET + "Z",
+        ATTR_MMD_CONNECT_INDEX,
+        ATTR_MMD_CONNECT_BONE_INDEX,
+        ATTR_MMD_CONNECTION_BONE,
+        ATTR_MMD_GRANT_PARENT_INDEX,
+        ATTR_MMD_GRANT_PARENT,
+        ATTR_MMD_GRANT_RATE,
+        ATTR_MMD_FIXED_AXIS,
+        ATTR_MMD_FIXED_AXIS + "X",
+        ATTR_MMD_FIXED_AXIS + "Y",
+        ATTR_MMD_FIXED_AXIS + "Z",
+        ATTR_MMD_AXIS_DIRECTION,
+        ATTR_MMD_LOCAL_X_AXIS,
+        ATTR_MMD_LOCAL_X_AXIS + "X",
+        ATTR_MMD_LOCAL_X_AXIS + "Y",
+        ATTR_MMD_LOCAL_X_AXIS + "Z",
+        ATTR_MMD_X_AXIS_DIRECTION,
+        ATTR_MMD_LOCAL_Z_AXIS,
+        ATTR_MMD_LOCAL_Z_AXIS + "X",
+        ATTR_MMD_LOCAL_Z_AXIS + "Y",
+        ATTR_MMD_LOCAL_Z_AXIS + "Z",
+        ATTR_MMD_Z_AXIS_DIRECTION,
+        ATTR_MMD_EXTERNAL_PARENT_KEY,
+        ATTR_MMD_IK_TARGET_INDEX,
+        ATTR_MMD_IK_TARGET,
+        ATTR_MMD_IK_LOOP,
+        ATTR_MMD_IK_LIMIT_ANGLE,
+        ATTR_MMD_IK_LINKS,
+    )
 
     def __init__(self, cmds_adapter: Any) -> None:
         self._cmds = cmds_adapter
@@ -107,6 +160,78 @@ class MayaSceneMetadataBackend:
             "comment": self._required_string(root, ATTR_MMD_COMMENT),
             "comment_english": self._required_string(root, ATTR_MMD_COMMENT_EN),
         }
+
+    def read_bone_value(
+        self,
+        model_root: str,
+        binding: str,
+        index: int | None = None,
+    ) -> MmdBoneSpec:
+        """Read one selected bone without enumerating model collections."""
+        root = self._material_identity(model_root)
+        joint = self._material_identity(binding)
+        self._require_selected_bone(root, joint, index)
+        data = self._read_bone(joint)
+        flags = int(data["flags"])
+        if flags & PmxBoneFlag.CONNECT_BONE:
+            data["connect_bone_index"] = self._agreed_int_alias(
+                joint,
+                (ATTR_MMD_CONNECT_INDEX, ATTR_MMD_CONNECT_BONE_INDEX),
+                minimum=-1,
+                required=False,
+            )
+            data["tail_offset"] = (0.0, -1.0, 0.0)
+        else:
+            data["tail_offset"] = self._required_vector(joint, ATTR_MMD_BONE_OFFSET)
+        grant_flags = PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE
+        if flags & grant_flags:
+            data["grant_parent_index"] = self._agreed_int_alias(
+                joint, (ATTR_MMD_GRANT_PARENT_INDEX,), minimum=0, required=False
+            )
+            data["grant_ratio"] = self._required_number(joint, ATTR_MMD_GRANT_RATE)
+        if flags & PmxBoneFlag.AXIS_FIXED:
+            data["fixed_axis"] = self._agreed_vector_alias(
+                joint, (ATTR_MMD_FIXED_AXIS, ATTR_MMD_AXIS_DIRECTION)
+            )
+        if flags & PmxBoneFlag.LOCAL_AXIS:
+            data["local_axis_x"] = self._agreed_vector_alias(
+                joint, (ATTR_MMD_LOCAL_X_AXIS, ATTR_MMD_X_AXIS_DIRECTION)
+            )
+            data["local_axis_z"] = self._agreed_vector_alias(
+                joint, (ATTR_MMD_LOCAL_Z_AXIS, ATTR_MMD_Z_AXIS_DIRECTION)
+            )
+        if flags & PmxBoneFlag.EXTERNAL_PARENT_DEFORM:
+            data["external_parent_key"] = self._required_int(joint, ATTR_MMD_EXTERNAL_PARENT_KEY)
+        if flags & PmxBoneFlag.IK:
+            data["ik_target_index"] = self._agreed_int_alias(
+                joint, (ATTR_MMD_IK_TARGET_INDEX,), minimum=0, required=False
+            )
+            data["ik_loop_count"] = self._required_int(joint, ATTR_MMD_IK_LOOP, minimum=0)
+            data["ik_limit_radian"] = self._required_number(joint, ATTR_MMD_IK_LIMIT_ANGLE)
+            raw_links = self._required(joint, ATTR_MMD_IK_LINKS)
+            if isinstance(raw_links, str):
+                try:
+                    raw_links = json.loads(raw_links)
+                except (TypeError, ValueError) as exc:
+                    raise MayaSceneMetadataError(
+                        f"{joint}.{ATTR_MMD_IK_LINKS} must contain JSON list: {exc}"
+                    ) from exc
+            if isinstance(raw_links, (str, bytes, bytearray)) or not isinstance(raw_links, Sequence):
+                raise MayaSceneMetadataError(f"{joint}.{ATTR_MMD_IK_LINKS} must be a JSON/list payload")
+            data["ik_links"] = list(raw_links)
+        return MmdBoneSpec.from_mapping(data)
+
+    def read_morph_value(
+        self,
+        model_root: str,
+        binding: str,
+        index: int | None = None,
+    ) -> MmdMorphSpec:
+        """Read one selected morph binding without enumerating other metadata."""
+        root = self._material_identity(model_root)
+        node = self._material_identity(binding)
+        self._require_selected_morph(root, node, index)
+        return MmdMorphSpec.from_mapping(self._read_morph(node))
 
     def iter_bone_metadata(self, root: str) -> Iterable[Mapping[str, Any]]:
         """Yield canonical PMX bone mappings for tagged descendant joints."""
@@ -188,6 +313,225 @@ class MayaSceneMetadataBackend:
         self._call_adapter("undo_info", openChunk=True, chunkName="MMD Authoring Metadata")
         transaction["chunk_open"] = True
         self._write_transaction = transaction
+
+    def read_material_value(
+        self,
+        model_root: str,
+        binding: str,
+        index: int | None = None,
+    ) -> MmdMaterialSpec:
+        """Read one selected material without enumerating other metadata."""
+        root = self._material_identity(model_root)
+        shader = self._material_identity(binding)
+        members = self._registry_material_members(root)
+        if members is None:
+            raise MayaSceneMetadataError(
+                f"selected material ownership cannot be proven for root {model_root!r}"
+            )
+        if shader not in members:
+            raise MayaSceneMetadataError(
+                f"material binding {binding!r} is not owned by root {model_root!r}"
+            )
+        if index is not None:
+            observed_index = self._required_int(shader, ATTR_MMD_MATERIAL_INDEX, minimum=0)
+            if observed_index != index:
+                raise MayaSceneMetadataError(
+                    f"material binding index mismatch: expected {index}, got {observed_index}"
+                )
+        try:
+            return MmdMaterialSpec.from_mapping(self._read_material(shader))
+        except Exception as exc:
+            raise MayaSceneMetadataError(
+                f"failed to read selected material value for {shader!r}: {exc}"
+            ) from exc
+
+    def read_material_value_by_index(
+        self,
+        model_root: str,
+        index: int,
+    ) -> MmdMaterialSpec:
+        """Read exactly one registry-owned material selected by PMX index."""
+        root = self._material_identity(model_root)
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise MayaSceneMetadataError("material index must be a non-negative integer")
+        members = self._registry_material_members(root)
+        if members is None:
+            raise MayaSceneMetadataError(
+                f"selected material ownership cannot be proven for root {model_root!r}"
+            )
+        matches = []
+        for member in members:
+            shader = self._material_identity(member)
+            if self._required_int(shader, ATTR_MMD_MATERIAL_INDEX, minimum=0) == index:
+                matches.append(shader)
+        if len(matches) != 1:
+            raise MayaSceneMetadataError(
+                f"material index {index} must resolve to exactly one registry binding"
+            )
+        try:
+            return MmdMaterialSpec.from_mapping(self._read_material(matches[0]))
+        except Exception as exc:
+            raise MayaSceneMetadataError(
+                f"failed to read selected material value for index {index}: {exc}"
+            ) from exc
+
+    def next_material_index(self, model_root: str) -> int:
+        """Return the next trailing material index from registry index attrs."""
+        root = self._material_identity(model_root)
+        members = self._registry_material_members(root)
+        if members is None:
+            raise MayaSceneMetadataError(
+                f"material ownership cannot be proven for root {model_root!r}"
+            )
+        indices = [
+            self._required_int(self._material_identity(member), ATTR_MMD_MATERIAL_INDEX, minimum=0)
+            for member in members
+        ]
+        if len(indices) != len(set(indices)):
+            raise MayaSceneMetadataError("material registry contains duplicate indices")
+        return max(indices, default=-1) + 1
+
+    def begin_material_create(self, model_root: str, index: int) -> None:
+        """Open a selected-material-only create transaction."""
+        if self._write_transaction is not None:
+            raise MayaSceneMetadataError("a metadata write transaction is already active")
+        root = self._material_identity(model_root)
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise MayaSceneMetadataError("material index must be a non-negative integer")
+        members = self._registry_material_members(root)
+        if members is None:
+            raise MayaSceneMetadataError(
+                f"material ownership cannot be proven for root {model_root!r}"
+            )
+        indices = [
+            self._required_int(self._material_identity(member), ATTR_MMD_MATERIAL_INDEX, minimum=0)
+            for member in members
+        ]
+        expected_index = max(indices, default=-1) + 1
+        if index != expected_index:
+            raise MayaSceneMetadataError(
+                f"material create index is not trailing: expected {expected_index}, got {index}"
+            )
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError("Maya undo must be enabled for material creation")
+        self._call_adapter(
+            "undo_info", openChunk=True, chunkName="MMD Material Create"
+        )
+        self._write_transaction = {
+            "root": root,
+            "kind": "material_create",
+            "index": index,
+            "original_members": tuple(self._material_identity(member) for member in members),
+            "chunk_open": True,
+        }
+
+    def begin_bone_register(self, model_root: str, bone: MmdBoneSpec) -> None:
+        """Open a selected-joint-only registration transaction."""
+        if self._write_transaction is not None:
+            raise MayaSceneMetadataError("a metadata write transaction is already active")
+        if not isinstance(bone, MmdBoneSpec):
+            raise MayaSceneMetadataError("bone registration requires an MmdBoneSpec")
+        root = self._material_identity(model_root)
+        joint = self._material_identity(bone.binding_identity)
+        registry_members = self._registry_morph_members(root)
+        if registry_members is None:
+            raise MayaSceneMetadataError(
+                f"bone ownership cannot be proven for root {model_root!r}"
+            )
+        self._require_unregistered_selected_bone(root, joint)
+        if bone.index < 0 or bone.parent_index < -1:
+            raise MayaSceneMetadataError("bone registration indices are invalid")
+        descendants = self._call_adapter(
+            "list_relatives", root, allDescendents=True, fullPath=True, type="joint"
+        ) or []
+        indices = [
+            self._required_int(self._material_identity(item), ATTR_MMD_BONE_INDEX, minimum=0)
+            for item in descendants
+            if self._has_attr(self._material_identity(item), ATTR_MMD_BONE_INDEX)
+        ]
+        if len(indices) != len(set(indices)):
+            raise MayaSceneMetadataError("root contains duplicate bone indices")
+        expected_index = max(indices, default=-1) + 1
+        if bone.index != expected_index:
+            raise MayaSceneMetadataError(
+                f"bone registration index is not trailing: expected {expected_index}, got {bone.index}"
+            )
+        original_attrs = {
+            attr: deepcopy(self._call_adapter("get_attr", f"{joint}.{attr}"))
+            for attr in self._BONE_REGISTER_ATTRS
+            if self._has_attr(joint, attr)
+        }
+        if original_attrs:
+            raise MayaSceneMetadataError(
+                f"selected bone has stale registration metadata: {joint!r}"
+            )
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError("Maya undo must be enabled for bone registration")
+        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Bone Register")
+        self._write_transaction = {
+            "root": root,
+            "kind": "bone_register",
+            "binding": joint,
+            "index": bone.index,
+            "registry_members": tuple(registry_members),
+            "original_attrs": original_attrs,
+            "chunk_open": True,
+        }
+
+    def commit_bone_register(self, model_root: str, bone: MmdBoneSpec) -> None:
+        """Strictly verify selected-joint metadata and close its undo chunk."""
+        transaction = self._active_transaction(model_root)
+        if transaction.get("kind") != "bone_register":
+            raise MayaSceneMetadataError("active transaction is not a bone registration")
+        if not isinstance(bone, MmdBoneSpec):
+            raise MayaSceneMetadataError("bone registration commit requires an MmdBoneSpec")
+        joint = self._material_identity(bone.binding_identity)
+        if joint != transaction["binding"] or bone.index != transaction["index"]:
+            raise MayaSceneMetadataError("bone registration commit binding/index mismatch")
+        current_registry = tuple(self._registry_morph_members(transaction["root"]) or ())
+        if current_registry != tuple(transaction["registry_members"]):
+            raise MayaSceneMetadataError("bone registration changed registry ownership")
+        self._require_selected_bone(transaction["root"], joint, bone.index)
+        try:
+            actual = self.read_bone_value(transaction["root"], joint, bone.index)
+        except Exception as exc:
+            raise MayaSceneMetadataError(f"bone registration readback failed: {exc}") from exc
+        if actual.to_mapping() != bone.to_mapping():
+            raise MayaSceneMetadataError(
+                f"bone registration readback mismatch: expected {bone.to_mapping()!r}, got {actual.to_mapping()!r}"
+            )
+        self._call_adapter("undo_info", closeChunk=True)
+        self._write_transaction = None
+
+    def commit_material_create(self, model_root: str, material: MmdMaterialSpec) -> None:
+        """Strictly verify one new shader binding and close its undo chunk."""
+        transaction = self._active_transaction(model_root)
+        if transaction.get("kind") != "material_create":
+            raise MayaSceneMetadataError("active transaction is not a material create")
+        if not isinstance(material, MmdMaterialSpec):
+            raise MayaSceneMetadataError("material create commit requires an MmdMaterialSpec")
+        shader = self._material_identity(material.binding_identity)
+        if material.index != transaction["index"]:
+            raise MayaSceneMetadataError("material create commit index mismatch")
+        members = self._registry_material_members(transaction["root"])
+        if members is None:
+            raise MayaSceneMetadataError("material create registry ownership disappeared")
+        canonical_members = tuple(self._material_identity(member) for member in members)
+        original = tuple(transaction["original_members"])
+        if len(canonical_members) != len(set(canonical_members)) or set(canonical_members) != set(original) | {shader}:
+            raise MayaSceneMetadataError("material create registry membership mismatch")
+        if shader in original:
+            raise MayaSceneMetadataError("material create reused an existing binding")
+        shading_groups = self._list_connections(shader, type="shadingEngine")
+        if len(shading_groups) != 1:
+            raise MayaSceneMetadataError("material create shader must have exactly one shading group")
+        actual = MmdMaterialSpec.from_mapping(self._read_material(shader))
+        if actual.to_mapping() != material.to_mapping():
+            raise MayaSceneMetadataError(
+                f"material create readback mismatch: expected {material.to_mapping()!r}, got {actual.to_mapping()!r}"
+            )
+        self._call_adapter("undo_info", closeChunk=True)
+        self._write_transaction = None
 
     def rebase_write_bindings(
         self,
@@ -412,6 +756,745 @@ class MayaSceneMetadataBackend:
         self._call_adapter("undo_info", closeChunk=True)
         self._write_transaction = None
 
+    def begin_material_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        old_material: MmdMaterialSpec,
+        new_material: MmdMaterialSpec,
+    ) -> None:
+        """Open a selected-shader-only value patch transaction.
+
+        Unlike ``begin_write``, this method never reads model, bone, morph, or
+        other material metadata.  It captures only the patch-safe attribute
+        preimage on the explicitly selected shader; commit and rollback use
+        the same narrow readback for strict verification.
+        """
+        if self._write_transaction is not None:
+            raise MayaSceneMetadataError("a metadata write transaction is already active")
+        root = self._material_identity(model_root)
+        if not isinstance(binding, str) or not binding.strip():
+            raise MayaSceneMetadataError("material value patch binding must be a non-empty string")
+        shader = self._material_identity(binding)
+        if not isinstance(old_material, MmdMaterialSpec) or not isinstance(new_material, MmdMaterialSpec):
+            raise MayaSceneMetadataError("material value patch requires material specs")
+        if old_material.binding_identity != shader or new_material.binding_identity != shader:
+            raise MayaSceneMetadataError("material value patch binding identity mismatch")
+        if old_material.index != new_material.index:
+            raise MayaSceneMetadataError("material value patch cannot change material index")
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError("Maya undo must be enabled for material value patches")
+        original = self._read_material_value_attrs(shader)
+        expected_old = self._material_value_attrs(old_material)
+        if not (old_material.resolved_texture_path or old_material.texture_path):
+            original["base_color"] = self._required_vector(shader, "baseColor")
+            expected_old["base_color"] = self._maya_float3(old_material.diffuse[:3])
+        if original != expected_old:
+            raise MayaSceneMetadataError(
+                f"material value patch preimage mismatch for {shader!r}: "
+                f"expected {expected_old!r}, got {original!r}"
+            )
+        self._call_adapter(
+            "undo_info",
+            openChunk=True,
+            chunkName="MMD Material Value Patch",
+        )
+        self._write_transaction = {
+            "root": root,
+            "kind": "material_value",
+            "binding": shader,
+            "index": old_material.index,
+            "original_values": original,
+            "target_values": self._material_value_attrs(new_material),
+            "target": None,
+            "chunk_open": True,
+        }
+
+    def begin_bone_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        old_bone: MmdBoneSpec,
+        new_bone: MmdBoneSpec,
+    ) -> None:
+        """Open a selected-bone-only value patch transaction."""
+        if self._write_transaction is not None:
+            raise MayaSceneMetadataError("a metadata write transaction is already active")
+        if not isinstance(old_bone, MmdBoneSpec) or not isinstance(new_bone, MmdBoneSpec):
+            raise MayaSceneMetadataError("bone value patch requires bone specs")
+        root = self._material_identity(model_root)
+        joint = self._material_identity(binding)
+        if old_bone.binding_identity != joint or new_bone.binding_identity != joint:
+            raise MayaSceneMetadataError("bone value patch binding identity mismatch")
+        if old_bone.index != new_bone.index:
+            raise MayaSceneMetadataError("bone value patch cannot change bone index")
+        self._require_selected_bone(root, joint, old_bone.index)
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError("Maya undo must be enabled for bone value patches")
+        original = self._read_bone_value_attrs(joint)
+        expected_old = self._bone_value_attrs(old_bone)
+        if original != expected_old:
+            raise MayaSceneMetadataError(
+                f"bone value patch preimage mismatch for {joint!r}: "
+                f"expected {expected_old!r}, got {original!r}"
+            )
+        self._call_adapter(
+            "undo_info",
+            openChunk=True,
+            chunkName="MMD Bone Value Patch",
+        )
+        self._write_transaction = {
+            "root": root,
+            "kind": "bone_value",
+            "binding": joint,
+            "index": old_bone.index,
+            "original_values": original,
+            "target_values": self._bone_value_attrs(new_bone),
+            "chunk_open": True,
+        }
+
+    def begin_morph_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        old_morph: MmdMorphSpec,
+        new_morph: MmdMorphSpec,
+    ) -> None:
+        """Open a selected-morph-only value patch transaction."""
+        if self._write_transaction is not None:
+            raise MayaSceneMetadataError("a metadata write transaction is already active")
+        if not isinstance(old_morph, MmdMorphSpec) or not isinstance(new_morph, MmdMorphSpec):
+            raise MayaSceneMetadataError("morph value patch requires morph specs")
+        root = self._material_identity(model_root)
+        node = self._material_identity(binding)
+        if old_morph.binding_identity != node or new_morph.binding_identity != node:
+            raise MayaSceneMetadataError("morph value patch binding identity mismatch")
+        if old_morph.index != new_morph.index:
+            raise MayaSceneMetadataError("morph value patch cannot change morph index")
+        self._require_selected_morph(root, node, old_morph.index)
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError("Maya undo must be enabled for morph value patches")
+        original = self._morph_value_attrs(MmdMorphSpec.from_mapping(self._read_morph(node)))
+        expected_old = self._morph_value_attrs(old_morph)
+        if original != expected_old:
+            raise MayaSceneMetadataError(
+                f"morph value patch preimage mismatch for {node!r}: "
+                f"expected {expected_old!r}, got {original!r}"
+            )
+        self._call_adapter(
+            "undo_info",
+            openChunk=True,
+            chunkName="MMD Morph Value Patch",
+        )
+        self._write_transaction = {
+            "root": root,
+            "kind": "morph_value",
+            "binding": node,
+            "index": old_morph.index,
+            "original_values": original,
+            "target_values": self._morph_value_attrs(new_morph),
+            "chunk_open": True,
+        }
+
+    def commit_morph_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        morph: MmdMorphSpec,
+    ) -> None:
+        """Strictly read back the selected morph and close its undo chunk."""
+        transaction = self._active_transaction(model_root)
+        if transaction.get("kind") != "morph_value":
+            raise MayaSceneMetadataError("active transaction is not a morph value patch")
+        node = self._material_identity(binding)
+        if node != transaction["binding"] or not isinstance(morph, MmdMorphSpec):
+            raise MayaSceneMetadataError("morph value patch commit binding mismatch")
+        if morph.index != transaction["index"] or morph.binding_identity != node:
+            raise MayaSceneMetadataError("morph value patch commit index/binding mismatch")
+        self._require_selected_morph(transaction["root"], node, transaction["index"])
+        actual = self._morph_value_attrs(MmdMorphSpec.from_mapping(self._read_morph(node)))
+        expected = dict(transaction["target_values"])
+        if actual != expected:
+            raise MayaSceneMetadataError(
+                f"morph value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
+            )
+        self._call_adapter("undo_info", closeChunk=True)
+        self._write_transaction = None
+
+    @staticmethod
+    def _morph_value_attrs(morph: MmdMorphSpec) -> dict[str, Any]:
+        """Project a morph into the selected-binding transaction payload."""
+        return {
+            "name": morph.name,
+            "name_english": morph.name_english,
+            "index": morph.index,
+            "panel": morph.panel,
+            "morph_type": morph.morph_type,
+            "offsets": morph.to_mapping()["offsets"],
+            "runtime_capability": morph.runtime_capability,
+            "loss_policy": morph.loss_policy,
+        }
+
+    def commit_bone_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        bone: MmdBoneSpec,
+    ) -> None:
+        """Strictly read back the selected bone and close its undo chunk."""
+        transaction = self._active_transaction(model_root)
+        if transaction.get("kind") != "bone_value":
+            raise MayaSceneMetadataError("active transaction is not a bone value patch")
+        joint = self._material_identity(binding)
+        if joint != transaction["binding"] or not isinstance(bone, MmdBoneSpec):
+            raise MayaSceneMetadataError("bone value patch commit binding mismatch")
+        if bone.index != transaction["index"] or bone.binding_identity != joint:
+            raise MayaSceneMetadataError("bone value patch commit index/binding mismatch")
+        self._require_selected_bone(transaction["root"], joint, transaction["index"])
+        actual = self._read_bone_value_attrs(joint)
+        expected = dict(transaction["target_values"])
+        if actual != expected:
+            raise MayaSceneMetadataError(
+                f"bone value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
+            )
+        self._call_adapter("undo_info", closeChunk=True)
+        self._write_transaction = None
+
+    @staticmethod
+    def _bone_value_attrs(bone: MmdBoneSpec) -> dict[str, Any]:
+        """Project a bone into the explicit narrow transaction fields."""
+        return {
+            "name": bone.name,
+            "name_english": bone.name_english,
+            "transform_layer": bone.transform_layer,
+            "flags": bone.flags,
+            "rest_position": tuple(bone.rest_position),
+            "fixed_axis": None if bone.fixed_axis is None else tuple(bone.fixed_axis),
+            "local_axis_x": None if bone.local_axis_x is None else tuple(bone.local_axis_x),
+            "local_axis_z": None if bone.local_axis_z is None else tuple(bone.local_axis_z),
+        }
+
+    def _read_bone_value_attrs(self, joint: str) -> dict[str, Any]:
+        """Read only patch-safe semantic attrs from one selected joint."""
+        flags = self._required_int(joint, ATTR_MMD_BONE_FLAGS, minimum=0)
+
+        def optional_axis(attrs: tuple[str, ...]) -> tuple[float, float, float] | None:
+            present = [attr for attr in attrs if self._has_attr(joint, attr)]
+            if not present:
+                return None
+            return self._agreed_vector_alias(joint, attrs)
+
+        return {
+            "name": self._required_string(joint, ATTR_MMD_BONE_NAME),
+            "name_english": self._required_string(joint, ATTR_MMD_BONE_NAME_EN),
+            "transform_layer": self._required_int(joint, ATTR_MMD_DEFORM_LAYER, minimum=0),
+            "flags": flags,
+            "rest_position": self._required_vector(joint, ATTR_MMD_PMX_REST_POSITION),
+            "fixed_axis": (
+                optional_axis((ATTR_MMD_FIXED_AXIS, ATTR_MMD_AXIS_DIRECTION))
+                if flags & PmxBoneFlag.AXIS_FIXED
+                else None
+            ),
+            "local_axis_x": (
+                optional_axis((ATTR_MMD_LOCAL_X_AXIS, ATTR_MMD_X_AXIS_DIRECTION))
+                if flags & PmxBoneFlag.LOCAL_AXIS
+                else None
+            ),
+            "local_axis_z": (
+                optional_axis((ATTR_MMD_LOCAL_Z_AXIS, ATTR_MMD_Z_AXIS_DIRECTION))
+                if flags & PmxBoneFlag.LOCAL_AXIS
+                else None
+            ),
+        }
+
+    def commit_material_value_patch(
+        self,
+        model_root: str,
+        binding: str,
+        material: MmdMaterialSpec,
+    ) -> None:
+        """Strictly read back the selected shader and close its undo chunk."""
+        transaction = self._active_transaction(model_root)
+        if transaction.get("kind") != "material_value":
+            raise MayaSceneMetadataError("active transaction is not a material value patch")
+        shader = self._material_identity(binding)
+        if shader != transaction["binding"] or material.binding_identity != shader:
+            raise MayaSceneMetadataError("material value patch commit binding mismatch")
+        actual = self._read_material_value_attrs(shader)
+        expected = dict(transaction["target_values"])
+        if "base_color" in transaction["original_values"]:
+            actual["base_color"] = self._required_vector(shader, "baseColor")
+            expected["base_color"] = self._maya_float3(material.diffuse[:3])
+        if actual != expected:
+            raise MayaSceneMetadataError(
+                f"material value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
+            )
+        self._call_adapter("undo_info", closeChunk=True)
+        self._write_transaction = None
+
+    @staticmethod
+    def _material_value_attrs(material: MmdMaterialSpec) -> dict[str, Any]:
+        """Project a material into the explicit narrow transaction fields."""
+        return {
+            "name": material.name,
+            "name_english": material.name_english,
+            "diffuse": tuple(material.diffuse),
+            "specular": tuple(material.specular),
+            "specular_coefficient": material.specular_coefficient,
+            "ambient": tuple(material.ambient),
+            "draw_flags": material.draw_flags,
+            "edge_flag": bool(material.draw_flags & 0x10),
+            "edge_color": tuple(material.edge_color),
+            "edge_size": material.edge_size,
+            "memo": material.memo,
+        }
+
+    @staticmethod
+    def _maya_float3(values: Sequence[float]) -> tuple[float, float, float]:
+        """Canonicalize Python doubles to Maya ``float3`` storage precision."""
+        converted = tuple(
+            struct.unpack("=f", struct.pack("=f", float(value)))[0]
+            for value in values
+        )
+        if len(converted) != 3:
+            raise MayaSceneMetadataError("Maya float3 values must contain exactly three numbers")
+        return converted
+
+    def _read_material_value_attrs(self, shader: str) -> dict[str, Any]:
+        """Read only patch-safe semantic attrs from one shader binding."""
+        draw_flags = self._required_int(shader, ATTR_MMD_DRAW_FLAGS, minimum=0)
+        edge_flag = (
+            bool(self._required(shader, ATTR_MMD_EDGE_FLAG))
+            if self._has_attr(shader, ATTR_MMD_EDGE_FLAG)
+            else bool(draw_flags & 0x10)
+        )
+        return {
+            "name": self._required_string(shader, ATTR_MMD_MATERIAL_NAME),
+            "name_english": self._required_string(shader, ATTR_MMD_MATERIAL_NAME_EN),
+            "diffuse": self._required_vector_with_alpha(shader, ATTR_MMD_DIFFUSE_COLOR, self._DIFFUSE_ALPHA),
+            "specular": self._required_vector(shader, ATTR_MMD_SPECULAR_COLOR),
+            "specular_coefficient": self._required_number(shader, ATTR_MMD_SHININESS),
+            "ambient": self._required_vector(shader, ATTR_MMD_AMBIENT_COLOR),
+            "draw_flags": draw_flags,
+            "edge_flag": edge_flag,
+            "edge_color": self._required_vector_with_alpha(shader, ATTR_MMD_EDGE_COLOR, self._EDGE_ALPHA),
+            "edge_size": self._required_number(shader, ATTR_MMD_EDGE_SIZE),
+            "memo": self._required_string(shader, ATTR_MMD_MEMO),
+        }
+
+    def commit_material_reindex(
+        self,
+        model_root: str,
+        spec: MmdModelAuthoringSpec,
+    ) -> None:
+        """Verify and close a narrow adjacent-material undo transaction.
+
+        The resulting semantic specification is used only as the commit
+        verification target.  This intentionally bypasses all full metadata
+        write hooks; the material adapter has already written the two index
+        attributes and changed Material Morph JSON values in this chunk.
+        """
+        transaction = self._active_transaction(model_root)
+        if not isinstance(spec, MmdModelAuthoringSpec):
+            raise MayaSceneMetadataError("spec must be an MmdModelAuthoringSpec")
+        target = spec.to_mapping()
+        transaction["target"] = target
+        try:
+            actual = SceneMetadataAdapter(self).read_spec(model_root).fingerprint()
+            expected = MmdModelAuthoringSpec.from_mapping(target).fingerprint()
+        except Exception as exc:
+            raise MayaSceneMetadataError(
+                f"failed to verify material reindex transaction: {exc}"
+            ) from exc
+        if actual != expected:
+            raise MayaSceneMetadataError(
+                f"material reindex transaction fingerprint mismatch: expected {expected}, got {actual}"
+            )
+        self._call_adapter("undo_info", closeChunk=True)
+        self._write_transaction = None
+
+    def begin_morph_reindex(
+        self,
+        model_root: str,
+        index: int,
+        new_position: int,
+    ) -> None:
+        """Open a narrow adjacent-morph reindex transaction."""
+        if self._write_transaction is not None:
+            raise MayaSceneMetadataError("a metadata write transaction is already active")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise MayaSceneMetadataError("morph index must be a non-negative integer")
+        if isinstance(new_position, bool) or not isinstance(new_position, int) or new_position < 0:
+            raise MayaSceneMetadataError("new_position must be a non-negative integer")
+        if abs(index - new_position) != 1:
+            raise MayaSceneMetadataError("morph reindex requires an adjacent swap")
+        self._require_root(model_root)
+        root = self._material_identity(model_root)
+        original = self._capture_morph_reindex_state(root)
+        indices = {value["index"] for value in original["morphs"].values()}
+        if len(indices) != len(original["morphs"]) or indices != set(range(len(indices))):
+            raise MayaSceneMetadataError("morph indices must be a contiguous registry-owned range")
+        if index not in indices or new_position not in indices:
+            raise MayaSceneMetadataError("morph reindex selected indices are not registry-owned")
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError("Maya undo must be enabled for morph reindex")
+        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Morph Reindex")
+        self._write_transaction = {
+            "root": root,
+            "kind": "morph_reindex",
+            "index": index,
+            "new_position": new_position,
+            "original_values": original,
+            "chunk_open": True,
+        }
+
+    def begin_morph_create(self, model_root: str, morph: MmdMorphSpec) -> int:
+        """Begin a narrow empty-offset morph creation transaction."""
+        if self._write_transaction is not None:
+            raise MayaSceneMetadataError("a metadata write transaction is already active")
+        if not isinstance(morph, MmdMorphSpec):
+            raise MayaSceneMetadataError("morph must be an MmdMorphSpec")
+        if morph.binding_identity is not None or morph.offsets:
+            raise MayaSceneMetadataError("morph creation requires an unbound empty-offset morph")
+        self._require_root(model_root)
+        root = self._material_identity(model_root)
+        original = self._capture_morph_create_state(root)
+        new_index = len(original["morphs"])
+        if set(original["morphs"].values()) != set(range(new_index)):
+            raise MayaSceneMetadataError("morph indices must be a contiguous registry-owned range")
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError("Maya undo must be enabled for morph creation")
+        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Morph Create")
+        self._write_transaction = {
+            "root": root,
+            "kind": "morph_create",
+            "index": new_index,
+            "original_values": original,
+            "chunk_open": True,
+        }
+        return new_index
+
+    def commit_morph_create(self, model_root: str, morph: MmdMorphSpec) -> None:
+        """Verify and close a narrow morph creation transaction."""
+        transaction = self._active_transaction(model_root)
+        if transaction.get("kind") != "morph_create":
+            raise MayaSceneMetadataError("active transaction is not a morph creation")
+        if not isinstance(morph, MmdMorphSpec) or morph.binding_identity is None:
+            raise MayaSceneMetadataError("morph creation result is invalid")
+        if morph.index != transaction["index"] or morph.offsets:
+            raise MayaSceneMetadataError("morph creation result does not match preimage")
+        actual = self._capture_morph_create_state(transaction["root"])
+        original = transaction["original_values"]
+        binding = self._material_identity(morph.binding_identity)
+        expected_members = tuple(original["members"]) + (binding,)
+        if actual["members"] != expected_members:
+            raise MayaSceneMetadataError("morph creation registry membership/order mismatch")
+        if set(actual["morphs"]) != set(original["morphs"]) | {binding}:
+            raise MayaSceneMetadataError("morph creation registry membership mismatch")
+        for node, index in original["morphs"].items():
+            if actual["morphs"].get(node) != index:
+                raise MayaSceneMetadataError("existing morph binding changed during creation")
+        if actual["morphs"].get(binding) != morph.index:
+            raise MayaSceneMetadataError("created morph index readback mismatch")
+        if self._required_string(binding, "mmd_morph_name") != morph.name:
+            raise MayaSceneMetadataError("created morph name readback mismatch")
+        if self._required_string(binding, "mmd_morph_name_en") != morph.name_english:
+            raise MayaSceneMetadataError("created morph English name readback mismatch")
+        if self._required_string(binding, "mmd_morph_type") != morph.morph_type:
+            raise MayaSceneMetadataError("created morph type readback mismatch")
+        if self._required_int(binding, "mmd_morph_panel") != morph.panel:
+            raise MayaSceneMetadataError("created morph panel readback mismatch")
+        if actual["controller"] != original["controller"]:
+            if original["controller"] is not None:
+                raise MayaSceneMetadataError("existing morph controller changed during creation")
+        if original["controller"] is not None and original.get("topology") != actual.get("topology"):
+            raise MayaSceneMetadataError("existing morph controller topology changed during creation")
+        new_slot = actual["slots"].get(morph.index)
+        if new_slot is None:
+            raise MayaSceneMetadataError("created morph controller slot is missing")
+        if morph.morph_type != "vertex" and f"{binding}.weight" not in new_slot["destinations"]:
+            raise MayaSceneMetadataError("created morph controller output readback mismatch")
+        if original["controller"] is not None:
+            for index, slot in original["slots"].items():
+                if actual["slots"].get(index) != slot:
+                    raise MayaSceneMetadataError("existing morph controller slot changed during creation")
+            for index, alias in original["aliases"].items():
+                if actual["aliases"].get(index) != alias:
+                    raise MayaSceneMetadataError("existing morph controller alias changed during creation")
+        if actual["aliases"].get(morph.index) != f"morph_{morph.index}":
+            raise MayaSceneMetadataError("created morph controller alias readback mismatch")
+        self._call_adapter("undo_info", closeChunk=True)
+        self._write_transaction = None
+
+    def _capture_morph_create_state(self, root: str) -> dict[str, Any]:
+        members = self._registry_morph_members(root)
+        if members is None:
+            raise MayaSceneMetadataError("morph creation requires a model registry")
+        canonical_members = tuple(self._material_identity(member) for member in members)
+        if len(set(canonical_members)) != len(canonical_members):
+            raise MayaSceneMetadataError("morph registry contains duplicate binding identities")
+        morphs: dict[str, int] = {}
+        for binding in canonical_members:
+            if self._node_type(binding) != "network":
+                raise MayaSceneMetadataError(f"morph binding {binding!r} must be a network node")
+            morphs[binding] = self._required_int(binding, "mmd_morph_index", minimum=0)
+        controllers = self._list_connections(
+            f"{root}.mmd_morph_controller", source=True, destination=False
+        ) if self._has_attr(root, "mmd_morph_controller") else []
+        if len(controllers) > 1:
+            raise MayaSceneMetadataError("morph controller connection is ambiguous")
+        controller = self._material_identity(controllers[0]) if controllers else None
+        slots: dict[int, Any] = {}
+        aliases: dict[int, str | None] = {}
+        if controller is not None:
+            for index in sorted(morphs.values()):
+                input_plug = f"{controller}.inputWeight[{index}]"
+                output_plug = f"{controller}.outputWeight[{index}]"
+                incoming = tuple(self._list_connections(input_plug, source=True, destination=False, plugs=True))
+                if len(incoming) > 1:
+                    raise MayaSceneMetadataError(f"{input_plug} has ambiguous incoming connections")
+                slots[index] = {
+                    "source": incoming[0] if incoming else None,
+                    "value": self._required_input_weight(controller, index),
+                    "destinations": tuple(
+                        self._list_connections(output_plug, source=False, destination=True, plugs=True)
+                    ),
+                }
+            aliases = self._capture_morph_controller_aliases(controller, slots)
+        topology = None
+        if controller is not None and self._has_attr(controller, "groupTopology"):
+            raw_topology = self._call_adapter("get_attr", f"{controller}.groupTopology")
+            if raw_topology is not None and not isinstance(raw_topology, str):
+                raise MayaSceneMetadataError(
+                    f"{controller}.groupTopology must be an exact string or None"
+                )
+            topology = raw_topology
+        return {
+            "members": canonical_members,
+            "morphs": morphs,
+            "controller": controller,
+            "slots": slots,
+            "aliases": aliases,
+            "topology": topology,
+        }
+
+    def commit_morph_reindex(
+        self,
+        model_root: str,
+        result: Any,
+    ) -> None:
+        """Verify an adjacent morph swap and close its undo chunk."""
+        transaction = self._active_transaction(model_root)
+        if transaction.get("kind") != "morph_reindex":
+            raise MayaSceneMetadataError("active transaction is not a morph reindex")
+        if not hasattr(result, "swapped_indices"):
+            raise MayaSceneMetadataError("morph reindex commit result is invalid")
+        raw_swapped = result.swapped_indices
+        if (
+            not isinstance(raw_swapped, tuple)
+            or len(raw_swapped) != 2
+            or any(isinstance(value, bool) or not isinstance(value, int) for value in raw_swapped)
+        ):
+            raise MayaSceneMetadataError("morph reindex commit indices are invalid")
+        swapped = raw_swapped
+        if swapped != (transaction["index"], transaction["new_position"]):
+            raise MayaSceneMetadataError("morph reindex commit indices do not match preimage")
+        actual = self._capture_morph_reindex_state(transaction["root"])
+        expected = self._expected_morph_reindex_state(transaction["original_values"], swapped)
+        if actual != expected:
+            raise MayaSceneMetadataError("morph reindex fingerprint mismatch")
+        self._call_adapter("undo_info", closeChunk=True)
+        self._write_transaction = None
+
+    def _capture_morph_reindex_state(self, root: str) -> dict[str, Any]:
+        members = self._registry_morph_members(root)
+        if members is None:
+            raise MayaSceneMetadataError("morph reindex requires a model registry")
+        canonical_members = tuple(sorted(self._material_identity(member) for member in members))
+        morphs: dict[str, dict[str, Any]] = {}
+        for binding in canonical_members:
+            if self._node_type(binding) != "network":
+                raise MayaSceneMetadataError(f"morph binding {binding!r} must be a network node")
+            morph_type = self._required_string(binding, "mmd_morph_type")
+            payload = None
+            if morph_type in {"group", "flip"}:
+                attr = {
+                    "group": "mmd_group_morph_offsets_json",
+                    "flip": ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
+                }[morph_type]
+                payload = self._required_string(binding, attr)
+            morphs[binding] = {
+                "index": self._required_int(binding, "mmd_morph_index", minimum=0),
+                "morph_type": morph_type,
+                "payload": payload,
+            }
+        controllers = self._list_connections(
+            f"{root}.mmd_morph_controller", source=True, destination=False
+        )
+        if len(controllers) != 1:
+            raise MayaSceneMetadataError("morph reindex requires one morph controller")
+        controller = self._material_identity(controllers[0])
+        slots: dict[int, Any] = {}
+        for index in sorted(value["index"] for value in morphs.values()):
+            input_plug = f"{controller}.inputWeight[{index}]"
+            output_plug = f"{controller}.outputWeight[{index}]"
+            sources = tuple(self._list_connections(input_plug, source=True, destination=False, plugs=True))
+            if len(sources) > 1:
+                raise MayaSceneMetadataError(f"{input_plug} has ambiguous sources")
+            slots[index] = {
+                "source": sources[0] if sources else None,
+                "value": self._required_input_weight(controller, index),
+                "destinations": tuple(self._list_connections(output_plug, source=False, destination=True, plugs=True)),
+            }
+        return {
+            "members": canonical_members,
+            "morphs": morphs,
+            "controller": controller,
+            "slots": slots,
+            "topology": self._optional_string(controller, "groupTopology"),
+            "display": self._optional_string(root, ATTR_MMD_DISPLAY_FRAMES_JSON),
+            "aliases": self._capture_morph_controller_aliases(controller, slots),
+            "runtime": self._capture_morph_runtime_state(morphs),
+        }
+
+    def _capture_morph_controller_aliases(
+        self, controller: str, slots: Mapping[int, Mapping[str, Any]]
+    ) -> dict[int, str | None]:
+        """Capture aliases for the two controller inputs being reindexed.
+
+        Alias state is part of the controller slot identity.  Missing aliases
+        are represented as ``None``; duplicate aliases or malformed query
+        payloads fail closed before any write occurs.
+        """
+        try:
+            raw = self._call_adapter("alias_attr", controller, query=True) or ()
+        except MayaSceneMetadataError:
+            raise
+        if isinstance(raw, (str, bytes, bytearray)) or len(raw) % 2:
+            raise MayaSceneMetadataError("morph controller aliases must be alias/plug pairs")
+        by_plug: dict[str, str] = {}
+        by_alias: set[str] = set()
+        for offset in range(0, len(raw), 2):
+            alias, plug = raw[offset], raw[offset + 1]
+            if not isinstance(alias, str) or not isinstance(plug, str):
+                raise MayaSceneMetadataError("morph controller aliases must be strings")
+            plug_text = plug.rsplit(".", 1)[-1]
+            if not plug_text.startswith("inputWeight["):
+                continue
+            if plug_text in by_plug or alias in by_alias:
+                raise MayaSceneMetadataError("morph controller input aliases are ambiguous")
+            by_plug[plug_text] = alias
+            by_alias.add(alias)
+        return {
+            index: by_plug.get(f"inputWeight[{index}]")
+            for index in slots
+        }
+
+    def _capture_morph_runtime_state(
+        self, morphs: Mapping[str, Mapping[str, Any]]
+    ) -> tuple[dict[str, Any], ...]:
+        """Read selected evaluator contributions through morph weight outputs."""
+        captured: list[dict[str, Any]] = []
+        evaluator_types = {"mmdBoneMorphAccum", "mmdMaterialMorphEval"}
+        for binding, value in morphs.items():
+            destinations = self._list_connections(
+                f"{binding}.weight",
+                source=False,
+                destination=True,
+                plugs=True,
+            )
+            for destination in destinations:
+                if not isinstance(destination, str):
+                    continue
+                match = re.fullmatch(
+                    r"(?P<node>.+)\.contribution\[(?P<slot>\d+)\]\.weight",
+                    destination,
+                )
+                if match is None:
+                    continue
+                node = match.group("node")
+                if self._node_type(node) not in evaluator_types:
+                    continue
+                slot = int(match.group("slot"))
+                order = self._required_runtime_morph_order(node, slot)
+                expected = value["index"]
+                if order != expected:
+                    raise MayaSceneMetadataError(
+                        f"{destination!r} morphOrder mismatch: expected {expected}, got {order}"
+                    )
+                captured.append({"node": node, "slot": slot, "morph_order": order})
+        return tuple(captured)
+
+    def _optional_string(self, node: str, attr: str) -> str | None:
+        if not self._has_attr(node, attr):
+            return None
+        return self._required_string(node, attr)
+
+    def _required_input_weight(self, controller: str, index: int) -> float:
+        """Read a multi attribute element without attributeQuery on the array."""
+        try:
+            value = self._call_adapter("get_attr", f"{controller}.inputWeight[{index}]")
+        except MayaSceneMetadataError as exc:
+            raise MayaSceneMetadataError(
+                f"{controller}.inputWeight[{index}] is required"
+            ) from exc
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise MayaSceneMetadataError(
+                f"{controller}.inputWeight[{index}] must be a finite number"
+            )
+        return float(value)
+
+    def _required_runtime_morph_order(self, node: str, slot: int) -> int:
+        """Read a contribution array element directly from Maya."""
+        try:
+            value = self._call_adapter(
+                "get_attr", f"{node}.contribution[{slot}].morphOrder"
+            )
+        except MayaSceneMetadataError as exc:
+            raise MayaSceneMetadataError(
+                f"{node}.contribution[{slot}].morphOrder is required"
+            ) from exc
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise MayaSceneMetadataError(
+                f"{node}.contribution[{slot}].morphOrder must be a non-negative integer"
+            )
+        return value
+
+    @staticmethod
+    def _expected_morph_reindex_state(original: Mapping[str, Any], swapped: tuple[int, int]) -> dict[str, Any]:
+        first, second = swapped
+        swap = {first: second, second: first}
+        expected = deepcopy(original)
+        for value in expected["morphs"].values():
+            value["index"] = swap.get(value["index"], value["index"])
+        slots = expected["slots"]
+        expected["slots"] = {
+            swap.get(index, index): value
+            for index, value in slots.items()
+        }
+        aliases = expected.get("aliases")
+        if isinstance(aliases, dict):
+            expected["aliases"] = {
+                swap.get(index, index): value
+                for index, value in aliases.items()
+            }
+        if expected["topology"]:
+            expected["topology"] = _swap_morph_json(
+                expected["topology"], swap, "topology"
+            )
+        if expected["display"]:
+            expected["display"] = _swap_morph_json(
+                expected["display"], swap, "display"
+            )
+        for value in expected["morphs"].values():
+            if value["payload"]:
+                value["payload"] = _swap_morph_json(
+                    value["payload"], swap, value["morph_type"]
+                )
+        for value in expected.get("runtime", ()):
+            value["morph_order"] = swap.get(value["morph_order"], value["morph_order"])
+        return expected
+
     def rollback_write(self, model_root: str) -> None:
         transaction = self._active_transaction(model_root)
         try:
@@ -421,6 +1504,66 @@ class MayaSceneMetadataBackend:
             self._call_adapter("undo")
         finally:
             self._write_transaction = None
+        if transaction.get("kind") == "bone_value":
+            self._require_selected_bone(
+                transaction["root"], transaction["binding"], transaction["index"]
+            )
+            actual = self._read_bone_value_attrs(transaction["binding"])
+            if actual != transaction["original_values"]:
+                raise MayaSceneMetadataError("bone value patch rollback fingerprint mismatch")
+            return
+        if transaction.get("kind") == "bone_register":
+            members = tuple(self._registry_morph_members(transaction["root"]) or ())
+            if members != tuple(transaction["registry_members"]):
+                raise MayaSceneMetadataError("bone registration rollback registry mismatch")
+            self._require_unregistered_selected_bone(
+                transaction["root"], transaction["binding"]
+            )
+            actual_attrs = {
+                attr: deepcopy(self._call_adapter("get_attr", f"{transaction['binding']}.{attr}"))
+                for attr in self._BONE_REGISTER_ATTRS
+                if self._has_attr(transaction["binding"], attr)
+            }
+            if actual_attrs != transaction["original_attrs"]:
+                raise MayaSceneMetadataError("bone registration rollback preimage mismatch")
+            return
+        if transaction.get("kind") == "material_value":
+            actual = self._read_material_value_attrs(transaction["binding"])
+            if "base_color" in transaction["original_values"]:
+                actual["base_color"] = self._required_vector(
+                    transaction["binding"], "baseColor"
+                )
+            if actual != transaction["original_values"]:
+                raise MayaSceneMetadataError("material value patch rollback fingerprint mismatch")
+            return
+        if transaction.get("kind") == "material_create":
+            members = self._registry_material_members(transaction["root"])
+            if members is None:
+                raise MayaSceneMetadataError("material create rollback registry ownership disappeared")
+            actual = tuple(self._material_identity(member) for member in members)
+            if actual != tuple(transaction["original_members"]):
+                raise MayaSceneMetadataError("material create rollback registry mismatch")
+            return
+        if transaction.get("kind") == "morph_value":
+            self._require_selected_morph(
+                transaction["root"], transaction["binding"], transaction["index"]
+            )
+            actual = self._morph_value_attrs(
+                MmdMorphSpec.from_mapping(self._read_morph(transaction["binding"]))
+            )
+            if actual != transaction["original_values"]:
+                raise MayaSceneMetadataError("morph value patch rollback fingerprint mismatch")
+            return
+        if transaction.get("kind") == "morph_reindex":
+            actual = self._capture_morph_reindex_state(transaction["root"])
+            if actual != transaction["original_values"]:
+                raise MayaSceneMetadataError("morph reindex rollback fingerprint mismatch")
+            return
+        if transaction.get("kind") == "morph_create":
+            actual = self._capture_morph_create_state(transaction["root"])
+            if actual != transaction["original_values"]:
+                raise MayaSceneMetadataError("morph creation rollback fingerprint mismatch")
+            return
         actual = SceneMetadataAdapter(self).read_spec(model_root).fingerprint()
         if actual != transaction["original_fingerprint"]:
             raise MayaSceneMetadataError("metadata rollback fingerprint mismatch")
@@ -1218,6 +2361,124 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(f"failed to inspect root {root!r}: {exc}") from exc
         if not exists:
             raise MayaSceneMetadataError(f"model root does not exist: {root!r}")
+
+    def _require_selected_bone(self, root: str, joint: str, index: int | None) -> int:
+        """Validate selected-joint ownership using only root/path/index attrs."""
+        if not self._call_adapter("object_exists", joint):
+            raise MayaSceneMetadataError(f"selected bone does not exist: {joint!r}")
+        if joint == root or not joint.startswith(root.rstrip("|") + "|"):
+            raise MayaSceneMetadataError(f"selected bone {joint!r} is not owned by root {root!r}")
+        observed = self._required_int(joint, ATTR_MMD_BONE_INDEX, minimum=0)
+        if index is not None and observed != index:
+            raise MayaSceneMetadataError(
+                f"selected bone index mismatch: expected {index}, got {observed}"
+            )
+        return observed
+
+    def _require_unregistered_selected_bone(self, root: str, joint: str) -> None:
+        """Validate selected-joint ownership before adding bone metadata."""
+        if not self._call_adapter("object_exists", joint):
+            raise MayaSceneMetadataError(f"selected bone does not exist: {joint!r}")
+        if joint == root or not joint.startswith(root.rstrip("|") + "|"):
+            raise MayaSceneMetadataError(f"selected bone {joint!r} is not owned by root {root!r}")
+        if self._has_attr(joint, ATTR_MMD_BONE_INDEX):
+            raise MayaSceneMetadataError(f"selected bone is already registered: {joint!r}")
+
+    def _require_selected_morph(self, root: str, node: str, index: int | None) -> int:
+        """Validate selected morph ownership using only registry/index attrs."""
+        if not self._call_adapter("object_exists", node):
+            raise MayaSceneMetadataError(f"selected morph does not exist: {node!r}")
+        if self._node_type(node) != "network":
+            raise MayaSceneMetadataError(f"selected morph binding must be a network node: {node!r}")
+        canonical = self._material_identity(node)
+        if self._has_attr(root, ATTR_MMD_MODEL_REGISTRY):
+            members = self._registry_morph_members(root) or []
+            owned = {self._material_identity(member) for member in members}
+            if canonical not in owned:
+                raise MayaSceneMetadataError(f"selected morph {node!r} is not owned by root {root!r}")
+        else:
+            if not self._has_attr(node, ATTR_MMD_MODEL_ROOT):
+                raise MayaSceneMetadataError(f"selected morph {node!r} has no explicit root ownership")
+            roots = self._list_connections(
+                f"{node}.{ATTR_MMD_MODEL_ROOT}", source=True, destination=False
+            )
+            if len(roots) != 1 or self._material_identity(roots[0]) != root:
+                raise MayaSceneMetadataError(f"selected morph {node!r} is not owned by root {root!r}")
+        observed = self._required_int(node, "mmd_morph_index", minimum=0)
+        if index is not None and observed != index:
+            raise MayaSceneMetadataError(
+                f"selected morph index mismatch: expected {index}, got {observed}"
+            )
+        return observed
+
+
+def _swap_morph_json(raw: str, swap: Mapping[int, int], kind: str) -> str:
+    """Remap one known morph-reference JSON payload without generic guessing."""
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise MayaSceneMetadataError(f"{kind} metadata contains invalid JSON: {exc}") from exc
+    if kind in {"group", "flip"}:
+        if not isinstance(value, list):
+            raise MayaSceneMetadataError(f"{kind} metadata must contain a JSON list")
+        for offset in value:
+            if not isinstance(offset, Mapping) or "morph_index" not in offset:
+                raise MayaSceneMetadataError(f"{kind} offset must contain morph_index")
+            index = offset["morph_index"]
+            if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+                raise MayaSceneMetadataError(f"{kind} morph_index must be a non-negative integer")
+            offset["morph_index"] = swap.get(index, index)
+    elif kind == "topology":
+        if not isinstance(value, Mapping):
+            raise MayaSceneMetadataError("groupTopology must contain a JSON object")
+        remapped: dict[str, Any] = {}
+        for target, sources in value.items():
+            if isinstance(target, bool) or not isinstance(target, (str, int)):
+                raise MayaSceneMetadataError("groupTopology target must be an integer key")
+            try:
+                target_index = int(target)
+            except (TypeError, ValueError) as exc:
+                raise MayaSceneMetadataError("groupTopology target must be an integer key") from exc
+            if target_index < 0 or not isinstance(sources, list):
+                raise MayaSceneMetadataError("groupTopology payload is malformed")
+            output: list[list[Any]] = []
+            for source in sources:
+                if not isinstance(source, list) or len(source) != 2:
+                    raise MayaSceneMetadataError("groupTopology source must be [index, rate]")
+                source_index = source[0]
+                if isinstance(source_index, bool) or not isinstance(source_index, int) or source_index < 0:
+                    raise MayaSceneMetadataError("groupTopology source index must be a non-negative integer")
+                output.append([swap.get(source_index, source_index), source[1]])
+            remapped[str(swap.get(target_index, target_index))] = output
+        value = remapped
+    elif kind == "display":
+        if not isinstance(value, list):
+            raise MayaSceneMetadataError("display frame metadata must contain a JSON list")
+        for frame in value:
+            if not isinstance(frame, Mapping):
+                raise MayaSceneMetadataError("display frame entry must be a mapping")
+            elements = frame.get("elements", [])
+            if not isinstance(elements, list):
+                raise MayaSceneMetadataError("display frame elements must be a list")
+            for element in elements:
+                if not isinstance(element, Mapping):
+                    raise MayaSceneMetadataError("display frame element must be a mapping")
+                element_type = element.get("type")
+                element_index = element.get("index")
+                if (
+                    isinstance(element_type, bool)
+                    or not isinstance(element_type, int)
+                    or element_type not in {0, 1}
+                    or isinstance(element_index, bool)
+                    or not isinstance(element_index, int)
+                    or element_index < 0
+                ):
+                    raise MayaSceneMetadataError("display frame element type/index is malformed")
+                if element_type == 1:
+                    element["index"] = swap.get(element_index, element_index)
+    else:
+        raise MayaSceneMetadataError(f"unsupported morph JSON kind: {kind!r}")
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 __all__ = ["MayaSceneMetadataError", "MayaSceneMetadataBackend"]

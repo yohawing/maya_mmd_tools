@@ -478,9 +478,96 @@ bool MmdRenderShape::updateMaterialAlpha(std::size_t materialIndex,
         item.material = *material;
         reordered.push_back(std::move(item));
     }
+    if (reordered.size() != geometry_.queueGeometry.size()) {
+        return false;
+    }
 
     geometry_.queueInputs = std::move(nextInputs);
     geometry_.renderQueue = nextQueue;
+    geometry_.queueGeometry = std::move(reordered);
+    clearRenderItemWitness();
+    clearMaterialBindingDiagnostics();
+    return true;
+}
+
+bool MmdRenderShape::reindexMaterialQueue(std::size_t firstIndex,
+                                           std::size_t secondIndex)
+{
+    if (firstIndex == secondIndex ||
+        (firstIndex < secondIndex ? secondIndex - firstIndex
+                                   : firstIndex - secondIndex) != 1U) {
+        return false;
+    }
+
+    std::vector<mmd::MmdRenderQueueInput> nextInputs = geometry_.queueInputs;
+    bool foundFirst = false;
+    bool foundSecond = false;
+    for (mmd::MmdRenderQueueInput& input : nextInputs) {
+        if (input.materialIndex == firstIndex) {
+            input.materialIndex = secondIndex;
+            foundFirst = true;
+        } else if (input.materialIndex == secondIndex) {
+            input.materialIndex = firstIndex;
+            foundSecond = true;
+        }
+    }
+    if (!foundFirst || !foundSecond) {
+        return false;
+    }
+
+    std::vector<mmd::MmdRenderQueueEntry> nextQueue =
+        mmd::buildMmdRenderQueue(nextInputs);
+    std::vector<bool> consumed(geometry_.queueGeometry.size(), false);
+    std::vector<std::size_t> sourceIndices;
+    sourceIndices.reserve(nextQueue.size());
+    for (const mmd::MmdRenderQueueEntry& entry : nextQueue) {
+        std::size_t existingIndex = geometry_.queueGeometry.size();
+        for (std::size_t candidateIndex = 0;
+             candidateIndex < geometry_.queueGeometry.size(); ++candidateIndex) {
+            const QueueGeometry& candidate =
+                geometry_.queueGeometry[candidateIndex];
+            if (!consumed[candidateIndex] &&
+                candidate.entry.inputIndex == entry.inputIndex) {
+                existingIndex = candidateIndex;
+                break;
+            }
+        }
+        if (existingIndex == geometry_.queueGeometry.size()) {
+            return false;
+        }
+        if (!mmd::findMmdRenderQueueInput(nextInputs, entry)) {
+            return false;
+        }
+        consumed[existingIndex] = true;
+        sourceIndices.push_back(existingIndex);
+    }
+
+    if (sourceIndices.size() != geometry_.queueGeometry.size() ||
+        std::any_of(consumed.begin(), consumed.end(),
+                    [](bool value) { return !value; })) {
+        return false;
+    }
+
+    // Build the complete reordered value before touching geometry_.  Copies
+    // keep every failure point above (including allocation) transactional;
+    // the final vector moves below are noexcept container swaps.
+    std::vector<QueueGeometry> reordered;
+    reordered.reserve(sourceIndices.size());
+    for (std::size_t queueIndex = 0; queueIndex < nextQueue.size();
+         ++queueIndex) {
+        QueueGeometry item = geometry_.queueGeometry[sourceIndices[queueIndex]];
+        item.entry = nextQueue[queueIndex];
+        const mmd::MmdRenderQueueInput* material =
+            mmd::findMmdRenderQueueInput(nextInputs, nextQueue[queueIndex]);
+        if (!material) {
+            return false;
+        }
+        item.material = *material;
+        reordered.push_back(std::move(item));
+    }
+
+    geometry_.queueInputs = std::move(nextInputs);
+    geometry_.renderQueue = std::move(nextQueue);
     geometry_.queueGeometry = std::move(reordered);
     clearRenderItemWitness();
     clearMaterialBindingDiagnostics();
@@ -775,4 +862,102 @@ MStatus MmdRenderQueueUpdateCommand::doIt(const MArgList& args)
 bool MmdRenderQueueUpdateCommand::isUndoable() const
 {
     return false;
+}
+
+void* MmdRenderQueueReindexCommand::creator()
+{
+    return new MmdRenderQueueReindexCommand();
+}
+
+MSyntax MmdRenderQueueReindexCommand::newSyntax()
+{
+    MSyntax syntax;
+    syntax.addFlag("-n", "-node", MSyntax::kString);
+    syntax.addFlag("-f", "-firstMaterialIndex", MSyntax::kLong);
+    syntax.addFlag("-s", "-secondMaterialIndex", MSyntax::kLong);
+    syntax.enableEdit(false);
+    return syntax;
+}
+
+MStatus MmdRenderQueueReindexCommand::doIt(const MArgList& args)
+{
+    MArgDatabase argData(newSyntax(), args);
+    if (!argData.isFlagSet("-node") ||
+        !argData.isFlagSet("-firstMaterialIndex") ||
+        !argData.isFlagSet("-secondMaterialIndex")) {
+        MGlobal::displayError(
+            "[mmdRenderQueueReindex] Required flags: -node, -firstMaterialIndex, -secondMaterialIndex");
+        return MS::kFailure;
+    }
+
+    MSelectionList selection;
+    const MString nodeName = argData.flagArgumentString("-node", 0);
+    MStatus status = selection.add(nodeName);
+    if (!status || selection.length() == 0U) {
+        MGlobal::displayError(MString("[mmdRenderQueueReindex] Node not found: ") +
+                              nodeName);
+        return MS::kFailure;
+    }
+    MObject node;
+    status = selection.getDependNode(0U, node);
+    if (!status) {
+        return status;
+    }
+    const int firstIndex = argData.flagArgumentInt("-firstMaterialIndex", 0);
+    const int secondIndex = argData.flagArgumentInt("-secondMaterialIndex", 0);
+    if (firstIndex < 0 || secondIndex < 0 || firstIndex == secondIndex ||
+        (firstIndex < secondIndex ? secondIndex - firstIndex
+                                   : firstIndex - secondIndex) != 1) {
+        MGlobal::displayError(
+            "[mmdRenderQueueReindex] Material queue reindex was rejected.");
+        return MS::kFailure;
+    }
+
+    nodeHandle_ = MObjectHandle(node);
+    firstIndex_ = static_cast<std::size_t>(firstIndex);
+    secondIndex_ = static_cast<std::size_t>(secondIndex);
+    return applySwap();
+}
+
+MStatus MmdRenderQueueReindexCommand::redoIt()
+{
+    return applySwap();
+}
+
+MStatus MmdRenderQueueReindexCommand::undoIt()
+{
+    // The queue operation is an involution: swapping the same adjacent pair
+    // restores the exact prior ordering without retaining mutable geometry.
+    return applySwap();
+}
+
+MStatus MmdRenderQueueReindexCommand::applySwap()
+{
+    if (!nodeHandle_.isValid() || !nodeHandle_.isAlive()) {
+        MGlobal::displayError(
+            "[mmdRenderQueueReindex] Target mmdRenderShape is no longer alive.");
+        return MS::kFailure;
+    }
+    MStatus status;
+    const MObject node = nodeHandle_.object();
+    MmdRenderShape* shape = MmdRenderShape::fromMObject(node, &status);
+    if (!status || !shape) {
+        MGlobal::displayError(
+            "[mmdRenderQueueReindex] Node is not an mmdRenderShape.");
+        return MS::kFailure;
+    }
+    if (!shape->reindexMaterialQueue(firstIndex_, secondIndex_)) {
+        MGlobal::displayError(
+            "[mmdRenderQueueReindex] Material queue reindex was rejected.");
+        return MS::kFailure;
+    }
+
+    MHWRender::MRenderer::setGeometryDrawDirty(node, true);
+    setResult(mStringFromUtf8(shape->renderItemWitness()));
+    return MS::kSuccess;
+}
+
+bool MmdRenderQueueReindexCommand::isUndoable() const
+{
+    return true;
 }

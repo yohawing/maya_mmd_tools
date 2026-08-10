@@ -319,13 +319,20 @@ class TestMaterialPresenter(unittest.TestCase):
     def test_create_and_duplicate_do_not_read_or_forward_maya_selection(self):
         presenter, coordinator = self._make_authoring_presenter()
         presenter.current_material_index = 4
+        coordinator.create_material.return_value = MmdMaterialSpec(
+            "Created", name_english="Created", index=5, binding_identity="shader5"
+        )
+        coordinator.duplicate_material.return_value = MmdMaterialSpec(
+            "Copy", name_english="Copy", index=6, binding_identity="shader6"
+        )
         self.mock_maya_adapter.ls.return_value = ["|model_root|mesh.f[2]"]
-        with patch.object(presenter, "load_materials"):
+        with patch.object(presenter, "_append_material_row") as append_row:
             self.assertTrue(presenter.create_material())
             self.assertTrue(presenter.duplicate_material())
 
         coordinator.create_material.assert_called_once_with("|model_root")
         coordinator.duplicate_material.assert_called_once_with("|model_root", 4)
+        self.assertEqual(append_row.call_count, 2)
         self.mock_maya_adapter.ls.assert_not_called()
 
     def test_move_material_routes_exact_index_permutation(self):
@@ -340,10 +347,41 @@ class TestMaterialPresenter(unittest.TestCase):
                 MmdMaterialSpec("C", index=2, binding_identity="shader2"),
             ),
         )
-        with patch.object(presenter, "load_materials"):
+        class Item:
+            def __init__(self, label, binding):
+                self._label = label
+                self._data = {Qt.UserRole: binding}
+
+            def data(self, role):
+                return self._data.get(role)
+
+            def setData(self, role, value):
+                self._data[role] = value
+
+            def text(self):
+                return self._label
+
+            def setText(self, value):
+                self._label = value
+
+        items = [Item("1:A", "shader0"), Item("2:B", "shader1"), Item("3:C", "shader2")]
+        presenter.view.material_list.count.return_value = 3
+        presenter.view.material_list.item.side_effect = lambda row: items[row]
+        presenter.view.material_list.takeItem.side_effect = lambda row: items.pop(row)
+        presenter.view.material_list.insertItem.side_effect = lambda row, item: items.insert(row, item)
+        presenter.view.material_list.setCurrentItem.side_effect = lambda item: setattr(
+            presenter.view.material_list, "selected", item
+        )
+
+        with patch.object(presenter, "load_materials") as reload_materials:
             self.assertTrue(presenter.move_material(-1))
 
-        coordinator.reindex_materials.assert_called_once_with("|model_root", (1, 0, 2))
+        coordinator.move_material.assert_called_once_with("|model_root", 1, 0)
+        coordinator.reindex_materials.assert_not_called()
+        reload_materials.assert_not_called()
+        self.assertEqual([item.data(Qt.UserRole) for item in items], ["shader1", "shader0", "shader2"])
+        self.assertEqual(presenter.view.material_list.selected.data(Qt.UserRole), "shader1")
+        self.assertEqual(presenter.current_material_index, 0)
 
     @patch("mmd_tools.ui.qt_compat.QMessageBox.question")
     def test_delete_requires_confirmation_and_routes_index(self, question):

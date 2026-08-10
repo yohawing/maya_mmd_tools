@@ -16,6 +16,11 @@ from ...core.morph_metadata_reader import (
     parse_blendshape_morph_entries,
     PMX_MORPH_TYPE_NAMES,
 )
+from ...core.morph_authoring import (
+    MorphReindexResult,
+    classify_morph_change,
+    swap_adjacent_morphs,
+)
 from ...core.model_authoring_spec import MmdMorphSpec
 from ...core.model_registry import (
     REGISTRY_CATEGORY_MORPH,
@@ -1065,14 +1070,43 @@ class MorphPresenter:
             name_english=self.view.morph_name_en_edit.text(),
             panel=self.view.panel_combo.currentIndex(),
         )
-        if self._run_authoring(
-            "replace morph",
-            self.authoring_coordinator.replace_morph,
-            current_model_root,
-            updated,
-            select_index=morph.index,
-        ):
-            logger.info("Applied semantic changes to morph index %s", morph.index)
+        selected_reader = getattr(self.authoring_coordinator, "read_morph_value", None)
+        selected_writer = getattr(self.authoring_coordinator, "apply_morph_value_patch", None)
+        try:
+            if callable(selected_reader) and callable(selected_writer):
+                prior = selected_reader(current_model_root, morph.index, morph.binding_identity)
+                route = classify_morph_change(prior, updated)
+                if route in {"value", "noop"}:
+                    result = prior if route == "noop" else selected_writer(current_model_root, updated)
+                    self._update_selected_row_after_patch(result)
+                    self.load_morph_details(self.current_morph)
+                    self.app_state.emit_status("replace morph completed")
+                    logger.info("Applied narrow semantic changes to morph index %s", morph.index)
+                    return
+            # Structural/mixed edits retain the established full transaction.
+            if not callable(getattr(self.authoring_coordinator, "replace_morph", None)):
+                raise TypeError("authoring coordinator lacks replace_morph")
+            if callable(getattr(self.authoring_coordinator, "read_spec", None)):
+                current = self.authoring_coordinator.read_spec(current_model_root)
+                prior = next((item for item in current.morphs if item.index == morph.index), None)
+                if prior is None or prior.binding_identity != morph.binding_identity:
+                    raise ValueError("selected morph is not the current registered binding")
+                updated = replace(
+                    prior,
+                    name=self.view.morph_name_jp_edit.text(),
+                    name_english=self.view.morph_name_en_edit.text(),
+                    panel=self.view.panel_combo.currentIndex(),
+                )
+            if self._run_authoring(
+                "replace morph",
+                self.authoring_coordinator.replace_morph,
+                current_model_root,
+                updated,
+                select_index=morph.index,
+            ):
+                logger.info("Applied semantic changes to morph index %s", morph.index)
+        except Exception as exc:
+            self._emit_authoring_error(f"replace morph failed: {exc}")
 
     def create_morph(self):
         """Choose a supported type at creation time and append one semantic morph."""
@@ -1094,13 +1128,65 @@ class MorphPresenter:
             )
             return
         morph = MmdMorphSpec(name="New Morph", name_english="New Morph", panel=4, morph_type=morph_type)
-        self._run_authoring(
-            "create morph",
-            self.authoring_coordinator.create_morph,
-            root,
-            morph,
-            select_index="last",
+        creator = getattr(self.authoring_coordinator, "create_morph", None)
+        if not callable(creator):
+            self._emit_authoring_error("create morph requires narrow morph transaction support")
+            return
+        try:
+            result = creator(root, morph)
+            if not isinstance(result, MmdMorphSpec):
+                raise TypeError("coordinator returned an invalid created morph")
+            self._append_created_morph_row(result)
+            self.app_state.emit_status("create morph completed")
+        except Exception as exc:
+            self._emit_authoring_error(f"create morph failed: {exc}")
+
+    def _append_created_morph_row(self, morph: MmdMorphSpec) -> None:
+        """Append one created row without reloading the Morph list."""
+        key = morph.name or f"Morph [{morph.index}]"
+        while key in self.morph_data:
+            key += "#"
+        raw_type = next(
+            (value for value, name in PMX_MORPH_TYPE_NAMES.items() if name == morph.morph_type),
+            1,
         )
+        self.morph_data[key] = {
+            "name_jp": morph.name,
+            "name_en": morph.name_english,
+            "panel": morph.panel,
+            "type": raw_type,
+            "index": morph.index,
+            "offsets": list(morph.to_mapping()["offsets"]),
+            "mmd_morph_type": morph.morph_type,
+            "morph_node": morph.binding_identity,
+            "_pmx_type_raw": True,
+        }
+        self._authoring_morphs_by_index[morph.index] = morph
+        if self._authoring_spec is not None:
+            self._authoring_spec = replace(
+                self._authoring_spec,
+                morphs=(*self._authoring_spec.morphs, morph),
+            )
+        self._morphs_by_index[morph.index] = self.morph_data[key]
+        type_letter = _MORPH_TYPE_LETTERS.get(
+            next(
+                (value for value, name in PMX_MORPH_TYPE_NAMES.items() if name == morph.morph_type),
+                1,
+            ),
+            "?",
+        )
+        item = QListWidgetItem(
+            format_indexed_name_label(
+                str(morph.index),
+                morph.name,
+                morph.name_english,
+                prefix=f"{type_letter}|",
+            )
+        )
+        item.setData(Qt.UserRole, key)
+        self.view.morph_list.addItem(item)
+        self.view.morph_list.setCurrentItem(item)
+        self.current_morph = key
 
     def _create_type_capabilities(self):
         """Return localized capability rows for the creation-only type menu."""
@@ -1152,16 +1238,144 @@ class MorphPresenter:
         root = self.app_state.current_model_root
         if not self._authoring_ready or not root or morph is None or self._authoring_spec is None:
             return
-        target = max(0, min(len(self._authoring_spec.morphs) - 1, morph.index + int(delta)))
-        if target != morph.index:
-            self._run_authoring(
-                "move morph",
-                self.authoring_coordinator.move_morph,
-                root,
-                morph.index,
-                target,
-                select_index=target,
-            )
+        try:
+            step = int(delta)
+        except (TypeError, ValueError):
+            self._emit_authoring_error("move morph requires an adjacent step")
+            return
+        target = morph.index + step
+        if target < 0 or target >= len(self._authoring_spec.morphs) or abs(target - morph.index) != 1:
+            return
+        mover = getattr(self.authoring_coordinator, "move_morph", None)
+        if not callable(mover):
+            self._emit_authoring_error("move morph requires narrow morph reindex support")
+            return
+        try:
+            result = mover(root, morph.index, target)
+            if not isinstance(result, MorphReindexResult):
+                raise TypeError("coordinator returned an invalid morph reindex result")
+            self._swap_morph_rows(result, morph.index, target)
+            self.app_state.emit_status("move morph completed")
+        except Exception as exc:
+            self._emit_authoring_error(f"move morph failed: {exc}")
+
+    def _swap_morph_rows(self, result, old_index, new_index):
+        """Apply a successful adjacent swap to only the two visible rows."""
+        if tuple(result.swapped_indices) != (old_index, new_index):
+            raise ValueError("morph reindex result does not match selected indices")
+        keys: dict[int, str] = {}
+        for key, data in self.morph_data.items():
+            value = data.get("index")
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            if value in {old_index, new_index}:
+                keys[value] = key
+        if set(keys) != {old_index, new_index}:
+            raise ValueError("selected morph rows are not present")
+        first_key, second_key = keys[old_index], keys[new_index]
+        self.morph_data[first_key]["index"], self.morph_data[second_key]["index"] = (
+            new_index,
+            old_index,
+        )
+        self._update_morph_row_order(first_key, second_key)
+
+        by_binding = {
+            morph.binding_identity: morph
+            for morph in self._authoring_morphs_by_index.values()
+            if morph.binding_identity
+        }
+        old_binding = next(
+            (morph.binding_identity for morph in by_binding.values() if morph.index == old_index),
+            None,
+        )
+        new_binding = next(
+            (morph.binding_identity for morph in by_binding.values() if morph.index == new_index),
+            None,
+        )
+        expected_bindings = {
+            new_index: old_binding,
+            old_index: new_binding,
+        }
+        if dict(result.bindings) != expected_bindings:
+            raise ValueError("morph reindex result bindings do not match the selected pair")
+        for index, binding in result.bindings:
+            morph = by_binding.get(binding)
+            if morph is None:
+                raise ValueError(f"morph reindex result references unknown binding {binding!r}")
+            if index not in {old_index, new_index}:
+                raise ValueError("morph reindex result contains an unexpected index")
+        if len(result.bindings) != 2 or {index for index, _ in result.bindings} != {old_index, new_index}:
+            raise ValueError("morph reindex result must contain exactly two bindings")
+        self._authoring_spec = swap_adjacent_morphs(self._authoring_spec, old_index, new_index)
+        self._authoring_morphs_by_index = {
+            morph.index: morph for morph in self._authoring_spec.morphs
+        }
+        self._remap_cached_morph_references({old_index: new_index, new_index: old_index})
+        self._morphs_by_index[old_index] = self.morph_data[second_key]
+        self._morphs_by_index[new_index] = self.morph_data[first_key]
+        self._select_morph_index(new_index)
+
+    def _remap_cached_morph_references(self, swap):
+        """Keep cached Group/Flip offsets coherent without reloading the list."""
+        for data in self.morph_data.values():
+            if data.get("mmd_morph_type") not in {"group", "flip"}:
+                continue
+            offsets = data.get("offsets")
+            if not isinstance(offsets, list):
+                continue
+            for offset in offsets:
+                if not isinstance(offset, dict):
+                    continue
+                index = offset.get("morph_index")
+                if isinstance(index, bool) or not isinstance(index, int):
+                    continue
+                if index in swap:
+                    offset["morph_index"] = swap[index]
+
+    def _update_morph_row_order(self, first_key, second_key):
+        widget = self.view.morph_list
+        rows = {
+            widget.item(row).data(Qt.UserRole): row
+            for row in range(widget.count())
+            if widget.item(row) is not None
+        }
+        row_a, row_b = rows.get(first_key), rows.get(second_key)
+        if row_a is None or row_b is None:
+            raise ValueError("selected morph rows are not visible")
+        if hasattr(widget, "takeItem") and hasattr(widget, "insertItem"):
+            if row_a < row_b:
+                item_b = widget.takeItem(row_b)
+                item_a = widget.takeItem(row_a)
+                widget.insertItem(row_a, item_b)
+                widget.insertItem(row_b, item_a)
+            else:
+                item_a = widget.takeItem(row_a)
+                item_b = widget.takeItem(row_b)
+                widget.insertItem(row_b, item_a)
+                widget.insertItem(row_a, item_b)
+        elif hasattr(widget, "items"):
+            widget.items[row_a], widget.items[row_b] = widget.items[row_b], widget.items[row_a]
+        else:
+            raise ValueError("morph list does not support local row swaps")
+        for key in (first_key, second_key):
+            for row in range(widget.count()):
+                item = widget.item(row)
+                if item is not None and item.data(Qt.UserRole) == key:
+                    data = self.morph_data[key]
+                    raw_type = data.get("type", 0)
+                    if not data.get("_pmx_type_raw"):
+                        raw_type = UI_INDEX_TO_PMX_TYPE.get(int(raw_type), 1)
+                    setter = getattr(item, "setText", None)
+                    if callable(setter):
+                        setter(
+                            format_indexed_name_label(
+                                str(data["index"]),
+                                data.get("name_jp") or key,
+                                data.get("name_en", ""),
+                                prefix=f"{_MORPH_TYPE_LETTERS.get(int(raw_type), '?')}|",
+                            )
+                        )
+                    break
 
     def apply_offsets(self):
         """Persist canonical raw offsets without changing preview weight."""
@@ -1181,14 +1395,29 @@ class MorphPresenter:
         if not isinstance(offsets, list):
             self._emit_authoring_error("Offsets JSON must be a list")
             return
-        self._run_authoring(
-            "replace morph offsets",
-            self.authoring_coordinator.replace_morph_offsets,
-            root,
-            morph.index,
-            offsets,
-            select_index=morph.index,
-        )
+        selected_reader = getattr(self.authoring_coordinator, "read_morph_value", None)
+        selected_writer = getattr(self.authoring_coordinator, "apply_morph_value_patch", None)
+        try:
+            if callable(selected_reader) and callable(selected_writer):
+                prior = selected_reader(root, morph.index, morph.binding_identity)
+                replacement = replace(prior, offsets=tuple(offsets))
+                route = classify_morph_change(prior, replacement)
+                if route in {"value", "noop"}:
+                    result = prior if route == "noop" else selected_writer(root, replacement)
+                    self._update_selected_row_after_patch(result)
+                    self.load_morph_details(self.current_morph)
+                    self.app_state.emit_status("replace morph offsets completed")
+                    return
+            self._run_authoring(
+                "replace morph offsets",
+                self.authoring_coordinator.replace_morph_offsets,
+                root,
+                morph.index,
+                offsets,
+                select_index=morph.index,
+            )
+        except Exception as exc:
+            self._emit_authoring_error(f"replace morph offsets failed: {exc}")
 
     def _selected_work_offset_index(self):
         combo = getattr(self.view, "work_offset_combo", None)
@@ -1284,6 +1513,39 @@ class MorphPresenter:
             if candidate == index:
                 self.view.morph_list.setCurrentItem(item)
                 return
+
+    def _update_selected_row_after_patch(self, result):
+        """Update only the selected morph row/state after a narrow patch."""
+        if not isinstance(result, MmdMorphSpec):
+            return
+        key = self.current_morph
+        if key not in self.morph_data:
+            return
+        data = self.morph_data[key]
+        data.update(
+            {
+                "name_jp": result.name,
+                "name_en": result.name_english,
+                "panel": result.panel,
+                "offsets": result.to_mapping()["offsets"],
+            }
+        )
+        type_letter = _MORPH_TYPE_LETTERS.get(int(data.get("type", 0)), "?")
+        index_text = str(result.index)
+        for row in range(self.view.morph_list.count()):
+            item = self.view.morph_list.item(row)
+            if item.data(Qt.UserRole) != key:
+                continue
+            item.setText(
+                format_indexed_name_label(
+                    index_text,
+                    result.name,
+                    result.name_english,
+                    prefix=f"{type_letter}|",
+                )
+            )
+            break
+        self._authoring_morphs_by_index[result.index] = result
 
     def _emit_authoring_error(self, message):
         try:
