@@ -240,9 +240,12 @@ def test_create_semistandard_model_registers_full_rig_and_cube_intent() -> None:
     result = initializer.create("pmx20-semistandard-v1", "準標準モデル", "Semi Model")
 
     assert result.root.endswith("_root")
-    assert len(result.spec.bones) == 56
+    assert len(result.spec.bones) == 94
     bones_by_name = {bone.name: bone for bone in result.spec.bones}
     assert bones_by_name["左足ＩＫ"].ik_target_index == bones_by_name["左足首"].index
+    assert bones_by_name["左足ＩＫ"].parent_index == bones_by_name["左足IK親"].index
+    assert bones_by_name["左肩C"].grant_parent_index == bones_by_name["左肩P"].index
+    assert bones_by_name["左腕捩3"].grant_ratio == 0.75
     assert bones_by_name["左つま先ＩＫ"].ik_links[0]["bone"] == bones_by_name["左足首"].index
     assert result.spec.materials[0].name == "Default Material"
     assert len(adapter.list_relatives(result.root, allDescendents=True, type="joint")) == len(result.spec.bones)

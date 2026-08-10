@@ -2306,3 +2306,20 @@ def maya_model_template_smoke(session: nox.Session) -> None:
         env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
         external=True,
     )
+
+
+@nox.session(venv_backend="none")
+def tda_semistandard_reference(session: nox.Session) -> None:
+    """Compare the local Tda V4X PMX with the checked-in structure fixture.
+
+    Example:
+        uvx nox -s tda_semistandard_reference -- --reference <Tda-V4X.pmx> --out build/reports/tda-template-reference.json
+    """
+    reference = _option(session.posargs, "--reference", None)
+    if not reference:
+        session.error("--reference is required")
+    out_path = _option(session.posargs, "--out", None)
+    args = ["tools/tda_semistandard_reference_probe.py", "--reference", reference]
+    if out_path:
+        args.extend(("--out", out_path))
+    session.run(sys.executable, *args, external=True)
