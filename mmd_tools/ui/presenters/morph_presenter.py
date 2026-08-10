@@ -27,6 +27,7 @@ from .list_presenter_helpers import (
     apply_list_filter,
     format_indexed_name_label,
     reload_for_current_model_change,
+    tr_message,
     tr_message_format,
 )
 
@@ -79,9 +80,6 @@ _EDITABLE_OFFSET_TYPES = frozenset({"vertex", "bone", "group", "material"})
 _ROUNDTRIP_ONLY_OFFSET_TYPES = frozenset(
     {"uv", "additional_uv1", "additional_uv2", "additional_uv3", "additional_uv4"}
 )
-_UNSUPPORTED_AUTHORING_TYPES = frozenset({"flip", "impulse"})
-
-
 class MorphPresenter:
     def __init__(
         self,
@@ -145,7 +143,6 @@ class MorphPresenter:
             ("delete_morph_btn", "clicked", self.delete_current_morph),
             ("move_morph_up_btn", "clicked", lambda: self.move_current_morph(-1)),
             ("move_morph_down_btn", "clicked", lambda: self.move_current_morph(1)),
-            ("reindex_morphs_btn", "clicked", self.reindex_displayed_morphs),
             ("apply_offsets_btn", "clicked", self.apply_offsets),
             ("create_work_material_btn", "clicked", self.create_work_material),
             ("apply_work_material_btn", "clicked", self.apply_work_material),
@@ -249,7 +246,6 @@ class MorphPresenter:
                 "" if available else "authoring_unavailable",
             )
         self._authoring_available = bool(available)
-        self._configure_create_type_capabilities()
         self._authoring_ready = False
 
     def _read_authoring_spec(self, root):
@@ -263,7 +259,6 @@ class MorphPresenter:
             setter = getattr(self.view, "set_authoring_controls_enabled", None)
             if callable(setter):
                 setter(True, "", "")
-            self._configure_create_type_capabilities()
         except Exception as exc:
             logger.error("Failed to read morph authoring spec: %s", exc, exc_info=True)
             self._authoring_spec = None
@@ -1080,20 +1075,23 @@ class MorphPresenter:
             logger.info("Applied semantic changes to morph index %s", morph.index)
 
     def create_morph(self):
-        """Create a semantic morph of the explicitly selected toolbar type."""
+        """Choose a supported type at creation time and append one semantic morph."""
         root = self.app_state.current_model_root
-        combo = getattr(self.view, "create_type_combo", None)
-        if not self._authoring_ready or not root or combo is None:
+        choose_type = getattr(self.view, "choose_create_morph_type", None)
+        if not self._authoring_ready or not root or not callable(choose_type):
             return
-        index = int(combo.currentIndex())
-        if index < 0 or index >= len(_CREATE_MORPH_TYPES):
+        capabilities = self._create_type_capabilities()
+        morph_type = choose_type(capabilities)
+        if morph_type is None:
             return
-        morph_type = _CREATE_MORPH_TYPES[index]
-        if morph_type == "vertex" and not self._owned_mesh_shapes():
-            self._emit_authoring_error("vertex target creation requires at least one owned mesh")
-            return
-        if morph_type in _UNSUPPORTED_AUTHORING_TYPES:
-            self._emit_authoring_error(f"{morph_type} morph authoring is rejected by policy")
+        capability = next(
+            (item for item in capabilities if item[0] == morph_type),
+            None,
+        )
+        if capability is None or not capability[1]:
+            self._emit_authoring_error(
+                capability[2] if capability is not None else f"Unknown morph type: {morph_type}"
+            )
             return
         morph = MmdMorphSpec(name="New Morph", name_english="New Morph", panel=4, morph_type=morph_type)
         self._run_authoring(
@@ -1104,19 +1102,22 @@ class MorphPresenter:
             select_index="last",
         )
 
-    def _configure_create_type_capabilities(self):
-        setter = getattr(self.view, "set_create_type_enabled", None)
-        if not callable(setter):
-            return
+    def _create_type_capabilities(self):
+        """Return localized capability rows for the creation-only type menu."""
         disabled = {
-            "flip": "PMX 2.1 Flip authoring is rejected by policy",
-            "impulse": "PMX 2.1 Impulse authoring is rejected by policy",
+            "flip": tr_message("morph_create_flip_unsupported"),
+            "impulse": tr_message("morph_create_impulse_unsupported"),
         }
-        owned_meshes = self._owned_mesh_shapes()
-        if not owned_meshes:
-            disabled["vertex"] = "Vertex target creation requires at least one owned mesh"
-        for index, morph_type in enumerate(_CREATE_MORPH_TYPES):
-            setter(index, self._authoring_available and morph_type not in disabled, disabled.get(morph_type, ""))
+        if not self._owned_mesh_shapes():
+            disabled["vertex"] = tr_message("morph_create_vertex_mesh_required")
+        return tuple(
+            (
+                morph_type,
+                self._authoring_ready and morph_type not in disabled,
+                disabled.get(morph_type, ""),
+            )
+            for morph_type in _CREATE_MORPH_TYPES
+        )
 
     def _owned_mesh_shapes(self):
         root = self.app_state.current_model_root
@@ -1161,27 +1162,6 @@ class MorphPresenter:
                 target,
                 select_index=target,
             )
-
-    def reindex_displayed_morphs(self):
-        root = self.app_state.current_model_root
-        if not self._authoring_ready or not root:
-            return
-        ordered = []
-        for row in range(self.view.morph_list.count()):
-            key = self.view.morph_list.item(row).data(Qt.UserRole)
-            try:
-                ordered.append(int(self.morph_data[key]["index"]))
-            except (KeyError, TypeError, ValueError):
-                self._emit_authoring_error("Displayed morph list contains an invalid index")
-                return
-        current = self._semantic_morph()
-        self._run_authoring(
-            "reindex morphs",
-            self.authoring_coordinator.reindex_morphs,
-            root,
-            ordered,
-            select_index=current.index if current else None,
-        )
 
     def apply_offsets(self):
         """Persist canonical raw offsets without changing preview weight."""

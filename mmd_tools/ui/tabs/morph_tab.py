@@ -18,6 +18,7 @@ from ..qt_compat import (
     QSplitter,
     QCheckBox,
     QTextEdit,
+    QMenu,
 )
 from ..base_tab import BaseTab
 from ..components.authoring_toolbar import AuthoringToolbar
@@ -88,14 +89,6 @@ class MorphTab(BaseTab):
         )
         self.refresh_morphs_btn = self.morph_refresh_toolbar.button("refresh")
         toolbar_layout.addWidget(self.morph_refresh_toolbar)
-        self.create_type_combo = QComboBox()
-        self.create_type_combo.addItems(
-            [
-                "Vertex", "UV", "Additional UV1", "Additional UV2",
-                "Additional UV3", "Additional UV4", "Bone", "Material",
-                "Group", "Flip", "Impulse",
-            ]
-        )
         self.morph_authoring_toolbar = AuthoringToolbar(
             actions=("create", "delete", "move_up", "move_down"),
             labels={
@@ -110,10 +103,7 @@ class MorphTab(BaseTab):
         self.delete_morph_btn = self.morph_authoring_toolbar.button("delete")
         self.move_morph_up_btn = self.morph_authoring_toolbar.button("move_up")
         self.move_morph_down_btn = self.morph_authoring_toolbar.button("move_down")
-        self.reindex_morphs_btn = QPushButton("Reindex")
-        toolbar_layout.addWidget(self.create_type_combo)
         toolbar_layout.addWidget(self.morph_authoring_toolbar)
-        toolbar_layout.addWidget(self.reindex_morphs_btn)
         toolbar_layout.addStretch()
         morph_list_layout.addLayout(toolbar_layout)
 
@@ -318,8 +308,6 @@ class MorphTab(BaseTab):
     def set_authoring_controls_enabled(self, enabled, tooltip="", reason_key=""):
         """Enable semantic authoring separately from preview weights."""
         for widget in (
-            self.create_type_combo,
-            self.reindex_morphs_btn,
             self.morph_name_jp_edit,
             self.morph_name_en_edit,
             self.panel_combo,
@@ -356,19 +344,26 @@ class MorphTab(BaseTab):
             widget.setEnabled(active)
             widget.setToolTip(tooltip)
 
-    def set_create_type_enabled(self, index, enabled, policy_text=""):
-        """Expose per-type structural authoring capability in the create selector."""
-        item = self.create_type_combo.model().item(int(index))
-        if item is None:
-            return
-        item.setEnabled(bool(enabled))
-        item.setToolTip(policy_text)
-        if not enabled and self.create_type_combo.currentIndex() == int(index):
-            for candidate in range(self.create_type_combo.count()):
-                candidate_item = self.create_type_combo.model().item(candidate)
-                if candidate_item is not None and candidate_item.isEnabled():
-                    self.create_type_combo.setCurrentIndex(candidate)
-                    break
+    def choose_create_morph_type(self, capabilities):
+        """Show creation-only morph types and return the selected PMX type."""
+        menu = QMenu(self)
+        for morph_type, enabled, reason in capabilities:
+            label = "UV" if morph_type == "uv" else self.tr(morph_type, "morph_types")
+            action = menu.addAction(label if enabled or not reason else f"{label} — {reason}")
+            action.setData(morph_type)
+            action.setEnabled(bool(enabled))
+            action.setToolTip(reason)
+            action.setStatusTip(reason)
+        execute = getattr(menu, "exec", None) or getattr(menu, "exec_", None)
+        if not callable(execute):
+            return None
+        selected = execute(
+            self.create_morph_btn.mapToGlobal(
+                self.create_morph_btn.rect().bottomLeft()
+            )
+        )
+        value = selected.data() if selected is not None else None
+        return value if isinstance(value, str) else None
 
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""

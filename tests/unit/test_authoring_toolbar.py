@@ -111,6 +111,14 @@ def test_authoring_tabs_expose_shared_icon_operations(qapp):
     assert all(not button.icon().isNull() for row in buttons for button in row)
 
 
+def test_morph_toolbar_has_no_persistent_type_or_manual_reindex_controls(qapp):
+    from mmd_tools.ui.tabs.morph_tab import MorphTab
+
+    tab = MorphTab()
+    assert not hasattr(tab, "create_type_combo")
+    assert not hasattr(tab, "reindex_morphs_btn")
+
+
 def test_display_pane_toolbars_precede_their_lists(qapp):
     from mmd_tools.ui.tabs.display_pane_tab import DisplayPaneTab
 

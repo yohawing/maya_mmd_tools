@@ -16,7 +16,6 @@ from tests.unit.test_morph_presenter_headless import (  # noqa: E402
     _FakeAppState,
     _FakeButton,
     _FakeComboBox,
-    _FakeItem,
     _FakeMayaAdapter,
     _FakeView,
 )
@@ -94,13 +93,16 @@ def _spec(kind="bone", offsets=()):
 
 def _view():
     view = _FakeView()
-    view.create_type_combo = _FakeComboBox()
-    view.create_type_combo.addItems([str(index) for index in range(11)])
+    view.create_type_choice = "group"
+    view.create_type_capabilities = ()
+    view.choose_create_morph_type = lambda capabilities: (
+        setattr(view, "create_type_capabilities", tuple(capabilities))
+        or view.create_type_choice
+    )
     view.create_morph_btn = _FakeButton()
     view.delete_morph_btn = _FakeButton()
     view.move_morph_up_btn = _FakeButton()
     view.move_morph_down_btn = _FakeButton()
-    view.reindex_morphs_btn = _FakeButton()
     view.apply_offsets_btn = _FakeButton()
     view.work_offset_combo = _FakeComboBox()
     view.create_work_material_btn = _FakeButton()
@@ -109,7 +111,6 @@ def _view():
     view.offsets_edit = _FakeTextEdit()
     view.offset_policy = (False, "")
     view.authoring_enabled = None
-    view.create_type_capabilities = {}
     view.work_controls = (False, (), "")
 
     def set_authoring_controls_enabled(enabled, tooltip="", reason_key=""):
@@ -126,9 +127,6 @@ def _view():
         lambda enabled, offsets=(), tooltip="": setattr(
             view, "work_controls", (enabled, tuple(offsets), tooltip)
         )
-    )
-    view.set_create_type_enabled = lambda index, enabled, reason="": view.create_type_capabilities.update(
-        {index: (enabled, reason)}
     )
     return view
 
@@ -197,37 +195,61 @@ def test_uv_is_visible_roundtrip_only_and_flip_create_is_policy_rejected():
     assert "Round-trip" in view.offset_policy[1]
     assert "vertex_index" in view.offsets_edit.toPlainText()
 
-    view.create_type_combo.setCurrentIndex(9)  # Flip
+    view.create_type_choice = "flip"
     presenter.create_morph()
     assert not any(operation == "create" for operation, _args in coordinator.calls)
     assert state.statuses[-1][1] == "error"
 
 
-def test_create_delete_move_and_reindex_use_only_coordinator_methods():
+def test_create_delete_and_move_use_only_coordinator_methods():
     presenter, view, _state, adapter, coordinator = _presenter()
-    view.create_type_combo.setCurrentIndex(8)  # Group
     presenter.create_morph()
     presenter.delete_current_morph()
     presenter.move_current_morph(1)
-    view.morph_list.items = [_FakeItem("Morph", "key")]
-    presenter.reindex_displayed_morphs()
 
     operations = [operation for operation, _args in coordinator.calls]
-    assert operations[-3:] == ["create", "delete", "reindex"]
+    assert operations[-2:] == ["create", "delete"]
     # One-item lists cannot move; critically, no Maya metadata write is used.
     assert not any(call[0] == "set_attr" for call in adapter.calls)
+
+
+def test_create_menu_exposes_supported_types_and_cancel_is_side_effect_free():
+    presenter, view, _state, _adapter, coordinator = _presenter()
+    view.create_type_choice = None
+
+    presenter.create_morph()
+
+    capabilities = {
+        morph_type: (enabled, reason)
+        for morph_type, enabled, reason in view.create_type_capabilities
+    }
+    for morph_type in (
+        "uv",
+        "additional_uv1",
+        "additional_uv2",
+        "additional_uv3",
+        "additional_uv4",
+        "bone",
+        "material",
+        "group",
+    ):
+        assert capabilities[morph_type] == (True, "")
+    assert capabilities["flip"][0] is False
+    assert capabilities["impulse"][0] is False
+    assert not any(operation == "create" for operation, _args in coordinator.calls)
 
 
 def test_vertex_create_is_disabled_and_rejected_before_coordinator_call():
     presenter, view, state, _adapter, coordinator = _presenter("vertex")
 
-    assert view.create_type_capabilities[0][0] is False
-    assert "at least one owned mesh" in view.create_type_capabilities[0][1]
-    view.create_type_combo.setCurrentIndex(0)
+    view.create_type_choice = "vertex"
     presenter.create_morph()
 
     assert not any(operation == "create" for operation, _args in coordinator.calls)
     assert "target creation" in state.statuses[-1][0]
+    vertex = next(item for item in view.create_type_capabilities if item[0] == "vertex")
+    assert vertex[1] is False
+    assert "at least one owned mesh" in vertex[2]
 
 
 def test_vertex_offsets_without_exact_blendshape_binding_show_validation_reason():
