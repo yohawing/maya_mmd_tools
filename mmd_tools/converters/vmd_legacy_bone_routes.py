@@ -79,6 +79,7 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
             "skip_rotate": joint in ik_link_joints,
             "ik_solver_rotate": ik_info,
             "control_owned": bool(control_route),
+            "control_owned_channels": tuple(sorted(control_route)),
             "quaternion_interpolation_safe": False,
             "fixed_axis_twist": joint in fixed_axis_twist_joints,
             # EDIT inserts a live basis converter between complete XYZ
