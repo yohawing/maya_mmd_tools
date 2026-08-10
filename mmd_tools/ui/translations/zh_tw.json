@@ -189,6 +189,14 @@
   },
   "messages": {
     "import_success": "匯入完成",
+    "create_model_unavailable": "此工作階段無法建立 MMD 模型",
+    "create_model_templates_unavailable": "無法載入內建模型範本。請重新載入外掛程式後再試",
+    "create_model_template_required": "請選擇內建模型範本",
+    "create_model_template_unknown": "所選模型範本無法使用：{template_id}",
+    "create_model_request_invalid": "建立 MMD 模型的要求無效：{error}",
+    "create_model_warning_title": "建立 MMD 模型",
+    "create_model_succeeded": "已建立 MMD 模型：{root}",
+    "create_model_failed": "建立 MMD 模型失敗：{error}",
     "select_vmd_target_model": "請選擇目標模型，或選擇 Camera Motion。",
     "export_success": "匯出完成",
     "error_file_not_found": "找不到檔案",
@@ -472,7 +480,7 @@
   },
   "actions": {
     "import_model": "匯入模型",
-    "new_mmd_model": "New MMD Model",
+    "new_mmd_model": "建立 MMD 模型",
     "create_mmd_model": "建立模型",
     "import_animation": "匯入動畫",
     "export": "匯出",

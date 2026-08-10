@@ -351,11 +351,17 @@ class TestImportExportPresenter(unittest.TestCase):
             create_model_dialog_factory=lambda templates, parent: dialog,
         )
 
-        self.assertFalse(presenter.open_create_model_dialog())
+        with patch(
+            "mmd_tools.ui.qt_compat.QMessageBox.warning",
+            create=True,
+        ) as warning:
+            self.assertFalse(presenter.open_create_model_dialog())
 
         self.assertEqual(app_state.current_model_root, "|existing")
         self.assertEqual(app_state.refresh_count, 0)
         self.assertIn("template failed", app_state.statuses[-1])
+        warning.assert_called_once()
+        self.assertEqual(warning.call_args.args[2], app_state.statuses[-1])
 
     def test_new_model_button_opens_injected_dialog_and_cancel_is_side_effect_free(self):
         view = _ModalView()
@@ -378,7 +384,11 @@ class TestImportExportPresenter(unittest.TestCase):
         )
 
         self.assertTrue(view.new_model_button.enabled)
-        self.assertFalse(presenter.open_create_model_dialog())
+        with patch(
+            "mmd_tools.ui.qt_compat.QMessageBox.warning",
+            create=True,
+        ) as warning:
+            self.assertFalse(presenter.open_create_model_dialog())
         self.assertEqual(dialog.exec_calls, 1)
         self.assertEqual(len(factory_calls), 1)
         self.assertEqual(factory_calls[0][0][0].template_id, "opaque-template-id")
@@ -386,6 +396,7 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertEqual(app_state.refresh_count, 0)
         self.assertEqual(app_state.current_model_root, "|existing")
         self.assertEqual(app_state.statuses, [])
+        warning.assert_not_called()
 
     def test_new_model_success_uses_opaque_template_id_and_refreshes_before_current_root(self):
         view = _ModalView()
@@ -456,15 +467,21 @@ class TestImportExportPresenter(unittest.TestCase):
             ),
         )
 
-        self.assertFalse(
-            presenter._execute_create_model_request(
-                CreateModelRequest("unknown", "モデル", "Model")
+        with patch(
+            "mmd_tools.ui.qt_compat.QMessageBox.warning",
+            create=True,
+        ) as warning:
+            self.assertFalse(
+                presenter._execute_create_model_request(
+                    CreateModelRequest("unknown", "モデル", "Model")
+                )
             )
-        )
 
         action.execute.assert_not_called()
         self.assertIn("unknown", app_state.statuses[-1])
         self.assertNotIn("Select a packaged", app_state.statuses[-1])
+        warning.assert_called_once()
+        self.assertEqual(warning.call_args.args[2], app_state.statuses[-1])
 
     def test_new_model_button_fails_closed_when_template_loading_fails(self):
         view = _ModalView()
@@ -481,8 +498,37 @@ class TestImportExportPresenter(unittest.TestCase):
         )
 
         self.assertFalse(view.new_model_button.enabled)
-        self.assertFalse(presenter.open_create_model_dialog())
+        with patch(
+            "mmd_tools.ui.qt_compat.QMessageBox.warning",
+            create=True,
+        ) as warning:
+            self.assertFalse(presenter.open_create_model_dialog())
         action.execute.assert_not_called()
+        warning.assert_called_once()
+
+    def test_new_model_action_and_warning_keys_are_localized_in_every_language(self):
+        translator = UITranslator.instance()
+        previous_language = translator.get_language()
+        expected_actions = {
+            "en": "New MMD Model",
+            "ja": "MMDモデルを新規作成",
+            "zh-CN": "新建 MMD 模型",
+            "zh-TW": "建立 MMD 模型",
+        }
+        try:
+            for language, expected in expected_actions.items():
+                translator.set_language(language)
+                self.assertEqual(
+                    translator.translate("new_mmd_model", "actions"),
+                    expected,
+                )
+                warning_title = translator.translate(
+                    "create_model_warning_title",
+                    "messages",
+                )
+                self.assertNotEqual(warning_title, "create_model_warning_title")
+        finally:
+            translator.set_language(previous_language)
 
     def test_vmd_reduction_summary_is_localized_and_concise(self):
         presenter = ImportExportPresenter(_FakeView(), _FakeAppState())

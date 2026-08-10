@@ -92,32 +92,50 @@ class ImportExportPresenter(QObject):
     def open_create_model_dialog(self):
         """Open the modal form and create only after the user accepts it."""
         if not callable(getattr(self.create_model_action, "execute", None)):
-            return False
+            return self._present_create_model_failure("create_model_unavailable")
         if not self._create_model_templates:
-            return False
+            return self._present_create_model_failure("create_model_templates_unavailable")
         dialog = self._make_create_model_dialog()
         if not dialog.exec_modal():
             return False
         request = dialog.get_request()
         if request is None:
-            self.app_state.emit_status(tr_message("create_model_template_required"))
-            return False
+            return self._present_create_model_failure("create_model_template_required")
         return self._execute_create_model_request(request)
+
+    def _present_create_model_failure(self, message_key, **format_values):
+        """Publish one localized blocking outcome to status and a modal warning."""
+        message = (
+            tr_message_format(message_key, **format_values)
+            if format_values
+            else tr_message(message_key)
+        )
+        self.app_state.emit_status(message)
+        try:
+            from ..qt_compat import QMessageBox
+
+            QMessageBox.warning(
+                self.view,
+                tr_message("create_model_warning_title"),
+                message,
+            )
+        except Exception as exc:
+            logger.debug("Create Model warning dialog unavailable: %s", exc, exc_info=True)
+        return False
 
     def _execute_create_model_request(self, request):
         """Execute one validated Create Model request and publish its new root."""
         action = self.create_model_action
         if not callable(getattr(action, "execute", None)):
-            self.app_state.emit_status(tr_message("create_model_unavailable"))
-            return False
+            return self._present_create_model_failure("create_model_unavailable")
         observed_type = type(request)
         try:
             request = normalize_create_model_request(request)
         except CreateModelActionError as exc:
-            self.app_state.emit_status(
-                tr_message_format("create_model_request_invalid", error=str(exc))
+            return self._present_create_model_failure(
+                "create_model_request_invalid",
+                error=str(exc),
             )
-            return False
         if observed_type is not CreateModelRequest:
             logger.warning(
                 "Rehydrated CreateModelRequest after module reload: actual=%s.%s "
@@ -130,18 +148,17 @@ class ImportExportPresenter(QObject):
             )
         template_id = request.template_id
         if not isinstance(template_id, str) or not template_id:
-            self.app_state.emit_status(tr_message("create_model_template_required"))
-            return False
+            return self._present_create_model_failure("create_model_template_required")
         valid_template_ids = {
             template.template_id
             for template in self._create_model_templates
             if isinstance(getattr(template, "template_id", None), str)
         }
         if template_id not in valid_template_ids:
-            self.app_state.emit_status(
-                tr_message_format("create_model_template_unknown", template_id=template_id)
+            return self._present_create_model_failure(
+                "create_model_template_unknown",
+                template_id=template_id,
             )
-            return False
         try:
             result = action.execute(request)
             root = getattr(result, "root", None)
@@ -157,10 +174,10 @@ class ImportExportPresenter(QObject):
             return True
         except Exception as exc:
             logger.error("Create Model failed", exc_info=True)
-            self.app_state.emit_status(
-                tr_message_format("create_model_failed", error=str(exc))
+            return self._present_create_model_failure(
+                "create_model_failed",
+                error=str(exc),
             )
-            return False
 
     def select_import_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
