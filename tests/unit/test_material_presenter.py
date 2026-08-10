@@ -59,6 +59,8 @@ class TestMaterialPresenter(unittest.TestCase):
                 "create_btn",
                 "duplicate_btn",
                 "delete_btn",
+                "reindex_up_btn",
+                "reindex_down_btn",
                 "apply_btn",
                 "reset_btn",
                 "both_face_check",
@@ -150,6 +152,8 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.create_btn.setEnabled.assert_called_with(False)
         self.mock_view.duplicate_btn.setEnabled.assert_called_with(False)
         self.mock_view.delete_btn.setEnabled.assert_called_with(False)
+        self.mock_view.reindex_up_btn.setEnabled.assert_called_with(False)
+        self.mock_view.reindex_down_btn.setEnabled.assert_called_with(False)
 
     def test_apply_changes_fails_closed_without_coordinator(self):
         self.presenter.current_material = "legacy_material"
@@ -323,6 +327,23 @@ class TestMaterialPresenter(unittest.TestCase):
         coordinator.create_material.assert_called_once_with("|model_root")
         coordinator.duplicate_material.assert_called_once_with("|model_root", 4)
         self.mock_maya_adapter.ls.assert_not_called()
+
+    def test_move_material_routes_exact_index_permutation(self):
+        presenter, coordinator = self._make_authoring_presenter()
+        presenter.current_material = "shader1"
+        presenter.current_material_index = 1
+        coordinator.read_spec.return_value = MmdModelAuthoringSpec(
+            model=MmdModelSpec("Model"),
+            materials=(
+                MmdMaterialSpec("A", index=0, binding_identity="shader0"),
+                MmdMaterialSpec("B", index=1, binding_identity="shader1"),
+                MmdMaterialSpec("C", index=2, binding_identity="shader2"),
+            ),
+        )
+        with patch.object(presenter, "load_materials"):
+            self.assertTrue(presenter.move_material(-1))
+
+        coordinator.reindex_materials.assert_called_once_with("|model_root", (1, 0, 2))
 
     @patch("mmd_tools.ui.qt_compat.QMessageBox.question")
     def test_delete_requires_confirmation_and_routes_index(self, question):

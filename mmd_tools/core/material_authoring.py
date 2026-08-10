@@ -8,7 +8,7 @@ as immutable input and returns a new validated specification.
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 from mmd_tools.core.model_authoring_spec import (
     MmdMaterialSpec,
@@ -146,7 +146,7 @@ def replace_material(spec: MmdModelAuthoringSpec, material: MmdMaterialSpec) -> 
 def _remap_material_morphs(
     morphs: tuple[MmdMorphSpec, ...],
     old_to_new: dict[int, int],
-    deleted_index: int,
+    deleted_index: int | None,
 ) -> tuple[MmdMorphSpec, ...]:
     """Validate and transactionally remap material morph offsets."""
     updated: list[MmdMorphSpec] = []
@@ -167,7 +167,7 @@ def _remap_material_morphs(
                 )
             if material_index == -1:
                 new_index = -1
-            elif material_index == deleted_index:
+            elif deleted_index is not None and material_index == deleted_index:
                 raise MaterialAuthoringError(
                     f"material {deleted_index} is referenced by morph {morph.index} offset {offset_number}"
                 )
@@ -182,6 +182,38 @@ def _remap_material_morphs(
             offsets.append(updated_offset)
         updated.append(replace(morph, offsets=tuple(offsets)))
     return tuple(updated)
+
+
+def reindex_materials(
+    spec: MmdModelAuthoringSpec,
+    ordered_indices: Sequence[int],
+) -> MmdModelAuthoringSpec:
+    """Reorder every material and remap material-morph references atomically."""
+    spec = _require_spec(spec)
+    if isinstance(ordered_indices, (str, bytes, bytearray)) or not isinstance(
+        ordered_indices, Sequence
+    ):
+        raise MaterialAuthoringError("ordered_indices must be a sequence")
+    requested = tuple(
+        _require_index(index, field=f"ordered_indices[{position}]")
+        for position, index in enumerate(ordered_indices)
+    )
+    materials_by_index = {material.index: material for material in spec.materials}
+    if len(requested) != len(materials_by_index) or set(requested) != set(materials_by_index):
+        raise MaterialAuthoringError("ordered_indices must contain every material index exactly once")
+    old_to_new = {old_index: new_index for new_index, old_index in enumerate(requested)}
+    materials = tuple(
+        replace(materials_by_index[old_index], index=old_to_new[old_index])
+        for old_index in requested
+    )
+    morphs = _remap_material_morphs(tuple(spec.morphs), old_to_new, None)
+    return MmdModelAuthoringSpec(
+        model=spec.model,
+        bones=spec.bones,
+        materials=materials,
+        morphs=morphs,
+        schema_version=spec.schema_version,
+    )
 
 
 def delete_material(spec: MmdModelAuthoringSpec, index: int) -> MmdModelAuthoringSpec:
@@ -210,5 +242,6 @@ __all__ = [
     "create_material",
     "duplicate_material",
     "replace_material",
+    "reindex_materials",
     "delete_material",
 ]

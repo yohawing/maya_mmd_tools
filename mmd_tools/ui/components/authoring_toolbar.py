@@ -18,6 +18,7 @@ ACTION_SYMBOLS = {
     "delete": "delete",
     "move_up": "move_up",
     "move_down": "move_down",
+    "reset": "restart_alt",
 }
 
 

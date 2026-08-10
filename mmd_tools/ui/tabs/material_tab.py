@@ -63,12 +63,14 @@ class MaterialTab(BaseTab):
         # ツールバー
         toolbar_layout = QHBoxLayout()
         self.authoring_toolbar = AuthoringToolbar(
-            actions=("refresh", "create", "duplicate", "delete"),
+            actions=("refresh", "create", "duplicate", "delete", "move_up", "move_down"),
             labels={
                 "refresh": self.tr("refresh", "buttons"),
                 "create": self.tr("create", "buttons"),
                 "duplicate": self.tr("duplicate", "buttons"),
                 "delete": self.tr("delete", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
             },
             parent=self,
         )
@@ -76,11 +78,13 @@ class MaterialTab(BaseTab):
         self.create_btn = self.authoring_toolbar.button("create")
         self.duplicate_btn = self.authoring_toolbar.button("duplicate")
         self.delete_btn = self.authoring_toolbar.button("delete")
+        self.reindex_up_btn = self.authoring_toolbar.button("move_up")
+        self.reindex_down_btn = self.authoring_toolbar.button("move_down")
         toolbar_layout.addWidget(self.authoring_toolbar)
 
         # MaterialPresenter enables writes only after a semantic coordinator
         # has been injected for a valid model root.
-        for action in ("create", "duplicate", "delete"):
+        for action in ("create", "duplicate", "delete", "move_up", "move_down"):
             self.authoring_toolbar.set_action_enabled(
                 action,
                 False,
@@ -399,6 +403,8 @@ class MaterialTab(BaseTab):
                     "create": self.tr("create", "buttons"),
                     "duplicate": self.tr("duplicate", "buttons"),
                     "delete": self.tr("delete", "buttons"),
+                    "move_up": self.tr("up", "buttons"),
+                    "move_down": self.tr("down", "buttons"),
                 },
                 reason_resolver=lambda key: self.tr(key, "tooltips"),
             )

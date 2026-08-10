@@ -8,7 +8,7 @@ import pytest
 
 from mmd_tools.adapters import maya_authoring_e2e
 from mmd_tools.core.bone_authoring import capture_rest, register_bone, reindex_bones, unregister_bone
-from mmd_tools.core.material_authoring import create_material, delete_material
+from mmd_tools.core.material_authoring import create_material, delete_material, reindex_materials
 from mmd_tools.core.model_authoring_spec import (
     MmdBoneSpec,
     MmdMaterialSpec,
@@ -178,6 +178,9 @@ class _FakeCoordinator:
     def delete_material(self, _root, index):
         value = delete_material(self.spec, index)
         return self._set(value)
+
+    def reindex_materials(self, _root, order):
+        return self._set(reindex_materials(self.spec, order))
 
     def register_selected_joint(self, _root, joint):
         bone = MmdBoneSpec(

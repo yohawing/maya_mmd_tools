@@ -40,6 +40,7 @@ DEFAULT_MANIFEST = {
 REQUIRED_OPERATIONS = (
     "material.create",
     "material.edit",
+    "material.reindex",
     "material.assign",
     "material.delete",
     "bone.register",

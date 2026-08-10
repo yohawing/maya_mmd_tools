@@ -9,6 +9,7 @@ from mmd_tools.core.material_authoring import (
     create_material,
     delete_material,
     duplicate_material,
+    reindex_materials,
     replace_material,
 )
 from mmd_tools.core.model_authoring_spec import (
@@ -99,6 +100,37 @@ def test_replace_only_changes_target_material_and_requires_existing_index():
     assert result.morphs == spec.morphs
     with pytest.raises(MaterialAuthoringError):
         replace_material(spec, _material(8, "不存在"))
+
+
+def test_reindex_reorders_materials_and_remaps_material_morph_offsets():
+    materials = (_material(0, "A"), _material(1, "B"), _material(2, "C"))
+    morph = MmdMorphSpec(
+        name="材質モーフ",
+        morph_type="material",
+        offsets=(
+            {"material_index": 0},
+            {"material_index": 2},
+            {"material_index": -1},
+        ),
+    )
+    spec = _spec(materials, morphs=(morph,))
+
+    result = reindex_materials(spec, (2, 0, 1))
+
+    assert [(item.index, item.name) for item in result.materials] == [
+        (0, "C"),
+        (1, "A"),
+        (2, "B"),
+    ]
+    assert [offset["material_index"] for offset in result.morphs[0].offsets] == [1, 0, -1]
+    assert [(item.index, item.name) for item in spec.materials] == [(0, "A"), (1, "B"), (2, "C")]
+
+
+@pytest.mark.parametrize("ordered", ((0, 1), (0, 1, 1), (0, 1, 9), "012", (0, True, 2)))
+def test_reindex_requires_one_exact_material_index_permutation(ordered):
+    spec = _spec(_material(0), _material(1), _material(2))
+    with pytest.raises(MaterialAuthoringError):
+        reindex_materials(spec, ordered)
 
 
 def test_delete_reindexes_and_remaps_material_morph_offsets_and_preserves_all_sentinel():

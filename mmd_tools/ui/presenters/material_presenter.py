@@ -62,6 +62,8 @@ class MaterialAuthoringCoordinator(Protocol):
 
     def delete_material(self, model_root: str, material_index: int) -> object: ...
 
+    def reindex_materials(self, model_root: str, ordered_indices: Sequence[int]) -> object: ...
+
     def read_spec(self, model_root: str) -> MmdModelAuthoringSpec: ...
 
     def replace_material(self, model_root: str, material: MmdMaterialSpec) -> MmdModelAuthoringSpec: ...
@@ -98,6 +100,8 @@ class MaterialPresenter:
             ("create_btn", self.create_material),
             ("duplicate_btn", self.duplicate_material),
             ("delete_btn", self.delete_material),
+            ("reindex_up_btn", lambda: self.move_material(-1)),
+            ("reindex_down_btn", lambda: self.move_material(1)),
         ):
             button = getattr(self.view, button_name, None)
             if button is not None:
@@ -396,17 +400,46 @@ class MaterialPresenter:
         has_root = bool(root and self.maya_adapter.object_exists(root))
         available = self.authoring_coordinator is not None and has_root
         selected = available and type(self.current_material_index) is int
+        raw_row = self.view.material_list.currentRow() if selected else -1
+        raw_count = self.view.material_list.count() if selected else 0
+        row = raw_row if type(raw_row) is int else -1
+        count = raw_count if type(raw_count) is int else 0
+        can_move_up = selected and row > 0
+        can_move_down = selected and 0 <= row < count - 1
         translate = getattr(self.view, "tr", None)
         if callable(translate):
             reason_unavailable = translate("authoring_unavailable", "tooltips")
             reason_selection = translate("authoring_selection_required", "tooltips")
+            reason_boundary = translate("authoring_move_boundary", "tooltips")
         else:
             reason_unavailable = "Authoring coordinator is not available"
             reason_selection = "Select an item first"
+            reason_boundary = "The selected item is already at this edge"
+        if selected:
+            move_reason = reason_boundary
+            move_reason_key = "authoring_move_boundary"
+        elif available:
+            move_reason = reason_selection
+            move_reason_key = "authoring_selection_required"
+        else:
+            move_reason = reason_unavailable
+            move_reason_key = "authoring_unavailable"
         for button_name, enabled, reason, reason_key in (
             ("create_btn", available, "" if available else reason_unavailable, "" if available else "authoring_unavailable"),
             ("duplicate_btn", selected, "" if selected else (reason_selection if available else reason_unavailable), "" if selected else ("authoring_selection_required" if available else "authoring_unavailable")),
             ("delete_btn", selected, "" if selected else (reason_selection if available else reason_unavailable), "" if selected else ("authoring_selection_required" if available else "authoring_unavailable")),
+            (
+                "reindex_up_btn",
+                can_move_up,
+                "" if can_move_up else move_reason,
+                "" if can_move_up else move_reason_key,
+            ),
+            (
+                "reindex_down_btn",
+                can_move_down,
+                "" if can_move_down else move_reason,
+                "" if can_move_down else move_reason_key,
+            ),
         ):
             button = getattr(self.view, button_name, None)
             if button is not None:
@@ -467,6 +500,42 @@ class MaterialPresenter:
         if reply != QMessageBox.Yes:
             return False
         return self._run_authoring("delete_material", self.current_material_index)
+
+    def move_material(self, direction):
+        """Move the selected semantic material by one index transactionally."""
+        if direction not in (-1, 1) or type(self.current_material_index) is not int:
+            return False
+        root = self._authoring_root()
+        if root is None:
+            return False
+        try:
+            current = self.authoring_coordinator.read_spec(root)
+            ordered = [material.index for material in sorted(current.materials, key=lambda item: item.index)]
+            position = ordered.index(self.current_material_index)
+            target = position + direction
+            if target < 0 or target >= len(ordered):
+                return False
+            ordered[position], ordered[target] = ordered[target], ordered[position]
+            selected_binding = self.current_material
+            self.authoring_coordinator.reindex_materials(root, tuple(ordered))
+        except Exception as exc:
+            logger.error("Material authoring reindex_materials failed", exc_info=True)
+            self.app_state.emit_status(
+                tr_message_format(
+                    "material_authoring_failed",
+                    operation="reindex_materials",
+                    error=str(exc),
+                )
+            )
+            return False
+        self.load_materials()
+        for row in range(self.view.material_list.count()):
+            item = self.view.material_list.item(row)
+            if item.data(Qt.UserRole) == selected_binding:
+                self.view.material_list.setCurrentItem(item)
+                break
+        self.app_state.emit_status(self.tr_message("material_reindex_materials_succeeded"))
+        return True
 
     def load_material_properties(self, material_name):
         """Load material properties from Maya material"""

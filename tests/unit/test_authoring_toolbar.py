@@ -1,6 +1,7 @@
 """Focused presentation contracts for the shared authoring icon toolbar."""
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -37,6 +38,14 @@ def test_canonical_order_and_symbol_ids():
     assert ACTION_SYMBOLS["create"] == "create"
     assert ACTION_SYMBOLS["duplicate"] == "duplicate"
     assert ACTION_SYMBOLS["delete"] == "delete"
+    assert ACTION_SYMBOLS["reset"] == "restart_alt"
+
+
+def test_authoring_action_symbols_use_white_fill():
+    symbol_dir = Path(symbol_tool_button.__file__).resolve().parents[1] / "assets" / "symbols"
+    for symbol in set(ACTION_SYMBOLS.values()):
+        svg = (symbol_dir / f"{symbol}.svg").read_text(encoding="utf-8")
+        assert 'fill="#ffffff"' in svg, symbol
 
 
 def test_toolbar_uses_32px_icon_buttons_and_focus(qapp):
@@ -89,8 +98,10 @@ def test_authoring_tabs_expose_shared_icon_operations(qapp):
 
     tabs = (MaterialTab(), BoneTab(), MorphTab(), DisplayPaneTab())
     buttons = (
-        (tabs[0].refresh_btn, tabs[0].create_btn, tabs[0].duplicate_btn, tabs[0].delete_btn),
-        (tabs[1].refresh_btn, tabs[1].reindex_up_btn, tabs[1].reindex_down_btn),
+        (tabs[0].refresh_btn, tabs[0].create_btn, tabs[0].duplicate_btn, tabs[0].delete_btn,
+         tabs[0].reindex_up_btn, tabs[0].reindex_down_btn),
+        (tabs[1].refresh_btn, tabs[1].reindex_up_btn, tabs[1].reindex_down_btn,
+         tabs[1].reset_authoring_btn),
         (tabs[2].refresh_morphs_btn, tabs[2].create_morph_btn, tabs[2].delete_morph_btn,
          tabs[2].move_morph_up_btn, tabs[2].move_morph_down_btn),
         (tabs[3].add_frame_btn, tabs[3].delete_frame_btn, tabs[3].move_frame_up_btn,

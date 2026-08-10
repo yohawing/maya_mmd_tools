@@ -13,7 +13,8 @@ from tools.model_authoring_gate import (
 
 def _result() -> dict:
     operations = [{"name": name, "status": "pass"} for name in REQUIRED_OPERATIONS]
-    operations[8]["created_types"] = [
+    by_name = {item["name"]: item for item in operations}
+    by_name["morph.create"]["created_types"] = [
         "bone",
         "vertex",
         "group",
@@ -21,8 +22,8 @@ def _result() -> dict:
         "uv",
         "additional_uv1",
     ]
-    operations[9]["edited_types"] = ["vertex", "bone", "group", "material"]
-    operations[9]["roundtrip_types"] = ["uv", "additional_uv1"]
+    by_name["morph.edit"]["edited_types"] = ["vertex", "bone", "group", "material"]
+    by_name["morph.edit"]["roundtrip_types"] = ["uv", "additional_uv1"]
     before = {"model": {}, "materials": [], "bones": [], "morphs": [], "fingerprint": "same"}
     return {
         "operations": operations,
@@ -48,11 +49,12 @@ def test_completed_worker_result_requires_explicit_morph_coverage() -> None:
 @pytest.mark.parametrize("detail", ["created_types", "edited_types", "roundtrip_types"])
 def test_completed_worker_result_rejects_missing_morph_detail(detail: str) -> None:
     result = _result()
+    by_name = {item["name"]: item for item in result["operations"]}
     if detail == "created_types":
-        del result["operations"][8][detail]
+        del by_name["morph.create"][detail]
     elif detail == "edited_types":
-        del result["operations"][9][detail]
+        del by_name["morph.edit"][detail]
     else:
-        del result["operations"][9][detail]
+        del by_name["morph.edit"][detail]
     with pytest.raises(ModelAuthoringGateError):
         _require_completed_worker_result(result)

@@ -109,24 +109,21 @@ class BoneTab(BaseTab):
         # ツールバー
         toolbar_layout = QHBoxLayout()
         self.bone_authoring_toolbar = AuthoringToolbar(
-            actions=("refresh", "move_up", "move_down"),
+            actions=("refresh", "move_up", "move_down", "reset"),
             labels={
                 "refresh": self.tr("refresh", "buttons"),
                 "move_up": self.tr("up", "buttons"),
                 "move_down": self.tr("down", "buttons"),
+                "reset": self.tr("reset_authoring", "buttons"),
             },
             parent=self,
         )
         self.refresh_btn = self.bone_authoring_toolbar.button("refresh")
         self.reindex_up_btn = self.bone_authoring_toolbar.button("move_up")
         self.reindex_down_btn = self.bone_authoring_toolbar.button("move_down")
+        self.reset_authoring_btn = self.bone_authoring_toolbar.button("reset")
         toolbar_layout.addWidget(self.bone_authoring_toolbar)
         bone_tree_layout.addLayout(toolbar_layout)
-
-        authoring_toolbar = QHBoxLayout()
-        self.reset_authoring_btn = QPushButton(self.tr("reset_authoring", "buttons"))
-        authoring_toolbar.addWidget(self.reset_authoring_btn)
-        authoring_toolbar.addStretch()
         for action in ("move_up", "move_down"):
             self.bone_authoring_toolbar.set_action_enabled(
                 action,
@@ -135,7 +132,6 @@ class BoneTab(BaseTab):
                 "authoring_selection_required",
             )
         self.reset_authoring_btn.setEnabled(False)
-        bone_tree_layout.addLayout(authoring_toolbar)
 
         self.animation_warning_label = QLabel()
         self.animation_warning_label.setWordWrap(True)
@@ -565,6 +561,7 @@ class BoneTab(BaseTab):
                 "refresh": self.tr("refresh", "buttons"),
                 "move_up": self.tr("up", "buttons"),
                 "move_down": self.tr("down", "buttons"),
+                "reset": self.tr("reset_authoring", "buttons"),
             },
             reason_resolver=lambda key: self.tr(key, "tooltips"),
         )

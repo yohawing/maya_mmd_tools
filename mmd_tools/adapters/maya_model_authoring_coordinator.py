@@ -28,6 +28,7 @@ from mmd_tools.core.material_authoring import (
     create_material,
     delete_material,
     duplicate_material,
+    reindex_materials,
     replace_material,
 )
 from mmd_tools.core.model_authoring_spec import (
@@ -220,6 +221,31 @@ class MayaModelAuthoringCoordinator:
             return result
 
         return self._execute(model_root, "delete_material", target, bind)
+
+    def reindex_materials(
+        self,
+        model_root: str,
+        ordered_indices: Sequence[int],
+    ) -> MmdModelAuthoringSpec:
+        """Reorder material bindings and remap material-morph references atomically."""
+        current = self._read_current(model_root, "reindex_materials")
+        target = self._pure(
+            "reindex_materials",
+            lambda: reindex_materials(current, ordered_indices),
+        )
+        structural_change = getattr(self._materials, "apply_material_spec_change", None)
+        if not callable(structural_change):
+            raise MayaModelAuthoringCoordinatorError(
+                "reindex_materials requires apply_material_spec_change; no Maya writes were performed"
+            )
+
+        def bind() -> MmdModelAuthoringSpec:
+            result = structural_change(model_root, current, target, None)
+            if type(result) is not MmdModelAuthoringSpec:
+                raise TypeError("apply_material_spec_change returned an invalid spec")
+            return result
+
+        return self._execute(model_root, "reindex_materials", target, bind)
 
     # Bone operations -----------------------------------------------------
     def register_selected_joint(self, model_root: str, joint: str) -> MmdModelAuthoringSpec:

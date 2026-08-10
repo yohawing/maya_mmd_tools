@@ -155,7 +155,10 @@ class FakeMaterialAuthoring:
         new: MmdModelAuthoringSpec,
         replacement_shader: str,
     ) -> MmdModelAuthoringSpec:
-        assert replacement_shader == new.materials[0].binding_identity
+        if len(new.materials) < len(_old.materials):
+            assert replacement_shader == new.materials[0].binding_identity
+        else:
+            assert replacement_shader is None
         self.backend.scene = new
         return new
 
@@ -318,6 +321,22 @@ def test_replace_material_uses_public_binding_api_in_one_transaction() -> None:
     assert result.materials[0].name == "材質編集"
     assert result.materials[0].binding_identity == "material0"
     _assert_one_successful_transaction(backend)
+
+
+def test_reindex_materials_uses_one_binding_transaction() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    coordinator.create_material("|root")
+    backend.rebase_count = 0
+
+    result = coordinator.reindex_materials("|root", (1, 0))
+
+    assert [(item.index, item.binding_identity) for item in result.materials] == [
+        (0, "material1"),
+        (1, "material0"),
+    ]
+    assert backend.begin_count == 2
+    assert backend.rebase_count == 1
+    assert backend.commit_count == 2
 
 
 def test_delete_material_uses_injected_structural_change_and_one_transaction() -> None:

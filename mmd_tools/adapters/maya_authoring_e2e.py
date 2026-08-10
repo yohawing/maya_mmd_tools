@@ -29,6 +29,7 @@ from mmd_tools.validation.snapshot import fingerprint_payload
 REQUIRED_OPERATIONS = (
     "material.create",
     "material.edit",
+    "material.reindex",
     # The operation name is retained for gate/report compatibility; the
     # implementation below is Maya-standard ``sets(forceElement=...)`` rather
     # than a product Assign route.
@@ -399,6 +400,20 @@ def run_authoring_e2e(
     operations.append(_operation("material.create", details={"index": created_material.index}))
     current = _edit_material(coordinator, material_authoring, root, created_material.index)
     operations.append(_operation("material.edit", details={"index": created_material.index}))
+    reordered = coordinator.reindex_materials(root, (created_material.index, 0))
+    created_material = next(
+        item
+        for item in reordered.materials
+        if item.binding_identity == created_material.binding_identity
+    )
+    if created_material.index != 0:
+        raise MayaAuthoringE2EError("material.reindex did not move the created binding to index 0")
+    operations.append(
+        _operation(
+            "material.reindex",
+            details={"binding": created_material.binding_identity, "index": created_material.index},
+        )
+    )
     _assign_material_with_standard_maya_sets(
         cmds_adapter,
         material_authoring,
