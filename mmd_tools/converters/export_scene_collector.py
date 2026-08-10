@@ -719,6 +719,8 @@ def _resolve_authored_reference(
     values: list[object],
     source_to_export: dict[int, Optional[int]],
     name_to_export: dict[str, Optional[int]],
+    *,
+    allow_minus_one: bool = False,
 ) -> tuple[object, bool]:
     """Resolve one or more authored references and detect conflicts."""
     candidates = [
@@ -730,7 +732,9 @@ def _resolve_authored_reference(
         return None, True
 
     resolved = [
-        _resolve_ik_bone_reference(value, source_to_export, name_to_export)
+        -1
+        if allow_minus_one and value == -1 and not isinstance(value, bool)
+        else _resolve_ik_bone_reference(value, source_to_export, name_to_export)
         for value in candidates
     ]
     if any(value is None for value in resolved):
@@ -824,6 +828,7 @@ def _collect_bone_semantic_metadata(
                 [_get_attr(joint, attr) for attr in reference_present],
                 source_to_export,
                 name_to_export,
+                allow_minus_one=True,
             )
             metadata["connect_bone_index"] = value
             if invalid:

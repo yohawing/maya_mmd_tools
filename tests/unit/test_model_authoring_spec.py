@@ -155,3 +155,11 @@ def test_external_parent_key_is_numeric_and_round_trips() -> None:
         MmdBoneSpec(name="string", external_parent_key="-1")  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         MmdBoneSpec(name="bool", external_parent_key=True)  # type: ignore[arg-type]
+
+
+def test_connect_bone_missing_target_sentinel_round_trips() -> None:
+    bone = MmdBoneSpec(name="terminal", flags=1, connect_bone_index=-1)
+
+    assert MmdBoneSpec.from_mapping(bone.to_mapping()) == bone
+    with pytest.raises(ValueError, match="connect_bone_index"):
+        MmdBoneSpec(name="invalid", flags=1, connect_bone_index=-2)

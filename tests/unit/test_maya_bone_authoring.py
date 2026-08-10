@@ -22,6 +22,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_PARENT_INDEX,
     ATTR_MMD_CONNECT_BONE_INDEX,
     ATTR_MMD_CONNECT_INDEX,
+    ATTR_MMD_CONNECTION_BONE,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_GRANT_PARENT_INDEX,
     ATTR_MMD_IK_LINKS,
@@ -223,6 +224,26 @@ def test_register_writes_spec_and_never_reads_live_transform() -> None:
     assert adapter.attrs[(joint, "mmd_bone_name")] == "日本語骨"
     assert adapter.attrs[(joint, "mmd_pmx_rest_position")] == (1.0, 2.0, 3.0)
     assert not adapter.world_translation
+
+
+def test_register_accepts_connect_bone_missing_target_sentinel() -> None:
+    adapter = FakeMayaCmds()
+    joint = "|モデル|末端"
+    adapter.nodes.add(joint)
+    adapter.joints.append(joint)
+    bone = MmdBoneSpec(
+        name="末端",
+        index=0,
+        flags=int(PmxBoneFlag.CONNECT_BONE),
+        connect_bone_index=-1,
+        binding_identity=joint,
+    )
+
+    register_existing_joint("|モデル", bone, adapter)
+
+    assert adapter.attrs[(joint, ATTR_MMD_CONNECT_INDEX)] == -1
+    assert adapter.attrs[(joint, ATTR_MMD_CONNECT_BONE_INDEX)] == -1
+    assert (joint, ATTR_MMD_CONNECTION_BONE) not in adapter.attrs
 
 
 def test_register_rejects_duplicate_identity_without_writes() -> None:

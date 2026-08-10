@@ -847,6 +847,13 @@ class MayaSceneMetadataBackend:
                 self._delete_existing_attr(node, attr)
             self._delete_existing_attr(node, name_attr)
             return
+        if index == -1:
+            for attr in numeric_attrs:
+                if not self._has_attr(node, attr):
+                    self._call_adapter("add_attr", node, longName=attr, attributeType="long")
+                self._set_existing_scalar(node, attr, index)
+            self._delete_existing_attr(node, name_attr)
+            return
         target = target_by_index.get(index)
         if target is None:
             raise MayaSceneMetadataError(f"{node}: bone reference points to unknown index {index}")
@@ -994,7 +1001,11 @@ class MayaSceneMetadataBackend:
         attrs = (ATTR_MMD_CONNECT_INDEX, ATTR_MMD_CONNECT_BONE_INDEX)
         if flags & PmxBoneFlag.CONNECT_BONE:
             data["connect_bone_index"] = self._resolve_reference(
-                joint, attrs, ATTR_MMD_CONNECTION_BONE, references
+                joint,
+                attrs,
+                ATTR_MMD_CONNECTION_BONE,
+                references,
+                minimum=-1,
             )
             # BonePresenter creates this editable field on every joint.  Its
             # exact UI default is inactive for index-connected bones, while a
@@ -1081,8 +1092,10 @@ class MayaSceneMetadataBackend:
         numeric_attrs: tuple[str, ...],
         name_attr: str,
         references: Mapping[str, set[int]],
+        *,
+        minimum: int = 0,
     ) -> int:
-        numeric = self._agreed_int_alias(joint, numeric_attrs, minimum=0, required=False)
+        numeric = self._agreed_int_alias(joint, numeric_attrs, minimum=minimum, required=False)
         name_value = None
         if self._has_attr(joint, name_attr):
             name_value = self._required_string(joint, name_attr)

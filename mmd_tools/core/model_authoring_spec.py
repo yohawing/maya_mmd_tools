@@ -337,7 +337,8 @@ class MmdBoneSpec:
         object.__setattr__(self, "rest_position", _vector(self.rest_position, 3, path="bone.rest_position"))
         _integer(self.transform_layer, path="bone.transform_layer", minimum=0)
         _integer(self.flags, path="bone.flags", minimum=0)
-        for field in ("connect_bone_index", "grant_parent_index", "ik_target_index"):
+        _optional_index(self.connect_bone_index, path="bone.connect_bone_index", allow_parent_root=True)
+        for field in ("grant_parent_index", "ik_target_index"):
             _optional_index(getattr(self, field), path=f"bone.{field}")
         object.__setattr__(self, "tail_offset", _optional_vector(self.tail_offset, 3, path="bone.tail_offset"))
         object.__setattr__(self, "grant_ratio", _number(self.grant_ratio, path="bone.grant_ratio"))

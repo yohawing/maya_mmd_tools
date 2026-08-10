@@ -449,6 +449,48 @@ class TestExportScope(unittest.TestCase):
         self.assertEqual(exported["key_value"], 42)
         self.assertNotIn("semantic_missing", exported)
 
+    def test_collect_bones_preserves_connect_bone_missing_target_sentinel(self):
+        """A PMX -1 terminal connection remains exportable, not unresolved."""
+        joint = "|model|terminal"
+        attrs = {
+            (joint, ATTR_MMD_BONE_INDEX): 117,
+            (joint, ATTR_MMD_BONE_PARENT_INDEX): -1,
+            (joint, ATTR_MMD_BONE_NAME): "Terminal",
+            (joint, ATTR_MMD_BONE_NAME_EN): "Terminal",
+            (joint, ATTR_MMD_BONE_FLAGS): 0x0001,
+            (joint, ATTR_MMD_CONNECT_INDEX): -1,
+            (joint, ATTR_MMD_CONNECT_BONE_INDEX): -1,
+        }
+
+        def attribute_query(attr, node, exists):
+            return exists and (node, attr) in attrs
+
+        def get_attr(path):
+            node, attr = path.rsplit(".", 1)
+            return attrs[(node, attr)]
+
+        with (
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "attributeQuery",
+                side_effect=attribute_query,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "getAttr",
+                side_effect=get_attr,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "xform",
+                return_value=[0.0, 0.0, 0.0],
+            ),
+        ):
+            bones, _ = export_scene_collector_module._collect_bones_from_joints([joint])
+
+        self.assertEqual(bones[0]["connect_bone_index"], -1)
+        self.assertNotIn("semantic_missing", bones[0])
+
     def test_collect_bones_keeps_malformed_rest_and_unresolved_refs_visible(self):
         """Malformed canonical data is retained for fail-closed validation."""
         root = "|model|root"

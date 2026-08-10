@@ -356,8 +356,8 @@ def register_existing_joint(root: str, bone: MmdBoneSpec, adapter: Any) -> None:
     flags = int(bone.flags)
     grant_flags = PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE
     if flags & PmxBoneFlag.CONNECT_BONE:
-        if bone.connect_bone_index is None or bone.connect_bone_index < 0:
-            _fail("CONNECT_BONE requires a non-negative connect_bone_index")
+        if bone.connect_bone_index is None or bone.connect_bone_index < -1:
+            _fail("CONNECT_BONE requires connect_bone_index >= -1")
     elif bone.connect_bone_index is not None:
         _fail("connect_bone_index requires CONNECT_BONE flag")
     if flags & grant_flags:
@@ -397,13 +397,14 @@ def register_existing_joint(root: str, bone: MmdBoneSpec, adapter: Any) -> None:
     if flags & PmxBoneFlag.CONNECT_BONE:
         _set_attr(adapter, joint, ATTR_MMD_CONNECT_INDEX, "long", bone.connect_bone_index)
         _set_attr(adapter, joint, ATTR_MMD_CONNECT_BONE_INDEX, "long", bone.connect_bone_index)
-        _set_attr(
-            adapter,
-            joint,
-            ATTR_MMD_CONNECTION_BONE,
-            "string",
-            reference_name(bone.connect_bone_index, "connect_bone_index"),
-        )
+        if bone.connect_bone_index >= 0:
+            _set_attr(
+                adapter,
+                joint,
+                ATTR_MMD_CONNECTION_BONE,
+                "string",
+                reference_name(bone.connect_bone_index, "connect_bone_index"),
+            )
     if flags & grant_flags:
         _set_attr(adapter, joint, ATTR_MMD_GRANT_PARENT_INDEX, "long", bone.grant_parent_index)
         _set_attr(
@@ -487,8 +488,8 @@ def register_existing_joints(root: str, bones: Sequence[MmdBoneSpec], adapter: A
         flags = int(item.flags)
         grant_flags = PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE
         if flags & PmxBoneFlag.CONNECT_BONE:
-            if item.connect_bone_index is None or item.connect_bone_index < 0:
-                _fail("CONNECT_BONE requires a non-negative connect_bone_index")
+            if item.connect_bone_index is None or item.connect_bone_index < -1:
+                _fail("CONNECT_BONE requires connect_bone_index >= -1")
         elif item.connect_bone_index is not None:
             _fail("connect_bone_index requires CONNECT_BONE flag")
         if flags & grant_flags:
@@ -575,7 +576,14 @@ def register_existing_joints(root: str, bones: Sequence[MmdBoneSpec], adapter: A
         if flags & PmxBoneFlag.CONNECT_BONE:
             _set_attr(adapter, joint, ATTR_MMD_CONNECT_INDEX, "long", item.connect_bone_index)
             _set_attr(adapter, joint, ATTR_MMD_CONNECT_BONE_INDEX, "long", item.connect_bone_index)
-            _set_attr(adapter, joint, ATTR_MMD_CONNECTION_BONE, "string", reference_name(item.connect_bone_index, "connect_bone_index"))
+            if item.connect_bone_index >= 0:
+                _set_attr(
+                    adapter,
+                    joint,
+                    ATTR_MMD_CONNECTION_BONE,
+                    "string",
+                    reference_name(item.connect_bone_index, "connect_bone_index"),
+                )
         if flags & (PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE):
             _set_attr(adapter, joint, ATTR_MMD_GRANT_PARENT_INDEX, "long", item.grant_parent_index)
             _set_attr(adapter, joint, ATTR_MMD_GRANT_PARENT, "string", reference_name(item.grant_parent_index, "grant_parent_index"))

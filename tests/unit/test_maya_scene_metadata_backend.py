@@ -360,6 +360,20 @@ def test_bone_presenter_tail_default_is_allowed_for_index_connection() -> None:
         list(backend.iter_bone_metadata("|root"))
 
 
+def test_connect_bone_missing_target_sentinel_is_allowed() -> None:
+    cmds, backend = _backend()
+    _bone(cmds, "|root|terminal", 0, int(PmxBoneFlag.CONNECT_BONE))
+    cmds.attrs[("|root|terminal", "mmd_connect_index")] = -1
+    cmds.attrs[("|root|terminal", "mmd_connect_bone_index")] = -1
+
+    assert list(backend.iter_bone_metadata("|root"))[0]["connect_bone_index"] == -1
+
+    cmds.attrs[("|root|terminal", "mmd_connect_index")] = -2
+    cmds.attrs[("|root|terminal", "mmd_connect_bone_index")] = -2
+    with pytest.raises(MayaSceneMetadataError, match="must be >= -1"):
+        list(backend.iter_bone_metadata("|root"))
+
+
 def test_name_only_and_full_path_references_resolve_but_ambiguity_fails() -> None:
     cmds, backend = _backend()
     _bone(cmds, "|root|source", 0, int(PmxBoneFlag.IK))
@@ -904,6 +918,25 @@ def test_bone_optional_payloads_clear_and_can_be_reenabled_transactionally() -> 
     adapter.write_spec("|root", reenabled)
 
     assert adapter.read_spec("|root").fingerprint() == reenabled.fingerprint()
+
+
+def test_connect_bone_missing_target_sentinel_round_trips_transactionally() -> None:
+    cmds, _, adapter = _writable_scene()
+    original = adapter.read_spec("|root")
+    terminal = replace(
+        original.bones[0],
+        flags=int(PmxBoneFlag.CONNECT_BONE),
+        connect_bone_index=-1,
+        tail_offset=None,
+    )
+    target = replace(original, bones=(terminal,))
+
+    adapter.write_spec("|root", target)
+
+    assert adapter.read_spec("|root").fingerprint() == target.fingerprint()
+    assert cmds.attrs[("|root|joint", "mmd_connect_index")] == -1
+    assert cmds.attrs[("|root|joint", "mmd_connect_bone_index")] == -1
+    assert ("|root|joint", "mmd_connection_bone") not in cmds.attrs
 
 
 @pytest.mark.parametrize("section", ["model", "bone", "material", "morph"])

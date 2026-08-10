@@ -169,7 +169,16 @@ def _validate_bone_refs(bone: MmdBoneSpec, *, indices: set[int], context: str = 
             _fail(f"{context}.parent_index references unknown bone index {bone.parent_index}")
         if bone.parent_index == bone.index:
             _fail(f"{context}.parent_index cannot reference itself")
-    for field in ("connect_bone_index", "grant_parent_index", "ik_target_index"):
+    if bone.connect_bone_index is not None:
+        checked = _ref_index(
+            bone.connect_bone_index,
+            context=f"{context}.connect_bone_index",
+            indices=indices,
+            allow_minus_one=True,
+        )
+        if checked == bone.index:
+            _fail(f"{context}.connect_bone_index cannot reference itself")
+    for field in ("grant_parent_index", "ik_target_index"):
         value = getattr(bone, field)
         if value is None:
             continue
@@ -248,6 +257,7 @@ def _reindex_with_mapping(spec: MmdModelAuthoringSpec, mapping: Mapping[int, int
                     bone.connect_bone_index,
                     mapping,
                     context=f"bones[{bone.index}].connect_bone_index",
+                    allow_minus_one=True,
                 ),
                 grant_parent_index=_remap_ref(
                     bone.grant_parent_index,

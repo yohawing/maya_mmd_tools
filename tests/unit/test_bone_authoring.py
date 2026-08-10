@@ -143,6 +143,38 @@ def test_reindex_remaps_all_bone_references_and_preserves_nonbone_morph() -> Non
     assert result.morphs[1] == spec.morphs[1]
 
 
+def test_replace_and_reindex_preserve_connect_bone_missing_target_sentinel() -> None:
+    spec = MmdModelAuthoringSpec(
+        model=MmdModelSpec("model"),
+        bones=(
+            MmdBoneSpec(
+                "terminal",
+                index=0,
+                flags=1,
+                connect_bone_index=-1,
+                binding_identity="terminal",
+            ),
+            MmdBoneSpec("other", index=1, binding_identity="other"),
+        ),
+    )
+
+    replaced = replace_bone(
+        spec,
+        MmdBoneSpec(
+            "terminal updated",
+            index=0,
+            flags=1,
+            connect_bone_index=-1,
+            binding_identity="terminal",
+        ),
+    )
+    reindexed = reindex_bones(replaced, [1, 0])
+
+    terminal = next(bone for bone in reindexed.bones if bone.name == "terminal updated")
+    assert terminal.index == 1
+    assert terminal.connect_bone_index == -1
+
+
 def test_reindex_rejects_non_permutation_and_malformed_refs() -> None:
     spec = _base_spec()
     for ordered in ([0, 2], [0, 2, 2], [0, 2, 9], [False, 2, 5]):
