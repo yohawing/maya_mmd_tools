@@ -9,6 +9,7 @@ ImportExportPresenter 自体は純粋な分岐ロジックだが、import 連鎖
 """
 
 import unittest
+from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -118,6 +119,17 @@ class _ModalDialog:
             model_name=model_name,
             model_name_english=model_name_english,
         )
+
+
+@dataclass(frozen=True)
+class _ReloadGenerationCreateModelRequest:
+    template_id: str
+    model_name: str
+    model_name_english: str = ""
+
+
+_ReloadGenerationCreateModelRequest.__module__ = CreateModelRequest.__module__
+_ReloadGenerationCreateModelRequest.__qualname__ = CreateModelRequest.__qualname__
 
 
 class _ModalView(_FakeView):
@@ -404,6 +416,55 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertEqual(request.model_name_english, "EnglishName")
         self.assertEqual(events, ["refresh"])
         self.assertEqual(app_state.current_model_root, "|created")
+
+    def test_reload_generation_request_is_rehydrated_without_misclassifying_selection(self):
+        view = _ModalView()
+        app_state = _FakeAppState()
+        action = MagicMock()
+        action.execute.return_value = SimpleNamespace(root="|created")
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            create_model_action=action,
+            model_template_loader=lambda: (
+                SimpleNamespace(template_id="opaque-template-id", label="Template"),
+            ),
+        )
+        request = _ReloadGenerationCreateModelRequest(
+            "opaque-template-id",
+            "モデル",
+            "Model",
+        )
+
+        self.assertTrue(presenter._execute_create_model_request(request))
+
+        normalized = action.execute.call_args.args[0]
+        self.assertIs(type(normalized), CreateModelRequest)
+        self.assertEqual(normalized.template_id, "opaque-template-id")
+        self.assertFalse(any("Select a packaged" in status for status in app_state.statuses))
+
+    def test_unknown_template_is_not_reported_as_missing_selection(self):
+        view = _ModalView()
+        app_state = _FakeAppState()
+        action = MagicMock()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            create_model_action=action,
+            model_template_loader=lambda: (
+                SimpleNamespace(template_id="known", label="Template"),
+            ),
+        )
+
+        self.assertFalse(
+            presenter._execute_create_model_request(
+                CreateModelRequest("unknown", "モデル", "Model")
+            )
+        )
+
+        action.execute.assert_not_called()
+        self.assertIn("unknown", app_state.statuses[-1])
+        self.assertNotIn("Select a packaged", app_state.statuses[-1])
 
     def test_new_model_button_fails_closed_when_template_loading_fails(self):
         view = _ModalView()

@@ -282,6 +282,8 @@
     "bone_unregister_confirm": "選択したMMDボーンの登録を解除しますか？参照はtransactionで検証されます。",
     "create_model_unavailable": "このセッションではMMDモデル作成を利用できません",
     "create_model_template_required": "同梱モデルテンプレートを選択してください",
+    "create_model_template_unknown": "選択したモデルテンプレートを利用できません: {template_id}",
+    "create_model_request_invalid": "MMDモデル作成リクエストが不正です: {error}",
     "create_model_succeeded": "MMDモデルを作成しました: {root}",
     "create_model_failed": "MMDモデルの作成に失敗しました: {error}",
     "changes_reset": "変更をリセットしました",

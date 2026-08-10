@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import make_dataclass, replace
 from typing import Any
 
 import pytest
@@ -284,6 +284,29 @@ def test_create_model_action_is_safe_without_injected_initializer() -> None:
         "モデル",
         "",
     )
+
+    reload_request_type = make_dataclass(
+        "CreateModelRequest",
+        (("template_id", str), ("model_name", str), ("model_name_english", str)),
+        frozen=True,
+    )
+    reload_request_type.__module__ = CreateModelRequest.__module__
+    reload_request_type.__qualname__ = CreateModelRequest.__qualname__
+    assert CreateModelAction(Stub()).execute(
+        reload_request_type("pmx20-basic-v1", "モデル", "Model")
+    ) == ("pmx20-basic-v1", "モデル", "Model")
+    with pytest.raises(CreateModelActionError, match="requires a CreateModelRequest"):
+        CreateModelAction(Stub()).execute(
+            type(
+                "DuckRequest",
+                (),
+                {
+                    "template_id": "pmx20-basic-v1",
+                    "model_name": "モデル",
+                    "model_name_english": "Model",
+                },
+            )()
+        )
 
 
 def test_template_selector_options_are_curated_and_immutable() -> None:

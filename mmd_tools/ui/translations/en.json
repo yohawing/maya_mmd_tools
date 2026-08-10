@@ -282,6 +282,8 @@
     "bone_unregister_confirm": "Unregister the selected MMD bone? References are validated transactionally.",
     "create_model_unavailable": "Create MMD Model is not available in this session",
     "create_model_template_required": "Select a packaged model template",
+    "create_model_template_unknown": "The selected model template is unavailable: {template_id}",
+    "create_model_request_invalid": "The Create MMD Model request is invalid: {error}",
     "create_model_succeeded": "Created MMD model: {root}",
     "create_model_failed": "Create MMD Model failed: {error}",
     "changes_reset": "Reset changes",

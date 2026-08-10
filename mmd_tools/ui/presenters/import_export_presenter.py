@@ -1,7 +1,11 @@
 import math
 
 from ..qt_compat import QObject, QFileDialog
-from ...actions.create_model_action import CreateModelRequest
+from ...actions.create_model_action import (
+    CreateModelActionError,
+    CreateModelRequest,
+    normalize_create_model_request,
+)
 from ...actions.import_model_action import ImportModelAction, ImportModelRequest
 from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
@@ -106,9 +110,24 @@ class ImportExportPresenter(QObject):
         if not callable(getattr(action, "execute", None)):
             self.app_state.emit_status(tr_message("create_model_unavailable"))
             return False
-        if not isinstance(request, CreateModelRequest):
-            self.app_state.emit_status(tr_message("create_model_template_required"))
+        observed_type = type(request)
+        try:
+            request = normalize_create_model_request(request)
+        except CreateModelActionError as exc:
+            self.app_state.emit_status(
+                tr_message_format("create_model_request_invalid", error=str(exc))
+            )
             return False
+        if observed_type is not CreateModelRequest:
+            logger.warning(
+                "Rehydrated CreateModelRequest after module reload: actual=%s.%s "
+                "actual_class_id=%s current_class_id=%s template_id=%r",
+                observed_type.__module__,
+                observed_type.__qualname__,
+                id(observed_type),
+                id(CreateModelRequest),
+                request.template_id,
+            )
         template_id = request.template_id
         if not isinstance(template_id, str) or not template_id:
             self.app_state.emit_status(tr_message("create_model_template_required"))
@@ -119,7 +138,9 @@ class ImportExportPresenter(QObject):
             if isinstance(getattr(template, "template_id", None), str)
         }
         if template_id not in valid_template_ids:
-            self.app_state.emit_status(tr_message("create_model_template_required"))
+            self.app_state.emit_status(
+                tr_message_format("create_model_template_unknown", template_id=template_id)
+            )
             return False
         try:
             result = action.execute(request)
