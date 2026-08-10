@@ -256,6 +256,39 @@ def test_vertex_runtime_patch_writes_exact_selected_target() -> None:
     assert any(path.endswith("inputPointsTarget") for path in paths)
 
 
+def test_vertex_name_only_patch_updates_alias_and_mapping() -> None:
+    adapter = FakeAdapter()
+    adapter.types.update({"morph": "network", "bs": "blendShape", "mesh": "mesh"})
+    adapter.attrs.update(
+        {
+            ("morph", "mmd_morph_index"): 0,
+            ("morph", "mmd_morph_type"): "vertex",
+            ("morph", "mmd_morph_name"): "Morph",
+            ("morph", "mmd_morph_name_en"): "Morph",
+            ("morph", "mmd_morph_panel"): 4,
+            ("|Model", "mmd_import_scale"): 1.0,
+            ("bs", "mmd_blendshape_morph_names_json"): '{"3":{"name":"Morph","index":0}}',
+            ("bs", "geometry"): ["mesh"],
+            ("bs", "geometryIndices"): [0],
+            ("mesh", "vertexCount"): 1,
+        }
+    )
+    adapter.aliases["bs.weight[3]"] = "Morph"
+    adapter.connections["|Model.mmd_morph_controller"] = ["controller"]
+    adapter.types["controller"] = "mmdMorphController"
+    adapter.connections["controller.outputWeight[0]"] = ["bs.weight[3]"]
+    old = _morph(
+        morph_type="vertex",
+        offsets=({"vertex_index": 0, "position_offset": [0, 0, 0]},),
+    )
+    new = replace(old, name="Edited")
+
+    apply_morph_value_patch("|Model", old, new, adapter, registry_api=FakeRegistry(["morph"]))
+
+    assert adapter.aliases["bs.weight[3]"] == "Edited"
+    assert adapter.attrs[("bs", "mmd_blendshape_morph_names_json")] == '{"3":{"name":"Edited","index":0}}'
+
+
 def test_bone_runtime_patch_reuses_bind_orientation_converter(monkeypatch) -> None:
     import mmd_tools.converters.bone_morph_runtime as runtime
 

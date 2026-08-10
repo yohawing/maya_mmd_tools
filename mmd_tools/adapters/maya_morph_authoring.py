@@ -124,7 +124,7 @@ def apply_morph_value_patch(
         if old_morph.to_mapping()[field] != new_morph.to_mapping()[field]
     }
     _write_morph_values(adapter, canonical, old_morph, new_morph, changed)
-    if "offsets" in changed:
+    if "offsets" in changed or (old_morph.morph_type == "vertex" and "name" in changed):
         _update_selected_runtime_values(adapter, root, canonical, old_morph, new_morph)
     return new_morph
 
