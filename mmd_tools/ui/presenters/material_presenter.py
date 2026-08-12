@@ -691,31 +691,33 @@ class MaterialPresenter:
             # Check shader type
             shader_type = self.maya_adapter.node_type(material_name)
 
-            if shader_type in ("dx11Shader", "GLSLShader"):
-                diffuse_color, diffuse_owned = self._load_base_value(
-                    material_name,
-                    ATTR_MMD_DIFFUSE_COLOR,
-                    ("DiffuseColorRGB", "g_Diffuse"),
-                    (0.5, 0.5, 0.5),
-                )
-            else:
-                actual_attr = "baseColor" if shader_type == "standardSurface" else "color"
-                diffuse_color = self._get_attr_safe(material_name, actual_attr, (0.5, 0.5, 0.5))
-                diffuse_owned = True
+            diffuse_fallbacks = (
+                ("DiffuseColorRGB", "g_Diffuse")
+                if shader_type in ("dx11Shader", "GLSLShader")
+                else (("baseColor",) if shader_type == "standardSurface" else ("color",))
+            )
+            diffuse_color, diffuse_owned = self._load_base_value(
+                material_name,
+                ATTR_MMD_DIFFUSE_COLOR,
+                diffuse_fallbacks,
+                (0.5, 0.5, 0.5),
+            )
             self.material_data["_diffuse_base_owned"] = diffuse_owned
             self.material_data["diffuse"] = diffuse_color
             self._update_color_widget(self.view.diffuse_color_widget, diffuse_color)
 
             # Get specular color
-            if shader_type in ("dx11Shader", "GLSLShader"):
-                specular_color, specular_owned = self._load_base_value(
-                    material_name, ATTR_MMD_SPECULAR_COLOR, ("SpecularColor",), (0.5, 0.5, 0.5)
-                )
-            else:
-                specular_color = self._get_attr_safe(
-                    material_name, "specularColor", (0.5, 0.5, 0.5)
-                )
-                specular_owned = True
+            specular_fallbacks = (
+                ("SpecularColor",)
+                if shader_type in ("dx11Shader", "GLSLShader")
+                else ("specularColor",)
+            )
+            specular_color, specular_owned = self._load_base_value(
+                material_name,
+                ATTR_MMD_SPECULAR_COLOR,
+                specular_fallbacks,
+                (0.5, 0.5, 0.5),
+            )
             self.material_data["_specular_base_owned"] = specular_owned
 
             # タプルが正しい形式であることを確認
@@ -726,15 +728,17 @@ class MaterialPresenter:
             self._update_color_widget(self.view.specular_color_widget, specular_color)
 
             # Get ambient - Maya doesn't have ambient by default, check if attr exists
-            if shader_type in ("dx11Shader", "GLSLShader"):
-                ambient_color, ambient_owned = self._load_base_value(
-                    material_name, ATTR_MMD_AMBIENT_COLOR, ("AmbientColor",), (0.5, 0.5, 0.5)
-                )
-            else:
-                ambient_color = self._get_attr_safe(
-                    material_name, "ambientColor", (0.5, 0.5, 0.5)
-                )
-                ambient_owned = True
+            ambient_fallbacks = (
+                ("AmbientColor",)
+                if shader_type in ("dx11Shader", "GLSLShader")
+                else ("ambientColor",)
+            )
+            ambient_color, ambient_owned = self._load_base_value(
+                material_name,
+                ATTR_MMD_AMBIENT_COLOR,
+                ambient_fallbacks,
+                (0.5, 0.5, 0.5),
+            )
             self.material_data["_ambient_base_owned"] = ambient_owned
 
             # タプルが正しい形式であることを確認

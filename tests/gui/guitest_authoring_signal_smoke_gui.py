@@ -10,7 +10,11 @@ import maya.cmds as cmds
 
 from mmd_tools.adapters.maya_authoring_e2e import normalize_spec_payload
 from mmd_tools.core import model_registry
-from mmd_tools.core.constants import ATTR_MMD_DISPLAY_FRAMES_JSON
+from mmd_tools.core.constants import (
+    ATTR_MMD_BONE_NAME_EN,
+    ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_MATERIAL_NAME_EN,
+)
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
 from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.ui.qt_compat import QApplication
@@ -81,6 +85,7 @@ def _changed_spec_sections(before, after):
     return sorted(
         key
         for key in set(before["spec"]) | set(after["spec"])
+        if key != "fingerprint"
         if before["spec"].get(key) != after["spec"].get(key)
     )
 
@@ -196,6 +201,8 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after)
         footprint = _footprint_delta(binding_before, binding_after)
+        self.assertEqual(_changed_spec_sections(before, after), ["materials"])
+        self.assertEqual(footprint["attributes_changed"], [ATTR_MMD_MATERIAL_NAME_EN])
         self.assertFalse(footprint["connections_added"])
         self.assertFalse(footprint["connections_removed"])
         evidence.update(
@@ -229,6 +236,8 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after)
         footprint = _footprint_delta(binding_before, binding_after)
+        self.assertEqual(_changed_spec_sections(before, after), ["bones"])
+        self.assertEqual(footprint["attributes_changed"], [ATTR_MMD_BONE_NAME_EN])
         self.assertFalse(footprint["connections_added"])
         self.assertFalse(footprint["connections_removed"])
         evidence.update(
@@ -279,6 +288,7 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             "; ".join(self.status_messages),
         )
         self.assertEqual(after["spec"]["morphs"][-1]["morph_type"], "group")
+        self.assertEqual(_changed_spec_sections(before, after), ["morphs"])
         cmds.undo()
         self.assertEqual(_canonical_payload(self.window, self.root), before)
         self.assertFalse(set(created_nodes) & set(cmds.ls(long=True) or []))
@@ -318,6 +328,8 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after)
         footprint = _footprint_delta(root_before, root_after)
+        self.assertEqual(_changed_spec_sections(before, after), [])
+        self.assertEqual(footprint["attributes_changed"], [ATTR_MMD_DISPLAY_FRAMES_JSON])
         self.assertFalse(footprint["connections_added"])
         self.assertFalse(footprint["connections_removed"])
         evidence.update(

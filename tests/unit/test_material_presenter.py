@@ -9,8 +9,11 @@ install_headless_ui_stubs()
 from mmd_tools.ui.presenters.material_presenter import MaterialPresenter  # noqa: E402
 from mmd_tools.ui.qt_compat import Qt  # noqa: E402
 from mmd_tools.core.constants import (  # noqa: E402
+    ATTR_MMD_AMBIENT_COLOR,
+    ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_SPECULAR_COLOR,
     ATTR_MMD_ORIGINAL_TEXTURE_PATH,
     ATTR_MMD_SPHERE_PATH,
     ATTR_MMD_SPHERE_MODE,
@@ -672,6 +675,27 @@ class TestMaterialPresenter(unittest.TestCase):
         info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
         self.assertIn(expected, debug_messages)
         self.assertNotIn(expected, info_messages)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_standard_surface_load_prefers_canonical_mmd_colors(self, mock_maya_attribute_utils):
+        self.mock_maya_adapter.node_type.return_value = "standardSurface"
+        canonical = {
+            ATTR_MMD_DIFFUSE_COLOR: (0.1, 0.2, 0.3),
+            ATTR_MMD_SPECULAR_COLOR: (0.4, 0.5, 0.6),
+            ATTR_MMD_AMBIENT_COLOR: (0.7, 0.8, 0.9),
+        }
+        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr in canonical
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: canonical.get(attr)
+
+        self.presenter.load_material_properties("standard_material")
+
+        self.assertEqual(self.presenter.material_data["diffuse"], canonical[ATTR_MMD_DIFFUSE_COLOR])
+        self.assertEqual(self.presenter.material_data["specular"], canonical[ATTR_MMD_SPECULAR_COLOR])
+        self.assertEqual(self.presenter.material_data["ambient"], canonical[ATTR_MMD_AMBIENT_COLOR])
+        queried = [call.args[1] for call in mock_maya_attribute_utils.get_attribute.call_args_list]
+        self.assertNotIn("baseColor", queried)
+        self.assertNotIn("specularColor", queried)
+        self.assertNotIn("ambientColor", queried)
 
     def test_update_color_widget_with_valid_color(self):
         """有効な色データでのカラーウィジェット更新テスト"""
