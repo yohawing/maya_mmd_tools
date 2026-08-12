@@ -1018,6 +1018,16 @@ def _capture_morph_oracle(root: str) -> dict[str, Any]:
     unsupported_types = set()
     for node in _owned_morph_network_nodes(root):
         morph_type = _required_morph_string(node, "mmd_morph_type")
+        if morph_type == "vertex":
+            morph_index = _required_morph_int(node, "mmd_morph_index")
+            existing = morphs_by_index.get(morph_index)
+            if existing is None or existing.get("type") != "vertex":
+                raise RuntimeError(
+                    f"vertex morph network {node} has no matching blendShape metadata"
+                )
+            if _required_morph_string(node, "mmd_morph_name") != existing.get("name"):
+                raise RuntimeError(f"vertex morph metadata differs at index {morph_index}")
+            continue
         if morph_type not in MORPH_OFFSET_ATTRIBUTES:
             unsupported_types.add(morph_type)
             continue
