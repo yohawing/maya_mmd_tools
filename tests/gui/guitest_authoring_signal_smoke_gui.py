@@ -29,6 +29,62 @@ def _fingerprint(payload):
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _json_value(value):
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _node_footprint(node):
+    """Capture serialisable user attrs and DG edges for one live node."""
+    attributes = {}
+    for attribute in cmds.listAttr(node, userDefined=True) or []:
+        try:
+            attributes[attribute] = _json_value(cmds.getAttr(f"{node}.{attribute}"))
+        except Exception:
+            continue
+    raw_connections = cmds.listConnections(
+        node,
+        source=True,
+        destination=True,
+        connections=True,
+        plugs=True,
+    ) or []
+    connections = sorted(
+        [str(raw_connections[index]), str(raw_connections[index + 1])]
+        for index in range(0, len(raw_connections) - 1, 2)
+    )
+    return {"node": node, "attributes": attributes, "connections": connections}
+
+
+def _footprint_delta(before, after):
+    before_attrs = before["attributes"]
+    after_attrs = after["attributes"]
+    changed_attrs = sorted(
+        key
+        for key in set(before_attrs) | set(after_attrs)
+        if before_attrs.get(key) != after_attrs.get(key)
+    )
+    before_edges = {tuple(edge) for edge in before["connections"]}
+    after_edges = {tuple(edge) for edge in after["connections"]}
+    return {
+        "node": after["node"],
+        "attributes_changed": changed_attrs,
+        "connections_added": [list(edge) for edge in sorted(after_edges - before_edges)],
+        "connections_removed": [list(edge) for edge in sorted(before_edges - after_edges)],
+    }
+
+
+def _changed_spec_sections(before, after):
+    return sorted(
+        key
+        for key in set(before["spec"]) | set(after["spec"])
+        if before["spec"].get(key) != after["spec"].get(key)
+    )
+
+
 def _semantic_topology(window, root):
     """Capture ownership topology by semantic role, never by Maya node name."""
     spec = window.authoring_composition.coordinator.read_spec(root)
@@ -124,10 +180,12 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         QApplication.processEvents()
         before = _canonical_payload(self.window, self.root)
         binding = self.window.authoring_composition.coordinator.read_spec(self.root).materials[0].binding_identity
+        binding_before = _node_footprint(binding)
         view.material_en_name_edit.setText("UI Material")
         view.apply_btn.click()
         QApplication.processEvents()
         after = _canonical_payload(self.window, self.root)
+        binding_after = _node_footprint(binding)
         self.assertEqual(after["spec"]["materials"][0]["name_english"], "UI Material")
         self.assertEqual(
             self.window.authoring_composition.coordinator.read_spec(self.root).materials[0].binding_identity,
@@ -137,7 +195,17 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(_canonical_payload(self.window, self.root), before)
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after)
-        evidence.update(selector="materialApplyButton", before=_fingerprint(before), after=_fingerprint(after))
+        footprint = _footprint_delta(binding_before, binding_after)
+        self.assertFalse(footprint["connections_added"])
+        self.assertFalse(footprint["connections_removed"])
+        evidence.update(
+            selector="materialApplyButton",
+            selected_binding=binding,
+            before=_fingerprint(before),
+            after=_fingerprint(after),
+            changed_spec_sections=_changed_spec_sections(before, after),
+            footprint=footprint,
+        )
 
     def _bone_case(self, evidence):
         view = self.window.bone_presenter.view
@@ -145,10 +213,12 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         QApplication.processEvents()
         before = _canonical_payload(self.window, self.root)
         binding = self.window.authoring_composition.coordinator.read_spec(self.root).bones[0].binding_identity
+        binding_before = _node_footprint(binding)
         view.bone_name_en_edit.setText("UI Root")
         view.apply_btn.click()
         QApplication.processEvents()
         after = _canonical_payload(self.window, self.root)
+        binding_after = _node_footprint(binding)
         self.assertEqual(after["spec"]["bones"][0]["name_english"], "UI Root")
         self.assertEqual(
             self.window.authoring_composition.coordinator.read_spec(self.root).bones[0].binding_identity,
@@ -158,7 +228,17 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(_canonical_payload(self.window, self.root), before)
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after)
-        evidence.update(selector="boneApplyButton", before=_fingerprint(before), after=_fingerprint(after))
+        footprint = _footprint_delta(binding_before, binding_after)
+        self.assertFalse(footprint["connections_added"])
+        self.assertFalse(footprint["connections_removed"])
+        evidence.update(
+            selector="boneApplyButton",
+            selected_binding=binding,
+            before=_fingerprint(before),
+            after=_fingerprint(after),
+            changed_spec_sections=_changed_spec_sections(before, after),
+            footprint=footprint,
+        )
 
     def _morph_case(self, evidence):
         view = self.window.morph_presenter.view
@@ -171,6 +251,9 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertTrue(self.window.morph_presenter._authoring_ready)
         self.assertTrue(view.create_morph_btn.isEnabled(), view.create_morph_btn.toolTip())
         before = _canonical_payload(self.window, self.root)
+        nodes_before = set(cmds.ls(long=True) or [])
+        registry = model_registry.get_model_registry(self.root)
+        registry_before = _node_footprint(registry)
         choices = []
         clicks = []
 
@@ -188,6 +271,8 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertTrue(clicks, "morphCreateButton did not emit clicked")
         self.assertTrue(choices, "morph create-type provider was not invoked")
         after = _canonical_payload(self.window, self.root)
+        registry_after = _node_footprint(registry)
+        created_nodes = sorted(set(cmds.ls(long=True) or []) - nodes_before)
         self.assertEqual(
             len(after["spec"]["morphs"]),
             len(before["spec"]["morphs"]) + 1,
@@ -196,14 +281,28 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(after["spec"]["morphs"][-1]["morph_type"], "group")
         cmds.undo()
         self.assertEqual(_canonical_payload(self.window, self.root), before)
+        self.assertFalse(set(created_nodes) & set(cmds.ls(long=True) or []))
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after)
-        evidence.update(selector="morphCreateButton", before=_fingerprint(before), after=_fingerprint(after))
+        self.assertTrue(set(created_nodes) <= set(cmds.ls(long=True) or []))
+        evidence.update(
+            selector="morphCreateButton",
+            before=_fingerprint(before),
+            after=_fingerprint(after),
+            changed_spec_sections=_changed_spec_sections(before, after),
+            footprint={
+                **_footprint_delta(registry_before, registry_after),
+                "nodes_created": [
+                    {"node": node, "node_type": cmds.nodeType(node)} for node in created_nodes
+                ],
+            },
+        )
 
     def _display_case(self, evidence):
         view = self.window.display_pane_presenter.view
         self.window.display_pane_presenter.refresh()
         before = _canonical_payload(self.window, self.root)
+        root_before = _node_footprint(self.root)
         view.add_frame_btn.click()
         QApplication.processEvents()
         view.name_jp_edit.setText("UI表示枠")
@@ -211,13 +310,23 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         view.apply_btn.click()
         QApplication.processEvents()
         after = _canonical_payload(self.window, self.root)
+        root_after = _node_footprint(self.root)
         self.assertEqual(after["spec"], before["spec"])
         self.assertEqual(after["display_frames"][-1]["name_english"], "UI Frame")
         cmds.undo()
         self.assertEqual(_canonical_payload(self.window, self.root), before)
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after)
-        evidence.update(selector="displayApplyButton", before=_fingerprint(before), after=_fingerprint(after))
+        footprint = _footprint_delta(root_before, root_after)
+        self.assertFalse(footprint["connections_added"])
+        self.assertFalse(footprint["connections_removed"])
+        evidence.update(
+            selector="displayApplyButton",
+            before=_fingerprint(before),
+            after=_fingerprint(after),
+            changed_spec_sections=_changed_spec_sections(before, after),
+            footprint=footprint,
+        )
 
     def _save_reopen_case(self, evidence):
         before = _canonical_payload(self.window, self.root)
