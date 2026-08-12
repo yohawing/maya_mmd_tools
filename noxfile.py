@@ -1119,10 +1119,11 @@ def model_authoring_gate(session: nox.Session) -> None:
 @nox.session(venv_backend="none")
 def ui_coverage_gate(session: nox.Session) -> None:
     """Validate the checked-in nine-tab UI inventory and optional report."""
+    args = list(session.posargs) or ["--from-evidence"]
     session.run(
         sys.executable,
         "tools/ui_coverage_gate.py",
-        *session.posargs,
+        *args,
         external=True,
     )
 

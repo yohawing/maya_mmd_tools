@@ -372,3 +372,20 @@ def test_evidence_report_builder_rejects_failed_artifact(tmp_path):
 
     with pytest.raises(ValueError, match="evidence failed"):
         build_report_from_evidence(manifest, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("name", "content"),
+    [
+        ("case-2024.log", "Ran 0 tests in 0.0s\n//-- GUI TEST FINISHED --// status=PASS\n"),
+        ("case-wrong.log", "Ran 1 test in 0.1s\n//-- GUI TEST FINISHED --// status=PASS\n"),
+    ],
+)
+def test_evidence_report_builder_rejects_zero_tests_or_wrong_version(tmp_path, name, content):
+    manifest = _qt_case_manifest()
+    manifest["cases"][0]["required_maya_versions"] = ["2024"]
+    manifest["cases"][0]["evidence_files"] = {"2024": name}
+    (tmp_path / name).write_text(content, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="evidence failed"):
+        build_report_from_evidence(manifest, tmp_path)

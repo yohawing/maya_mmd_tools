@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
@@ -378,7 +379,14 @@ def _evidence_passes(path: Path, version: str) -> bool:
             and str(payload.get("maya_version", "")).startswith(version)
         )
     text = path.read_text(encoding="utf-8", errors="replace")
-    return "//-- GUI TEST FINISHED --// status=PASS" in text and "Ran " in text
+    test_count = re.search(r"\bRan\s+(\d+)\s+tests?\b", text)
+    filename_has_version = version in path.name
+    return (
+        "//-- GUI TEST FINISHED --// status=PASS" in text
+        and test_count is not None
+        and int(test_count.group(1)) > 0
+        and filename_has_version
+    )
 
 
 def build_report_from_evidence(manifest: Mapping[str, Any], repo_root: Path) -> Dict[str, Any]:
