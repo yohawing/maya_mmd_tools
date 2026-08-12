@@ -77,7 +77,13 @@
       "evidence_files": {
         "2024": "build/reports/ui_info_undo_maya2024_final.log",
         "2026": "build/reports/ui-info-undo-2026.log"
-      }
+      },
+      "evidence_tests": [
+        "tests.gui.guitest_info_undo_contract_gui.TestInfoUndoContractGUI.test_focus_session_immediate_write_and_undo_redo",
+        "tests.gui.guitest_info_undo_contract_gui.TestInfoUndoContractGUI.test_model_switch_does_not_write_loading_text_to_new_root",
+        "tests.gui.guitest_info_undo_contract_gui.TestInfoUndoContractGUI.test_qtextedit_focus_session_immediate_write_and_undo_redo",
+        "tests.gui.guitest_info_undo_contract_gui.TestInfoUndoContractGUI.test_root_deletion_and_window_teardown_close_info_session"
+      ]
     },
     {
       "id": "gui.authoring_signal_smoke",
@@ -90,7 +96,10 @@
       "evidence_files": {
         "2024": "build/reports/ui_authoring_signal_smoke_maya2024.json",
         "2026": "build/reports/ui_authoring_signal_smoke_maya2026.json"
-      }
+      },
+      "evidence_tests": [
+        "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_authoring_signals_undo_redo_and_save_reopen"
+      ]
     },
     {
       "id": "gui.fileio_safe_routes",
@@ -103,7 +112,12 @@
       "evidence_files": {
         "2024": "build/reports/ui-fileio-safe-routes-2024.log",
         "2026": "build/reports/ui-fileio-safe-routes-2026.log"
-      }
+      },
+      "evidence_tests": [
+        "tests.gui.guitest_fileio_safe_routes_gui.TestFileIOSafeRoutesGUI.test_import_button_reaches_scene_graph_and_history",
+        "tests.gui.guitest_fileio_safe_routes_gui.TestFileIOSafeRoutesGUI.test_new_model_button_uses_real_modal_and_undo_redo_lifecycle",
+        "tests.gui.guitest_fileio_safe_routes_gui.TestFileIOSafeRoutesGUI.test_vmd_button_targets_current_model_and_creates_keys_timeline_history"
+      ]
     },
     {
       "id": "gui.settings_side_effects",
@@ -116,7 +130,10 @@
       "evidence_files": {
         "2024": "build/reports/ui-settings-side-effects-2024.log",
         "2026": "build/reports/ui-settings-side-effects-2026.log"
-      }
+      },
+      "evidence_tests": [
+        "tests.gui.guitest_settings_side_effects_gui.TestSettingsSideEffects.test_settings_controls_apply_real_side_effects"
+      ]
     },
     {
       "id": "gui.material_export_roundtrip",

@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from tools.ui_coverage_gate import build_report_from_evidence, validate_manifest, validate_report
+from tools.ui_coverage_gate import (
+    build_report_from_batch_logs,
+    build_report_from_evidence,
+    validate_manifest,
+    validate_report,
+)
 
 
 MANIFEST_PATH = Path(__file__).resolve().parents[2] / "tools" / "ui_coverage_manifest.json"
@@ -389,3 +394,30 @@ def test_evidence_report_builder_rejects_zero_tests_or_wrong_version(tmp_path, n
 
     with pytest.raises(ValueError, match="evidence failed"):
         build_report_from_evidence(manifest, tmp_path)
+
+
+def test_batch_report_builder_requires_each_named_test_in_each_version(tmp_path):
+    manifest = _qt_case_manifest()
+    test_id = "tests.gui.case.TestCase.test_action"
+    manifest["cases"][0]["evidence_tests"] = [test_id]
+    logs = {}
+    for version in ("2024", "2026"):
+        path = tmp_path / f"gui-{version}.log"
+        path.write_text(
+            f"[GUI TEST] END {test_id} outcome=success\n"
+            "Ran 1 test in 0.1s\n"
+            "//-- GUI TEST FINISHED --// status=PASS\n",
+            encoding="utf-8",
+        )
+        logs[version] = path
+
+    report = build_report_from_batch_logs(manifest, logs)
+
+    assert validate_report(manifest, report)["valid"]
+
+    logs["2026"].write_text(
+        "Ran 1 test in 0.1s\n//-- GUI TEST FINISHED --// status=PASS\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="missing successful tests"):
+        build_report_from_batch_logs(manifest, logs)

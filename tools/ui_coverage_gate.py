@@ -433,6 +433,72 @@ def build_report_from_evidence(manifest: Mapping[str, Any], repo_root: Path) -> 
     }
 
 
+def build_report_from_batch_logs(
+    manifest: Mapping[str, Any], batch_logs: Mapping[str, Path]
+) -> Dict[str, Any]:
+    """Build evidence from fresh full-suite logs for each required Maya version."""
+    required_case_ids = {
+        surface["case_id"]
+        for surface in manifest.get("surfaces", [])
+        if surface.get("disposition") == "qt_case"
+    }
+    cases_by_id = _entry_map(manifest.get("cases", []), "id")
+    cases = []
+    for case_id in sorted(required_case_ids):
+        case = cases_by_id.get(case_id, {})
+        versions = _normalise_versions(case.get("required_maya_versions"))
+        test_ids = case.get("evidence_tests")
+        if not isinstance(test_ids, list) or not test_ids or not all(
+            isinstance(test_id, str) and test_id for test_id in test_ids
+        ):
+            raise ValueError(f"case {case_id} has no evidence_tests list")
+        for version in versions:
+            log_path = batch_logs.get(version)
+            if log_path is None or not log_path.is_file() or not _evidence_passes(log_path, version):
+                raise ValueError(f"full GUI evidence failed for Maya {version}: {log_path}")
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+            missing = [
+                test_id
+                for test_id in test_ids
+                if f"[GUI TEST] END {test_id} outcome=success" not in text
+            ]
+            if missing:
+                raise ValueError(
+                    f"case {case_id} missing successful tests for Maya {version}: {', '.join(missing)}"
+                )
+        cases.append({"case_id": case_id, "status": "pass", "maya_versions": versions})
+
+    surfaces = []
+    for surface in manifest.get("surfaces", []):
+        if surface.get("disposition") != "qt_case":
+            continue
+        locator_key = "selector" if "selector" in surface else "attribute"
+        surfaces.append(
+            {
+                "surface_id": surface["id"],
+                "case_id": surface["case_id"],
+                "status": "pass",
+                locator_key: surface[locator_key],
+            }
+        )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "gate_id": GATE_ID,
+        "cases": cases,
+        "surfaces": surfaces,
+    }
+
+
+def _parse_batch_logs(values: Sequence[str]) -> Dict[str, Path]:
+    result = {}
+    for value in values:
+        version, separator, raw_path = value.partition("=")
+        if not separator or not version or not raw_path or version in result:
+            raise ValueError(f"invalid or duplicate --batch-log value: {value}")
+        result[version] = Path(raw_path).resolve()
+    return result
+
+
 def _build_cli_result(manifest_result: Dict[str, Any], report_result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     result = report_result if report_result is not None else manifest_result
     return {
@@ -462,16 +528,34 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         help="generate the report from manifest-declared build artifacts",
     )
     parser.add_argument("--write-report", help="write the generated evidence report JSON")
+    parser.add_argument(
+        "--batch-log",
+        action="append",
+        default=[],
+        metavar="VERSION=PATH",
+        help="fresh full GUI log used to generate evidence; repeat per Maya version",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
         manifest = load_json(Path(args.manifest))
         manifest_result = validate_manifest(manifest)
         report_result = None
-        if args.report and args.from_evidence:
-            raise ValueError("--report and --from-evidence are mutually exclusive")
-        if args.write_report and not args.from_evidence:
-            raise ValueError("--write-report requires --from-evidence")
-        if args.from_evidence:
+        generation_modes = int(bool(args.report)) + int(args.from_evidence) + int(bool(args.batch_log))
+        if generation_modes > 1:
+            raise ValueError("--report, --from-evidence, and --batch-log are mutually exclusive")
+        if args.write_report and not (args.from_evidence or args.batch_log):
+            raise ValueError("--write-report requires --from-evidence or --batch-log")
+        if args.batch_log:
+            generated = build_report_from_batch_logs(manifest, _parse_batch_logs(args.batch_log))
+            if args.write_report:
+                report_path = Path(args.write_report)
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                report_path.write_text(
+                    json.dumps(generated, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            report_result = validate_report(manifest, generated)
+        elif args.from_evidence:
             generated = build_report_from_evidence(manifest, Path(__file__).resolve().parents[1])
             if args.write_report:
                 report_path = Path(args.write_report)

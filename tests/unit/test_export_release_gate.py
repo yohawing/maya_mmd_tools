@@ -1539,5 +1539,42 @@ class ExportReleaseGateTests(unittest.TestCase):
         self.assertTrue(any("morphs[0] mesh[0] vertices max error" in failure for failure in failures))
 
 
+    def test_main_defaults_to_release_complete_full_gui(self):
+        summary = {"status": "pass", "unexecuted": []}
+        with mock.patch.object(
+            RELEASE_GATE, "build_release_summary", return_value=summary
+        ) as build_summary, mock.patch.object(
+            RELEASE_GATE, "_require_build_path", return_value=Path("build/release")
+        ):
+            self.assertEqual(
+                RELEASE_GATE.main(["--out-dir", "build/release", "--mmd-anim-cli", "runtime"]),
+                0,
+            )
+
+        self.assertTrue(build_summary.call_args.kwargs["full_gui"])
+
+    def test_main_targeted_gui_is_explicitly_incomplete_scope(self):
+        summary = {"status": "fail", "unexecuted": ["ui_coverage_gate"]}
+        with mock.patch.object(
+            RELEASE_GATE, "build_release_summary", return_value=summary
+        ) as build_summary, mock.patch.object(
+            RELEASE_GATE, "_require_build_path", return_value=Path("build/release")
+        ):
+            self.assertEqual(
+                RELEASE_GATE.main(
+                    [
+                        "--out-dir",
+                        "build/release",
+                        "--mmd-anim-cli",
+                        "runtime",
+                        "--targeted-gui",
+                    ]
+                ),
+                1,
+            )
+
+        self.assertFalse(build_summary.call_args.kwargs["full_gui"])
+
+
 if __name__ == "__main__":
     unittest.main()

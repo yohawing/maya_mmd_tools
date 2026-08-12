@@ -2076,6 +2076,8 @@ def build_release_summary(
             "tests/unit/test_export_release_gate.py",
             "tests/unit/test_export_scope.py",
             "tests/unit/test_gui_runner.py",
+            "tests/unit/test_ui_coverage_gate.py",
+            "tests/unit/test_ui_selector_contract.py",
             "tests/unit/test_vmd_scene_collector.py",
         ]
         consistency_tests = ROOT / "tests" / "unit" / "test_export_report_consistency.py"
@@ -2093,6 +2095,7 @@ def build_release_summary(
     steps.append({"name": "fail_fixture_matrix", **fail_matrix})
 
     report_paths: list[Path] = [Path(path) for path in fail_matrix.get("report_paths", [])]
+    gui_log_paths: dict[str, Path] = {}
     for version in maya_versions:
         mayapy = _maya_path(version)
         probe_dir = out_dir / f"maya-{version}"
@@ -2119,11 +2122,13 @@ def build_release_summary(
         if skip_gui:
             steps.append(_not_run(f"gui_tests_{version}", "--skip-gui was supplied"))
         else:
+            gui_log_path = out_dir / f"gui-{version}.log"
+            gui_log_paths[version] = gui_log_path
             gui_args = [
                 "--maya_version",
                 version,
                 "--log_path",
-                str(out_dir / f"gui-{version}.log"),
+                str(gui_log_path),
             ]
             if not full_gui:
                 gui_args.extend(
@@ -2141,6 +2146,35 @@ def build_release_summary(
                     timeout=1200.0,
                 )
             )
+
+    if skip_gui:
+        steps.append(_not_run("ui_coverage_gate", "--skip-gui was supplied"))
+    elif not full_gui:
+        steps.append(
+            _not_run(
+                "ui_coverage_gate",
+                "targeted GUI scope does not provide the required nine-tab evidence",
+            )
+        )
+    else:
+        ui_coverage_report = out_dir / "ui-coverage.json"
+        coverage_args = [
+            sys.executable,
+            str(ROOT / "tools" / "ui_coverage_gate.py"),
+            "--write-report",
+            str(ui_coverage_report),
+        ]
+        for version in maya_versions:
+            coverage_args.extend(
+                ("--batch-log", f"{version}={gui_log_paths.get(version, out_dir / f'gui-{version}.log')}")
+            )
+        steps.append(
+            _run_command(
+                "ui_coverage_gate",
+                coverage_args,
+                timeout=120.0,
+            )
+        )
 
     mmd_report: Path | None = None
     if mmd_anim_cli:
@@ -2285,7 +2319,7 @@ def build_release_summary(
         "VMD self-shadow support (explicitly excluded by the camera/light case)",
     ]
     if gui_passed:
-        coverage_proven.append(f"{gui_scope} ExportTab GUI workflow for each requested Maya version")
+        coverage_proven.append(f"{gui_scope} GUI workflow for each requested Maya version")
     else:
         coverage_outside.append(
             f"{gui_scope} GUI workflow was not fully executed and passing for every requested Maya version"
@@ -2389,7 +2423,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--maya", dest="maya_versions", action="append", choices=MAYA_VERSIONS)
     parser.add_argument("--mmd-anim-cli")
     parser.add_argument("--skip-gui", action="store_true")
-    parser.add_argument("--full-gui", action="store_true")
+    gui_scope = parser.add_mutually_exclusive_group()
+    gui_scope.add_argument("--full-gui", dest="full_gui", action="store_true")
+    gui_scope.add_argument(
+        "--targeted-gui",
+        dest="full_gui",
+        action="store_false",
+        help="run only ExportTab GUI checks; this is not release-complete",
+    )
+    parser.set_defaults(full_gui=True)
     parser.add_argument("--skip-focused-tests", action="store_true")
     args = parser.parse_args(argv)
     try:

@@ -1137,8 +1137,9 @@ def export_release_gate(session: nox.Session) -> None:
     ``--skip-gui`` only for a deliberately partial local investigation.
 
     Examples:
-        uvx nox -s export_release_gate
+        uvx nox -s export_release_gate  # full Maya 2024/2026 GUI + UI coverage by default
         uvx nox -s export_release_gate -- --skip-gui
+        uvx nox -s export_release_gate -- --targeted-gui  # diagnostic only; gate fails incomplete
         uvx nox -s export_release_gate -- --out-dir build/release-gate/v070-local
     """
     gate_args = list(session.posargs)
