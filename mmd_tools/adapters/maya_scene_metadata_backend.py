@@ -855,6 +855,46 @@ class MayaSceneMetadataBackend:
             "chunk_open": True,
         }
 
+    def begin_material_binding_patch(
+        self,
+        model_root: str,
+        binding: str,
+        old_material: MmdMaterialSpec,
+        new_material: MmdMaterialSpec,
+    ) -> None:
+        """Open a full selected-shader patch without reading other materials."""
+        if self._write_transaction is not None:
+            raise MayaSceneMetadataError("a metadata write transaction is already active")
+        root = self._material_identity(model_root)
+        shader = self._material_identity(binding)
+        if not isinstance(old_material, MmdMaterialSpec) or not isinstance(new_material, MmdMaterialSpec):
+            raise MayaSceneMetadataError("material binding patch requires material specs")
+        if old_material.binding_identity != shader or new_material.binding_identity != shader:
+            raise MayaSceneMetadataError("material binding patch binding identity mismatch")
+        if old_material.index != new_material.index:
+            raise MayaSceneMetadataError("material binding patch cannot change material index")
+        original = self.read_material_value(root, shader, old_material.index)
+        if original != old_material:
+            raise MayaSceneMetadataError(
+                f"material binding patch preimage mismatch for {shader!r}"
+            )
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError("Maya undo must be enabled for material binding patches")
+        self._call_adapter(
+            "undo_info",
+            openChunk=True,
+            chunkName="MMD Material Binding Patch",
+        )
+        self._write_transaction = {
+            "root": root,
+            "kind": "material_binding",
+            "binding": shader,
+            "index": old_material.index,
+            "original_material": old_material,
+            "target_material": new_material,
+            "chunk_open": True,
+        }
+
     def begin_bone_value_patch(
         self,
         model_root: str,
@@ -1073,6 +1113,27 @@ class MayaSceneMetadataBackend:
         if actual != expected:
             raise MayaSceneMetadataError(
                 f"material value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
+            )
+        self._call_adapter("undo_info", closeChunk=True)
+        self._write_transaction = None
+
+    def commit_material_binding_patch(
+        self,
+        model_root: str,
+        binding: str,
+        material: MmdMaterialSpec,
+    ) -> None:
+        """Strictly read back one complete selected material and close its chunk."""
+        transaction = self._active_transaction(model_root)
+        if transaction.get("kind") != "material_binding":
+            raise MayaSceneMetadataError("active transaction is not a material binding patch")
+        shader = self._material_identity(binding)
+        if shader != transaction["binding"] or material != transaction["target_material"]:
+            raise MayaSceneMetadataError("material binding patch commit target mismatch")
+        actual = self.read_material_value(model_root, shader, transaction["index"])
+        if actual != material:
+            raise MayaSceneMetadataError(
+                f"material binding patch fingerprint mismatch: expected {material!r}, got {actual!r}"
             )
         self._call_adapter("undo_info", closeChunk=True)
         self._write_transaction = None
@@ -1709,6 +1770,13 @@ class MayaSceneMetadataBackend:
                 )
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("material value patch rollback fingerprint mismatch")
+            return
+        if transaction.get("kind") == "material_binding":
+            actual = self.read_material_value(
+                transaction["root"], transaction["binding"], transaction["index"]
+            )
+            if actual != transaction["original_material"]:
+                raise MayaSceneMetadataError("material binding patch rollback fingerprint mismatch")
             return
         if transaction.get("kind") == "material_create":
             members = self._registry_material_members(transaction["root"])

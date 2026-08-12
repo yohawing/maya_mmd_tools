@@ -18,8 +18,6 @@ from mmd_tools.adapters.maya_material_authoring import MayaMaterialAuthoring  # 
 from mmd_tools.core.material_authoring import classify_material_change  # noqa: E402
 from mmd_tools.core.model_authoring_spec import (  # noqa: E402
     MmdMaterialSpec,
-    MmdModelAuthoringSpec,
-    MmdModelSpec,
 )
 from tests.unit.test_material_presenter import TestMaterialPresenter  # noqa: E402
 from tests.unit.test_maya_material_authoring import (  # noqa: E402
@@ -102,6 +100,32 @@ def test_adapter_diffuse_patch_updates_base_color_without_resolved_texture() -> 
         if call[0] == "set_attr"
     }
     assert "baseColor" in written
+
+
+def test_adapter_binding_patch_updates_only_selected_texture_graph() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    rebuilds: list[str] = []
+    adapter = MayaMaterialAuthoring(
+        cmds,
+        registry,
+        runtime_rebuilders={"material": lambda root: rebuilds.append(root)},
+    )
+    bound, shader, _ = adapter.create_material("|Model_root", _material())
+    updated = replace(bound, resolved_texture_path="C:/textures/edited.png")
+
+    cmds.calls.clear()
+    result = adapter.apply_material_binding_patch("|Model_root", bound, updated)
+
+    assert result == updated
+    assert any(
+        call[0] == "set_attr"
+        and call[1][0].endswith(".fileTextureName")
+        and call[1][1] == "C:/textures/edited.png"
+        for call in cmds.calls
+    )
+    assert rebuilds == ["|Model_root", "|Model_root"]
+    assert shader == updated.binding_identity
 
 
 def test_adapter_narrow_create_skips_runtime_rebuild_but_clones_local_texture() -> None:
@@ -259,6 +283,27 @@ def test_coordinator_narrow_failure_rolls_back_without_full_hooks() -> None:
     assert backend.events == ["begin:value", "rollback:value"]
 
 
+def test_coordinator_binding_patch_does_not_read_unrelated_materials() -> None:
+    coordinator, backend, materials, _ = _coordinator()
+    prior = backend.scene.materials[0]
+    target = replace(prior, resolved_texture_path="C:/textures/edited.png")
+    coordinator._metadata.read_spec = lambda _root: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        AssertionError("full read is forbidden")
+    )
+    coordinator._metadata.read_material_value = lambda _root, _binding, _index: prior
+    backend.begin_material_binding_patch = lambda *_args: backend.events.append("begin:binding")
+    coordinator._metadata.commit_material_binding_patch = lambda *_args: backend.events.append(
+        "commit:binding"
+    )
+    materials.apply_material_binding_patch = lambda _root, _old, new: new
+
+    result = coordinator.apply_material_binding_patch("|root", target)
+
+    assert result == target
+    assert backend.events == ["begin:binding", "commit:binding"]
+    assert backend.rebase_count == 0
+
+
 def test_coordinator_noop_does_not_open_a_narrow_transaction() -> None:
     coordinator, backend, _materials, _ = _coordinator()
     prior = backend.scene.materials[0]
@@ -361,6 +406,28 @@ def test_backend_value_commit_mismatch_rolls_back_selected_preimage() -> None:
     assert cmds.attrs[(shader, "mmd_material_name")] == old.name
 
 
+def test_backend_binding_patch_verifies_selected_material_and_rolls_back() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    cmds.attrs[("mat", "mmd_texture_path")] = "textures/original.png"
+    cmds.attrs[("mat", "mmd_resolved_texture_path")] = "C:/textures/original.png"
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, resolved_texture_path="C:/textures/edited.png")
+
+    backend.begin_material_binding_patch("|root", "mat", old, new)
+    cmds.set_attr("mat.mmd_resolved_texture_path", "C:/textures/edited.png", type="string")
+    backend.commit_material_binding_patch("|root", "mat", new)
+
+    assert cmds.undo_chunk_open is False
+    assert backend.read_material_value("|root", "mat", 0) == new
+
+    backend.begin_material_binding_patch("|root", "mat", new, old)
+    cmds.set_attr("mat.mmd_resolved_texture_path", "C:/textures/wrong.png", type="string")
+    with pytest.raises(MayaSceneMetadataError, match="fingerprint mismatch"):
+        backend.commit_material_binding_patch("|root", "mat", old)
+    backend.rollback_write("|root")
+    assert backend.read_material_value("|root", "mat", 0) == new
+
+
 def test_presenter_value_apply_uses_selected_row_without_full_reload() -> None:
     fixture = TestMaterialPresenter()
     fixture.setUp()
@@ -427,7 +494,7 @@ def test_presenter_value_apply_uses_selected_row_without_full_reload() -> None:
     assert presenter.has_unsaved_changes is False
 
 
-def test_presenter_texture_edit_uses_full_binding_route() -> None:
+def test_presenter_texture_edit_uses_selected_binding_route() -> None:
     fixture = TestMaterialPresenter()
     fixture.setUp()
     presenter = fixture.presenter
@@ -438,11 +505,11 @@ def test_presenter_texture_edit_uses_full_binding_route() -> None:
         sphere_texture_path="sphere.png",
         binding_identity="shader",
     )
-    current = MmdModelAuthoringSpec(model=MmdModelSpec("Model"), materials=(prior,))
     coordinator = Mock()
     coordinator.read_material_value.side_effect = lambda _root, _index, _binding: prior  # noqa: E731
-    coordinator.read_spec.return_value = current
-    coordinator.replace_material.return_value = current
+    coordinator.apply_material_binding_patch.side_effect = lambda _root, material: material  # noqa: E731
+    coordinator.read_spec.side_effect = AssertionError("full read is forbidden")
+    coordinator.replace_material.side_effect = AssertionError("full replace is forbidden")
     presenter.authoring_coordinator = coordinator
     presenter.current_material = "shader"
     presenter.current_material_index = 0
@@ -479,6 +546,7 @@ def test_presenter_texture_edit_uses_full_binding_route() -> None:
 
     presenter._apply_authoring_changes()
 
-    coordinator.replace_material.assert_called_once()
-    coordinator.read_spec.assert_called()
+    coordinator.apply_material_binding_patch.assert_called_once()
+    coordinator.replace_material.assert_not_called()
+    coordinator.read_spec.assert_not_called()
     coordinator.apply_material_value_patch.assert_not_called()

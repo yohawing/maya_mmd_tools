@@ -69,6 +69,15 @@ class SceneMetadataBackend(Protocol):
     ) -> None:
         """Begin a selected-shader-only patch transaction."""
 
+    def begin_material_binding_patch(
+        self,
+        model_root: str,
+        binding: str,
+        old_material: _authoring_spec.MmdMaterialSpec,
+        new_material: _authoring_spec.MmdMaterialSpec,
+    ) -> None:
+        """Begin a selected-shader binding patch transaction."""
+
     def read_material_value_by_index(
         self,
         model_root: str,
@@ -158,6 +167,14 @@ class SceneMetadataBackend(Protocol):
         material: _authoring_spec.MmdMaterialSpec,
     ) -> None:
         """Verify and commit a selected-shader-only patch transaction."""
+
+    def commit_material_binding_patch(
+        self,
+        model_root: str,
+        binding: str,
+        material: _authoring_spec.MmdMaterialSpec,
+    ) -> None:
+        """Verify and commit a selected-shader binding patch transaction."""
 
     def commit_bone_value_patch(
         self,
@@ -390,6 +407,25 @@ class SceneMetadataAdapter:
         except Exception as exc:
             raise SceneMetadataError(
                 f"failed to commit material value patch for root {model_root!r}: {exc}"
+            ) from exc
+
+    def commit_material_binding_patch(
+        self,
+        model_root: str,
+        binding: str,
+        material: _authoring_spec.MmdMaterialSpec,
+    ) -> None:
+        """Commit a selected-shader binding patch after strict readback."""
+        self._validate_root(model_root)
+        if not isinstance(binding, str) or not binding.strip():
+            raise SceneMetadataError("material binding patch binding must be a non-empty string")
+        if not isinstance(material, _authoring_spec.MmdMaterialSpec):
+            raise SceneMetadataError("material binding patch requires an MmdMaterialSpec")
+        try:
+            self._backend.commit_material_binding_patch(model_root, binding, material)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to commit material binding patch for root {model_root!r}: {exc}"
             ) from exc
 
     def read_material_value_by_index(

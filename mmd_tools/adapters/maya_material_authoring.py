@@ -222,6 +222,36 @@ class MayaMaterialAuthoring:
         self._write_material_value_attrs(binding, old_material, new_material)
         return new_material
 
+    def apply_material_binding_patch(
+        self,
+        model_root: str,
+        old_material: MmdMaterialSpec,
+        new_material: MmdMaterialSpec,
+    ) -> MmdMaterialSpec:
+        """Replace one selected shader, including its texture binding fields."""
+        root = self._require_root(model_root)
+        self._require_material(old_material)
+        self._require_material(new_material)
+        if old_material.binding_identity != new_material.binding_identity:
+            raise MayaMaterialAuthoringError("material binding patch cannot change binding identity")
+        if old_material.index != new_material.index:
+            raise MayaMaterialAuthoringError("material binding patch cannot change material index")
+        if classify_material_change(old_material, new_material) != "binding":
+            raise MayaMaterialAuthoringError("material binding patch requires binding-sensitive fields")
+        binding = old_material.binding_identity
+        if not isinstance(binding, str) or not binding:
+            raise MayaMaterialAuthoringError("material binding patch requires a binding identity")
+        resolved = self._resolve_material_value_binding(root, old_material)
+        if resolved is None or resolved[0] != binding:
+            raise MayaMaterialAuthoringError(
+                f"material {old_material.index} binding is not resolvable under root {root!r}"
+            )
+        self._write_material_attrs(binding, new_material)
+        # Texture writes can replace the destination of an existing material
+        # morph evaluator. Restore the runtime route inside the same undo chunk.
+        self._rebuild_material_morph_graph(root)
+        return new_material
+
     def _resolve_material_value_binding(
         self,
         root: str,

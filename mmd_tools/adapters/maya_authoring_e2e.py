@@ -302,8 +302,13 @@ def _edit_material(
     if read_material_value(root, material_index, old.binding_identity) != value_edited:
         raise MayaAuthoringE2EError("material value patch redo did not restore the edited shader")
 
+    binding_patch = getattr(coordinator, "apply_material_binding_patch", None)
+    if not callable(binding_patch):
+        raise MayaAuthoringE2EError("material edit requires the selected-material binding patch API")
     edited = replace(
         value_edited,
+        resolved_texture_path=(value_edited.resolved_texture_path or "C:/mmd_e2e_texture.png")
+        + ".edited",
         sphere_texture_path="textures/e2e_sphere.spa",
         toon_texture_path="textures/e2e_toon.bmp",
     )
@@ -311,12 +316,17 @@ def _edit_material(
         current,
         materials=tuple(edited if item.index == material_index else item for item in current.materials),
     )
-    replace_material = getattr(coordinator, "replace_material", None)
-    if not callable(replace_material):
-        raise MayaAuthoringE2EError("material edit requires coordinator.replace_material")
-    result = replace_material(root, edited)
-    if not isinstance(result, MmdModelAuthoringSpec):
-        raise MayaAuthoringE2EError("material edit returned an invalid spec")
+    result = binding_patch(root, edited)
+    if not isinstance(result, MmdMaterialSpec) or result != edited:
+        raise MayaAuthoringE2EError("material binding patch returned an invalid material")
+    if read_material_value(root, material_index, old.binding_identity) != edited:
+        raise MayaAuthoringE2EError("material binding patch did not persist the selected shader")
+    undo()
+    if read_material_value(root, material_index, old.binding_identity) != value_edited:
+        raise MayaAuthoringE2EError("material binding patch undo did not restore the selected shader")
+    redo()
+    if read_material_value(root, material_index, old.binding_identity) != edited:
+        raise MayaAuthoringE2EError("material binding patch redo did not restore the edited shader")
     observed = coordinator.read_spec(root)
     if observed.materials != target.materials:
         raise MayaAuthoringE2EError("material edit did not persist semantic values")
@@ -488,7 +498,7 @@ def run_authoring_e2e(
             details={
                 "index": created_material.index,
                 "value_patch_elapsed_ms": value_patch_elapsed_ms,
-                "routes": ["selected_shader_value_patch", "binding_transaction"],
+                "routes": ["selected_shader_value_patch", "selected_shader_binding_patch"],
                 "undo_redo_verified": True,
             },
         )

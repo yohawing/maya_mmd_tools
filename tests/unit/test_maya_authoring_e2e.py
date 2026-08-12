@@ -205,6 +205,11 @@ class _FakeCoordinator:
         self.replace_material(_root, material)
         return material
 
+    def apply_material_binding_patch(self, _root, material):
+        self.undo_spec = self.spec
+        self.replace_material(_root, material)
+        return material
+
     def undo(self):
         self.redo_spec, self.spec = self.spec, self.undo_spec
 

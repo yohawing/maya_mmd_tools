@@ -75,6 +75,8 @@ class MaterialAuthoringCoordinator(Protocol):
 
     def apply_material_value_patch(self, model_root: str, material: MmdMaterialSpec) -> object: ...
 
+    def apply_material_binding_patch(self, model_root: str, material: MmdMaterialSpec) -> object: ...
+
 
 class MaterialPresenter:
     def __init__(self, view, app_state, maya_adapter=None, authoring_coordinator=None):
@@ -1159,6 +1161,7 @@ class MaterialPresenter:
             raise ValueError("an indexed material must be selected before Apply")
         read_material_value = getattr(coordinator, "read_material_value", None)
         narrow_patch = getattr(coordinator, "apply_material_value_patch", None)
+        binding_patch = getattr(coordinator, "apply_material_binding_patch", None)
         if callable(read_material_value):
             if not callable(narrow_patch):
                 raise TypeError("authoring coordinator lacks apply_material_value_patch")
@@ -1176,27 +1179,13 @@ class MaterialPresenter:
                 reloaded = result
                 self.material_data["_authoring_material"] = reloaded.to_mapping()
             else:
-                # Binding-sensitive edits deliberately re-read the complete
-                # semantic spec and use the existing unified transaction.
-                if not callable(read_spec) or not callable(replace_material):
-                    raise TypeError("authoring coordinator must expose read_spec and replace_material")
-                current = read_spec(root)
-                if not isinstance(current, MmdModelAuthoringSpec):
-                    raise TypeError("authoring coordinator read_spec returned an invalid spec")
-                prior = next(
-                    (material for material in current.materials if material.index == index),
-                    None,
-                )
-                if prior is None:
-                    raise ValueError(f"material index {index} is not present in the current spec")
-                replacement = self._material_from_authoring_controls(prior)
-                result = replace_material(root, replacement)
-                if not isinstance(result, MmdModelAuthoringSpec):
-                    raise TypeError("material binding transaction returned an invalid spec")
-                reloaded = read_spec(root)
-                if not isinstance(reloaded, MmdModelAuthoringSpec):
-                    raise TypeError("authoring coordinator strict reload returned an invalid spec")
-                self.material_data["_authoring_fingerprint"] = reloaded.fingerprint()
+                if not callable(binding_patch):
+                    raise TypeError("authoring coordinator lacks apply_material_binding_patch")
+                result = binding_patch(root, replacement)
+                if not isinstance(result, MmdMaterialSpec):
+                    raise TypeError("material binding patch returned an invalid material")
+                reloaded = result
+                self.material_data["_authoring_material"] = reloaded.to_mapping()
         else:
             if not callable(read_spec) or not callable(replace_material):
                 raise TypeError("authoring coordinator must expose read_spec and replace_material")

@@ -430,9 +430,59 @@ class MayaModelAuthoringCoordinator:
                 raise TypeError("material value patch binding operation returned an invalid material")
             return result
 
-        return self._execute_material_value_patch(
+        return self._execute_material_patch(
             model_root,
             "apply_material_value_patch",
+            previous,
+            material,
+            binding,
+            begin,
+            bind,
+            commit,
+        )
+
+    def apply_material_binding_patch(
+        self,
+        model_root: str,
+        material: MmdMaterialSpec,
+    ) -> MmdMaterialSpec:
+        """Apply one selected material, including texture binding fields."""
+        if not isinstance(material, MmdMaterialSpec):
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_material_binding_patch requires an MmdMaterialSpec"
+            )
+        binding = material.binding_identity
+        if not isinstance(binding, str) or not binding:
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_material_binding_patch requires a material binding identity"
+            )
+        previous = self.read_material_value(model_root, material.index, binding)
+        if material.binding_identity != previous.binding_identity:
+            raise MayaModelAuthoringCoordinatorError(
+                f"material {material.index} binding identity cannot change"
+            )
+        if classify_material_change(previous, material) != "binding":
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_material_binding_patch requires binding-sensitive fields"
+            )
+        structural_patch = getattr(self._materials, "apply_material_binding_patch", None)
+        begin = getattr(self._backend, "begin_material_binding_patch", None)
+        commit = getattr(self._metadata, "commit_material_binding_patch", None)
+        if not callable(structural_patch) or not callable(begin) or not callable(commit):
+            raise MayaModelAuthoringCoordinatorError(
+                "apply_material_binding_patch requires narrow binding/metadata APIs; "
+                "no Maya writes were performed"
+            )
+
+        def bind() -> MmdMaterialSpec:
+            result = structural_patch(model_root, previous, material)
+            if not isinstance(result, MmdMaterialSpec):
+                raise TypeError("material binding patch returned an invalid material")
+            return result
+
+        return self._execute_material_patch(
+            model_root,
+            "apply_material_binding_patch",
             previous,
             material,
             binding,
@@ -1232,7 +1282,7 @@ class MayaModelAuthoringCoordinator:
                 f"{operation} failed for root {model_root!r}: {exc}"
             ) from exc
 
-    def _execute_material_value_patch(
+    def _execute_material_patch(
         self,
         model_root: str,
         operation: str,
@@ -1243,7 +1293,7 @@ class MayaModelAuthoringCoordinator:
         structural_write: Callable[[], MmdMaterialSpec],
         commit: Callable[[str, str, MmdMaterialSpec], Any],
     ) -> MmdMaterialSpec:
-        """Run a selected-shader value patch with no full metadata hooks."""
+        """Run a selected-shader patch with no full metadata hooks."""
         started = False
         try:
             begin(model_root, binding, old_material, new_material)
