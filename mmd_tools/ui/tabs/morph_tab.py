@@ -48,6 +48,7 @@ class MorphTab(BaseTab):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("MorphTab")
+        self.create_morph_type_provider = None
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
@@ -357,6 +358,8 @@ class MorphTab(BaseTab):
 
     def choose_create_morph_type(self, capabilities):
         """Show creation-only morph types and return the selected PMX type."""
+        if callable(self.create_morph_type_provider):
+            return self.create_morph_type_provider(tuple(capabilities))
         menu = QMenu(self)
         for morph_type, enabled, reason in capabilities:
             label = "UV" if morph_type == "uv" else self.tr(morph_type, "morph_types")

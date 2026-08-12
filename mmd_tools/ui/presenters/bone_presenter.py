@@ -193,17 +193,29 @@ class BonePresenter:
         self._update_authoring_actions()
 
         # ジョイントを検索する複数の方法を試す
-        joints = self.maya_adapter.list_relatives(current_model_root, allDescendents=True, type="joint") or []
+        # Store canonical DAG paths in rows.  Short joint names can differ from
+        # the coordinator's binding identity and make a valid UI selection
+        # fail its narrow selected-bone transaction.
+        joints = self.maya_adapter.list_relatives(
+            current_model_root,
+            allDescendents=True,
+            type="joint",
+            fullPath=True,
+        ) or []
         logger.debug(f"Found {len(joints)} joints using listRelatives")
 
         # もしジョイントが見つからない場合、別の方法を試す
         if not joints:
             # ルートノードの子を確認
-            children = self.maya_adapter.list_relatives(current_model_root, children=True) or []
+            children = self.maya_adapter.list_relatives(
+                current_model_root, children=True, fullPath=True
+            ) or []
             logger.debug(f"Direct children of root: {children}")
 
             # 全ての子孫を取得してジョイントをフィルタ
-            all_descendants = self.maya_adapter.list_relatives(current_model_root, allDescendents=True) or []
+            all_descendants = self.maya_adapter.list_relatives(
+                current_model_root, allDescendents=True, fullPath=True
+            ) or []
             joints = [node for node in all_descendants if self.maya_adapter.node_type(node) == "joint"]
             logger.debug(f"Found {len(joints)} joints using nodeType filter from {len(all_descendants)} descendants")
 

@@ -521,7 +521,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
 
     def test_load_bones_routes_to_adapter_and_adds_sorted_items(self):
         relatives = {
-            (TEST_MODEL, (("allDescendents", True), ("type", "joint"))): [
+            (TEST_MODEL, (("allDescendents", True), ("fullPath", True), ("type", "joint"))): [
                 "arm_jnt",
                 "center_jnt",
             ],
@@ -548,7 +548,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
                 (
                     "list_relatives",
                     TEST_MODEL,
-                    {"allDescendents": True, "type": "joint"},
+                    {"allDescendents": True, "type": "joint", "fullPath": True},
                 ),
             ],
         )
@@ -564,9 +564,9 @@ class TestBonePresenterHeadless(unittest.TestCase):
 
     def test_load_bones_falls_back_to_descendant_node_type_filter(self):
         relatives = {
-            (TEST_MODEL, (("allDescendents", True), ("type", "joint"))): [],
-            (TEST_MODEL, (("children", True),)): ["skeleton_grp"],
-            (TEST_MODEL, (("allDescendents", True),)): ["mesh", "leg_jnt"],
+            (TEST_MODEL, (("allDescendents", True), ("fullPath", True), ("type", "joint"))): [],
+            (TEST_MODEL, (("children", True), ("fullPath", True))): ["skeleton_grp"],
+            (TEST_MODEL, (("allDescendents", True), ("fullPath", True))): ["mesh", "leg_jnt"],
         }
         adapter = _FakeMayaAdapter(relatives=relatives, node_types={"mesh": "mesh", "leg_jnt": "joint"})
         presenter, view, app_state, adapter = _make_presenter(adapter=adapter)
@@ -584,9 +584,13 @@ class TestBonePresenterHeadless(unittest.TestCase):
             adapter.calls,
             [
                 ("object_exists", TEST_MODEL),
-                ("list_relatives", TEST_MODEL, {"allDescendents": True, "type": "joint"}),
-                ("list_relatives", TEST_MODEL, {"children": True}),
-                ("list_relatives", TEST_MODEL, {"allDescendents": True}),
+                (
+                    "list_relatives",
+                    TEST_MODEL,
+                    {"allDescendents": True, "type": "joint", "fullPath": True},
+                ),
+                ("list_relatives", TEST_MODEL, {"children": True, "fullPath": True}),
+                ("list_relatives", TEST_MODEL, {"allDescendents": True, "fullPath": True}),
                 ("node_type", "mesh"),
                 ("node_type", "leg_jnt"),
             ],
@@ -596,7 +600,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
     def test_load_bones_hides_namespace_and_path_but_preserves_full_node(self):
         joint = "|root|outer:model:manipulation_center"
         relatives = {
-            (TEST_MODEL, (("allDescendents", True), ("type", "joint"))): [joint],
+            (TEST_MODEL, (("allDescendents", True), ("fullPath", True), ("type", "joint"))): [joint],
         }
         adapter = _FakeMayaAdapter(relatives=relatives)
         presenter, view, app_state, _ = _make_presenter(adapter=adapter)
