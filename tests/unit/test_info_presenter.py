@@ -94,6 +94,11 @@ def _make_mock_view():
     view = Mock()
     attach_mocks(view, ["set_fields_enabled"])
 
+    view.edit_started = _FakeSignal()
+    view.edit_finished = _FakeSignal()
+    view.teardown = _FakeSignal()
+    view.destroyed = _FakeSignal()
+
     for attr in ("model_name_jp_edit", "model_name_en_edit", "comment_jp_edit", "comment_en_edit"):
         widget = Mock()
         widget.textChanged = MagicMock()
@@ -197,29 +202,35 @@ class TestUpdateModelInfo(unittest.TestCase):
     def setUp(self):
         self.presenter, self.view, self.app_state = _make_presenter_with_model()
 
-    def test_calls_set_custom_attributes_with_view_values(self):
+    def test_calls_undoable_cmds_set_attr_with_view_values(self):
         self.view.model_name_jp_edit.text.return_value = "新しい名前"
         self.view.model_name_en_edit.text.return_value = "New Name"
         self.view.comment_jp_edit.toPlainText.return_value = "新しいコメント"
         self.view.comment_en_edit.toPlainText.return_value = "New Comment"
 
-        with patch(f"{_MOD}.set_custom_attributes") as mock_set:
+        with patch(f"{_MOD}.cmds.setAttr") as mock_set:
+            self.view.edit_started.emit(self.view.model_name_jp_edit)
             self.presenter.update_model_info()
+            self.view.edit_finished.emit(self.view.model_name_jp_edit)
 
-        mock_set.assert_called_once_with(
-            TEST_MODEL,
-            {
-                ATTR_MMD_MODEL_NAME: "新しい名前",
-                ATTR_MMD_MODEL_NAME_EN: "New Name",
-                ATTR_MMD_COMMENT: "新しいコメント",
-                ATTR_MMD_COMMENT_EN: "New Comment",
-            },
+        self.assertEqual(mock_set.call_count, 4)
+        mock_set.assert_any_call(
+            f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME}", "新しい名前", type="string"
+        )
+        mock_set.assert_any_call(
+            f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME_EN}", "New Name", type="string"
+        )
+        mock_set.assert_any_call(
+            f"{TEST_MODEL}.{ATTR_MMD_COMMENT}", "新しいコメント", type="string"
+        )
+        mock_set.assert_any_call(
+            f"{TEST_MODEL}.{ATTR_MMD_COMMENT_EN}", "New Comment", type="string"
         )
 
     def test_skips_when_no_model(self):
         self.app_state._current_model_root = None
 
-        with patch(f"{_MOD}.set_custom_attributes") as mock_set:
+        with patch(f"{_MOD}.cmds.setAttr") as mock_set:
             self.presenter.update_model_info()
 
         mock_set.assert_not_called()
@@ -239,11 +250,15 @@ class TestUpdateModelInfo(unittest.TestCase):
         self.view.comment_jp_edit.toPlainText.return_value = ""
         self.view.comment_en_edit.toPlainText.return_value = ""
 
-        with patch(f"{_MOD}.set_custom_attributes") as mock_set:
+        with patch(f"{_MOD}.cmds.setAttr") as mock_set:
+            self.view.edit_started.emit(self.view.model_name_jp_edit)
             self.presenter.update_model_info()
+            self.view.edit_finished.emit(self.view.model_name_jp_edit)
 
-        mock_set.assert_called_once()
-        self.assertEqual(mock_set.call_args[0][0], selected)
+        self.assertEqual(mock_set.call_count, 4)
+        self.assertTrue(
+            any(call.args[0] == f"{selected}.{ATTR_MMD_MODEL_NAME}" for call in mock_set.call_args_list)
+        )
 
 
 class TestCurrentModelChanged(unittest.TestCase):
@@ -275,6 +290,153 @@ class TestCurrentModelChanged(unittest.TestCase):
 
         self.view.set_fields_enabled.assert_called_with(False)
         self.view.model_name_jp_edit.clear.assert_called()
+
+
+class TestInfoUndoLifecycle(unittest.TestCase):
+    def setUp(self):
+        self.presenter, self.view, self.app_state = _make_presenter_with_model()
+
+    def test_focus_session_coalesces_writes_into_one_named_chunk(self):
+        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo, patch(f"{_MOD}.cmds.setAttr") as mock_set:
+            self.view.edit_started.emit(self.view.model_name_jp_edit)
+            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "一")
+            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "二")
+            self.view.edit_finished.emit(self.view.model_name_jp_edit)
+
+        mock_undo.assert_any_call(openChunk=True, chunkName="MMD Info Edit")
+        mock_undo.assert_any_call(closeChunk=True)
+        self.assertEqual(mock_undo.call_count, 2)
+        self.assertEqual(mock_set.call_count, 2)
+
+    def test_direct_update_without_session_is_fail_closed(self):
+        with patch(f"{_MOD}.cmds.setAttr") as mock_set:
+            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "無効")
+
+        mock_set.assert_not_called()
+
+    def test_close_failure_blocks_writes_until_retry_succeeds(self):
+        close_attempts = []
+
+        def _undo_info(**kwargs):
+            if kwargs.get("closeChunk"):
+                close_attempts.append(kwargs)
+                if len(close_attempts) == 1:
+                    raise RuntimeError("close uncertain")
+
+        with patch(f"{_MOD}.cmds.undoInfo", side_effect=_undo_info) as mock_undo, patch(
+            f"{_MOD}.cmds.setAttr"
+        ) as mock_set:
+            self.view.edit_started.emit(self.view.model_name_jp_edit)
+            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "一")
+            self.view.edit_finished.emit(self.view.model_name_jp_edit)
+            self.assertTrue(self.presenter._undo_state_uncertain)
+            self.assertTrue(self.presenter._edit_session_blocked)
+            self.assertTrue(self.presenter._undo_chunk_open)
+
+            self.view.edit_started.emit(self.view.model_name_jp_edit)
+            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "二")
+            self.assertEqual(mock_set.call_count, 1)
+
+            self.presenter.end_edit_session()
+
+        self.assertEqual(len(close_attempts), 2)
+        self.assertFalse(self.presenter._undo_state_uncertain)
+        self.assertFalse(self.presenter._undo_chunk_open)
+        self.assertFalse(self.presenter._edit_session_blocked)
+        self.assertEqual(mock_undo.call_count, 3)
+
+    def test_root_mismatch_close_failure_does_not_open_second_chunk(self):
+        close_attempts = []
+
+        def _undo_info(**kwargs):
+            if kwargs.get("closeChunk"):
+                close_attempts.append(kwargs)
+                raise RuntimeError("close uncertain")
+
+        with patch(f"{_MOD}.cmds.undoInfo", side_effect=_undo_info) as mock_undo:
+            self.view.edit_started.emit(self.view.model_name_jp_edit)
+            self.app_state._current_model_root = "new_test_model"
+            self.presenter.begin_edit_session(self.view.model_name_jp_edit)
+
+        self.assertEqual(mock_undo.call_count, 2)
+        self.assertEqual(len(close_attempts), 1)
+        self.assertTrue(self.presenter._undo_state_uncertain)
+        self.assertTrue(self.presenter._undo_chunk_open)
+
+    def test_text_changed_callback_lazily_opens_focused_session(self):
+        widget = self.view.model_name_jp_edit
+        widget.hasFocus.return_value = True
+        widget.text.return_value = "lazy"
+        callback = self.presenter._text_change_callbacks[ATTR_MMD_MODEL_NAME]
+
+        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo, patch(f"{_MOD}.cmds.setAttr") as mock_set:
+            callback()
+            self.view.edit_finished.emit(widget)
+
+        mock_undo.assert_any_call(openChunk=True, chunkName="MMD Info Edit")
+        mock_set.assert_called_once_with(
+            f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME}", "lazy", type="string"
+        )
+
+    def test_current_model_change_closes_old_session_before_loading(self):
+        old_root = self.app_state.current_model_root
+        new_root = "new_test_model"
+        self.app_state._current_model_root = new_root
+        self.app_state.scene_model_service.attr_values = {
+            f"{new_root}.{ATTR_MMD_MODEL_NAME}": "新モデル",
+            f"{new_root}.{ATTR_MMD_MODEL_NAME_EN}": "",
+            f"{new_root}.{ATTR_MMD_COMMENT}": "",
+            f"{new_root}.{ATTR_MMD_COMMENT_EN}": "",
+        }
+
+        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo, patch(f"{_MOD}.cmds.setAttr") as mock_set:
+            self.view.edit_started.emit(self.view.model_name_jp_edit)
+            self.presenter.on_current_model_changed(new_root)
+
+        self.assertEqual(self.presenter._edit_session_root, None)
+        self.assertFalse(self.presenter._undo_chunk_open)
+        mock_undo.assert_any_call(closeChunk=True)
+        mock_set.assert_not_called()
+        self.assertNotEqual(old_root, new_root)
+
+    def test_stale_old_root_callback_is_fail_closed(self):
+        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo, patch(f"{_MOD}.cmds.setAttr") as mock_set:
+            self.view.edit_started.emit(self.view.model_name_jp_edit)
+            self.app_state._current_model_root = "new_test_model"
+            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "stale")
+
+        mock_undo.assert_any_call(closeChunk=True)
+        mock_set.assert_not_called()
+        self.assertFalse(self.presenter._undo_chunk_open)
+
+    def test_deleted_current_root_closes_session_without_writing(self):
+        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo, patch(f"{_MOD}.cmds.setAttr") as mock_set:
+            self.view.edit_started.emit(self.view.model_name_jp_edit)
+            self.app_state.scene_model_service.exists = False
+            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "deleted")
+
+        mock_undo.assert_any_call(closeChunk=True)
+        mock_set.assert_not_called()
+        self.assertFalse(self.presenter._undo_chunk_open)
+
+    def test_write_error_closes_open_chunk(self):
+        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo, patch(
+            f"{_MOD}.cmds.setAttr", side_effect=RuntimeError("write failed")
+        ):
+            self.view.edit_started.emit(self.view.model_name_jp_edit)
+            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "失敗")
+            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "失敗2")
+
+        mock_undo.assert_any_call(closeChunk=True)
+        self.assertFalse(self.presenter._undo_chunk_open)
+
+    def test_destroyed_signal_closes_open_chunk(self):
+        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo:
+            self.view.edit_started.emit(self.view.model_name_jp_edit)
+            self.view.destroyed.emit()
+
+        mock_undo.assert_any_call(closeChunk=True)
+        self.assertFalse(self.presenter._undo_chunk_open)
 
 
 if __name__ == "__main__":
