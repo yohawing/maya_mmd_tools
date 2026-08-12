@@ -217,7 +217,15 @@ class ImportExportPresenter(QObject):
         else:
             available_models = getattr(self.app_state, "available_models", None)
         if available_models is not None and target_model not in available_models:
-            return None
+            target_leaf = str(target_model).rsplit("|", 1)[-1]
+            canonical_matches = [
+                model
+                for model in available_models
+                if str(model).rsplit("|", 1)[-1] == target_leaf
+            ]
+            if len(canonical_matches) != 1:
+                return None
+            target_model = canonical_matches[0]
 
         object_exists = getattr(scene_service, "object_exists", None)
         if callable(object_exists):

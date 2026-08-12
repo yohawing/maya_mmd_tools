@@ -1653,6 +1653,24 @@ class TestVmdImportOptions(unittest.TestCase):
         app_state.current_model_root = None
         self.assertIsNone(presenter._get_vmd_target_model())
 
+    def test_get_vmd_target_model_resolves_unique_long_path(self):
+        view = _FakeView()
+        app_state = _FakeAppState(_FakeSceneModelService(models=["|current_model"]))
+        app_state.current_model_root = "current_model"
+        presenter, _, _ = self._make_presenter(view, app_state)
+
+        self.assertEqual(presenter._get_vmd_target_model(), "|current_model")
+
+    def test_get_vmd_target_model_rejects_ambiguous_short_name(self):
+        view = _FakeView()
+        app_state = _FakeAppState(
+            _FakeSceneModelService(models=["|group_a|current_model", "|group_b|current_model"])
+        )
+        app_state.current_model_root = "current_model"
+        presenter, _, _ = self._make_presenter(view, app_state)
+
+        self.assertIsNone(presenter._get_vmd_target_model())
+
     def test_no_current_model_defers_content_validation_to_importer(self):
         view = _FakeView()
         app_state = _FakeAppState(_FakeSceneModelService(models=["model_a", "model_b"]))
