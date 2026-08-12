@@ -38,6 +38,7 @@ class DisplayPaneTab(BaseTab):
         self.frames_group = QGroupBox()
         frames_group_layout = QVBoxLayout(self.frames_group)
         self.frame_list = QListWidget()
+        self.frame_list.setObjectName("displayFrameList")
         frame_toolbar = QHBoxLayout()
         self.frame_authoring_toolbar = AuthoringToolbar(
             actions=("create", "delete", "move_up", "move_down"),
@@ -49,18 +50,25 @@ class DisplayPaneTab(BaseTab):
             },
             parent=self,
         )
+        self.frame_authoring_toolbar.setObjectName("displayFrameAuthoringToolbar")
         self.add_frame_btn = self.frame_authoring_toolbar.button("create")
         self.delete_frame_btn = self.frame_authoring_toolbar.button("delete")
         self.move_frame_up_btn = self.frame_authoring_toolbar.button("move_up")
         self.move_frame_down_btn = self.frame_authoring_toolbar.button("move_down")
+        self.add_frame_btn.setObjectName("displayAddFrameButton")
+        self.delete_frame_btn.setObjectName("displayDeleteFrameButton")
+        self.move_frame_up_btn.setObjectName("displayMoveFrameUpButton")
+        self.move_frame_down_btn.setObjectName("displayMoveFrameDownButton")
         frame_toolbar.addWidget(self.frame_authoring_toolbar)
         self.refresh_toolbar = AuthoringToolbar(
             actions=("refresh",),
             labels={"refresh": self.tr("refresh", "buttons")},
             parent=self,
         )
+        self.refresh_toolbar.setObjectName("displayRefreshToolbar")
         self.footer_toolbar = self.refresh_toolbar
         self.refresh_btn = self.refresh_toolbar.button("refresh")
+        self.refresh_btn.setObjectName("displayRefreshButton")
         frame_toolbar.addWidget(self.refresh_toolbar)
         frame_toolbar.addStretch(1)
         frames_group_layout.addLayout(frame_toolbar)
@@ -75,8 +83,11 @@ class DisplayPaneTab(BaseTab):
         self.properties_group = QGroupBox()
         properties_layout = QFormLayout(self.properties_group)
         self.name_jp_edit = QLineEdit()
+        self.name_jp_edit.setObjectName("displayFrameNameJpEdit")
         self.name_en_edit = QLineEdit()
+        self.name_en_edit.setObjectName("displayFrameNameEnEdit")
         self.special_frame_check = QCheckBox()
+        self.special_frame_check.setObjectName("displaySpecialFrameCheck")
         self.name_jp_label = QLabel()
         self.name_en_label = QLabel()
         properties_layout.addRow(self.name_jp_label, self.name_jp_edit)
@@ -87,6 +98,7 @@ class DisplayPaneTab(BaseTab):
         self.items_group = QGroupBox()
         items_layout = QVBoxLayout(self.items_group)
         self.item_table = QTableWidget(0, 3)
+        self.item_table.setObjectName("displayItemTable")
         self.item_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.item_table.setSelectionMode(QTableWidget.SingleSelection)
         self.item_table.verticalHeader().setVisible(False)
@@ -99,6 +111,7 @@ class DisplayPaneTab(BaseTab):
             labels={"create": self.tr("add_element", "buttons")},
             parent=self,
         )
+        self.item_element_toolbar.setObjectName("displayItemElementToolbar")
         self.item_authoring_toolbar = AuthoringToolbar(
             actions=("delete", "move_up", "move_down"),
             labels={
@@ -108,10 +121,15 @@ class DisplayPaneTab(BaseTab):
             },
             parent=self,
         )
+        self.item_authoring_toolbar.setObjectName("displayItemAuthoringToolbar")
         self.add_element_btn = self.item_element_toolbar.button("create")
         self.delete_item_btn = self.item_authoring_toolbar.button("delete")
         self.move_item_up_btn = self.item_authoring_toolbar.button("move_up")
         self.move_item_down_btn = self.item_authoring_toolbar.button("move_down")
+        self.add_element_btn.setObjectName("displayAddElementButton")
+        self.delete_item_btn.setObjectName("displayDeleteItemButton")
+        self.move_item_up_btn.setObjectName("displayMoveItemUpButton")
+        self.move_item_down_btn.setObjectName("displayMoveItemDownButton")
         item_toolbar.addWidget(self.item_element_toolbar)
         item_toolbar.addWidget(self.item_authoring_toolbar)
         item_toolbar.addStretch(1)
@@ -126,6 +144,8 @@ class DisplayPaneTab(BaseTab):
         footer.addWidget(self.status_label, 1)
         self.apply_btn = QPushButton()
         self.reset_btn = QPushButton()
+        self.apply_btn.setObjectName("displayApplyButton")
+        self.reset_btn.setObjectName("displayResetButton")
         footer.addWidget(self.apply_btn)
         footer.addWidget(self.reset_btn)
         root_layout.addLayout(footer)

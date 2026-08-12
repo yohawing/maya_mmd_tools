@@ -86,7 +86,9 @@ class MorphTab(BaseTab):
             labels={"refresh": self.tr("refresh", "buttons")},
             parent=self,
         )
+        self.morph_refresh_toolbar.setObjectName("morphRefreshToolbar")
         self.refresh_morphs_btn = self.morph_refresh_toolbar.button("refresh")
+        self.refresh_morphs_btn.setObjectName("morphRefreshButton")
         toolbar_layout.addWidget(self.morph_refresh_toolbar)
         self.morph_authoring_toolbar = AuthoringToolbar(
             actions=("create", "delete", "move_up", "move_down"),
@@ -98,16 +100,22 @@ class MorphTab(BaseTab):
             },
             parent=self,
         )
+        self.morph_authoring_toolbar.setObjectName("morphAuthoringToolbar")
         self.create_morph_btn = self.morph_authoring_toolbar.button("create")
         self.delete_morph_btn = self.morph_authoring_toolbar.button("delete")
         self.move_morph_up_btn = self.morph_authoring_toolbar.button("move_up")
         self.move_morph_down_btn = self.morph_authoring_toolbar.button("move_down")
+        self.create_morph_btn.setObjectName("morphCreateButton")
+        self.delete_morph_btn.setObjectName("morphDeleteButton")
+        self.move_morph_up_btn.setObjectName("morphMoveUpButton")
+        self.move_morph_down_btn.setObjectName("morphMoveDownButton")
         toolbar_layout.addWidget(self.morph_authoring_toolbar)
         toolbar_layout.addStretch()
         morph_list_layout.addLayout(toolbar_layout)
 
         # モーフリスト
         self.morph_list = QListWidget()
+        self.morph_list.setObjectName("morphList")
         self.morph_list.setAlternatingRowColors(True)
         morph_list_layout.addWidget(self.morph_list)
 
@@ -116,6 +124,7 @@ class MorphTab(BaseTab):
         self.search_label = QLabel(self.tr("search", "fields"))
         search_layout.addWidget(self.search_label)
         self.search_edit = QLineEdit()
+        self.search_edit.setObjectName("morphSearchEdit")
         self.search_edit.setPlaceholderText(self.tr("search_morph_name", "placeholders"))
         search_layout.addWidget(self.search_edit)
         morph_list_layout.addLayout(search_layout)
@@ -164,9 +173,11 @@ class MorphTab(BaseTab):
         self.advanced_group = QGroupBox(self.tr("advanced_settings", "groups"))
         advanced_layout = QFormLayout()
         self.invert_check = QCheckBox(self.tr("invert_value", "checkboxes"))
+        self.invert_check.setObjectName("morphInvertCheck")
         advanced_layout.addRow("", self.invert_check)
 
         self.multiplier_spin = QDoubleSpinBox()
+        self.multiplier_spin.setObjectName("morphMultiplierSpin")
         self.multiplier_spin.setRange(-10.0, 10.0)
         self.multiplier_spin.setValue(1.0)
         self.multiplier_spin.setSingleStep(0.1)
@@ -179,6 +190,8 @@ class MorphTab(BaseTab):
         reset_layout = QHBoxLayout()
         self.reset_slider_btn = QPushButton(self.tr("reset", "buttons"))
         self.reset_all_btn = QPushButton(self.tr("reset_all", "actions"))
+        self.reset_slider_btn.setObjectName("morphResetSliderButton")
+        self.reset_all_btn.setObjectName("morphResetAllButton")
         reset_layout.addStretch()
         reset_layout.addWidget(self.reset_slider_btn)
         reset_layout.addWidget(self.reset_all_btn)
@@ -191,6 +204,8 @@ class MorphTab(BaseTab):
         button_layout = QHBoxLayout()
         self.apply_btn = QPushButton(self.tr("apply", "buttons"))
         self.reset_btn = QPushButton(self.tr("reset", "buttons"))
+        self.apply_btn.setObjectName("morphApplyButton")
+        self.reset_btn.setObjectName("morphResetButton")
         button_layout.addStretch()
         button_layout.addWidget(self.apply_btn)
         button_layout.addWidget(self.reset_btn)
@@ -209,15 +224,19 @@ class MorphTab(BaseTab):
         layout = QVBoxLayout(widget)
         work_layout = QHBoxLayout()
         self.work_offset_combo = QComboBox()
+        self.work_offset_combo.setObjectName("morphWorkOffsetCombo")
         self.create_work_material_btn = QPushButton(
             self.tr("create_work_material", "buttons")
         )
+        self.create_work_material_btn.setObjectName("morphCreateWorkMaterialButton")
         self.apply_work_material_btn = QPushButton(
             self.tr("apply_work_material", "buttons")
         )
+        self.apply_work_material_btn.setObjectName("morphApplyWorkMaterialButton")
         self.clear_work_material_btn = QPushButton(
             self.tr("clear_work_material", "buttons")
         )
+        self.clear_work_material_btn.setObjectName("morphClearWorkMaterialButton")
         work_layout.addWidget(self.work_offset_combo)
         work_layout.addWidget(self.create_work_material_btn)
         work_layout.addWidget(self.apply_work_material_btn)
@@ -232,7 +251,9 @@ class MorphTab(BaseTab):
 
         # モーフ名
         self.morph_name_jp_edit = QLineEdit()
+        self.morph_name_jp_edit.setObjectName("morphNameJpEdit")
         self.morph_name_en_edit = QLineEdit()
+        self.morph_name_en_edit.setObjectName("morphNameEnEdit")
         self.morph_name_jp_label = QLabel(self.tr("morph_name_jp", "fields"))
         self.morph_name_en_label = QLabel(self.tr("morph_name_en", "fields"))
         layout.addRow(self.morph_name_jp_label, self.morph_name_jp_edit)
@@ -241,6 +262,7 @@ class MorphTab(BaseTab):
         # パネル
         panel_layout = QHBoxLayout()
         self.panel_combo = QComboBox()
+        self.panel_combo.setObjectName("morphPanelCombo")
         self.panel_combo.addItems(
             [
                 self.tr("none", "morph_panels"),
@@ -256,6 +278,7 @@ class MorphTab(BaseTab):
 
         # モーフタイプ
         self.morph_type_combo = QComboBox()
+        self.morph_type_combo.setObjectName("morphTypeCombo")
         self.morph_type_combo.addItems(
             [
                 self.tr("vertex", "morph_types"),

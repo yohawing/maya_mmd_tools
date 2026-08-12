@@ -157,6 +157,7 @@ class ValidationConsole(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("validationConsole")
         self._translator = UITranslator.instance()
         self._report: Optional[ExportValidationReport] = None
         self._metadata: Dict[str, Any] = {}
@@ -168,16 +169,19 @@ class ValidationConsole(QWidget):
         header.addWidget(self.summary_label)
         header.addStretch()
         self.filter_combo = QComboBox()
+        self.filter_combo.setObjectName("validationFilterCombo")
         self.filter_combo.addItem(self._tr("all", "All"), "all")
         self.filter_combo.currentIndexChanged.connect(self._refresh_issue_list)
         header.addWidget(self.filter_combo)
         layout.addLayout(header)
 
         self.issue_list = QListWidget()
+        self.issue_list.setObjectName("validationIssueList")
         self.issue_list.currentRowChanged.connect(self._show_selected_issue)
         layout.addWidget(self.issue_list)
 
         self.detail_text = QTextEdit()
+        self.detail_text.setObjectName("validationDetailEdit")
         self.detail_text.setReadOnly(True)
         layout.addWidget(self.detail_text)
 
@@ -185,16 +189,20 @@ class ValidationConsole(QWidget):
         self.acknowledge_check = QCheckBox(
             self._tr("acknowledge_warnings", "Acknowledge warnings")
         )
+        self.acknowledge_check.setObjectName("validationAcknowledgeCheck")
         self.acknowledge_check.setEnabled(False)
         self.acknowledge_check.toggled.connect(self.acknowledgement_changed.emit)
         actions.addWidget(self.acknowledge_check)
         self.revalidate_button = QPushButton(self._tr("revalidate", "Revalidate"))
+        self.revalidate_button.setObjectName("validationRevalidateButton")
         self.revalidate_button.clicked.connect(self.revalidate_requested.emit)
         actions.addWidget(self.revalidate_button)
         self.copy_button = QPushButton(self._tr("copy", "Copy"))
+        self.copy_button.setObjectName("validationCopyButton")
         self.copy_button.clicked.connect(self.copy_report)
         actions.addWidget(self.copy_button)
         self.save_button = QPushButton(self._tr("save_report", "Save report"))
+        self.save_button.setObjectName("validationSaveButton")
         self.save_button.clicked.connect(self.save_report)
         actions.addWidget(self.save_button)
         actions.addStretch()
