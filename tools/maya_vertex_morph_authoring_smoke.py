@@ -8,6 +8,7 @@ import json
 from maya import cmds, standalone
 
 from mmd_tools.adapters.maya_cmds_adapter import MayaCmdsAdapter
+from mmd_tools.adapters.maya_scene_metadata_backend import MayaSceneMetadataBackend
 from mmd_tools.adapters.maya_morph_authoring import (
     _apply_vertex_target_plan,
     _new_vertex_target_plans,
@@ -68,6 +69,14 @@ def main() -> int:
         root = cmds.createNode("transform", name="Model")
         face_bs, face_plug = _target(root, "face", (4, 7, 8, 10), 3)
         body_bs, body_plug = _target(root, "body", (9, 12, 13, 15), 8)
+        controller = cmds.createNode("network", name="vertexSmokeController")
+        cmds.addAttr(controller, longName="outputWeight", attributeType="double", multi=True)
+        cmds.addAttr(root, longName="mmd_morph_controller", attributeType="message")
+        cmds.addAttr(root, longName="mmd_import_scale", attributeType="double")
+        cmds.setAttr(f"{root}.mmd_import_scale", 2.0)
+        cmds.connectAttr(f"{controller}.message", f"{root}.mmd_morph_controller")
+        cmds.connectAttr(f"{controller}.outputWeight[0]", face_plug)
+        cmds.connectAttr(f"{controller}.outputWeight[0]", body_plug)
         adapter = MayaCmdsAdapter(cmds)
         old = MmdMorphSpec(
             name="Move",
@@ -114,8 +123,31 @@ def main() -> int:
             )
             assert mapping[str(target_index)] == {"name": "Move Wide", "index": 0}
 
-        controller = cmds.createNode("network", name="vertexSmokeController")
-        cmds.addAttr(controller, longName="outputWeight", attributeType="double", multi=True)
+        face_item = f"{face_bs}.inputTarget[0].inputTargetGroup[3].inputTargetItem[6000]"
+        cmds.setAttr(
+            f"{face_item}.inputComponentsTarget",
+            1,
+            "vtx[0:1]",
+            type="componentList",
+        )
+        cmds.setAttr(
+            f"{face_item}.inputPointsTarget",
+            2,
+            (2.0, 4.0, -6.0, 1.0),
+            (0.0, 2.0, 0.0, 1.0),
+            type="pointArray",
+        )
+        offsets = MayaSceneMetadataBackend(adapter)._read_vertex_blendshape_offsets(
+            cmds.ls(root, long=True)[0],
+            "vertexNode",
+            0,
+        )
+        assert offsets == [
+            {"vertex_index": 4, "position_offset": [1.0, 2.0, 3.0]},
+            {"vertex_index": 7, "position_offset": [0.0, 1.0, 0.0]},
+            {"vertex_index": 9, "position_offset": [-1.0, 0.5, -2.0]},
+        ]
+
         empty = MmdMorphSpec(name="Empty", index=1, morph_type="vertex")
         cmds.createNode("network", name="emptyNode")
         create_plans = _new_vertex_target_plans(

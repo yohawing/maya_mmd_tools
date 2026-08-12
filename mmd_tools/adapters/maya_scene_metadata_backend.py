@@ -1777,11 +1777,20 @@ class MayaSceneMetadataBackend:
                 item = f"{group}.inputTargetItem[6000]"
                 points = self._call_adapter("get_attr", f"{item}.inputPointsTarget") or ()
                 components = self._call_adapter("get_attr", f"{item}.inputComponentsTarget") or ()
-                if len(points) != len(components):
+                qualified_components = [
+                    str(component)
+                    if ".vtx[" in str(component)
+                    else f"{geometry}.{component}"
+                    for component in components
+                ]
+                flattened_components = tuple(
+                    self._call_adapter("ls", qualified_components, flatten=True) or ()
+                ) if qualified_components else ()
+                if len(points) != len(flattened_components):
                     raise MayaSceneMetadataError(
                         f"{item} points/components lengths differ"
                     )
-                for point, component in zip(points, components):
+                for point, component in zip(points, flattened_components):
                     component_match = re.search(r"(?:^|\.)vtx\[(\d+)\]$", str(component))
                     if component_match is None:
                         raise MayaSceneMetadataError(

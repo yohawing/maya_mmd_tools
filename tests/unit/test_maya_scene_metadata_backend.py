@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any
@@ -137,7 +138,25 @@ class FakeCmds:
     def ls(self, *nodes: str, **kwargs: Any) -> list[str]:
         if kwargs.get("type"):
             return [node for node, node_type in self.node_types.items() if node_type == kwargs["type"]]
-        values = [node for node in nodes if isinstance(node, str)]
+        values = [
+            item
+            for node in nodes
+            for item in (node if isinstance(node, (list, tuple)) else (node,))
+            if isinstance(item, str)
+        ]
+        if kwargs.get("flatten"):
+            flattened: list[str] = []
+            for value in values:
+                match = re.fullmatch(r"(.*\.vtx\[)(\d+):(\d+)(\])", value)
+                if match is None:
+                    flattened.append(value)
+                    continue
+                start, end = int(match.group(2)), int(match.group(3))
+                flattened.extend(
+                    f"{match.group(1)}{index}{match.group(4)}"
+                    for index in range(start, end + 1)
+                )
+            values = flattened
         if kwargs.get("materials"):
             values = [node for node in values if self.node_types.get(node) in {"lambert", "standardSurface", "dx11Shader"}]
         if kwargs.get("long"):
@@ -841,6 +860,25 @@ def test_vertex_blendshape_offsets_canonicalize_signed_zero() -> None:
 
     assert offset["position_offset"] == [0.0, 0.25, 0.0]
     assert all(math.copysign(1.0, value) > 0.0 for value in offset["position_offset"] if value == 0.0)
+
+
+def test_vertex_blendshape_offsets_expand_compressed_component_ranges() -> None:
+    cmds, backend = _vertex_scene(vertex_count=3)
+    item = "bs.inputTarget[0].inputTargetGroup[3].inputTargetItem[6000]"
+    cmds.attrs[(item, "inputPointsTarget")] = [
+        (1.0, 0.0, 0.0),
+        (0.0, 2.0, 0.0),
+        (0.0, 0.0, 3.0),
+    ]
+    cmds.attrs[(item, "inputComponentsTarget")] = ["vtx[0:2]"]
+
+    metadata = list(backend.iter_morph_metadata("|root"))[0]
+
+    assert metadata["offsets"] == [
+        {"vertex_index": 0, "position_offset": [1.0, 0.0, 0.0]},
+        {"vertex_index": 1, "position_offset": [0.0, 2.0, 0.0]},
+        {"vertex_index": 2, "position_offset": [0.0, 0.0, -3.0]},
+    ]
 
 
 def test_vertex_blendshape_alias_destination_resolves_weight_index() -> None:
