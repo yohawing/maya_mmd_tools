@@ -25,7 +25,14 @@ except ImportError as exc:  # pragma: no cover - local Maya installs provide Qt.
 
 @pytest.fixture(scope="module")
 def qapp():
-    return QApplication.instance() or QApplication([])
+    instance = getattr(QApplication, "instance", lambda: None)()
+    if instance is not None:
+        return instance
+    try:
+        return QApplication([])
+    except TypeError:
+        # A prior headless unit module may have installed the shared Qt stub.
+        return QApplication()
 
 
 def _assert_selectors(root, selectors):
