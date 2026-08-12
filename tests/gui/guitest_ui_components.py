@@ -209,9 +209,14 @@ class TestMainWindow(GuiTestBase):
 
     def test_display_pane_editor_applies_and_undoes_scene_metadata(self):
         """実Qt操作からroot JSONへ保存し、1回のMaya Undoで復元できる。"""
-        root = cmds.createNode("transform", name="displayPaneGuiModel")
-        cmds.addAttr(root, longName="mmd_display_frames_json", dataType="string")
-        cmds.addAttr(root, longName="mmdMorphData", dataType="string")
+        template = self.window.authoring_composition.model_initializer.create(
+            "pmx20-basic-v1",
+            "Display Pane GUI",
+            "Display Pane GUI",
+        )
+        root = template.root
+        if not cmds.attributeQuery("mmdMorphData", node=root, exists=True):
+            cmds.addAttr(root, longName="mmdMorphData", dataType="string")
         original_frames = [
             {
                 "name": "Root",
@@ -245,12 +250,6 @@ class TestMainWindow(GuiTestBase):
             ),
             type="string",
         )
-        bone = cmds.createNode("joint", name="displayPaneGuiRootBone", parent=root)
-        cmds.addAttr(bone, longName="mmd_bone_index", attributeType="long")
-        cmds.addAttr(bone, longName="mmd_bone_name", dataType="string")
-        cmds.setAttr(f"{bone}.mmd_bone_index", 0)
-        cmds.setAttr(f"{bone}.mmd_bone_name", "全ての親", type="string")
-
         self.window.app_state.current_model_root = root
         tab = self.window.display_pane_tab
         presenter = self.window.display_pane_presenter
