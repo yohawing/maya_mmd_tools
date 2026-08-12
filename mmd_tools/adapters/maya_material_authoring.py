@@ -1097,11 +1097,19 @@ class MayaMaterialAuthoring:
             self._set_attr(shader, attr, value, attr_type)
         for attr, value in strings.items():
             self._set_attr(shader, attr, value, "string")
-        # StandardSurface exposes baseColor as a Maya float3 compound; the
-        # canonical semantic color attrs above remain custom double3 fields.
-        self._set_attr(shader, "baseColor", material.diffuse[:3], "float3")
+
+        # Reconcile the graph before touching ``baseColor``.  A connected
+        # file node owns that compound destination and Maya rejects a direct
+        # setAttr while the connection is live.  Removing a resolved texture
+        # therefore disconnects/deletes its file node first; retaining one
+        # leaves the graph in charge and skips the direct write entirely.
         if bind_texture_graph:
             self._bind_texture_graph(shader, material)
+        if not material.resolved_texture_path:
+            # StandardSurface exposes baseColor as a Maya float3 compound;
+            # the canonical semantic color attrs above remain custom
+            # double3 fields.
+            self._set_attr(shader, "baseColor", material.diffuse[:3], "float3")
 
     def _set_attr(self, node: str, attr: str, value: Any, attr_type: str) -> None:
         if not self._has_attr(node, attr):

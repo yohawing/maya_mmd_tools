@@ -369,8 +369,36 @@ class TestMainWindow(GuiTestBase):
 
         self.assertEqual(
             self.window.tab_widget.tabText(1),
-            UITranslator.instance().translate("info", "tabs"),
+            UITranslator.instance().translate("export_workflow", "tabs"),
         )
+
+    def test_retranslate_updates_display_pane_tab_title(self):
+        """Live language changes include the Display Pane tab title."""
+        from mmd_tools.ui.translations import UITranslator
+
+        translator = UITranslator.instance()
+        previous_language = translator.get_language()
+        try:
+            translator.set_language("en")
+            self.window.retranslate_all_tabs()
+            english = self.window.tab_widget.tabText(
+                self.window.tab_widget.indexOf(self.window.display_pane_tab)
+            )
+            english_name_label = self.window.display_pane_tab.name_jp_label.text()
+            self.assertEqual(english, translator.translate("display_pane", "tabs"))
+
+            translator.set_language("ja")
+            self.window.retranslate_all_tabs()
+            japanese = self.window.tab_widget.tabText(
+                self.window.tab_widget.indexOf(self.window.display_pane_tab)
+            )
+            japanese_name_label = self.window.display_pane_tab.name_jp_label.text()
+            self.assertEqual(japanese, translator.translate("display_pane", "tabs"))
+            self.assertNotEqual(japanese, english)
+            self.assertNotEqual(japanese_name_label, english_name_label)
+        finally:
+            translator.set_language(previous_language)
+            self.window.retranslate_all_tabs()
 
     def test_window_resize(self):
         """

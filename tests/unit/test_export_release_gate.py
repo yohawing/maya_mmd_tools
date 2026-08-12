@@ -1428,6 +1428,28 @@ class ExportReleaseGateTests(unittest.TestCase):
         self.assertTrue(any("material[0].memo" in failure for failure in failures))
         self.assertFalse(any("material[0].sphere_texture_path" in failure for failure in failures))
 
+    def test_scene_oracle_derives_optional_edge_flag_from_pmx_draw_flags(self):
+        """A redundant Maya edge flag may be absent after a PMX fresh import."""
+        material = {
+            "index": 0,
+            "draw_flags": 0x10,
+            "edge_flag": 1,
+            "diffuse": [],
+            "specular": [],
+            "ambient": [],
+            "edge_color": [],
+            "edge_size": None,
+            "shininess": None,
+        }
+        source = {"materials": [material], "metadata": {}, "pose": {}}
+        actual = {
+            "materials": [{**material, "edge_flag": None}],
+            "metadata": {},
+            "pose": {},
+        }
+
+        assert _compare_scene_oracles(source, actual, pose=False, mesh=False) == []
+
     def test_scene_oracle_detects_physics_semantic_drift(self):
         source = {
             "metadata": {"mmd_file_type": "pmx", "mmd_model_name": "fixture"},

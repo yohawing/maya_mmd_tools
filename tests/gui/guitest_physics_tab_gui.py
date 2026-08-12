@@ -253,7 +253,10 @@ class TestPhysicsTabGUI(GuiTestBase):
         try:
             translator.set_language("en")
             tab.retranslateUi()
-            en_refresh = tab.refresh_btn.text()
+            # Refresh is an icon-only SymbolToolButton; localization lives in
+            # its tooltip/accessibility contract rather than visible text.
+            en_refresh_tooltip = tab.refresh_btn.toolTip()
+            en_refresh_accessible = tab.refresh_btn.accessibleName()
             en_mass = tab._form_labels["rigid_mass"][1].text()
             en_physics_enable = tab.physics_enable_check.text()
             en_none = tab.rigid_related_bone_combo.itemText(0)
@@ -264,7 +267,10 @@ class TestPhysicsTabGUI(GuiTestBase):
 
             translator.set_language("ja")
             tab.retranslateUi()
-            self.assertNotEqual(tab.refresh_btn.text(), en_refresh)
+            self.assertNotEqual(tab.refresh_btn.toolTip(), en_refresh_tooltip)
+            self.assertNotEqual(tab.refresh_btn.accessibleName(), en_refresh_accessible)
+            self.assertEqual(tab.refresh_btn.toolTip(), translator.translate("refresh", "buttons"))
+            self.assertEqual(tab.refresh_btn.accessibleName(), translator.translate("refresh", "buttons"))
             self.assertNotEqual(tab._form_labels["rigid_mass"][1].text(), en_mass)
             self.assertNotEqual(tab.physics_enable_check.text(), en_physics_enable)
             self.assertNotEqual(tab.rigid_related_bone_combo.itemText(0), en_none)
@@ -302,7 +308,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             )
             self.assertEqual(tab.rigid_body_list.count(), rigid_dag_count)
             self.assertEqual(tab.joint_list.count(), joint_dag_count)
-            self.assertRegex(tab.rigid_body_list.item(0).text(), r"^\d+: G(?:[1-9]|1[0-6]) .+ - \[.+\]$")
+            self.assertRegex(tab.rigid_body_list.item(0).text(), r"^\d+:G(?:[1-9]|1[0-6]) .+ - \[.+\]$")
 
             tab.rigid_body_list.setCurrentRow(0)
             QApplication.processEvents()

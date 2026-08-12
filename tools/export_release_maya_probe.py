@@ -1680,6 +1680,21 @@ def _normalize_material_field(field: str, value: Any) -> Any:
     return value
 
 
+def _normalized_material_oracle_value(material: Mapping[str, Any], field: str) -> Any:
+    """Return one canonical material value for PMX roundtrip comparison.
+
+    ``edge_flag`` is a legacy optional Maya attribute.  PMX stores the same
+    semantic in the edge-drawing bit of ``draw_flags``, so derive it when an
+    importer intentionally leaves the redundant attribute absent.
+    """
+    value = material.get(field)
+    if field == "edge_flag" and value is None:
+        draw_flags = material.get("draw_flags")
+        if isinstance(draw_flags, int) and not isinstance(draw_flags, bool):
+            value = int(bool(draw_flags & 0x10))
+    return _normalize_material_field(field, value)
+
+
 def _compare_scene_oracles(
     expected: Mapping[str, Any],
     actual: Mapping[str, Any],
@@ -1730,8 +1745,8 @@ def _compare_scene_oracles(
                 "toon_texture_index",
                 "shared_toon_flag",
             ):
-                expected_value = _normalize_material_field(field, source.get(field))
-                actual_value = _normalize_material_field(field, result.get(field))
+                expected_value = _normalized_material_oracle_value(source, field)
+                actual_value = _normalized_material_oracle_value(result, field)
                 if expected_value != actual_value:
                     failures.append(
                         f"material[{index}].{field}: expected {expected_value!r}, "

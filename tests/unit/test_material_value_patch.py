@@ -124,8 +124,52 @@ def test_adapter_binding_patch_updates_only_selected_texture_graph() -> None:
         and call[1][1] == "C:/textures/edited.png"
         for call in cmds.calls
     )
+    assert not any(
+        call[0] == "set_attr" and call[1][0].endswith(".baseColor")
+        for call in cmds.calls
+    )
     assert rebuilds == ["|Model_root", "|Model_root"]
     assert shader == updated.binding_identity
+
+
+def test_binding_patch_removes_texture_graph_before_writing_base_color() -> None:
+    """Clearing a resolved texture disconnects it before baseColor is set."""
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    bound, shader, shading_group = adapter.create_material("|Model_root", _material())
+
+    file_node = next(
+        call[1][0]
+        for call in cmds.calls
+        if call[0] == "shading_node" and call[1][0] == "file"
+    )
+    # Model the bidirectional Maya connection used by listConnections().
+    cmds.connections[shader] = [shading_group, file_node]
+    cmds.connections[file_node] = [shader]
+    cmds.types[file_node] = "file"
+    cmds.calls.clear()
+
+    updated = replace(bound, texture_path=None, resolved_texture_path=None)
+    adapter.apply_material_binding_patch("|Model_root", bound, updated)
+
+    disconnect_index = next(
+        index
+        for index, call in enumerate(cmds.calls)
+        if call[0] == "disconnect_attr" and call[1][1].endswith(".baseColor")
+    )
+    delete_index = next(
+        index
+        for index, call in enumerate(cmds.calls)
+        if call[0] == "delete" and call[1][0] == file_node
+    )
+    base_color_index = next(
+        index
+        for index, call in enumerate(cmds.calls)
+        if call[0] == "set_attr" and call[1][0].endswith(".baseColor")
+    )
+    assert disconnect_index < base_color_index
+    assert delete_index < base_color_index
 
 
 def test_adapter_narrow_create_skips_runtime_rebuild_but_clones_local_texture() -> None:

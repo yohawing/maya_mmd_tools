@@ -398,6 +398,7 @@ class MainWindow(QMainWindow):
             (self.material_presenter.view, "material"),
             (self.bone_presenter.view, "bone"),
             (self.morph_tab, "morph"),
+            (self.display_pane_tab, "display_pane"),
             (self.physics_tab, "physics"),
             (self.settings_presenter.view, "settings"),
         ]

@@ -83,7 +83,7 @@ class TestMorphTabGUI(GuiTestBase):
             QApplication.processEvents()
 
             self.assertEqual(tab.morph_list.count(), 1)
-            self.assertEqual(tab.morph_list.item(0).text(), "000:V|Mouth_A01")
+            self.assertEqual(tab.morph_list.item(0).text(), "0:V|Mouth_A01")
             self.assertEqual(tab.morph_list.item(0).data(Qt.UserRole), "Mouth_A01")
             tab.morph_list.setCurrentRow(0)
             QApplication.processEvents()

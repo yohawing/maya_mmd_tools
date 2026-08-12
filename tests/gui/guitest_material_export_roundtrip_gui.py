@@ -45,6 +45,7 @@ def _first_material_node(root):
 
 def _edit_custom_toon_with_material_tab(root):
     """Author custom Toon path/index through the real MaterialTab controls."""
+    from mmd_tools.adapters.maya_authoring_factory import build_maya_authoring_composition
     from mmd_tools.ui.application_state import ApplicationState
     from mmd_tools.ui.presenters.material_presenter import MaterialPresenter
     from mmd_tools.ui.qt_compat import QApplication
@@ -53,7 +54,13 @@ def _edit_custom_toon_with_material_tab(root):
     application = QApplication.instance() or QApplication([])
     view = MaterialTab()
     state = ApplicationState()
-    presenter = MaterialPresenter(view, state)
+    composition = build_maya_authoring_composition()
+    presenter = MaterialPresenter(
+        view,
+        state,
+        maya_adapter=composition.cmds_adapter,
+        authoring_coordinator=composition.coordinator,
+    )
     state.current_model_root = root
     presenter.load_materials()
     if view.material_list.count() < 1:
@@ -71,16 +78,30 @@ def _edit_custom_toon_with_material_tab(root):
 
     texture_table = json.loads(cmds.getAttr(f"{root}.{ATTR_MMD_TEXTURE_TABLE_JSON}"))
     custom_toon_index = texture_table.index(CUSTOM_TOON_PATH)
+    before = {
+        "shared_toon_flag": maya_attribute_utils.get_attribute(
+            presenter.current_material, ATTR_MMD_SHARED_TOON_FLAG
+        ),
+        "toon_texture_index": maya_attribute_utils.get_attribute(
+            presenter.current_material, ATTR_MMD_TOON_TEXTURE_INDEX
+        ),
+        "toon_texture_path": maya_attribute_utils.get_attribute(
+            presenter.current_material, ATTR_MMD_TOON_PATH
+        ),
+    }
     view.toon_sharing_check.setChecked(False)
     view.toon_texture_path_edit.setText(CUSTOM_TOON_PATH)
     view.toon_texture_index_spin.setValue(custom_toon_index)
     application.processEvents()
-    presenter.apply_changes()
+    # Exercise the production signal route, including the coordinator-backed
+    # transaction and its Maya undo chunk.
+    view.apply_btn.click()
     application.processEvents()
 
     material = presenter.current_material
     return {
         "material": material,
+        "before": before,
         "shared_toon_flag": maya_attribute_utils.get_attribute(material, ATTR_MMD_SHARED_TOON_FLAG),
         "toon_texture_index": maya_attribute_utils.get_attribute(material, ATTR_MMD_TOON_TEXTURE_INDEX),
         "toon_texture_path": maya_attribute_utils.get_attribute(material, ATTR_MMD_TOON_PATH),
@@ -107,6 +128,51 @@ class TestMaterialExportRoundtripGUI(GuiTestBase):
             self.assertEqual(material_edit["shared_toon_flag"], 0)
             self.assertEqual(material_edit["toon_texture_index"], material_edit["texture_table"].index(CUSTOM_TOON_PATH))
             self.assertEqual(material_edit["toon_texture_path"], CUSTOM_TOON_PATH)
+
+            # The production Apply coordinator owns one undo chunk.  Verify
+            # that the GUI signal route is reversible before exporting.
+            from maya import cmds
+
+            material_node = material_edit["material"]
+            applied_state = {
+                "shared_toon_flag": maya_attribute_utils.get_attribute(
+                    material_node, ATTR_MMD_SHARED_TOON_FLAG
+                ),
+                "toon_texture_index": maya_attribute_utils.get_attribute(
+                    material_node, ATTR_MMD_TOON_TEXTURE_INDEX
+                ),
+                "toon_texture_path": maya_attribute_utils.get_attribute(
+                    material_node, ATTR_MMD_TOON_PATH
+                ),
+            }
+            cmds.undo()
+            undone_state = {
+                "shared_toon_flag": maya_attribute_utils.get_attribute(
+                    material_node, ATTR_MMD_SHARED_TOON_FLAG
+                ),
+                "toon_texture_index": maya_attribute_utils.get_attribute(
+                    material_node, ATTR_MMD_TOON_TEXTURE_INDEX
+                ),
+                "toon_texture_path": maya_attribute_utils.get_attribute(
+                    material_node, ATTR_MMD_TOON_PATH
+                ),
+            }
+            self.assertEqual(undone_state, material_edit["before"])
+            cmds.redo()
+            self.assertEqual(
+                {
+                    "shared_toon_flag": maya_attribute_utils.get_attribute(
+                        material_node, ATTR_MMD_SHARED_TOON_FLAG
+                    ),
+                    "toon_texture_index": maya_attribute_utils.get_attribute(
+                        material_node, ATTR_MMD_TOON_TEXTURE_INDEX
+                    ),
+                    "toon_texture_path": maya_attribute_utils.get_attribute(
+                        material_node, ATTR_MMD_TOON_PATH
+                    ),
+                },
+                applied_state,
+            )
             source_oracle = _capture_scene_oracle(source_root, (0,))
 
             output = output_dir / "material_edit.pmx"
