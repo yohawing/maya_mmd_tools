@@ -1,6 +1,10 @@
 """Stable objectName contracts for the model-authoring UI controls."""
 
+import json
 import os
+import re
+from collections import Counter
+from pathlib import Path
 
 import pytest
 
@@ -19,8 +23,77 @@ try:
         QTextEdit,
         QWidget,
     )
-except ImportError as exc:  # pragma: no cover - local Maya installs provide Qt.
-    pytest.skip(f"Qt binding unavailable: {exc}", allow_module_level=True)
+except ImportError:  # pragma: no cover - the release runner may omit Qt.
+    QApplication = QCheckBox = QComboBox = QLineEdit = QListWidget = object
+    QPushButton = QSpinBox = QTableWidget = QTextEdit = QWidget = object
+
+
+_HAS_REAL_QT_WIDGETS = callable(getattr(QApplication, "instance", None)) and callable(
+    getattr(QWidget, "setObjectName", None)
+)
+_DYNAMIC_PHYSICS_SELECTOR_NAMES = {
+    "jointRigidBodyACombo",
+    "jointRigidBodyBCombo",
+    "physicsJointNameEdit",
+    "physicsJointNameEnglishEdit",
+    "physicsJointPositionEdit",
+    "physicsJointRotationEdit",
+    "physicsJointRotationMaxEdit",
+    "physicsJointRotationMinEdit",
+    "physicsJointSpringRotationEdit",
+    "physicsJointSpringTranslationEdit",
+    "physicsJointTranslationMaxEdit",
+    "physicsJointTranslationMinEdit",
+    "physicsJointTypeCombo",
+    "physicsRigidAngularDampingEdit",
+    "physicsRigidCollisionGroupSpin",
+    "physicsRigidCollisionMaskEdit",
+    "physicsRigidFrictionEdit",
+    "physicsRigidLinearDampingEdit",
+    "physicsRigidMassEdit",
+    "physicsRigidNameEdit",
+    "physicsRigidNameEnglishEdit",
+    "physicsRigidPhysicsModeCombo",
+    "physicsRigidPositionEdit",
+    "physicsRigidRestitutionEdit",
+    "physicsRigidRotationEdit",
+    "physicsRigidShapeCombo",
+    "physicsRigidShapeSizeEdit",
+    "rigidRelatedBoneCombo",
+}
+
+
+def test_manifest_object_names_are_unique_source_contracts():
+    """Keep selector spelling covered when the pure test runner uses Qt stubs."""
+    repository_root = Path(__file__).resolve().parents[2]
+    manifest = json.loads(
+        (repository_root / "tools" / "ui_coverage_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    required_names = {
+        entry["selector"].removeprefix("objectName=")
+        for entry in (*manifest["tabs"], *manifest["surfaces"])
+        if entry.get("selector")
+    }
+    declared_names = []
+    for source_path in (repository_root / "mmd_tools" / "ui").rglob("*.py"):
+        declared_names.extend(
+            re.findall(
+                r'\.setObjectName\(\s*["\']([^"\']+)',
+                source_path.read_text(encoding="utf-8"),
+            )
+        )
+
+    counts = Counter(declared_names)
+    # Physics editor names are assigned from a data table and are exercised by
+    # the real-Qt contract below. All literal selectors remain statically gated.
+    literal_required_names = required_names & counts.keys()
+    assert literal_required_names
+    assert required_names - literal_required_names == _DYNAMIC_PHYSICS_SELECTOR_NAMES
+    assert not {
+        name: counts[name] for name in literal_required_names if counts[name] != 1
+    }
 
 
 @pytest.fixture(scope="module")
@@ -48,6 +121,7 @@ def _assert_selectors(root, selectors):
     return names
 
 
+@pytest.mark.skipif(not _HAS_REAL_QT_WIDGETS, reason="real Qt widgets unavailable")
 def test_authoring_tabs_have_stable_action_list_table_and_swatch_selectors(qapp):
     from mmd_tools.ui.tabs.bone_tab import BoneTab
     from mmd_tools.ui.tabs.display_pane_tab import DisplayPaneTab
@@ -141,6 +215,7 @@ def test_authoring_tabs_have_stable_action_list_table_and_swatch_selectors(qapp)
     assert len(names) == len(set(names))
 
 
+@pytest.mark.skipif(not _HAS_REAL_QT_WIDGETS, reason="real Qt widgets unavailable")
 def test_physics_settings_and_validation_selectors(qapp):
     from mmd_tools.ui.tabs.physics_tab import PhysicsTab
     from mmd_tools.ui.tabs.settings_tab import SettingsTab
