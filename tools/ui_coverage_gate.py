@@ -268,6 +268,13 @@ def validate_report(manifest: Mapping[str, Any], report: Mapping[str, Any]) -> D
     manifest_cases = _entry_map(_as_entries(manifest.get("cases"), path="cases", errors=[]), "id")
     manifest_surfaces = _entry_map(_as_entries(manifest.get("surfaces"), path="surfaces", errors=[]), "id")
     case_entries = _as_entries(report.get("cases", []), path="report.cases", errors=errors)
+    seen_report_cases = set()
+    for index, case in enumerate(case_entries):
+        case_id = case.get("case_id")
+        if isinstance(case_id, str):
+            if case_id in seen_report_cases:
+                errors.append(_error("duplicate_report_case", f"report.cases[{index}].case_id", case_id))
+            seen_report_cases.add(case_id)
     report_cases = _entry_map(case_entries, "case_id")
     for index, case in enumerate(case_entries):
         case_id = case.get("case_id")
@@ -289,7 +296,7 @@ def validate_report(manifest: Mapping[str, Any], report: Mapping[str, Any]) -> D
             errors.append(_error("missing_case_evidence", f"report.cases[{case_id}]", "case evidence is required"))
             continue
         case_status = evidence.get("status")
-        if case_status is not None and str(case_status).lower() not in _PASS_STATUSES:
+        if str(case_status or "").lower() not in _PASS_STATUSES:
             errors.append(
                 _error(
                     "incomplete_case_evidence",
@@ -310,6 +317,19 @@ def validate_report(manifest: Mapping[str, Any], report: Mapping[str, Any]) -> D
             )
 
     surface_entries = _as_entries(report.get("surfaces", []), path="report.surfaces", errors=errors)
+    seen_report_surfaces = set()
+    for index, evidence in enumerate(surface_entries):
+        surface_id = evidence.get("surface_id")
+        if isinstance(surface_id, str):
+            if surface_id in seen_report_surfaces:
+                errors.append(
+                    _error(
+                        "duplicate_report_surface",
+                        f"report.surfaces[{index}].surface_id",
+                        surface_id,
+                    )
+                )
+            seen_report_surfaces.add(surface_id)
     report_surfaces = _entry_map(surface_entries, "surface_id")
     for index, evidence in enumerate(surface_entries):
         surface_id = evidence.get("surface_id")
@@ -349,6 +369,62 @@ def load_json(path: Path) -> Mapping[str, Any]:
     return value
 
 
+def _evidence_passes(path: Path, version: str) -> bool:
+    """Verify one real GUI artifact without trusting a hand-authored summary."""
+    if path.suffix.lower() == ".json":
+        payload = load_json(path)
+        return (
+            str(payload.get("status", "")).lower() in _PASS_STATUSES
+            and str(payload.get("maya_version", "")).startswith(version)
+        )
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return "//-- GUI TEST FINISHED --// status=PASS" in text and "Ran " in text
+
+
+def build_report_from_evidence(manifest: Mapping[str, Any], repo_root: Path) -> Dict[str, Any]:
+    """Build aggregate evidence only after all declared source artifacts pass."""
+    required_case_ids = {
+        surface["case_id"]
+        for surface in manifest.get("surfaces", [])
+        if surface.get("disposition") == "qt_case"
+    }
+    cases_by_id = _entry_map(manifest.get("cases", []), "id")
+    cases = []
+    for case_id in sorted(required_case_ids):
+        case = cases_by_id.get(case_id, {})
+        versions = _normalise_versions(case.get("required_maya_versions"))
+        evidence_files = case.get("evidence_files")
+        if not isinstance(evidence_files, Mapping):
+            raise ValueError(f"case {case_id} has no evidence_files mapping")
+        for version in versions:
+            relative_path = evidence_files.get(version)
+            if not isinstance(relative_path, str) or not relative_path:
+                raise ValueError(f"case {case_id} has no evidence file for Maya {version}")
+            evidence_path = (repo_root / relative_path).resolve()
+            if not evidence_path.is_file() or not _evidence_passes(evidence_path, version):
+                raise ValueError(f"case {case_id} evidence failed for Maya {version}: {evidence_path}")
+        cases.append({"case_id": case_id, "status": "pass", "maya_versions": versions})
+
+    surfaces = []
+    for surface in manifest.get("surfaces", []):
+        if surface.get("disposition") != "qt_case":
+            continue
+        evidence = {
+            "surface_id": surface["id"],
+            "case_id": surface["case_id"],
+            "status": "pass",
+        }
+        locator_key = "selector" if "selector" in surface else "attribute"
+        evidence[locator_key] = surface[locator_key]
+        surfaces.append(evidence)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "gate_id": GATE_ID,
+        "cases": cases,
+        "surfaces": surfaces,
+    }
+
+
 def _build_cli_result(manifest_result: Dict[str, Any], report_result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     result = report_result if report_result is not None else manifest_result
     return {
@@ -372,12 +448,32 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         help="checked-in UI coverage manifest",
     )
     parser.add_argument("--report", help="optional Qt evidence report JSON")
+    parser.add_argument(
+        "--from-evidence",
+        action="store_true",
+        help="generate the report from manifest-declared build artifacts",
+    )
+    parser.add_argument("--write-report", help="write the generated evidence report JSON")
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
         manifest = load_json(Path(args.manifest))
         manifest_result = validate_manifest(manifest)
         report_result = None
-        if args.report:
+        if args.report and args.from_evidence:
+            raise ValueError("--report and --from-evidence are mutually exclusive")
+        if args.write_report and not args.from_evidence:
+            raise ValueError("--write-report requires --from-evidence")
+        if args.from_evidence:
+            generated = build_report_from_evidence(manifest, Path(__file__).resolve().parents[1])
+            if args.write_report:
+                report_path = Path(args.write_report)
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                report_path.write_text(
+                    json.dumps(generated, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            report_result = validate_report(manifest, generated)
+        elif args.report:
             report_result = validate_report(manifest, load_json(Path(args.report)))
         print(json.dumps(_build_cli_result(manifest_result, report_result), ensure_ascii=False, indent=2))
     except (OSError, ValueError, json.JSONDecodeError) as exc:

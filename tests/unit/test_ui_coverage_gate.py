@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.ui_coverage_gate import validate_manifest, validate_report
+from tools.ui_coverage_gate import build_report_from_evidence, validate_manifest, validate_report
 
 
 MANIFEST_PATH = Path(__file__).resolve().parents[2] / "tools" / "ui_coverage_manifest.json"
@@ -156,7 +156,7 @@ def test_report_missing_required_version_evidence_fails():
     result = validate_report(
         _qt_case_manifest(),
         _report(
-            [{"case_id": "case.one", "maya_versions": ["2024"]}],
+            [{"case_id": "case.one", "status": "pass", "maya_versions": ["2024"]}],
             [
                 {
                     "surface_id": "import_export.surface",
@@ -201,7 +201,7 @@ def test_report_incomplete_qt_surface_fails(status):
     result = validate_report(
         manifest,
         _report(
-            [{"case_id": "case.one", "maya_versions": ["2024", "2026"]}],
+            [{"case_id": "case.one", "status": "pass", "maya_versions": ["2024", "2026"]}],
             [
                 {
                     "surface_id": "import_export.surface",
@@ -220,7 +220,7 @@ def test_report_selector_mismatch_fails():
     result = validate_report(
         manifest,
         _report(
-            [{"case_id": "case.one", "maya_versions": ["2024", "2026"]}],
+            [{"case_id": "case.one", "status": "pass", "maya_versions": ["2024", "2026"]}],
             [
                 {
                     "surface_id": "import_export.surface",
@@ -239,7 +239,7 @@ def test_report_green_fixture_requires_case_versions_and_matching_selector():
     result = validate_report(
         manifest,
         _report(
-            [{"case_id": "case.one", "maya_versions": ["2024", "2026"]}],
+            [{"case_id": "case.one", "status": "pass", "maya_versions": ["2024", "2026"]}],
             [
                 {
                     "surface_id": "import_export.surface",
@@ -251,6 +251,28 @@ def test_report_green_fixture_requires_case_versions_and_matching_selector():
         ),
     )
     assert result["valid"]
+
+
+def test_report_missing_case_status_fails_closed():
+    manifest = _qt_case_manifest()
+    report = _aggregate_from_inventory(manifest, {"case.one": ("2024", "2026")})
+    report["cases"][0].pop("status")
+
+    result = validate_report(manifest, report)
+
+    assert "incomplete_case_evidence" in _errors(result)
+
+
+def test_report_duplicate_case_and_surface_ids_fail_closed():
+    manifest = _qt_case_manifest()
+    report = _aggregate_from_inventory(manifest, {"case.one": ("2024", "2026")})
+    report["cases"].append(copy.deepcopy(report["cases"][0]))
+    report["surfaces"].append(copy.deepcopy(report["surfaces"][0]))
+
+    result = validate_report(manifest, report)
+
+    assert "duplicate_report_case" in _errors(result)
+    assert "duplicate_report_surface" in _errors(result)
 
 
 def _aggregate_from_inventory(manifest, versions_by_case):
@@ -312,3 +334,41 @@ def test_real_gui_case_aggregate_passes_when_both_maya_versions_are_present():
     }
     result = validate_report(manifest, _aggregate_from_inventory(manifest, versions))
     assert result["valid"]
+
+
+def test_evidence_report_builder_reads_declared_artifacts(tmp_path):
+    manifest = _qt_case_manifest()
+    manifest["cases"][0]["evidence_files"] = {
+        "2024": "reports/case-2024.log",
+        "2026": "reports/case-2026.json",
+    }
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "case-2024.log").write_text(
+        "Ran 1 test in 0.1s\n//-- GUI TEST FINISHED --// status=PASS\n",
+        encoding="utf-8",
+    )
+    (reports / "case-2026.json").write_text(
+        json.dumps({"status": "pass", "maya_version": "2026"}),
+        encoding="utf-8",
+    )
+
+    report = build_report_from_evidence(manifest, tmp_path)
+
+    assert validate_report(manifest, report)["valid"]
+
+
+def test_evidence_report_builder_rejects_failed_artifact(tmp_path):
+    manifest = _qt_case_manifest()
+    manifest["cases"][0]["evidence_files"] = {
+        "2024": "case-2024.log",
+        "2026": "case-2026.log",
+    }
+    for version in ("2024", "2026"):
+        (tmp_path / f"case-{version}.log").write_text(
+            "Ran 1 test in 0.1s\n//-- GUI TEST FINISHED --// status=FAIL\n",
+            encoding="utf-8",
+        )
+
+    with pytest.raises(ValueError, match="evidence failed"):
+        build_report_from_evidence(manifest, tmp_path)

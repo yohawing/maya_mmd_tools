@@ -73,7 +73,11 @@
         "2024",
         "2026"
       ],
-      "source": "tests/gui/guitest_info_undo_contract_gui.py; build/reports/ui_info_undo_maya2024_final.log; build/reports/ui-info-undo-2026.log"
+      "source": "tests/gui/guitest_info_undo_contract_gui.py; build/reports/ui_info_undo_maya2024_final.log; build/reports/ui-info-undo-2026.log",
+      "evidence_files": {
+        "2024": "build/reports/ui_info_undo_maya2024_final.log",
+        "2026": "build/reports/ui-info-undo-2026.log"
+      }
     },
     {
       "id": "gui.authoring_signal_smoke",
@@ -82,7 +86,11 @@
         "2024",
         "2026"
       ],
-      "source": "tests/gui/guitest_authoring_signal_smoke_gui.py; build/reports/ui_authoring_signal_smoke_maya2024.json; build/reports/ui_authoring_signal_smoke_maya2026.json"
+      "source": "tests/gui/guitest_authoring_signal_smoke_gui.py; build/reports/ui_authoring_signal_smoke_maya2024.json; build/reports/ui_authoring_signal_smoke_maya2026.json",
+      "evidence_files": {
+        "2024": "build/reports/ui_authoring_signal_smoke_maya2024.json",
+        "2026": "build/reports/ui_authoring_signal_smoke_maya2026.json"
+      }
     },
     {
       "id": "gui.fileio_safe_routes",
@@ -91,7 +99,11 @@
         "2024",
         "2026"
       ],
-      "source": "tests/gui/guitest_fileio_safe_routes_gui.py; build/reports/ui-fileio-safe-routes-2024.log; build/reports/ui-fileio-safe-routes-2026.log"
+      "source": "tests/gui/guitest_fileio_safe_routes_gui.py; build/reports/ui-fileio-safe-routes-2024.log; build/reports/ui-fileio-safe-routes-2026.log",
+      "evidence_files": {
+        "2024": "build/reports/ui-fileio-safe-routes-2024.log",
+        "2026": "build/reports/ui-fileio-safe-routes-2026.log"
+      }
     },
     {
       "id": "gui.settings_side_effects",
@@ -100,7 +112,11 @@
         "2024",
         "2026"
       ],
-      "source": "tests/gui/guitest_settings_side_effects_gui.py; build/reports/ui-settings-side-effects-2024.log; build/reports/ui-settings-side-effects-2026.log"
+      "source": "tests/gui/guitest_settings_side_effects_gui.py; build/reports/ui-settings-side-effects-2024.log; build/reports/ui-settings-side-effects-2026.log",
+      "evidence_files": {
+        "2024": "build/reports/ui-settings-side-effects-2024.log",
+        "2026": "build/reports/ui-settings-side-effects-2026.log"
+      }
     },
     {
       "id": "gui.material_export_roundtrip",
