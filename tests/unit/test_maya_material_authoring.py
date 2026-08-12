@@ -467,6 +467,39 @@ def test_apply_material_reindex_fast_path_writes_only_swapped_indices_and_morph_
     assert written_attrs == {ATTR_MMD_MATERIAL_INDEX, ATTR_MMD_MATERIAL_MORPH_OFFSETS}
 
 
+def test_apply_material_reindex_fast_path_does_not_require_full_specs() -> None:
+    cmds = FakeCmdsAdapter(
+        attrs={
+            ("shaderA", ATTR_MMD_MATERIAL_INDEX): 0,
+            ("shaderB", ATTR_MMD_MATERIAL_INDEX): 1,
+            ("morphNode", "mmd_morph_type"): "material",
+            ("morphNode", ATTR_MMD_MATERIAL_MORPH_OFFSETS): json.dumps(
+                [_material_offset(0)], separators=(",", ":")
+            ),
+        },
+        types={
+            "|Model_root": "transform",
+            "shaderA": "standardSurface",
+            "shaderB": "standardSurface",
+            "morphNode": "network",
+        },
+    )
+    registry = FakeRegistry(
+        members=["shaderA", "shaderB"], morph_members=["morphNode"]
+    )
+    adapter = _authoring(cmds, registry)
+
+    result = adapter.apply_material_reindex_fast("|Model_root", 0, 1)
+
+    assert result.first_index == 0
+    assert result.second_index == 1
+    assert cmds.attrs[("shaderA", ATTR_MMD_MATERIAL_INDEX)] == 1
+    assert cmds.attrs[("shaderB", ATTR_MMD_MATERIAL_INDEX)] == 0
+    assert json.loads(cmds.attrs[("morphNode", ATTR_MMD_MATERIAL_MORPH_OFFSETS)])[0][
+        "material_index"
+    ] == 1
+
+
 def test_native_queue_reindex_fails_closed_on_descendant_discovery_error() -> None:
     class FailingDescendantCmds(FakeCmdsAdapter):
         def all_node_types(self) -> list[str]:

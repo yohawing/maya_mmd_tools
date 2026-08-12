@@ -1,10 +1,9 @@
 """Coordinate pure model mutations with Maya binding transactions.
 
 This module is the structural transaction boundary for product authoring.  It
-computes the complete immutable target before opening Maya's undo chunk, runs
-binding operations without opening nested chunks, rebases the backend to the
-strictly observed binding/index set, and finally applies the full semantic
-specification with fingerprint verification.
+computes complete immutable targets for generic structural edits, while the
+adjacent Material swap uses a dedicated narrow transaction.  Binding
+operations run without opening nested chunks and every path fails closed.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ import math
 from typing import Any, Callable
 
 from mmd_tools.adapters import maya_bone_authoring
+from mmd_tools.adapters.maya_material_authoring import MaterialReindexResult
 from mmd_tools.core.bone_authoring import (
     BoneResetPlan,
     classify_bone_change,
@@ -504,7 +504,7 @@ class MayaModelAuthoringCoordinator:
         index: int,
         new_position: int,
     ) -> MmdModelAuthoringSpec:
-        """Move one material to an adjacent position through a narrow transaction."""
+        """Move one material while preserving the full-spec return contract."""
         current = self._read_current(model_root, "move_material")
         target = self._pure(
             "move_material",
@@ -515,11 +515,6 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 "move_material requires apply_material_reindex; no Maya writes were performed"
             )
-        commit = getattr(self._metadata, "commit_material_reindex", None)
-        if not callable(commit):
-            raise MayaModelAuthoringCoordinatorError(
-                "move_material requires a narrow metadata reindex commit; no Maya writes were performed"
-            )
 
         def bind() -> MmdModelAuthoringSpec:
             result = structural_change(model_root, current, target)
@@ -527,7 +522,31 @@ class MayaModelAuthoringCoordinator:
                 raise TypeError("material reindex binding operation returned an invalid spec")
             return result
 
-        return self._execute_material_reindex(model_root, "move_material", bind, commit)
+        return self._execute(model_root, "move_material", target, bind)
+
+    def move_material_fast(
+        self,
+        model_root: str,
+        index: int,
+        new_position: int,
+    ) -> MaterialReindexResult:
+        """Move one adjacent material without constructing a full model spec."""
+        begin = getattr(self._backend, "begin_material_reindex", None)
+        structural_change = getattr(self._materials, "apply_material_reindex_fast", None)
+        commit = getattr(self._metadata, "commit_material_reindex", None)
+        if not all(callable(item) for item in (begin, structural_change, commit)):
+            raise MayaModelAuthoringCoordinatorError(
+                "move_material_fast requires the narrow material reindex APIs; no Maya writes were performed"
+            )
+        return self._execute_material_reindex_fast(
+            model_root,
+            "move_material_fast",
+            index,
+            new_position,
+            begin,
+            structural_change,
+            commit,
+        )
 
     # Bone operations -----------------------------------------------------
     def register_selected_joint(self, model_root: str, joint: str) -> MmdBoneSpec:
@@ -1145,24 +1164,27 @@ class MayaModelAuthoringCoordinator:
                 f"{operation} failed for root {model_root!r}: {exc}"
             ) from exc
 
-    def _execute_material_reindex(
+    def _execute_material_reindex_fast(
         self,
         model_root: str,
         operation: str,
-        structural_write: Callable[[], MmdModelAuthoringSpec],
-        commit: Callable[[str, MmdModelAuthoringSpec], Any],
-    ) -> MmdModelAuthoringSpec:
-        """Run the adjacent-material path without full-list metadata hooks."""
+        index: int,
+        new_position: int,
+        begin: Callable[[str, int, int], Any],
+        structural_write: Callable[[str, int, int], MaterialReindexResult],
+        commit: Callable[[str, MaterialReindexResult], Any],
+    ) -> MaterialReindexResult:
+        """Run adjacent material swap without full-spec metadata hooks."""
         started = False
         try:
-            self._backend.begin_write(model_root)
+            begin(model_root, index, new_position)
             started = True
-            bound_target = structural_write()
-            if not isinstance(bound_target, MmdModelAuthoringSpec):
-                raise TypeError("material reindex binding operation returned an invalid spec")
-            commit(model_root, bound_target)
+            result = structural_write(model_root, index, new_position)
+            if not isinstance(result, MaterialReindexResult):
+                raise TypeError("material reindex binding operation returned an invalid result")
+            commit(model_root, result)
             started = False
-            return bound_target
+            return result
         except Exception as exc:
             if started:
                 try:

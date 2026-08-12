@@ -179,13 +179,22 @@ class SceneMetadataBackend(Protocol):
     def commit_material_reindex(
         self,
         model_root: str,
-        spec: _authoring_spec.MmdModelAuthoringSpec,
+        result: Any,
     ) -> None:
         """Verify and commit a narrow adjacent-material transaction.
 
-        The backend must validate the complete resulting spec but must not
-        invoke any full model/bone/material/morph metadata write hooks.
+        The backend validates only the narrow transaction state and must not
+        invoke any full model/bone/material/morph metadata read or write hooks.
         """
+        ...
+
+    def begin_material_reindex(
+        self,
+        model_root: str,
+        index: int,
+        new_position: int,
+    ) -> None:
+        """Begin a narrow adjacent-material transaction."""
         ...
 
     def commit_morph_reindex(
@@ -296,23 +305,41 @@ class SceneMetadataAdapter:
                 f"{original_error}; rollback failed for root {model_root!r}: {rollback_error}"
             ) from rollback_error
 
+    def begin_material_reindex(
+        self,
+        model_root: str,
+        index: int,
+        new_position: int,
+    ) -> None:
+        """Begin a narrow adjacent material swap."""
+        self._validate_root(model_root)
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise SceneMetadataError("material index must be an integer")
+        if isinstance(new_position, bool) or not isinstance(new_position, int):
+            raise SceneMetadataError("material new position must be an integer")
+        try:
+            self._backend.begin_material_reindex(model_root, index, new_position)
+        except Exception as exc:
+            raise SceneMetadataError(
+                f"failed to begin material reindex for root {model_root!r}: {exc}"
+            ) from exc
+
     def commit_material_reindex(
         self,
         model_root: str,
-        spec: _authoring_spec.MmdModelAuthoringSpec,
+        result: Any,
     ) -> None:
         """Commit an adjacent material swap after narrow Maya writes.
 
-        The backend performs a strict full-spec read/fingerprint check.  No
-        semantic metadata section is written here; the shader/Material Morph
-        and native queue writes have already happened inside the same undo
-        chunk.
+        The backend performs a strict narrow-state check.  No semantic
+        metadata section is written here; the shader/Material Morph and native
+        queue writes have already happened inside the same undo chunk.
         """
         self._validate_root(model_root)
-        if not isinstance(spec, _authoring_spec.MmdModelAuthoringSpec):
-            raise SceneMetadataError("spec must be an MmdModelAuthoringSpec")
+        if result is None:
+            raise SceneMetadataError("material reindex commit requires a narrow result")
         try:
-            self._backend.commit_material_reindex(model_root, spec)
+            self._backend.commit_material_reindex(model_root, result)
         except Exception as exc:
             raise SceneMetadataError(
                 f"failed to commit material reindex for root {model_root!r}: {exc}"

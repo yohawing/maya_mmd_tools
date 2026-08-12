@@ -51,6 +51,23 @@ REQUIRED_OPERATIONS = (
 )
 
 
+def _material_morph_offset(material_index: int) -> dict[str, Any]:
+    """Return one complete Material Morph offset for transaction probes."""
+    return {
+        "material_index": material_index,
+        "operation_type": 0,
+        "diffuse": [1.0, 1.0, 1.0, 1.0],
+        "specular": [0.0, 0.0, 0.0],
+        "specular_coefficient": 0.0,
+        "ambient": [0.0, 0.0, 0.0],
+        "edge_color": [0.0, 0.0, 0.0, 1.0],
+        "edge_size": 1.0,
+        "texture_factor": [1.0, 1.0, 1.0, 1.0],
+        "sphere_texture_factor": [1.0, 1.0, 1.0, 1.0],
+        "toon_texture_factor": [1.0, 1.0, 1.0, 1.0],
+    }
+
+
 def writer_not_called_case(output_path: str | Path | None = None) -> dict[str, Any]:
     """Prove blocking PMX preflight dispatches no writer and preserves output.
 
@@ -476,16 +493,64 @@ def run_authoring_e2e(
             },
         )
     )
+    original_material_index = created_material.index
+    reindex_probe = coordinator.create_morph(
+        root,
+        MmdMorphSpec(
+            name="Material Reindex Probe",
+            name_english="Material Reindex Probe",
+            panel=4,
+            morph_type="material",
+        ),
+    )
+    coordinator.replace_morph_offsets(
+        root,
+        reindex_probe.index,
+        (_material_morph_offset(original_material_index),),
+    )
+
     reindex_started = time.perf_counter()
-    reordered = coordinator.move_material(root, created_material.index, 0)
+    reordered = coordinator.move_material_fast(root, original_material_index, 0)
     reindex_elapsed_ms = (time.perf_counter() - reindex_started) * 1000.0
-    created_material = next(
-        item
-        for item in reordered.materials
-        if item.binding_identity == created_material.binding_identity
+    if (reordered.first_index, reordered.second_index) != (0, original_material_index):
+        raise MayaAuthoringE2EError("material.reindex returned the wrong swapped indices")
+    created_material = coordinator.read_material_value(
+        root,
+        0,
+        created_material.binding_identity,
     )
     if created_material.index != 0:
         raise MayaAuthoringE2EError("material.reindex did not move the created binding to index 0")
+    moved_probe = coordinator.read_morph_value(
+        root, reindex_probe.index, reindex_probe.binding_identity
+    )
+    if moved_probe.offsets[0]["material_index"] != 0:
+        raise MayaAuthoringE2EError("material.reindex did not remap Material Morph offsets")
+
+    cmds_adapter.undo()
+    coordinator.read_material_value(
+        root,
+        original_material_index,
+        created_material.binding_identity,
+    )
+    undo_probe = coordinator.read_morph_value(
+        root, reindex_probe.index, reindex_probe.binding_identity
+    )
+    if undo_probe.offsets[0]["material_index"] != original_material_index:
+        raise MayaAuthoringE2EError("material.reindex undo did not restore Material Morph offsets")
+
+    cmds_adapter.redo()
+    created_material = coordinator.read_material_value(
+        root,
+        0,
+        created_material.binding_identity,
+    )
+    redo_probe = coordinator.read_morph_value(
+        root, reindex_probe.index, reindex_probe.binding_identity
+    )
+    if redo_probe.offsets[0]["material_index"] != 0:
+        raise MayaAuthoringE2EError("material.reindex redo did not restore Material Morph offsets")
+    coordinator.delete_morph(root, reindex_probe.index)
     operations.append(
         _operation(
             "material.reindex",
@@ -493,6 +558,8 @@ def run_authoring_e2e(
                 "binding": created_material.binding_identity,
                 "index": created_material.index,
                 "elapsed_ms": reindex_elapsed_ms,
+                "undo_redo_verified": True,
+                "material_morph_remap_verified": True,
             },
         )
     )
@@ -637,19 +704,7 @@ def run_authoring_e2e(
         morph_type="group",
     )
     coordinator.create_morph(root, morph_group)
-    material_offset = {
-        "material_index": 0,
-        "operation_type": 0,
-        "diffuse": [1.0, 1.0, 1.0, 1.0],
-        "specular": [0.0, 0.0, 0.0],
-        "specular_coefficient": 0.0,
-        "ambient": [0.0, 0.0, 0.0],
-        "edge_color": [0.0, 0.0, 0.0, 1.0],
-        "edge_size": 1.0,
-        "texture_factor": [1.0, 1.0, 1.0, 1.0],
-        "sphere_texture_factor": [1.0, 1.0, 1.0, 1.0],
-        "toon_texture_factor": [1.0, 1.0, 1.0, 1.0],
-    }
+    material_offset = _material_morph_offset(0)
     coordinator.create_morph(
         root,
         MmdMorphSpec(

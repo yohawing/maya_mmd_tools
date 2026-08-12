@@ -9,7 +9,7 @@ undo transactions remain the responsibility of the caller.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import json
 from typing import Any
 
@@ -56,6 +56,14 @@ ATTR_MMD_MATERIAL_MORPH_OFFSETS = "mmd_material_morph_offsets_json"
 
 class MayaMaterialAuthoringError(RuntimeError):
     """Raised when a material binding operation cannot fail closed."""
+
+
+@dataclass(frozen=True)
+class MaterialReindexResult:
+    """Result of a narrow adjacent material swap."""
+
+    first_index: int
+    second_index: int
 
 
 class MayaMaterialAuthoring:
@@ -509,6 +517,128 @@ class MayaMaterialAuthoring:
                 f"failed to apply adjacent material reindex under root {root!r}: {exc}"
             ) from exc
         return new_spec
+
+    def apply_material_reindex_fast(
+        self,
+        model_root: str,
+        index: int,
+        new_position: int,
+    ) -> MaterialReindexResult:
+        """Apply an adjacent swap without reading a model authoring spec."""
+        root = self._require_root(model_root)
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise MayaMaterialAuthoringError("material index must be a non-negative integer")
+        if isinstance(new_position, bool) or not isinstance(new_position, int) or new_position < 0:
+            raise MayaMaterialAuthoringError("new_position must be a non-negative integer")
+        if abs(index - new_position) != 1:
+            raise MayaMaterialAuthoringError("material reindex requires an adjacent swap")
+        first_index, second_index = sorted((index, new_position))
+
+        registry_members = self._registry.list_model_registry_members(
+            root, REGISTRY_CATEGORY_MATERIAL
+        )
+        if registry_members is None:
+            raise MayaMaterialAuthoringError("material reindex requires a model registry")
+        by_index: dict[int, str] = {}
+        for member in registry_members:
+            binding = self._canonical_node(str(member))
+            observed = self._get_attr(binding, ATTR_MMD_MATERIAL_INDEX)
+            if isinstance(observed, bool) or not isinstance(observed, int) or observed < 0:
+                raise MayaMaterialAuthoringError(
+                    f"material {binding!r} has an invalid material index"
+                )
+            if observed in by_index and by_index[observed] != binding:
+                raise MayaMaterialAuthoringError(
+                    f"duplicate material index {observed} in the model registry"
+                )
+            by_index[observed] = binding
+        try:
+            first_binding = by_index[first_index]
+            second_binding = by_index[second_index]
+        except KeyError as exc:
+            raise MayaMaterialAuthoringError(
+                "material reindex indices are not registry-owned"
+            ) from exc
+
+        morph_updates = self._material_morph_reindex_updates(
+            root, first_index, second_index, set(by_index)
+        )
+        try:
+            self._set_attr(first_binding, ATTR_MMD_MATERIAL_INDEX, second_index, "long")
+            self._set_attr(second_binding, ATTR_MMD_MATERIAL_INDEX, first_index, "long")
+            for node, payload in morph_updates:
+                self._set_attr(node, ATTR_MMD_MATERIAL_MORPH_OFFSETS, payload, "string")
+            self._update_native_render_queue(root, first_index, second_index)
+        except Exception as exc:
+            raise MayaMaterialAuthoringError(
+                f"failed to apply adjacent material reindex under root {root!r}: {exc}"
+            ) from exc
+        return MaterialReindexResult(
+            first_index=first_index,
+            second_index=second_index,
+        )
+
+    def _material_morph_reindex_updates(
+        self,
+        root: str,
+        first_index: int,
+        second_index: int,
+        valid_indices: set[int],
+    ) -> list[tuple[str, str]]:
+        """Build writes for only Material Morph JSON affected by a swap."""
+        morph_members = self._registry.list_model_registry_members(root, "morph") or []
+        updates: list[tuple[str, str]] = []
+        swap = {first_index: second_index, second_index: first_index}
+        for member in morph_members:
+            node = self._canonical_node(str(member))
+            morph_type = self._get_attr(node, "mmd_morph_type")
+            if morph_type != "material":
+                continue
+            if not self._has_attr(node, ATTR_MMD_MATERIAL_MORPH_OFFSETS):
+                raise MayaMaterialAuthoringError(
+                    f"material morph {node!r} is missing its offsets JSON"
+                )
+            raw = self._get_attr(node, ATTR_MMD_MATERIAL_MORPH_OFFSETS)
+            try:
+                offsets = json.loads(raw, object_pairs_hook=self._unique_json_object)
+            except (TypeError, ValueError) as exc:
+                raise MayaMaterialAuthoringError(
+                    f"material morph {node!r} contains invalid offsets JSON"
+                ) from exc
+            if not isinstance(offsets, list):
+                raise MayaMaterialAuthoringError(
+                    f"material morph {node!r} offsets must be a JSON list"
+                )
+            changed = False
+            for offset_number, offset in enumerate(offsets):
+                self._validate_material_morph_offset(
+                    offset,
+                    set(),
+                    f"material morph {node} offset {offset_number}",
+                    valid_indices=valid_indices,
+                )
+                material_index = offset["material_index"]
+                replacement = swap.get(material_index)
+                if replacement is not None:
+                    offset["material_index"] = replacement
+                    changed = True
+            if changed:
+                updates.append(
+                    (
+                        node,
+                        json.dumps(offsets, ensure_ascii=False, separators=(",", ":")),
+                    )
+                )
+        return updates
+
+    @staticmethod
+    def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate JSON field {key!r}")
+            value[key] = item
+        return value
 
     def _validate_adjacent_reindex(
         self,
@@ -1075,4 +1205,4 @@ class MayaMaterialAuthoring:
             raise MayaMaterialAuthoringError(f"Maya adapter call {method} failed: {exc}") from exc
 
 
-__all__ = ["MayaMaterialAuthoringError", "MayaMaterialAuthoring"]
+__all__ = ["MaterialReindexResult", "MayaMaterialAuthoringError", "MayaMaterialAuthoring"]

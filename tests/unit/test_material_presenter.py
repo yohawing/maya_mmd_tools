@@ -376,7 +376,8 @@ class TestMaterialPresenter(unittest.TestCase):
         with patch.object(presenter, "load_materials") as reload_materials:
             self.assertTrue(presenter.move_material(-1))
 
-        coordinator.move_material.assert_called_once_with("|model_root", 1, 0)
+        coordinator.move_material_fast.assert_called_once_with("|model_root", 1, 0)
+        coordinator.read_spec.assert_not_called()
         coordinator.reindex_materials.assert_not_called()
         reload_materials.assert_not_called()
         self.assertEqual([item.data(Qt.UserRole) for item in items], ["shader1", "shader0", "shader2"])

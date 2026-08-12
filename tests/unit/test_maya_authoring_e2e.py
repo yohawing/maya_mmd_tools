@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from mmd_tools.adapters.maya_material_authoring import MaterialReindexResult
 from mmd_tools.adapters import maya_authoring_e2e
 from mmd_tools.core.bone_authoring import capture_rest, register_bone, reindex_bones, unregister_bone
 from mmd_tools.core.material_authoring import create_material, delete_material, move_material
@@ -18,6 +19,7 @@ from mmd_tools.core.model_authoring_spec import (
 from mmd_tools.core.morph_authoring import (
     MorphReindexResult,
     create_morph,
+    delete_morph,
     reindex_morphs,
     replace_morph_offsets,
     swap_adjacent_morphs,
@@ -216,6 +218,11 @@ class _FakeCoordinator:
     def move_material(self, _root, index, new_position):
         return self._set(move_material(self.spec, index, new_position))
 
+    def move_material_fast(self, _root, index, new_position):
+        self.undo_spec = self.spec
+        self._set(move_material(self.spec, index, new_position))
+        return MaterialReindexResult(*sorted((index, new_position)))
+
     def register_selected_joint(self, _root, joint):
         bone = MmdBoneSpec(
             name="e2eBone",
@@ -276,6 +283,9 @@ class _FakeCoordinator:
 
     def replace_morph_offsets(self, _root, index, offsets):
         return self._set(replace_morph_offsets(self.spec, index, offsets))
+
+    def delete_morph(self, _root, index):
+        return self._set(delete_morph(self.spec, index))
 
     def reindex_morphs(self, _root, order):
         return self._set(reindex_morphs(self.spec, order))

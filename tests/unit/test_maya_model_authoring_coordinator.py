@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from mmd_tools.adapters.maya_material_authoring import MaterialReindexResult
 from mmd_tools.adapters.maya_model_authoring_coordinator import (
     MayaModelAuthoringCoordinator,
     MayaModelAuthoringCoordinatorError,
@@ -53,6 +54,14 @@ class FakeBackend:
         self.payload = self.scene.to_mapping()
         self.begin_count += 1
         self.events.append("begin")
+
+    def begin_material_reindex(self, _root: str, _index: int, _new_position: int) -> None:
+        if self.active:
+            raise RuntimeError("nested transaction")
+        self.active = True
+        self.snapshot = self.scene
+        self.begin_count += 1
+        self.events.append("begin:material_reindex")
 
     def begin_bone_value_patch(
         self,
@@ -174,9 +183,9 @@ class FakeMetadataAdapter:
         self.backend.commit_count += 1
         self.backend.events.append("commit:bone_register")
 
-    def commit_material_reindex(self, _root: str, target: MmdModelAuthoringSpec) -> None:
+    def commit_material_reindex(self, _root: str, result: MaterialReindexResult) -> None:
         assert self.backend.active
-        self.backend.scene = target
+        assert (result.first_index, result.second_index) == (0, 1)
         self.backend.active = False
         self.backend.commit_count += 1
         self.backend.events.append("commit:material_reindex")
@@ -298,6 +307,30 @@ class FakeMaterialAuthoring:
     ) -> MmdModelAuthoringSpec:
         self.backend.scene = new
         return new
+
+    def apply_material_reindex_fast(
+        self,
+        _root: str,
+        index: int,
+        new_position: int,
+    ) -> MaterialReindexResult:
+        self.backend.scene = replace(
+            self.backend.scene,
+            materials=tuple(
+                replace(
+                    item,
+                    index=(
+                        new_position
+                        if item.index == index
+                        else index
+                        if item.index == new_position
+                        else item.index
+                    ),
+                )
+                for item in self.backend.scene.materials
+            ),
+        )
+        return MaterialReindexResult(*sorted((index, new_position)))
 
 
 class FakeBoneApi:
@@ -548,20 +581,98 @@ def test_reindex_materials_uses_one_binding_transaction() -> None:
     assert backend.commit_count == 2
 
 
+def test_move_material_preserves_full_spec_return_contract() -> None:
+    coordinator, backend, _materials, _ = _coordinator()
+    coordinator.create_material("|root")
+
+    result = coordinator.move_material("|root", 1, 0)
+
+    assert isinstance(result, MmdModelAuthoringSpec)
+    assert [(item.index, item.binding_identity) for item in result.materials] == [
+        (0, "material1"),
+        (1, "material0"),
+    ]
+
+
 def test_move_material_uses_narrow_transaction_without_full_metadata_hooks() -> None:
     coordinator, backend, _materials, _ = _coordinator()
     coordinator.create_material("|root")
     backend.events.clear()
     backend.rebase_count = 0
 
-    result = coordinator.move_material("|root", 1, 0)
+    result = coordinator.move_material_fast("|root", 1, 0)
 
-    assert [(item.index, item.binding_identity) for item in result.materials] == [
+    assert (result.first_index, result.second_index) == (0, 1)
+    assert [(item.index, item.binding_identity) for item in backend.scene.materials] == [
         (0, "material1"),
         (1, "material0"),
     ]
-    assert backend.events == ["begin", "commit:material_reindex"]
+    assert backend.events == ["begin:material_reindex", "commit:material_reindex"]
     assert backend.rebase_count == 0
+
+
+def test_move_material_uses_specialized_transaction_without_reading_spec() -> None:
+    coordinator, backend, materials, _ = _coordinator()
+    coordinator.create_material("|root")
+    original = backend.scene
+    calls: list[str] = []
+
+    def begin(_root: str, _index: int, _new_position: int) -> None:
+        backend.active = True
+        backend.snapshot = backend.scene
+        calls.append("begin")
+
+    def write(_root: str, index: int, new_position: int) -> MaterialReindexResult:
+        calls.append("write")
+        backend.scene = replace(
+            backend.scene,
+            materials=tuple(
+                replace(item, index=new_position if item.index == index else index if item.index == new_position else item.index)
+                for item in backend.scene.materials
+            ),
+        )
+        return MaterialReindexResult(*sorted((index, new_position)))
+
+    def commit(_root: str, _result: Any) -> None:
+        assert backend.active
+        backend.active = False
+        calls.append("commit")
+
+    backend.begin_material_reindex = begin  # type: ignore[attr-defined]
+    materials.apply_material_reindex_fast = write  # type: ignore[attr-defined]
+    coordinator._metadata.commit_material_reindex = commit  # type: ignore[attr-defined]
+    coordinator._metadata.read_spec = lambda _root: (_ for _ in ()).throw(AssertionError("full read"))  # type: ignore[method-assign]
+
+    result = coordinator.move_material_fast("|root", 0, 1)
+
+    assert calls == ["begin", "write", "commit"]
+    assert result.first_index == 0
+    assert backend.scene != original
+    assert not backend.active
+
+
+def test_move_material_specialized_write_failure_rolls_back() -> None:
+    coordinator, backend, materials, _ = _coordinator()
+    coordinator.create_material("|root")
+    original = backend.scene
+
+    def begin(_root: str, _index: int, _new_position: int) -> None:
+        backend.active = True
+        backend.snapshot = backend.scene
+
+    def write(_root: str, _index: int, _new_position: int) -> tuple[int, int]:
+        backend.scene = replace(backend.scene, materials=())
+        raise RuntimeError("write failed")
+
+    backend.begin_material_reindex = begin  # type: ignore[attr-defined]
+    materials.apply_material_reindex_fast = write  # type: ignore[attr-defined]
+    coordinator._metadata.commit_material_reindex = lambda *_args: None  # type: ignore[attr-defined]
+
+    with pytest.raises(MayaModelAuthoringCoordinatorError, match="write failed"):
+        coordinator.move_material_fast("|root", 0, 1)
+
+    assert backend.scene == original
+    assert backend.rollback_count == 1
 
 
 def test_delete_material_uses_injected_structural_change_and_one_transaction() -> None:

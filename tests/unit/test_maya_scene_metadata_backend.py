@@ -8,6 +8,7 @@ import re
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -983,25 +984,18 @@ def test_transactional_write_updates_existing_bindings_and_verifies_fingerprint(
 
 
 def test_material_reindex_commit_verifies_without_full_metadata_hooks() -> None:
-    cmds, backend, adapter = _writable_scene()
+    cmds, backend, _adapter = _writable_scene()
     _material(cmds, "mat2", 1)
     cmds.connections[("registry.materialMembers", None)].append("mat2")
-    original = adapter.read_spec("|root")
-    target = replace(
-        original,
-        materials=(
-            replace(original.materials[0], index=1),
-            replace(original.materials[1], index=0),
-        ),
-    )
+    cmds.attrs[("registry", "materialMembers")] = True
 
-    backend.begin_write("|root")
-    writes_before = len(cmds.write_history)
-    cmds.set_attr("mat.mmd_material_index", 1)
-    cmds.set_attr("mat2.mmd_material_index", 0)
-    backend.commit_material_reindex("|root", target)
+    with patch.object(SceneMetadataAdapter, "read_spec", side_effect=AssertionError("full read")):
+        backend.begin_material_reindex("|root", 0, 1)
+        writes_before = len(cmds.write_history)
+        cmds.set_attr("mat.mmd_material_index", 1)
+        cmds.set_attr("mat2.mmd_material_index", 0)
+        backend.commit_material_reindex("|root", (0, 1))
 
-    assert adapter.read_spec("|root").fingerprint() == target.fingerprint()
     assert cmds.undo_chunk_open is False
     assert cmds.write_history[writes_before:] == [
         "mat.mmd_material_index",
@@ -1010,25 +1004,41 @@ def test_material_reindex_commit_verifies_without_full_metadata_hooks() -> None:
 
 
 def test_material_reindex_commit_mismatch_rolls_back_original_spec() -> None:
-    cmds, backend, adapter = _writable_scene()
+    cmds, backend, _adapter = _writable_scene()
     _material(cmds, "mat2", 1)
     cmds.connections[("registry.materialMembers", None)].append("mat2")
-    original = adapter.read_spec("|root")
-    target = replace(
-        original,
-        materials=(
-            replace(original.materials[0], index=1),
-            replace(original.materials[1], index=0),
-        ),
-    )
+    cmds.attrs[("registry", "materialMembers")] = True
 
-    backend.begin_write("|root")
+    backend.begin_material_reindex("|root", 0, 1)
     cmds.set_attr("mat.mmd_material_index", 1)
-    with pytest.raises(MayaSceneMetadataError, match="failed to verify material reindex"):
-        backend.commit_material_reindex("|root", target)
+    with pytest.raises(MayaSceneMetadataError, match="narrow-state mismatch"):
+        backend.commit_material_reindex("|root", (0, 1))
     backend.rollback_write("|root")
 
-    assert adapter.read_spec("|root").fingerprint() == original.fingerprint()
+    assert cmds.attrs[("mat", "mmd_material_index")] == 0
+    assert cmds.attrs[("mat2", "mmd_material_index")] == 1
+    assert cmds.undo_chunk_open is False
+
+
+def test_narrow_material_reindex_avoids_full_spec_read_and_rolls_back() -> None:
+    cmds, backend, adapter = _writable_scene()
+    _material(cmds, "mat2", 1)
+    _morph(cmds, "materialMorph", "material", [{"material_index": 0}])
+    cmds.connections[("registry.morphMembers", None)].append("materialMorph")
+    cmds.attrs[("registry", "materialMembers")] = True
+    cmds.connections[("registry.materialMembers", None)] = ["mat", "mat2"]
+    original_morph = cmds.attrs[("materialMorph", "mmd_material_morph_offsets_json")]
+
+    with patch.object(SceneMetadataAdapter, "read_spec", side_effect=AssertionError("full read")):
+        backend.begin_material_reindex("|root", 0, 1)
+        cmds.set_attr("mat.mmd_material_index", 1)
+        with pytest.raises(MayaSceneMetadataError, match="narrow-state mismatch"):
+            backend.commit_material_reindex("|root", (0, 1))
+        backend.rollback_write("|root")
+
+    assert cmds.attrs[("mat", "mmd_material_index")] == 0
+    assert cmds.attrs[("mat2", "mmd_material_index")] == 1
+    assert cmds.attrs[("materialMorph", "mmd_material_morph_offsets_json")] == original_morph
     assert cmds.undo_chunk_open is False
 
 

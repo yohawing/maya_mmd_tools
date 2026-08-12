@@ -67,6 +67,8 @@ class MaterialAuthoringCoordinator(Protocol):
 
     def move_material(self, model_root: str, index: int, new_position: int) -> object: ...
 
+    def move_material_fast(self, model_root: str, index: int, new_position: int) -> object: ...
+
     def read_spec(self, model_root: str) -> MmdModelAuthoringSpec: ...
 
     def replace_material(self, model_root: str, material: MmdMaterialSpec) -> MmdModelAuthoringSpec: ...
@@ -558,18 +560,38 @@ class MaterialPresenter:
         if root is None:
             return False
         try:
-            current = self.authoring_coordinator.read_spec(root)
-            ordered = [material.index for material in sorted(current.materials, key=lambda item: item.index)]
-            position = ordered.index(self.current_material_index)
+            material_list = self.view.material_list
+            count = material_list.count()
+            if type(count) is not int:
+                raise TypeError("material list count is invalid")
+            position = None
+            for row in range(count):
+                item = material_list.item(row)
+                if item is None:
+                    continue
+                if item.data(MATERIAL_INDEX_ROLE) == self.current_material_index:
+                    position = row
+                    break
+                if position is None and item.data(Qt.UserRole) == self.current_material:
+                    position = row
+            if position is None and 0 <= self.current_material_index < count:
+                # Older/headless views may not provide either item role.  The
+                # legacy list is still ordered by the semantic material index.
+                position = self.current_material_index
+            if position is None:
+                raise RuntimeError("selected material row is missing")
             target = position + direction
-            if target < 0 or target >= len(ordered):
+            if target < 0 or target >= count:
                 return False
-            ordered[position], ordered[target] = ordered[target], ordered[position]
+            target_item = material_list.item(target)
+            target_index = target_item.data(MATERIAL_INDEX_ROLE) if target_item is not None else None
+            if type(target_index) is not int:
+                target_index = target
             selected_binding = self.current_material
-            move = getattr(self.authoring_coordinator, "move_material", None)
+            move = getattr(self.authoring_coordinator, "move_material_fast", None)
             if not callable(move):
-                raise TypeError("material authoring coordinator lacks move_material")
-            move(root, self.current_material_index, target)
+                raise TypeError("material authoring coordinator lacks move_material_fast")
+            move(root, self.current_material_index, target_index)
         except Exception as exc:
             logger.error("Material authoring reindex_materials failed", exc_info=True)
             self.app_state.emit_status(
@@ -581,7 +603,7 @@ class MaterialPresenter:
             )
             return False
         self._swap_material_rows(position, target)
-        self.current_material_index = target
+        self.current_material_index = target_index
         for row in range(self.view.material_list.count()):
             item = self.view.material_list.item(row)
             if item.data(Qt.UserRole) == selected_binding:

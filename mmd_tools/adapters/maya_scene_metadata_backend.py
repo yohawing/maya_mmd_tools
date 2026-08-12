@@ -96,6 +96,8 @@ class MayaSceneMetadataError(SceneMetadataError):
 class MayaSceneMetadataBackend:
     """Read model, material, PMX bone, and morph metadata from an adapter."""
 
+    _MATERIAL_MORPH_OFFSETS_JSON = "mmd_material_morph_offsets_json"
+
     _DIFFUSE_ALPHA = "mmd_diffuse_alpha"
     _EDGE_ALPHA = "mmd_edge_alpha"
     _TEXTURE_PATH = "mmd_texture_path"
@@ -316,6 +318,46 @@ class MayaSceneMetadataBackend:
         self._call_adapter("undo_info", openChunk=True, chunkName="MMD Authoring Metadata")
         transaction["chunk_open"] = True
         self._write_transaction = transaction
+
+    def begin_material_reindex(
+        self,
+        model_root: str,
+        index: int,
+        new_position: int,
+    ) -> None:
+        """Open a narrow adjacent-material transaction.
+
+        This captures only registry ownership, the two material index
+        attributes, and registered Material Morph JSON.  In particular it
+        never constructs a full authoring spec.
+        """
+        if self._write_transaction is not None:
+            raise MayaSceneMetadataError("a metadata write transaction is already active")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise MayaSceneMetadataError("material index must be a non-negative integer")
+        if isinstance(new_position, bool) or not isinstance(new_position, int) or new_position < 0:
+            raise MayaSceneMetadataError("material new position must be a non-negative integer")
+        if abs(index - new_position) != 1:
+            raise MayaSceneMetadataError("material reindex requires an adjacent swap")
+        self._require_root(model_root)
+        root = self._material_identity(model_root)
+        first_index, second_index = sorted((index, new_position))
+        original = self._capture_material_reindex_state(root, first_index, second_index)
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError("Maya undo must be enabled for material reindex")
+        self._call_adapter(
+            "undo_info",
+            openChunk=True,
+            chunkName="MMD Material Reindex",
+        )
+        self._write_transaction = {
+            "root": root,
+            "kind": "material_reindex",
+            "first_index": first_index,
+            "second_index": second_index,
+            "original_values": original,
+            "chunk_open": True,
+        }
 
     def read_material_value(
         self,
@@ -1088,33 +1130,162 @@ class MayaSceneMetadataBackend:
     def commit_material_reindex(
         self,
         model_root: str,
-        spec: MmdModelAuthoringSpec,
+        result: Any,
     ) -> None:
         """Verify and close a narrow adjacent-material undo transaction.
 
-        The resulting semantic specification is used only as the commit
-        verification target.  This intentionally bypasses all full metadata
-        write hooks; the material adapter has already written the two index
-        attributes and changed Material Morph JSON values in this chunk.
+        The narrow transaction verifies only the two index attributes and
+        affected Material Morph JSON.  The material adapter has already
+        written them in this chunk.
         """
         transaction = self._active_transaction(model_root)
-        if not isinstance(spec, MmdModelAuthoringSpec):
-            raise MayaSceneMetadataError("spec must be an MmdModelAuthoringSpec")
-        target = spec.to_mapping()
-        transaction["target"] = target
+        if transaction.get("kind") == "material_reindex":
+            first_index, second_index = self._material_reindex_result_indices(result)
+            if (first_index, second_index) != (
+                transaction["first_index"],
+                transaction["second_index"],
+            ):
+                raise MayaSceneMetadataError(
+                    "material reindex commit indices do not match preimage"
+                )
+            try:
+                actual = self._capture_material_reindex_state(
+                    transaction["root"],
+                    first_index,
+                    second_index,
+                    transaction["original_values"]["bindings"],
+                )
+                expected = self._expected_material_reindex_state(
+                    transaction["original_values"], first_index, second_index
+                )
+            except Exception as exc:
+                raise MayaSceneMetadataError(
+                    f"failed to verify material reindex transaction: {exc}"
+                ) from exc
+            if actual != expected:
+                raise MayaSceneMetadataError(
+                    "material reindex transaction narrow-state mismatch"
+                )
+            self._call_adapter("undo_info", closeChunk=True)
+            self._write_transaction = None
+            return
+        raise MayaSceneMetadataError("active transaction is not a material reindex")
+
+    def _capture_material_reindex_state(
+        self,
+        root: str,
+        first_index: int,
+        second_index: int,
+        target_bindings: Mapping[int, str] | None = None,
+    ) -> dict[str, Any]:
+        """Capture only state touched by an adjacent material swap."""
+        members = self._registry_material_members(root)
+        if members is None:
+            raise MayaSceneMetadataError("material reindex requires a model registry")
+        canonical_members = tuple(self._material_identity(member) for member in members)
+        if len(set(canonical_members)) != len(canonical_members):
+            raise MayaSceneMetadataError("material registry contains duplicate members")
+        by_index: dict[int, str] = {}
+        if target_bindings is None:
+            for binding in canonical_members:
+                observed = self._required_int(binding, ATTR_MMD_MATERIAL_INDEX, minimum=0)
+                if observed in by_index and by_index[observed] != binding:
+                    raise MayaSceneMetadataError(
+                        f"duplicate material index {observed} in the model registry"
+                    )
+                by_index[observed] = binding
+            if first_index not in by_index or second_index not in by_index:
+                raise MayaSceneMetadataError("material reindex indices are not registry-owned")
+            target_bindings = {
+                first_index: by_index[first_index],
+                second_index: by_index[second_index],
+            }
+        else:
+            target_bindings = dict(target_bindings)
+            if set(target_bindings) != {first_index, second_index}:
+                raise MayaSceneMetadataError("material reindex target bindings are invalid")
+            if any(binding not in canonical_members for binding in target_bindings.values()):
+                raise MayaSceneMetadataError("material reindex target binding is not registry-owned")
+        indices = {
+            binding: self._required_int(binding, ATTR_MMD_MATERIAL_INDEX, minimum=0)
+            for binding in target_bindings.values()
+        }
+
+        morphs: dict[str, Any] = {}
+        morph_members = self._registry_morph_members(root) or []
+        for member in morph_members:
+            binding = self._material_identity(member)
+            if self._required_string(binding, "mmd_morph_type") != "material":
+                continue
+            raw = self._required_string(binding, self._MATERIAL_MORPH_OFFSETS_JSON)
+            morphs[binding] = self._parse_material_reindex_offsets(binding, raw)
+        return {
+            "members": canonical_members,
+            "bindings": target_bindings,
+            "indices": indices,
+            "morphs": morphs,
+        }
+
+    def _parse_material_reindex_offsets(self, node: str, raw: str) -> list[dict[str, Any]]:
         try:
-            actual = SceneMetadataAdapter(self).read_spec(model_root).fingerprint()
-            expected = MmdModelAuthoringSpec.from_mapping(target).fingerprint()
-        except Exception as exc:
+            value = json.loads(raw, object_pairs_hook=self._unique_json_object)
+        except (TypeError, ValueError) as exc:
             raise MayaSceneMetadataError(
-                f"failed to verify material reindex transaction: {exc}"
+                f"{node}.{self._MATERIAL_MORPH_OFFSETS_JSON} must contain strict JSON"
             ) from exc
-        if actual != expected:
+        if not isinstance(value, list):
             raise MayaSceneMetadataError(
-                f"material reindex transaction fingerprint mismatch: expected {expected}, got {actual}"
+                f"{node}.{self._MATERIAL_MORPH_OFFSETS_JSON} must contain a JSON list"
             )
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        result: list[dict[str, Any]] = []
+        for offset in value:
+            if not isinstance(offset, Mapping):
+                raise MayaSceneMetadataError(f"{node} material morph offset must be a mapping")
+            item = dict(offset)
+            material_index = item.get("material_index")
+            if isinstance(material_index, bool) or not isinstance(material_index, int):
+                raise MayaSceneMetadataError(
+                    f"{node} material morph offset index must be an integer"
+                )
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _expected_material_reindex_state(
+        original: Mapping[str, Any],
+        first_index: int,
+        second_index: int,
+    ) -> dict[str, Any]:
+        expected = deepcopy(original)
+        swap = {first_index: second_index, second_index: first_index}
+        expected["indices"] = {
+            binding: swap.get(index, index)
+            for binding, index in original["indices"].items()
+        }
+        for offsets in expected["morphs"].values():
+            for offset in offsets:
+                offset["material_index"] = swap.get(
+                    offset["material_index"], offset["material_index"]
+                )
+        return expected
+
+    @staticmethod
+    def _material_reindex_result_indices(result: Any) -> tuple[int, int]:
+        if result is None:
+            raise MayaSceneMetadataError("material reindex commit result is missing")
+        first = getattr(result, "first_index", None)
+        second = getattr(result, "second_index", None)
+        if first is None and second is None and isinstance(result, (tuple, list)) and len(result) == 2:
+            first, second = result
+        if (
+            isinstance(first, bool)
+            or not isinstance(first, int)
+            or isinstance(second, bool)
+            or not isinstance(second, int)
+            or abs(second - first) != 1
+        ):
+            raise MayaSceneMetadataError("material reindex commit indices are invalid")
+        return tuple(sorted((first, second)))
 
     def begin_morph_reindex(
         self,
@@ -1546,6 +1717,16 @@ class MayaSceneMetadataBackend:
             actual = tuple(self._material_identity(member) for member in members)
             if actual != tuple(transaction["original_members"]):
                 raise MayaSceneMetadataError("material create rollback registry mismatch")
+            return
+        if transaction.get("kind") == "material_reindex":
+            actual = self._capture_material_reindex_state(
+                transaction["root"],
+                transaction["first_index"],
+                transaction["second_index"],
+                transaction["original_values"]["bindings"],
+            )
+            if actual != transaction["original_values"]:
+                raise MayaSceneMetadataError("material reindex rollback narrow-state mismatch")
             return
         if transaction.get("kind") == "morph_value":
             self._require_selected_morph(
