@@ -1,0 +1,390 @@
+"""Structural and evidence validation for the MainWindow UI coverage manifest.
+
+The manifest is deliberately independent from Maya.  A normal invocation only
+checks that every tab/surface has an unambiguous mapping.  A report is an
+optional second input and is the only mode that evaluates Qt-case evidence.
+
+The report input is a small aggregate JSON object::
+
+    {"schema_version": 1, "gate_id": "V070-UI-COVERAGE-1",
+     "cases": [{"case_id": "gui.fileio_safe_routes", "status": "pass",
+                 "maya_versions": ["2024", "2026"]}],
+     "surfaces": [{"surface_id": "import_export.import_model",
+                   "case_id": "gui.fileio_safe_routes",
+                   "attribute": "import_button", "status": "pass"}]}
+
+The gate checks report case IDs, required Maya versions, and every manifest
+surface marked ``qt_case``.  It does not infer evidence from the number of
+tests or from a raw log filename.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+
+
+GATE_ID = "V070-UI-COVERAGE-1"
+SCHEMA_VERSION = 1
+DISPOSITIONS = {"qt_case", "blocked", "not_run", "excluded"}
+TAB_IDS = (
+    "import_export",
+    "export",
+    "info",
+    "material",
+    "bone",
+    "morph",
+    "display_pane",
+    "physics",
+    "settings",
+)
+_PASS_STATUSES = {"pass", "passed", "ok", "success", "succeeded"}
+
+
+def _error(code: str, path: str, message: str) -> Dict[str, str]:
+    return {"code": code, "path": path, "message": message}
+
+
+def _normalise_versions(value: Any) -> List[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item) for item in value]
+
+
+def _as_entries(value: Any, *, path: str, errors: List[Dict[str, str]]) -> List[Mapping[str, Any]]:
+    """Accept the human-friendly list form and reject malformed entries."""
+    if not isinstance(value, list):
+        errors.append(_error("invalid_entries", path, "expected a list"))
+        return []
+    entries: List[Mapping[str, Any]] = []
+    for index, entry in enumerate(value):
+        if not isinstance(entry, Mapping):
+            errors.append(_error("invalid_entry", f"{path}[{index}]", "expected an object"))
+            continue
+        entries.append(entry)
+    return entries
+
+
+def validate_manifest(manifest: Mapping[str, Any]) -> Dict[str, Any]:
+    """Validate manifest structure and return a JSON-serialisable result.
+
+    This function intentionally does not require Qt or Maya evidence.  That
+    distinction keeps a checked-in inventory useful before smoke infrastructure
+    exists and prevents a unit-test count from being mistaken for coverage.
+    """
+    errors: List[Dict[str, str]] = []
+    if not isinstance(manifest, Mapping):
+        return {"valid": False, "errors": [_error("invalid_manifest", "$", "expected an object")]}
+
+    if manifest.get("schema_version") != SCHEMA_VERSION:
+        errors.append(_error("invalid_schema_version", "schema_version", "must be 1"))
+    if manifest.get("gate_id") != GATE_ID:
+        errors.append(_error("invalid_gate_id", "gate_id", f"must be {GATE_ID}"))
+
+    tabs = _as_entries(manifest.get("tabs"), path="tabs", errors=errors)
+    tab_ids: List[str] = []
+    tab_selectors: Dict[str, str] = {}
+    tab_attributes: Dict[str, str] = {}
+    for index, tab in enumerate(tabs):
+        tab_id = tab.get("id")
+        if not isinstance(tab_id, str) or not tab_id.strip():
+            errors.append(_error("invalid_tab_id", f"tabs[{index}].id", "must be non-empty"))
+            continue
+        if tab_id in tab_ids:
+            errors.append(_error("duplicate_tab_id", f"tabs[{index}].id", tab_id))
+        tab_ids.append(tab_id)
+        tab_locators = []
+        for field in ("selector", "attribute"):
+            value = tab.get(field)
+            if isinstance(value, str) and value.strip():
+                tab_locators.append((field, value.strip()))
+        if len(tab_locators) != 1:
+            errors.append(
+                _error(
+                    "invalid_tab_selector",
+                    f"tabs[{index}]",
+                    "exactly one non-empty selector or attribute is required",
+                )
+            )
+        else:
+            field, locator = tab_locators[0]
+            seen = tab_selectors if field == "selector" else tab_attributes
+            if locator in seen:
+                errors.append(_error("duplicate_selector", f"tabs[{index}].{field}", locator))
+            else:
+                seen[locator] = tab_id
+    missing_tabs = sorted(set(TAB_IDS) - set(tab_ids))
+    extra_tabs = sorted(set(tab_ids) - set(TAB_IDS))
+    if missing_tabs:
+        errors.append(_error("missing_tabs", "tabs", ", ".join(missing_tabs)))
+    if extra_tabs:
+        errors.append(_error("unknown_tab", "tabs", ", ".join(extra_tabs)))
+
+    cases = _as_entries(manifest.get("cases"), path="cases", errors=errors)
+    case_ids: List[str] = []
+    case_versions: Dict[str, List[str]] = {}
+    for index, case in enumerate(cases):
+        case_id = case.get("id")
+        if not isinstance(case_id, str) or not case_id.strip():
+            errors.append(_error("invalid_case_id", f"cases[{index}].id", "must be non-empty"))
+            continue
+        if case_id in case_ids:
+            errors.append(_error("duplicate_case_id", f"cases[{index}].id", case_id))
+        case_ids.append(case_id)
+        versions = _normalise_versions(case.get("required_maya_versions"))
+        if not versions:
+            errors.append(
+                _error(
+                    "invalid_required_versions",
+                    f"cases[{index}].required_maya_versions",
+                    "must be a non-empty list",
+                )
+            )
+        elif len(versions) != len(set(versions)):
+            errors.append(
+                _error(
+                    "duplicate_required_version",
+                    f"cases[{index}].required_maya_versions",
+                    case_id,
+                )
+            )
+        case_versions[case_id] = versions
+
+    surfaces = _as_entries(manifest.get("surfaces"), path="surfaces", errors=errors)
+    surface_ids: List[str] = []
+    # Tab selectors are declared in both ``tabs`` metadata and the surface
+    # inventory so that reports can address the selector like any other UI
+    # surface.  They are checked for duplicates within their own collections;
+    # the two declarations intentionally describe the same tab widget.
+    selectors: Dict[str, str] = {}
+    attributes: Dict[str, str] = {}
+    for index, surface in enumerate(surfaces):
+        path = f"surfaces[{index}]"
+        surface_id = surface.get("id")
+        if not isinstance(surface_id, str) or not surface_id.strip():
+            errors.append(_error("invalid_surface_id", f"{path}.id", "must be non-empty"))
+        elif surface_id in surface_ids:
+            errors.append(_error("duplicate_surface_id", f"{path}.id", surface_id))
+        else:
+            surface_ids.append(surface_id)
+
+        kind = surface.get("kind")
+        if not isinstance(kind, str) or not kind.strip():
+            errors.append(_error("invalid_surface_kind", f"{path}.kind", "must be non-empty"))
+
+        tab_id = surface.get("tab")
+        if tab_id not in TAB_IDS:
+            errors.append(_error("unknown_surface_tab", f"{path}.tab", str(tab_id)))
+
+        nonempty_locators = []
+        for field in ("selector", "attribute"):
+            value = surface.get(field)
+            if isinstance(value, str) and value.strip():
+                nonempty_locators.append((field, value.strip()))
+        if len(nonempty_locators) != 1:
+            errors.append(
+                _error(
+                    "invalid_locator",
+                    path,
+                    "exactly one non-empty selector or attribute is required",
+                )
+            )
+        for field, value in nonempty_locators:
+            if field == "selector":
+                if value in selectors:
+                    errors.append(_error("duplicate_selector", f"{path}.selector", value))
+                else:
+                    selectors[value] = surface_id if isinstance(surface_id, str) else path
+            elif value in attributes:
+                errors.append(_error("duplicate_attribute", f"{path}.attribute", value))
+            else:
+                attributes[value] = surface_id if isinstance(surface_id, str) else path
+
+        disposition = surface.get("disposition")
+        if disposition not in DISPOSITIONS:
+            errors.append(_error("unmapped_disposition", f"{path}.disposition", str(disposition)))
+            continue
+        has_case = isinstance(surface.get("case_id"), str) and bool(surface.get("case_id", "").strip())
+        has_reason_code = isinstance(surface.get("reason_code"), str) and bool(
+            surface.get("reason_code", "").strip()
+        )
+        has_reason = isinstance(surface.get("reason"), str) and bool(surface.get("reason", "").strip())
+        if disposition == "qt_case":
+            if not has_case:
+                errors.append(_error("missing_case_id", f"{path}.case_id", "qt_case requires case_id"))
+            elif surface.get("case_id") not in case_ids:
+                errors.append(_error("unknown_case", f"{path}.case_id", str(surface.get("case_id"))))
+            if has_reason_code or has_reason:
+                errors.append(_error("invalid_reason_fields", path, "qt_case cannot have reason fields"))
+        else:
+            if not has_reason_code or not has_reason:
+                errors.append(
+                    _error(
+                        "invalid_reason_fields",
+                        path,
+                        f"{disposition} requires non-empty reason_code and reason",
+                    )
+                )
+            if has_case:
+                errors.append(_error("invalid_reason_fields", path, f"{disposition} cannot have case_id"))
+
+    unmapped = manifest.get("unmapped_surfaces", [])
+    if unmapped != []:
+        errors.append(_error("unmapped_surfaces", "unmapped_surfaces", "must be an empty list"))
+
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "surface_count": len(surfaces),
+        "tab_count": len(tab_ids),
+        "case_count": len(case_ids),
+        "case_versions": case_versions,
+    }
+
+
+def _entry_map(entries: Sequence[Mapping[str, Any]], key: str) -> Dict[str, Mapping[str, Any]]:
+    result: Dict[str, Mapping[str, Any]] = {}
+    for entry in entries:
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            result[value] = entry
+    return result
+
+
+def validate_report(manifest: Mapping[str, Any], report: Mapping[str, Any]) -> Dict[str, Any]:
+    """Validate optional Qt evidence against a structurally valid manifest."""
+    structural = validate_manifest(manifest)
+    errors: List[Dict[str, str]] = list(structural["errors"])
+    if not isinstance(report, Mapping):
+        errors.append(_error("invalid_report", "$", "expected an object"))
+        return {"valid": False, "errors": errors, "structural": structural, "evidence_checked": True}
+    if report.get("schema_version") != SCHEMA_VERSION:
+        errors.append(_error("invalid_report_schema_version", "report.schema_version", "must be 1"))
+    if report.get("gate_id") != GATE_ID:
+        errors.append(_error("invalid_report_gate_id", "report.gate_id", f"must be {GATE_ID}"))
+
+    manifest_cases = _entry_map(_as_entries(manifest.get("cases"), path="cases", errors=[]), "id")
+    manifest_surfaces = _entry_map(_as_entries(manifest.get("surfaces"), path="surfaces", errors=[]), "id")
+    case_entries = _as_entries(report.get("cases", []), path="report.cases", errors=errors)
+    report_cases = _entry_map(case_entries, "case_id")
+    for index, case in enumerate(case_entries):
+        case_id = case.get("case_id")
+        if case_id not in manifest_cases:
+            errors.append(_error("unknown_report_case", f"report.cases[{index}].case_id", str(case_id)))
+
+    # A report may be partial, but every declared case that is needed by a
+    # qt_case surface must be present with all of its required Maya versions.
+    required_case_ids = {
+        surface.get("case_id")
+        for surface in manifest_surfaces.values()
+        if surface.get("disposition") == "qt_case"
+    }
+    for case_id, case in manifest_cases.items():
+        if case_id not in required_case_ids and case_id not in report_cases:
+            continue
+        evidence = report_cases.get(case_id)
+        if evidence is None:
+            errors.append(_error("missing_case_evidence", f"report.cases[{case_id}]", "case evidence is required"))
+            continue
+        case_status = evidence.get("status")
+        if case_status is not None and str(case_status).lower() not in _PASS_STATUSES:
+            errors.append(
+                _error(
+                    "incomplete_case_evidence",
+                    f"report.cases[{case_id}].status",
+                    "must be pass",
+                )
+            )
+        required_versions = set(_normalise_versions(case.get("required_maya_versions")))
+        observed_versions = set(_normalise_versions(evidence.get("maya_versions")))
+        missing_versions = sorted(required_versions - observed_versions)
+        if missing_versions:
+            errors.append(
+                _error(
+                    "missing_required_version_evidence",
+                    f"report.cases[{case_id}].maya_versions",
+                    ", ".join(missing_versions),
+                )
+            )
+
+    surface_entries = _as_entries(report.get("surfaces", []), path="report.surfaces", errors=errors)
+    report_surfaces = _entry_map(surface_entries, "surface_id")
+    for index, evidence in enumerate(surface_entries):
+        surface_id = evidence.get("surface_id")
+        if surface_id not in manifest_surfaces:
+            errors.append(_error("unknown_report_surface", f"report.surfaces[{index}].surface_id", str(surface_id)))
+
+    for surface_id, surface in manifest_surfaces.items():
+        if surface.get("disposition") != "qt_case":
+            continue
+        evidence = report_surfaces.get(surface_id)
+        if evidence is None:
+            errors.append(_error("missing_surface_evidence", f"report.surfaces[{surface_id}]", "qt_case evidence is required"))
+            continue
+        if str(evidence.get("status", "")).lower() not in _PASS_STATUSES:
+            errors.append(_error("incomplete_surface_evidence", f"report.surfaces[{surface_id}].status", "must be pass"))
+        if evidence.get("case_id") != surface.get("case_id"):
+            errors.append(_error("surface_case_mismatch", f"report.surfaces[{surface_id}].case_id", str(evidence.get("case_id"))))
+        expected_locator = surface.get("selector") or surface.get("attribute")
+        observed_locator = evidence.get("selector") or evidence.get("attribute")
+        if observed_locator != expected_locator:
+            errors.append(_error("selector_mismatch", f"report.surfaces[{surface_id}]", str(observed_locator)))
+
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "structural": structural,
+        "evidence_checked": True,
+        "required_case_count": len(required_case_ids),
+    }
+
+
+def load_json(path: Path) -> Mapping[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{path} must contain a JSON object")
+    return value
+
+
+def _build_cli_result(manifest_result: Dict[str, Any], report_result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    result = report_result if report_result is not None else manifest_result
+    return {
+        "gate_id": GATE_ID,
+        "status": "pass" if result["valid"] else "fail",
+        "structural_valid": bool(manifest_result["valid"]),
+        "evidence_status": (
+            "not_evaluated" if report_result is None else ("pass" if report_result["valid"] else "fail")
+        ),
+        "surface_count": manifest_result.get("surface_count", 0),
+        "errors": result["errors"],
+    }
+
+
+def main(argv: Optional[Iterable[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "manifest",
+        nargs="?",
+        default=str(Path(__file__).with_name("ui_coverage_manifest.json")),
+        help="checked-in UI coverage manifest",
+    )
+    parser.add_argument("--report", help="optional Qt evidence report JSON")
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    try:
+        manifest = load_json(Path(args.manifest))
+        manifest_result = validate_manifest(manifest)
+        report_result = None
+        if args.report:
+            report_result = validate_report(manifest, load_json(Path(args.report)))
+        print(json.dumps(_build_cli_result(manifest_result, report_result), ensure_ascii=False, indent=2))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(json.dumps({"gate_id": GATE_ID, "status": "fail", "errors": [str(exc)]}, ensure_ascii=False))
+        return 1
+    return 0 if (report_result or manifest_result)["valid"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,2392 @@
+{
+  "schema_version": 1,
+  "gate_id": "V070-UI-COVERAGE-1",
+  "inventory_scope": "MainWindow nine tabs; logical mutable/actionable surfaces only, with explicit exclusions for containers and read-only displays.",
+  "tabs": [
+    {
+      "id": "import_export",
+      "selector": "objectName=ImportExportTab",
+      "module": "mmd_tools.ui.tabs.import_export_tab.ImportExportTab"
+    },
+    {
+      "id": "export",
+      "attribute": "export_tab",
+      "module": "mmd_tools.ui.tabs.export_tab.ExportTab"
+    },
+    {
+      "id": "info",
+      "selector": "objectName=InfoTab",
+      "module": "mmd_tools.ui.tabs.info_tab.InfoTab"
+    },
+    {
+      "id": "material",
+      "selector": "objectName=MaterialTab",
+      "module": "mmd_tools.ui.tabs.material_tab.MaterialTab"
+    },
+    {
+      "id": "bone",
+      "selector": "objectName=BoneTab",
+      "module": "mmd_tools.ui.tabs.bone_tab.BoneTab"
+    },
+    {
+      "id": "morph",
+      "selector": "objectName=MorphTab",
+      "module": "mmd_tools.ui.tabs.morph_tab.MorphTab"
+    },
+    {
+      "id": "display_pane",
+      "selector": "objectName=DisplayPaneTab",
+      "module": "mmd_tools.ui.tabs.display_pane_tab.DisplayPaneTab"
+    },
+    {
+      "id": "physics",
+      "selector": "objectName=PhysicsTab",
+      "module": "mmd_tools.ui.tabs.physics_tab.PhysicsTab"
+    },
+    {
+      "id": "settings",
+      "selector": "objectName=SettingsTab",
+      "module": "mmd_tools.ui.tabs.settings_tab.SettingsTab"
+    }
+  ],
+  "cases": [
+    {
+      "id": "gui.import_export_tab",
+      "status": "current",
+      "required_maya_versions": [
+        "2024"
+      ],
+      "source": "tests/gui or planned Qt smoke case"
+    },
+    {
+      "id": "gui.export_tab",
+      "status": "current",
+      "required_maya_versions": [
+        "2024"
+      ],
+      "source": "tests/gui or planned Qt smoke case"
+    },
+    {
+      "id": "gui.info_undo",
+      "status": "current",
+      "required_maya_versions": [
+        "2024",
+        "2026"
+      ],
+      "source": "tests/gui/guitest_info_undo_contract_gui.py; build/reports/ui_info_undo_maya2024_final.log; build/reports/ui-info-undo-2026.log"
+    },
+    {
+      "id": "gui.authoring_signal_smoke",
+      "status": "current",
+      "required_maya_versions": [
+        "2024",
+        "2026"
+      ],
+      "source": "tests/gui/guitest_authoring_signal_smoke_gui.py; build/reports/ui_authoring_signal_smoke_maya2024.json; build/reports/ui_authoring_signal_smoke_maya2026.json"
+    },
+    {
+      "id": "gui.fileio_safe_routes",
+      "status": "current",
+      "required_maya_versions": [
+        "2024",
+        "2026"
+      ],
+      "source": "tests/gui/guitest_fileio_safe_routes_gui.py; build/reports/ui-fileio-safe-routes-2024.log; build/reports/ui-fileio-safe-routes-2026.log"
+    },
+    {
+      "id": "gui.settings_side_effects",
+      "status": "current",
+      "required_maya_versions": [
+        "2024",
+        "2026"
+      ],
+      "source": "tests/gui/guitest_settings_side_effects_gui.py; build/reports/ui-settings-side-effects-2024.log; build/reports/ui-settings-side-effects-2026.log"
+    },
+    {
+      "id": "gui.material_export_roundtrip",
+      "status": "current",
+      "required_maya_versions": [
+        "2024"
+      ],
+      "source": "tests/gui or planned Qt smoke case"
+    },
+    {
+      "id": "gui.morph_tab",
+      "status": "current",
+      "required_maya_versions": [
+        "2024"
+      ],
+      "source": "tests/gui or planned Qt smoke case"
+    },
+    {
+      "id": "gui.physics_tab",
+      "status": "current",
+      "required_maya_versions": [
+        "2024"
+      ],
+      "source": "tests/gui or planned Qt smoke case"
+    },
+    {
+      "id": "gui.main_window_tabs",
+      "status": "planned",
+      "required_maya_versions": [
+        "2024",
+        "2026"
+      ],
+      "source": "tests/gui or planned Qt smoke case"
+    },
+    {
+      "id": "gui.bone_tab",
+      "status": "planned",
+      "required_maya_versions": [
+        "2024",
+        "2026"
+      ],
+      "source": "tests/gui or planned Qt smoke case"
+    },
+    {
+      "id": "gui.display_pane_tab",
+      "status": "planned",
+      "required_maya_versions": [
+        "2024",
+        "2026"
+      ],
+      "source": "tests/gui or planned Qt smoke case"
+    },
+    {
+      "id": "gui.settings_tab",
+      "status": "planned",
+      "required_maya_versions": [
+        "2024",
+        "2026"
+      ],
+      "source": "tests/gui or planned Qt smoke case"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "import_export.tab_selector",
+      "tab": "import_export",
+      "kind": "tab_selector",
+      "selector": "objectName=ImportExportTab",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "import_export.main_tab_widget",
+      "tab": "import_export",
+      "kind": "tab_selector",
+      "selector": "mainTabWidget",
+      "disposition": "qt_case",
+      "case_id": "gui.authoring_signal_smoke"
+    },
+    {
+      "id": "export.tab_selector",
+      "tab": "export",
+      "kind": "tab_selector",
+      "attribute": "export_tab",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "info.tab_selector",
+      "tab": "info",
+      "kind": "tab_selector",
+      "selector": "objectName=InfoTab",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "material.tab_selector",
+      "tab": "material",
+      "kind": "tab_selector",
+      "selector": "objectName=MaterialTab",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "bone.tab_selector",
+      "tab": "bone",
+      "kind": "tab_selector",
+      "selector": "objectName=BoneTab",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "morph.tab_selector",
+      "tab": "morph",
+      "kind": "tab_selector",
+      "selector": "objectName=MorphTab",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "display_pane.tab_selector",
+      "tab": "display_pane",
+      "kind": "tab_selector",
+      "selector": "objectName=DisplayPaneTab",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "physics.tab_selector",
+      "tab": "physics",
+      "kind": "tab_selector",
+      "selector": "objectName=PhysicsTab",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "settings.tab_selector",
+      "tab": "settings",
+      "kind": "tab_selector",
+      "selector": "objectName=SettingsTab",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "import_export.scale",
+      "tab": "import_export",
+      "kind": "scalar",
+      "attribute": "scale_spin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.use_namespace",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "use_namespace_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.custom_namespace",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "custom_namespace_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.namespace",
+      "tab": "import_export",
+      "kind": "text",
+      "attribute": "namespace_edit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.import_models",
+      "tab": "import_export",
+      "kind": "hidden_check",
+      "attribute": "import_models_check",
+      "disposition": "excluded",
+      "reason_code": "behavior_fixed",
+      "reason": "Import models is always enabled; the legacy checkbox is intentionally hidden."
+    },
+    {
+      "id": "import_export.create_mmd_shaders",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "create_mmd_shaders_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.create_mmd_control_rig",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "create_mmd_control_rig_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.separate_meshes",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "separate_meshes_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.auto_resolve_textures",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "auto_resolve_textures_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.disable_backface_culling",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "disable_backface_culling_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.texture_search_path",
+      "tab": "import_export",
+      "kind": "text",
+      "attribute": "texture_search_path_edit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.uv_set_name",
+      "tab": "import_export",
+      "kind": "text",
+      "attribute": "uv_set_name_edit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.import_morphs",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "import_morphs_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.import_physics",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "import_physics_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.cpp_fast_load",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "use_cpp_fast_load_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.cpp_vp2_ownership",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "use_cpp_vp2_ownership_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.cpp_rig_nodes",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "use_cpp_rig_nodes_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.vmd_fps",
+      "tab": "import_export",
+      "kind": "combo",
+      "attribute": "vmd_fps_combo",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.motion_scale",
+      "tab": "import_export",
+      "kind": "scalar",
+      "attribute": "motion_scale_spin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.bake_mode",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "bake_mode_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.vmd_rotation_time_curve",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "vmd_rotation_time_curve_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.native_physics_bake",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "native_physics_bake_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.reduce_bake_keys",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "reduce_bake_keys_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.reduce_quality",
+      "tab": "import_export",
+      "kind": "scalar",
+      "attribute": "reduce_quality_slider",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.reduce_quality_value",
+      "tab": "import_export",
+      "kind": "read_only",
+      "attribute": "reduce_quality_value_label",
+      "disposition": "excluded",
+      "reason_code": "read_only",
+      "reason": "Displayed reduction quality is read-only feedback."
+    },
+    {
+      "id": "import_export.import_path",
+      "tab": "import_export",
+      "kind": "text",
+      "attribute": "import_path_edit",
+      "disposition": "qt_case",
+      "case_id": "gui.fileio_safe_routes"
+    },
+    {
+      "id": "import_export.import_browse",
+      "tab": "import_export",
+      "kind": "button",
+      "attribute": "import_path_button",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.import_model",
+      "tab": "import_export",
+      "kind": "button",
+      "attribute": "import_button",
+      "disposition": "qt_case",
+      "case_id": "gui.fileio_safe_routes"
+    },
+    {
+      "id": "import_export.new_model",
+      "tab": "import_export",
+      "kind": "button",
+      "attribute": "new_model_button",
+      "disposition": "qt_case",
+      "case_id": "gui.fileio_safe_routes"
+    },
+    {
+      "id": "import_export.new_file",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "new_file_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.vmd_path",
+      "tab": "import_export",
+      "kind": "text",
+      "attribute": "vmd_path_edit",
+      "disposition": "qt_case",
+      "case_id": "gui.fileio_safe_routes"
+    },
+    {
+      "id": "import_export.vmd_browse",
+      "tab": "import_export",
+      "kind": "button",
+      "attribute": "vmd_path_button",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.clear_existing_motion",
+      "tab": "import_export",
+      "kind": "check",
+      "attribute": "clear_existing_motion_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "import_export.import_vmd",
+      "tab": "import_export",
+      "kind": "button",
+      "attribute": "import_vmd_button",
+      "disposition": "qt_case",
+      "case_id": "gui.fileio_safe_routes"
+    },
+    {
+      "id": "import_export.history",
+      "tab": "import_export",
+      "kind": "list",
+      "attribute": "unified_history_list",
+      "disposition": "qt_case",
+      "case_id": "gui.fileio_safe_routes"
+    },
+    {
+      "id": "import_export.clear_history",
+      "tab": "import_export",
+      "kind": "button",
+      "attribute": "clear_history_button",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.pane_selector",
+      "tab": "export",
+      "kind": "tab_selector",
+      "selector": "objectName=exportPaneTabs",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.output_path",
+      "tab": "export",
+      "kind": "text",
+      "selector": "objectName=exportOutputPath",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.output_browse",
+      "tab": "export",
+      "kind": "button",
+      "attribute": "output_browse_button",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.validate",
+      "tab": "export",
+      "kind": "button",
+      "attribute": "validate_button",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.export",
+      "tab": "export",
+      "kind": "button",
+      "attribute": "export_button",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.apply_scale",
+      "tab": "export",
+      "kind": "check",
+      "selector": "objectName=modelApplyScale",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.motion_mode",
+      "tab": "export",
+      "kind": "combo",
+      "selector": "objectName=motionMode",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.motion_frame_range",
+      "tab": "export",
+      "kind": "check",
+      "selector": "objectName=motionUseFrameRange",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.motion_frame_start",
+      "tab": "export",
+      "kind": "scalar",
+      "selector": "objectName=motionFrameStart",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.motion_frame_end",
+      "tab": "export",
+      "kind": "scalar",
+      "selector": "objectName=motionFrameEnd",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.validation_filter",
+      "tab": "export",
+      "kind": "combo",
+      "selector": "objectName=validationFilterCombo",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.validation_issues",
+      "tab": "export",
+      "kind": "list",
+      "selector": "objectName=validationIssueList",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.validation_detail",
+      "tab": "export",
+      "kind": "read_only",
+      "selector": "objectName=validationDetailEdit",
+      "disposition": "excluded",
+      "reason_code": "read_only",
+      "reason": "Validation detail is read-only report output; Copy is the actionable surface."
+    },
+    {
+      "id": "export.validation_acknowledge",
+      "tab": "export",
+      "kind": "check",
+      "selector": "objectName=validationAcknowledgeCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.validation_revalidate",
+      "tab": "export",
+      "kind": "button",
+      "selector": "objectName=validationRevalidateButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.validation_copy",
+      "tab": "export",
+      "kind": "button",
+      "selector": "objectName=validationCopyButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.validation_save",
+      "tab": "export",
+      "kind": "button",
+      "selector": "objectName=validationSaveButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "export.validation_console",
+      "tab": "export",
+      "kind": "container",
+      "selector": "objectName=validationConsole",
+      "disposition": "excluded",
+      "reason_code": "container_only",
+      "reason": "ValidationConsole is a composite container; child controls are inventoried separately."
+    },
+    {
+      "id": "export.workflow_state",
+      "tab": "export",
+      "kind": "read_only",
+      "attribute": "state_label",
+      "disposition": "excluded",
+      "reason_code": "read_only",
+      "reason": "Workflow state is read-only status feedback."
+    },
+    {
+      "id": "info.model_name_jp",
+      "tab": "info",
+      "kind": "text",
+      "attribute": "model_name_jp_edit",
+      "disposition": "qt_case",
+      "case_id": "gui.info_undo"
+    },
+    {
+      "id": "info.model_name_en",
+      "tab": "info",
+      "kind": "text",
+      "attribute": "model_name_en_edit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "info.comment_jp",
+      "tab": "info",
+      "kind": "text",
+      "attribute": "comment_jp_edit",
+      "disposition": "qt_case",
+      "case_id": "gui.info_undo"
+    },
+    {
+      "id": "info.comment_en",
+      "tab": "info",
+      "kind": "text",
+      "attribute": "comment_en_edit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "info.status",
+      "tab": "info",
+      "kind": "read_only",
+      "attribute": "info_label",
+      "disposition": "excluded",
+      "reason_code": "read_only",
+      "reason": "No-model status is read-only feedback."
+    },
+    {
+      "id": "material.authoring_toolbar",
+      "tab": "material",
+      "kind": "container",
+      "selector": "objectName=materialAuthoringToolbar",
+      "disposition": "excluded",
+      "reason_code": "container_only",
+      "reason": "Toolbar container; actions are inventoried separately."
+    },
+    {
+      "id": "material.refresh",
+      "tab": "material",
+      "kind": "button",
+      "selector": "objectName=materialRefreshButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.create",
+      "tab": "material",
+      "kind": "button",
+      "selector": "objectName=materialCreateButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.duplicate",
+      "tab": "material",
+      "kind": "button",
+      "selector": "objectName=materialDuplicateButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.delete",
+      "tab": "material",
+      "kind": "button",
+      "selector": "objectName=materialDeleteButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.move_up",
+      "tab": "material",
+      "kind": "button",
+      "selector": "objectName=materialMoveUpButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.move_down",
+      "tab": "material",
+      "kind": "button",
+      "selector": "objectName=materialMoveDownButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.list",
+      "tab": "material",
+      "kind": "list",
+      "selector": "materialList",
+      "disposition": "qt_case",
+      "case_id": "gui.authoring_signal_smoke"
+    },
+    {
+      "id": "material.search",
+      "tab": "material",
+      "kind": "text",
+      "selector": "objectName=materialSearchEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.name_jp",
+      "tab": "material",
+      "kind": "text",
+      "selector": "objectName=materialNameJpEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.name_en",
+      "tab": "material",
+      "kind": "text",
+      "selector": "materialNameEnEdit",
+      "disposition": "qt_case",
+      "case_id": "gui.authoring_signal_smoke"
+    },
+    {
+      "id": "material.diffuse_color",
+      "tab": "material",
+      "kind": "color",
+      "selector": "objectName=diffuseColorSwatch",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.transparency",
+      "tab": "material",
+      "kind": "scalar",
+      "selector": "objectName=materialTransparencySpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.specular_color",
+      "tab": "material",
+      "kind": "color",
+      "selector": "objectName=specularColorSwatch",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.specular_coefficient",
+      "tab": "material",
+      "kind": "scalar",
+      "selector": "objectName=materialSpecularCoefficientSpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.ambient_color",
+      "tab": "material",
+      "kind": "color",
+      "selector": "objectName=ambientColorSwatch",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.texture_path",
+      "tab": "material",
+      "kind": "text",
+      "selector": "objectName=materialTexturePathEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.texture_browse",
+      "tab": "material",
+      "kind": "button",
+      "selector": "objectName=materialTextureBrowseButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.sphere_map_path",
+      "tab": "material",
+      "kind": "text",
+      "selector": "objectName=materialSphereMapPathEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.sphere_map_browse",
+      "tab": "material",
+      "kind": "button",
+      "selector": "objectName=materialSphereMapBrowseButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.sphere_mode",
+      "tab": "material",
+      "kind": "combo",
+      "selector": "objectName=materialSphereModeCombo",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.toon_sharing",
+      "tab": "material",
+      "kind": "check",
+      "selector": "objectName=materialToonSharingCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.toon_texture",
+      "tab": "material",
+      "kind": "combo",
+      "selector": "objectName=materialToonTextureCombo",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.toon_texture_path",
+      "tab": "material",
+      "kind": "text",
+      "selector": "objectName=materialToonTexturePathEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.toon_texture_index",
+      "tab": "material",
+      "kind": "scalar",
+      "selector": "objectName=materialToonTextureIndexSpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.original_pmx_path",
+      "tab": "material",
+      "kind": "text",
+      "selector": "objectName=materialOriginalPmxPathEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.double_sided",
+      "tab": "material",
+      "kind": "check",
+      "selector": "objectName=materialDoubleSidedCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.ground_shadow",
+      "tab": "material",
+      "kind": "check",
+      "selector": "objectName=materialGroundShadowCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.self_shadow_map",
+      "tab": "material",
+      "kind": "check",
+      "selector": "objectName=materialSelfShadowMapCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.self_shadow",
+      "tab": "material",
+      "kind": "check",
+      "selector": "objectName=materialSelfShadowCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.edge_draw",
+      "tab": "material",
+      "kind": "check",
+      "selector": "objectName=materialEdgeDrawCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.vertex_color",
+      "tab": "material",
+      "kind": "check",
+      "selector": "objectName=materialVertexColorCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.point_draw",
+      "tab": "material",
+      "kind": "check",
+      "selector": "objectName=materialPointDrawCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.line_draw",
+      "tab": "material",
+      "kind": "check",
+      "selector": "objectName=materialLineDrawCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.edge_color",
+      "tab": "material",
+      "kind": "color",
+      "selector": "objectName=edgeColorSwatch",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.edge_size",
+      "tab": "material",
+      "kind": "scalar",
+      "selector": "objectName=materialEdgeSizeSpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "material.apply",
+      "tab": "material",
+      "kind": "button",
+      "selector": "materialApplyButton",
+      "disposition": "qt_case",
+      "case_id": "gui.authoring_signal_smoke"
+    },
+    {
+      "id": "material.reset",
+      "tab": "material",
+      "kind": "button",
+      "selector": "objectName=materialResetButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.authoring_toolbar",
+      "tab": "bone",
+      "kind": "container",
+      "selector": "objectName=boneAuthoringToolbar",
+      "disposition": "excluded",
+      "reason_code": "container_only",
+      "reason": "Toolbar container; actions are inventoried separately."
+    },
+    {
+      "id": "bone.refresh",
+      "tab": "bone",
+      "kind": "button",
+      "selector": "objectName=boneRefreshButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.move_up",
+      "tab": "bone",
+      "kind": "button",
+      "selector": "objectName=boneMoveUpButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.move_down",
+      "tab": "bone",
+      "kind": "button",
+      "selector": "objectName=boneMoveDownButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.reset_authoring",
+      "tab": "bone",
+      "kind": "button",
+      "selector": "objectName=boneResetAuthoringButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.list",
+      "tab": "bone",
+      "kind": "list",
+      "selector": "boneList",
+      "disposition": "qt_case",
+      "case_id": "gui.authoring_signal_smoke"
+    },
+    {
+      "id": "bone.search",
+      "tab": "bone",
+      "kind": "text",
+      "selector": "objectName=boneSearchEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.name_jp",
+      "tab": "bone",
+      "kind": "text",
+      "selector": "objectName=boneNameJpEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.name_en",
+      "tab": "bone",
+      "kind": "text",
+      "selector": "boneNameEnEdit",
+      "disposition": "qt_case",
+      "case_id": "gui.authoring_signal_smoke"
+    },
+    {
+      "id": "bone.parent",
+      "tab": "bone",
+      "kind": "text",
+      "selector": "objectName=boneParentEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.deform_layer",
+      "tab": "bone",
+      "kind": "scalar",
+      "selector": "objectName=boneDeformLayerSpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.rotatable",
+      "tab": "bone",
+      "kind": "check",
+      "selector": "objectName=boneRotatableCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.movable",
+      "tab": "bone",
+      "kind": "check",
+      "selector": "objectName=boneMovableCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.visible",
+      "tab": "bone",
+      "kind": "check",
+      "selector": "objectName=boneVisibleCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.enabled",
+      "tab": "bone",
+      "kind": "check",
+      "selector": "objectName=boneEnabledCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.after_physics",
+      "tab": "bone",
+      "kind": "check",
+      "selector": "objectName=boneAfterPhysicsCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.external_parent",
+      "tab": "bone",
+      "kind": "check",
+      "selector": "objectName=boneExternalParentCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.external_parent_key",
+      "tab": "bone",
+      "kind": "scalar",
+      "selector": "objectName=boneExternalParentKeySpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.ik_enabled",
+      "tab": "bone",
+      "kind": "check",
+      "selector": "objectName=boneIkEnabledCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.ik_target",
+      "tab": "bone",
+      "kind": "text",
+      "selector": "objectName=boneIkTargetEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.select_ik_target",
+      "tab": "bone",
+      "kind": "button",
+      "selector": "objectName=boneSelectIkTargetButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.ik_loop",
+      "tab": "bone",
+      "kind": "scalar",
+      "selector": "objectName=boneIkLoopSpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.ik_limit_angle",
+      "tab": "bone",
+      "kind": "scalar",
+      "selector": "objectName=boneIkLimitAngleSpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.ik_toolbar",
+      "tab": "bone",
+      "kind": "container",
+      "selector": "objectName=boneIkAuthoringToolbar",
+      "disposition": "excluded",
+      "reason_code": "container_only",
+      "reason": "Toolbar container; actions are inventoried separately."
+    },
+    {
+      "id": "bone.add_ik_link",
+      "tab": "bone",
+      "kind": "button",
+      "selector": "objectName=boneAddIkLinkButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.remove_ik_link",
+      "tab": "bone",
+      "kind": "button",
+      "selector": "objectName=boneRemoveIkLinkButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.move_ik_link_up",
+      "tab": "bone",
+      "kind": "button",
+      "selector": "objectName=boneMoveIkLinkUpButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.move_ik_link_down",
+      "tab": "bone",
+      "kind": "button",
+      "selector": "objectName=boneMoveIkLinkDownButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.ik_links",
+      "tab": "bone",
+      "kind": "table",
+      "selector": "objectName=boneIkLinksTable",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.rotation_grant",
+      "tab": "bone",
+      "kind": "check",
+      "selector": "objectName=boneRotationGrantCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.move_grant",
+      "tab": "bone",
+      "kind": "check",
+      "selector": "objectName=boneMoveGrantCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.grant_parent",
+      "tab": "bone",
+      "kind": "text",
+      "selector": "objectName=boneGrantParentEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.select_grant_parent",
+      "tab": "bone",
+      "kind": "button",
+      "selector": "objectName=boneSelectGrantParentButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.grant_rate",
+      "tab": "bone",
+      "kind": "scalar",
+      "selector": "objectName=boneGrantRateSpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.local_grant",
+      "tab": "bone",
+      "kind": "check",
+      "selector": "objectName=boneLocalGrantCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.fixed_axis_enabled",
+      "tab": "bone",
+      "kind": "check",
+      "selector": "objectName=boneFixedAxisCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.fixed_axis",
+      "tab": "bone",
+      "kind": "vector",
+      "selector": "objectName=boneFixedAxisXSpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.local_axis_enabled",
+      "tab": "bone",
+      "kind": "check",
+      "selector": "objectName=boneLocalAxisCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.local_x_axis",
+      "tab": "bone",
+      "kind": "vector",
+      "selector": "objectName=boneLocalXAxisXSpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.local_z_axis",
+      "tab": "bone",
+      "kind": "vector",
+      "selector": "objectName=boneLocalZAxisXSpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "bone.apply",
+      "tab": "bone",
+      "kind": "button",
+      "selector": "boneApplyButton",
+      "disposition": "qt_case",
+      "case_id": "gui.authoring_signal_smoke"
+    },
+    {
+      "id": "bone.reset",
+      "tab": "bone",
+      "kind": "button",
+      "selector": "objectName=boneResetButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.refresh_toolbar",
+      "tab": "morph",
+      "kind": "container",
+      "selector": "objectName=morphRefreshToolbar",
+      "disposition": "excluded",
+      "reason_code": "container_only",
+      "reason": "Toolbar container; its action is inventoried separately."
+    },
+    {
+      "id": "morph.refresh",
+      "tab": "morph",
+      "kind": "button",
+      "selector": "objectName=morphRefreshButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.authoring_toolbar",
+      "tab": "morph",
+      "kind": "container",
+      "selector": "objectName=morphAuthoringToolbar",
+      "disposition": "excluded",
+      "reason_code": "container_only",
+      "reason": "Toolbar container; actions are inventoried separately."
+    },
+    {
+      "id": "morph.create",
+      "tab": "morph",
+      "kind": "button",
+      "selector": "morphCreateButton",
+      "disposition": "qt_case",
+      "case_id": "gui.authoring_signal_smoke"
+    },
+    {
+      "id": "morph.delete",
+      "tab": "morph",
+      "kind": "button",
+      "selector": "objectName=morphDeleteButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.move_up",
+      "tab": "morph",
+      "kind": "button",
+      "selector": "objectName=morphMoveUpButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.move_down",
+      "tab": "morph",
+      "kind": "button",
+      "selector": "objectName=morphMoveDownButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.list",
+      "tab": "morph",
+      "kind": "list",
+      "selector": "objectName=morphList",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.search",
+      "tab": "morph",
+      "kind": "text",
+      "selector": "objectName=morphSearchEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.detail_selector",
+      "tab": "morph",
+      "kind": "tab_selector",
+      "attribute": "detail_tabs",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.value",
+      "tab": "morph",
+      "kind": "slider",
+      "attribute": "morph_slider",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.invert",
+      "tab": "morph",
+      "kind": "check",
+      "selector": "objectName=morphInvertCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.multiplier",
+      "tab": "morph",
+      "kind": "scalar",
+      "selector": "objectName=morphMultiplierSpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.reset_slider",
+      "tab": "morph",
+      "kind": "button",
+      "selector": "objectName=morphResetSliderButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.reset_all",
+      "tab": "morph",
+      "kind": "button",
+      "selector": "objectName=morphResetAllButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.apply",
+      "tab": "morph",
+      "kind": "button",
+      "selector": "objectName=morphApplyButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.reset",
+      "tab": "morph",
+      "kind": "button",
+      "selector": "objectName=morphResetButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.work_offset",
+      "tab": "morph",
+      "kind": "combo",
+      "selector": "objectName=morphWorkOffsetCombo",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.create_work_material",
+      "tab": "morph",
+      "kind": "button",
+      "selector": "objectName=morphCreateWorkMaterialButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.apply_work_material",
+      "tab": "morph",
+      "kind": "button",
+      "selector": "objectName=morphApplyWorkMaterialButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.clear_work_material",
+      "tab": "morph",
+      "kind": "button",
+      "selector": "objectName=morphClearWorkMaterialButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.name_jp",
+      "tab": "morph",
+      "kind": "text",
+      "selector": "objectName=morphNameJpEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.name_en",
+      "tab": "morph",
+      "kind": "text",
+      "selector": "objectName=morphNameEnEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.panel",
+      "tab": "morph",
+      "kind": "combo",
+      "selector": "objectName=morphPanelCombo",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.type",
+      "tab": "morph",
+      "kind": "combo",
+      "selector": "objectName=morphTypeCombo",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "morph.value_label",
+      "tab": "morph",
+      "kind": "read_only",
+      "attribute": "morph_value_label",
+      "disposition": "excluded",
+      "reason_code": "read_only",
+      "reason": "Morph percentage is read-only feedback."
+    },
+    {
+      "id": "display_pane.frame_authoring_toolbar",
+      "tab": "display_pane",
+      "kind": "container",
+      "selector": "objectName=displayFrameAuthoringToolbar",
+      "disposition": "excluded",
+      "reason_code": "container_only",
+      "reason": "Toolbar container; actions are inventoried separately."
+    },
+    {
+      "id": "display_pane.add_frame",
+      "tab": "display_pane",
+      "kind": "button",
+      "selector": "displayAddFrameButton",
+      "disposition": "qt_case",
+      "case_id": "gui.authoring_signal_smoke"
+    },
+    {
+      "id": "display_pane.delete_frame",
+      "tab": "display_pane",
+      "kind": "button",
+      "selector": "objectName=displayDeleteFrameButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "display_pane.move_frame_up",
+      "tab": "display_pane",
+      "kind": "button",
+      "selector": "objectName=displayMoveFrameUpButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "display_pane.move_frame_down",
+      "tab": "display_pane",
+      "kind": "button",
+      "selector": "objectName=displayMoveFrameDownButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "display_pane.refresh_toolbar",
+      "tab": "display_pane",
+      "kind": "container",
+      "selector": "objectName=displayRefreshToolbar",
+      "disposition": "excluded",
+      "reason_code": "container_only",
+      "reason": "Toolbar container; its action is inventoried separately."
+    },
+    {
+      "id": "display_pane.refresh",
+      "tab": "display_pane",
+      "kind": "button",
+      "selector": "objectName=displayRefreshButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "display_pane.frames",
+      "tab": "display_pane",
+      "kind": "list",
+      "selector": "objectName=displayFrameList",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "display_pane.frame_name_jp",
+      "tab": "display_pane",
+      "kind": "text",
+      "attribute": "name_jp_edit",
+      "disposition": "qt_case",
+      "case_id": "gui.authoring_signal_smoke"
+    },
+    {
+      "id": "display_pane.frame_name_en",
+      "tab": "display_pane",
+      "kind": "text",
+      "attribute": "name_en_edit",
+      "disposition": "qt_case",
+      "case_id": "gui.authoring_signal_smoke"
+    },
+    {
+      "id": "display_pane.special_frame",
+      "tab": "display_pane",
+      "kind": "check",
+      "attribute": "special_frame_check",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "display_pane.item_element_toolbar",
+      "tab": "display_pane",
+      "kind": "container",
+      "selector": "objectName=displayItemElementToolbar",
+      "disposition": "excluded",
+      "reason_code": "container_only",
+      "reason": "Toolbar container; its action is inventoried separately."
+    },
+    {
+      "id": "display_pane.add_element",
+      "tab": "display_pane",
+      "kind": "button",
+      "selector": "objectName=displayAddElementButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "display_pane.item_authoring_toolbar",
+      "tab": "display_pane",
+      "kind": "container",
+      "selector": "objectName=displayItemAuthoringToolbar",
+      "disposition": "excluded",
+      "reason_code": "container_only",
+      "reason": "Toolbar container; actions are inventoried separately."
+    },
+    {
+      "id": "display_pane.delete_item",
+      "tab": "display_pane",
+      "kind": "button",
+      "selector": "objectName=displayDeleteItemButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "display_pane.move_item_up",
+      "tab": "display_pane",
+      "kind": "button",
+      "selector": "objectName=displayMoveItemUpButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "display_pane.move_item_down",
+      "tab": "display_pane",
+      "kind": "button",
+      "selector": "objectName=displayMoveItemDownButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "display_pane.items",
+      "tab": "display_pane",
+      "kind": "table",
+      "selector": "objectName=displayItemTable",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "display_pane.apply",
+      "tab": "display_pane",
+      "kind": "button",
+      "selector": "displayApplyButton",
+      "disposition": "qt_case",
+      "case_id": "gui.authoring_signal_smoke"
+    },
+    {
+      "id": "display_pane.reset",
+      "tab": "display_pane",
+      "kind": "button",
+      "selector": "objectName=displayResetButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "display_pane.status",
+      "tab": "display_pane",
+      "kind": "read_only",
+      "attribute": "status_label",
+      "disposition": "excluded",
+      "reason_code": "read_only",
+      "reason": "Display status is read-only feedback."
+    },
+    {
+      "id": "physics.refresh",
+      "tab": "physics",
+      "kind": "button",
+      "selector": "objectName=physicsRefreshButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.create",
+      "tab": "physics",
+      "kind": "button",
+      "selector": "objectName=physicsCreateButton",
+      "disposition": "excluded",
+      "reason_code": "unsupported_hidden",
+      "reason": "Create is retained for compatibility but hidden as unsupported."
+    },
+    {
+      "id": "physics.duplicate",
+      "tab": "physics",
+      "kind": "button",
+      "selector": "objectName=physicsDuplicateButton",
+      "disposition": "excluded",
+      "reason_code": "unsupported_hidden",
+      "reason": "Duplicate is retained for compatibility but hidden as unsupported."
+    },
+    {
+      "id": "physics.delete",
+      "tab": "physics",
+      "kind": "button",
+      "selector": "objectName=physicsDeleteButton",
+      "disposition": "excluded",
+      "reason_code": "unsupported_hidden",
+      "reason": "Delete is retained for compatibility but hidden as unsupported."
+    },
+    {
+      "id": "physics.show_colliders",
+      "tab": "physics",
+      "kind": "check",
+      "selector": "objectName=physicsShowCollidersCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.enable_physics",
+      "tab": "physics",
+      "kind": "check",
+      "selector": "objectName=physicsEnableCheck",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.list_selector",
+      "tab": "physics",
+      "kind": "tab_selector",
+      "attribute": "list_tabs",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_list",
+      "tab": "physics",
+      "kind": "list",
+      "selector": "objectName=rigidBodyList",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_search",
+      "tab": "physics",
+      "kind": "text",
+      "selector": "objectName=rigidBodySearchEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_list",
+      "tab": "physics",
+      "kind": "list",
+      "selector": "objectName=jointList",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_search",
+      "tab": "physics",
+      "kind": "text",
+      "selector": "objectName=jointSearchEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.apply",
+      "tab": "physics",
+      "kind": "button",
+      "selector": "objectName=physicsApplyButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.reset",
+      "tab": "physics",
+      "kind": "button",
+      "selector": "objectName=physicsResetButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_name",
+      "tab": "physics",
+      "kind": "text",
+      "selector": "objectName=physicsRigidNameEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_name_english",
+      "tab": "physics",
+      "kind": "text",
+      "selector": "objectName=physicsRigidNameEnglishEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_shape",
+      "tab": "physics",
+      "kind": "combo",
+      "selector": "objectName=physicsRigidShapeCombo",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_physics_mode",
+      "tab": "physics",
+      "kind": "combo",
+      "selector": "objectName=physicsRigidPhysicsModeCombo",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_related_bone",
+      "tab": "physics",
+      "kind": "combo",
+      "selector": "objectName=rigidRelatedBoneCombo",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_shape_size",
+      "tab": "physics",
+      "kind": "vector",
+      "selector": "objectName=physicsRigidShapeSizeEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_position",
+      "tab": "physics",
+      "kind": "vector",
+      "selector": "objectName=physicsRigidPositionEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_rotation",
+      "tab": "physics",
+      "kind": "vector",
+      "selector": "objectName=physicsRigidRotationEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_collision_group",
+      "tab": "physics",
+      "kind": "scalar",
+      "selector": "objectName=physicsRigidCollisionGroupSpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_collision_mask",
+      "tab": "physics",
+      "kind": "scalar",
+      "selector": "objectName=physicsRigidCollisionMaskEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_mass",
+      "tab": "physics",
+      "kind": "scalar",
+      "selector": "objectName=physicsRigidMassEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_linear_damping",
+      "tab": "physics",
+      "kind": "scalar",
+      "selector": "objectName=physicsRigidLinearDampingEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_angular_damping",
+      "tab": "physics",
+      "kind": "scalar",
+      "selector": "objectName=physicsRigidAngularDampingEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_restitution",
+      "tab": "physics",
+      "kind": "scalar",
+      "selector": "objectName=physicsRigidRestitutionEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.rigid_friction",
+      "tab": "physics",
+      "kind": "scalar",
+      "selector": "objectName=physicsRigidFrictionEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_name",
+      "tab": "physics",
+      "kind": "text",
+      "selector": "objectName=physicsJointNameEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_name_english",
+      "tab": "physics",
+      "kind": "text",
+      "selector": "objectName=physicsJointNameEnglishEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_type",
+      "tab": "physics",
+      "kind": "combo",
+      "selector": "objectName=physicsJointTypeCombo",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_body_a",
+      "tab": "physics",
+      "kind": "combo",
+      "selector": "objectName=jointRigidBodyACombo",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_body_b",
+      "tab": "physics",
+      "kind": "combo",
+      "selector": "objectName=jointRigidBodyBCombo",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_position",
+      "tab": "physics",
+      "kind": "vector",
+      "selector": "objectName=physicsJointPositionEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_rotation",
+      "tab": "physics",
+      "kind": "vector",
+      "selector": "objectName=physicsJointRotationEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_translation_min",
+      "tab": "physics",
+      "kind": "vector",
+      "selector": "objectName=physicsJointTranslationMinEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_translation_max",
+      "tab": "physics",
+      "kind": "vector",
+      "selector": "objectName=physicsJointTranslationMaxEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_rotation_min",
+      "tab": "physics",
+      "kind": "vector",
+      "selector": "objectName=physicsJointRotationMinEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_rotation_max",
+      "tab": "physics",
+      "kind": "vector",
+      "selector": "objectName=physicsJointRotationMaxEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_spring_translation",
+      "tab": "physics",
+      "kind": "vector",
+      "selector": "objectName=physicsJointSpringTranslationEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "physics.joint_spring_rotation",
+      "tab": "physics",
+      "kind": "vector",
+      "selector": "objectName=physicsJointSpringRotationEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "settings.save",
+      "tab": "settings",
+      "kind": "button",
+      "selector": "objectName=settingsSaveButton",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "settings.reset",
+      "tab": "settings",
+      "kind": "button",
+      "selector": "objectName=settingsResetButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "settings.export",
+      "tab": "settings",
+      "kind": "button",
+      "selector": "objectName=settingsExportButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "settings.import",
+      "tab": "settings",
+      "kind": "button",
+      "selector": "objectName=settingsImportButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "settings.development_mode",
+      "tab": "settings",
+      "kind": "check",
+      "selector": "objectName=settingsDevelopmentModeCheck",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "settings.language",
+      "tab": "settings",
+      "kind": "combo",
+      "selector": "objectName=settingsLanguageCombo",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "settings.file_history_limit",
+      "tab": "settings",
+      "kind": "scalar",
+      "selector": "objectName=settingsFileHistoryLimitSpin",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "settings.command_port",
+      "tab": "settings",
+      "kind": "scalar",
+      "selector": "objectName=settingsCommandPortSpin",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "settings.open_command_port",
+      "tab": "settings",
+      "kind": "button",
+      "selector": "objectName=settingsOpenCommandPortButton",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "settings.logging_enabled",
+      "tab": "settings",
+      "kind": "check",
+      "selector": "objectName=settingsLoggingEnabledCheck",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "settings.log_level",
+      "tab": "settings",
+      "kind": "combo",
+      "selector": "objectName=settingsLogLevelCombo",
+      "disposition": "qt_case",
+      "case_id": "gui.settings_side_effects"
+    },
+    {
+      "id": "settings.log_file_path",
+      "tab": "settings",
+      "kind": "text",
+      "selector": "objectName=settingsLogFilePathEdit",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    },
+    {
+      "id": "settings.log_file_browse",
+      "tab": "settings",
+      "kind": "button",
+      "selector": "objectName=settingsLogFileBrowseButton",
+      "disposition": "not_run",
+      "reason_code": "qt_smoke_deferred",
+      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+    }
+  ],
+  "unmapped_surfaces": []
+}
