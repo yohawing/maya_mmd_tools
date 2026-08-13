@@ -144,15 +144,24 @@ class ExportModelResult:
 
 
 def _default_collect_model_data(options: Dict[str, Any]) -> dict:
-    """Collect minimum PMX-compatible model data from the requested mesh."""
-    from maya import cmds
-
+    """Collect minimum PMX-compatible model data from the requested model."""
     from ..converters.export_scene_collector import ExportSceneCollector
 
+    options = dict(options or {})
     export_format = str(options.get("export_format") or Path(str(options.get("file_path") or "")).suffix)
     export_format = export_format.lower().lstrip(".")
     if export_format != "pmx":
         raise ValueError(f"model export format {export_format or 'empty'} is not supported")
+
+    # The Export UI's Current Model is the only implicit scene authority.  Do
+    # not derive an export target from Maya's selection: connection nodes such
+    # as the MMD light vectorProduct can be selected without being exportable
+    # geometry, and selection is not part of the validation snapshot.
+    if "current_model_root" in options:
+        current_model_root = options.get("current_model_root")
+        if not current_model_root:
+            raise ValueError("Model export requires a Current Model")
+        options["target_model"] = str(current_model_root)
 
     collector = ExportSceneCollector()
     if (
@@ -172,50 +181,9 @@ def _default_collect_model_data(options: Dict[str, Any]) -> dict:
 
         return _project_authoring_payload(options, oracle_payload, adapter=MayaCmdsAdapter())
 
-    target = None
-    if target is None:
-        selection = cmds.ls(selection=True, long=True) or []
-        target = selection[0] if selection else None
-    if target is None:
-        raise ValueError("Model export requires model_data, target_model, target_mesh, or a selected mesh")
-    semantics = options.get("authoring_semantics", "auto")
-    if semantics not in {"auto", "legacy"}:
-        raise ValueError("authoring_semantics must be 'auto' or 'legacy'")
-
-    adapter = None
-    selected_options = {**options, "target_mesh": target, "_selected_target": True}
-    selected_root = None
-    if semantics == "auto":
-        from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
-
-        adapter = MayaCmdsAdapter()
-        selected_root, _ = _find_authoring_model_root(selected_options, adapter)
-
-    collector_options = {
-        "target_model": selected_root
-        if selected_root is not None and _has_authoring_markers(selected_root, adapter)
-        else None,
-        "target_mesh": target
-        if selected_root is None or not _has_authoring_markers(selected_root, adapter)
-        else None,
-        "export_format": options.get("export_format"),
-    }
-    collector_options = {key: value for key, value in collector_options.items() if value is not None}
-    oracle_payload = collector.collect(
-        collector_options
+    raise ValueError(
+        "Model export requires current_model_root, target_model, model_root, or a target mesh"
     )
-    if semantics == "legacy":
-        return oracle_payload
-    if adapter is None:
-        from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
-
-        adapter = MayaCmdsAdapter()
-    project_options = (
-        {**options, "target_model": selected_root}
-        if selected_root is not None
-        else {**options, "target_mesh": target, "_selected_target": True}
-    )
-    return _project_authoring_payload(project_options, oracle_payload, adapter=adapter)
 
 
 class ExportModelAction:

@@ -206,6 +206,51 @@ class _FakeModelAction:
 class TestExportWorkflowService(unittest.TestCase):
     """UI and headless callers share one validation/action boundary."""
 
+    def test_current_model_is_forwarded_as_explicit_collector_target(self):
+        payload = _valid_model_data()
+        action = _FakeModelAction(payload)
+        observed = []
+
+        def collector(options):
+            observed.append(dict(options))
+            return payload
+
+        action._collector = collector
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            model_action=action,
+            vmd_action=object(),
+        )
+
+        result = service.validate(
+            ExportWorkflowRequest(
+                "model.pmx",
+                {
+                    "export_format": "pmx",
+                    "require_target": True,
+                    "require_current_model": True,
+                    "current_model_root": "model_ROOT",
+                },
+            )
+        )
+
+        self.assertEqual(result.state, STATE_READY)
+        self.assertEqual(observed[0]["target_model"], "model_ROOT")
+
+    def test_current_model_does_not_scope_vmd_scene_tracks(self):
+        options = ExportWorkflowService._target_options(
+            {
+                "export_format": "vmd",
+                "current_model_root": "model_ROOT",
+            },
+            {"format": "vmd"},
+        )
+
+        self.assertNotIn("target_model", options)
+
     def test_validate_does_not_call_writer_and_execute_reuses_snapshot(self):
         payload = _valid_model_data()
         action = _FakeModelAction(payload)

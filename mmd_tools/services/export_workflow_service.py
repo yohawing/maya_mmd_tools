@@ -131,8 +131,13 @@ class ExportWorkflowService:
 
     @staticmethod
     def _target_options(options: Mapping[str, Any], metadata: Mapping[str, Any]) -> Dict[str, Any]:
-        """Add scene provenance used by model snapshots and report artifacts."""
+        """Add provenance and project Current Model into collector target options."""
         enriched = dict(options)
+        if metadata.get("format") == "pmx" and enriched.get("current_model_root"):
+            # ExportTab intentionally has no target selector.  Keep the
+            # Current Model authoritative for PMX geometry collection.  VMD
+            # camera/light tracks are scene-level and must remain unscoped.
+            enriched["target_model"] = str(enriched["current_model_root"])
         if metadata.get("target_identity") is not None:
             enriched.setdefault("target_identity", metadata["target_identity"])
         if metadata.get("scene_revision") is not None:

@@ -533,58 +533,34 @@ class TestExportModelAction(unittest.TestCase):
 
         self.assertIs(result, oracle)
 
-    def test_selected_descendant_promotes_collection_to_model_root(self):
+    def test_default_collector_uses_current_model_root_as_authority(self):
         oracle = {"vertices": [], "faces": []}
         collect_options = []
-        bridge_calls = []
 
         class FakeCollector:
             def collect(self, options):
                 collect_options.append(options)
                 return oracle
 
-        class SelectedAdapter:
-            def attribute_exists(self, attr, node):
-                if node == "|root":
-                    return attr in {"mmd_model_name", "mmd_model_registry"}
-                return False
-
-            def list_relatives(self, node, **kwargs):
-                if kwargs.get("parent") and node == "|root|geo|meshShape":
-                    return ["|root|geo"]
-                if kwargs.get("parent") and node == "|root|geo":
-                    return ["|root"]
-                return []
-
-        class FakeBackend:
-            def __init__(self, adapter):
-                pass
-
-        class FakeSceneAdapter:
-            def __init__(self, backend):
-                pass
-
-            def read_spec(self, root):
-                self.root = root
-                return "spec"
-
-        def bridge(spec, payload):
-            bridge_calls.append((spec, payload))
-            return {"projected": True}
-
         with (
-            mock.patch("maya.cmds.ls", return_value=["|root|geo|meshShape"]),
+            mock.patch("maya.cmds.ls", side_effect=AssertionError("selection fallback called")),
             mock.patch("mmd_tools.converters.export_scene_collector.ExportSceneCollector", FakeCollector),
-            mock.patch("mmd_tools.adapters.maya_cmds_adapter.MayaCmdsAdapter", SelectedAdapter),
-            mock.patch("mmd_tools.adapters.maya_scene_metadata_backend.MayaSceneMetadataBackend", FakeBackend),
-            mock.patch("mmd_tools.adapters.scene_metadata_adapter.SceneMetadataAdapter", FakeSceneAdapter),
-            mock.patch("mmd_tools.converters.authoring_export_bridge.project_authoring_spec", bridge),
         ):
-            result = _default_collect_model_data({"export_format": "pmx"})
+            result = _default_collect_model_data(
+                {
+                    "current_model_root": "|root",
+                    "export_format": "pmx",
+                    "authoring_semantics": "legacy",
+                }
+            )
 
-        self.assertEqual(result, {"projected": True})
-        self.assertEqual(collect_options, [{"target_model": "|root", "export_format": "pmx"}])
-        self.assertEqual(len(bridge_calls), 1)
+        self.assertIs(result, oracle)
+        self.assertEqual(collect_options[0]["target_model"], "|root")
+
+    def test_default_collector_rejects_missing_target_without_selection_fallback(self):
+        with mock.patch("maya.cmds.ls", side_effect=AssertionError("selection fallback called")):
+            with self.assertRaisesRegex(ValueError, "current_model_root"):
+                _default_collect_model_data({"export_format": "pmx"})
 
     def test_execute_reports_missing_collector_or_data(self):
         options = {"file_path": "out.pmx", "export_format": "pmx"}
