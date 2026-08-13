@@ -955,3 +955,43 @@ def test_presenter_absolute_aux_texture_path_is_also_resolved() -> None:
         None,
         None,
     )
+
+
+def test_presenter_absolute_main_texture_path_keeps_export_provenance() -> None:
+    fixture = TestMaterialPresenter()
+    fixture.setUp()
+    presenter = fixture.presenter
+    path = "C:/textures/main.png"
+    presenter.view.texture_path_edit.text.return_value = path
+    presenter.material_data = {}
+
+    assert presenter._authoring_main_texture_paths(MmdMaterialSpec("A", index=0)) == (
+        path,
+        path,
+    )
+
+
+def test_presenter_rejects_only_changed_missing_texture_files(tmp_path) -> None:
+    fixture = TestMaterialPresenter()
+    fixture.setUp()
+    presenter = fixture.presenter
+    existing = tmp_path / "existing.png"
+    existing.write_bytes(b"png")
+    missing = tmp_path / "missing.png"
+    presenter.maya_adapter.workspace.side_effect = lambda **kwargs: kwargs["expandName"]
+    prior = MmdMaterialSpec(
+        "A",
+        index=0,
+        resolved_texture_path=str(missing),
+    )
+
+    presenter._validate_changed_authoring_texture_files(prior, prior)
+    presenter._validate_changed_authoring_texture_files(
+        prior,
+        replace(prior, resolved_texture_path=str(existing)),
+    )
+    with pytest.raises(ValueError, match="main texture file does not exist"):
+        presenter._validate_changed_authoring_texture_files(
+            prior,
+            replace(prior, resolved_texture_path=str(tmp_path / "other-missing.png")),
+        )

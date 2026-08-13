@@ -479,6 +479,7 @@ def _collect_texture_table_from_materials(materials: list[dict]) -> list[str] | 
                 continue
 
             path = material.get(path_key)
+            path_missing = path is None or path == ""
             if source_key in material:
                 index = material[source_key]
                 if (
@@ -486,6 +487,13 @@ def _collect_texture_table_from_materials(materials: list[dict]) -> list[str] | 
                     or not isinstance(index, int)
                     or index < 0
                 ):
+                    if (
+                        isinstance(index, int)
+                        and not isinstance(index, bool)
+                        and index < 0
+                        and path_missing
+                    ):
+                        continue
                     return None
             elif payload_key in material:
                 index = material[payload_key]
@@ -494,6 +502,13 @@ def _collect_texture_table_from_materials(materials: list[dict]) -> list[str] | 
                     or not isinstance(index, int)
                     or index < 0
                 ):
+                    if (
+                        isinstance(index, int)
+                        and not isinstance(index, bool)
+                        and index < 0
+                        and path_missing
+                    ):
+                        continue
                     return None
             else:
                 index = None
@@ -557,6 +572,27 @@ def _apply_texture_table(model_data: dict, model_root: str | None) -> None:
         texture_table = _collect_texture_table_from_materials(model_data.get("materials", []))
         if texture_table is None:
             return
+    else:
+        path_to_index = {path: index for index, path in enumerate(texture_table)}
+        for material in model_data.get("materials", []):
+            shared_toon = material.get("shared_toon_flag") == 1
+            for path_key, payload_key, source_key in _PMX_TEXTURE_PROVENANCE_FIELDS:
+                if payload_key == "toon_texture_index" and shared_toon:
+                    continue
+                path = material.get(path_key)
+                if (
+                    not isinstance(path, str)
+                    or not path
+                    or payload_key in material
+                    or source_key in material
+                ):
+                    continue
+                index = path_to_index.get(path)
+                if index is None:
+                    index = len(texture_table)
+                    texture_table.append(path)
+                    path_to_index[path] = index
+                material[payload_key] = index
     _resolve_material_texture_indices(model_data.get("materials", []), texture_table)
     model_data["textures"] = texture_table
 
@@ -1624,6 +1660,12 @@ def _collect_mmd_material_dict(shader: str) -> dict:
         semantic_missing.append("toon_texture_path")
     if texture_present:
         material["texture_path"] = texture_path
+        if texture_connected and material.get("texture_index") == -1:
+            # A newly authored file connection has valid provenance but no
+            # imported PMX table slot yet. Omitting the sentinel lets the
+            # root-level table builder allocate one without reinterpreting
+            # unrelated path + -1 metadata as textured.
+            material.pop("texture_index", None)
     if sphere_present:
         material["sphere_texture_path"] = sphere_path
     if toon_present:

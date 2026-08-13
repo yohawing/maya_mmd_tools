@@ -1189,6 +1189,7 @@ class MaterialPresenter:
             if not isinstance(prior, MmdMaterialSpec):
                 raise TypeError("selected-material reader returned an invalid material")
             replacement = self._material_from_authoring_controls(prior)
+            self._validate_changed_authoring_texture_files(prior, replacement)
             route = classify_material_change(prior, replacement)
             if route in {"value", "noop"}:
                 # A failed narrow transaction is surfaced to the user; it must
@@ -1219,6 +1220,7 @@ class MaterialPresenter:
             if prior is None:
                 raise ValueError(f"material index {index} is not present in the current spec")
             replacement = self._material_from_authoring_controls(prior)
+            self._validate_changed_authoring_texture_files(prior, replacement)
             route = classify_material_change(prior, replacement)
             if route == "noop":
                 reloaded = current
@@ -1379,9 +1381,34 @@ class MaterialPresenter:
             return source, prior.resolved_texture_path
         if prior.resolved_texture_path and value == prior.resolved_texture_path:
             return source, prior.resolved_texture_path
+        if os.path.isabs(value):
+            return source or value, value
         # The editable field is the resolved Maya path when a file graph is
         # present.  Preserve source-relative PMX provenance separately.
         return source, value
+
+    def _validate_changed_authoring_texture_files(
+        self,
+        prior: MmdMaterialSpec,
+        replacement: MmdMaterialSpec,
+    ) -> None:
+        """Reject newly entered texture paths that do not resolve to files."""
+        for label, previous, current in (
+            ("main", prior.resolved_texture_path, replacement.resolved_texture_path),
+            ("sphere", prior.resolved_sphere_texture_path, replacement.resolved_sphere_texture_path),
+            ("toon", prior.resolved_toon_texture_path, replacement.resolved_toon_texture_path),
+        ):
+            if not current or current == previous:
+                continue
+            expanded = current
+            workspace = getattr(self.maya_adapter, "workspace", None)
+            if callable(workspace):
+                candidate = workspace(expandName=current)
+                if not isinstance(candidate, str) or not candidate:
+                    continue
+                expanded = candidate
+            if not os.path.isfile(expanded):
+                raise ValueError(f"{label} texture file does not exist: {current}")
 
     @staticmethod
     def _authoring_aux_texture_paths(

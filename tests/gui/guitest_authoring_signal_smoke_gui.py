@@ -10,6 +10,7 @@ from unittest.mock import patch
 import maya.cmds as cmds
 
 from mmd_tools.adapters.maya_authoring_e2e import normalize_spec_payload
+from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.core import model_registry
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME_EN,
@@ -17,6 +18,9 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MATERIAL_NAME_EN,
 )
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
+from mmd_tools.core.mmd_parser import parse_pmx_file
+from mmd_tools.io.mmd_importer import import_mmd_file
+from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.ui.qt_compat import QApplication, QColor, QMessageBox, QT_BINDING, Qt
 from tests.common.gui_test_base import GuiTestBase, requires_gui
@@ -483,6 +487,23 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             first_path.write_bytes(source_texture.read_bytes())
             second_path.write_bytes(source_texture.read_bytes())
 
+            view.texture_path_edit.setText(str(Path(temp_dir) / "missing.png"))
+            view.apply_btn.click()
+            QApplication.processEvents()
+            self.assertIsNone(
+                self.window.authoring_composition.coordinator.read_spec(self.root)
+                .materials[0]
+                .resolved_texture_path
+            )
+            self.assertFalse(
+                cmds.listConnections(
+                    f"{shader}.baseColor",
+                    source=True,
+                    destination=False,
+                    type="file",
+                )
+            )
+
             with patch(
                 "mmd_tools.ui.presenters.material_presenter.QFileDialog.getOpenFileName",
                 return_value=(str(first_path), "Image Files (*.png)"),
@@ -504,7 +525,7 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             file_node = first_sources[0].rsplit(".", 1)[0]
             self.assertEqual(cmds.nodeType(file_node), "file")
             self.assertEqual(Path(cmds.getAttr(f"{file_node}.fileTextureName")), first_path)
-            self.assertIsNone(first_material.texture_path)
+            self.assertEqual(first_material.texture_path, str(first_path))
             self.assertEqual(first_material.resolved_texture_path, str(first_path))
 
             with patch(
@@ -561,6 +582,87 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             self.assertEqual(len(reopened_sources), 1)
             reopened_file = reopened_sources[0].rsplit(".", 1)[0]
             self.assertEqual(Path(cmds.getAttr(f"{reopened_file}.fileTextureName")), second_path)
+
+    def test_standard_surface_texture_browse_pmx_fresh_import(self):
+        """Round-trip a newly browsed texture through PMX export and fresh import."""
+        from mmd_tools.core import settings
+
+        view = self.window.material_presenter.view
+        view.material_list.setCurrentRow(0)
+        QApplication.processEvents()
+        source_texture = Path(__file__).resolve().parents[1] / "data" / "tex" / "diffuse.png"
+
+        with tempfile.TemporaryDirectory(prefix="mmd_material_texture_pmx_") as temp_dir:
+            texture_path = Path(temp_dir) / "authored.png"
+            export_path = Path(temp_dir) / "material_texture_roundtrip.pmx"
+            texture_path.write_bytes(source_texture.read_bytes())
+            with patch(
+                "mmd_tools.ui.presenters.material_presenter.QFileDialog.getOpenFileName",
+                return_value=(str(texture_path), "Image Files (*.png)"),
+            ):
+                QTest.mouseClick(view.texture_browse_btn, Qt.LeftButton)
+            view.apply_btn.click()
+            QApplication.processEvents()
+
+            authored = self.window.authoring_composition.coordinator.read_spec(self.root).materials[0]
+            self.assertEqual(authored.texture_path, str(texture_path))
+            self.assertEqual(authored.resolved_texture_path, str(texture_path))
+            collected = ExportSceneCollector().collect_from_model_root(self.root)
+            collected_material = collected["materials"][0]
+            self.assertEqual(collected["textures"], [str(texture_path)])
+            self.assertEqual(collected_material["texture_index"], 0)
+            self.assertNotIn("texture_table", collected_material.get("semantic_missing", []))
+
+            PmxExporter().export_pmx_model(str(export_path), collected)
+            parsed = parse_pmx_file(
+                str(export_path),
+                use_native_pmx_parse=False,
+                require_native_pmx_parse=False,
+            )
+            self.assertEqual(parsed.textures, [str(texture_path)])
+            self.assertEqual(parsed.materials[0].texture_index, 0)
+
+            previous_create = settings.get("import.model.create_mmd_shaders")
+            previous_backend = settings.get("import.model.mmd_shader_backend")
+            try:
+                settings.set("import.model.create_mmd_shaders", True)
+                settings.set("import.model.mmd_shader_backend", "standardSurface")
+                cmds.file(new=True, force=True)
+                reopened_root = import_mmd_file(
+                    str(export_path),
+                    options={
+                        "scale": 1.0,
+                        "import_physics": False,
+                        "setup_rig": False,
+                        "setup_bone_orientation": False,
+                        "create_mmd_control_rig": False,
+                        "create_mmd_shaders": True,
+                        "use_cpp_fast_load": False,
+                        "use_native_pmx_parse": False,
+                        "require_native_pmx_parse": False,
+                    },
+                )
+            finally:
+                settings.set("import.model.create_mmd_shaders", previous_create)
+                settings.set("import.model.mmd_shader_backend", previous_backend)
+            self.assertTrue(reopened_root)
+            self.root = str(reopened_root)
+            self.window.app_state.current_model_root = self.root
+            QApplication.processEvents()
+            reopened = self.window.authoring_composition.coordinator.read_spec(self.root).materials[0]
+            self.assertEqual(cmds.nodeType(reopened.binding_identity), "standardSurface")
+            self.assertEqual(reopened.texture_path, str(texture_path))
+            self.assertEqual(reopened.resolved_texture_path, str(texture_path))
+            sources = cmds.listConnections(
+                f"{reopened.binding_identity}.baseColor",
+                source=True,
+                destination=False,
+                plugs=True,
+                type="file",
+            ) or []
+            self.assertEqual(len(sources), 1)
+            file_node = sources[0].rsplit(".", 1)[0]
+            self.assertEqual(Path(cmds.getAttr(f"{file_node}.fileTextureName")), texture_path)
 
     def test_material_toolbar_crud_reindex_and_undo(self):
         """Exercise every supported Material toolbar action through real buttons."""

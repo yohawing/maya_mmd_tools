@@ -779,6 +779,96 @@ class TestExportScope(unittest.TestCase):
         self.assertEqual(material["texture_path"], "textures/body.png")
         self.assertIn("texture_table", material["semantic_missing"])
 
+    def test_connected_authored_texture_allocates_new_table_entry(self):
+        path = "C:/textures/authored.png"
+        with mock.patch.object(
+            export_scene_collector_module,
+            "_shader_texture_provenance",
+            return_value=(True, path),
+        ):
+            material = self._collect_single_material(
+                {
+                    ATTR_MMD_MATERIAL: 1,
+                    "mmd_texture_path": path,
+                    ATTR_MMD_TEXTURE_INDEX: -1,
+                }
+            )
+        self.assertEqual(material["texture_path"], path)
+        self.assertNotIn("texture_index", material)
+
+        model_data = {"materials": [material]}
+        material.update(
+            {
+                "sphere_texture_index": -1,
+                "toon_texture_index": -1,
+                "shared_toon_flag": 0,
+            }
+        )
+        with mock.patch.object(
+            export_scene_collector_module,
+            "_get_attr",
+            return_value=None,
+        ):
+            export_scene_collector_module._apply_texture_table(
+                model_data,
+                "|model_ROOT",
+            )
+
+        self.assertEqual(model_data["textures"], [path])
+        self.assertEqual(material["texture_index"], 0)
+        self.assertNotIn("texture_table", material["semantic_missing"])
+
+    def test_existing_texture_table_appends_and_deduplicates_unindexed_paths(self):
+        model_data = {
+            "materials": [
+                {
+                    "texture_path": "textures/imported.png",
+                    "source_texture_index": 0,
+                    "semantic_missing": ["texture_table"],
+                },
+                {
+                    "texture_path": "textures/authored.png",
+                    "semantic_missing": ["texture_table"],
+                },
+                {
+                    "texture_path": "textures/authored.png",
+                    "semantic_missing": ["texture_table"],
+                },
+            ]
+        }
+
+        with mock.patch.object(
+            export_scene_collector_module,
+            "_get_attr",
+            return_value='["textures/imported.png"]',
+        ):
+            export_scene_collector_module._apply_texture_table(model_data, "|model_ROOT")
+
+        self.assertEqual(
+            model_data["textures"],
+            ["textures/imported.png", "textures/authored.png"],
+        )
+        self.assertEqual(
+            [material["texture_index"] for material in model_data["materials"]],
+            [0, 1, 1],
+        )
+
+    def test_negative_sentinel_with_malformed_falsy_path_is_fail_closed(self):
+        model_data = {
+            "materials": [
+                {
+                    "texture_path": [],
+                    "texture_index": -1,
+                    "semantic_missing": ["texture_table"],
+                }
+            ]
+        }
+
+        export_scene_collector_module._apply_texture_table(model_data, None)
+
+        self.assertNotIn("textures", model_data)
+        self.assertEqual(model_data["materials"][0]["semantic_missing"], ["texture_table"])
+
     def test_model_texture_table_restores_writer_indices_without_reconstructing_paths(self):
         model_data = {
             "materials": [
