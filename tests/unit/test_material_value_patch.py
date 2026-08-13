@@ -14,7 +14,10 @@ from mmd_tools.adapters.maya_scene_metadata_backend import (  # noqa: E402
     MayaSceneMetadataBackend,
     MayaSceneMetadataError,
 )
-from mmd_tools.adapters.maya_material_diffuse_route import material_diffuse_route  # noqa: E402
+from mmd_tools.adapters.maya_material_shader_route import (  # noqa: E402
+    material_diffuse_route,
+    material_shader_route,
+)
 from mmd_tools.adapters.maya_material_authoring import MayaMaterialAuthoring  # noqa: E402
 from mmd_tools.core.material_authoring import classify_material_change  # noqa: E402
 from mmd_tools.core.model_authoring_spec import (  # noqa: E402
@@ -44,13 +47,23 @@ def test_classifier_routes_noop_value_binding_and_mixed_changes() -> None:
 
 
 def test_diffuse_route_is_backend_specific_and_texture_aware() -> None:
-    assert material_diffuse_route("standardSurface", has_main_texture=False).attribute == "baseColor"
+    assert material_diffuse_route("standardSurface", has_main_texture=False).diffuse_attribute == "baseColor"
     assert material_diffuse_route("standardSurface", has_main_texture=True) is None
-    assert material_diffuse_route("dx11Shader", has_main_texture=False).attribute == "DiffuseColorRGB"
-    assert material_diffuse_route("dx11Shader", has_main_texture=True).attribute == "DiffuseColorRGB"
-    assert material_diffuse_route("GLSLShader", has_main_texture=False).attribute == "DiffuseColorRGB"
-    assert material_diffuse_route("lambert", has_main_texture=False).attribute == "color"
+    assert material_diffuse_route("dx11Shader", has_main_texture=False).diffuse_attribute == "DiffuseColorRGB"
+    assert material_diffuse_route("dx11Shader", has_main_texture=True).diffuse_attribute == "DiffuseColorRGB"
+    assert material_diffuse_route("GLSLShader", has_main_texture=False).diffuse_attribute == "DiffuseColorRGB"
+    assert material_diffuse_route("lambert", has_main_texture=False).diffuse_attribute == "color"
     assert material_diffuse_route("unknownShader", has_main_texture=False) is None
+
+
+def test_material_shader_route_uses_hardware_main_texture_contract() -> None:
+    for shader_type in ("dx11Shader", "GLSLShader"):
+        route = material_shader_route(shader_type)
+        assert route is not None
+        assert route.diffuse_attribute == "DiffuseColorRGB"
+        assert route.main_texture_attribute == "MainTexture"
+        assert route.main_texture_presence_attribute == "HasMainTexture"
+    assert material_shader_route("unknownShader") is None
 
 
 def test_adapter_writes_only_changed_values_and_keeps_texture_graph_untouched() -> None:
@@ -148,7 +161,7 @@ def test_backend_dx11_value_patch_uses_hardware_diffuse_route() -> None:
     backend.begin_material_value_patch("|root", "mat", old, replace(old, name="edited"))
 
     assert backend._write_transaction is not None
-    assert backend._write_transaction["diffuse_route"].attribute == "DiffuseColorRGB"
+    assert backend._write_transaction["diffuse_route"].diffuse_attribute == "DiffuseColorRGB"
     backend.rollback_write("|root")
 
 
@@ -162,6 +175,12 @@ def test_adapter_binding_patch_updates_only_selected_texture_graph() -> None:
         runtime_rebuilders={"material": lambda root: rebuilds.append(root)},
     )
     bound, shader, _ = adapter.create_material("|Model_root", _material())
+    file_node = next(
+        call[1][0]
+        for call in cmds.calls
+        if call[0] == "shading_node" and call[1][0] == "file"
+    )
+    cmds.connections[f"{shader}.baseColor"] = [file_node]
     updated = replace(bound, resolved_texture_path="C:/textures/edited.png")
 
     cmds.calls.clear()
@@ -196,6 +215,7 @@ def test_binding_patch_removes_texture_graph_before_writing_base_color() -> None
     )
     # Model the bidirectional Maya connection used by listConnections().
     cmds.connections[shader] = [shading_group, file_node]
+    cmds.connections[f"{shader}.baseColor"] = [file_node]
     cmds.connections[file_node] = [shader]
     cmds.types[file_node] = "file"
     cmds.calls.clear()
@@ -220,6 +240,130 @@ def test_binding_patch_removes_texture_graph_before_writing_base_color() -> None
     )
     assert disconnect_index < base_color_index
     assert delete_index < base_color_index
+
+
+def test_binding_patch_uses_dx11_main_texture_and_presence_flag() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    source = replace(_material(), texture_path=None, resolved_texture_path=None)
+    bound, shader, shading_group = adapter.create_material("|Model_root", source)
+    cmds.types[shader] = "dx11Shader"
+    cmds.attrs.pop((shader, "baseColor"), None)
+    cmds.attrs[(shader, "DiffuseColorRGB")] = tuple(bound.diffuse[:3])
+    cmds.connections[shader] = [shading_group]
+    cmds.calls.clear()
+
+    updated = replace(
+        bound,
+        texture_path="textures/edited.png",
+        resolved_texture_path="C:/textures/edited.png",
+    )
+    adapter.apply_material_binding_patch("|Model_root", bound, updated)
+
+    assert any(
+        call[0] == "connect_attr"
+        and call[1][1].endswith(".MainTexture")
+        for call in cmds.calls
+    )
+    assert any(
+        call[0] == "set_attr"
+        and call[1][0].endswith(".HasMainTexture")
+        and call[1][1] == 1
+        for call in cmds.calls
+    )
+    assert not any(
+        call[0] == "connect_attr" and call[1][1].endswith(".baseColor")
+        for call in cmds.calls
+    )
+
+
+def test_binding_patch_clears_dx11_main_texture_and_presence_flag() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    bound, shader, shading_group = adapter.create_material("|Model_root", _material())
+    file_node = next(
+        call[1][0]
+        for call in cmds.calls
+        if call[0] == "shading_node" and call[1][0] == "file"
+    )
+    cmds.types[shader] = "dx11Shader"
+    cmds.attrs.pop((shader, "baseColor"), None)
+    cmds.attrs[(shader, "DiffuseColorRGB")] = tuple(bound.diffuse[:3])
+    cmds.attrs[(shader, "HasMainTexture")] = 1
+    cmds.connections[shader] = [shading_group, file_node]
+    cmds.connections[f"{shader}.MainTexture"] = [file_node]
+    cmds.connections[file_node] = [shader]
+    cmds.types[file_node] = "file"
+    cmds.calls.clear()
+
+    updated = replace(bound, texture_path=None, resolved_texture_path=None)
+    adapter.apply_material_binding_patch("|Model_root", bound, updated)
+
+    assert any(
+        call[0] == "disconnect_attr"
+        and call[1][1].endswith(".MainTexture")
+        for call in cmds.calls
+    )
+    assert any(call[0] == "delete" and call[1][0] == file_node for call in cmds.calls)
+    assert any(
+        call[0] == "set_attr"
+        and call[1][0].endswith(".HasMainTexture")
+        and call[1][1] == 0
+        for call in cmds.calls
+    )
+    assert not any(
+        call[0] == "disconnect_attr" and call[1][1].endswith(".baseColor")
+        for call in cmds.calls
+    )
+
+
+def test_binding_patch_ignores_unrelated_file_nodes_for_dx11_main_route() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    source = replace(_material(), texture_path=None, resolved_texture_path=None)
+    bound, shader, shading_group = adapter.create_material("|Model_root", source)
+    cmds.types[shader] = "dx11Shader"
+    cmds.attrs.pop((shader, "baseColor"), None)
+    cmds.attrs[(shader, "DiffuseColorRGB")] = tuple(bound.diffuse[:3])
+
+    main_file = cmds.shading_node("file", name="mainFile")
+    sphere_file = cmds.shading_node("file", name="sphereFile")
+    toon_file = cmds.shading_node("file", name="toonFile")
+    cmds.connections[shader] = [shading_group, sphere_file, toon_file]
+    cmds.connections[f"{shader}.MainTexture"] = [main_file]
+    cmds.connections[main_file] = [shader]
+    cmds.types[main_file] = "file"
+    cmds.types[sphere_file] = "file"
+    cmds.types[toon_file] = "file"
+    cmds.calls.clear()
+
+    updated = replace(
+        bound,
+        texture_path="textures/edited.png",
+        resolved_texture_path="C:/textures/edited.png",
+    )
+    result = adapter.apply_material_binding_patch("|Model_root", bound, updated)
+    assert result == updated
+    assert not any(call[0] == "shading_node" for call in cmds.calls)
+    assert any(
+        call[0] == "connect_attr"
+        and call[1] == (f"{main_file}.outColor", f"{shader}.MainTexture")
+        for call in cmds.calls
+    )
+
+    cmds.calls.clear()
+    cleared = replace(updated, texture_path=None, resolved_texture_path=None)
+    adapter.apply_material_binding_patch("|Model_root", result, cleared)
+    assert any(
+        call[0] == "disconnect_attr"
+        and call[1] == (f"{main_file}.outColor", f"{shader}.MainTexture")
+        for call in cmds.calls
+    )
+    assert any(call[0] == "delete" and call[1] == (main_file,) for call in cmds.calls)
+    assert not any(call[0] == "delete" and call[1] in {(sphere_file,), (toon_file,)} for call in cmds.calls)
 
 
 def test_adapter_narrow_create_skips_runtime_rebuild_but_clones_local_texture() -> None:

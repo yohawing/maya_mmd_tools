@@ -273,7 +273,7 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(_canonical_payload(self.window, self.root), after)
 
     def test_dx11_material_value_apply_undo_redo(self):
-        """Apply name and diffuse edits through the DX11 viewport route."""
+        """Apply name, diffuse, and main-texture edits through the DX11 route."""
         from mmd_tools.core import settings
         from mmd_tools.io.mmd_importer import import_mmd_file
 
@@ -344,6 +344,60 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(_canonical_payload(self.window, self.root), after_name)
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after_diffuse)
+
+        def main_texture_state():
+            sources = cmds.listConnections(
+                f"{shader}.MainTexture",
+                source=True,
+                destination=False,
+                plugs=True,
+            ) or []
+            source = str(sources[0]) if sources else None
+            file_node = source.rsplit(".", 1)[0] if source and "." in source else None
+            return {
+                "source": source,
+                "file_node": file_node,
+                "file_node_type": cmds.nodeType(file_node) if file_node else None,
+                "has_main_texture": int(cmds.getAttr(f"{shader}.HasMainTexture")),
+            }
+
+        before_texture = _canonical_payload(self.window, self.root)
+        before_texture_state = main_texture_state()
+        texture_path = (Path(__file__).resolve().parents[1] / "data" / "tex" / "diffuse.png").resolve()
+        view.texture_path_edit.setText(str(texture_path))
+        view.apply_btn.click()
+        QApplication.processEvents()
+        after_texture = _canonical_payload(self.window, self.root)
+        after_texture_state = main_texture_state()
+        self.assertEqual(
+            after_texture["spec"]["materials"][0]["resolved_texture_path"],
+            str(texture_path),
+        )
+        self.assertIsNotNone(after_texture_state["source"])
+        self.assertEqual(after_texture_state["file_node_type"], "file")
+        self.assertEqual(after_texture_state["has_main_texture"], 1)
+        self.assertFalse(cmds.attributeQuery("baseColor", node=shader, exists=True))
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before_texture)
+        self.assertEqual(main_texture_state(), before_texture_state)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_texture)
+        self.assertEqual(main_texture_state(), after_texture_state)
+
+        view.texture_path_edit.clear()
+        view.apply_btn.click()
+        QApplication.processEvents()
+        after_clear = _canonical_payload(self.window, self.root)
+        after_clear_state = main_texture_state()
+        self.assertIsNone(after_clear["spec"]["materials"][0]["resolved_texture_path"])
+        self.assertIsNone(after_clear_state["source"])
+        self.assertEqual(after_clear_state["has_main_texture"], 0)
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_texture)
+        self.assertEqual(main_texture_state(), after_texture_state)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_clear)
+        self.assertEqual(main_texture_state(), after_clear_state)
 
     def test_material_toolbar_crud_reindex_and_undo(self):
         """Exercise every supported Material toolbar action through real buttons."""

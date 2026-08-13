@@ -14,7 +14,10 @@ import json
 from typing import Any
 
 from mmd_tools.core import model_registry
-from mmd_tools.adapters.maya_material_diffuse_route import material_diffuse_route
+from mmd_tools.adapters.maya_material_shader_route import (
+    material_diffuse_route,
+    material_shader_route,
+)
 from mmd_tools.core.material_authoring import classify_material_change
 from mmd_tools.core.constants import (
     ATTR_MMD_AMBIENT_COLOR,
@@ -304,7 +307,12 @@ class MayaMaterialAuthoring:
                 has_main_texture=bool(old.resolved_texture_path or old.texture_path),
             )
             if route is not None:
-                self._set_attr(shader, route.attribute, new.diffuse[:3], route.attribute_type)
+                self._set_attr(
+                    shader,
+                    route.diffuse_attribute,
+                    new.diffuse[:3],
+                    route.diffuse_attribute_type,
+                )
         if "specular" in changed:
             self._set_attr(shader, ATTR_MMD_SPECULAR_COLOR, new.specular, "double3")
         if "specular_coefficient" in changed:
@@ -1110,7 +1118,12 @@ class MayaMaterialAuthoring:
             has_main_texture=bool(material.resolved_texture_path),
         )
         if route is not None:
-            self._set_attr(shader, route.attribute, material.diffuse[:3], route.attribute_type)
+            self._set_attr(
+                shader,
+                route.diffuse_attribute,
+                material.diffuse[:3],
+                route.diffuse_attribute_type,
+            )
 
     def _set_attr(self, node: str, attr: str, value: Any, attr_type: str) -> None:
         if not self._has_attr(node, attr):
@@ -1167,17 +1180,38 @@ class MayaMaterialAuthoring:
 
     def _bind_texture_graph(self, shader: str, material: MmdMaterialSpec) -> None:
         """Create or reuse one file node for the resolved main texture path."""
+        route = material_shader_route(str(self._call("node_type", shader)))
+        if route is None:
+            raise MayaMaterialAuthoringError(
+                f"shader {shader!r} has no supported main texture route"
+            )
+        destination = f"{shader}.{route.main_texture_attribute}"
+        source_plugs = self._call(
+            "list_connections",
+            destination,
+            source=True,
+            destination=False,
+            plugs=True,
+            type="file",
+        ) or []
         file_nodes = [
-            self._canonical_node(str(node))
-            for node in (self._call("list_connections", shader, type="file") or [])
+            self._canonical_node(str(source).rsplit(".", 1)[0])
+            for source in source_plugs
         ]
         if len(file_nodes) > 1:
             raise MayaMaterialAuthoringError(f"shader {shader!r} has ambiguous main texture file nodes")
         if not material.resolved_texture_path:
             if file_nodes:
                 file_node = file_nodes[0]
-                self._call("disconnect_attr", f"{file_node}.outColor", f"{shader}.baseColor")
+                self._call("disconnect_attr", f"{file_node}.outColor", destination)
                 self._call("delete", file_node)
+            if route.main_texture_presence_attribute is not None:
+                self._set_attr(
+                    shader,
+                    route.main_texture_presence_attribute,
+                    0,
+                    route.main_texture_presence_type,
+                )
             return
         if file_nodes:
             file_node = file_nodes[0]
@@ -1195,7 +1229,14 @@ class MayaMaterialAuthoring:
             )
         self._set_attr(file_node, "fileTextureName", material.resolved_texture_path, "string")
         self._set_attr(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH, material.texture_path or "", "string")
-        self._call("connect_attr", f"{file_node}.outColor", f"{shader}.baseColor", force=True)
+        self._call("connect_attr", f"{file_node}.outColor", destination, force=True)
+        if route.main_texture_presence_attribute is not None:
+            self._set_attr(
+                shader,
+                route.main_texture_presence_attribute,
+                1,
+                route.main_texture_presence_type,
+            )
 
     def _require_root(self, model_root: str) -> str:
         if not isinstance(model_root, str) or not model_root.strip() or not self._object_exists(model_root):

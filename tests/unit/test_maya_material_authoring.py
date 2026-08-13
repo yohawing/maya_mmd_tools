@@ -98,11 +98,13 @@ class FakeCmdsAdapter:
         shader = source.rsplit(".", 1)[0]
         sg = destination.rsplit(".", 1)[0]
         self.connections.setdefault(shader, []).append(sg)
+        self.connections[destination] = [source]
         if destination.endswith(".baseColor"):
             self.connections.setdefault(sg, []).append(shader)
 
     def disconnect_attr(self, source: str, destination: str) -> None:
         self.calls.append(("disconnect_attr", (source, destination), {}))
+        self.connections.pop(destination, None)
 
     def list_connections(self, node: str, **kwargs: Any) -> list[str]:
         if kwargs.get("type") == "shadingEngine":
@@ -112,7 +114,12 @@ class FakeCmdsAdapter:
                 if self.types.get(candidate) == "shadingEngine"
             ]
         if kwargs.get("type") == "file":
-            return [candidate for candidate in self.connections.get(node, []) if self.types.get(candidate) == "file"]
+            result = []
+            for candidate in self.connections.get(node, []):
+                candidate_node = candidate.rsplit(".", 1)[0]
+                if self.types.get(candidate_node) == "file":
+                    result.append(candidate if kwargs.get("plugs") else candidate_node)
+            return result
         return []
 
     def node_type(self, node: str) -> str:

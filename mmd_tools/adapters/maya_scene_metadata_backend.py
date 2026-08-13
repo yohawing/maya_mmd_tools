@@ -17,8 +17,8 @@ from copy import deepcopy
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from mmd_tools.adapters.maya_material_diffuse_route import (
-    MayaMaterialDiffuseRoute,
+from mmd_tools.adapters.maya_material_shader_route import (
+    MayaMaterialShaderRoute,
     material_diffuse_route,
 )
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter, SceneMetadataError
@@ -840,7 +840,9 @@ class MayaSceneMetadataBackend:
             has_main_texture=bool(old_material.resolved_texture_path or old_material.texture_path),
         )
         if diffuse_route is not None:
-            original["viewport_diffuse"] = self._required_vector(shader, diffuse_route.attribute)
+            original["viewport_diffuse"] = self._required_vector(
+                shader, diffuse_route.diffuse_attribute
+            )
             expected_old["viewport_diffuse"] = self._maya_float3(old_material.diffuse[:3])
         if original != expected_old:
             raise MayaSceneMetadataError(
@@ -1117,8 +1119,10 @@ class MayaSceneMetadataBackend:
         actual = self._read_material_value_attrs(shader)
         expected = dict(transaction["target_values"])
         diffuse_route = transaction.get("diffuse_route")
-        if isinstance(diffuse_route, MayaMaterialDiffuseRoute):
-            actual["viewport_diffuse"] = self._required_vector(shader, diffuse_route.attribute)
+        if isinstance(diffuse_route, MayaMaterialShaderRoute):
+            actual["viewport_diffuse"] = self._required_vector(
+                shader, diffuse_route.diffuse_attribute
+            )
             expected["viewport_diffuse"] = self._maya_float3(material.diffuse[:3])
         if actual != expected:
             raise MayaSceneMetadataError(
@@ -1775,9 +1779,9 @@ class MayaSceneMetadataBackend:
         if transaction.get("kind") == "material_value":
             actual = self._read_material_value_attrs(transaction["binding"])
             diffuse_route = transaction.get("diffuse_route")
-            if isinstance(diffuse_route, MayaMaterialDiffuseRoute):
+            if isinstance(diffuse_route, MayaMaterialShaderRoute):
                 actual["viewport_diffuse"] = self._required_vector(
-                    transaction["binding"], diffuse_route.attribute
+                    transaction["binding"], diffuse_route.diffuse_attribute
                 )
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("material value patch rollback fingerprint mismatch")
