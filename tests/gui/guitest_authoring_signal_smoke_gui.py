@@ -459,6 +459,109 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(_canonical_payload(self.window, self.root), after_clear)
         self.assertEqual(main_texture_state(), after_clear_state)
 
+    def test_standard_surface_texture_browse_reuse_and_save_reopen(self):
+        """Browse, replace, undo, and persist one standardSurface main texture."""
+        view = self.window.material_presenter.view
+        view.material_list.setCurrentRow(0)
+        QApplication.processEvents()
+        material = self.window.authoring_composition.coordinator.read_spec(self.root).materials[0]
+        shader = material.binding_identity
+        self.assertEqual(cmds.nodeType(shader), "standardSurface")
+        self.assertFalse(
+            cmds.listConnections(
+                f"{shader}.baseColor",
+                source=True,
+                destination=False,
+                type="file",
+            )
+        )
+
+        source_texture = Path(__file__).resolve().parents[1] / "data" / "tex" / "diffuse.png"
+        with tempfile.TemporaryDirectory(prefix="mmd_material_texture_browse_") as temp_dir:
+            first_path = Path(temp_dir) / "first.png"
+            second_path = Path(temp_dir) / "second.png"
+            first_path.write_bytes(source_texture.read_bytes())
+            second_path.write_bytes(source_texture.read_bytes())
+
+            with patch(
+                "mmd_tools.ui.presenters.material_presenter.QFileDialog.getOpenFileName",
+                return_value=(str(first_path), "Image Files (*.png)"),
+            ):
+                QTest.mouseClick(view.texture_browse_btn, Qt.LeftButton)
+            self.assertEqual(view.texture_path_edit.text(), str(first_path))
+            view.apply_btn.click()
+            QApplication.processEvents()
+
+            first_material = self.window.authoring_composition.coordinator.read_spec(self.root).materials[0]
+            first_sources = cmds.listConnections(
+                f"{shader}.baseColor",
+                source=True,
+                destination=False,
+                plugs=True,
+                type="file",
+            ) or []
+            self.assertEqual(len(first_sources), 1)
+            file_node = first_sources[0].rsplit(".", 1)[0]
+            self.assertEqual(cmds.nodeType(file_node), "file")
+            self.assertEqual(Path(cmds.getAttr(f"{file_node}.fileTextureName")), first_path)
+            self.assertIsNone(first_material.texture_path)
+            self.assertEqual(first_material.resolved_texture_path, str(first_path))
+
+            with patch(
+                "mmd_tools.ui.presenters.material_presenter.QFileDialog.getOpenFileName",
+                return_value=(str(second_path), "Image Files (*.png)"),
+            ):
+                QTest.mouseClick(view.texture_browse_btn, Qt.LeftButton)
+            view.apply_btn.click()
+            QApplication.processEvents()
+
+            second_material = self.window.authoring_composition.coordinator.read_spec(self.root).materials[0]
+            second_sources = cmds.listConnections(
+                f"{shader}.baseColor",
+                source=True,
+                destination=False,
+                plugs=True,
+                type="file",
+            ) or []
+            self.assertEqual(second_sources, [f"{file_node}.outColor"])
+            self.assertEqual(Path(cmds.getAttr(f"{file_node}.fileTextureName")), second_path)
+            self.assertEqual(second_material.resolved_texture_path, str(second_path))
+
+            cmds.undo()
+            self.assertEqual(Path(cmds.getAttr(f"{file_node}.fileTextureName")), first_path)
+            self.assertEqual(
+                self.window.authoring_composition.coordinator.read_spec(self.root)
+                .materials[0]
+                .resolved_texture_path,
+                str(first_path),
+            )
+            cmds.redo()
+            self.assertEqual(Path(cmds.getAttr(f"{file_node}.fileTextureName")), second_path)
+
+            scene_path = Path(temp_dir) / "material_texture_ascii.ma"
+            before_reopen = _canonical_payload(self.window, self.root)
+            cmds.file(rename=str(scene_path))
+            cmds.file(save=True, type="mayaAscii", force=True)
+            cmds.file(new=True, force=True)
+            cmds.file(str(scene_path), open=True, force=True)
+            roots = self.window.app_state.scene_model_service.list_mmd_models()
+            self.assertEqual(len(roots), 1)
+            self.root = roots[0]
+            self.window.app_state.current_model_root = self.root
+            QApplication.processEvents()
+            reopened = self.window.authoring_composition.coordinator.read_spec(self.root).materials[0]
+            reopened_sources = cmds.listConnections(
+                f"{reopened.binding_identity}.baseColor",
+                source=True,
+                destination=False,
+                plugs=True,
+                type="file",
+            ) or []
+            self.assertEqual(_canonical_payload(self.window, self.root), before_reopen)
+            self.assertEqual(len(reopened_sources), 1)
+            reopened_file = reopened_sources[0].rsplit(".", 1)[0]
+            self.assertEqual(Path(cmds.getAttr(f"{reopened_file}.fileTextureName")), second_path)
+
     def test_material_toolbar_crud_reindex_and_undo(self):
         """Exercise every supported Material toolbar action through real buttons."""
         view = self.window.material_presenter.view
