@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "gate_id": "V070-UI-COVERAGE-1",
-  "minimum_qt_case_surfaces": 118,
+  "minimum_qt_case_surfaces": 130,
   "inventory_scope": "MainWindow nine tabs; logical mutable/actionable surfaces only, with explicit exclusions for containers and read-only displays.",
   "tabs": [
     {
@@ -161,6 +161,20 @@
         "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_apply_basic_values_undo_redo",
         "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_apply_fixed_axis_undo_redo",
         "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_apply_local_axes_undo_redo"
+      ]
+    },
+    {
+      "id": "gui.bone_apply_structural",
+      "status": "current",
+      "required_maya_versions": [
+        "2024",
+        "2026"
+      ],
+      "source": "tests/gui/guitest_authoring_signal_smoke_gui.py",
+      "evidence_tests": [
+        "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_apply_grant_semantic_undo_redo",
+        "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_apply_external_parent_semantic_undo_redo",
+        "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_apply_ik_semantic_undo_redo"
       ]
     },
     {
@@ -1322,36 +1336,32 @@
       "tab": "bone",
       "kind": "check",
       "selector": "objectName=boneExternalParentCheck",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_structural"
     },
     {
       "id": "bone.external_parent_key",
       "tab": "bone",
       "kind": "scalar",
       "selector": "objectName=boneExternalParentKeySpin",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_structural"
     },
     {
       "id": "bone.ik_enabled",
       "tab": "bone",
       "kind": "check",
       "selector": "objectName=boneIkEnabledCheck",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_structural"
     },
     {
       "id": "bone.ik_target",
       "tab": "bone",
       "kind": "text",
       "selector": "objectName=boneIkTargetEdit",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_structural"
     },
     {
       "id": "bone.select_ik_target",
@@ -1367,18 +1377,16 @@
       "tab": "bone",
       "kind": "scalar",
       "selector": "objectName=boneIkLoopSpin",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_structural"
     },
     {
       "id": "bone.ik_limit_angle",
       "tab": "bone",
       "kind": "scalar",
       "selector": "objectName=boneIkLimitAngleSpin",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_structural"
     },
     {
       "id": "bone.ik_toolbar",
@@ -1430,36 +1438,32 @@
       "tab": "bone",
       "kind": "table",
       "selector": "objectName=boneIkLinksTable",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_structural"
     },
     {
       "id": "bone.rotation_grant",
       "tab": "bone",
       "kind": "check",
       "selector": "objectName=boneRotationGrantCheck",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_structural"
     },
     {
       "id": "bone.move_grant",
       "tab": "bone",
       "kind": "check",
       "selector": "objectName=boneMoveGrantCheck",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_structural"
     },
     {
       "id": "bone.grant_parent",
       "tab": "bone",
       "kind": "text",
       "selector": "objectName=boneGrantParentEdit",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_structural"
     },
     {
       "id": "bone.select_grant_parent",
@@ -1475,18 +1479,16 @@
       "tab": "bone",
       "kind": "scalar",
       "selector": "objectName=boneGrantRateSpin",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_structural"
     },
     {
       "id": "bone.local_grant",
       "tab": "bone",
       "kind": "check",
       "selector": "objectName=boneLocalGrantCheck",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_structural"
     },
     {
       "id": "bone.fixed_axis_enabled",

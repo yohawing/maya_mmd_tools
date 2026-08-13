@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,7 +20,16 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_EXTERNAL_PARENT_KEY,
     ATTR_MMD_FIXED_AXIS,
+    ATTR_MMD_GRANT_PARENT,
+    ATTR_MMD_GRANT_PARENT_INDEX,
+    ATTR_MMD_GRANT_RATE,
+    ATTR_MMD_IK_LINKS,
+    ATTR_MMD_IK_LOOP,
+    ATTR_MMD_IK_LIMIT_ANGLE,
+    ATTR_MMD_IK_TARGET,
+    ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_LOCAL_X_AXIS,
     ATTR_MMD_LOCAL_Z_AXIS,
     ATTR_MMD_MATERIAL_NAME_EN,
@@ -206,6 +216,23 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(len(presenter._registered_indices), 2)
         return tuple(presenter.all_bones)
 
+    def _register_third_bone_fixture(self):
+        """Register two deterministic descendants for the IK structural case."""
+        bindings = list(self._register_second_bone_fixture())
+        coordinator = self.window.authoring_composition.coordinator
+        presenter = self.window.bone_presenter
+        joint = cmds.createNode("joint", name="uiCoverageThirdBone", parent=self.root)
+        cmds.xform(joint, translation=(0.0, -2.0, 0.0), worldSpace=True)
+        cmds.select(joint, replace=True)
+        registered = coordinator.register_selected_joint(self.root, joint)
+        self.assertEqual(registered.binding_identity, cmds.ls(joint, long=True)[0])
+        presenter.load_bones()
+        QApplication.processEvents()
+        self.assertEqual(len(presenter.all_bones), 3)
+        self.assertEqual(len(presenter._registered_indices), 3)
+        bindings.append(registered.binding_identity)
+        return tuple(bindings)
+
     def _bone_maya_fingerprint(self):
         spec = self.window.authoring_composition.coordinator.read_spec(self.root)
         return {
@@ -265,6 +292,50 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
                         f"Qt edit({selector}); QTest.mouseClick(objectName=boneApplyButton, Qt.LeftButton)"
                     ),
                     "fired_action": "MayaModelAuthoringCoordinator.apply_bone_value_patch",
+                    "oracle": oracle,
+                    "action_count": action_count,
+                },
+            }
+            self.report["surfaces"].append(surface_witness)
+            print(
+                "[UI COVERAGE WITNESS] "
+                + json.dumps(
+                    surface_witness,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
+
+    def _emit_bone_structural_surface_witnesses(self, surface_ids, oracle, action_count):
+        """Emit per-control witnesses after a complete structural Apply oracle."""
+        selectors = {
+            "bone.external_parent": "objectName=boneExternalParentCheck",
+            "bone.external_parent_key": "objectName=boneExternalParentKeySpin",
+            "bone.ik_enabled": "objectName=boneIkEnabledCheck",
+            "bone.ik_target": "objectName=boneIkTargetEdit",
+            "bone.ik_loop": "objectName=boneIkLoopSpin",
+            "bone.ik_limit_angle": "objectName=boneIkLimitAngleSpin",
+            "bone.ik_links": "objectName=boneIkLinksTable",
+            "bone.rotation_grant": "objectName=boneRotationGrantCheck",
+            "bone.move_grant": "objectName=boneMoveGrantCheck",
+            "bone.grant_parent": "objectName=boneGrantParentEdit",
+            "bone.grant_rate": "objectName=boneGrantRateSpin",
+            "bone.local_grant": "objectName=boneLocalGrantCheck",
+        }
+        for surface_id in surface_ids:
+            selector = selectors[surface_id]
+            surface_witness = {
+                "surface_id": surface_id,
+                "case_id": "gui.bone_apply_structural",
+                "selector": selector,
+                "status": "pass",
+                "runtime_witness": {
+                    "interaction": (
+                        f"Qt edit({selector}); QTest.mouseClick(objectName=boneApplyButton, Qt.LeftButton)"
+                    ),
+                    "fired_action": "MayaModelAuthoringCoordinator.replace_bone_semantic",
                     "oracle": oracle,
                     "action_count": action_count,
                 },
@@ -1095,6 +1166,233 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
                 "bone.local_z_axis",
             ),
             "local_axes_spec_vectors_maya_attrs_undo_redo",
+            len(invocations),
+        )
+
+    def test_bone_apply_grant_semantic_undo_redo(self):
+        """Apply rotation/move grant metadata through one full semantic replace."""
+        bindings = self._register_second_bone_fixture()
+        presenter = self.window.bone_presenter
+        view = presenter.view
+        view.bone_list.setCurrentRow(1)
+        QApplication.processEvents()
+        coordinator = self.window.authoring_composition.coordinator
+        before_spec = coordinator.read_spec(self.root)
+        before = _canonical_payload(self.window, self.root)
+        binding = bindings[1]
+        before_maya = _node_footprint(binding)
+        root_bone = next(bone for bone in before_spec.bones if bone.binding_identity == bindings[0])
+        grant_parent_display = presenter._get_bone_display_name(bindings[0])
+
+        view.rotation_grant_check.setChecked(True)
+        view.move_grant_check.setChecked(True)
+        view.grant_parent_edit.setText(grant_parent_display)
+        view.grant_rate_spin.setValue(0.35)
+        view.local_grant_check.setChecked(True)
+        QApplication.processEvents()
+        self.assertEqual(view.grant_parent_edit.text(), grant_parent_display)
+
+        invocations = []
+        original_replace = coordinator.replace_bone_semantic
+
+        def observe_replace(*args, **kwargs):
+            invocations.append("MayaModelAuthoringCoordinator.replace_bone_semantic")
+            return original_replace(*args, **kwargs)
+
+        coordinator.replace_bone_semantic = observe_replace
+        try:
+            QTest.mouseClick(view.apply_btn, Qt.LeftButton)
+            QApplication.processEvents()
+        finally:
+            coordinator.replace_bone_semantic = original_replace
+
+        self.assertEqual(len(invocations), 1, "grant Apply must invoke replace_bone_semantic once")
+        after = _canonical_payload(self.window, self.root)
+        after_spec = coordinator.read_spec(self.root)
+        after_bone = next(bone for bone in after_spec.bones if bone.binding_identity == binding)
+        grant_flags = int(PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE)
+        self.assertEqual(after_bone.grant_parent_index, root_bone.index)
+        self.assertAlmostEqual(after_bone.grant_ratio, 0.35, places=6)
+        self.assertTrue(after_bone.grant_local)
+        self.assertEqual(int(after_bone.flags) & grant_flags, grant_flags)
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_GRANT_PARENT_INDEX}"), root_bone.index)
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_GRANT_PARENT}"), root_bone.name)
+        self.assertAlmostEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_GRANT_RATE}"), 0.35, places=6)
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_BONE_FLAGS}") & grant_flags, grant_flags)
+        after_maya = _node_footprint(binding)
+
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before)
+        self.assertEqual(_node_footprint(binding), before_maya)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after)
+        self.assertEqual(_node_footprint(binding), after_maya)
+        self.assertEqual(
+            cmds.getAttr(f"{binding}.{ATTR_MMD_GRANT_PARENT_INDEX}"), root_bone.index
+        )
+        self.assertAlmostEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_GRANT_RATE}"), 0.35, places=6)
+        self._emit_bone_structural_surface_witnesses(
+            (
+                "bone.rotation_grant",
+                "bone.move_grant",
+                "bone.grant_parent",
+                "bone.grant_rate",
+                "bone.local_grant",
+            ),
+            "grant_parent_index_flags_ratio_local_spec_maya_attrs_undo_redo",
+            len(invocations),
+        )
+
+    def test_bone_apply_external_parent_semantic_undo_redo(self):
+        """Apply external-parent flag/key through one full semantic replace."""
+        view = self.window.bone_presenter.view
+        view.bone_list.setCurrentRow(0)
+        QApplication.processEvents()
+        coordinator = self.window.authoring_composition.coordinator
+        binding = coordinator.read_spec(self.root).bones[0].binding_identity
+        before = _canonical_payload(self.window, self.root)
+        before_maya = _node_footprint(binding)
+
+        view.external_parent_check.setChecked(True)
+        view.external_parent_key_spin.setValue(37)
+        QApplication.processEvents()
+        self.assertFalse(view.external_parent_key_spin.isHidden())
+
+        invocations = []
+        original_replace = coordinator.replace_bone_semantic
+
+        def observe_replace(*args, **kwargs):
+            invocations.append("MayaModelAuthoringCoordinator.replace_bone_semantic")
+            return original_replace(*args, **kwargs)
+
+        coordinator.replace_bone_semantic = observe_replace
+        try:
+            QTest.mouseClick(view.apply_btn, Qt.LeftButton)
+            QApplication.processEvents()
+        finally:
+            coordinator.replace_bone_semantic = original_replace
+
+        self.assertEqual(
+            len(invocations), 1, "external-parent Apply must invoke replace_bone_semantic once"
+        )
+        after = _canonical_payload(self.window, self.root)
+        after_bone = coordinator.read_spec(self.root).bones[0]
+        self.assertEqual(after_bone.external_parent_key, 37)
+        self.assertTrue(int(after_bone.flags) & int(PmxBoneFlag.EXTERNAL_PARENT_DEFORM))
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_EXTERNAL_PARENT_KEY}"), 37)
+        self.assertTrue(
+            cmds.getAttr(f"{binding}.{ATTR_MMD_BONE_FLAGS}")
+            & int(PmxBoneFlag.EXTERNAL_PARENT_DEFORM)
+        )
+        after_maya = _node_footprint(binding)
+
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before)
+        self.assertEqual(_node_footprint(binding), before_maya)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after)
+        self.assertEqual(_node_footprint(binding), after_maya)
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_EXTERNAL_PARENT_KEY}"), 37)
+        self._emit_bone_structural_surface_witnesses(
+            ("bone.external_parent", "bone.external_parent_key"),
+            "external_parent_flag_key_spec_maya_attrs_undo_redo",
+            len(invocations),
+        )
+
+    def test_bone_apply_ik_semantic_undo_redo(self):
+        """Apply IK target/settings/link limits through one full semantic replace."""
+        bindings = self._register_third_bone_fixture()
+        presenter = self.window.bone_presenter
+        view = presenter.view
+        view.bone_list.setCurrentRow(0)
+        QApplication.processEvents()
+        coordinator = self.window.authoring_composition.coordinator
+        binding = bindings[0]
+        before = _canonical_payload(self.window, self.root)
+        before_maya = _node_footprint(binding)
+
+        view.ik_enabled_check.setChecked(True)
+        QApplication.processEvents()
+        cmds.select(bindings[1], replace=True)
+        QTest.mouseClick(view.select_ik_target_btn, Qt.LeftButton)
+        QApplication.processEvents()
+        self.assertTrue(view.ik_target_edit.text())
+        view.ik_loop_spin.setValue(7)
+        view.ik_limit_angle_spin.setValue(33.0)
+
+        cmds.select(bindings[2], replace=True)
+        QTest.mouseClick(view.add_ik_link_btn, Qt.LeftButton)
+        QApplication.processEvents()
+        self.assertEqual(view.ik_links_table.rowCount(), 1)
+        row = 0
+        limit_check = view.ik_links_table.cellWidget(row, 1)
+        self.assertIsNotNone(limit_check)
+        limit_check.setChecked(True)
+        lower_degrees = (-10.0, -20.0, -30.0)
+        upper_degrees = (11.0, 22.0, 33.0)
+        for col, value in zip(range(2, 5), lower_degrees):
+            view.ik_links_table.item(row, col).setText(str(value))
+        for col, value in zip(range(5, 8), upper_degrees):
+            view.ik_links_table.item(row, col).setText(str(value))
+
+        invocations = []
+        original_replace = coordinator.replace_bone_semantic
+
+        def observe_replace(*args, **kwargs):
+            invocations.append("MayaModelAuthoringCoordinator.replace_bone_semantic")
+            return original_replace(*args, **kwargs)
+
+        coordinator.replace_bone_semantic = observe_replace
+        try:
+            QTest.mouseClick(view.apply_btn, Qt.LeftButton)
+            QApplication.processEvents()
+        finally:
+            coordinator.replace_bone_semantic = original_replace
+
+        self.assertEqual(len(invocations), 1, "IK Apply must invoke replace_bone_semantic once")
+        after = _canonical_payload(self.window, self.root)
+        after_bone = coordinator.read_spec(self.root).bones[0]
+        self.assertTrue(int(after_bone.flags) & int(PmxBoneFlag.IK))
+        self.assertEqual(after_bone.ik_target_index, 1)
+        self.assertEqual(after_bone.ik_loop_count, 7)
+        self.assertAlmostEqual(after_bone.ik_limit_radian, math.radians(33.0), places=6)
+        self.assertEqual(len(after_bone.ik_links), 1)
+        link = after_bone.ik_links[0]
+        self.assertEqual(link["bone"], 2)
+        self.assertTrue(link["limit_enabled"])
+        for actual, expected in zip(link["lower_limit"], lower_degrees):
+            self.assertAlmostEqual(actual, math.radians(expected), places=6)
+        for actual, expected in zip(link["upper_limit"], upper_degrees):
+            self.assertAlmostEqual(actual, math.radians(expected), places=6)
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_IK_TARGET_INDEX}"), 1)
+        target_bone = coordinator.read_spec(self.root).bones[1]
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_IK_TARGET}"), target_bone.name)
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_IK_LOOP}"), 7)
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{binding}.{ATTR_MMD_IK_LIMIT_ANGLE}"), math.radians(33.0), places=6
+        )
+        maya_links = json.loads(cmds.getAttr(f"{binding}.{ATTR_MMD_IK_LINKS}"))
+        self.assertEqual(maya_links[0]["bone"], 2)
+        self.assertTrue(maya_links[0]["limit_enabled"])
+        after_maya = _node_footprint(binding)
+
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before)
+        self.assertEqual(_node_footprint(binding), before_maya)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after)
+        self.assertEqual(_node_footprint(binding), after_maya)
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_IK_TARGET_INDEX}"), 1)
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_IK_LOOP}"), 7)
+        self._emit_bone_structural_surface_witnesses(
+            (
+                "bone.ik_enabled",
+                "bone.ik_target",
+                "bone.ik_loop",
+                "bone.ik_limit_angle",
+                "bone.ik_links",
+            ),
+            "ik_target_settings_links_limits_spec_maya_attrs_undo_redo",
             len(invocations),
         )
 
