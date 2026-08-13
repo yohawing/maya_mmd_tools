@@ -181,6 +181,52 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(self.report, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _register_second_bone_fixture(self):
+        """Register one deterministic descendant joint through production APIs."""
+        coordinator = self.window.authoring_composition.coordinator
+        presenter = self.window.bone_presenter
+        joint = cmds.createNode("joint", name="uiCoverageSecondBone", parent=self.root)
+        cmds.xform(joint, translation=(0.0, 2.0, 0.0), worldSpace=True)
+        cmds.select(joint, replace=True)
+        registered = coordinator.register_selected_joint(self.root, joint)
+        self.assertEqual(registered.binding_identity, cmds.ls(joint, long=True)[0])
+        presenter.load_bones()
+        QApplication.processEvents()
+        self.assertEqual(len(presenter.all_bones), 2)
+        self.assertEqual(len(presenter._registered_indices), 2)
+        return tuple(presenter.all_bones)
+
+    def _bone_maya_fingerprint(self):
+        spec = self.window.authoring_composition.coordinator.read_spec(self.root)
+        return {
+            bone.binding_identity: _node_footprint(bone.binding_identity)
+            for bone in spec.bones
+            if bone.binding_identity
+        }
+
+    def _emit_bone_action_witness(
+        self, surface_id, selector, fired_action, oracle, action_count
+    ):
+        runtime_witness = {
+            "interaction": f"QTest.mouseClick({selector})",
+            "fired_action": fired_action,
+            "oracle": oracle,
+            "action_count": action_count,
+        }
+        surface_witness = {
+            "surface_id": surface_id,
+            "case_id": "gui.bone_actions",
+            "selector": selector,
+            "status": "pass",
+            "runtime_witness": runtime_witness,
+        }
+        self.report["surfaces"].append(surface_witness)
+        print(
+            "[UI COVERAGE WITNESS] "
+            + json.dumps(surface_witness, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            flush=True,
+        )
+
     def test_authoring_signals_undo_redo_and_save_reopen(self):
         self._record("authoring.material.value_apply", self._material_case)
         self._record("authoring.bone.value_apply", self._bone_case)
@@ -735,6 +781,149 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(_canonical_payload(self.window, self.root), before_delete)
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after_delete)
+
+    def test_bone_reset_restores_pending_ui_edit(self):
+        """A Bone Reset click restores pending fields without a Maya write."""
+        view = self.window.bone_presenter.view
+        view.bone_list.setCurrentRow(0)
+        QApplication.processEvents()
+        binding = self.window.authoring_composition.coordinator.read_spec(self.root).bones[0].binding_identity
+        before = _canonical_payload(self.window, self.root)
+        before_semantic = _semantic_topology(self.window, self.root)
+        before_maya = _node_footprint(binding)
+        original_name = view.bone_name_en_edit.text()
+        view.bone_name_en_edit.setText(f"{original_name} pending")
+        self.assertNotEqual(view.bone_name_en_edit.text(), original_name)
+        self.status_messages.clear()
+
+        self.assertTrue(view.reset_btn.isEnabled())
+        QTest.mouseClick(view.reset_btn, Qt.LeftButton)
+        QApplication.processEvents()
+
+        self.assertEqual(view.bone_name_en_edit.text(), original_name)
+        self.assertEqual(_canonical_payload(self.window, self.root), before)
+        self.assertEqual(_semantic_topology(self.window, self.root), before_semantic)
+        self.assertEqual(_node_footprint(binding), before_maya)
+        self.assertEqual(len(self.status_messages), 1, "boneResetButton handler must emit one status")
+        self._emit_bone_action_witness(
+            "bone.reset",
+            "objectName=boneResetButton",
+            "BonePresenter.reset_changes -> AppState.status_message",
+            "pending_ui_edit_and_semantic_maya_fingerprint_unchanged",
+            len(self.status_messages),
+        )
+
+    def test_bone_move_up_reorders_pending_registered_bones(self):
+        """Move Up changes only the deterministic pending order."""
+        bindings = self._register_second_bone_fixture()
+        view = self.window.bone_presenter.view
+        view.bone_list.setCurrentRow(1)
+        QApplication.processEvents()
+        before = _canonical_payload(self.window, self.root)
+        before_semantic = _semantic_topology(self.window, self.root)
+        before_maya = self._bone_maya_fingerprint()
+        before_order = tuple(view.bone_list.item(index).data(Qt.UserRole) for index in range(view.bone_list.count()))
+        self.assertEqual(before_order, bindings)
+        self.status_messages.clear()
+
+        self.assertTrue(view.reindex_up_btn.isEnabled())
+        QTest.mouseClick(view.reindex_up_btn, Qt.LeftButton)
+        QApplication.processEvents()
+
+        after_order = tuple(view.bone_list.item(index).data(Qt.UserRole) for index in range(view.bone_list.count()))
+        self.assertEqual(after_order, (bindings[1], bindings[0]))
+        self.assertEqual(_canonical_payload(self.window, self.root), before)
+        self.assertEqual(_semantic_topology(self.window, self.root), before_semantic)
+        self.assertEqual(self._bone_maya_fingerprint(), before_maya)
+        self.assertEqual(len(self.status_messages), 1, "boneMoveUpButton handler must emit one status")
+        self._emit_bone_action_witness(
+            "bone.move_up",
+            "objectName=boneMoveUpButton",
+            "BonePresenter.move_reindex(-1) -> AppState.status_message",
+            "pending_bone_order_swapped_once_semantic_maya_fingerprint_unchanged",
+            len(self.status_messages),
+        )
+
+    def test_bone_move_down_reorders_pending_registered_bones(self):
+        """Move Down changes only the deterministic pending order."""
+        bindings = self._register_second_bone_fixture()
+        view = self.window.bone_presenter.view
+        view.bone_list.setCurrentRow(0)
+        QApplication.processEvents()
+        before = _canonical_payload(self.window, self.root)
+        before_semantic = _semantic_topology(self.window, self.root)
+        before_maya = self._bone_maya_fingerprint()
+        before_order = tuple(view.bone_list.item(index).data(Qt.UserRole) for index in range(view.bone_list.count()))
+        self.assertEqual(before_order, bindings)
+        self.status_messages.clear()
+
+        self.assertTrue(view.reindex_down_btn.isEnabled())
+        QTest.mouseClick(view.reindex_down_btn, Qt.LeftButton)
+        QApplication.processEvents()
+
+        after_order = tuple(view.bone_list.item(index).data(Qt.UserRole) for index in range(view.bone_list.count()))
+        self.assertEqual(after_order, (bindings[1], bindings[0]))
+        self.assertEqual(_canonical_payload(self.window, self.root), before)
+        self.assertEqual(_semantic_topology(self.window, self.root), before_semantic)
+        self.assertEqual(self._bone_maya_fingerprint(), before_maya)
+        self.assertEqual(len(self.status_messages), 1, "boneMoveDownButton handler must emit one status")
+        self._emit_bone_action_witness(
+            "bone.move_down",
+            "objectName=boneMoveDownButton",
+            "BonePresenter.move_reindex(1) -> AppState.status_message",
+            "pending_bone_order_swapped_once_semantic_maya_fingerprint_unchanged",
+            len(self.status_messages),
+        )
+
+    def test_bone_reset_authoring_commits_pending_order_and_undo_redo(self):
+        """Reset Authoring commits pending order through one coordinator call."""
+        bindings = self._register_second_bone_fixture()
+        presenter = self.window.bone_presenter
+        view = presenter.view
+        view.bone_list.setCurrentRow(1)
+        QApplication.processEvents()
+        self.assertTrue(presenter.move_reindex(-1))
+        QApplication.processEvents()
+        pending_order = tuple(view.bone_list.item(index).data(Qt.UserRole) for index in range(view.bone_list.count()))
+        self.assertEqual(pending_order, (bindings[1], bindings[0]))
+        before = _canonical_payload(self.window, self.root)
+        coordinator = self.window.authoring_composition.coordinator
+        original_reset_bones = coordinator.reset_bones
+        reset_invocations = []
+
+        def observe_reset_bones(*args, **kwargs):
+            reset_invocations.append("MayaModelAuthoringCoordinator.reset_bones")
+            return original_reset_bones(*args, **kwargs)
+
+        coordinator.reset_bones = observe_reset_bones
+        try:
+            self.assertTrue(view.reset_authoring_btn.isEnabled())
+            QTest.mouseClick(view.reset_authoring_btn, Qt.LeftButton)
+            QApplication.processEvents()
+        finally:
+            coordinator.reset_bones = original_reset_bones
+
+        self.assertEqual(len(reset_invocations), 1, "boneResetAuthoringButton must invoke reset_bones once")
+        after = _canonical_payload(self.window, self.root)
+        after_spec = coordinator.read_spec(self.root)
+        after_bones = sorted(after_spec.bones, key=lambda bone: bone.index)
+        self.assertEqual([bone.binding_identity for bone in after_bones], list(pending_order))
+        self.assertEqual([bone.index for bone in after_bones], [0, 1])
+        self.assertEqual(
+            {bone.binding_identity for bone in after_bones},
+            set(bindings),
+        )
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after)
+        self._emit_bone_action_witness(
+            "bone.reset_authoring",
+            "objectName=boneResetAuthoringButton",
+            "BonePresenter.reset_authoring -> MayaModelAuthoringCoordinator.reset_bones",
+            "spec_order_index_bindings_and_undo_redo",
+            len(reset_invocations),
+        )
 
     def _material_case(self, evidence):
         view = self.window.material_presenter.view

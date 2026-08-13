@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "gate_id": "V070-UI-COVERAGE-1",
-  "minimum_qt_case_surfaces": 102,
+  "minimum_qt_case_surfaces": 106,
   "inventory_scope": "MainWindow nine tabs; logical mutable/actionable surfaces only, with explicit exclusions for containers and read-only displays.",
   "tabs": [
     {
@@ -132,6 +132,21 @@
       "source": "tests/gui/guitest_authoring_signal_smoke_gui.py",
       "evidence_tests": [
         "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_material_toolbar_crud_reindex_and_undo"
+      ]
+    },
+    {
+      "id": "gui.bone_actions",
+      "status": "current",
+      "required_maya_versions": [
+        "2024",
+        "2026"
+      ],
+      "source": "tests/gui/guitest_authoring_signal_smoke_gui.py",
+      "evidence_tests": [
+        "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_reset_restores_pending_ui_edit",
+        "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_move_up_reorders_pending_registered_bones",
+        "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_move_down_reorders_pending_registered_bones",
+        "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_reset_authoring_commits_pending_order_and_undo_redo"
       ]
     },
     {
@@ -1179,27 +1194,24 @@
       "tab": "bone",
       "kind": "button",
       "selector": "objectName=boneMoveUpButton",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_actions"
     },
     {
       "id": "bone.move_down",
       "tab": "bone",
       "kind": "button",
       "selector": "objectName=boneMoveDownButton",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_actions"
     },
     {
       "id": "bone.reset_authoring",
       "tab": "bone",
       "kind": "button",
       "selector": "objectName=boneResetAuthoringButton",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_actions"
     },
     {
       "id": "bone.list",
@@ -1527,9 +1539,8 @@
       "tab": "bone",
       "kind": "button",
       "selector": "objectName=boneResetButton",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_actions"
     },
     {
       "id": "morph.refresh_toolbar",
