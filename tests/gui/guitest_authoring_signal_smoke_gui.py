@@ -331,7 +331,7 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         QApplication.processEvents()
         before_delete = _canonical_payload(self.window, self.root)
         with patch(
-            "mmd_tools.ui.presenters.material_presenter.QMessageBox.question",
+            "mmd_tools.ui.qt_compat.QMessageBox.question",
             return_value=QMessageBox.Yes,
         ):
             view.delete_btn.click()

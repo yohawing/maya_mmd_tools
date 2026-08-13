@@ -44,7 +44,6 @@ from .list_presenter_helpers import (
     apply_list_filter,
     format_indexed_node_label,
     reload_for_current_model_change,
-    select_existing_user_role_nodes,
     tr_message_format,
 )
 
@@ -323,12 +322,19 @@ class MaterialPresenter:
             # Material-list selection is deliberately shader-only.  Maya's
             # standard set membership remains the assignment authority; do
             # not open HyperShade or implicitly assign the selected shader.
-            self.maya_adapter.select(material_name, replace=True)
+            self._select_material_nodes(material_name, replace=True)
             logger.debug(f"Selected material in Maya: {material_name}")
         except Exception as e:
             logger.warning(f"Could not select material in Maya: {e}")
 
         self.load_material_properties(material_name)
+
+    def _select_material_nodes(self, nodes, *, replace=True):
+        """Select material nodes without creating an undo entry when possible."""
+        select_fast = getattr(self.maya_adapter, "select_fast", None)
+        if callable(select_fast):
+            return select_fast(nodes, replace=replace)
+        return self.maya_adapter.select(nodes, replace=replace)
 
     def _read_material_index(self, material):
         """Read a binding index for UI routing, never as semantic authority."""
@@ -1494,11 +1500,20 @@ class MaterialPresenter:
 
     def on_selection_changed_maya(self):
         """リスト選択が変更されたときにMayaでも選択する"""
-        select_existing_user_role_nodes(
-            self.view.material_list,
-            self.maya_adapter,
-            Qt.UserRole,
-            exists=self.maya_adapter.object_exists,
-            logger=logger,
-            label="materials",
-        )
+        selected_items = self.view.material_list.selectedItems()
+        if not selected_items:
+            return
+
+        nodes = []
+        for item in selected_items:
+            node = item.data(Qt.UserRole)
+            if node and self.maya_adapter.object_exists(node):
+                nodes.append(node)
+        if not nodes:
+            return
+
+        try:
+            self._select_material_nodes(nodes, replace=True)
+            logger.debug("Selected materials in Maya: %s", nodes)
+        except Exception as exc:
+            logger.warning("Could not select materials in Maya: %s", exc)

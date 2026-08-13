@@ -180,7 +180,7 @@ class TestMaterialPresenter(unittest.TestCase):
             presenter.on_material_selected(item, None)
 
         self.assertEqual(presenter.current_material_index, 3)
-        self.mock_maya_adapter.select.assert_called_once_with("shader1", replace=True)
+        self.mock_maya_adapter.select_fast.assert_called_once_with("shader1", replace=True)
         load_properties.assert_called_once_with("shader1")
         self.mock_view.duplicate_btn.setEnabled.assert_called_with(True)
         self.mock_view.delete_btn.setEnabled.assert_called_with(True)
@@ -592,7 +592,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.presenter.on_material_selected(mock_item, None)
 
         # マテリアルが選択されることを確認
-        self.mock_maya_adapter.select.assert_called_with("material1", replace=True)
+        self.mock_maya_adapter.select_fast.assert_called_with("material1", replace=True)
         # 詳細が有効化されることを確認
         self.mock_view._set_details_enabled.assert_called_with(True)
 
@@ -602,6 +602,17 @@ class TestMaterialPresenter(unittest.TestCase):
         info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
         self.assertIn(expected, debug_messages)
         self.assertNotIn(expected, info_messages)
+
+    def test_on_selection_changed_maya_uses_fast_selection_path(self):
+        item = Mock()
+        item.data.return_value = "material1"
+        self.mock_view.material_list.selectedItems.return_value = [item]
+        self.mock_maya_adapter.object_exists.return_value = True
+
+        self.presenter.on_selection_changed_maya()
+
+        self.mock_maya_adapter.select_fast.assert_called_once_with(["material1"], replace=True)
+        self.mock_maya_adapter.select.assert_not_called()
 
     @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
