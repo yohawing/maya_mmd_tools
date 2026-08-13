@@ -14,6 +14,7 @@ from mmd_tools.adapters.maya_scene_metadata_backend import (  # noqa: E402
     MayaSceneMetadataBackend,
     MayaSceneMetadataError,
 )
+from mmd_tools.adapters.maya_material_diffuse_route import material_diffuse_route  # noqa: E402
 from mmd_tools.adapters.maya_material_authoring import MayaMaterialAuthoring  # noqa: E402
 from mmd_tools.core.material_authoring import classify_material_change  # noqa: E402
 from mmd_tools.core.model_authoring_spec import (  # noqa: E402
@@ -40,6 +41,16 @@ def test_classifier_routes_noop_value_binding_and_mixed_changes() -> None:
         prior,
         replace(prior, name="B", resolved_texture_path="C:/a.png"),
     ) == "binding"
+
+
+def test_diffuse_route_is_backend_specific_and_texture_aware() -> None:
+    assert material_diffuse_route("standardSurface", has_main_texture=False).attribute == "baseColor"
+    assert material_diffuse_route("standardSurface", has_main_texture=True) is None
+    assert material_diffuse_route("dx11Shader", has_main_texture=False).attribute == "DiffuseColorRGB"
+    assert material_diffuse_route("dx11Shader", has_main_texture=True).attribute == "DiffuseColorRGB"
+    assert material_diffuse_route("GLSLShader", has_main_texture=False).attribute == "DiffuseColorRGB"
+    assert material_diffuse_route("lambert", has_main_texture=False).attribute == "color"
+    assert material_diffuse_route("unknownShader", has_main_texture=False) is None
 
 
 def test_adapter_writes_only_changed_values_and_keeps_texture_graph_untouched() -> None:
@@ -100,6 +111,45 @@ def test_adapter_diffuse_patch_updates_base_color_without_resolved_texture() -> 
         if call[0] == "set_attr"
     }
     assert "baseColor" in written
+
+
+def test_adapter_dx11_diffuse_patch_updates_hardware_parameter_without_base_color() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    source = replace(_material(), texture_path=None, resolved_texture_path=None)
+    bound, shader, _ = adapter.create_material("|Model_root", source)
+    cmds.types[shader] = "dx11Shader"
+    cmds.attrs.pop((shader, "baseColor"), None)
+    cmds.attrs[(shader, "DiffuseColorRGB")] = tuple(bound.diffuse[:3])
+    cmds.calls.clear()
+
+    adapter.apply_material_value_patch(
+        "|Model_root",
+        bound,
+        replace(bound, diffuse=(0.2, 0.3, 0.4, 1.0)),
+    )
+
+    written = {
+        call[1][0].rsplit(".", 1)[1]
+        for call in cmds.calls
+        if call[0] == "set_attr"
+    }
+    assert "DiffuseColorRGB" in written
+    assert "baseColor" not in written
+
+
+def test_backend_dx11_value_patch_uses_hardware_diffuse_route() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    old = backend.read_material_value("|root", "mat", 0)
+    cmds.node_types["mat"] = "dx11Shader"
+    cmds.attrs[("mat", "DiffuseColorRGB")] = [backend._maya_float3(old.diffuse[:3])]
+
+    backend.begin_material_value_patch("|root", "mat", old, replace(old, name="edited"))
+
+    assert backend._write_transaction is not None
+    assert backend._write_transaction["diffuse_route"].attribute == "DiffuseColorRGB"
+    backend.rollback_write("|root")
 
 
 def test_adapter_binding_patch_updates_only_selected_texture_graph() -> None:

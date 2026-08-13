@@ -1241,13 +1241,23 @@ class MaterialPresenter:
         """Apply the explicit Maya-only outline choice after semantic authoring."""
         if self.maya_adapter.node_type(self.current_material) != "dx11Shader":
             return
+        enabled = bool(self.view.shader_outline_check.isChecked())
+        previous_enabled = bool(self.material_data.get("shader_outline_enabled", False))
+        previous_edge_size = self.material_data.get("edge_size", material.edge_size)
+        try:
+            edge_size_changed = abs(float(previous_edge_size) - float(material.edge_size)) > 1e-6
+        except (TypeError, ValueError):
+            edge_size_changed = True
+        if enabled == previous_enabled and (not enabled or not edge_size_changed):
+            return
         from mmd_tools.converters.mesh_converter import apply_shader_outline
 
         apply_shader_outline(
             self.current_material,
-            bool(self.view.shader_outline_check.isChecked()),
+            enabled,
             material.edge_size,
         )
+        self.material_data["shader_outline_enabled"] = enabled
 
     def _update_selected_material_row(
         self,

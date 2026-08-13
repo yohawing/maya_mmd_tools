@@ -119,6 +119,11 @@ def main():
     parser.add_argument("--test_path", default="tests/gui", help="Path to the test directory (relative to project root)")
     parser.add_argument("--test_filter", default=None, help="Optional substring matched against discovered test IDs")
     parser.add_argument(
+        "--vp2_device_override",
+        default=None,
+        help="Optional MAYA_VP2_DEVICE_OVERRIDE for backend-specific GUI tests",
+    )
+    parser.add_argument(
         "--log_path",
         default=None,
         help="Path to the GUI test log (relative to project root; default: logs/ui_test_results.log)",
@@ -150,6 +155,12 @@ def main():
         maya_exe = maya_commandport.maya_exe(args.maya_version)
         logger.info("Maya executable: %s", maya_exe)
         maya_commandport.ensure_port_available(COMMAND_PORT)
+        env_overrides = {
+            "MAYA_APP_DIR": str(maya_app_dir),
+            "MAYA_PLUG_IN_PATH": str(project_root / "mmd_tools"),
+        }
+        if args.vp2_device_override:
+            env_overrides["MAYA_VP2_DEVICE_OVERRIDE"] = args.vp2_device_override
         maya_process = maya_commandport.launch_maya(
             version=args.maya_version,
             project_root=project_root,
@@ -160,10 +171,7 @@ def main():
             launch_mode="explorer" if sys.platform == "win32" else "direct",
             # Never let automated Maya startup read or rewrite the user's
             # Documents/maya preferences (pluginPrefs.mel, userPrefs.mel, etc.).
-            env_overrides={
-                "MAYA_APP_DIR": str(maya_app_dir),
-                "MAYA_PLUG_IN_PATH": str(project_root / "mmd_tools"),
-            },
+            env_overrides=env_overrides,
         )
         maya_launched = True
         maya_commandport.wait_for_port(COMMAND_PORT, MAYA_START_TIMEOUT, maya_process)

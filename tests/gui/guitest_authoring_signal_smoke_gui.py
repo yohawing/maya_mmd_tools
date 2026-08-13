@@ -272,6 +272,79 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after)
 
+    def test_dx11_material_value_apply_undo_redo(self):
+        """Apply name and diffuse edits through the DX11 viewport route."""
+        from mmd_tools.core import settings
+        from mmd_tools.io.mmd_importer import import_mmd_file
+
+        cmds.file(new=True, force=True)
+        cmds.loadPlugin("dx11Shader", quiet=True)
+        fixture = Path(__file__).resolve().parents[1] / "data" / "mmt_test_model.pmx"
+        previous_create = settings.get("import.model.create_mmd_shaders")
+        previous_backend = settings.get("import.model.mmd_shader_backend")
+        try:
+            settings.set("import.model.create_mmd_shaders", True)
+            settings.set("import.model.mmd_shader_backend", "dx11")
+            root = import_mmd_file(
+                str(fixture),
+                options={
+                    "scale": 1.0,
+                    "import_physics": False,
+                    "setup_rig": False,
+                    "setup_bone_orientation": False,
+                    "create_mmd_control_rig": False,
+                    "create_mmd_shaders": True,
+                    "use_cpp_fast_load": False,
+                    "use_native_pmx_parse": False,
+                    "require_native_pmx_parse": False,
+                },
+            )
+        finally:
+            settings.set("import.model.create_mmd_shaders", previous_create)
+            settings.set("import.model.mmd_shader_backend", previous_backend)
+        self.assertTrue(root)
+        self.root = str(root)
+        self.window.app_state.current_model_root = self.root
+        QApplication.processEvents()
+
+        view = self.window.material_presenter.view
+        view.material_list.setCurrentRow(0)
+        QApplication.processEvents()
+        material = self.window.authoring_composition.coordinator.read_spec(self.root).materials[0]
+        shader = material.binding_identity
+        self.assertEqual(cmds.nodeType(shader), "dx11Shader")
+        self.assertFalse(cmds.attributeQuery("baseColor", node=shader, exists=True))
+        self.assertTrue(cmds.attributeQuery("DiffuseColorRGB", node=shader, exists=True))
+        before = _canonical_payload(self.window, self.root)
+
+        view.material_en_name_edit.setText("DX11 Material Edited")
+        view.apply_btn.click()
+        QApplication.processEvents()
+        after_name = _canonical_payload(self.window, self.root)
+        self.assertEqual(after_name["spec"]["materials"][0]["name_english"], "DX11 Material Edited")
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_name)
+
+        with patch(
+            "mmd_tools.ui.presenters.material_presenter.QColorDialog.getColor",
+            return_value=QColor(64, 128, 192),
+        ):
+            QTest.mouseClick(view.diffuse_color_widget, Qt.LeftButton)
+        view.apply_btn.click()
+        QApplication.processEvents()
+        after_diffuse = _canonical_payload(self.window, self.root)
+        expected = (64 / 255.0, 128 / 255.0, 192 / 255.0)
+        for actual, channel in zip(after_diffuse["spec"]["materials"][0]["diffuse"][:3], expected):
+            self.assertAlmostEqual(actual, channel, places=6)
+        for actual, channel in zip(cmds.getAttr(f"{shader}.DiffuseColorRGB")[0], expected):
+            self.assertAlmostEqual(actual, channel, places=6)
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_name)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_diffuse)
+
     def test_material_toolbar_crud_reindex_and_undo(self):
         """Exercise every supported Material toolbar action through real buttons."""
         view = self.window.material_presenter.view

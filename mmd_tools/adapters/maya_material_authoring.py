@@ -14,6 +14,7 @@ import json
 from typing import Any
 
 from mmd_tools.core import model_registry
+from mmd_tools.adapters.maya_material_diffuse_route import material_diffuse_route
 from mmd_tools.core.material_authoring import classify_material_change
 from mmd_tools.core.constants import (
     ATTR_MMD_AMBIENT_COLOR,
@@ -298,11 +299,12 @@ class MayaMaterialAuthoring:
         if "diffuse" in changed:
             self._set_attr(shader, ATTR_MMD_DIFFUSE_COLOR, new.diffuse[:3], "double3")
             self._set_attr(shader, ATTR_MMD_DIFFUSE_ALPHA, new.diffuse[3], "double")
-            # With no resolved texture graph, keep the standardSurface final
-            # color in sync.  A resolved texture path means baseColor is a
-            # graph destination; leave that connection untouched.
-            if not (old.resolved_texture_path or old.texture_path):
-                self._set_attr(shader, "baseColor", new.diffuse[:3], "float3")
+            route = material_diffuse_route(
+                str(self._call("node_type", shader)),
+                has_main_texture=bool(old.resolved_texture_path or old.texture_path),
+            )
+            if route is not None:
+                self._set_attr(shader, route.attribute, new.diffuse[:3], route.attribute_type)
         if "specular" in changed:
             self._set_attr(shader, ATTR_MMD_SPECULAR_COLOR, new.specular, "double3")
         if "specular_coefficient" in changed:
@@ -1098,18 +1100,17 @@ class MayaMaterialAuthoring:
         for attr, value in strings.items():
             self._set_attr(shader, attr, value, "string")
 
-        # Reconcile the graph before touching ``baseColor``.  A connected
-        # file node owns that compound destination and Maya rejects a direct
-        # setAttr while the connection is live.  Removing a resolved texture
-        # therefore disconnects/deletes its file node first; retaining one
-        # leaves the graph in charge and skips the direct write entirely.
+        # Reconcile the graph before touching a stock shader's final color.
+        # A connected file node owns that destination and Maya rejects a
+        # direct setAttr while the connection is live.
         if bind_texture_graph:
             self._bind_texture_graph(shader, material)
-        if not material.resolved_texture_path:
-            # StandardSurface exposes baseColor as a Maya float3 compound;
-            # the canonical semantic color attrs above remain custom
-            # double3 fields.
-            self._set_attr(shader, "baseColor", material.diffuse[:3], "float3")
+        route = material_diffuse_route(
+            str(self._call("node_type", shader)),
+            has_main_texture=bool(material.resolved_texture_path),
+        )
+        if route is not None:
+            self._set_attr(shader, route.attribute, material.diffuse[:3], route.attribute_type)
 
     def _set_attr(self, node: str, attr: str, value: Any, attr_type: str) -> None:
         if not self._has_attr(node, attr):

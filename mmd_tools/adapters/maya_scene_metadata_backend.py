@@ -17,6 +17,10 @@ from copy import deepcopy
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from mmd_tools.adapters.maya_material_diffuse_route import (
+    MayaMaterialDiffuseRoute,
+    material_diffuse_route,
+)
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter, SceneMetadataError
 from mmd_tools.core.constants import (
     ATTR_MMD_AXIS_DIRECTION,
@@ -831,9 +835,13 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError("Maya undo must be enabled for material value patches")
         original = self._read_material_value_attrs(shader)
         expected_old = self._material_value_attrs(old_material)
-        if not (old_material.resolved_texture_path or old_material.texture_path):
-            original["base_color"] = self._required_vector(shader, "baseColor")
-            expected_old["base_color"] = self._maya_float3(old_material.diffuse[:3])
+        diffuse_route = material_diffuse_route(
+            self._node_type(shader),
+            has_main_texture=bool(old_material.resolved_texture_path or old_material.texture_path),
+        )
+        if diffuse_route is not None:
+            original["viewport_diffuse"] = self._required_vector(shader, diffuse_route.attribute)
+            expected_old["viewport_diffuse"] = self._maya_float3(old_material.diffuse[:3])
         if original != expected_old:
             raise MayaSceneMetadataError(
                 f"material value patch preimage mismatch for {shader!r}: "
@@ -851,6 +859,7 @@ class MayaSceneMetadataBackend:
             "index": old_material.index,
             "original_values": original,
             "target_values": self._material_value_attrs(new_material),
+            "diffuse_route": diffuse_route,
             "target": None,
             "chunk_open": True,
         }
@@ -1107,9 +1116,10 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError("material value patch commit binding mismatch")
         actual = self._read_material_value_attrs(shader)
         expected = dict(transaction["target_values"])
-        if "base_color" in transaction["original_values"]:
-            actual["base_color"] = self._required_vector(shader, "baseColor")
-            expected["base_color"] = self._maya_float3(material.diffuse[:3])
+        diffuse_route = transaction.get("diffuse_route")
+        if isinstance(diffuse_route, MayaMaterialDiffuseRoute):
+            actual["viewport_diffuse"] = self._required_vector(shader, diffuse_route.attribute)
+            expected["viewport_diffuse"] = self._maya_float3(material.diffuse[:3])
         if actual != expected:
             raise MayaSceneMetadataError(
                 f"material value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
@@ -1764,9 +1774,10 @@ class MayaSceneMetadataBackend:
             return
         if transaction.get("kind") == "material_value":
             actual = self._read_material_value_attrs(transaction["binding"])
-            if "base_color" in transaction["original_values"]:
-                actual["base_color"] = self._required_vector(
-                    transaction["binding"], "baseColor"
+            diffuse_route = transaction.get("diffuse_route")
+            if isinstance(diffuse_route, MayaMaterialDiffuseRoute):
+                actual["viewport_diffuse"] = self._required_vector(
+                    transaction["binding"], diffuse_route.attribute
                 )
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("material value patch rollback fingerprint mismatch")
