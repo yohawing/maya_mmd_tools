@@ -1119,6 +1119,46 @@ def test_bone_optional_payloads_clear_and_can_be_reenabled_transactionally() -> 
     assert adapter.read_spec("|root").fingerprint() == reenabled.fingerprint()
 
 
+def test_bone_optional_payloads_can_be_enabled_after_base_registration() -> None:
+    cmds, _, adapter = _writable_scene()
+    original = adapter.read_spec("|root")
+    enabled_bone = replace(
+        original.bones[0],
+        flags=int(
+            PmxBoneFlag.GRANT_PARENT_ROTATE
+            | PmxBoneFlag.EXTERNAL_PARENT_DEFORM
+            | PmxBoneFlag.IK
+        ),
+        grant_parent_index=0,
+        grant_ratio=0.35,
+        external_parent_key=37,
+        ik_target_index=0,
+        ik_loop_count=7,
+        ik_limit_radian=0.5,
+        ik_links=({"bone": 0, "limit_enabled": False},),
+    )
+    for attr in (
+        "mmd_grant_rate",
+        "mmd_external_parent_key",
+        "mmd_ik_loop",
+        "mmd_ik_limit_angle",
+        "mmd_ik_links",
+    ):
+        cmds.attrs.pop(("|root|joint", attr), None)
+
+    target = replace(original, bones=(enabled_bone,))
+    adapter.write_spec("|root", target)
+
+    assert adapter.read_spec("|root").fingerprint() == target.fingerprint()
+    assert cmds.attrs[("|root|joint", "mmd_grant_rate")] == 0.35
+    assert cmds.attrs[("|root|joint", "mmd_external_parent_key")] == 37
+    assert cmds.attrs[("|root|joint", "mmd_ik_loop")] == 7
+    assert cmds.attrs[("|root|joint", "mmd_ik_limit_angle")] == 0.5
+    assert json.loads(cmds.attrs[("|root|joint", "mmd_ik_links")]) == [
+        {"bone": 0, "limit_enabled": False}
+    ]
+
+
 def test_connect_bone_missing_target_sentinel_round_trips_transactionally() -> None:
     cmds, _, adapter = _writable_scene()
     original = adapter.read_spec("|root")

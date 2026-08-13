@@ -681,7 +681,7 @@ class MayaSceneMetadataBackend:
                 target_by_index,
             )
             if item["grant_parent_index"] is not None:
-                self._set_existing_scalar(node, ATTR_MMD_GRANT_RATE, item["grant_ratio"])
+                self._set_optional_scalar(node, ATTR_MMD_GRANT_RATE, item["grant_ratio"], "double")
             else:
                 self._delete_existing_attr(node, ATTR_MMD_GRANT_PARENT_INDEX)
                 self._set_existing_string(node, ATTR_MMD_GRANT_PARENT, "")
@@ -705,7 +705,12 @@ class MayaSceneMetadataBackend:
                 self._delete_existing_attr(node, ATTR_MMD_X_AXIS_DIRECTION)
                 self._delete_existing_attr(node, ATTR_MMD_Z_AXIS_DIRECTION)
             if item["external_parent_key"] is not None:
-                self._set_existing_scalar(node, ATTR_MMD_EXTERNAL_PARENT_KEY, item["external_parent_key"])
+                self._set_optional_scalar(
+                    node,
+                    ATTR_MMD_EXTERNAL_PARENT_KEY,
+                    item["external_parent_key"],
+                    "long",
+                )
             else:
                 self._set_existing_scalar(node, ATTR_MMD_EXTERNAL_PARENT_KEY, -1)
             self._write_optional_bone_reference(
@@ -716,11 +721,16 @@ class MayaSceneMetadataBackend:
                 target_by_index,
             )
             if item["ik_target_index"] is not None:
-                self._set_existing_scalar(node, ATTR_MMD_IK_LOOP, item["ik_loop_count"])
+                self._set_optional_scalar(node, ATTR_MMD_IK_LOOP, item["ik_loop_count"], "long")
             if item["ik_target_index"] is not None and item["ik_limit_radian"] is not None:
-                self._set_existing_scalar(node, ATTR_MMD_IK_LIMIT_ANGLE, item["ik_limit_radian"])
+                self._set_optional_scalar(
+                    node,
+                    ATTR_MMD_IK_LIMIT_ANGLE,
+                    item["ik_limit_radian"],
+                    "double",
+                )
             if item["ik_target_index"] is not None:
-                self._set_existing_string(
+                self._set_optional_string(
                     node,
                     ATTR_MMD_IK_LINKS,
                     json.dumps(item["ik_links"], ensure_ascii=False, separators=(",", ":")),
@@ -2472,6 +2482,18 @@ class MayaSceneMetadataBackend:
     def _set_existing_vector(self, node: str, attr: str, value: Sequence[Any]) -> None:
         if self._has_attr(node, attr):
             self._call_adapter("set_attr", f"{node}.{attr}", *value, type="double3")
+
+    def _set_optional_scalar(self, node: str, attr: str, value: Any, attribute_type: str) -> None:
+        """Create an optional scalar metadata attribute when it becomes active."""
+        if not self._has_attr(node, attr):
+            self._call_adapter("add_attr", node, longName=attr, attributeType=attribute_type)
+        self._call_adapter("set_attr", f"{node}.{attr}", value)
+
+    def _set_optional_string(self, node: str, attr: str, value: str) -> None:
+        """Create an optional string metadata attribute when it becomes active."""
+        if not self._has_attr(node, attr):
+            self._call_adapter("add_attr", node, longName=attr, dataType="string")
+        self._call_adapter("set_attr", f"{node}.{attr}", value, type="string")
 
     def _set_optional_vector(self, node: str, attr: str, value: Sequence[Any]) -> None:
         if not self._has_attr(node, attr):
