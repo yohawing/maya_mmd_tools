@@ -342,6 +342,14 @@ class MaterialTab(BaseTab):
         self.edge_size_spin.setDecimals(2)
         edge_layout.addWidget(self.edge_size_spin, 1, 1, 1, 2)
 
+        # Maya viewport outline. This is intentionally separate from the PMX
+        # Edge Drawing flag so imported semantics can be preserved while the
+        # potentially visible outline pass remains opt-in.
+        self.shader_outline_check = QCheckBox(self.tr("shader_outline", "rendering_checkboxes"))
+        self.shader_outline_check.setObjectName("materialShaderOutlineCheck")
+        self.shader_outline_check.setChecked(False)
+        edge_layout.addWidget(self.shader_outline_check, 2, 0, 1, 3)
+
         self.edge_group.setLayout(edge_layout)
         layout.addWidget(self.edge_group)
 
@@ -406,6 +414,7 @@ class MaterialTab(BaseTab):
             self.line_draw_check,
             self.edge_color_widget,
             self.edge_size_spin,
+            self.shader_outline_check,
             self.apply_btn,
             self.reset_btn,
         ]
@@ -492,6 +501,8 @@ class MaterialTab(BaseTab):
             self.edge_color_label.setText(self.tr("edge_color", "fields"))
         if hasattr(self, "edge_size_label"):
             self.edge_size_label.setText(self.tr("edge_size", "fields"))
+        if hasattr(self, "shader_outline_check"):
+            self.shader_outline_check.setText(self.tr("shader_outline", "rendering_checkboxes"))
         # CheckBoxes
         if hasattr(self, "both_face_check"):
             self.both_face_check.setText(self.tr("double_sided", "rendering_checkboxes"))

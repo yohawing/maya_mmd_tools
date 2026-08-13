@@ -49,7 +49,7 @@ class TestMaterialIsDoubleSided(unittest.TestCase):
         self.assertTrue(material_has_outline(SimpleNamespace(edge_flag=1), is_pmd=True))
         self.assertFalse(material_has_outline(SimpleNamespace(edge_flag=0), is_pmd=True))
 
-    def test_imported_custom_outline_state_follows_pmx_edge_flag(self):
+    def test_imported_custom_outline_state_defaults_off_without_losing_pmx_edge_data(self):
         material = SimpleNamespace(
             material_index=0,
             name="outline",
@@ -77,9 +77,10 @@ class TestMaterialIsDoubleSided(unittest.TestCase):
 
         attrs = set_custom_attributes.call_args[0][1]
         self.assertEqual(attrs["mmd_edge_size"], 2.5)
-        self.assertTrue(attrs["mmd_shader_outline_enabled"])
+        self.assertEqual(attrs["mmd_draw_flags"], 0x11)
+        self.assertFalse(attrs["mmd_shader_outline_enabled"])
 
-    def test_imported_setup_passes_authored_pmx_edge_size_to_hardware_uniform(self):
+    def test_imported_setup_disables_hardware_outline_by_default(self):
         material = SimpleNamespace(
             diffuse=(1.0, 1.0, 1.0, 1.0),
             ambient=(0.0, 0.0, 0.0),
@@ -117,7 +118,7 @@ class TestMaterialIsDoubleSided(unittest.TestCase):
                 is_pmd=False,
             )
 
-        set_attribute.assert_any_call("shader1", "EdgeSize", 2.5, "float")
+        set_attribute.assert_any_call("shader1", "EdgeSize", 0.0, "float")
 
     def test_imported_dx11_material_starts_opaque_even_when_classified_blend(self):
         """Automatic import must not mix a subset of materials into VP2 transparency."""

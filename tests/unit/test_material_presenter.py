@@ -72,6 +72,7 @@ class TestMaterialPresenter(unittest.TestCase):
                 "self_shadow_map_check",
                 "self_shadow_check",
                 "edge_draw_check",
+                "shader_outline_check",
                 "vertex_color_check",
                 "point_draw_check",
                 "line_draw_check",
@@ -140,6 +141,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.toon_texture_path_edit.text.return_value = ""
         self.mock_view.toon_texture_index_spin.value.return_value = -1
         self.mock_view.edge_size_spin.value.return_value = 1.5
+        self.mock_view.shader_outline_check.isChecked.return_value = False
         for checkbox in [
             self.mock_view.both_face_check,
             self.mock_view.ground_shadow_check,
@@ -269,7 +271,11 @@ class TestMaterialPresenter(unittest.TestCase):
         ):
             getattr(self.mock_view, bit_name).isChecked.return_value = value
 
-        with patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils") as attrs:
+        self.mock_maya_adapter.node_type.return_value = "dx11Shader"
+        self.mock_view.shader_outline_check.isChecked.return_value = True
+        with patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils") as attrs, patch(
+            "mmd_tools.converters.mesh_converter.apply_shader_outline"
+        ) as apply_outline:
             result = self.presenter.apply_changes()
 
         self.assertIs(result, coordinator.current)
@@ -295,6 +301,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.assertEqual(replacement.memo, prior.memo)
         attrs.set_attribute.assert_not_called()
         attrs.set_custom_attributes.assert_not_called()
+        apply_outline.assert_called_once_with("shader|材質", True, 1.5)
         self.assertFalse(self.presenter.has_unsaved_changes)
         self.assertEqual(self.presenter.material_data["_authoring_fingerprint"], result.fingerprint())
 
@@ -627,6 +634,7 @@ class TestMaterialPresenter(unittest.TestCase):
                 "SpecularColor",
                 "AmbientColor",
                 "MainTexture",
+                ATTR_MMD_SHADER_OUTLINE_ENABLED,
             ]
         )
 
@@ -644,7 +652,7 @@ class TestMaterialPresenter(unittest.TestCase):
             ATTR_MMD_DRAW_FLAGS: 0x1F,
             ATTR_MMD_EDGE_COLOR: (0.0, 0.0, 0.0, 1.0),
             ATTR_MMD_EDGE_SIZE: 1.0,
-            ATTR_MMD_SHADER_OUTLINE_ENABLED: False,
+            ATTR_MMD_SHADER_OUTLINE_ENABLED: True,
             ATTR_MMD_TOON_TEXTURE_INDEX: 0,
             "fileTextureName": "textures/main.png",
         }.get(attr, None)
@@ -659,6 +667,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.material_en_name_edit.setText.assert_called_with("Test Material")
         self.mock_view.specular_coefficient_spin.setValue.assert_called_with(0.5)
         self.mock_view.texture_path_edit.setText.assert_called_with("textures/main.png")
+        self.mock_view.shader_outline_check.setChecked.assert_called_with(True)
 
         # テクスチャロード詳細は DEBUG のみ（INFO には出さない）
         expected = "Loaded texture: textures/main.png"

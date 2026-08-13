@@ -20,6 +20,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SHININESS,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
+    ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
     ATTR_MMD_MATERIAL_INDEX,
@@ -166,6 +167,7 @@ class MaterialPresenter:
             self.view.vertex_color_check,
             self.view.point_draw_check,
             self.view.line_draw_check,
+            self.view.shader_outline_check,
         ]:
             checkbox.stateChanged.connect(self._on_value_changed)
 
@@ -993,6 +995,14 @@ class MaterialPresenter:
         self.view.point_draw_check.setChecked(bool(draw_flags & 0x40))
         self.view.line_draw_check.setChecked(bool(draw_flags & 0x80))
 
+        # Viewport outline is an opt-in display setting, independent from the
+        # authored PMX Edge Drawing bit above.
+        outline_enabled = bool(
+            self._get_attr_safe(material_name, ATTR_MMD_SHADER_OUTLINE_ENABLED, False)
+        )
+        self.material_data["shader_outline_enabled"] = outline_enabled
+        self.view.shader_outline_check.setChecked(outline_enabled)
+
         # Edge properties
         edge_color = self._get_attr_safe(material_name, ATTR_MMD_EDGE_COLOR, (0.0, 0.0, 0.0, 1.0))
         edge_alpha = float(self._get_attr_safe(material_name, ATTR_MMD_EDGE_ALPHA, 1.0))
@@ -1219,12 +1229,25 @@ class MaterialPresenter:
                 if not isinstance(reloaded, MmdModelAuthoringSpec):
                     raise TypeError("authoring coordinator strict reload returned an invalid spec")
             self.material_data["_authoring_fingerprint"] = reloaded.fingerprint()
+        self._apply_viewport_outline(replacement)
         self.has_unsaved_changes = False
         self._update_selected_material_row(reloaded, replacement.binding_identity)
         self.app_state.emit_status(
             tr_message_format("material_changes_applied", material=self.current_material)
         )
         return reloaded
+
+    def _apply_viewport_outline(self, material: MmdMaterialSpec) -> None:
+        """Apply the explicit Maya-only outline choice after semantic authoring."""
+        if self.maya_adapter.node_type(self.current_material) != "dx11Shader":
+            return
+        from mmd_tools.converters.mesh_converter import apply_shader_outline
+
+        apply_shader_outline(
+            self.current_material,
+            bool(self.view.shader_outline_check.isChecked()),
+            material.edge_size,
+        )
 
     def _update_selected_material_row(
         self,
