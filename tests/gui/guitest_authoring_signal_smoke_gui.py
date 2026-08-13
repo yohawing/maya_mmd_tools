@@ -13,12 +13,22 @@ from mmd_tools.adapters.maya_authoring_e2e import normalize_spec_payload
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.core import model_registry
 from mmd_tools.core.constants import (
+    ATTR_MMD_AXIS_DIRECTION,
+    ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_NAME_EN,
+    ATTR_MMD_BONE_NAME,
+    ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_FIXED_AXIS,
+    ATTR_MMD_LOCAL_X_AXIS,
+    ATTR_MMD_LOCAL_Z_AXIS,
     ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_X_AXIS_DIRECTION,
+    ATTR_MMD_Z_AXIS_DIRECTION,
 )
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
 from mmd_tools.core.mmd_parser import parse_pmx_file
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.ui.main_window import MainWindow
@@ -226,6 +236,50 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             + json.dumps(surface_witness, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
             flush=True,
         )
+
+    def _emit_bone_value_surface_witnesses(self, surface_ids, oracle, action_count):
+        """Emit formal per-control witnesses after a complete value apply oracle."""
+        selectors = {
+            "bone.name_jp": "objectName=boneNameJpEdit",
+            "bone.deform_layer": "objectName=boneDeformLayerSpin",
+            "bone.rotatable": "objectName=boneRotatableCheck",
+            "bone.movable": "objectName=boneMovableCheck",
+            "bone.visible": "objectName=boneVisibleCheck",
+            "bone.enabled": "objectName=boneEnabledCheck",
+            "bone.after_physics": "objectName=boneAfterPhysicsCheck",
+            "bone.fixed_axis_enabled": "objectName=boneFixedAxisCheck",
+            "bone.fixed_axis": "objectName=boneFixedAxisXSpin",
+            "bone.local_axis_enabled": "objectName=boneLocalAxisCheck",
+            "bone.local_x_axis": "objectName=boneLocalXAxisXSpin",
+            "bone.local_z_axis": "objectName=boneLocalZAxisXSpin",
+        }
+        for surface_id in surface_ids:
+            selector = selectors[surface_id]
+            surface_witness = {
+                "surface_id": surface_id,
+                "case_id": "gui.bone_apply_values",
+                "selector": selector,
+                "status": "pass",
+                "runtime_witness": {
+                    "interaction": (
+                        f"Qt edit({selector}); QTest.mouseClick(objectName=boneApplyButton, Qt.LeftButton)"
+                    ),
+                    "fired_action": "MayaModelAuthoringCoordinator.apply_bone_value_patch",
+                    "oracle": oracle,
+                    "action_count": action_count,
+                },
+            }
+            self.report["surfaces"].append(surface_witness)
+            print(
+                "[UI COVERAGE WITNESS] "
+                + json.dumps(
+                    surface_witness,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
 
     def test_authoring_signals_undo_redo_and_save_reopen(self):
         self._record("authoring.material.value_apply", self._material_case)
@@ -811,6 +865,237 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             "BonePresenter.reset_changes -> AppState.status_message",
             "pending_ui_edit_and_semantic_maya_fingerprint_unchanged",
             len(self.status_messages),
+        )
+
+    def test_bone_apply_basic_values_undo_redo(self):
+        """Apply basic bone values through one real Qt click and one value patch."""
+        view = self.window.bone_presenter.view
+        view.bone_list.setCurrentRow(0)
+        QApplication.processEvents()
+        coordinator = self.window.authoring_composition.coordinator
+        binding = coordinator.read_spec(self.root).bones[0].binding_identity
+        before = _canonical_payload(self.window, self.root)
+        before_maya = _node_footprint(binding)
+
+        view.bone_name_jp_edit.setText("UI Root Basic")
+        view.deform_layer_spin.setValue(7)
+        for control, checked in (
+            (view.rotatable_check, False),
+            (view.movable_check, False),
+            (view.visible_check, False),
+            (view.enabled_check, False),
+            (view.after_physics_check, True),
+        ):
+            control.setChecked(checked)
+
+        invocations = []
+        original_apply = coordinator.apply_bone_value_patch
+
+        def observe_apply(*args, **kwargs):
+            invocations.append(True)
+            return original_apply(*args, **kwargs)
+
+        coordinator.apply_bone_value_patch = observe_apply
+        try:
+            QTest.mouseClick(view.apply_btn, Qt.LeftButton)
+            QApplication.processEvents()
+        finally:
+            coordinator.apply_bone_value_patch = original_apply
+
+        self.assertEqual(len(invocations), 1)
+        after = _canonical_payload(self.window, self.root)
+        after_bone = coordinator.read_spec(self.root).bones[0]
+        self.assertEqual(after_bone.name, "UI Root Basic")
+        self.assertEqual(after_bone.transform_layer, 7)
+        self.assertEqual(
+            int(after_bone.flags),
+            int(PmxBoneFlag.DEFORM_AFTER_PHYSICS),
+        )
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_BONE_NAME}"), "UI Root Basic")
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_DEFORM_LAYER}"), 7)
+        self.assertEqual(
+            cmds.getAttr(f"{binding}.{ATTR_MMD_BONE_FLAGS}"),
+            int(PmxBoneFlag.DEFORM_AFTER_PHYSICS),
+        )
+        after_maya = _node_footprint(binding)
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before)
+        self.assertEqual(_node_footprint(binding), before_maya)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after)
+        self.assertEqual(_node_footprint(binding), after_maya)
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_BONE_NAME}"), "UI Root Basic")
+        self.assertEqual(cmds.getAttr(f"{binding}.{ATTR_MMD_DEFORM_LAYER}"), 7)
+        self.assertEqual(
+            cmds.getAttr(f"{binding}.{ATTR_MMD_BONE_FLAGS}"),
+            int(PmxBoneFlag.DEFORM_AFTER_PHYSICS),
+        )
+        self._emit_bone_value_surface_witnesses(
+            (
+                "bone.name_jp",
+                "bone.deform_layer",
+                "bone.rotatable",
+                "bone.movable",
+                "bone.visible",
+                "bone.enabled",
+                "bone.after_physics",
+            ),
+            "basic_values_spec_maya_attrs_undo_redo",
+            len(invocations),
+        )
+
+    def test_bone_apply_fixed_axis_undo_redo(self):
+        """Apply a fixed-axis vector through one real Qt click and one value patch."""
+        view = self.window.bone_presenter.view
+        view.bone_list.setCurrentRow(0)
+        QApplication.processEvents()
+        coordinator = self.window.authoring_composition.coordinator
+        binding = coordinator.read_spec(self.root).bones[0].binding_identity
+        before = _canonical_payload(self.window, self.root)
+        before_maya = _node_footprint(binding)
+
+        view.fixed_axis_check.setChecked(True)
+        fixed_axis = (0.3, -0.4, 0.5)
+        for control, value in zip(
+            (
+                view.fixed_axis_x_spin,
+                view.fixed_axis_y_spin,
+                view.fixed_axis_z_spin,
+            ),
+            fixed_axis,
+        ):
+            control.setValue(value)
+
+        invocations = []
+        original_apply = coordinator.apply_bone_value_patch
+
+        def observe_apply(*args, **kwargs):
+            invocations.append(True)
+            return original_apply(*args, **kwargs)
+
+        coordinator.apply_bone_value_patch = observe_apply
+        try:
+            QTest.mouseClick(view.apply_btn, Qt.LeftButton)
+            QApplication.processEvents()
+        finally:
+            coordinator.apply_bone_value_patch = original_apply
+
+        self.assertEqual(len(invocations), 1)
+        after = _canonical_payload(self.window, self.root)
+        after_bone = coordinator.read_spec(self.root).bones[0]
+        self.assertTrue(int(after_bone.flags) & int(PmxBoneFlag.AXIS_FIXED))
+        for actual, expected in zip(after_bone.fixed_axis, fixed_axis):
+            self.assertAlmostEqual(actual, expected, places=6)
+        for attr in (ATTR_MMD_FIXED_AXIS, ATTR_MMD_AXIS_DIRECTION):
+            value = cmds.getAttr(f"{binding}.{attr}")[0]
+            for actual, expected in zip(value, fixed_axis):
+                self.assertAlmostEqual(actual, expected, places=6)
+        after_maya = _node_footprint(binding)
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before)
+        self.assertEqual(_node_footprint(binding), before_maya)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after)
+        self.assertEqual(_node_footprint(binding), after_maya)
+        for attr in (ATTR_MMD_FIXED_AXIS, ATTR_MMD_AXIS_DIRECTION):
+            value = cmds.getAttr(f"{binding}.{attr}")[0]
+            for actual, expected in zip(value, fixed_axis):
+                self.assertAlmostEqual(actual, expected, places=6)
+        self._emit_bone_value_surface_witnesses(
+            ("bone.fixed_axis_enabled", "bone.fixed_axis"),
+            "fixed_axis_spec_vector_maya_attrs_undo_redo",
+            len(invocations),
+        )
+
+    def test_bone_apply_local_axes_undo_redo(self):
+        """Apply local X/Z vectors through one real Qt click and one value patch."""
+        view = self.window.bone_presenter.view
+        view.bone_list.setCurrentRow(0)
+        QApplication.processEvents()
+        coordinator = self.window.authoring_composition.coordinator
+        binding = coordinator.read_spec(self.root).bones[0].binding_identity
+        before = _canonical_payload(self.window, self.root)
+        before_maya = _node_footprint(binding)
+
+        view.local_axis_check.setChecked(True)
+        local_x = (0.2, 0.3, 0.4)
+        local_z = (-0.5, 0.6, -0.7)
+        for controls, values in (
+            (
+                (
+                    view.local_x_axis_x_spin,
+                    view.local_x_axis_y_spin,
+                    view.local_x_axis_z_spin,
+                ),
+                local_x,
+            ),
+            (
+                (
+                    view.local_z_axis_x_spin,
+                    view.local_z_axis_y_spin,
+                    view.local_z_axis_z_spin,
+                ),
+                local_z,
+            ),
+        ):
+            for control, value in zip(controls, values):
+                control.setValue(value)
+
+        invocations = []
+        original_apply = coordinator.apply_bone_value_patch
+
+        def observe_apply(*args, **kwargs):
+            invocations.append(True)
+            return original_apply(*args, **kwargs)
+
+        coordinator.apply_bone_value_patch = observe_apply
+        try:
+            QTest.mouseClick(view.apply_btn, Qt.LeftButton)
+            QApplication.processEvents()
+        finally:
+            coordinator.apply_bone_value_patch = original_apply
+
+        self.assertEqual(len(invocations), 1)
+        after = _canonical_payload(self.window, self.root)
+        after_bone = coordinator.read_spec(self.root).bones[0]
+        self.assertTrue(int(after_bone.flags) & int(PmxBoneFlag.LOCAL_AXIS))
+        for actual, expected in zip(after_bone.local_axis_x, local_x):
+            self.assertAlmostEqual(actual, expected, places=6)
+        for actual, expected in zip(after_bone.local_axis_z, local_z):
+            self.assertAlmostEqual(actual, expected, places=6)
+        for attr, expected in (
+            (ATTR_MMD_LOCAL_X_AXIS, local_x),
+            (ATTR_MMD_X_AXIS_DIRECTION, local_x),
+            (ATTR_MMD_LOCAL_Z_AXIS, local_z),
+            (ATTR_MMD_Z_AXIS_DIRECTION, local_z),
+        ):
+            value = cmds.getAttr(f"{binding}.{attr}")[0]
+            for actual, expected_value in zip(value, expected):
+                self.assertAlmostEqual(actual, expected_value, places=6)
+        after_maya = _node_footprint(binding)
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before)
+        self.assertEqual(_node_footprint(binding), before_maya)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after)
+        self.assertEqual(_node_footprint(binding), after_maya)
+        for attr, expected in (
+            (ATTR_MMD_LOCAL_X_AXIS, local_x),
+            (ATTR_MMD_X_AXIS_DIRECTION, local_x),
+            (ATTR_MMD_LOCAL_Z_AXIS, local_z),
+            (ATTR_MMD_Z_AXIS_DIRECTION, local_z),
+        ):
+            value = cmds.getAttr(f"{binding}.{attr}")[0]
+            for actual, expected_value in zip(value, expected):
+                self.assertAlmostEqual(actual, expected_value, places=6)
+        self._emit_bone_value_surface_witnesses(
+            (
+                "bone.local_axis_enabled",
+                "bone.local_x_axis",
+                "bone.local_z_axis",
+            ),
+            "local_axes_spec_vectors_maya_attrs_undo_redo",
+            len(invocations),
         )
 
     def test_bone_move_up_reorders_pending_registered_bones(self):

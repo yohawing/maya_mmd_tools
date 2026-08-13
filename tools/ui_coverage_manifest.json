@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "gate_id": "V070-UI-COVERAGE-1",
-  "minimum_qt_case_surfaces": 106,
+  "minimum_qt_case_surfaces": 118,
   "inventory_scope": "MainWindow nine tabs; logical mutable/actionable surfaces only, with explicit exclusions for containers and read-only displays.",
   "tabs": [
     {
@@ -147,6 +147,20 @@
         "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_move_up_reorders_pending_registered_bones",
         "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_move_down_reorders_pending_registered_bones",
         "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_reset_authoring_commits_pending_order_and_undo_redo"
+      ]
+    },
+    {
+      "id": "gui.bone_apply_values",
+      "status": "current",
+      "required_maya_versions": [
+        "2024",
+        "2026"
+      ],
+      "source": "tests/gui/guitest_authoring_signal_smoke_gui.py",
+      "evidence_tests": [
+        "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_apply_basic_values_undo_redo",
+        "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_apply_fixed_axis_undo_redo",
+        "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_apply_local_axes_undo_redo"
       ]
     },
     {
@@ -1235,9 +1249,8 @@
       "tab": "bone",
       "kind": "text",
       "selector": "objectName=boneNameJpEdit",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_values"
     },
     {
       "id": "bone.name_en",
@@ -1261,54 +1274,48 @@
       "tab": "bone",
       "kind": "scalar",
       "selector": "objectName=boneDeformLayerSpin",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_values"
     },
     {
       "id": "bone.rotatable",
       "tab": "bone",
       "kind": "check",
       "selector": "objectName=boneRotatableCheck",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_values"
     },
     {
       "id": "bone.movable",
       "tab": "bone",
       "kind": "check",
       "selector": "objectName=boneMovableCheck",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_values"
     },
     {
       "id": "bone.visible",
       "tab": "bone",
       "kind": "check",
       "selector": "objectName=boneVisibleCheck",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_values"
     },
     {
       "id": "bone.enabled",
       "tab": "bone",
       "kind": "check",
       "selector": "objectName=boneEnabledCheck",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_values"
     },
     {
       "id": "bone.after_physics",
       "tab": "bone",
       "kind": "check",
       "selector": "objectName=boneAfterPhysicsCheck",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_values"
     },
     {
       "id": "bone.external_parent",
@@ -1486,45 +1493,40 @@
       "tab": "bone",
       "kind": "check",
       "selector": "objectName=boneFixedAxisCheck",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_values"
     },
     {
       "id": "bone.fixed_axis",
       "tab": "bone",
       "kind": "vector",
       "selector": "objectName=boneFixedAxisXSpin",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_values"
     },
     {
       "id": "bone.local_axis_enabled",
       "tab": "bone",
       "kind": "check",
       "selector": "objectName=boneLocalAxisCheck",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_values"
     },
     {
       "id": "bone.local_x_axis",
       "tab": "bone",
       "kind": "vector",
       "selector": "objectName=boneLocalXAxisXSpin",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_values"
     },
     {
       "id": "bone.local_z_axis",
       "tab": "bone",
       "kind": "vector",
       "selector": "objectName=boneLocalZAxisXSpin",
-      "disposition": "not_run",
-      "reason_code": "qt_smoke_deferred",
-      "reason": "No UI-COVERAGE-MANIFEST-1 Qt/Maya evidence report has been generated yet."
+      "disposition": "qt_case",
+      "case_id": "gui.bone_apply_values"
     },
     {
       "id": "bone.apply",
