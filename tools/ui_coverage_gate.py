@@ -11,7 +11,10 @@ The report input is a small aggregate JSON object::
                  "maya_versions": ["2024", "2026"]}],
      "surfaces": [{"surface_id": "import_export.import_model",
                    "case_id": "gui.fileio_safe_routes",
-                   "attribute": "import_button", "status": "pass"}]}
+                   "attribute": "import_button", "status": "pass",
+                   "runtime_witness": {"interaction": "click",
+                       "fired_action": "import", "oracle": "model_loaded",
+                       "action_count": 1}}]}
 
 The gate checks report case IDs, required Maya versions, and every manifest
 surface marked ``qt_case``.  It does not infer evidence from the number of
@@ -42,6 +45,7 @@ TAB_IDS = (
     "settings",
 )
 _PASS_STATUSES = {"pass", "passed", "ok", "success", "succeeded"}
+_RUNTIME_WITNESS_TEXT_FIELDS = ("interaction", "fired_action", "oracle")
 
 
 def _error(code: str, path: str, message: str) -> Dict[str, str]:
@@ -278,6 +282,38 @@ def _entry_map(entries: Sequence[Mapping[str, Any]], key: str) -> Dict[str, Mapp
     return result
 
 
+def _validate_runtime_witness(
+    evidence: Mapping[str, Any], *, path: str, errors: List[Dict[str, str]]
+) -> None:
+    """Require a witness produced by the runtime interaction, not a test name."""
+    witness = evidence.get("runtime_witness")
+    if witness is None:
+        errors.append(_error("missing_runtime_witness", f"{path}.runtime_witness", "required"))
+        return
+    if not isinstance(witness, Mapping):
+        errors.append(_error("invalid_runtime_witness", f"{path}.runtime_witness", "must be an object"))
+        return
+    for field in _RUNTIME_WITNESS_TEXT_FIELDS:
+        value = witness.get(field)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(
+                _error(
+                    "invalid_runtime_witness_field",
+                    f"{path}.runtime_witness.{field}",
+                    "must be a non-empty string",
+                )
+            )
+    action_count = witness.get("action_count")
+    if isinstance(action_count, bool) or not isinstance(action_count, int) or action_count != 1:
+        errors.append(
+            _error(
+                "invalid_runtime_witness_action_count",
+                f"{path}.runtime_witness.action_count",
+                "must be exactly 1",
+            )
+        )
+
+
 def validate_report(manifest: Mapping[str, Any], report: Mapping[str, Any]) -> Dict[str, Any]:
     """Validate optional Qt evidence against a structurally valid manifest."""
     structural = validate_manifest(manifest)
@@ -376,6 +412,11 @@ def validate_report(manifest: Mapping[str, Any], report: Mapping[str, Any]) -> D
         observed_locator = evidence.get("selector") or evidence.get("attribute")
         if observed_locator != expected_locator:
             errors.append(_error("selector_mismatch", f"report.surfaces[{surface_id}]", str(observed_locator)))
+        _validate_runtime_witness(
+            evidence,
+            path=f"report.surfaces[{surface_id}]",
+            errors=errors,
+        )
 
     return {
         "valid": not errors,
@@ -437,18 +478,15 @@ def build_report_from_evidence(manifest: Mapping[str, Any], repo_root: Path) -> 
                 raise ValueError(f"case {case_id} evidence failed for Maya {version}: {evidence_path}")
         cases.append({"case_id": case_id, "status": "pass", "maya_versions": versions})
 
-    surfaces = []
-    for surface in manifest.get("surfaces", []):
-        if surface.get("disposition") != "qt_case":
-            continue
-        evidence = {
-            "surface_id": surface["id"],
-            "case_id": surface["case_id"],
-            "status": "pass",
-        }
-        locator_key = "selector" if "selector" in surface else "attribute"
-        evidence[locator_key] = surface[locator_key]
-        surfaces.append(evidence)
+    if required_case_ids:
+        raise ValueError(
+            "qt_case runtime witness unavailable: evidence artifacts do not provide "
+            "per-surface interaction, fired_action, oracle, and action_count"
+        )
+
+    # No qt_case surface can be emitted without a runtime witness.  The
+    # explicit error above is intentional; this builder has no witness input.
+    surfaces: List[Dict[str, Any]] = []
     return {
         "schema_version": SCHEMA_VERSION,
         "gate_id": GATE_ID,
@@ -493,19 +531,15 @@ def build_report_from_batch_logs(
                 )
         cases.append({"case_id": case_id, "status": "pass", "maya_versions": versions})
 
-    surfaces = []
-    for surface in manifest.get("surfaces", []):
-        if surface.get("disposition") != "qt_case":
-            continue
-        locator_key = "selector" if "selector" in surface else "attribute"
-        surfaces.append(
-            {
-                "surface_id": surface["id"],
-                "case_id": surface["case_id"],
-                "status": "pass",
-                locator_key: surface[locator_key],
-            }
+    if required_case_ids:
+        raise ValueError(
+            "qt_case runtime witness unavailable: batch logs only identify named tests; "
+            "they do not provide per-surface interaction, fired_action, oracle, and action_count"
         )
+
+    # Named tests are not a runtime witness, so no qt_case surfaces are
+    # synthesized from this log-only input.
+    surfaces: List[Dict[str, Any]] = []
     return {
         "schema_version": SCHEMA_VERSION,
         "gate_id": GATE_ID,

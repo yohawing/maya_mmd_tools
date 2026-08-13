@@ -61,11 +61,24 @@ def _errors(result):
 
 def _report(cases, surfaces=None):
     """Build the CLI-compatible aggregate shape used by report-join tests."""
+    report_surfaces = []
+    for surface in surfaces or []:
+        entry = dict(surface)
+        entry.setdefault(
+            "runtime_witness",
+            {
+                "interaction": "QTest.click(import_export.surface)",
+                "fired_action": "import_model",
+                "oracle": "model_loaded",
+                "action_count": 1,
+            },
+        )
+        report_surfaces.append(entry)
     return {
         "schema_version": 1,
         "gate_id": "V070-UI-COVERAGE-1",
         "cases": cases,
-        "surfaces": list(surfaces or []),
+        "surfaces": report_surfaces,
     }
 
 
@@ -239,6 +252,71 @@ def test_report_selector_mismatch_fails():
     assert "selector_mismatch" in _errors(result)
 
 
+def test_report_missing_runtime_witness_fails_closed():
+    manifest = _qt_case_manifest()
+    report = _report(
+        [{"case_id": "case.one", "status": "pass", "maya_versions": ["2024", "2026"]}],
+        [
+            {
+                "surface_id": "import_export.surface",
+                "case_id": "case.one",
+                "selector": "objectName=surface",
+                "status": "pass",
+            }
+        ],
+    )
+    report["surfaces"][0].pop("runtime_witness")
+
+    result = validate_report(manifest, report)
+
+    assert "missing_runtime_witness" in _errors(result)
+    assert not result["valid"]
+
+
+@pytest.mark.parametrize("field", ["interaction", "fired_action", "oracle"])
+def test_report_runtime_witness_text_fields_must_be_nonempty(field):
+    manifest = _qt_case_manifest()
+    report = _report(
+        [{"case_id": "case.one", "status": "pass", "maya_versions": ["2024", "2026"]}],
+        [
+            {
+                "surface_id": "import_export.surface",
+                "case_id": "case.one",
+                "selector": "objectName=surface",
+                "status": "pass",
+            }
+        ],
+    )
+    report["surfaces"][0]["runtime_witness"][field] = " "
+
+    result = validate_report(manifest, report)
+
+    assert "invalid_runtime_witness_field" in _errors(result)
+    assert not result["valid"]
+
+
+@pytest.mark.parametrize("action_count", [0, 2, True, "1", None])
+def test_report_runtime_witness_action_count_must_be_exactly_one(action_count):
+    manifest = _qt_case_manifest()
+    report = _report(
+        [{"case_id": "case.one", "status": "pass", "maya_versions": ["2024", "2026"]}],
+        [
+            {
+                "surface_id": "import_export.surface",
+                "case_id": "case.one",
+                "selector": "objectName=surface",
+                "status": "pass",
+            }
+        ],
+    )
+    report["surfaces"][0]["runtime_witness"]["action_count"] = action_count
+
+    result = validate_report(manifest, report)
+
+    assert "invalid_runtime_witness_action_count" in _errors(result)
+    assert not result["valid"]
+
+
 def test_report_green_fixture_requires_case_versions_and_matching_selector():
     manifest = _qt_case_manifest()
     result = validate_report(
@@ -356,7 +434,7 @@ def test_manifest_fails_when_qt_case_count_drops_below_floor():
     assert "insufficient_qt_case_surfaces" in _errors(result)
 
 
-def test_evidence_report_builder_reads_declared_artifacts(tmp_path):
+def test_evidence_report_builder_rejects_artifacts_without_runtime_witness(tmp_path):
     manifest = _qt_case_manifest()
     manifest["cases"][0]["evidence_files"] = {
         "2024": "reports/case-2024.log",
@@ -373,9 +451,8 @@ def test_evidence_report_builder_reads_declared_artifacts(tmp_path):
         encoding="utf-8",
     )
 
-    report = build_report_from_evidence(manifest, tmp_path)
-
-    assert validate_report(manifest, report)["valid"]
+    with pytest.raises(ValueError, match="runtime witness unavailable"):
+        build_report_from_evidence(manifest, tmp_path)
 
 
 def test_evidence_report_builder_rejects_failed_artifact(tmp_path):
@@ -411,7 +488,7 @@ def test_evidence_report_builder_rejects_zero_tests_or_wrong_version(tmp_path, n
         build_report_from_evidence(manifest, tmp_path)
 
 
-def test_batch_report_builder_requires_each_named_test_in_each_version(tmp_path):
+def test_batch_report_builder_rejects_named_tests_without_runtime_witness(tmp_path):
     manifest = _qt_case_manifest()
     test_id = "tests.gui.case.TestCase.test_action"
     manifest["cases"][0]["evidence_tests"] = [test_id]
@@ -426,9 +503,8 @@ def test_batch_report_builder_requires_each_named_test_in_each_version(tmp_path)
         )
         logs[version] = path
 
-    report = build_report_from_batch_logs(manifest, logs)
-
-    assert validate_report(manifest, report)["valid"]
+    with pytest.raises(ValueError, match="runtime witness unavailable"):
+        build_report_from_batch_logs(manifest, logs)
 
     logs["2026"].write_text(
         "Ran 1 test in 0.1s\n//-- GUI TEST FINISHED --// status=PASS\n",
