@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import struct
 from copy import deepcopy
@@ -2578,10 +2579,16 @@ class MayaSceneMetadataBackend:
         if len(matches) > 1:
             raise MayaSceneMetadataError(f"{shader}.{source_attr} has ambiguous file provenance")
         provenance = matches[0] if matches else None
-        if provenance is not None and explicit_path is not None and provenance != explicit_path:
-            raise MayaSceneMetadataError(
-                f"{shader}.{source_attr} file provenance conflicts with {explicit_attr!r}"
-            )
+        if provenance is not None and explicit_path is not None:
+            if os.path.normcase(os.path.normpath(provenance)) != os.path.normcase(
+                os.path.normpath(explicit_path)
+            ):
+                raise MayaSceneMetadataError(
+                    f"{shader}.{source_attr} file provenance conflicts with {explicit_attr!r}"
+                )
+            # Preserve the authored spelling when Maya normalizes path
+            # separators in fileTextureName during setAttr/readback.
+            return explicit_path
         return provenance if provenance is not None else explicit_path
 
     def _optional_path(self, node: str, attr: str | None) -> str | None:

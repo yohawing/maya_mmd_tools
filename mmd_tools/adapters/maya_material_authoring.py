@@ -11,10 +11,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 import json
+from pathlib import Path
 from typing import Any
 
 from mmd_tools.core import model_registry
 from mmd_tools.adapters.maya_material_shader_route import (
+    MayaMaterialTextureSlotRoute,
     material_diffuse_route,
     material_shader_route,
 )
@@ -106,7 +108,7 @@ class MayaMaterialAuthoring:
         existing = None if narrow else self._resolve_material(root, material)
         if existing is not None:
             shader, shading_group = existing
-            self._bind_texture_graph(shader, material)
+            self._bind_texture_graphs(shader, material)
             self._rebuild_material_morph_graph(root)
             return replace(material, binding_identity=shader), shader, shading_group
 
@@ -1112,7 +1114,7 @@ class MayaMaterialAuthoring:
         # A connected file node owns that destination and Maya rejects a
         # direct setAttr while the connection is live.
         if bind_texture_graph:
-            self._bind_texture_graph(shader, material)
+            self._bind_texture_graphs(shader, material)
         route = material_diffuse_route(
             str(self._call("node_type", shader)),
             has_main_texture=bool(material.resolved_texture_path),
@@ -1178,14 +1180,43 @@ class MayaMaterialAuthoring:
             return prior_index
         return -1
 
-    def _bind_texture_graph(self, shader: str, material: MmdMaterialSpec) -> None:
-        """Create or reuse one file node for the resolved main texture path."""
+    def _bind_texture_graphs(self, shader: str, material: MmdMaterialSpec) -> None:
+        """Reconcile every texture graph supported by the shader backend."""
         route = material_shader_route(str(self._call("node_type", shader)))
         if route is None:
             raise MayaMaterialAuthoringError(
-                f"shader {shader!r} has no supported main texture route"
+                f"shader {shader!r} has no supported texture route"
             )
-        destination = f"{shader}.{route.main_texture_attribute}"
+        paths = {
+            "main": (material.texture_path, material.resolved_texture_path),
+            "sphere": (
+                material.sphere_texture_path,
+                material.resolved_sphere_texture_path,
+            ),
+            "toon": self._toon_texture_paths(material),
+        }
+        for slot in route.texture_slots:
+            source_path, resolved_path = paths[slot.semantic]
+            self._bind_texture_slot(
+                shader,
+                material.index,
+                slot,
+                source_path,
+                resolved_path,
+            )
+        if route.texture_slot("sphere") is not None:
+            self._set_attr(shader, "SphereMode", material.sphere_mode, "long")
+
+    def _bind_texture_slot(
+        self,
+        shader: str,
+        material_index: int,
+        slot: MayaMaterialTextureSlotRoute,
+        source_path: str | None,
+        resolved_path: str | None,
+    ) -> None:
+        """Create, update, or clear one exact shader texture slot."""
+        destination = f"{shader}.{slot.texture_attribute}"
         source_plugs = self._call(
             "list_connections",
             destination,
@@ -1199,18 +1230,28 @@ class MayaMaterialAuthoring:
             for source in source_plugs
         ]
         if len(file_nodes) > 1:
-            raise MayaMaterialAuthoringError(f"shader {shader!r} has ambiguous main texture file nodes")
-        if not material.resolved_texture_path:
+            raise MayaMaterialAuthoringError(
+                f"shader {shader!r} has ambiguous {slot.semantic} texture file nodes"
+            )
+        if not resolved_path:
             if file_nodes:
                 file_node = file_nodes[0]
                 self._call("disconnect_attr", f"{file_node}.outColor", destination)
-                self._call("delete", file_node)
-            if route.main_texture_presence_attribute is not None:
+                remaining = self._call(
+                    "list_connections",
+                    f"{file_node}.outColor",
+                    source=False,
+                    destination=True,
+                    plugs=True,
+                ) or []
+                if not remaining:
+                    self._call("delete", file_node)
+            if slot.presence_attribute is not None:
                 self._set_attr(
                     shader,
-                    route.main_texture_presence_attribute,
+                    slot.presence_attribute,
                     0,
-                    route.main_texture_presence_type,
+                    "long",
                 )
             return
         if file_nodes:
@@ -1223,20 +1264,38 @@ class MayaMaterialAuthoring:
                         "file",
                         asTexture=True,
                         isColorManaged=True,
-                        name=f"mmdMaterial_{material.index}_File",
+                        name=f"mmdMaterial_{material_index}_{slot.file_node_suffix}",
                     )
                 )
             )
-        self._set_attr(file_node, "fileTextureName", material.resolved_texture_path, "string")
-        self._set_attr(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH, material.texture_path or "", "string")
-        self._call("connect_attr", f"{file_node}.outColor", destination, force=True)
-        if route.main_texture_presence_attribute is not None:
+        self._set_attr(file_node, "fileTextureName", resolved_path, "string")
+        self._set_attr(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH, source_path or "", "string")
+        expected_source = f"{file_node}.outColor"
+        if expected_source not in {str(source) for source in source_plugs}:
+            self._call("connect_attr", expected_source, destination, force=True)
+        if slot.presence_attribute is not None:
             self._set_attr(
                 shader,
-                route.main_texture_presence_attribute,
+                slot.presence_attribute,
                 1,
-                route.main_texture_presence_type,
+                "long",
             )
+
+    @staticmethod
+    def _toon_texture_paths(material: MmdMaterialSpec) -> tuple[str | None, str | None]:
+        """Return source/resolved paths for custom or bundled shared toon."""
+        if not material.shared_toon:
+            return material.toon_texture_path, material.resolved_toon_texture_path
+        index = material.toon_texture_index
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index <= 9:
+            return None, None
+        resolved = (
+            Path(__file__).resolve().parents[1]
+            / "shaders"
+            / "toon_textures"
+            / f"toon{index + 1:02d}.bmp"
+        )
+        return None, str(resolved)
 
     def _require_root(self, model_root: str) -> str:
         if not isinstance(model_root, str) or not model_root.strip() or not self._object_exists(model_root):

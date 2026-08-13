@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import replace
 import math
+import os
 import re
 from typing import Protocol
 
@@ -1391,12 +1392,14 @@ class MaterialPresenter:
         """Translate source-path controls and clear stale resolved paths on edits."""
         if value is None:
             return None, None
-        if value == "" and source is None:
+        if value == "":
             return None, None
         if value == source:
             return source, resolved
         if resolved and value == resolved:
             return source, resolved
+        if os.path.isabs(value):
+            return value, value
         return value, None
 
     def _authoring_toon_shared(self, prior: MmdMaterialSpec) -> bool:

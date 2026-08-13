@@ -384,6 +384,66 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(_canonical_payload(self.window, self.root), after_texture)
         self.assertEqual(main_texture_state(), after_texture_state)
 
+        sphere_path = (Path(__file__).resolve().parents[1] / "data" / "tex" / "sph.png").resolve()
+        view.sphere_map_path_edit.setText(str(sphere_path))
+        view.sphere_mode_combo.setCurrentIndex(1)
+        view.apply_btn.click()
+        QApplication.processEvents()
+        after_sphere = _canonical_payload(self.window, self.root)
+        sphere_sources = cmds.listConnections(
+            f"{shader}.SphereTexture",
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+        self.assertEqual(
+            after_sphere["spec"]["materials"][0]["resolved_sphere_texture_path"],
+            str(sphere_path),
+        )
+        self.assertEqual(len(sphere_sources), 1)
+        self.assertEqual(cmds.nodeType(sphere_sources[0].rsplit(".", 1)[0]), "file")
+        self.assertEqual(cmds.getAttr(f"{shader}.HasSphereTexture"), 1)
+        self.assertEqual(cmds.getAttr(f"{shader}.SphereMode"), 1)
+        self.assertEqual(main_texture_state(), after_texture_state)
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_texture)
+        self.assertFalse(
+            cmds.listConnections(
+                f"{shader}.SphereTexture",
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+        )
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_sphere)
+        self.assertEqual(main_texture_state(), after_texture_state)
+
+        view.sphere_map_path_edit.clear()
+        view.apply_btn.click()
+        QApplication.processEvents()
+        after_sphere_clear = _canonical_payload(self.window, self.root)
+        self.assertIsNone(
+            after_sphere_clear["spec"]["materials"][0]["sphere_texture_path"]
+        )
+        self.assertIsNone(
+            after_sphere_clear["spec"]["materials"][0]["resolved_sphere_texture_path"]
+        )
+        self.assertFalse(
+            cmds.listConnections(
+                f"{shader}.SphereTexture",
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+        )
+        self.assertEqual(cmds.getAttr(f"{shader}.HasSphereTexture"), 0)
+        self.assertEqual(main_texture_state(), after_texture_state)
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_sphere)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_sphere_clear)
+
         view.texture_path_edit.clear()
         view.apply_btn.click()
         QApplication.processEvents()
@@ -393,7 +453,7 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertIsNone(after_clear_state["source"])
         self.assertEqual(after_clear_state["has_main_texture"], 0)
         cmds.undo()
-        self.assertEqual(_canonical_payload(self.window, self.root), after_texture)
+        self.assertEqual(_canonical_payload(self.window, self.root), after_sphere_clear)
         self.assertEqual(main_texture_state(), after_texture_state)
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after_clear)

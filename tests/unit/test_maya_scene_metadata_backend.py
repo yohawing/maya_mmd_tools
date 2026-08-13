@@ -703,6 +703,32 @@ def test_material_file_provenance_conflicting_with_explicit_path_fails_closed() 
         list(backend.iter_material_metadata("|root"))
 
 
+def test_material_file_provenance_accepts_equivalent_maya_path_spelling() -> None:
+    cmds, backend = _backend()
+    _material(cmds, "mat")
+    cmds.meshes.append("|root|mesh")
+    cmds.node_types["|root|mesh"] = "mesh"
+    cmds.node_types["sg"] = "shadingEngine"
+    cmds.connections[("|root|mesh", "shadingEngine")] = ["sg"]
+    cmds.connections[("sg", None)] = ["mat"]
+    explicit = r"C:\resolved\sphere.sph"
+    cmds.attrs.update(
+        {
+            ("mat", "mmd_sphere_path"): "textures/sphere.sph",
+            ("mat", "mmd_resolved_sphere_texture_path"): explicit,
+            ("file", "mmd_original_texture_path"): "textures/sphere.sph",
+            ("file", "fileTextureName"): "C:/resolved/sphere.sph",
+        }
+    )
+    cmds.nodes.add("file")
+    cmds.node_types["file"] = "file"
+    cmds.connections[("mat.mmd_sphere_path", "file")] = ["file"]
+
+    material = list(backend.iter_material_metadata("|root"))[0]
+
+    assert material["resolved_sphere_texture_path"] == explicit
+
+
 def test_material_malformed_explicit_resolved_path_fails_closed() -> None:
     cmds, backend = _backend()
     _material(cmds, "mat")

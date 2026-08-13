@@ -61,8 +61,18 @@ def test_material_shader_route_uses_hardware_main_texture_contract() -> None:
         route = material_shader_route(shader_type)
         assert route is not None
         assert route.diffuse_attribute == "DiffuseColorRGB"
-        assert route.main_texture_attribute == "MainTexture"
-        assert route.main_texture_presence_attribute == "HasMainTexture"
+        main = route.texture_slot("main")
+        sphere = route.texture_slot("sphere")
+        toon = route.texture_slot("toon")
+        assert main is not None
+        assert main.texture_attribute == "MainTexture"
+        assert main.presence_attribute == "HasMainTexture"
+        assert sphere is not None
+        assert sphere.texture_attribute == "SphereTexture"
+        assert sphere.presence_attribute == "HasSphereTexture"
+        assert toon is not None
+        assert toon.texture_attribute == "ToonTexture"
+        assert toon.presence_attribute == "HasToonTexture"
     assert material_shader_route("unknownShader") is None
 
 
@@ -274,6 +284,146 @@ def test_binding_patch_uses_dx11_main_texture_and_presence_flag() -> None:
     )
     assert not any(
         call[0] == "connect_attr" and call[1][1].endswith(".baseColor")
+        for call in cmds.calls
+    )
+
+
+def test_binding_patch_binds_dx11_sphere_slot_without_reconnecting_main() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    bound, shader, shading_group = adapter.create_material("|Model_root", _material())
+    main_file = next(
+        node for node, node_type in cmds.types.items() if node_type == "file"
+    )
+    cmds.types[shader] = "dx11Shader"
+    cmds.attrs.pop((shader, "baseColor"), None)
+    cmds.attrs[(shader, "DiffuseColorRGB")] = tuple(bound.diffuse[:3])
+    cmds.attrs[(shader, "HasMainTexture")] = 1
+    cmds.connections[shader] = [shading_group, main_file]
+    cmds.connections[f"{shader}.MainTexture"] = [f"{main_file}.outColor"]
+    cmds.calls.clear()
+
+    updated = replace(
+        bound,
+        sphere_texture_path="C:/textures/sphere.png",
+        resolved_sphere_texture_path="C:/textures/sphere.png",
+        sphere_mode=1,
+    )
+    adapter.apply_material_binding_patch("|Model_root", bound, updated)
+
+    main_connects = [
+        call
+        for call in cmds.calls
+        if call[0] == "connect_attr" and call[1][1].endswith(".MainTexture")
+    ]
+    assert not main_connects, main_connects
+    assert any(
+        call[0] == "connect_attr" and call[1][1].endswith(".SphereTexture")
+        for call in cmds.calls
+    )
+    assert any(
+        call[0] == "set_attr"
+        and call[1][0].endswith(".HasSphereTexture")
+        and call[1][1] == 1
+        for call in cmds.calls
+    )
+    assert any(
+        call[0] == "set_attr"
+        and call[1][0].endswith(".SphereMode")
+        and call[1][1] == 1
+        for call in cmds.calls
+    )
+
+
+def test_binding_patch_binds_custom_toon_slot_and_clears_only_sphere() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    source = replace(_material(), texture_path=None, resolved_texture_path=None)
+    bound, shader, shading_group = adapter.create_material("|Model_root", source)
+    cmds.types[shader] = "dx11Shader"
+    cmds.attrs.pop((shader, "baseColor"), None)
+    cmds.attrs[(shader, "DiffuseColorRGB")] = tuple(bound.diffuse[:3])
+    cmds.connections[shader] = [shading_group]
+
+    textured = replace(
+        bound,
+        sphere_texture_path="C:/textures/sphere.png",
+        resolved_sphere_texture_path="C:/textures/sphere.png",
+        toon_texture_path="C:/textures/toon.png",
+        resolved_toon_texture_path="C:/textures/toon.png",
+        shared_toon=False,
+    )
+    adapter.apply_material_binding_patch("|Model_root", bound, textured)
+    sphere_source = cmds.connections[f"{shader}.SphereTexture"][0]
+    toon_source = cmds.connections[f"{shader}.ToonTexture"][0]
+    cmds.calls.clear()
+
+    cleared = replace(
+        textured,
+        sphere_texture_path=None,
+        resolved_sphere_texture_path=None,
+    )
+    adapter.apply_material_binding_patch("|Model_root", textured, cleared)
+
+    assert any(
+        call[0] == "disconnect_attr"
+        and call[1] == (sphere_source, f"{shader}.SphereTexture")
+        for call in cmds.calls
+    )
+    assert not any(
+        call[0] == "disconnect_attr"
+        and call[1] == (toon_source, f"{shader}.ToonTexture")
+        for call in cmds.calls
+    )
+    assert not any(
+        call[0] == "connect_attr" and call[1][1].endswith(".ToonTexture")
+        for call in cmds.calls
+    )
+
+
+def test_binding_patch_keeps_file_node_shared_by_another_texture_slot() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    source = replace(_material(), texture_path=None, resolved_texture_path=None)
+    bound, shader, shading_group = adapter.create_material("|Model_root", source)
+    cmds.types[shader] = "dx11Shader"
+    cmds.attrs.pop((shader, "baseColor"), None)
+    cmds.attrs[(shader, "DiffuseColorRGB")] = tuple(bound.diffuse[:3])
+    shared_file = cmds.shading_node("file", name="sharedFile")
+    shared_source = f"{shared_file}.outColor"
+    cmds.connections[shader] = [shading_group, shared_file]
+    cmds.connections[f"{shader}.MainTexture"] = [shared_source]
+    cmds.connections[f"{shader}.SphereTexture"] = [shared_source]
+    cmds.connections[shared_source] = [
+        f"{shader}.MainTexture",
+        f"{shader}.SphereTexture",
+    ]
+    textured = replace(
+        bound,
+        texture_path="C:/textures/shared.png",
+        resolved_texture_path="C:/textures/shared.png",
+        sphere_texture_path="C:/textures/shared.png",
+        resolved_sphere_texture_path="C:/textures/shared.png",
+    )
+    cmds.calls.clear()
+
+    cleared = replace(
+        textured,
+        sphere_texture_path=None,
+        resolved_sphere_texture_path=None,
+    )
+    adapter.apply_material_binding_patch("|Model_root", textured, cleared)
+
+    assert any(
+        call[0] == "disconnect_attr"
+        and call[1] == (shared_source, f"{shader}.SphereTexture")
+        for call in cmds.calls
+    )
+    assert not any(
+        call[0] == "delete" and call[1] == (shared_file,)
         for call in cmds.calls
     )
 
@@ -785,6 +935,23 @@ def test_presenter_texture_edit_uses_selected_binding_route() -> None:
     presenter._apply_authoring_changes()
 
     coordinator.apply_material_binding_patch.assert_called_once()
+    replacement = coordinator.apply_material_binding_patch.call_args.args[1]
+    assert replacement.sphere_texture_path is None
+    assert replacement.resolved_sphere_texture_path is None
     coordinator.replace_material.assert_not_called()
     coordinator.read_spec.assert_not_called()
     coordinator.apply_material_value_patch.assert_not_called()
+
+
+def test_presenter_absolute_aux_texture_path_is_also_resolved() -> None:
+    path = "C:/textures/sphere.png"
+    from mmd_tools.ui.presenters.material_presenter import MaterialPresenter
+
+    assert MaterialPresenter._authoring_aux_texture_paths(None, None, path) == (
+        path,
+        path,
+    )
+    assert MaterialPresenter._authoring_aux_texture_paths("", None, "") == (
+        None,
+        None,
+    )
