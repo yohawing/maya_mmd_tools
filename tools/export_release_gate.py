@@ -2302,6 +2302,19 @@ def build_release_summary(
     gui_passed = bool(gui_steps) and len(gui_steps) == len(maya_versions) and all(
         step["status"] == "pass" for step in gui_steps
     )
+    ui_coverage = {}
+    ui_coverage_path = out_dir / "ui-coverage.json"
+    if ui_coverage_path.is_file():
+        try:
+            payload = json.loads(ui_coverage_path.read_text(encoding="utf-8"))
+            counts = payload.get("coverage")
+            if isinstance(counts, dict):
+                ui_coverage = {
+                    key: int(counts.get(key, 0))
+                    for key in ("qt_case", "not_run", "excluded", "blocked")
+                }
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            ui_coverage = {}
     coverage_proven = [
         "13-case PMX/VMD export plus PMD import probe with fresh-import or policy-reject evidence",
         "PMX 2.0 additional UV channels 1-4 and UV/additional-UV morph field oracle",
@@ -2324,6 +2337,15 @@ def build_release_summary(
         coverage_outside.append(
             f"{gui_scope} GUI workflow was not fully executed and passing for every requested Maya version"
         )
+    if ui_coverage:
+        total_ui_surfaces = sum(ui_coverage.values())
+        coverage_proven.append(
+            f"GUI interaction evidence for {ui_coverage['qt_case']} of {total_ui_surfaces} inventoried surfaces"
+        )
+        if ui_coverage["not_run"]:
+            coverage_outside.append(
+                f"{ui_coverage['not_run']} inventoried GUI surfaces remain not_run"
+            )
     summary = {
         "schema_version": 1,
         "gate": "V070-EXPORT-RELEASE-GATE-1",
@@ -2342,6 +2364,7 @@ def build_release_summary(
         "gui_steps": [
             {"name": step["name"], "status": step["status"]} for step in gui_steps
         ],
+        "ui_coverage": ui_coverage,
         "coverage": {
             "proven": coverage_proven,
             "outside_this_gate": coverage_outside,
@@ -2407,6 +2430,15 @@ def build_release_summary(
     else:
         lines.append("None.")
     lines.extend(["", "## Coverage", ""])
+    if ui_coverage:
+        lines.append(
+            "UI surfaces: "
+            f"`{ui_coverage['qt_case']}` evidenced / "
+            f"`{ui_coverage['not_run']}` not run / "
+            f"`{ui_coverage['excluded']}` excluded / "
+            f"`{ui_coverage['blocked']}` blocked."
+        )
+        lines.append("")
     lines.append("Proven by this gate:")
     lines.extend(f"- {item}" for item in summary["coverage"]["proven"])
     lines.append("")

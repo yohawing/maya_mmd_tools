@@ -235,6 +235,29 @@ def validate_manifest(manifest: Mapping[str, Any]) -> Dict[str, Any]:
     if unmapped != []:
         errors.append(_error("unmapped_surfaces", "unmapped_surfaces", "must be an empty list"))
 
+    disposition_counts = {
+        disposition: sum(surface.get("disposition") == disposition for surface in surfaces)
+        for disposition in sorted(DISPOSITIONS)
+    }
+    minimum_qt_cases = manifest.get("minimum_qt_case_surfaces")
+    if minimum_qt_cases is not None:
+        if isinstance(minimum_qt_cases, bool) or not isinstance(minimum_qt_cases, int):
+            errors.append(
+                _error(
+                    "invalid_minimum_qt_case_surfaces",
+                    "minimum_qt_case_surfaces",
+                    "must be an integer",
+                )
+            )
+        elif disposition_counts["qt_case"] < minimum_qt_cases:
+            errors.append(
+                _error(
+                    "insufficient_qt_case_surfaces",
+                    "minimum_qt_case_surfaces",
+                    f"requires {minimum_qt_cases}, found {disposition_counts['qt_case']}",
+                )
+            )
+
     return {
         "valid": not errors,
         "errors": errors,
@@ -242,6 +265,7 @@ def validate_manifest(manifest: Mapping[str, Any]) -> Dict[str, Any]:
         "tab_count": len(tab_ids),
         "case_count": len(case_ids),
         "case_versions": case_versions,
+        "disposition_counts": disposition_counts,
     }
 
 
@@ -428,6 +452,7 @@ def build_report_from_evidence(manifest: Mapping[str, Any], repo_root: Path) -> 
     return {
         "schema_version": SCHEMA_VERSION,
         "gate_id": GATE_ID,
+        "coverage": validate_manifest(manifest)["disposition_counts"],
         "cases": cases,
         "surfaces": surfaces,
     }
@@ -509,6 +534,7 @@ def _build_cli_result(manifest_result: Dict[str, Any], report_result: Optional[D
             "not_evaluated" if report_result is None else ("pass" if report_result["valid"] else "fail")
         ),
         "surface_count": manifest_result.get("surface_count", 0),
+        "disposition_counts": manifest_result.get("disposition_counts", {}),
         "errors": result["errors"],
     }
 

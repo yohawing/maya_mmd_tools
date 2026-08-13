@@ -316,14 +316,23 @@ def _aggregate_from_inventory(manifest, versions_by_case):
     return _report(cases, surfaces)
 
 
+def _required_versions_by_qt_case(manifest):
+    case_ids = {
+        surface["case_id"]
+        for surface in manifest["surfaces"]
+        if surface["disposition"] == "qt_case"
+    }
+    return {
+        case["id"]: tuple(case["required_maya_versions"])
+        for case in manifest["cases"]
+        if case["id"] in case_ids
+    }
+
+
 def test_real_gui_case_aggregate_reports_missing_info_2026_evidence():
     manifest = _load_manifest()
-    versions = {
-        "gui.authoring_signal_smoke": ("2024", "2026"),
-        "gui.fileio_safe_routes": ("2024", "2026"),
-        "gui.info_undo": ("2024",),
-        "gui.settings_side_effects": ("2024", "2026"),
-    }
+    versions = _required_versions_by_qt_case(manifest)
+    versions["gui.info_undo"] = ("2024",)
     result = validate_report(manifest, _aggregate_from_inventory(manifest, versions))
     assert "missing_required_version_evidence" in _errors(result)
     assert not any(error["code"] == "missing_surface_evidence" for error in result["errors"])
@@ -331,14 +340,20 @@ def test_real_gui_case_aggregate_reports_missing_info_2026_evidence():
 
 def test_real_gui_case_aggregate_passes_when_both_maya_versions_are_present():
     manifest = _load_manifest()
-    versions = {
-        "gui.authoring_signal_smoke": ("2024", "2026"),
-        "gui.fileio_safe_routes": ("2024", "2026"),
-        "gui.info_undo": ("2024", "2026"),
-        "gui.settings_side_effects": ("2024", "2026"),
-    }
+    versions = _required_versions_by_qt_case(manifest)
     result = validate_report(manifest, _aggregate_from_inventory(manifest, versions))
     assert result["valid"]
+
+
+def test_manifest_fails_when_qt_case_count_drops_below_floor():
+    manifest = _load_manifest()
+    manifest["minimum_qt_case_surfaces"] = sum(
+        surface["disposition"] == "qt_case" for surface in manifest["surfaces"]
+    ) + 1
+
+    result = validate_manifest(manifest)
+
+    assert "insufficient_qt_case_surfaces" in _errors(result)
 
 
 def test_evidence_report_builder_reads_declared_artifacts(tmp_path):

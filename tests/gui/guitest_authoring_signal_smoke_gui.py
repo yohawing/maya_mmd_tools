@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import maya.cmds as cmds
 
@@ -17,9 +18,14 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
 from mmd_tools.ui.main_window import MainWindow
-from mmd_tools.ui.qt_compat import QApplication
+from mmd_tools.ui.qt_compat import QApplication, QColor, QMessageBox, QT_BINDING, Qt
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from tests.common.maya_plugin_setup import load_mmd_tools_plugin
+
+if QT_BINDING == "PySide6":
+    from PySide6.QtTest import QTest
+else:
+    from PySide2.QtTest import QTest
 
 
 def _canonical_payload(window, root):
@@ -178,6 +184,164 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self._record("authoring.save_reopen", self._save_reopen_case)
         self.report["status"] = "pass"
         self._write_report()
+
+    def test_material_value_controls_apply_reset_and_undo(self):
+        """Exercise every non-texture Material value control through Qt signals."""
+        view = self.window.material_presenter.view
+        view.material_list.setCurrentRow(0)
+        QApplication.processEvents()
+        before = _canonical_payload(self.window, self.root)
+
+        view.material_jp_name_edit.setText("UI材質")
+        view.material_en_name_edit.setText("UI Material Values")
+        chosen_colors = (
+            QColor(51, 102, 153),
+            QColor(25, 50, 75),
+            QColor(10, 20, 30),
+            QColor(80, 90, 100),
+        )
+        with patch(
+            "mmd_tools.ui.presenters.material_presenter.QColorDialog.getColor",
+            side_effect=chosen_colors,
+        ):
+            for swatch in (
+                view.diffuse_color_widget,
+                view.specular_color_widget,
+                view.ambient_color_widget,
+                view.edge_color_widget,
+            ):
+                QTest.mouseClick(swatch, Qt.LeftButton)
+        for key, expected in (
+            ("diffuse", (0.2, 0.4, 0.6)),
+            ("specular", (25 / 255.0, 50 / 255.0, 75 / 255.0)),
+            ("ambient", (10 / 255.0, 20 / 255.0, 30 / 255.0)),
+            ("edge_color", (80 / 255.0, 90 / 255.0, 100 / 255.0)),
+        ):
+            for actual, channel in zip(self.window.material_presenter.material_data[key], expected):
+                self.assertAlmostEqual(actual, channel, places=6, msg=key)
+        view.transparency_spin.setValue(0.25)
+        view.specular_coefficient_spin.setValue(0.6)
+        flag_values = (
+            (view.both_face_check, True),
+            (view.ground_shadow_check, False),
+            (view.self_shadow_map_check, True),
+            (view.self_shadow_check, False),
+            (view.edge_draw_check, True),
+            (view.vertex_color_check, False),
+            (view.point_draw_check, True),
+            (view.line_draw_check, False),
+        )
+        for control, checked in flag_values:
+            control.setChecked(checked)
+        view.edge_size_spin.setValue(1.25)
+        view.apply_btn.click()
+        QApplication.processEvents()
+
+        after = _canonical_payload(self.window, self.root)
+        material = after["spec"]["materials"][0]
+        self.assertEqual(material["name"], "UI材質")
+        self.assertEqual(material["name_english"], "UI Material Values")
+        for actual, expected in zip(material["diffuse"], (0.2, 0.4, 0.6, 0.75)):
+            self.assertAlmostEqual(actual, expected, places=6)
+        for key, expected in (
+            ("specular", (25 / 255.0, 50 / 255.0, 75 / 255.0)),
+            ("ambient", (10 / 255.0, 20 / 255.0, 30 / 255.0)),
+        ):
+            for actual, channel in zip(material[key], expected):
+                self.assertAlmostEqual(actual, channel, places=6)
+        for actual, expected in zip(material["edge_color"][:3], (80 / 255.0, 90 / 255.0, 100 / 255.0)):
+            self.assertAlmostEqual(actual, expected, places=6)
+        self.assertAlmostEqual(material["specular_coefficient"], 0.6)
+        self.assertAlmostEqual(material["edge_size"], 1.25)
+        self.assertEqual(material["draw_flags"], 0x55)
+        self.assertEqual(_changed_spec_sections(before, after), ["materials"])
+
+        view.search_edit.setText("UI材質")
+        QApplication.processEvents()
+        self.assertFalse(view.material_list.item(0).isHidden())
+        view.search_edit.clear()
+        view.material_jp_name_edit.setText("discarded")
+        view.transparency_spin.setValue(0.9)
+        view.reset_btn.click()
+        QApplication.processEvents()
+        self.assertEqual(view.material_jp_name_edit.text(), "UI材質")
+        self.assertAlmostEqual(view.transparency_spin.value(), 0.25)
+
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after)
+
+    def test_material_toolbar_crud_reindex_and_undo(self):
+        """Exercise every supported Material toolbar action through real buttons."""
+        view = self.window.material_presenter.view
+        view.refresh_btn.click()
+        QApplication.processEvents()
+        self.assertEqual(view.material_list.count(), 1)
+
+        before_create = _canonical_payload(self.window, self.root)
+        view.create_btn.click()
+        QApplication.processEvents()
+        after_create = _canonical_payload(self.window, self.root)
+        self.assertEqual(len(after_create["spec"]["materials"]), 2)
+        self.assertEqual(cmds.undoInfo(query=True, undoName=True), "MMD Material Create")
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before_create)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_create)
+
+        view.refresh_btn.click()
+        view.material_list.setCurrentRow(1)
+        QApplication.processEvents()
+        before_duplicate = _canonical_payload(self.window, self.root)
+        view.duplicate_btn.click()
+        QApplication.processEvents()
+        after_duplicate = _canonical_payload(self.window, self.root)
+        self.assertEqual(len(after_duplicate["spec"]["materials"]), 3)
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before_duplicate)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_duplicate)
+
+        view.refresh_btn.click()
+        view.material_list.setCurrentRow(2)
+        QApplication.processEvents()
+        before_move_up = _canonical_payload(self.window, self.root)
+        view.reindex_up_btn.click()
+        QApplication.processEvents()
+        after_move_up = _canonical_payload(self.window, self.root)
+        self.assertNotEqual(after_move_up, before_move_up)
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before_move_up)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_move_up)
+
+        before_move_down = _canonical_payload(self.window, self.root)
+        view.reindex_down_btn.click()
+        QApplication.processEvents()
+        after_move_down = _canonical_payload(self.window, self.root)
+        self.assertEqual(after_move_down, before_move_up)
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before_move_down)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_move_down)
+
+        view.refresh_btn.click()
+        view.material_list.setCurrentRow(2)
+        QApplication.processEvents()
+        before_delete = _canonical_payload(self.window, self.root)
+        with patch(
+            "mmd_tools.ui.presenters.material_presenter.QMessageBox.question",
+            return_value=QMessageBox.Yes,
+        ):
+            view.delete_btn.click()
+        QApplication.processEvents()
+        after_delete = _canonical_payload(self.window, self.root)
+        self.assertEqual(len(after_delete["spec"]["materials"]), 2)
+        cmds.undo()
+        self.assertEqual(_canonical_payload(self.window, self.root), before_delete)
+        cmds.redo()
+        self.assertEqual(_canonical_payload(self.window, self.root), after_delete)
 
     def _material_case(self, evidence):
         view = self.window.material_presenter.view
