@@ -7,6 +7,7 @@ ApplicationStateやPresenterがMayaコマンドへ直接依存しすぎないよ
 from ..adapters import MayaCmdsAdapter
 from ..core.constants import ATTR_MMD_MODEL_NAME, ATTR_MMD_MODEL_NAME_EN, SCENE_ROOT_SUFFIX
 from ..core.logger import get_logger
+from ..core.maya_identity import canonical_node_identity
 
 logger = get_logger(__name__)
 
@@ -25,6 +26,10 @@ class SceneModelService:
         if not node:
             return False
         return bool(self._cmds_adapter.object_exists(node))
+
+    def canonical_node(self, node):
+        """Resolve a model-root alias to one unique long Maya identity."""
+        return canonical_node_identity(self._cmds_adapter, node)
 
     def attribute_exists(self, node, attr):
         """ノードに属性が存在するかを返す。"""

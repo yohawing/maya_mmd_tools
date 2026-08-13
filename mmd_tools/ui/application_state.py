@@ -39,6 +39,9 @@ class ApplicationState(QObject):
     @current_model_root.setter
     def current_model_root(self, value):
         """現在のモデルを設定"""
+        canonicalize = getattr(self._scene_model_service, "canonical_node", None)
+        if value and callable(canonicalize):
+            value = canonicalize(value) or value
         logger.debug(f"ApplicationState: Setting current model to {value}")
         if value != self._current_model_root:
             old_value = self._current_model_root

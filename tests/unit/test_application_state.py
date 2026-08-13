@@ -23,6 +23,10 @@ class _FakeSceneModelService:
         self.selection_model = None
         self.info = {}
         self.raise_on_list = False
+        self.canonical = {}
+
+    def canonical_node(self, node):
+        return self.canonical.get(node, node if node in self.existing else None)
 
     def object_exists(self, node):
         return node in self.existing
@@ -103,6 +107,18 @@ class TestApplicationStateWithInjectedService(unittest.TestCase):
 
         self.assertIsNone(app_state.current_model_root)
         signal_catcher.assert_called_with("")
+
+    def test_refresh_model_list_preserves_short_root_as_canonical_long_identity(self):
+        service = _FakeSceneModelService()
+        service.models = ["|MMT_TestModel_root"]
+        service.existing = {"MMT_TestModel_root", "|MMT_TestModel_root"}
+        service.canonical["MMT_TestModel_root"] = "|MMT_TestModel_root"
+        app_state = ApplicationState(scene_model_service=service)
+
+        app_state.current_model_root = "MMT_TestModel_root"
+        app_state.refresh_model_list()
+
+        self.assertEqual(app_state.current_model_root, "|MMT_TestModel_root")
 
     def test_refresh_model_list_emits_empty_list_on_exception(self):
         service = _FakeSceneModelService()

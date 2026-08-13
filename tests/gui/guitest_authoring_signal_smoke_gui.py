@@ -945,6 +945,10 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertFalse(short_root.startswith("|"))
         self.window.app_state.current_model_root = short_root
         QApplication.processEvents()
+        self.assertEqual(
+            self.window.app_state.current_model_root,
+            cmds.ls(self.root, long=True)[0],
+        )
         view.bone_list.setCurrentRow(0)
         QApplication.processEvents()
         coordinator = self.window.authoring_composition.coordinator
