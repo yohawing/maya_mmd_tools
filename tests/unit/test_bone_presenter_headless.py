@@ -59,6 +59,8 @@ class _FakeButton:
 class _FakeLineEdit:
     def __init__(self, text=""):
         self._text = text
+        self._properties = {}
+        self._tooltip = ""
         self.enabled = True
         self.textChanged = _FakeSignal()
 
@@ -73,6 +75,18 @@ class _FakeLineEdit:
 
     def setEnabled(self, enabled):
         self.enabled = enabled
+
+    def setProperty(self, name, value):
+        self._properties[name] = value
+
+    def property(self, name):
+        return self._properties.get(name)
+
+    def setToolTip(self, tooltip):
+        self._tooltip = tooltip
+
+    def toolTip(self):
+        return self._tooltip
 
 
 class _FakeCheckBox:
@@ -686,7 +700,14 @@ class TestBonePresenterHeadless(unittest.TestCase):
         self.assertFalse(view.rotatable_check.isChecked())
         self.assertFalse(view.movable_check.isChecked())
         self.assertFalse(view.ik_enabled_check.isChecked())
-        self.assertEqual(adapter.calls[0], ("list_relatives", TEST_BONE, {"parent": True, "type": "joint"}))
+        self.assertEqual(
+            adapter.calls[0],
+            (
+                "list_relatives",
+                TEST_BONE,
+                {"parent": True, "type": "joint", "fullPath": True},
+            ),
+        )
 
     def test_calculate_bone_flags_combines_enabled_ui_state(self):
         presenter, view, _, _ = _make_presenter()
@@ -718,16 +739,45 @@ class TestBonePresenterHeadless(unittest.TestCase):
         self.assertEqual(flags, expected)
 
     def test_select_bone_dialog_routes_selection_query_and_updates_target_field(self):
-        adapter = _FakeMayaAdapter(selection=["ik_target_jnt"])
+        target = "|model_root|Skeleton|ik_target_jnt"
+        adapter = _FakeMayaAdapter(selection=[target])
         presenter, view, _, adapter = _make_presenter(adapter=adapter)
-        attrs = {("ik_target_jnt", ATTR_MMD_BONE_NAME): "IK先"}
+        attrs = {(target, ATTR_MMD_BONE_NAME): "IK先"}
 
         with patch.object(bone_presenter_module, "object_exists", return_value=True):
             with patch.object(bone_presenter_module, "get_attribute", side_effect=_attr_getter(attrs)):
                 presenter.select_bone_dialog("ik_target")
 
-        self.assertEqual(adapter.calls, [("ls", (), {"selection": True, "type": "joint"})])
+        self.assertEqual(
+            adapter.calls,
+            [("ls", (), {"selection": True, "type": "joint", "long": True})],
+        )
         self.assertEqual(view.ik_target_edit.text(), "ik_target_jnt:IK先")
+        self.assertEqual(view.ik_target_edit.property("mmdBindingIdentity"), target)
+        self.assertEqual(view.ik_target_edit.toolTip(), target)
+
+    def test_resolve_bone_reference_prefers_hidden_binding_identity(self):
+        presenter, _, _, _ = _make_presenter()
+        first = MmdBoneSpec(
+            "同名",
+            index=1,
+            binding_identity="|model_a|Skeleton|same_name",
+        )
+        second = MmdBoneSpec(
+            "同名",
+            index=2,
+            binding_identity="|model_b|Skeleton|same_name",
+        )
+        spec = MmdModelAuthoringSpec(model=MmdModelSpec("Model"), bones=(first, second))
+
+        resolved = presenter._resolve_bone_reference(
+            spec,
+            "same_name:同名",
+            "IK target",
+            second.binding_identity,
+        )
+
+        self.assertEqual(resolved, 2)
 
     def test_apply_changes_routes_complete_spec_through_semantic_coordinator(self):
         adapter = _FakeMayaAdapter()

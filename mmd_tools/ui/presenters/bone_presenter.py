@@ -25,6 +25,7 @@ from ...core.constants import (
     ATTR_MMD_IK_LIMIT_ANGLE,
     ATTR_MMD_IK_LINKS,
     ATTR_MMD_GRANT_PARENT,
+    ATTR_MMD_GRANT_PARENT_INDEX,
     ATTR_MMD_GRANT_RATE,
     ATTR_MMD_FIXED_AXIS,
     ATTR_MMD_LOCAL_X_AXIS,
@@ -43,6 +44,7 @@ from ..qt_compat import (
 from .list_presenter_helpers import (
     apply_list_filter,
     format_indexed_node_label,
+    maya_node_leaf_name,
     reload_for_current_model_change,
     select_existing_user_role_nodes,
     tr_message,
@@ -595,8 +597,13 @@ class BonePresenter:
             self.view.bone_name_en_edit.setText(get_attribute(self.current_bone, ATTR_MMD_BONE_NAME_EN))
 
             # 親ボーン
-            parent = self.maya_adapter.list_relatives(self.current_bone, parent=True, type="joint")
-            self.view.parent_bone_edit.setText(parent[0] if parent else "")
+            parent = self.maya_adapter.list_relatives(
+                self.current_bone,
+                parent=True,
+                type="joint",
+                fullPath=True,
+            )
+            self._set_reference_edit(self.view.parent_bone_edit, parent[0] if parent else "")
 
             # 変形階層
             self.view.deform_layer_spin.setValue(get_attribute(self.current_bone, ATTR_MMD_DEFORM_LAYER))
@@ -649,6 +656,7 @@ class BonePresenter:
         if not self.view.ik_enabled_check.isChecked():
             self.view.ik_settings_group.setVisible(False)
             self.view.ik_links_group.setVisible(False)
+            self._set_reference_edit(self.view.ik_target_edit, "")
             return
 
         self.view.ik_settings_group.setVisible(True)
@@ -656,12 +664,12 @@ class BonePresenter:
 
         # IKターゲット
         ik_target_index = get_attribute(self.current_bone, ATTR_MMD_IK_TARGET_INDEX)
-        if isinstance(ik_target_index, int) and 0 <= ik_target_index < len(self.all_bones):
-            ik_target = self.all_bones[ik_target_index]
-            display_name = self._get_bone_display_name(ik_target)
-        else:
-            display_name = ""
-        self.view.ik_target_edit.setText(display_name)
+        ik_target = (
+            self.all_bones[ik_target_index]
+            if isinstance(ik_target_index, int) and 0 <= ik_target_index < len(self.all_bones)
+            else ""
+        )
+        self._set_reference_edit(self.view.ik_target_edit, ik_target)
 
         # IKループ回数
         ik_loop = get_attribute(self.current_bone, ATTR_MMD_IK_LOOP)
@@ -694,9 +702,8 @@ class BonePresenter:
                 else:
                     bone_name = str(bone_index)
 
-                display_name = self._get_bone_display_name(bone_name)
                 self._add_ik_link_row(
-                    display_name,
+                    bone_name,
                     link_data.get("limit_enabled", False),
                     link_data.get("lower_limit", [0.0, 0.0, 0.0]),
                     link_data.get("upper_limit", [0.0, 0.0, 0.0]),
@@ -708,7 +715,11 @@ class BonePresenter:
         self.view.ik_links_table.insertRow(row)
 
         # ボーン名
-        self.view.ik_links_table.setItem(row, 0, QTableWidgetItem(bone_name))
+        identity = bone_name if bone_name and object_exists(bone_name) else None
+        bone_item = QTableWidgetItem(self._get_bone_display_name(bone_name))
+        bone_item.setData(Qt.UserRole, identity)
+        bone_item.setToolTip(str(identity or ""))
+        self.view.ik_links_table.setItem(row, 0, bone_item)
 
         # 角度制限チェックボックス
         limit_check = QCheckBox()
@@ -731,12 +742,18 @@ class BonePresenter:
         self.view.grant_settings_group.setVisible(grant_enabled)
 
         if not grant_enabled:
+            self._set_reference_edit(self.view.grant_parent_edit, "")
             return
 
         # 付与親
-        grant_parent = get_attribute(self.current_bone, ATTR_MMD_GRANT_PARENT)
-        display_name = self._get_bone_display_name(grant_parent)
-        self.view.grant_parent_edit.setText(display_name)
+        grant_parent_index = get_attribute(self.current_bone, ATTR_MMD_GRANT_PARENT_INDEX)
+        grant_parent = (
+            self.all_bones[grant_parent_index]
+            if isinstance(grant_parent_index, int)
+            and 0 <= grant_parent_index < len(self.all_bones)
+            else get_attribute(self.current_bone, ATTR_MMD_GRANT_PARENT)
+        )
+        self._set_reference_edit(self.view.grant_parent_edit, grant_parent)
 
         # 付与率
         grant_rate = get_attribute(self.current_bone, ATTR_MMD_GRANT_RATE)
@@ -821,18 +838,16 @@ class BonePresenter:
     def select_bone_dialog(self, target_type):
         """ボーン選択ダイアログを表示"""
         # 簡易的な実装：現在のMaya選択を使用
-        selected = self.maya_adapter.ls(selection=True, type="joint")
+        selected = self.maya_adapter.ls(selection=True, type="joint", long=True)
         if not selected:
             self.app_state.emit_status(tr_message("select_joint"))
             return
 
         bone = selected[0]
-        display_name = self._get_bone_display_name(bone)
-
         if target_type == "ik_target":
-            self.view.ik_target_edit.setText(display_name)
+            self._set_reference_edit(self.view.ik_target_edit, bone)
         elif target_type == "grant_parent":
-            self.view.grant_parent_edit.setText(display_name)
+            self._set_reference_edit(self.view.grant_parent_edit, bone)
 
     def _is_descendant(self, parent, child):
         """childがparentの子孫かどうかをチェック"""
@@ -864,14 +879,13 @@ class BonePresenter:
 
     def add_ik_link(self):
         """IKリンクを追加"""
-        selected = self.maya_adapter.ls(selection=True, type="joint")
+        selected = self.maya_adapter.ls(selection=True, type="joint", long=True)
         if not selected:
             self.app_state.emit_status(tr_message("select_joint_for_ik_link"))
             return
 
         bone = selected[0]
-        display_name = self._get_bone_display_name(bone)
-        self._add_ik_link_row(display_name, False, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        self._add_ik_link_row(bone, False, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
 
     def remove_ik_link(self):
         """選択されたIKリンクを削除"""
@@ -897,7 +911,13 @@ class BonePresenter:
                 row_data.append(widget.isChecked() if widget else False)
             else:
                 item = self.view.ik_links_table.item(current_row, col)
-                row_data.append(item.text() if item else "")
+                row_data.append(
+                    (
+                        item.text() if item else "",
+                        item.data(Qt.UserRole) if item else None,
+                        item.toolTip() if item else "",
+                    )
+                )
 
         # 行を削除して新しい位置に挿入
         self.view.ik_links_table.removeRow(current_row)
@@ -910,7 +930,11 @@ class BonePresenter:
                 check.setChecked(data)
                 self.view.ik_links_table.setCellWidget(new_row, col, check)
             else:
-                self.view.ik_links_table.setItem(new_row, col, QTableWidgetItem(str(data)))
+                text, identity, tooltip = data
+                item = QTableWidgetItem(text)
+                item.setData(Qt.UserRole, identity)
+                item.setToolTip(tooltip)
+                self.view.ik_links_table.setItem(new_row, col, item)
 
         # 選択を維持
         self.view.ik_links_table.setCurrentCell(new_row, 0)
@@ -1019,6 +1043,7 @@ class BonePresenter:
                     spec,
                     self.view.grant_parent_edit.text(),
                     "grant parent",
+                    self.view.grant_parent_edit.property("mmdBindingIdentity"),
                 )
                 if grant_enabled
                 else None
@@ -1033,6 +1058,7 @@ class BonePresenter:
                     spec,
                     self.view.ik_target_edit.text(),
                     "IK target",
+                    self.view.ik_target_edit.property("mmdBindingIdentity"),
                 )
                 ik_loop_count = self.view.ik_loop_spin.value()
                 ik_limit_radian = math.radians(self.view.ik_limit_angle_spin.value())
@@ -1048,6 +1074,7 @@ class BonePresenter:
                                 spec,
                                 bone_item.text(),
                                 f"IK link {row}",
+                                bone_item.data(Qt.UserRole),
                             ),
                             "limit_enabled": limit_widget.isChecked() if limit_widget else False,
                             "lower_limit": [
@@ -1171,8 +1198,17 @@ class BonePresenter:
         self._registered_indices[self.current_bone] = self.current_bone_index
         self._store_bone_data()
 
-    def _resolve_bone_reference(self, spec, display_name, field):
+    def _resolve_bone_reference(self, spec, display_name, field, binding_identity=None):
         """Resolve one UI label to a unique registered semantic bone index."""
+        if binding_identity:
+            exact = [
+                bone.index
+                for bone in spec.bones
+                if bone.binding_identity == binding_identity
+            ]
+            if len(exact) == 1:
+                return exact[0]
+            raise ValueError(f"{field} no longer identifies a registered bone")
         matches = []
         for bone in spec.bones:
             binding = bone.binding_identity
@@ -1246,11 +1282,19 @@ class BonePresenter:
         if not bone_name or not object_exists(bone_name):
             return bone_name or ""
 
+        leaf_name = maya_node_leaf_name(bone_name)
         # MMD日本語名を取得
         name_jp = get_attribute(bone_name, ATTR_MMD_BONE_NAME)
-        if name_jp and name_jp != bone_name:
-            return f"{bone_name}:{name_jp}"
-        return bone_name
+        if name_jp and name_jp != leaf_name:
+            return f"{leaf_name}:{name_jp}"
+        return leaf_name
+
+    def _set_reference_edit(self, edit, bone_name):
+        """Show a compact label while retaining the canonical Maya identity."""
+        identity = bone_name if bone_name and object_exists(bone_name) else None
+        edit.setText(self._get_bone_display_name(bone_name))
+        edit.setProperty("mmdBindingIdentity", identity)
+        edit.setToolTip(str(identity or ""))
 
     def _extract_bone_name(self, display_name):
         """表示名から実際のボーン名を抽出"""

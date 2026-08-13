@@ -1326,6 +1326,11 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         QTest.mouseClick(view.select_ik_target_btn, Qt.LeftButton)
         QApplication.processEvents()
         self.assertTrue(view.ik_target_edit.text())
+        self.assertNotIn("|", view.ik_target_edit.text())
+        self.assertEqual(
+            view.ik_target_edit.property("mmdBindingIdentity"),
+            bindings[1],
+        )
         view.ik_loop_spin.setValue(7)
         view.ik_limit_angle_spin.setValue(33.0)
 
@@ -1334,6 +1339,9 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         QApplication.processEvents()
         self.assertEqual(view.ik_links_table.rowCount(), 1)
         row = 0
+        link_bone_item = view.ik_links_table.item(row, 0)
+        self.assertNotIn("|", link_bone_item.text())
+        self.assertEqual(link_bone_item.data(Qt.UserRole), bindings[2])
         limit_check = view.ik_links_table.cellWidget(row, 1)
         self.assertIsNotNone(limit_check)
         limit_check.setChecked(True)
