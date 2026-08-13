@@ -152,13 +152,13 @@ def _get(adapter: Any, node: str, attr: str) -> Any:
 def _canonical_identity(adapter: Any, node: Any) -> str:
     """Resolve one Maya DAG/DG alias to its unique long identity."""
     if not isinstance(node, str) or not node:
-        _fail("registry root connection must contain a non-empty node identity")
+        _fail("node identity must be a non-empty string")
     paths = _call(adapter, "ls", node, long=True) or []
     if isinstance(paths, (str, bytes, bytearray)) or len(paths) != 1:
-        _fail(f"registry root connection is not uniquely resolvable: {node!r}")
+        _fail(f"node identity is not uniquely resolvable: {node!r}")
     identity = paths[0]
     if not isinstance(identity, str) or not identity:
-        _fail(f"registry root connection has invalid identity: {node!r}")
+        _fail(f"node identity resolved to an invalid value: {node!r}")
     return identity
 
 
@@ -204,7 +204,11 @@ def _require_selected_joint(adapter: Any, root: str, joint: str) -> None:
     _require_string(joint, field="joint")
     if not _call(adapter, "object_exists", root) or not _call(adapter, "object_exists", joint):
         _fail("root and joint must exist")
-    if joint == root or not joint.startswith(root.rstrip("|") + "|"):
+    canonical_root = _canonical_identity(adapter, root)
+    canonical_joint = _canonical_identity(adapter, joint)
+    if canonical_joint == canonical_root or not canonical_joint.startswith(
+        canonical_root.rstrip("|") + "|"
+    ):
         _fail(f"joint {joint!r} is not a descendant of root {root!r}")
 
 

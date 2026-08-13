@@ -941,10 +941,15 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
     def test_bone_apply_basic_values_undo_redo(self):
         """Apply basic bone values through one real Qt click and one value patch."""
         view = self.window.bone_presenter.view
+        short_root = cmds.ls(self.root, shortNames=True)[0]
+        self.assertFalse(short_root.startswith("|"))
+        self.window.app_state.current_model_root = short_root
+        QApplication.processEvents()
         view.bone_list.setCurrentRow(0)
         QApplication.processEvents()
         coordinator = self.window.authoring_composition.coordinator
         binding = coordinator.read_spec(self.root).bones[0].binding_identity
+        self.assertTrue(binding.startswith("|"))
         before = _canonical_payload(self.window, self.root)
         before_maya = _node_footprint(binding)
 

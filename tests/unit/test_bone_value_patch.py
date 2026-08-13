@@ -47,6 +47,19 @@ def test_selected_adapter_writes_only_changed_name_axis_and_rest_attributes() ->
     }
 
 
+def test_selected_adapter_accepts_short_root_with_long_joint_binding() -> None:
+    cmds, backend = _backend()
+    _bone(cmds, "|root|Skeleton|master|center", 0, 0)
+    cmds.nodes.add("root")
+    cmds.long_names["root"] = "|root"
+    old = backend.read_bone_value("root", "|root|Skeleton|master|center", 0)
+    new = replace(old, name="edited")
+
+    apply_bone_value_patch("root", old, new, cmds)
+
+    assert cmds.attrs[("|root|Skeleton|master|center", "mmd_bone_name")] == "edited"
+
+
 def test_selected_reader_ignores_default_axis_attrs_when_flags_are_off() -> None:
     cmds, backend = _backend()
     _bone(cmds, "|root|bone", 0, 0)
