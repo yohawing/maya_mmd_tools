@@ -28,6 +28,7 @@ from mmd_tools.core.model_authoring_spec import (  # noqa: E402
     MmdModelAuthoringSpec,
     MmdModelSpec,
 )
+from mmd_tools.converters.material_shader_parameters import ATTR_MMD_DIFFUSE_ALPHA  # noqa: E402
 
 
 class TestMaterialPresenter(unittest.TestCase):
@@ -697,6 +698,21 @@ class TestMaterialPresenter(unittest.TestCase):
         self.assertNotIn("specularColor", queried)
         self.assertNotIn("ambientColor", queried)
 
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_standard_surface_load_prefers_canonical_mmd_diffuse_alpha(
+        self, mock_maya_attribute_utils
+    ):
+        """StandardSurface の Reset でも canonical diffuse alpha を復元する。"""
+        self.mock_maya_adapter.node_type.return_value = "standardSurface"
+        canonical = {ATTR_MMD_DIFFUSE_ALPHA: 0.75}
+        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr in canonical
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: canonical.get(attr)
+
+        self.presenter.load_material_properties("standard_material")
+
+        self.assertEqual(self.presenter.material_data["transparency"], 0.25)
+        self.mock_view.transparency_spin.setValue.assert_called_with(0.25)
+
     def test_update_color_widget_with_valid_color(self):
         """有効な色データでのカラーウィジェット更新テスト"""
         widget = Mock()
@@ -811,6 +827,28 @@ class TestMaterialPresenter(unittest.TestCase):
         # 新しい色が設定されることを確認
         self.assertEqual(self.presenter.material_data["diffuse"], (1.0, 0.0, 0.0))
         # 変更フラグが設定されることを確認
+        self.assertTrue(self.presenter.has_unsaved_changes)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.QColorDialog")
+    def test_pick_edge_color_stores_apply_key(self, mock_color_dialog):
+        """Edge Color は Apply が読む edge_color キーへ一時保存する。"""
+        self.presenter.current_material = "test_material"
+        self.presenter.material_data = {"edge_color": (0.1, 0.2, 0.3)}
+
+        mock_color = Mock()
+        mock_color.isValid.return_value = True
+        mock_color.red.return_value = 80
+        mock_color.green.return_value = 90
+        mock_color.blue.return_value = 100
+        mock_color_dialog.getColor.return_value = mock_color
+
+        self.presenter.pick_color("edge")
+
+        self.assertEqual(
+            self.presenter.material_data["edge_color"],
+            (80 / 255.0, 90 / 255.0, 100 / 255.0),
+        )
+        self.assertNotIn("edge", self.presenter.material_data)
         self.assertTrue(self.presenter.has_unsaved_changes)
 
     def test_reset_changes(self):

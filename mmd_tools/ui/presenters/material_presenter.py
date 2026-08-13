@@ -792,9 +792,7 @@ class MaterialPresenter:
             self.view.specular_coefficient_spin.setValue(specular_coefficient)
 
             # Get transparency (PMX style)
-            if shader_type in ("dx11Shader", "GLSLShader") and self.maya_adapter.attribute_exists(
-                ATTR_MMD_DIFFUSE_ALPHA, material_name
-            ):
+            if self.maya_adapter.attribute_exists(ATTR_MMD_DIFFUSE_ALPHA, material_name):
                 diffuse_alpha = float(maya_attribute_utils.get_attribute(material_name, ATTR_MMD_DIFFUSE_ALPHA))
                 self.material_data["_diffuse_alpha_base_owned"] = True
                 transparency = 1.0 - diffuse_alpha
@@ -1095,7 +1093,8 @@ class MaterialPresenter:
             )
             self._update_color_widget(widget, new_color)
             # Store in temp data (not applied yet)
-            self.material_data[color_type] = new_color
+            storage_key = "edge_color" if color_type == "edge" else color_type
+            self.material_data[storage_key] = new_color
             self.has_unsaved_changes = True
 
     def browse_file(self, file_type):
