@@ -502,6 +502,19 @@ class TestMaterialPresenter(unittest.TestCase):
         self.assertNotIn("meshes=", refreshed_item.text())
         self.assertEqual(refreshed_item.data(Qt.UserRole + 2), "meshes=0, faces=0")
 
+    def test_assignment_summary_accepts_short_root_and_long_members(self):
+        self.mock_maya_adapter.ls.side_effect = lambda node, **kwargs: {
+            "model_root": ["|model_root"],
+            "|model_root|mesh": ["|model_root|mesh"],
+        }.get(node, [node])
+        self.mock_maya_adapter.list_relatives.return_value = ["|model_root|mesh|meshShape"]
+        self.mock_maya_adapter.list_connections.return_value = ["meshSG"]
+        self.mock_maya_adapter.sets.return_value = ["|model_root|mesh.f[0:3]"]
+
+        summary = self.presenter._read_material_assignment_summary("model_root", "shader")
+
+        self.assertEqual(summary, "meshes=1, faces=4")
+
     @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
     def test_load_materials_with_model(self, mock_maya_attribute_utils, mock_logger):
@@ -544,7 +557,7 @@ class TestMaterialPresenter(unittest.TestCase):
             type="mesh",
         )
         self.mock_maya_adapter.list_connections.assert_any_call(["meshShape"], type="shadingEngine")
-        self.mock_maya_adapter.ls.assert_called_with(["mat1"], materials=True)
+        self.mock_maya_adapter.ls.assert_any_call(["mat1"], materials=True)
         self.mock_maya_adapter.attribute_exists.assert_called_with(ATTR_MMD_MATERIAL_NAME, "mat1")
 
         # 一覧ロード詳細は DEBUG のみ（INFO には出さない）

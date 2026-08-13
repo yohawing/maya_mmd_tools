@@ -1680,6 +1680,47 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         infos = presenter._collect_morph_infos("test_model")
         self.assertEqual(len(infos), 0)
 
+    def test_legacy_network_morph_accepts_short_and_long_root_aliases(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            model_root="MMT_TestModel_root",
+        )
+        adapter._attrs.update(
+            {
+                ("legacyMorph", "mmd_morph_type"): "bone",
+                ("legacyMorph", "mmd_model_root"): True,
+                ("legacyMorph", "mmd_morph_name"): "LegacyBone",
+            }
+        )
+        original_ls = adapter.ls
+        adapter.ls = lambda nodes=None, type=None, **kwargs: (
+            ["legacyMorph"]
+            if type == "network"
+            else original_ls(nodes, type=type, **kwargs)
+        )
+        original_connections = adapter.list_connections
+        adapter.list_connections = lambda node, **kwargs: (
+            ["|MMT_TestModel_root"]
+            if node == "legacyMorph.mmd_model_root"
+            else original_connections(node, **kwargs)
+        )
+        adapter._long_paths.update(
+            {
+                "MMT_TestModel_root": "|MMT_TestModel_root",
+                "|MMT_TestModel_root": "|MMT_TestModel_root",
+            }
+        )
+        morphs = []
+
+        presenter._collect_network_morph_targets(
+            "MMT_TestModel_root",
+            {},
+            morphs,
+            set(),
+        )
+
+        self.assertEqual([morph.name for morph in morphs], ["LegacyBone"])
+        self.assertEqual(presenter._network_morph_targets["LegacyBone"], ["legacyMorph.weight"])
+
     def test_clear_morph_tab(self):
         presenter, view, _, _ = self._make_with_morphs(
             blend_shapes=SAMPLE_BLEND_SHAPES,

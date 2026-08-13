@@ -362,6 +362,37 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(presenter.morph_data, {})
         self.assertEqual(adapter.calls, [])
 
+    def test_legacy_network_morph_accepts_short_and_long_root_aliases(self):
+        presenter, _, _, adapter = _make_presenter()
+        presenter._registry_morph_members = lambda _root: None
+        adapter.attr_exists.update(
+            {
+                ("legacyMorph", "mmd_morph_type"),
+                ("legacyMorph", "mmd_model_root"),
+                ("legacyMorph", "mmd_morph_name"),
+            }
+        )
+        adapter.attr_values.update(
+            {
+                "legacyMorph.mmd_morph_type": "bone",
+                "legacyMorph.mmd_morph_name": "LegacyBone",
+            }
+        )
+        adapter.ls = lambda node=None, **kwargs: (
+            ["legacyMorph"]
+            if kwargs.get("type") == "network"
+            else ["|MMT_TestModel_root"]
+            if node in {"MMT_TestModel_root", "|MMT_TestModel_root"}
+            else [node]
+        )
+        adapter.list_connections = lambda node, **_kwargs: (
+            ["|MMT_TestModel_root"] if node == "legacyMorph.mmd_model_root" else []
+        )
+
+        presenter._load_network_morphs("MMT_TestModel_root")
+
+        self.assertEqual(presenter.morph_data["LegacyBone"]["morph_node"], "legacyMorph")
+
     def test_load_morphs_no_model_clears_state_and_returns_before_adapter(self):
         presenter, view, _, adapter = _make_presenter(model=None)
         presenter.morph_data = {"stale": {"group": "目"}}

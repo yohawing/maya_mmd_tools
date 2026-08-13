@@ -7,6 +7,7 @@ import re
 from mmd_tools.adapters import MayaCmdsAdapter
 from ...core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
 from ...core.logger import get_logger
+from ...core.maya_identity import same_node_identity
 from ...core.morph_metadata_reader import (
     MORPH_TAB_GROUP_ORDER,
     PMX_TYPE_TO_UI_INDEX,
@@ -460,7 +461,10 @@ class MorphPresenter:
                 connected_roots = self.maya_adapter.list_connections(
                     f"{morph_node}.mmd_model_root"
                 ) or []
-                if model_root not in connected_roots:
+                if not any(
+                    same_node_identity(self.maya_adapter, model_root, connected_root)
+                    for connected_root in connected_roots
+                ):
                     continue
 
             morph_type = self._get_attr_safe(morph_node, "mmd_morph_type", "")

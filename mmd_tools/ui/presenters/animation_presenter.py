@@ -15,6 +15,7 @@ from ...core.constants import (
 )
 from ...core.display_frame_resolver import PickerGroup, resolve_display_frames
 from ...core.logger import get_logger
+from ...core.maya_identity import same_node_identity
 from ...core.mmd_bone_names import normalize_mmd_bone_name
 from ...core.mmd_control_rig_builder import inspect_mmd_control_rig
 from ...core.morph_metadata_reader import (
@@ -1913,7 +1914,10 @@ class AnimationPresenter:
                     continue
                 if registry_members is None and self.maya_adapter.attribute_exists("mmd_model_root", node):
                     roots = self.maya_adapter.list_connections(f"{node}.mmd_model_root") or []
-                    if roots and model_root not in roots:
+                    if roots and not any(
+                        same_node_identity(self.maya_adapter, model_root, root)
+                        for root in roots
+                    ):
                         continue
                 name = self.maya_adapter.get_attr(f"{node}.mmd_morph_name") or node
                 index = -1

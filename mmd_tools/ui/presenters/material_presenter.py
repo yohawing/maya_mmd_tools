@@ -34,6 +34,7 @@ from mmd_tools.core.constants import (
 )
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
+from ...core.maya_identity import canonical_node_identity
 from ...core.model_registry import (
     REGISTRY_CATEGORY_MATERIAL,
     list_model_registry_members_from_adapter,
@@ -358,6 +359,9 @@ class MaterialPresenter:
         the same Maya shading graph.
         """
         try:
+            canonical_root = canonical_node_identity(self.maya_adapter, model_root)
+            if canonical_root is None:
+                return "meshes=0, faces=?"
             meshes = {
                 node
                 for node in (
@@ -369,7 +373,7 @@ class MaterialPresenter:
                     )
                     or ()
                 )
-                if isinstance(node, str) and node.startswith(f"{model_root}|")
+                if isinstance(node, str) and node.startswith(f"{canonical_root}|")
             }
             mesh_parents = {node.rsplit("|", 1)[0] for node in meshes if "|" in node}
             shading_groups = self.maya_adapter.list_connections(shader, type="shadingEngine") or ()
@@ -384,9 +388,14 @@ class MaterialPresenter:
                 if isinstance(members, (str, bytes, bytearray)):
                     members = (members,)
                 for member in members:
-                    if not isinstance(member, str) or not member.startswith(f"{model_root}|"):
+                    if not isinstance(member, str):
                         continue
-                    base = member.split(".f[", 1)[0]
+                    base = canonical_node_identity(
+                        self.maya_adapter,
+                        member.split(".f[", 1)[0],
+                    )
+                    if base is None or not base.startswith(f"{canonical_root}|"):
+                        continue
                     if meshes and base not in meshes and base not in mesh_parents:
                         # Maya may return the transform instead of its shape;
                         # retain only members that are still below this root.
