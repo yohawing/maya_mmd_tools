@@ -145,6 +145,7 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             "maya_version": str(cmds.about(version=True)),
             "fixture": "pmx20-basic-v1",
             "cases": [],
+            "surfaces": [],
             "status": "running",
         }
 
@@ -778,8 +779,32 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         binding = self.window.authoring_composition.coordinator.read_spec(self.root).bones[0].binding_identity
         binding_before = _node_footprint(binding)
         view.bone_name_en_edit.setText("UI Root")
-        view.apply_btn.click()
-        QApplication.processEvents()
+        coordinator = self.window.authoring_composition.coordinator
+        original_apply_bone_value_patch = coordinator.apply_bone_value_patch
+        action_invocations = []
+        clicked_invocations = []
+
+        def observe_apply_bone_value_patch(*args, **kwargs):
+            action_invocations.append("MayaModelAuthoringCoordinator.apply_bone_value_patch")
+            return original_apply_bone_value_patch(*args, **kwargs)
+
+        def observe_apply_click(*_args):
+            clicked_invocations.append("boneApplyButton.clicked")
+
+        coordinator.apply_bone_value_patch = observe_apply_bone_value_patch
+        view.apply_btn.clicked.connect(observe_apply_click)
+        try:
+            view.apply_btn.click()
+            QApplication.processEvents()
+        finally:
+            view.apply_btn.clicked.disconnect(observe_apply_click)
+            coordinator.apply_bone_value_patch = original_apply_bone_value_patch
+        self.assertEqual(len(clicked_invocations), 1, "boneApplyButton must emit clicked exactly once")
+        self.assertEqual(
+            len(action_invocations),
+            1,
+            "boneApplyButton must invoke apply_bone_value_patch exactly once",
+        )
         after = _canonical_payload(self.window, self.root)
         binding_after = _node_footprint(binding)
         self.assertEqual(after["spec"]["bones"][0]["name_english"], "UI Root")
@@ -796,6 +821,25 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(footprint["attributes_changed"], [ATTR_MMD_BONE_NAME_EN])
         self.assertFalse(footprint["connections_added"])
         self.assertFalse(footprint["connections_removed"])
+        runtime_witness = {
+            "interaction": "click(boneApplyButton)",
+            "fired_action": action_invocations[0],
+            "oracle": "bone_spec_maya_footprint_undo_redo",
+            "action_count": len(action_invocations),
+        }
+        surface_witness = {
+            "surface_id": "bone.apply",
+            "case_id": "gui.authoring_signal_smoke",
+            "selector": "boneApplyButton",
+            "status": "pass",
+            "runtime_witness": runtime_witness,
+        }
+        self.report["surfaces"].append(surface_witness)
+        print(
+            "[UI COVERAGE WITNESS] "
+            + json.dumps(surface_witness, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            flush=True,
+        )
         evidence.update(
             selector="boneApplyButton",
             selected_binding=binding,

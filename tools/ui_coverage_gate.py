@@ -46,6 +46,7 @@ TAB_IDS = (
 )
 _PASS_STATUSES = {"pass", "passed", "ok", "success", "succeeded"}
 _RUNTIME_WITNESS_TEXT_FIELDS = ("interaction", "fired_action", "oracle")
+_RUNTIME_WITNESS_MARKER = "[UI COVERAGE WITNESS] "
 
 
 def _error(code: str, path: str, message: str) -> Dict[str, str]:
@@ -454,15 +455,143 @@ def _evidence_passes(path: Path, version: str) -> bool:
     )
 
 
+def _runtime_witness_contract(evidence: Mapping[str, Any], *, path: str) -> Dict[str, Any]:
+    """Return only the stable runtime witness fields used for aggregation."""
+    errors: List[Dict[str, str]] = []
+    _validate_runtime_witness(evidence, path=path, errors=errors)
+    if errors:
+        error = errors[0]
+        raise ValueError(f"{error['code']} at {error['path']}: {error['message']}")
+    witness = evidence["runtime_witness"]
+    return {field: witness[field] for field in (*_RUNTIME_WITNESS_TEXT_FIELDS, "action_count")}
+
+
+def _surface_contract(
+    evidence: Mapping[str, Any], *, path: str, expected: Optional[Mapping[str, Any]] = None
+) -> Dict[str, Any]:
+    """Validate and return the identity/locator/action contract for one surface."""
+    surface_id = evidence.get("surface_id")
+    if not isinstance(surface_id, str) or not surface_id.strip():
+        raise ValueError(f"invalid_surface_id at {path}.surface_id")
+    if str(evidence.get("status", "")).lower() not in _PASS_STATUSES:
+        raise ValueError(f"incomplete_surface_evidence at {path}.status: must be pass")
+    case_id = evidence.get("case_id")
+    if not isinstance(case_id, str) or not case_id.strip():
+        raise ValueError(f"invalid_case_id at {path}.case_id")
+    locators = [
+        (field, evidence.get(field).strip())
+        for field in ("selector", "attribute")
+        if isinstance(evidence.get(field), str) and evidence.get(field).strip()
+    ]
+    if len(locators) != 1:
+        raise ValueError(f"invalid_locator at {path}: exactly one locator is required")
+    locator_key, locator = locators[0]
+    contract = {
+        "surface_id": surface_id,
+        "case_id": case_id,
+        "status": "pass",
+        locator_key: locator,
+        "runtime_witness": _runtime_witness_contract(evidence, path=path),
+    }
+    if expected is not None:
+        if case_id != expected.get("case_id"):
+            raise ValueError(
+                f"surface_case_mismatch at {path}.case_id: expected {expected.get('case_id')}"
+            )
+        expected_locator_key = "selector" if "selector" in expected else "attribute"
+        if locator_key != expected_locator_key or locator != expected.get(expected_locator_key):
+            raise ValueError(
+                f"selector_mismatch at {path}: expected {expected_locator_key}={expected.get(expected_locator_key)}"
+            )
+    return contract
+
+
+def _manifest_surface_contract(surface: Mapping[str, Any]) -> Dict[str, Any]:
+    locator_key = "selector" if "selector" in surface else "attribute"
+    return {
+        "surface_id": surface.get("id"),
+        "case_id": surface.get("case_id"),
+        locator_key: surface.get(locator_key),
+    }
+
+
+def _collect_surface_contracts(
+    entries: Any,
+    *,
+    expected_surfaces: Mapping[str, Mapping[str, Any]],
+    path: str,
+) -> Dict[str, Dict[str, Any]]:
+    """Collect known surfaces and reject duplicate or malformed witnesses."""
+    if not isinstance(entries, list):
+        raise ValueError(f"missing_runtime_witness at {path}: surfaces must be a list")
+    result: Dict[str, Dict[str, Any]] = {}
+    for index, evidence in enumerate(entries):
+        if not isinstance(evidence, Mapping):
+            raise ValueError(f"invalid_surface_evidence at {path}[{index}]: expected an object")
+        surface_id = evidence.get("surface_id")
+        if surface_id not in expected_surfaces:
+            raise ValueError(f"unknown_runtime_witness at {path}[{index}].surface_id: {surface_id}")
+        if surface_id in result:
+            raise ValueError(f"duplicate_runtime_witness at {path}[{index}].surface_id: {surface_id}")
+        result[surface_id] = _surface_contract(
+            evidence,
+            path=f"{path}[{index}]",
+            expected=expected_surfaces[surface_id],
+        )
+    missing = sorted(set(expected_surfaces) - set(result))
+    if missing:
+        raise ValueError(f"missing_runtime_witness at {path}: {', '.join(missing)}")
+    return result
+
+
+def _parse_runtime_witness_markers(text: str, *, path: str) -> List[Mapping[str, Any]]:
+    markers: List[Mapping[str, Any]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        line = line.strip()
+        if not line.startswith(_RUNTIME_WITNESS_MARKER):
+            continue
+        raw = line[len(_RUNTIME_WITNESS_MARKER) :].strip()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid_runtime_witness at {path}:{line_number}: {exc.msg}") from exc
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"invalid_runtime_witness at {path}:{line_number}: expected an object")
+        markers.append(payload)
+    return markers
+
+
+def _aggregate_version_surfaces(
+    per_version: Mapping[str, Mapping[str, Mapping[str, Any]]]
+) -> List[Dict[str, Any]]:
+    versions = list(per_version)
+    if not versions:
+        return []
+    baseline = per_version[versions[0]]
+    for version in versions[1:]:
+        for surface_id, expected in baseline.items():
+            if per_version[version].get(surface_id) != expected:
+                raise ValueError(
+                    f"runtime_witness_mismatch for {surface_id}: Maya {versions[0]} vs Maya {version}"
+                )
+    return [baseline[surface_id] for surface_id in sorted(baseline)]
+
+
 def build_report_from_evidence(manifest: Mapping[str, Any], repo_root: Path) -> Dict[str, Any]:
-    """Build aggregate evidence only after all declared source artifacts pass."""
+    """Build aggregate evidence from structured per-version runtime reports."""
     required_case_ids = {
         surface["case_id"]
         for surface in manifest.get("surfaces", [])
         if surface.get("disposition") == "qt_case"
     }
     cases_by_id = _entry_map(manifest.get("cases", []), "id")
+    surfaces_by_case: Dict[str, Dict[str, Mapping[str, Any]]] = {}
+    for surface in manifest.get("surfaces", []):
+        if surface.get("disposition") != "qt_case":
+            continue
+        surfaces_by_case.setdefault(surface["case_id"], {})[surface["id"]] = _manifest_surface_contract(surface)
     cases = []
+    per_version_surfaces: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for case_id in sorted(required_case_ids):
         case = cases_by_id.get(case_id, {})
         versions = _normalise_versions(case.get("required_maya_versions"))
@@ -476,17 +605,24 @@ def build_report_from_evidence(manifest: Mapping[str, Any], repo_root: Path) -> 
             evidence_path = (repo_root / relative_path).resolve()
             if not evidence_path.is_file() or not _evidence_passes(evidence_path, version):
                 raise ValueError(f"case {case_id} evidence failed for Maya {version}: {evidence_path}")
+            if evidence_path.suffix.lower() != ".json":
+                raise ValueError(
+                    f"case {case_id} evidence must be structured JSON for runtime witnesses: {evidence_path}"
+                )
+            payload = load_json(evidence_path)
+            observed = _collect_surface_contracts(
+                payload.get("surfaces"),
+                expected_surfaces=surfaces_by_case.get(case_id, {}),
+                path=f"{evidence_path}.surfaces",
+            )
+            for surface_id, surface_evidence in observed.items():
+                previous = per_version_surfaces.setdefault(version, {}).get(surface_id)
+                if previous is not None and previous != surface_evidence:
+                    raise ValueError(f"runtime_witness_mismatch for {surface_id} in Maya {version}")
+                per_version_surfaces.setdefault(version, {})[surface_id] = surface_evidence
         cases.append({"case_id": case_id, "status": "pass", "maya_versions": versions})
 
-    if required_case_ids:
-        raise ValueError(
-            "qt_case runtime witness unavailable: evidence artifacts do not provide "
-            "per-surface interaction, fired_action, oracle, and action_count"
-        )
-
-    # No qt_case surface can be emitted without a runtime witness.  The
-    # explicit error above is intentional; this builder has no witness input.
-    surfaces: List[Dict[str, Any]] = []
+    surfaces = _aggregate_version_surfaces(per_version_surfaces)
     return {
         "schema_version": SCHEMA_VERSION,
         "gate_id": GATE_ID,
@@ -499,14 +635,20 @@ def build_report_from_evidence(manifest: Mapping[str, Any], repo_root: Path) -> 
 def build_report_from_batch_logs(
     manifest: Mapping[str, Any], batch_logs: Mapping[str, Path]
 ) -> Dict[str, Any]:
-    """Build evidence from fresh full-suite logs for each required Maya version."""
+    """Build evidence from fresh logs carrying deterministic runtime markers."""
     required_case_ids = {
         surface["case_id"]
         for surface in manifest.get("surfaces", [])
         if surface.get("disposition") == "qt_case"
     }
     cases_by_id = _entry_map(manifest.get("cases", []), "id")
+    expected_surfaces: Dict[str, Mapping[str, Any]] = {}
+    for surface in manifest.get("surfaces", []):
+        if surface.get("disposition") != "qt_case":
+            continue
+        expected_surfaces[surface["id"]] = _manifest_surface_contract(surface)
     cases = []
+    per_version_surfaces: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for case_id in sorted(required_case_ids):
         case = cases_by_id.get(case_id, {})
         versions = _normalise_versions(case.get("required_maya_versions"))
@@ -531,15 +673,28 @@ def build_report_from_batch_logs(
                 )
         cases.append({"case_id": case_id, "status": "pass", "maya_versions": versions})
 
-    if required_case_ids:
-        raise ValueError(
-            "qt_case runtime witness unavailable: batch logs only identify named tests; "
-            "they do not provide per-surface interaction, fired_action, oracle, and action_count"
+    required_versions = sorted(
+        {
+            version
+            for case_id in required_case_ids
+            for version in _normalise_versions(cases_by_id.get(case_id, {}).get("required_maya_versions"))
+        }
+    )
+    for version in required_versions:
+        log_path = batch_logs.get(version)
+        if log_path is None or not log_path.is_file() or not _evidence_passes(log_path, version):
+            raise ValueError(f"full GUI evidence failed for Maya {version}: {log_path}")
+        observed = _collect_surface_contracts(
+            _parse_runtime_witness_markers(
+                log_path.read_text(encoding="utf-8", errors="replace"),
+                path=str(log_path),
+            ),
+            expected_surfaces=expected_surfaces,
+            path=f"{log_path} runtime witness markers",
         )
+        per_version_surfaces[version] = observed
 
-    # Named tests are not a runtime witness, so no qt_case surfaces are
-    # synthesized from this log-only input.
-    surfaces: List[Dict[str, Any]] = []
+    surfaces = _aggregate_version_surfaces(per_version_surfaces)
     return {
         "schema_version": SCHEMA_VERSION,
         "gate_id": GATE_ID,

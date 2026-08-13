@@ -434,24 +434,119 @@ def test_manifest_fails_when_qt_case_count_drops_below_floor():
     assert "insufficient_qt_case_surfaces" in _errors(result)
 
 
-def test_evidence_report_builder_rejects_artifacts_without_runtime_witness(tmp_path):
-    manifest = _qt_case_manifest()
-    manifest["cases"][0]["evidence_files"] = {
-        "2024": "reports/case-2024.log",
-        "2026": "reports/case-2026.json",
+def _builder_surface(**witness_overrides):
+    witness = {
+        "interaction": "click(boneApplyButton)",
+        "fired_action": "bone.apply",
+        "oracle": "bone_spec_maya_footprint_undo_redo",
+        "action_count": 1,
     }
-    reports = tmp_path / "reports"
-    reports.mkdir()
-    (reports / "case-2024.log").write_text(
+    witness.update(witness_overrides)
+    return {
+        "surface_id": "import_export.surface",
+        "case_id": "case.one",
+        "selector": "objectName=surface",
+        "status": "pass",
+        "runtime_witness": witness,
+    }
+
+
+def _write_structured_evidence(tmp_path, manifest, payloads):
+    manifest["cases"][0]["evidence_files"] = {}
+    for version, payload in payloads.items():
+        name = f"case-{version}.json"
+        manifest["cases"][0]["evidence_files"][version] = name
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _batch_marker(surface):
+    return "[UI COVERAGE WITNESS] " + json.dumps(
+        surface, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def test_evidence_report_builder_aggregates_identical_runtime_witness(tmp_path):
+    manifest = _qt_case_manifest()
+    surface = _builder_surface()
+    _write_structured_evidence(
+        tmp_path,
+        manifest,
+        {
+            version: {"status": "pass", "maya_version": version, "surfaces": [surface]}
+            for version in ("2024", "2026")
+        },
+    )
+
+    report = build_report_from_evidence(manifest, tmp_path)
+
+    assert report["surfaces"] == [surface]
+    assert validate_report(manifest, report)["valid"]
+
+
+def test_evidence_report_builder_rejects_missing_runtime_witness(tmp_path):
+    manifest = _qt_case_manifest()
+    surface = _builder_surface()
+    _write_structured_evidence(
+        tmp_path,
+        manifest,
+        {
+            "2024": {"status": "pass", "maya_version": "2024", "surfaces": [surface]},
+            "2026": {"status": "pass", "maya_version": "2026", "surfaces": []},
+        },
+    )
+
+    with pytest.raises(ValueError, match="missing_runtime_witness"):
+        build_report_from_evidence(manifest, tmp_path)
+
+
+def test_evidence_report_builder_rejects_duplicate_runtime_witness(tmp_path):
+    manifest = _qt_case_manifest()
+    surface = _builder_surface()
+    _write_structured_evidence(
+        tmp_path,
+        manifest,
+        {
+            "2024": {"status": "pass", "maya_version": "2024", "surfaces": [surface, surface]},
+            "2026": {"status": "pass", "maya_version": "2026", "surfaces": [surface]},
+        },
+    )
+
+    with pytest.raises(ValueError, match="duplicate_runtime_witness"):
+        build_report_from_evidence(manifest, tmp_path)
+
+
+def test_evidence_report_builder_rejects_cross_version_witness_mismatch(tmp_path):
+    manifest = _qt_case_manifest()
+    _write_structured_evidence(
+        tmp_path,
+        manifest,
+        {
+            "2024": {
+                "status": "pass",
+                "maya_version": "2024",
+                "surfaces": [_builder_surface()],
+            },
+            "2026": {
+                "status": "pass",
+                "maya_version": "2026",
+                "surfaces": [_builder_surface(oracle="different_oracle")],
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="runtime_witness_mismatch"):
+        build_report_from_evidence(manifest, tmp_path)
+
+
+def test_evidence_report_builder_requires_structured_json_witness(tmp_path):
+    manifest = _qt_case_manifest()
+    manifest["cases"][0]["evidence_files"] = {"2024": "case-2024.log"}
+    (tmp_path / "case-2024.log").write_text(
         "Ran 1 test in 0.1s\n//-- GUI TEST FINISHED --// status=PASS\n",
         encoding="utf-8",
     )
-    (reports / "case-2026.json").write_text(
-        json.dumps({"status": "pass", "maya_version": "2026"}),
-        encoding="utf-8",
-    )
 
-    with pytest.raises(ValueError, match="runtime witness unavailable"):
+    with pytest.raises(ValueError, match="structured JSON"):
         build_report_from_evidence(manifest, tmp_path)
 
 
@@ -488,23 +583,64 @@ def test_evidence_report_builder_rejects_zero_tests_or_wrong_version(tmp_path, n
         build_report_from_evidence(manifest, tmp_path)
 
 
-def test_batch_report_builder_rejects_named_tests_without_runtime_witness(tmp_path):
+def _write_batch_logs(tmp_path, surface_by_version):
     manifest = _qt_case_manifest()
     test_id = "tests.gui.case.TestCase.test_action"
     manifest["cases"][0]["evidence_tests"] = [test_id]
     logs = {}
-    for version in ("2024", "2026"):
+    for version, surfaces in surface_by_version.items():
         path = tmp_path / f"gui-{version}.log"
+        markers = "".join(_batch_marker(surface) + "\n" for surface in surfaces)
         path.write_text(
             f"[GUI TEST] END {test_id} outcome=success\n"
             "Ran 1 test in 0.1s\n"
-            "//-- GUI TEST FINISHED --// status=PASS\n",
+            "//-- GUI TEST FINISHED --// status=PASS\n"
+            + markers,
             encoding="utf-8",
         )
         logs[version] = path
+    return manifest, logs
 
-    with pytest.raises(ValueError, match="runtime witness unavailable"):
+
+def test_batch_report_builder_aggregates_identical_runtime_witness(tmp_path):
+    surface = _builder_surface()
+    manifest, logs = _write_batch_logs(tmp_path, {"2024": [surface], "2026": [surface]})
+
+    report = build_report_from_batch_logs(manifest, logs)
+
+    assert report["surfaces"] == [surface]
+    assert validate_report(manifest, report)["valid"]
+
+
+def test_batch_report_builder_rejects_missing_runtime_witness(tmp_path):
+    surface = _builder_surface()
+    manifest, logs = _write_batch_logs(tmp_path, {"2024": [surface], "2026": []})
+
+    with pytest.raises(ValueError, match="missing_runtime_witness"):
         build_report_from_batch_logs(manifest, logs)
+
+
+def test_batch_report_builder_rejects_duplicate_runtime_witness(tmp_path):
+    surface = _builder_surface()
+    manifest, logs = _write_batch_logs(tmp_path, {"2024": [surface, surface], "2026": [surface]})
+
+    with pytest.raises(ValueError, match="duplicate_runtime_witness"):
+        build_report_from_batch_logs(manifest, logs)
+
+
+def test_batch_report_builder_rejects_cross_version_witness_mismatch(tmp_path):
+    manifest, logs = _write_batch_logs(
+        tmp_path,
+        {"2024": [_builder_surface()], "2026": [_builder_surface(oracle="different_oracle")]},
+    )
+
+    with pytest.raises(ValueError, match="runtime_witness_mismatch"):
+        build_report_from_batch_logs(manifest, logs)
+
+
+def test_batch_report_builder_still_requires_named_test_success(tmp_path):
+    surface = _builder_surface()
+    manifest, logs = _write_batch_logs(tmp_path, {"2024": [surface], "2026": [surface]})
 
     logs["2026"].write_text(
         "Ran 1 test in 0.1s\n//-- GUI TEST FINISHED --// status=PASS\n",
