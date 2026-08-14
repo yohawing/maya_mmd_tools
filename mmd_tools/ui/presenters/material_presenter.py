@@ -257,12 +257,16 @@ class MaterialPresenter:
 
             # Swap only after the complete immutable generation and all Qt
             # rows were built successfully.
-            self.view.material_list.clear()
             self.current_material = None
             self.current_material_index = None
             self._material_list_projection = projection
-            for item in projected_items:
-                self.view.material_list.addItem(item)
+            was_blocked = self.view.material_list.blockSignals(True)
+            try:
+                self.view.material_list.clear()
+                for item in projected_items:
+                    self.view.material_list.addItem(item)
+            finally:
+                self.view.material_list.blockSignals(was_blocked)
 
             # Show placeholder if no materials
             if self.view.material_list.count() == 0:

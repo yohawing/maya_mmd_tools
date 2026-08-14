@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 from tests.common.mock_ui import attach_mocks
@@ -619,6 +619,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.presenter.authoring_coordinator = coordinator
         # count() は addItem 後の件数を返す想定
         self.mock_view.material_list.count.return_value = 1
+        self.mock_view.material_list.blockSignals.return_value = False
 
         self.presenter.load_materials()
 
@@ -626,6 +627,10 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.material_list.clear.assert_called_once()
         # マテリアルがリストに追加されることを確認
         self.mock_view.material_list.addItem.assert_called()
+        self.assertEqual(
+            self.mock_view.material_list.blockSignals.call_args_list,
+            [call(True), call(False)],
+        )
         coordinator.read_material_list_projection.assert_called_once_with("|test_model")
         self.mock_maya_adapter.list_relatives.assert_not_called()
         self.mock_maya_adapter.list_connections.assert_not_called()
