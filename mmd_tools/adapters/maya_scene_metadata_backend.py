@@ -105,6 +105,14 @@ from mmd_tools.core.model_authoring_spec import (
 
 logger = get_logger(__name__)
 
+_MATERIAL_OUTLINE_ATTRS = (
+    "technique",
+    "EdgeSize",
+    "mmd_shader_outline_enabled",
+    "mmdDoubleSided",
+    "mmdTransparencyMode",
+)
+
 
 class MayaSceneMetadataError(SceneMetadataError):
     """Raised when Maya metadata cannot be normalized without loss."""
@@ -912,6 +920,7 @@ class MayaSceneMetadataBackend:
         binding: str,
         old_material: MmdMaterialSpec,
         new_material: MmdMaterialSpec,
+        outline_enabled: bool | None = None,
     ) -> None:
         """Open a selected-shader-only value patch transaction.
 
@@ -932,6 +941,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError("material value patch binding identity mismatch")
         if old_material.index != new_material.index:
             raise MayaSceneMetadataError("material value patch cannot change material index")
+        outline_original = self._begin_material_outline_capture(shader, outline_enabled)
         if not bool(self._call_adapter("undo_info", query=True, state=True)):
             raise MayaSceneMetadataError("Maya undo must be enabled for material value patches")
         original = self._read_material_value_attrs(shader)
@@ -965,6 +975,8 @@ class MayaSceneMetadataBackend:
             "diffuse_route": diffuse_route,
             "target": None,
             "chunk_open": True,
+            "outline_original": outline_original,
+            "outline_enabled": outline_enabled,
         }
 
     def begin_material_binding_patch(
@@ -973,6 +985,7 @@ class MayaSceneMetadataBackend:
         binding: str,
         old_material: MmdMaterialSpec,
         new_material: MmdMaterialSpec,
+        outline_enabled: bool | None = None,
     ) -> None:
         """Open a full selected-shader patch without reading other materials."""
         if self._write_transaction is not None:
@@ -985,6 +998,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError("material binding patch binding identity mismatch")
         if old_material.index != new_material.index:
             raise MayaSceneMetadataError("material binding patch cannot change material index")
+        outline_original = self._begin_material_outline_capture(shader, outline_enabled)
         original = self.read_material_value(root, shader, old_material.index)
         if original != old_material:
             raise MayaSceneMetadataError(
@@ -1005,6 +1019,8 @@ class MayaSceneMetadataBackend:
             "original_material": old_material,
             "target_material": new_material,
             "chunk_open": True,
+            "outline_original": outline_original,
+            "outline_enabled": outline_enabled,
         }
 
     def begin_bone_value_patch(
@@ -1209,6 +1225,7 @@ class MayaSceneMetadataBackend:
         model_root: str,
         binding: str,
         material: MmdMaterialSpec,
+        outline_target: Mapping[str, Any] | None = None,
     ) -> None:
         """Strictly read back the selected shader and close its undo chunk."""
         transaction = self._active_transaction(model_root)
@@ -1229,6 +1246,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"material value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
             )
+        self._verify_material_outline_target(transaction, outline_target, material)
         self._call_adapter("undo_info", closeChunk=True)
         self._write_transaction = None
 
@@ -1237,6 +1255,7 @@ class MayaSceneMetadataBackend:
         model_root: str,
         binding: str,
         material: MmdMaterialSpec,
+        outline_target: Mapping[str, Any] | None = None,
     ) -> None:
         """Strictly read back one complete selected material and close its chunk."""
         transaction = self._active_transaction(model_root)
@@ -1250,6 +1269,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"material binding patch fingerprint mismatch: expected {material!r}, got {actual!r}"
             )
+        self._verify_material_outline_target(transaction, outline_target, material)
         self._call_adapter("undo_info", closeChunk=True)
         self._write_transaction = None
 
@@ -1963,6 +1983,7 @@ class MayaSceneMetadataBackend:
                 actual, transaction["original_values"]
             ):
                 raise MayaSceneMetadataError("material value patch rollback fingerprint mismatch")
+            self._verify_material_outline_rollback(transaction)
             return
         if transaction.get("kind") == "material_binding":
             actual = self.read_material_value(
@@ -1970,6 +1991,7 @@ class MayaSceneMetadataBackend:
             )
             if actual != transaction["original_material"]:
                 raise MayaSceneMetadataError("material binding patch rollback fingerprint mismatch")
+            self._verify_material_outline_rollback(transaction)
             return
         if transaction.get("kind") == "material_create":
             members = self._registry_material_members(transaction["root"])
@@ -2521,6 +2543,99 @@ class MayaSceneMetadataBackend:
         if self._material_identity(model_root) != transaction["root"]:
             raise MayaSceneMetadataError("metadata write transaction belongs to another model root")
         return transaction
+
+    def _begin_material_outline_capture(
+        self,
+        shader: str,
+        outline_enabled: bool | None,
+    ) -> dict[str, Any] | None:
+        """Capture preview attrs only for an explicit DX11 outline edit."""
+        if outline_enabled is None:
+            return None
+        if type(outline_enabled) is not bool:
+            raise MayaSceneMetadataError("material outline intent must be bool or None")
+        if self._node_type(shader) != "dx11Shader":
+            raise MayaSceneMetadataError("material outline intent requires a dx11Shader")
+        return self._capture_material_outline_attrs(shader)
+
+    def _capture_material_outline_attrs(self, shader: str) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for attr in _MATERIAL_OUTLINE_ATTRS:
+            exists = self._has_attr(shader, attr)
+            result[attr] = {
+                "exists": exists,
+                "value": (
+                    deepcopy(self._call_adapter("get_attr", f"{shader}.{attr}"))
+                    if exists
+                    else None
+                ),
+            }
+        return result
+
+    def _verify_material_outline_target(
+        self,
+        transaction: Mapping[str, Any],
+        outline_target: Mapping[str, Any] | None,
+        material: MmdMaterialSpec,
+    ) -> None:
+        original = transaction.get("outline_original")
+        if original is None:
+            if outline_target is not None:
+                raise MayaSceneMetadataError("unexpected material outline target")
+            return
+        if not isinstance(outline_target, Mapping):
+            raise MayaSceneMetadataError("material outline target was not recorded")
+        expected = dict(outline_target)
+        if set(expected) != set(_MATERIAL_OUTLINE_ATTRS):
+            raise MayaSceneMetadataError("material outline target fields mismatch")
+        actual = self._capture_material_outline_attrs(transaction["binding"])
+        if actual != expected:
+            raise MayaSceneMetadataError(
+                f"material outline fingerprint mismatch: expected {expected!r}, got {actual!r}"
+            )
+        outline_attr = actual["mmd_shader_outline_enabled"]
+        if not outline_attr["exists"] or bool(outline_attr["value"]) is not transaction["outline_enabled"]:
+            raise MayaSceneMetadataError("material outline intent readback mismatch")
+        from mmd_tools.converters.mesh_converter import expected_shader_outline_preview
+
+        original = transaction["outline_original"]
+        transparency = original["mmdTransparencyMode"]
+        expected_policy = expected_shader_outline_preview(
+            str(original["technique"]["value"] or ""),
+            transparency["value"] if transparency["exists"] else None,
+            material.draw_flags,
+            transaction["outline_enabled"],
+            material.edge_size,
+            edge_size_exists=bool(original["EdgeSize"]["exists"]),
+        )
+        for attr, expected_value in expected_policy.items():
+            observed = actual[attr]
+            matches = observed["value"] == expected_value
+            if attr == "EdgeSize" and observed["exists"]:
+                value = observed["value"]
+                matches = (
+                    not isinstance(value, bool)
+                    and isinstance(value, (int, float))
+                    and math.isclose(
+                        float(value),
+                        float(expected_value),
+                        rel_tol=1e-6,
+                        abs_tol=1e-7,
+                    )
+                )
+            if not observed["exists"] or not matches:
+                raise MayaSceneMetadataError(
+                    f"material outline policy mismatch for {attr}: "
+                    f"expected {expected_value!r}, got {observed!r}"
+                )
+
+    def _verify_material_outline_rollback(self, transaction: Mapping[str, Any]) -> None:
+        original = transaction.get("outline_original")
+        if original is None:
+            return
+        actual = self._capture_material_outline_attrs(transaction["binding"])
+        if actual != original:
+            raise MayaSceneMetadataError("material outline rollback preimage mismatch")
 
     @staticmethod
     def _require_exact_mapping(metadata: Any, expected: set[str], context: str) -> None:

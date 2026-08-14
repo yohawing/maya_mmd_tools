@@ -125,13 +125,10 @@ def _morph_snapshot(adapter, plugs):
     }
 
 
-def test_material_semantic_commit_remains_after_outline_failure_and_undo_redo():
-    """Current order commits semantic Material state before outline mutation."""
+def test_material_outline_failure_rolls_back_semantic_and_preview_state_atomically():
+    """A preview failure restores the semantic and DX11 preimage together."""
 
-    coordinator, backend, _materials, _bones = _make_coordinator()
-    # This fixture intentionally exercises the presenter's complete-spec
-    # replace route; its narrow reader is not provided by the shared fake.
-    coordinator.read_material_value = None  # type: ignore[method-assign]
+    coordinator, backend, materials, _bones = _make_coordinator()
     old = backend.scene.materials[0]
     new = replace(old, name="New", edge_size=1.0)
     state = _HistoryState(
@@ -145,29 +142,39 @@ def test_material_semantic_commit_remains_after_outline_failure_and_undo_redo():
         dg={"material_output": "material0.outColor->mesh.inColor"},
     )
     pending = []
-    original_begin = backend.begin_write
-    original_commit = backend.commit_write
+    events = []
 
-    def begin_write(root):
+    coordinator._metadata.read_material_value = lambda *_args: old
+
+    def begin_patch(_root, _binding, _old, _new, outline_enabled):
+        assert outline_enabled is True
         pending.append(state.snapshot())
-        return original_begin(root)
+        events.append("begin")
 
-    def commit_write(root):
-        result = original_commit(root)
-        state.spec = backend.scene
-        material = state.spec.materials[0]
-        state.attrs.update(
-            {
-                "material0.mmd_material_name": material.name,
-                "material0.mmd_edge_size": material.edge_size,
-            }
-        )
-        state._record(pending.pop())
-        return result
+    def semantic_patch(_root, _old, target):
+        state.spec = replace(state.spec, materials=(target,))
+        state.attrs["material0.mmd_material_name"] = target.name
+        state.attrs["material0.mmd_edge_size"] = target.edge_size
+        events.append("semantic")
+        return target
 
-    backend.begin_write = begin_write  # type: ignore[method-assign]
-    backend.commit_write = commit_write  # type: ignore[method-assign]
-    state._restore_hook = lambda snapshot: setattr(backend, "scene", snapshot["spec"])
+    def outline_patch(shader, enabled, edge_size):
+        events.append("outline")
+        from mmd_tools.converters.mesh_converter import apply_shader_outline
+
+        apply_shader_outline(shader, enabled, edge_size)
+        return {}
+
+    def rollback(_root):
+        state._restore(pending.pop())
+        backend.scene = state.spec
+        events.append("rollback")
+
+    backend.begin_material_value_patch = begin_patch
+    backend.commit_material_value_patch = lambda *_args: events.append("commit")
+    backend.rollback_write = rollback
+    materials.apply_material_value_patch = semantic_patch
+    materials.apply_material_outline = outline_patch
 
     view = Mock()
     view.material_list.count.return_value = 0
@@ -207,38 +214,10 @@ def test_material_semantic_commit_remains_after_outline_failure_and_undo_redo():
         assert presenter.apply_changes() is None
 
     failure = _material_snapshot(state, presenter)
-    assert backend.events == [
-        "begin",
-        "rebase",
-        "apply:model",
-        "apply:bones",
-        "apply:materials",
-        "apply:morphs",
-        "commit",
-    ]
+    assert events == ["begin", "semantic", "outline", "rollback"]
     assert outline_calls == [("material0", True, 1.0)]
-    assert start["spec"].materials[0].name == "Material"
-    assert failure["spec"].materials[0].name == "New"
-    assert failure["attrs"] == {
-        "material0.mmd_material_name": "New",
-        "material0.mmd_edge_size": 1.0,
-        "material0.technique": "outline",
-        "material0.EdgeSize": old.edge_size,
-    }
-    assert failure["dg"] == start["dg"]
-    assert state.dg_calls == []
+    assert failure == start
     assert presenter.has_unsaved_changes is True
-
-    state.undo()
-    after_undo = _material_snapshot(state, presenter)
-    assert after_undo["spec"].materials[0].name == "New"
-    assert after_undo["attrs"]["material0.technique"] == "flat"
-    assert after_undo["attrs"]["material0.mmd_material_name"] == "New"
-    assert after_undo["dg"] == start["dg"]
-
-    state.redo()
-    after_redo = _material_snapshot(state, presenter)
-    assert after_redo == failure
 
 
 class _DisplayFailureAdapter(_DisplayAdapter):

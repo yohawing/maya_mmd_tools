@@ -75,9 +75,19 @@ class MaterialAuthoringCoordinator(Protocol):
 
     def replace_material(self, model_root: str, material: MmdMaterialSpec) -> MmdModelAuthoringSpec: ...
 
-    def apply_material_value_patch(self, model_root: str, material: MmdMaterialSpec) -> object: ...
+    def apply_material_value_patch(
+        self,
+        model_root: str,
+        material: MmdMaterialSpec,
+        outline_enabled: bool | None = None,
+    ) -> object: ...
 
-    def apply_material_binding_patch(self, model_root: str, material: MmdMaterialSpec) -> object: ...
+    def apply_material_binding_patch(
+        self,
+        model_root: str,
+        material: MmdMaterialSpec,
+        outline_enabled: bool | None = None,
+    ) -> object: ...
 
 
 class MaterialPresenter:
@@ -1233,10 +1243,19 @@ class MaterialPresenter:
             replacement = self._material_from_authoring_controls(prior)
             self._validate_changed_authoring_texture_files(prior, replacement)
             route = classify_material_change(prior, replacement)
+            outline_intent = self._viewport_outline_intent(prior, replacement)
             if route in {"value", "noop"}:
                 # A failed narrow transaction is surfaced to the user; it must
                 # not silently fall back to the full binding transaction.
-                result = prior if route == "noop" else narrow_patch(root, replacement)
+                result = (
+                    prior
+                    if route == "noop" and outline_intent is None
+                    else (
+                        narrow_patch(root, replacement)
+                        if outline_intent is None
+                        else narrow_patch(root, replacement, outline_enabled=outline_intent)
+                    )
+                )
                 if not isinstance(result, MmdMaterialSpec):
                     raise TypeError("material value patch returned an invalid material")
                 reloaded = result
@@ -1244,7 +1263,11 @@ class MaterialPresenter:
             else:
                 if not callable(binding_patch):
                     raise TypeError("authoring coordinator lacks apply_material_binding_patch")
-                result = binding_patch(root, replacement)
+                result = (
+                    binding_patch(root, replacement)
+                    if outline_intent is None
+                    else binding_patch(root, replacement, outline_enabled=outline_intent)
+                )
                 if not isinstance(result, MmdMaterialSpec):
                     raise TypeError("material binding patch returned an invalid material")
                 reloaded = result
@@ -1264,6 +1287,9 @@ class MaterialPresenter:
             replacement = self._material_from_authoring_controls(prior)
             self._validate_changed_authoring_texture_files(prior, replacement)
             route = classify_material_change(prior, replacement)
+            outline_intent = self._viewport_outline_intent(prior, replacement)
+            if outline_intent is not None:
+                raise TypeError("viewport outline edits require the narrow material coordinator")
             if route == "noop":
                 reloaded = current
             else:
@@ -1274,7 +1300,8 @@ class MaterialPresenter:
                 if not isinstance(reloaded, MmdModelAuthoringSpec):
                     raise TypeError("authoring coordinator strict reload returned an invalid spec")
             self.material_data["_authoring_fingerprint"] = reloaded.fingerprint()
-        self._apply_viewport_outline(replacement)
+        if outline_intent is not None:
+            self.material_data["shader_outline_enabled"] = outline_intent
         self.has_unsaved_changes = False
         self._update_selected_material_row(reloaded, replacement.binding_identity)
         self.app_state.emit_status(
@@ -1282,27 +1309,20 @@ class MaterialPresenter:
         )
         return reloaded
 
-    def _apply_viewport_outline(self, material: MmdMaterialSpec) -> None:
-        """Apply the explicit Maya-only outline choice after semantic authoring."""
-        if self.maya_adapter.node_type(self.current_material) != "dx11Shader":
-            return
+    def _viewport_outline_intent(
+        self,
+        prior: MmdMaterialSpec,
+        material: MmdMaterialSpec,
+    ) -> bool | None:
+        """Return an explicit DX11 preview edit, or ``None`` for no Maya write."""
         enabled = bool(self.view.shader_outline_check.isChecked())
         previous_enabled = bool(self.material_data.get("shader_outline_enabled", False))
-        previous_edge_size = self.material_data.get("edge_size", material.edge_size)
-        try:
-            edge_size_changed = abs(float(previous_edge_size) - float(material.edge_size)) > 1e-6
-        except (TypeError, ValueError):
-            edge_size_changed = True
+        edge_size_changed = abs(float(prior.edge_size) - float(material.edge_size)) > 1e-6
         if enabled == previous_enabled and (not enabled or not edge_size_changed):
-            return
-        from mmd_tools.converters.mesh_converter import apply_shader_outline
-
-        apply_shader_outline(
-            self.current_material,
-            enabled,
-            material.edge_size,
-        )
-        self.material_data["shader_outline_enabled"] = enabled
+            return None
+        if self.maya_adapter.node_type(self.current_material) != "dx11Shader":
+            return None
+        return enabled
 
     def _update_selected_material_row(
         self,

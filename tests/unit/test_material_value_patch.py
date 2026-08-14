@@ -1,7 +1,7 @@
 """Focused tests for the selected-material value patch transaction."""
 
 from dataclasses import replace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -23,6 +23,7 @@ from mmd_tools.core.material_authoring import classify_material_change  # noqa: 
 from mmd_tools.core.model_authoring_spec import (  # noqa: E402
     MmdMaterialSpec,
 )
+from mmd_tools.converters.mesh_converter import expected_shader_outline_preview  # noqa: E402
 from tests.unit.test_material_presenter import TestMaterialPresenter  # noqa: E402
 from tests.unit.test_maya_material_authoring import (  # noqa: E402
     FakeCmdsAdapter,
@@ -162,6 +163,34 @@ def test_adapter_dx11_diffuse_patch_updates_hardware_parameter_without_base_colo
     assert "baseColor" not in written
 
 
+def test_adapter_outline_seam_reports_the_same_injected_scene_state() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    bound, shader, _ = adapter.create_material("|Model_root", _material())
+    cmds.types[shader] = "dx11Shader"
+    cmds.attrs[(shader, "technique")] = "MMD"
+    cmds.attrs[(shader, "EdgeSize")] = bound.edge_size
+
+    def mutate(target, enabled, edge_size, *, cmds_module):
+        assert (target, enabled, edge_size) == (shader, True, bound.edge_size)
+        assert cmds_module is cmds
+        cmds.set_attr(f"{shader}.technique", "MMD", type="string")
+        cmds.set_attr(f"{shader}.EdgeSize", edge_size)
+        cmds.add_attr(shader, longName="mmd_shader_outline_enabled", attributeType="bool")
+        cmds.set_attr(f"{shader}.mmd_shader_outline_enabled", enabled)
+        cmds.add_attr(shader, longName="mmdDoubleSided", attributeType="bool")
+        cmds.set_attr(f"{shader}.mmdDoubleSided", False)
+
+    with patch("mmd_tools.converters.mesh_converter.apply_shader_outline", side_effect=mutate):
+        state = adapter.apply_material_outline(shader, True, bound.edge_size)
+
+    assert state["technique"] == {"exists": True, "value": "MMD"}
+    assert state["EdgeSize"] == {"exists": True, "value": bound.edge_size}
+    assert state["mmd_shader_outline_enabled"] == {"exists": True, "value": True}
+    assert state["mmdDoubleSided"] == {"exists": True, "value": False}
+
+
 def test_backend_dx11_value_patch_uses_hardware_diffuse_route() -> None:
     cmds, backend, _adapter = _writable_scene()
     old = backend.read_material_value("|root", "mat", 0)
@@ -173,6 +202,19 @@ def test_backend_dx11_value_patch_uses_hardware_diffuse_route() -> None:
     assert backend._write_transaction is not None
     assert backend._write_transaction["diffuse_route"].diffuse_attribute == "DiffuseColorRGB"
     backend.rollback_write("|root")
+
+
+def test_backend_value_patch_without_outline_skips_preview_capture() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    old = backend.read_material_value("|root", "mat", 0)
+    cmds.attrs[("mat", "baseColor")] = [tuple(old.diffuse[:3])]
+    capture = Mock(side_effect=AssertionError("preview capture is forbidden"))
+    backend._capture_material_outline_attrs = capture
+
+    backend.begin_material_value_patch("|root", "mat", old, replace(old, name="edited"))
+    backend.rollback_write("|root")
+
+    capture.assert_not_called()
 
 
 def test_adapter_binding_patch_updates_only_selected_texture_graph() -> None:
@@ -692,6 +734,46 @@ def test_coordinator_binding_patch_does_not_read_unrelated_materials() -> None:
     assert backend.rebase_count == 0
 
 
+def test_coordinator_binding_and_outline_failure_share_one_rollback() -> None:
+    coordinator, backend, materials, _ = _coordinator()
+    prior = backend.scene.materials[0]
+    target = replace(prior, resolved_texture_path="C:/textures/edited.png")
+    coordinator._metadata.read_material_value = lambda _root, _binding, _index: prior  # noqa: E731
+
+    def begin(_root, _binding, _old, _new, enabled):
+        assert enabled is True
+        backend.events.append("begin:binding+outline")
+
+    def binding(_root, _old, new):
+        backend.events.append("apply:binding")
+        return new
+
+    def outline(_binding, _enabled, _edge_size):
+        backend.events.append("apply:outline")
+        raise RuntimeError("injected outline failure")
+
+    def rollback(_root):
+        backend.events.append("rollback:binding+outline")
+
+    backend.begin_material_binding_patch = begin
+    backend.commit_material_binding_patch = Mock(
+        side_effect=AssertionError("failed mutation must not commit")
+    )
+    backend.rollback_write = rollback
+    materials.apply_material_binding_patch = binding
+    materials.apply_material_outline = outline
+
+    with pytest.raises(Exception, match="injected outline failure"):
+        coordinator.apply_material_binding_patch("|root", target, outline_enabled=True)
+
+    assert backend.events == [
+        "begin:binding+outline",
+        "apply:binding",
+        "apply:outline",
+        "rollback:binding+outline",
+    ]
+
+
 def test_coordinator_noop_does_not_open_a_narrow_transaction() -> None:
     coordinator, backend, _materials, _ = _coordinator()
     prior = backend.scene.materials[0]
@@ -701,6 +783,42 @@ def test_coordinator_noop_does_not_open_a_narrow_transaction() -> None:
     result = coordinator.apply_material_value_patch("|root", prior)
     assert result == prior
     assert backend.events == []
+
+
+def test_coordinator_outline_only_edit_opens_one_narrow_transaction() -> None:
+    coordinator, backend, materials, _ = _coordinator()
+    prior = backend.scene.materials[0]
+    coordinator._metadata.read_material_value = lambda _root, _binding, _index: prior  # noqa: E731
+
+    def begin(_root, _binding, _old, _new, enabled):
+        assert enabled is True
+        backend.events.append("begin:outline")
+
+    def outline(binding, enabled, edge_size):
+        assert (binding, enabled, edge_size) == (
+            prior.binding_identity,
+            True,
+            prior.edge_size,
+        )
+        backend.events.append("apply:outline")
+        return {"preview": "exact"}
+
+    def commit(_root, _binding, target, preview):
+        assert target == prior
+        assert preview == {"preview": "exact"}
+        backend.events.append("commit:outline")
+
+    backend.begin_material_value_patch = begin
+    backend.commit_material_value_patch = commit
+    materials.apply_material_value_patch = Mock(
+        side_effect=AssertionError("semantic noop must not write")
+    )
+    materials.apply_material_outline = outline
+
+    result = coordinator.apply_material_value_patch("|root", prior, outline_enabled=True)
+
+    assert result == prior
+    assert backend.events == ["begin:outline", "apply:outline", "commit:outline"]
 
 
 class _SelectedMaterialCmds:
@@ -787,6 +905,86 @@ def test_backend_value_commit_rejects_materially_different_float() -> None:
     backend.rollback_write("|root")
 
     assert cmds.attrs[("mat", "mmd_edge_size")] == old.edge_size
+
+
+def test_backend_outline_commit_rejects_matching_but_wrong_writer_snapshot() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, name="edited", edge_size=1.5)
+    cmds.node_types["mat"] = "dx11Shader"
+    cmds.attrs[("mat", "DiffuseColorRGB")] = [backend._maya_float3(old.diffuse[:3])]
+    cmds.attrs[("mat", "technique")] = "MMD"
+    cmds.attrs[("mat", "EdgeSize")] = old.edge_size
+    cmds.attrs[("mat", "mmdTransparencyMode")] = "opaque"
+
+    backend.begin_material_value_patch("|root", "mat", old, new, True)
+    cmds.set_attr("mat.mmd_material_name", new.name, type="string")
+    cmds.set_attr("mat.mmd_edge_size", new.edge_size)
+    cmds.set_attr("mat.technique", "MMD", type="string")
+    cmds.set_attr("mat.EdgeSize", 0.25)
+    cmds.add_attr("mat", longName="mmd_shader_outline_enabled", attributeType="bool")
+    cmds.set_attr("mat.mmd_shader_outline_enabled", True)
+    cmds.add_attr("mat", longName="mmdDoubleSided", attributeType="bool")
+    cmds.set_attr("mat.mmdDoubleSided", False)
+    writer_snapshot = backend._capture_material_outline_attrs("mat")
+
+    with pytest.raises(MayaSceneMetadataError, match="outline policy mismatch"):
+        backend.commit_material_value_patch("|root", "mat", new, writer_snapshot)
+    backend.rollback_write("|root")
+
+    assert cmds.attrs[("mat", "mmd_material_name")] == old.name
+    assert cmds.attrs[("mat", "mmd_edge_size")] == old.edge_size
+    assert ("mat", "mmd_shader_outline_enabled") not in cmds.attrs
+    assert ("mat", "mmdDoubleSided") not in cmds.attrs
+
+
+def test_backend_outline_commit_accepts_maya_float_edge_size_round_trip() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, edge_size=0.6)
+    cmds.node_types["mat"] = "dx11Shader"
+    cmds.attrs[("mat", "DiffuseColorRGB")] = [backend._maya_float3(old.diffuse[:3])]
+    cmds.attrs[("mat", "technique")] = "MMDTechnique"
+    cmds.attrs[("mat", "EdgeSize")] = old.edge_size
+    cmds.attrs[("mat", "mmdTransparencyMode")] = "opaque"
+
+    backend.begin_material_value_patch("|root", "mat", old, new, True)
+    expected_preview = expected_shader_outline_preview(
+        "MMDTechnique",
+        "opaque",
+        new.draw_flags,
+        True,
+        new.edge_size,
+        edge_size_exists=True,
+    )
+    cmds.set_attr("mat.mmd_edge_size", 0.6000000238418579)
+    cmds.set_attr("mat.technique", expected_preview["technique"], type="string")
+    cmds.set_attr("mat.EdgeSize", 0.6000000238418579)
+    cmds.add_attr("mat", longName="mmd_shader_outline_enabled", attributeType="bool")
+    cmds.set_attr("mat.mmd_shader_outline_enabled", True)
+    cmds.add_attr("mat", longName="mmdDoubleSided", attributeType="bool")
+    cmds.set_attr("mat.mmdDoubleSided", expected_preview["mmdDoubleSided"])
+    writer_snapshot = backend._capture_material_outline_attrs("mat")
+
+    backend.commit_material_value_patch("|root", "mat", new, writer_snapshot)
+
+    assert cmds.undo_chunk_open is False
+
+
+def test_expected_outline_preview_clamps_edge_and_tracks_double_sided() -> None:
+    expected = expected_shader_outline_preview(
+        "MMD",
+        "opaque",
+        0x01,
+        True,
+        3.5,
+        edge_size_exists=True,
+    )
+
+    assert expected["EdgeSize"] == 2.0
+    assert expected["mmdDoubleSided"] is True
+    assert expected["mmd_shader_outline_enabled"] is True
+    assert expected["technique"].endswith("DoubleSided")
 
 
 def test_backend_value_commit_mismatch_rolls_back_selected_preimage() -> None:

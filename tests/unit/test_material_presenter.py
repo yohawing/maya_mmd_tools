@@ -271,7 +271,7 @@ class TestMaterialPresenter(unittest.TestCase):
         ):
             getattr(self.mock_view, bit_name).isChecked.return_value = value
 
-        self.mock_maya_adapter.node_type.return_value = "dx11Shader"
+        self.mock_maya_adapter.node_type.return_value = "standardSurface"
         self.mock_view.shader_outline_check.isChecked.return_value = True
         with patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils") as attrs, patch(
             "mmd_tools.converters.mesh_converter.apply_shader_outline"
@@ -301,7 +301,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.assertEqual(replacement.memo, prior.memo)
         attrs.set_attribute.assert_not_called()
         attrs.set_custom_attributes.assert_not_called()
-        apply_outline.assert_called_once_with("shader|材質", True, 1.5)
+        apply_outline.assert_not_called()
         self.assertFalse(self.presenter.has_unsaved_changes)
         self.assertEqual(self.presenter.material_data["_authoring_fingerprint"], result.fingerprint())
 
@@ -756,7 +756,7 @@ class TestMaterialPresenter(unittest.TestCase):
         # 正しいスタイルシートが設定されることを確認
         widget.setStyleSheet.assert_called_with("background-color: rgb(255, 127, 0); border: 1px solid black;")
 
-    def test_unchanged_dx11_outline_does_not_add_a_post_transaction_write(self):
+    def test_unchanged_dx11_outline_has_no_transaction_intent(self):
         material = MmdMaterialSpec("Material", index=0, edge_size=1.0, binding_identity="shader")
         self.presenter.current_material = "shader"
         self.presenter.material_data = {
@@ -766,10 +766,8 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.node_type.return_value = "dx11Shader"
         self.mock_view.shader_outline_check.isChecked.return_value = False
 
-        with patch("mmd_tools.converters.mesh_converter.apply_shader_outline") as apply_outline:
-            self.presenter._apply_viewport_outline(material)
-
-        apply_outline.assert_not_called()
+        self.assertIsNone(self.presenter._viewport_outline_intent(material, material))
+        self.mock_maya_adapter.node_type.assert_not_called()
 
     def test_update_color_widget_with_invalid_color(self):
         """無効な色データでのカラーウィジェット更新テスト"""

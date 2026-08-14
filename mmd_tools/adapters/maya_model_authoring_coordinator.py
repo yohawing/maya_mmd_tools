@@ -415,6 +415,7 @@ class MayaModelAuthoringCoordinator:
         self,
         model_root: str,
         material: MmdMaterialSpec,
+        outline_enabled: bool | None = None,
     ) -> MmdMaterialSpec:
         """Apply one patch-safe material value edit in a narrow undo chunk."""
         if not isinstance(material, MmdMaterialSpec):
@@ -434,28 +435,57 @@ class MayaModelAuthoringCoordinator:
                 f"material {material.index} binding identity cannot change"
             )
         route = classify_material_change(previous, material)
-        if route == "noop":
+        if outline_enabled is not None and type(outline_enabled) is not bool:
+            raise MayaModelAuthoringCoordinatorError("material outline intent must be bool or None")
+        if route == "noop" and outline_enabled is None:
             return previous
-        if route != "value":
+        if route not in {"value", "noop"}:
             raise MayaModelAuthoringCoordinatorError(
                 "apply_material_value_patch received binding-sensitive fields"
             )
         structural_patch = getattr(self._materials, "apply_material_value_patch", None)
+        outline_patch = getattr(self._materials, "apply_material_outline", None)
         if not callable(structural_patch):
             raise MayaModelAuthoringCoordinatorError(
                 "apply_material_value_patch requires a narrow material binding API; no Maya writes were performed"
             )
+        if outline_enabled is not None and not callable(outline_patch):
+            raise MayaModelAuthoringCoordinatorError(
+                "material outline edit requires a DX11 outline binding API"
+            )
         begin = getattr(self._backend, "begin_material_value_patch", None)
-        commit = getattr(self._metadata, "commit_material_value_patch", None)
+        commit_owner = self._backend if outline_enabled is not None else self._metadata
+        commit = getattr(commit_owner, "commit_material_value_patch", None)
         if not callable(begin) or not callable(commit):
             raise MayaModelAuthoringCoordinatorError(
                 "apply_material_value_patch requires a narrow metadata transaction; no Maya writes were performed"
             )
+        outline_target: Mapping[str, Any] | None = None
+
         def bind() -> MmdMaterialSpec:
-            result = structural_patch(model_root, previous, material)
+            nonlocal outline_target
+            result = (
+                previous
+                if route == "noop"
+                else structural_patch(model_root, previous, material)
+            )
             if not isinstance(result, MmdMaterialSpec):
                 raise TypeError("material value patch binding operation returned an invalid material")
+            if outline_enabled is not None:
+                outline_target = outline_patch(binding, outline_enabled, material.edge_size)
             return result
+
+        begin_patch = begin
+        commit_patch = commit
+        if outline_enabled is not None:
+            def begin_with_outline(root, node, old, new):
+                return begin(root, node, old, new, outline_enabled)
+
+            def commit_with_outline(root, node, target):
+                return commit(root, node, target, outline_target)
+
+            begin_patch = begin_with_outline
+            commit_patch = commit_with_outline
 
         return self._execute_material_patch(
             model_root,
@@ -463,15 +493,16 @@ class MayaModelAuthoringCoordinator:
             previous,
             material,
             binding,
-            begin,
+            begin_patch,
             bind,
-            commit,
+            commit_patch,
         )
 
     def apply_material_binding_patch(
         self,
         model_root: str,
         material: MmdMaterialSpec,
+        outline_enabled: bool | None = None,
     ) -> MmdMaterialSpec:
         """Apply one selected material, including texture binding fields."""
         if not isinstance(material, MmdMaterialSpec):
@@ -492,20 +523,45 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 "apply_material_binding_patch requires binding-sensitive fields"
             )
+        if outline_enabled is not None and type(outline_enabled) is not bool:
+            raise MayaModelAuthoringCoordinatorError("material outline intent must be bool or None")
         structural_patch = getattr(self._materials, "apply_material_binding_patch", None)
+        outline_patch = getattr(self._materials, "apply_material_outline", None)
         begin = getattr(self._backend, "begin_material_binding_patch", None)
-        commit = getattr(self._metadata, "commit_material_binding_patch", None)
+        commit_owner = self._backend if outline_enabled is not None else self._metadata
+        commit = getattr(commit_owner, "commit_material_binding_patch", None)
         if not callable(structural_patch) or not callable(begin) or not callable(commit):
             raise MayaModelAuthoringCoordinatorError(
                 "apply_material_binding_patch requires narrow binding/metadata APIs; "
                 "no Maya writes were performed"
             )
+        if outline_enabled is not None and not callable(outline_patch):
+            raise MayaModelAuthoringCoordinatorError(
+                "material outline edit requires a DX11 outline binding API"
+            )
+
+        outline_target: Mapping[str, Any] | None = None
 
         def bind() -> MmdMaterialSpec:
+            nonlocal outline_target
             result = structural_patch(model_root, previous, material)
             if not isinstance(result, MmdMaterialSpec):
                 raise TypeError("material binding patch returned an invalid material")
+            if outline_enabled is not None:
+                outline_target = outline_patch(binding, outline_enabled, material.edge_size)
             return result
+
+        begin_patch = begin
+        commit_patch = commit
+        if outline_enabled is not None:
+            def begin_with_outline(root, node, old, new):
+                return begin(root, node, old, new, outline_enabled)
+
+            def commit_with_outline(root, node, target):
+                return commit(root, node, target, outline_target)
+
+            begin_patch = begin_with_outline
+            commit_patch = commit_with_outline
 
         return self._execute_material_patch(
             model_root,
@@ -513,9 +569,9 @@ class MayaModelAuthoringCoordinator:
             previous,
             material,
             binding,
-            begin,
+            begin_patch,
             bind,
-            commit,
+            commit_patch,
         )
 
     def delete_material(self, model_root: str, index: int) -> MmdModelAuthoringSpec:

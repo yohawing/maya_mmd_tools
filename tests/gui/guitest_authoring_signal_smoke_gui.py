@@ -702,17 +702,42 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(cmds.nodeType(shader), "dx11Shader")
         self.assertFalse(cmds.attributeQuery("baseColor", node=shader, exists=True))
         self.assertTrue(cmds.attributeQuery("DiffuseColorRGB", node=shader, exists=True))
-        before = _canonical_payload(self.window, self.root)
 
+        def outline_state():
+            result = {}
+            for attr in (
+                "technique",
+                "EdgeSize",
+                "mmd_shader_outline_enabled",
+                "mmdDoubleSided",
+            ):
+                exists = cmds.attributeQuery(attr, node=shader, exists=True)
+                result[attr] = {
+                    "exists": bool(exists),
+                    "value": cmds.getAttr(f"{shader}.{attr}") if exists else None,
+                }
+            return result
+
+        before = _canonical_payload(self.window, self.root)
+        before_outline = outline_state()
+        outline_enabled = not view.shader_outline_check.isChecked()
         view.material_en_name_edit.setText("DX11 Material Edited")
+        view.shader_outline_check.setChecked(outline_enabled)
         view.apply_btn.click()
         QApplication.processEvents()
         after_name = _canonical_payload(self.window, self.root)
+        after_outline = outline_state()
         self.assertEqual(after_name["spec"]["materials"][0]["name_english"], "DX11 Material Edited")
+        self.assertEqual(
+            bool(after_outline["mmd_shader_outline_enabled"]["value"]),
+            outline_enabled,
+        )
         cmds.undo()
         self.assertEqual(_canonical_payload(self.window, self.root), before)
+        self.assertEqual(outline_state(), before_outline)
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after_name)
+        self.assertEqual(outline_state(), after_outline)
 
         with patch(
             "mmd_tools.ui.presenters.material_presenter.QColorDialog.getColor",

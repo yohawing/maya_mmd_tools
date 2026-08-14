@@ -59,6 +59,13 @@ ATTR_MMD_TOON_TEXTURE_PATH = ATTR_MMD_TOON_PATH
 ATTR_MMD_DIFFUSE_ALPHA = "mmd_diffuse_alpha"
 ATTR_MMD_EDGE_ALPHA = "mmd_edge_alpha"
 ATTR_MMD_MATERIAL_MORPH_OFFSETS = "mmd_material_morph_offsets_json"
+_MATERIAL_OUTLINE_ATTRS = (
+    "technique",
+    "EdgeSize",
+    "mmd_shader_outline_enabled",
+    "mmdDoubleSided",
+    "mmdTransparencyMode",
+)
 
 
 class MayaMaterialAuthoringError(RuntimeError):
@@ -258,6 +265,29 @@ class MayaMaterialAuthoring:
         # morph evaluator. Restore the runtime route inside the same undo chunk.
         self._rebuild_material_morph_graph(root)
         return new_material
+
+    def apply_material_outline(
+        self,
+        shader: str,
+        enabled: bool,
+        edge_size: float,
+    ) -> Mapping[str, Any]:
+        """Apply the shared DX11 outline writer and return its exact attr state."""
+        if type(enabled) is not bool:
+            raise MayaMaterialAuthoringError("material outline intent must be a bool")
+        if self._call("node_type", shader) != "dx11Shader":
+            raise MayaMaterialAuthoringError("material outline intent requires a dx11Shader")
+        from mmd_tools.converters.mesh_converter import apply_shader_outline
+
+        apply_shader_outline(shader, enabled, edge_size, cmds_module=self._cmds)
+        result = {}
+        for attr in _MATERIAL_OUTLINE_ATTRS:
+            exists = self._has_attr(shader, attr)
+            result[attr] = {
+                "exists": exists,
+                "value": self._get_attr(shader, attr) if exists else None,
+            }
+        return result
 
     def _resolve_material_value_binding(
         self,

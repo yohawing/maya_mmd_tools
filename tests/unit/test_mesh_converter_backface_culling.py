@@ -294,9 +294,7 @@ class TestDx11TechniqueSelection(unittest.TestCase):
                 self.assertEqual(get_transparency_mode("shader1"), expected)
 
     def test_apply_transparency_mode_preserves_double_sided_technique_state(self):
-        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
-        ) as mock_set_custom_attributes:
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
             mock_cmds.attributeQuery.side_effect = lambda *args, **kwargs: args[0] == "technique"
             mock_cmds.getAttr.return_value = "MMDTechniqueNoEdgeDoubleSided"
 
@@ -304,7 +302,10 @@ class TestDx11TechniqueSelection(unittest.TestCase):
 
         self.assertEqual(technique, "MMDTechniqueDoubleSided")
         mock_cmds.setAttr.assert_any_call("shader1.technique", technique, type="string")
-        mock_set_custom_attributes.assert_called_once_with("shader1", {"mmdDoubleSided": True})
+        mock_cmds.addAttr.assert_any_call(
+            "shader1", longName="mmdDoubleSided", attributeType="bool"
+        )
+        mock_cmds.setAttr.assert_any_call("shader1.mmdDoubleSided", True)
 
     def test_apply_shader_outline_prefers_draw_flags_for_double_sided_state(self):
         def attribute_exists(*args, **kwargs):
@@ -322,7 +323,7 @@ class TestDx11TechniqueSelection(unittest.TestCase):
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ) as mock_set_custom_attributes, patch(
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
-        ):
+        ) as mock_set_attribute:
             mock_cmds.attributeQuery.side_effect = attribute_exists
             mock_cmds.getAttr.side_effect = get_attr
 
@@ -330,25 +331,43 @@ class TestDx11TechniqueSelection(unittest.TestCase):
 
         self.assertEqual(technique, "MMDTechniqueDoubleSided")
         mock_cmds.setAttr.assert_any_call("shader1.technique", technique, type="string")
-        mock_set_custom_attributes.assert_called_once_with("shader1", {"mmdDoubleSided": True})
+        mock_cmds.addAttr.assert_called_once_with(
+            "shader1", longName="mmdDoubleSided", attributeType="bool"
+        )
+        mock_cmds.setAttr.assert_any_call("shader1.mmdDoubleSided", True)
+        mock_cmds.setAttr.assert_any_call("shader1.mmd_shader_outline_enabled", True)
+        mock_set_custom_attributes.assert_not_called()
+        mock_set_attribute.assert_not_called()
 
     def test_disabling_outline_keeps_technique_and_suppresses_edge_size(self):
         def attribute_exists(*args, **kwargs):
-            return args[0] in {"technique", "EdgeSize", "mmd_shader_outline_enabled"}
+            return args[0] in {
+                "technique",
+                "EdgeSize",
+                "mmd_shader_outline_enabled",
+                "mmdDoubleSided",
+            }
+
+        def get_attr(plug):
+            return False if plug.endswith(".mmdDoubleSided") else "MMDTechnique"
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch(
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
-        ):
+        ) as mock_set_custom_attributes:
             mock_cmds.attributeQuery.side_effect = attribute_exists
-            mock_cmds.getAttr.return_value = "MMDTechnique"
+            mock_cmds.getAttr.side_effect = get_attr
 
             technique = apply_shader_outline("shader1", False, edge_size=1.5)
 
         self.assertEqual(technique, "MMDTechnique")
         mock_cmds.setAttr.assert_any_call("shader1.EdgeSize", 0.0)
-        mock_set_attribute.assert_any_call("shader1", "mmd_shader_outline_enabled", False, "bool")
+        mock_cmds.setAttr.assert_any_call("shader1.mmdDoubleSided", False)
+        mock_cmds.setAttr.assert_any_call("shader1.mmd_shader_outline_enabled", False)
+        mock_cmds.addAttr.assert_not_called()
+        mock_set_attribute.assert_not_called()
+        mock_set_custom_attributes.assert_not_called()
 
     def test_disabling_outline_without_size_still_suppresses_edge(self):
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
