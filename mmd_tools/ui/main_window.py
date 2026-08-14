@@ -89,6 +89,10 @@ class MainWindow(QMainWindow):
         self.app_state.status_message.connect(self.show_status_message)
         self.app_state.progress_updated.connect(self.update_progress)
         self.app_state.current_model_changed.connect(self.update_window_title)
+        self.app_state.model_list_updated.connect(self._on_model_list_updated)
+        refresh_signal = getattr(self.app_state, "model_refresh_completed", None)
+        if refresh_signal is not None and hasattr(refresh_signal, "connect"):
+            refresh_signal.connect(self._on_model_refresh_completed)
 
         # 最小サイズを設定
         self.setMinimumWidth(800)
@@ -211,6 +215,42 @@ class MainWindow(QMainWindow):
                 self.setWindowTitle(f"{base_title} - {model_root}")
         else:
             self.setWindowTitle(base_title)
+
+    def _on_model_list_updated(self, _models):
+        """Refresh the title after Header Refresh invalidates model metadata."""
+        self.update_window_title(self.app_state.current_model_root)
+
+    @staticmethod
+    def _generation_refresh(presenter, generation):
+        """Invoke a presenter generation refresh when it implements the seam.
+
+        Checking the class keeps old Mock-based/headless callers on their
+        legacy activation methods while real presenters opt into lazy reload.
+        """
+        method = getattr(type(presenter), "refresh_for_generation", None)
+        if callable(method):
+            result = method(presenter, generation)
+            return result is not False
+        return False
+
+    def _on_model_refresh_completed(self, generation):
+        """Reload only the currently visible authoring tab."""
+        active_tab = self.tab_widget.currentWidget()
+        tab_presenter_pairs = (
+            (getattr(self, "info_presenter", None), getattr(self, "info_presenter", None)),
+            (getattr(self, "material_presenter", None), getattr(self, "material_presenter", None)),
+            (getattr(self, "bone_presenter", None), getattr(self, "bone_presenter", None)),
+            (getattr(self, "morph_tab", None), getattr(self, "morph_presenter", None)),
+            (getattr(self, "display_pane_tab", None), getattr(self, "display_pane_presenter", None)),
+            (getattr(self, "physics_tab", None), getattr(self, "physics_presenter", None)),
+        )
+        for tab_or_presenter, presenter in tab_presenter_pairs:
+            if presenter is None:
+                continue
+            tab = getattr(presenter, "view", None) if tab_or_presenter is presenter else tab_or_presenter
+            if tab is active_tab:
+                MainWindow._generation_refresh(presenter, generation)
+                break
 
     def setup_logging(self):
         install_maya_script_editor_handler()
@@ -356,10 +396,28 @@ class MainWindow(QMainWindow):
     def _on_main_tab_changed(self, index):
         """Refresh data-backed tabs when they become active."""
         active_tab = self.tab_widget.widget(index)
+        generation = getattr(getattr(self, "app_state", None), "refresh_generation", 0)
+
+        info_presenter = getattr(self, "info_presenter", None)
+        if info_presenter is not None and getattr(info_presenter, "view", None) is active_tab:
+            if not MainWindow._generation_refresh(info_presenter, generation):
+                info_presenter.load_model_info()
+
+        material_presenter = getattr(self, "material_presenter", None)
+        if material_presenter is not None and getattr(material_presenter, "view", None) is active_tab:
+            if not MainWindow._generation_refresh(material_presenter, generation):
+                material_presenter.load_materials()
+
+        bone_presenter = getattr(self, "bone_presenter", None)
+        if bone_presenter is not None and getattr(bone_presenter, "view", None) is active_tab:
+            if not MainWindow._generation_refresh(bone_presenter, generation):
+                bone_presenter.load_bones()
+
         morph_tab = getattr(self, "morph_tab", None)
         morph_presenter = getattr(self, "morph_presenter", None)
         if morph_tab is not None and morph_presenter is not None and active_tab is morph_tab:
-            morph_presenter.ensure_morphs_loaded()
+            if not MainWindow._generation_refresh(morph_presenter, generation):
+                morph_presenter.ensure_morphs_loaded()
 
         display_pane_tab = getattr(self, "display_pane_tab", None)
         display_pane_presenter = getattr(self, "display_pane_presenter", None)
@@ -368,12 +426,14 @@ class MainWindow(QMainWindow):
             and display_pane_presenter is not None
             and active_tab is display_pane_tab
         ):
-            display_pane_presenter.refresh()
+            if not MainWindow._generation_refresh(display_pane_presenter, generation):
+                display_pane_presenter.refresh()
 
         physics_tab = getattr(self, "physics_tab", None)
         presenter = getattr(self, "physics_presenter", None)
         if physics_tab is not None and presenter is not None and active_tab is physics_tab:
-            presenter.refresh_physics()
+            if not MainWindow._generation_refresh(presenter, generation):
+                presenter.refresh_physics()
 
     def refresh_development_mode_visibility(self):
         """Development Mode 依存の UI 表示を現在のウィンドウへ再適用する。"""

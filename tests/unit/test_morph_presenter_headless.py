@@ -2,6 +2,7 @@
 
 import json
 import unittest
+from unittest.mock import Mock
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
@@ -350,6 +351,26 @@ def _freeze(value):
 
 
 class TestMorphPresenterHeadless(unittest.TestCase):
+    def test_refresh_pending_detects_unapplied_name_and_panel_edits(self):
+        presenter, view, _, _ = _make_presenter()
+        presenter.current_morph = "smile"
+        presenter._morph_edit_baseline = ("Smile", "", 0, 0)
+        view.morph_name_jp_edit.setText("Edited Smile")
+        view.panel_combo.setCurrentIndex(2)
+
+        self.assertTrue(presenter._has_pending_refresh_work())
+
+    def test_initial_timer_does_not_bypass_pending_refresh(self):
+        presenter, _, app_state, _ = _make_presenter()
+        app_state.refresh_generation = 3
+        presenter._pending_refresh_generation = 3
+        presenter._last_refresh_generation = None
+        presenter.load_morphs = Mock()
+
+        presenter._load_initial_morphs()
+
+        presenter.load_morphs.assert_not_called()
+
     def test_init_connects_signals_without_maya_adapter_calls(self):
         presenter, view, app_state, adapter = _make_presenter()
 

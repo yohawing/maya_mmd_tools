@@ -41,10 +41,15 @@ class DisplayPanePresenter:
         self._bone_choices: dict[str, int] = {}
         self._morph_choices: dict[str, int] = {}
         self._loading = False
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = None
         self._connect_signals()
 
     def _connect_signals(self) -> None:
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
+        refresh_signal = getattr(self.app_state, "model_refresh_completed", None)
+        if refresh_signal is not None and hasattr(refresh_signal, "connect"):
+            refresh_signal.connect(self.on_model_refresh)
         self.view.frame_list.currentRowChanged.connect(self.on_frame_selected)
         self.view.add_frame_btn.clicked.connect(self.add_frame)
         self.view.delete_frame_btn.clicked.connect(self.delete_frame)
@@ -63,10 +68,41 @@ class DisplayPanePresenter:
 
     def on_current_model_changed(self, _model_root: str) -> None:
         """共有モデル選択が変わったら表示枠を読み直す。"""
+        if getattr(self.app_state, "refreshing", False) is True:
+            self.on_model_refresh(getattr(self.app_state, "refresh_generation", 0))
+            return
+        self._pending_refresh_generation = None
         self.refresh()
+
+    def on_model_refresh(self, generation: int) -> None:
+        """Mark frame metadata stale without replacing the work copy."""
+        self._pending_refresh_generation = generation
+
+    def _has_pending_refresh_work(self) -> bool:
+        return self.frames != self._original_frames
+
+    def refresh_for_generation(self, generation: int) -> bool:
+        """Reload a visible tab once per generation when its work copy is clean."""
+        if self._pending_refresh_generation != generation:
+            if self._last_refresh_generation == generation:
+                return True
+            self.refresh()
+            self._last_refresh_generation = generation
+            return True
+        if self._has_pending_refresh_work():
+            self._last_refresh_generation = generation
+            return True
+        self.refresh()
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = generation
+        return True
 
     def refresh(self) -> None:
         """scene metadataから作業コピーと候補一覧を再構築する。"""
+        if self._pending_refresh_generation is not None and self._has_pending_refresh_work():
+            return
+        self._last_refresh_generation = getattr(self.app_state, "refresh_generation", 0)
+        self._pending_refresh_generation = None
         root = self.app_state.current_model_root
         self.frames = []
         self._original_frames = []

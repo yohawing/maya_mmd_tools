@@ -105,21 +105,28 @@ class MorphPresenter:
         self._loaded_model_root = None
         self._morph_controller = None
         self._authoring_spec = None
+        self._authoring_spec_baseline = None
+        self._morph_edit_baseline = None
         self._authoring_morphs_by_index = {}
         self._authoring_ready = False
         self.group_morphs = {}  # グループごとのモーフリスト
         self.is_updating = False
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = None
 
         self.connect_signals()
         self._set_authoring_available()
 
         # 既に選択されているモデルがある場合はロード
         if self.app_state.current_model_root:
-            QTimer.singleShot(100, self.load_morphs)
+            QTimer.singleShot(100, self._load_initial_morphs)
 
     def connect_signals(self):
         # ApplicationStateのシグナル
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
+        refresh_signal = getattr(self.app_state, "model_refresh_completed", None)
+        if refresh_signal is not None and hasattr(refresh_signal, "connect"):
+            refresh_signal.connect(self.on_model_refresh)
 
         # モーフリスト関連
         self.view.morph_list.currentItemChanged.connect(self.on_morph_selected)
@@ -157,22 +164,90 @@ class MorphPresenter:
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
+        if getattr(self.app_state, "refreshing", False) is True:
+            self.on_model_refresh(getattr(self.app_state, "refresh_generation", 0))
+            return
+        self._pending_refresh_generation = None
         reload_for_current_model_change(logger, "MorphPresenter", model_root, self.load_morphs)
+
+    def on_model_refresh(self, generation):
+        """Mark morph data stale without replacing a pending work copy."""
+        self._pending_refresh_generation = generation
+
+    def _has_pending_refresh_work(self):
+        if (
+            self._authoring_spec is not None
+            and self._authoring_spec_baseline is not None
+            and self._authoring_spec != self._authoring_spec_baseline
+        ):
+            return True
+        if self.current_morph and self._morph_edit_baseline is not None:
+            try:
+                current = (
+                    self.view.morph_name_jp_edit.text(),
+                    self.view.morph_name_en_edit.text(),
+                    self.view.panel_combo.currentIndex(),
+                    self.view.morph_type_combo.currentIndex(),
+                )
+                if current != self._morph_edit_baseline:
+                    return True
+            except Exception:
+                return True
+        work = self.material_morph_work
+        if work is None:
+            return False
+        for name in ("is_dirty", "dirty", "has_unsaved_changes", "pending"):
+            value = getattr(work, name, False)
+            try:
+                value = value() if callable(value) else value
+            except Exception:
+                value = False
+            if value:
+                return True
+        return False
+
+    def refresh_for_generation(self, generation):
+        """Reload a visible tab once per generation when its work copy is clean."""
+        if self._pending_refresh_generation != generation:
+            if self._last_refresh_generation == generation:
+                return True
+            self.load_morphs()
+            self._last_refresh_generation = generation
+            return True
+        if self._has_pending_refresh_work():
+            self._last_refresh_generation = generation
+            return True
+        self.load_morphs()
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = generation
+        return True
 
     def ensure_morphs_loaded(self):
         """Load once when the active model has not populated this presenter yet."""
-        model_root = self.app_state.current_model_root
-        if model_root and model_root != self._loaded_model_root:
-            self.load_morphs()
+        generation = getattr(self.app_state, "refresh_generation", 0)
+        self.refresh_for_generation(generation)
+
+    def _load_initial_morphs(self):
+        """Load the deferred constructor projection unless activation did it first."""
+        if self._pending_refresh_generation is not None:
+            return
+        generation = getattr(self.app_state, "refresh_generation", 0)
+        if self._last_refresh_generation == generation:
+            return
+        self.load_morphs()
 
     def load_morphs(self):
         """モーフをロード"""
+        self._last_refresh_generation = getattr(self.app_state, "refresh_generation", 0)
+        self._pending_refresh_generation = None
         self.view.morph_list.clear()
         self.morph_data.clear()
         self._blendshape_metadata_bindings.clear()
         self._morph_capability_cache.clear()
         self._morphs_by_index.clear()
         self._authoring_spec = None
+        self._authoring_spec_baseline = None
+        self._morph_edit_baseline = None
         self._authoring_morphs_by_index.clear()
         self._authoring_ready = False
         self.group_morphs.clear()
@@ -189,6 +264,7 @@ class MorphPresenter:
             return
 
         self._read_authoring_spec(current_model_root)
+        self._authoring_spec_baseline = self._authoring_spec
 
         controllers = []
         if self.maya_adapter.attribute_exists("mmd_morph_controller", current_model_root):
@@ -941,6 +1017,12 @@ class MorphPresenter:
         supported = self._morph_controls_supported(data)
         tooltip = "" if supported else self.view.tr("morph_runtime_unsupported", "tooltips")
         self.view.set_morph_controls_enabled(supported, tooltip)
+        self._morph_edit_baseline = (
+            self.view.morph_name_jp_edit.text(),
+            self.view.morph_name_en_edit.text(),
+            self.view.panel_combo.currentIndex(),
+            self.view.morph_type_combo.currentIndex(),
+        )
 
         self.is_updating = False
 

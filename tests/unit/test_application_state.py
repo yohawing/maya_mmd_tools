@@ -167,6 +167,44 @@ class TestApplicationStateWithInjectedService(unittest.TestCase):
         self.assertEqual(app_state.available_models, [])
         signal_catcher.assert_called_with([])
 
+    def test_explicit_refresh_failure_preserves_state_and_generation(self):
+        service = _FakeSceneModelService()
+        service.models = ["model_root"]
+        service.existing = {"model_root"}
+        app_state = ApplicationState(scene_model_service=service)
+        app_state._available_models = ["model_root"]
+        app_state._current_model_root = "model_root"
+        app_state._model_info_cache = {"model_root": {"display_name": "cached"}}
+        refresh_signal = Mock()
+        app_state.model_refresh_completed.connect(refresh_signal)
+        service.raise_on_list = True
+
+        with self.assertRaises(RuntimeError):
+            app_state.refresh_model_list(explicit=True)
+
+        self.assertEqual(app_state.available_models, ["model_root"])
+        self.assertEqual(app_state.current_model_root, "model_root")
+        self.assertEqual(app_state._model_info_cache, {"model_root": {"display_name": "cached"}})
+        self.assertEqual(app_state.refresh_generation, 0)
+        refresh_signal.assert_not_called()
+
+    def test_explicit_refresh_replacement_emits_selection_without_eager_hidden_reload(self):
+        service = _FakeSceneModelService()
+        service.models = ["new_root"]
+        service.existing = {"old_root", "new_root"}
+        app_state = ApplicationState(scene_model_service=service)
+        app_state._current_model_root = "old_root"
+        current_signal = Mock()
+        refresh_signal = Mock()
+        app_state.current_model_changed.connect(current_signal)
+        app_state.model_refresh_completed.connect(refresh_signal)
+
+        app_state.refresh_model_list(explicit=True)
+
+        current_signal.assert_called_once_with("new_root")
+        refresh_signal.assert_called_once_with(1)
+        self.assertEqual(app_state.current_model_root, "new_root")
+
     def test_get_model_info_uses_service_and_cache(self):
         service = _FakeSceneModelService()
         service.existing = {"model_root"}

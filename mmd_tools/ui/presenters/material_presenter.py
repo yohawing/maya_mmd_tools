@@ -91,6 +91,8 @@ class MaterialPresenter:
         self.material_data = {}  # Store original material data for reset
         self.has_unsaved_changes = False
         self._loading_properties = False  # Flag to prevent change tracking during loading
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = None
         self.connect_signals()
         self._update_authoring_actions()
 
@@ -101,6 +103,9 @@ class MaterialPresenter:
     def connect_signals(self):
         # ApplicationStateのシグナル
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
+        refresh_signal = getattr(self.app_state, "model_refresh_completed", None)
+        if refresh_signal is not None and hasattr(refresh_signal, "connect"):
+            refresh_signal.connect(self.on_model_refresh)
 
         # UIのシグナル
         self.view.material_list.currentItemChanged.connect(self.on_material_selected)
@@ -180,14 +185,42 @@ class MaterialPresenter:
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
+        if getattr(self.app_state, "refreshing", False) is True:
+            self.on_model_refresh(getattr(self.app_state, "refresh_generation", 0))
+            return
+        self._pending_refresh_generation = None
         reload_for_current_model_change(logger, "MaterialPresenter", model_root, self.load_materials)
         self._update_authoring_actions()
+
+    def on_model_refresh(self, generation):
+        """Invalidate list data without discarding an unsaved material copy."""
+        self._pending_refresh_generation = generation
+
+    def refresh_for_generation(self, generation):
+        """Reload a visible tab once per generation when it is clean."""
+        if self._pending_refresh_generation != generation:
+            if self._last_refresh_generation == generation:
+                return True
+            self.load_materials()
+            self._last_refresh_generation = generation
+            return True
+        if self.has_unsaved_changes:
+            self._last_refresh_generation = generation
+            return True
+        self.load_materials()
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = generation
+        return True
 
     def tr_message(self, key: str) -> str:
         """Translate a material presenter message key."""
         return UITranslator.instance().translate(key, "messages")
 
     def load_materials(self):
+        if self._pending_refresh_generation is not None and self.has_unsaved_changes:
+            return
+        self._last_refresh_generation = getattr(self.app_state, "refresh_generation", 0)
+        self._pending_refresh_generation = None
         self.view.material_list.clear()
         self.current_material = None
         self.current_material_index = None

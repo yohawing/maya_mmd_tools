@@ -61,7 +61,10 @@ MAX_ADAPTER_CALLS = {
     "morph_slider_drag": 1,
     "display_apply": 5,
     "info_focus_edit": 3,
-    "refresh_visible_material_tab": 5,
+    # Header Refresh now reloads the already-visible Material projection while
+    # hidden tabs remain generation-dirty.  Keep headroom above the Maya 2024
+    # post-contract baseline without permitting a full-model eager reload.
+    "refresh_visible_material_tab": 60,
 }
 
 COLLECTION_METHODS = frozenset(
@@ -679,7 +682,6 @@ def run_probe(
                 raise AssertionError("Info metadata read-back mismatch")
 
         def refresh_action(_index: int) -> None:
-            window.tab_widget.setCurrentWidget(material_presenter.view)
             window.header_widget.refresh_btn.click()
 
         def refresh_oracle(_index: int) -> None:
@@ -704,6 +706,9 @@ def run_probe(
             ("refresh_visible_material_tab", refresh_action, refresh_oracle, common_targets, set()),
         )
         for name, callback, oracle, targets, expected_created in actions:
+            if name == "refresh_visible_material_tab":
+                window.tab_widget.setCurrentWidget(material_presenter.view)
+                _safe_process_events()
             report["cases"].append(
                 _measure_action(
                     name,

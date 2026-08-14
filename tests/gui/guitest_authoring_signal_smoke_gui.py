@@ -33,6 +33,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_LOCAL_X_AXIS,
     ATTR_MMD_LOCAL_Z_AXIS,
     ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_MODEL_NAME,
     ATTR_MMD_X_AXIS_DIRECTION,
     ATTR_MMD_Z_AXIS_DIRECTION,
 )
@@ -1045,6 +1046,47 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             self.assertEqual(len(sources), 1)
             file_node = sources[0].rsplit(".", 1)[0]
             self.assertEqual(Path(cmds.getAttr(f"{file_node}.fileTextureName")), texture_path)
+
+    def test_header_refresh_defers_hidden_authoring_tabs(self):
+        """Header Refresh must not read hidden authoring graphs eagerly."""
+        self.window.tab_widget.setCurrentIndex(0)
+        cmds.setAttr(f"{self.root}.{ATTR_MMD_MODEL_NAME}", "UI Refresh Name", type="string")
+        generation = self.window.app_state.refresh_generation
+
+        with patch.object(self.window.info_presenter, "load_model_info") as info_load, patch.object(
+            self.window.material_presenter, "load_materials"
+        ) as material_load, patch.object(self.window.bone_presenter, "load_bones") as bone_load, patch.object(
+            self.window.morph_presenter, "load_morphs"
+        ) as morph_load, patch.object(self.window.display_pane_presenter, "refresh") as display_refresh, patch.object(
+            self.window.physics_presenter, "refresh_physics"
+        ) as physics_refresh:
+            self.window.header_widget.refresh_btn.click()
+            QApplication.processEvents()
+            self.assertEqual(self.window.app_state.refresh_generation, generation + 1)
+            for call in (
+                info_load,
+                material_load,
+                bone_load,
+                morph_load,
+                display_refresh,
+                physics_refresh,
+            ):
+                self.assertEqual(call.call_count, 0)
+
+            info_index = self.window.tab_widget.indexOf(self.window.info_presenter.view)
+            self.window.tab_widget.setCurrentIndex(info_index)
+            QApplication.processEvents()
+            info_load.assert_called_once_with()
+
+        self.assertIn("UI Refresh Name", self.window.windowTitle())
+        self._emit_surface_witness(
+            "header.refresh",
+            "gui.authoring_refresh_generation",
+            selector="objectName=headerRefreshButton",
+            interaction="QTest.mouseClick(objectName=headerRefreshButton)",
+            fired_action="ApplicationState.refresh_model_list(explicit=True)",
+            oracle="hidden_authoring_tabs_zero_graph_reads_until_activation",
+        )
 
     def test_material_toolbar_crud_reindex_and_undo(self):
         """Exercise every supported Material toolbar action through real buttons."""

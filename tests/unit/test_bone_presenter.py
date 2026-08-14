@@ -1,7 +1,7 @@
 """BonePresenterのユニットテスト"""
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 import maya.cmds as cmds
 
 from mmd_tools.core.constants import (
@@ -253,6 +253,64 @@ class TestBonePresenter(MayaTestBase):
         self.assertEqual(self.presenter.bone_list_items, {})
         self.assertEqual(self.presenter.all_bones, [])
         self.assertFalse(self.presenter.is_updating)
+
+    def test_refresh_pending_detects_axis_vector_edit(self):
+        presenter = BonePresenter.__new__(BonePresenter)
+        presenter.view = self.mock_view
+        presenter.current_bone = "joint"
+        presenter._reindex_dirty = False
+        presenter._reset_plan = None
+        presenter.bone_data = {
+            "name_jp": "",
+            "name_en": "",
+            "deform_layer": 0.0,
+            "flags": 0,
+            "structural": {},
+            "fixed_axis": (0.0, 0.0, 0.0),
+            "local_axis_x": (0.0, 0.0, 0.0),
+            "local_axis_z": (0.0, 0.0, 0.0),
+        }
+        self.mock_view.fixed_axis_x_spin.value.return_value = 1.0
+        presenter._get_bone_flags = Mock(side_effect=AssertionError("pending check must not read Maya"))
+
+        self.assertTrue(presenter._has_pending_refresh_work())
+        presenter._get_bone_flags.assert_not_called()
+
+    def test_refresh_pending_is_fail_closed_when_control_read_fails(self):
+        presenter = BonePresenter.__new__(BonePresenter)
+        presenter.view = self.mock_view
+        presenter.current_bone = "joint"
+        presenter._reindex_dirty = False
+        presenter._reset_plan = None
+        presenter.bone_data = {"name_jp": "", "name_en": "", "deform_layer": 0.0, "flags": 0}
+        self.mock_view.bone_name_jp_edit.text.side_effect = RuntimeError("control unavailable")
+
+        self.assertTrue(presenter._has_pending_refresh_work())
+
+    def test_dirty_same_generation_reactivation_does_not_reload_graph(self):
+        presenter = BonePresenter.__new__(BonePresenter)
+        presenter._pending_refresh_generation = 3
+        presenter._last_refresh_generation = None
+        presenter._reindex_dirty = True
+        presenter._reset_plan = None
+        presenter.load_bones = Mock()
+
+        self.assertTrue(presenter.refresh_for_generation(3))
+        self.assertTrue(presenter.refresh_for_generation(3))
+        presenter.load_bones.assert_not_called()
+        self.assertEqual(presenter._last_refresh_generation, 3)
+
+    def test_initial_timer_does_not_bypass_pending_refresh(self):
+        presenter = BonePresenter.__new__(BonePresenter)
+        presenter.app_state = self.mock_app_state
+        presenter.app_state.refresh_generation = 3
+        presenter._pending_refresh_generation = 3
+        presenter._last_refresh_generation = None
+        presenter.load_bones = Mock()
+
+        presenter._load_initial_bones()
+
+        presenter.load_bones.assert_not_called()
 
     def test_load_bones(self):
         """ボーン読み込みのテスト"""

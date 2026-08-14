@@ -13,6 +13,12 @@ open_maya_ui.MQtUtil = Mock()
 sys.modules["maya.OpenMayaUI"] = open_maya_ui
 
 from mmd_tools.ui.main_window import MainWindow  # noqa: E402
+from mmd_tools.ui.presenters.bone_presenter import BonePresenter  # noqa: E402
+from mmd_tools.ui.presenters.display_pane_presenter import DisplayPanePresenter  # noqa: E402
+from mmd_tools.ui.presenters.info_presenter import InfoPresenter  # noqa: E402
+from mmd_tools.ui.presenters.material_presenter import MaterialPresenter  # noqa: E402
+from mmd_tools.ui.presenters.morph_presenter import MorphPresenter  # noqa: E402
+from mmd_tools.ui.presenters.physics_presenter import PhysicsPresenter  # noqa: E402
 
 
 class _Tabs:
@@ -99,6 +105,67 @@ def test_display_frames_refresh_when_their_main_tab_activates():
 
     MainWindow._on_main_tab_changed(window, 1)
     presenter.refresh.assert_called_once_with()
+
+
+def test_real_presenters_consume_initial_generation_once_across_tab_reactivation():
+    """A real presenter owns its first generation load and then stays idle."""
+    cases = (
+        (InfoPresenter, "info_presenter", "load_model_info", {"_undo_chunk_open": False, "_edit_session_root": None}),
+        (MaterialPresenter, "material_presenter", "load_materials", {"has_unsaved_changes": False}),
+        (
+            BonePresenter,
+            "bone_presenter",
+            "load_bones",
+            {"_reindex_dirty": False, "_reset_plan": None, "current_bone": None, "bone_data": {}},
+        ),
+        (
+            MorphPresenter,
+            "morph_presenter",
+            "load_morphs",
+            {
+                "_authoring_spec": None,
+                "_authoring_spec_baseline": None,
+                "current_morph": None,
+                "_morph_edit_baseline": None,
+                "material_morph_work": None,
+            },
+        ),
+        (DisplayPanePresenter, "display_pane_presenter", "refresh", {"frames": [], "_original_frames": []}),
+        (PhysicsPresenter, "physics_presenter", "refresh_physics", {"_form_dirty": False}),
+    )
+    for presenter_cls, presenter_attr, load_name, state in cases:
+        tab = object()
+        presenter = presenter_cls.__new__(presenter_cls)
+        presenter.view = tab
+        presenter.app_state = type("AppState", (), {"refresh_generation": 3})()
+        presenter._pending_refresh_generation = None
+        presenter._last_refresh_generation = None
+        for name, value in state.items():
+            setattr(presenter, name, value)
+        loader = Mock()
+        setattr(presenter, load_name, loader)
+        window = type(
+            "Window",
+            (),
+            {
+                "app_state": presenter.app_state,
+                presenter_attr: presenter,
+                "tab_widget": _Tabs([object(), tab]),
+                "physics_tab": tab if presenter_attr == "physics_presenter" else None,
+                "morph_tab": tab if presenter_attr == "morph_presenter" else None,
+                "display_pane_tab": tab if presenter_attr == "display_pane_presenter" else None,
+            },
+        )()
+
+        MainWindow._on_main_tab_changed(window, 0)
+        MainWindow._on_main_tab_changed(window, 1)
+        MainWindow._on_main_tab_changed(window, 0)
+        MainWindow._on_main_tab_changed(window, 1)
+
+        if load_name == "refresh_physics":
+            loader.assert_called_once_with(force=True)
+        else:
+            loader.assert_called_once_with()
 
 
 def test_development_visibility_refresh_keeps_always_present_physics_tab():

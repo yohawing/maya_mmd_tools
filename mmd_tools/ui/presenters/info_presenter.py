@@ -40,6 +40,8 @@ class InfoPresenter:
         self._edit_session_blocked = False
         self._undo_state_uncertain = False
         self._loading = False
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = None
         self.connect_signals()
 
         # 既に選択されているモデルがある場合は情報をロード
@@ -50,6 +52,9 @@ class InfoPresenter:
     def connect_signals(self):
         # ApplicationStateのシグナル
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
+        refresh_signal = getattr(self.app_state, "model_refresh_completed", None)
+        if refresh_signal is not None and hasattr(refresh_signal, "connect"):
+            refresh_signal.connect(self.on_model_refresh)
 
         # Focus transitions are supplied by InfoTab's shared event-filter seam.
         # Keep this optional for the headless presenter view stubs.
@@ -150,6 +155,9 @@ class InfoPresenter:
         self._undo_chunk_open = False
         self._edit_session_root = None
         self._edit_session_blocked = False
+        pending_generation = self._pending_refresh_generation
+        if pending_generation is not None and not self._loading:
+            self.refresh_for_generation(pending_generation)
 
     # Explicit lifecycle alias for MainWindow/window teardown callers.
     shutdown = end_edit_session
@@ -163,6 +171,10 @@ class InfoPresenter:
 
     def on_current_model_changed(self, model_root):
         """Close the old-root session before loading the new root's values."""
+        if getattr(self.app_state, "refreshing", False) is True:
+            self.on_model_refresh(getattr(self.app_state, "refresh_generation", 0))
+            return
+        self._pending_refresh_generation = None
         # This order is intentional: loading text must never be interpreted as
         # an edit against the newly selected root.
         self.end_edit_session()
@@ -177,7 +189,31 @@ class InfoPresenter:
         finally:
             self._loading = False
 
+    def on_model_refresh(self, generation):
+        """Mark metadata stale without touching Maya or an active edit chunk."""
+        self._pending_refresh_generation = generation
+
+    def refresh_for_generation(self, generation):
+        """Reload a visible tab once per generation, preserving focus edits."""
+        if self._pending_refresh_generation != generation:
+            if self._last_refresh_generation == generation:
+                return True
+            self.load_model_info()
+            self._last_refresh_generation = generation
+            return True
+        if self._undo_chunk_open or self._edit_session_root is not None:
+            self._last_refresh_generation = generation
+            return True
+        self.load_model_info()
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = generation
+        return True
+
     def load_model_info(self):
+        # Any completed direct load (including constructor/eager loads) has
+        # consumed the current generation, so tab activation cannot duplicate
+        # the same graph read.
+        self._last_refresh_generation = getattr(self.app_state, "refresh_generation", 0)
         current_model_root = self.app_state.current_model_root
         if not current_model_root or not self._model_exists(current_model_root):
             logger.warning("No model selected or model does not exist.")

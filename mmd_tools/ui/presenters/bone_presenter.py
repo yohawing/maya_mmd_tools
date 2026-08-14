@@ -104,6 +104,8 @@ class BonePresenter:
         self._reindex_dirty = False
         self._pending_order = []
         self._reset_plan = None
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = None
         self.bone_data = {}  # Store original bone data for reset
         self.bone_list_items = {}  # Map bone name to list item
         self.all_bones = []  # All bones list
@@ -114,11 +116,14 @@ class BonePresenter:
         # 既に選択されているモデルがある場合はロード
         if self.app_state.current_model_root:
             # Qt のイベントループが安定してから実行
-            QTimer.singleShot(100, self.load_bones)
+            QTimer.singleShot(100, self._load_initial_bones)
 
     def connect_signals(self):
         # ApplicationStateのシグナル
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
+        refresh_signal = getattr(self.app_state, "model_refresh_completed", None)
+        if refresh_signal is not None and hasattr(refresh_signal, "connect"):
+            refresh_signal.connect(self.on_model_refresh)
 
         # リストビューのシグナル
         self.view.bone_list.currentItemChanged.connect(self.on_bone_selected)
@@ -160,6 +165,10 @@ class BonePresenter:
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
+        if getattr(self.app_state, "refreshing", False) is True:
+            self.on_model_refresh(getattr(self.app_state, "refresh_generation", 0))
+            return
+        self._pending_refresh_generation = None
         self.current_bone = None
         self.current_bone_index = None
         self._model_root_valid = False
@@ -170,8 +179,68 @@ class BonePresenter:
         self._update_authoring_actions()
         reload_for_current_model_change(logger, "BonePresenter", model_root, self.load_bones)
 
+    def on_model_refresh(self, generation):
+        """Mark the list stale without replacing pending Bone UI work."""
+        self._pending_refresh_generation = generation
+
+    def _has_pending_refresh_work(self):
+        if self._reindex_dirty or self._reset_plan is not None:
+            return True
+        if not self.current_bone or not self.bone_data:
+            return False
+        # The controls are a local work copy; comparing them is Maya-free.
+        try:
+            if self.view.bone_name_jp_edit.text() != self.bone_data.get("name_jp", ""):
+                return True
+            if self.view.bone_name_en_edit.text() != self.bone_data.get("name_en", ""):
+                return True
+            if self.view.deform_layer_spin.value() != self.bone_data.get("deform_layer"):
+                return True
+            if int(self._calculate_bone_flags(self.bone_data.get("flags", 0))) != int(
+                self.bone_data.get("flags", 0)
+            ):
+                return True
+            for key, names in (
+                ("fixed_axis", ("fixed_axis_x_spin", "fixed_axis_y_spin", "fixed_axis_z_spin")),
+                ("local_axis_x", ("local_x_axis_x_spin", "local_x_axis_y_spin", "local_x_axis_z_spin")),
+                ("local_axis_z", ("local_z_axis_x_spin", "local_z_axis_y_spin", "local_z_axis_z_spin")),
+            ):
+                expected = self.bone_data.get(key)
+                if expected is None:
+                    continue
+                values = tuple(getattr(self.view, name).value() for name in names)
+                if values != tuple(expected):
+                    return True
+            return self._structural_ui_state(existing_flags=self.bone_data.get("flags", 0)) != self.bone_data.get(
+                "structural"
+            )
+        except Exception:
+            # If a local control cannot be inspected, retain the work copy
+            # rather than risking a destructive refresh.
+            return True
+
+    def refresh_for_generation(self, generation):
+        """Reload a visible tab once per generation when its work copy is clean."""
+        if self._pending_refresh_generation != generation:
+            if self._last_refresh_generation == generation:
+                return True
+            self.load_bones()
+            self._last_refresh_generation = generation
+            return True
+        if self._has_pending_refresh_work():
+            self._last_refresh_generation = generation
+            return True
+        self.load_bones()
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = generation
+        return True
+
     def load_bones(self):
         """ボーンリストをロード"""
+        if self._pending_refresh_generation is not None and self._has_pending_refresh_work():
+            return
+        self._last_refresh_generation = getattr(self.app_state, "refresh_generation", 0)
+        self._pending_refresh_generation = None
         self.view.bone_list.clear()
         self.bone_list_items.clear()
         self.all_bones.clear()
@@ -259,6 +328,15 @@ class BonePresenter:
         self._update_authoring_actions()
 
         logger.debug(f"Loaded {len(joints)} bones for model: {current_model_root}")
+
+    def _load_initial_bones(self):
+        """Load the deferred constructor projection unless activation did it first."""
+        if self._pending_refresh_generation is not None:
+            return
+        generation = getattr(self.app_state, "refresh_generation", 0)
+        if self._last_refresh_generation == generation:
+            return
+        self.load_bones()
 
     def _get_bone_type(self, joint):
         """ボーンのタイプを判定"""
@@ -833,7 +911,17 @@ class BonePresenter:
             "flags": int(self._get_bone_flags(self.current_bone)),
             "structural": self._structural_ui_state(),
             "all_settings": self._gather_all_settings(),
+            "fixed_axis": self._axis_values("fixed_axis_x_spin", "fixed_axis_y_spin", "fixed_axis_z_spin"),
+            "local_axis_x": self._axis_values("local_x_axis_x_spin", "local_x_axis_y_spin", "local_x_axis_z_spin"),
+            "local_axis_z": self._axis_values("local_z_axis_x_spin", "local_z_axis_y_spin", "local_z_axis_z_spin"),
         }
+
+    def _axis_values(self, *names):
+        """Capture one axis vector from controls without querying Maya."""
+        try:
+            return tuple(getattr(self.view, name).value() for name in names)
+        except Exception:
+            return None
 
     def select_bone_dialog(self, target_type):
         """ボーン選択ダイアログを表示"""
@@ -1147,9 +1235,10 @@ class BonePresenter:
             logger.error(f"Failed to apply bone changes: {e}", exc_info=True)
             self.app_state.emit_status(tr_message_format("bone_changes_failed", error=str(e)))
 
-    def _structural_ui_state(self):
+    def _structural_ui_state(self, existing_flags=None):
         """Return only controls that require reference/topology resolution."""
-        existing_flags = self._get_bone_flags(self.current_bone) if self.current_bone else 0
+        if existing_flags is None:
+            existing_flags = self._get_bone_flags(self.current_bone) if self.current_bone else 0
         flags = self._calculate_bone_flags(existing_flags)
         links = []
         for row in range(self.view.ik_links_table.rowCount()):
