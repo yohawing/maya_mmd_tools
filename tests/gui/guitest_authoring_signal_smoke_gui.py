@@ -14,6 +14,7 @@ from mmd_tools.core import model_registry
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_MATERIAL_NAME_EN,
     ATTR_MMD_MODEL_NAME,
 )
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
@@ -843,6 +844,98 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(cmds.getAttr(f"{second_identity}.{ATTR_MMD_BONE_NAME_EN}"), before_second)
         cmds.redo()
         self.assertEqual(cmds.getAttr(f"{second_identity}.{ATTR_MMD_BONE_NAME_EN}"), edited_name)
+
+    def test_material_list_click_keyboard_routes_canonical_selection_to_one_apply(self):
+        """Real row navigation routes one Apply to only the selected material."""
+        presenter = self.window.material_presenter
+        view = presenter.view
+        coordinator = self.window.authoring_composition.coordinator
+        self.window.tab_widget.setCurrentWidget(view)
+
+        coordinator.create_material(self.root)
+        cmds.namespace(add="uiMaterialSelection")
+        for material in coordinator.read_spec(self.root).materials:
+            leaf = material.binding_identity.rsplit(":", 1)[-1]
+            cmds.rename(
+                material.binding_identity,
+                "uiMaterialSelection:{}".format(leaf),
+            )
+        presenter.load_materials()
+        QApplication.processEvents()
+
+        projection = presenter._material_list_projection
+        self.assertIsNotNone(projection)
+        self.assertEqual(projection.root_identity, self.root)
+        self.assertEqual(view.material_list.count(), 2)
+        projected = projection.items
+        self.assertEqual(tuple(item.index for item in projected), (0, 1))
+        rows = (view.material_list.item(0), view.material_list.item(1))
+        for row, item in zip(rows, projected):
+            identity = row.data(Qt.UserRole)
+            index = row.data(Qt.UserRole + 1)
+            self.assertEqual(identity, item.binding_identity)
+            self.assertEqual(index, item.index)
+            self.assertTrue(identity.startswith("uiMaterialSelection:"), identity)
+            self.assertNotIn(identity, row.text())
+            self.assertNotEqual(row.toolTip(), identity)
+
+        first_item, second_item = rows
+        first_identity = projected[0].binding_identity
+        second_identity = projected[1].binding_identity
+        view.material_list.scrollToItem(first_item)
+        QApplication.processEvents()
+        first_rect = view.material_list.visualItemRect(first_item)
+        self.assertTrue(first_rect.isValid())
+        self.assertTrue(view.material_list.viewport().rect().contains(first_rect.center()))
+        QTest.mouseClick(
+            view.material_list.viewport(),
+            Qt.LeftButton,
+            pos=first_rect.center(),
+        )
+        QApplication.processEvents()
+        self.assertIs(view.material_list.currentItem(), first_item)
+        self.assertEqual(presenter.current_material, first_identity)
+        self.assertEqual(presenter.current_material_index, 0)
+        self.assertEqual(tuple(cmds.ls(selection=True, long=True) or ()), (first_identity,))
+
+        QTest.keyClick(view.material_list, Qt.Key_Down)
+        QApplication.processEvents()
+        self.assertIs(view.material_list.currentItem(), second_item)
+        self.assertEqual(presenter.current_material, second_identity)
+        self.assertEqual(presenter.current_material_index, 1)
+        self.assertEqual(tuple(cmds.ls(selection=True, long=True) or ()), (second_identity,))
+
+        before_first = cmds.getAttr(f"{first_identity}.{ATTR_MMD_MATERIAL_NAME_EN}")
+        before_second = cmds.getAttr(f"{second_identity}.{ATTR_MMD_MATERIAL_NAME_EN}")
+        edited_name = "Keyboard Selected Material"
+        view.material_en_name_edit.setText(edited_name)
+        with patch.object(
+            coordinator,
+            "apply_material_value_patch",
+            wraps=coordinator.apply_material_value_patch,
+        ) as apply_action:
+            QTest.mouseClick(view.apply_btn, Qt.LeftButton)
+            QApplication.processEvents()
+            self.assertEqual(apply_action.call_count, 1)
+
+        self.assertEqual(
+            cmds.getAttr(f"{first_identity}.{ATTR_MMD_MATERIAL_NAME_EN}"),
+            before_first,
+        )
+        self.assertEqual(
+            cmds.getAttr(f"{second_identity}.{ATTR_MMD_MATERIAL_NAME_EN}"),
+            edited_name,
+        )
+        cmds.undo()
+        self.assertEqual(
+            cmds.getAttr(f"{second_identity}.{ATTR_MMD_MATERIAL_NAME_EN}"),
+            before_second,
+        )
+        cmds.redo()
+        self.assertEqual(
+            cmds.getAttr(f"{second_identity}.{ATTR_MMD_MATERIAL_NAME_EN}"),
+            edited_name,
+        )
 
 
 
