@@ -956,6 +956,18 @@ def gui_tests(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def authoring_performance_contract(session: nox.Session) -> None:
+    """Capture narrow Authoring action timings and Maya adapter scope."""
+    _run_python_module(
+        session,
+        module="tools.authoring_performance_contract",
+        posargs=session.posargs,
+        python_executable=sys.executable,
+        environment=dict(os.environ),
+    )
+
+
+@nox.session(venv_backend="none")
 def ffi_build(session: nox.Session) -> None:
     """Build the mmd-anim FFI library used by Python and C++ integrations.
 
