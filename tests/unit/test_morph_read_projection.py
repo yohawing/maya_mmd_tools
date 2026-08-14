@@ -8,6 +8,8 @@ from mmd_tools.core.morph_binding_resolver import MorphBinding, MorphBindingWarn
 from mmd_tools.core.morph_read_projection import (
     MorphBindingProjection,
     MorphBlendShapeReadProjection,
+    MorphProjectionRequest,
+    project_runtime_capabilities,
 )
 
 
@@ -61,3 +63,24 @@ def test_binding_lookup_fails_when_index_is_missing_or_ambiguous():
         projection.binding_for_index(1)
     with pytest.raises(KeyError, match="not unique"):
         projection.binding_for_index(99)
+
+
+def test_runtime_capability_policy_uses_validated_topology_and_direct_types():
+    requests = (
+        MorphProjectionRequest("Group", 0, "groupNode", "group"),
+        MorphProjectionRequest("Bone", 1, "boneNode", "bone"),
+        MorphProjectionRequest("Material", 2, "materialNode", "material"),
+        MorphProjectionRequest("UV", 3, "uvNode", "uv"),
+        MorphProjectionRequest("Flip", 4, "flipNode", "flip"),
+    )
+
+    assert project_runtime_capabilities(
+        requests,
+        {1: ((0, 0.5),)},
+        (1,),
+    ) == (True, True, True, False, False)
+    assert project_runtime_capabilities(
+        requests,
+        {1: ((0, 0.0),)},
+        (1,),
+    )[0] is False

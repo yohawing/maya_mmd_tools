@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Mapping, Tuple
+import math
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from mmd_tools.adapters.maya_morph_binding_query import (
     MayaMorphBindingQueryError,
@@ -17,6 +18,7 @@ from mmd_tools.core.morph_read_projection import (
     MorphBindingProjection,
     MorphBlendShapeReadProjection,
     MorphProjectionRequest,
+    project_runtime_capabilities,
 )
 from mmd_tools.core.model_registry import (
     REGISTRY_CATEGORY_MORPH,
@@ -38,17 +40,22 @@ class MayaMorphReadProjectionAdapter:
         self,
         model_root: str,
         requests: Iterable[MorphProjectionRequest],
+        controller_topology: Optional[Mapping[object, Iterable[Tuple[int, float]]]] = None,
     ) -> MorphBlendShapeReadProjection:
-        """Return canonical bindings after one model mesh/history observation pass."""
+        """Return canonical bindings/capabilities after one model graph scan."""
 
         root = self._canonical_identity(model_root, "model root")
         normalized_requests = self._normalize_requests(requests)
+        topology = self._normalize_topology(
+            {} if controller_topology is None else controller_topology
+        )
         controller = self._controller_identity(root)
-        meshes, blend_shapes = self._owned_blend_shapes(root)
+        meshes, non_intermediate_meshes, blend_shapes = self._owned_blend_shapes(root)
         registry_bindings = self._registry_morph_bindings(root)
         cached = _CachedBindingQueryAdapter(self._adapter)
 
-        projected: List[MorphBindingProjection] = []
+        observations = []
+        connected_output_indices = []
         semantic_bindings = set()
         for item in normalized_requests:
             semantic_binding = self._canonical_identity(
@@ -67,43 +74,76 @@ class MayaMorphReadProjectionAdapter:
                 semantic_binding,
                 item.global_morph_index,
                 item.raw_pmx_name,
+                item.morph_type,
                 registry_bindings,
             )
-            request = MorphBindingRequest(
-                raw_pmx_name=item.raw_pmx_name,
-                global_morph_index=item.global_morph_index,
-                controller_identity=controller,
-                controller_slot=item.global_morph_index,
+            output_plug = "{}.outputWeight[{}]".format(
+                controller,
+                item.global_morph_index,
             )
-            try:
-                resolution = resolve_maya_morph_binding(cached, request)
-            except (MayaMorphBindingQueryError, MorphBindingResolutionError) as exc:
-                raise MayaMorphReadProjectionError(
-                    "morph index {} binding projection failed: {}".format(
-                        item.global_morph_index,
-                        exc,
-                    )
-                ) from exc
+            destinations = cached.list_connections(
+                output_plug,
+                source=False,
+                destination=True,
+                plugs=True,
+            ) or ()
+            destinations = self._require_sequence(destinations, "controller output destinations")
+            if destinations:
+                connected_output_indices.append(item.global_morph_index)
 
-            foreign = tuple(
-                binding.blend_shape_identity
-                for binding in resolution.bindings
-                if binding.blend_shape_identity not in blend_shapes
-            )
-            if foreign:
-                raise MayaMorphReadProjectionError(
-                    "morph index {} resolves outside the model-owned mesh history: {!r}".format(
-                        item.global_morph_index,
-                        foreign,
-                    )
+            resolution = None
+            if item.morph_type == "vertex":
+                request = MorphBindingRequest(
+                    raw_pmx_name=item.raw_pmx_name,
+                    global_morph_index=item.global_morph_index,
+                    controller_identity=controller,
+                    controller_slot=item.global_morph_index,
                 )
+                try:
+                    resolution = resolve_maya_morph_binding(cached, request)
+                except (MayaMorphBindingQueryError, MorphBindingResolutionError) as exc:
+                    raise MayaMorphReadProjectionError(
+                        "morph index {} binding projection failed: {}".format(
+                            item.global_morph_index,
+                            exc,
+                        )
+                    ) from exc
+
+                foreign = tuple(
+                    binding.blend_shape_identity
+                    for binding in resolution.bindings
+                    if binding.blend_shape_identity not in blend_shapes
+                )
+                if foreign:
+                    raise MayaMorphReadProjectionError(
+                        "morph index {} resolves outside the model-owned mesh history: {!r}".format(
+                            item.global_morph_index,
+                            foreign,
+                        )
+                    )
+            observations.append((item, semantic_binding, resolution))
+
+        capabilities = project_runtime_capabilities(
+            normalized_requests,
+            topology,
+            tuple(connected_output_indices),
+        )
+        projected: List[MorphBindingProjection] = []
+        for (item, semantic_binding, resolution), supported in zip(observations, capabilities):
+            bindings = resolution.bindings if resolution is not None else ()
+            warnings = resolution.warnings if resolution is not None else ()
             projected.append(
                 MorphBindingProjection(
                     raw_pmx_name=item.raw_pmx_name,
                     global_morph_index=item.global_morph_index,
                     binding_identity=semantic_binding,
-                    bindings=resolution.bindings,
-                    warnings=resolution.warnings,
+                    bindings=bindings,
+                    warnings=warnings,
+                    runtime_preview_plugs=(
+                        "{}.inputWeight[{}]".format(controller, item.global_morph_index),
+                    ),
+                    runtime_supported=supported,
+                    unsupported_reason="" if supported else "runtime_output_unsupported",
                 )
             )
 
@@ -113,7 +153,54 @@ class MayaMorphReadProjectionAdapter:
             owned_mesh_identities=meshes,
             owned_blend_shape_identities=blend_shapes,
             morphs=tuple(projected),
+            owned_non_intermediate_mesh_identities=non_intermediate_meshes,
         )
+
+    @staticmethod
+    def _normalize_topology(
+        topology: Mapping[object, Iterable[Tuple[int, float]]],
+    ) -> Dict[int, Tuple[Tuple[int, float], ...]]:
+        if not isinstance(topology, Mapping):
+            raise MayaMorphReadProjectionError("controller topology must be a mapping")
+        normalized = {}
+        for target_value, sources in topology.items():
+            if isinstance(target_value, bool):
+                raise MayaMorphReadProjectionError("controller topology target is invalid")
+            if isinstance(target_value, int):
+                target = target_value
+            elif (
+                isinstance(target_value, str)
+                and target_value.isdecimal()
+                and str(int(target_value)) == target_value
+            ):
+                target = int(target_value)
+            else:
+                raise MayaMorphReadProjectionError("controller topology target is invalid")
+            if target < 0:
+                raise MayaMorphReadProjectionError("controller topology target is invalid")
+            if target in normalized:
+                raise MayaMorphReadProjectionError(
+                    "controller topology target is duplicated after normalization"
+                )
+            try:
+                pairs = tuple(sources)
+            except TypeError as exc:
+                raise MayaMorphReadProjectionError("controller topology sources are invalid") from exc
+            normalized_sources = []
+            for pair in pairs:
+                if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+                    raise MayaMorphReadProjectionError("controller topology source is invalid")
+                source, rate = pair
+                if isinstance(source, bool) or not isinstance(source, int) or source < 0:
+                    raise MayaMorphReadProjectionError("controller topology source index is invalid")
+                if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+                    raise MayaMorphReadProjectionError("controller topology rate is invalid")
+                normalized_rate = float(rate)
+                if not math.isfinite(normalized_rate):
+                    raise MayaMorphReadProjectionError("controller topology rate is invalid")
+                normalized_sources.append((source, normalized_rate))
+            normalized[target] = tuple(normalized_sources)
+        return normalized
 
     def _registry_morph_bindings(self, root: str) -> Any:
         members = list_model_registry_members_from_adapter(
@@ -134,6 +221,7 @@ class MayaMorphReadProjectionAdapter:
         binding: str,
         expected_index: int,
         expected_name: str,
+        expected_type: str,
         registry_bindings: Any,
     ) -> None:
         if self._call("node_type", binding) != "network":
@@ -146,9 +234,12 @@ class MayaMorphReadProjectionAdapter:
                     "morph semantic binding {!r} has no {}".format(binding, attr)
                 )
         morph_type = self._call("get_attr", "{}.mmd_morph_type".format(binding))
-        if morph_type != "vertex":
+        if morph_type != expected_type:
             raise MayaMorphReadProjectionError(
-                "morph semantic binding {!r} must have vertex type".format(binding)
+                "morph semantic binding {!r} type does not match {!r}".format(
+                    binding,
+                    expected_type,
+                )
             )
         raw_name = self._call("get_attr", "{}.mmd_morph_name".format(binding))
         if raw_name != expected_name:
@@ -219,7 +310,10 @@ class MayaMorphReadProjectionAdapter:
             )
         return self._canonical_identity(controllers[0], "morph controller")
 
-    def _owned_blend_shapes(self, root: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    def _owned_blend_shapes(
+        self,
+        root: str,
+    ) -> Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]:
         shapes = self._call(
             "list_relatives",
             root,
@@ -228,6 +322,7 @@ class MayaMorphReadProjectionAdapter:
         ) or ()
         shapes = self._require_sequence(shapes, "owned mesh descendants")
         canonical_meshes: List[str] = []
+        non_intermediate_meshes: List[str] = []
         blend_shapes: List[str] = []
         seen_meshes = set()
         seen_blend_shapes = set()
@@ -237,6 +332,8 @@ class MayaMorphReadProjectionAdapter:
                 continue
             seen_meshes.add(shape)
             canonical_meshes.append(shape)
+            if not bool(self._call("get_attr", "{}.intermediateObject".format(shape))):
+                non_intermediate_meshes.append(shape)
             history = self._call("list_history", shape) or ()
             history = self._require_sequence(history, "mesh history")
             candidates = self._call("ls", history, type="blendShape") or ()
@@ -246,7 +343,11 @@ class MayaMorphReadProjectionAdapter:
                 if blend_shape not in seen_blend_shapes:
                     seen_blend_shapes.add(blend_shape)
                     blend_shapes.append(blend_shape)
-        return tuple(canonical_meshes), tuple(sorted(blend_shapes))
+        return (
+            tuple(canonical_meshes),
+            tuple(non_intermediate_meshes),
+            tuple(sorted(blend_shapes)),
+        )
 
     def _canonical_identity(self, value: object, label: str) -> str:
         if not isinstance(value, str) or not value:
@@ -288,6 +389,8 @@ class MayaMorphReadProjectionAdapter:
                 raise MayaMorphReadProjectionError("global morph index must be non-negative")
             if not isinstance(value.binding_identity, str) or not value.binding_identity:
                 raise MayaMorphReadProjectionError("morph binding identity must be non-empty")
+            if not isinstance(value.morph_type, str) or not value.morph_type:
+                raise MayaMorphReadProjectionError("morph type must be non-empty")
             if value.global_morph_index in seen_indices:
                 raise MayaMorphReadProjectionError(
                     "duplicate global morph index {}".format(value.global_morph_index)
@@ -332,7 +435,7 @@ class _CachedBindingQueryAdapter:
         self._cache: Dict[Tuple[object, ...], Any] = {}
 
     def list_connections(self, plug: str, **kwargs: Any) -> Any:
-        return self._adapter.list_connections(plug, **kwargs)
+        return self._memoized("list_connections", (plug,), kwargs)
 
     def ls(self, node: str, **kwargs: Any) -> Any:
         return self._memoized("ls", (node,), kwargs)

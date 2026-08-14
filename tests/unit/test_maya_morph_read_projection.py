@@ -57,6 +57,7 @@ class FakeMayaAdapter:
             "faceB": json.dumps({"2": {"name": "Same", "index": 2}}),
         }
         self.raw_attrs = {"faceA", "faceB"}
+        self.intermediate_meshes = set()
         self.morph_indices = {"morphA": 2, "morphB": 3}
         self.morph_types = {"morphA": "vertex", "morphB": "vertex"}
         self.morph_names = {"morphA": "Same", "morphB": "Same"}
@@ -118,6 +119,8 @@ class FakeMayaAdapter:
             return self.morph_types[node]
         if attr == "mmd_morph_name":
             return self.morph_names[node]
+        if attr == "intermediateObject":
+            return node in self.intermediate_meshes
         raise KeyError(plug)
 
 
@@ -255,7 +258,7 @@ def test_distinct_input_aliases_cannot_resolve_to_one_semantic_binding():
     [
         (lambda maya: maya.morph_indices.__setitem__("morphA", 9), "index does not match"),
         (lambda maya: maya.morph_indices.pop("morphA"), "must be a network node"),
-        (lambda maya: maya.morph_types.__setitem__("morphA", "bone"), "must have vertex type"),
+        (lambda maya: maya.morph_types.__setitem__("morphA", "bone"), "type does not match"),
         (lambda maya: maya.morph_names.__setitem__("morphA", "Other"), "raw name does not match"),
         (
             lambda maya: maya.connections.__setitem__("morphA.mmd_model_root", ["meshA"]),
@@ -290,3 +293,41 @@ def test_registry_membership_is_authoritative_when_present(monkeypatch):
     )
     with pytest.raises(MayaMorphReadProjectionError, match="not owned by the model registry"):
         _read(maya, (_request(2, "morphA"),))
+
+
+def test_projects_network_capabilities_and_non_intermediate_meshes_without_bindings():
+    maya = FakeMayaAdapter()
+    maya.morph_types.update({"morphA": "group", "morphB": "material"})
+    maya.intermediate_meshes.add("|root|meshB")
+    requests = (
+        MorphProjectionRequest("Same", 2, "morphA", "group"),
+        MorphProjectionRequest("Same", 3, "morphB", "material"),
+    )
+
+    projection = MayaMorphReadProjectionAdapter(maya).read_blend_shape_projection(
+        "root",
+        requests,
+        {"3": ((2, 1.0),)},
+    )
+
+    assert projection.owned_non_intermediate_mesh_identities == ("|root|meshA",)
+    assert projection.binding_for_index(2).runtime_supported is True
+    assert projection.binding_for_index(2).bindings == ()
+    assert projection.binding_for_index(2).runtime_targets == (
+        "controller.inputWeight[2]",
+    )
+    assert projection.binding_for_index(3).runtime_supported is True
+
+
+@pytest.mark.parametrize(
+    "topology, error",
+    [
+        ({"03": ((2, 1.0),)}, "target is invalid"),
+        ({True: ((2, 1.0),)}, "target is invalid"),
+        ({-1: ((2, 1.0),)}, "target is invalid"),
+        ({3: ((2, 1.0),), "3": ((2, 1.0),)}, "duplicated after normalization"),
+    ],
+)
+def test_topology_target_keys_fail_closed_unless_canonical_decimal(topology, error):
+    with pytest.raises(MayaMorphReadProjectionError, match=error):
+        MayaMorphReadProjectionAdapter._normalize_topology(topology)
