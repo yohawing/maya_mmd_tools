@@ -128,6 +128,15 @@ class FakeAdapter:
         self.aliases[plug] = alias
         return None
 
+    def list_attr(self, node: str, **kwargs: Any) -> list[str]:
+        names = ["message", "inputWeight", "outputWeight", "topologyVersion", "groupTopology"]
+        if kwargs.get("shortNames"):
+            names = ["msg", "iw", "ow", "tv", "gt"]
+        names.extend(
+            alias for plug, alias in self.aliases.items() if plug.startswith(f"{node}.")
+        )
+        return names
+
     def delete(self, node: str) -> None:
         self.calls.append(("delete", (node,), {}))
         self.types.pop(node, None)
@@ -278,8 +287,25 @@ def test_create_unicode_uv_morph_uses_ascii_node_and_binds_controller() -> None:
     assert adapter.attrs[(created, "mmd_morph_name")] == "UV_日本語"
     assert adapter.attrs[(created, "mmd_morph_index")] == 0
     assert adapter.connections["controller.outputWeight[0]"] == [f"{created}.weight"]
+    controller_alias = adapter.aliases["controller.inputWeight[0]"]
+    assert controller_alias.isascii() and controller_alias.isidentifier()
+    assert controller_alias != "morph_0"
     assert registry.members == [created]
     assert adapter.attrs[("controller", "groupTopology")] == "{}"
+
+
+def test_duplicate_new_morph_names_receive_unique_controller_aliases() -> None:
+    adapter = FakeAdapter()
+    registry = FakeRegistry([])
+    new = _spec(
+        replace(_morph("New Morph", 0, "bone", "unused0"), binding_identity=None),
+        replace(_morph("New Morph", 1, "material", "unused1"), binding_identity=None),
+    )
+
+    apply_morph_spec_change("|Model", _spec(), new, adapter, registry)
+
+    assert adapter.aliases["controller.inputWeight[0]"] == "New_Morph"
+    assert adapter.aliases["controller.inputWeight[1]"] == "New_Morph_1"
 
 
 def test_reindex_rewrites_raw_runtime_attrs_connections_and_group_topology() -> None:

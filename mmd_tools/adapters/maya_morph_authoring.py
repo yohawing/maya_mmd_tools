@@ -124,6 +124,11 @@ def apply_morph_value_patch(
         if old_morph.to_mapping()[field] != new_morph.to_mapping()[field]
     }
     _write_morph_values(adapter, canonical, old_morph, new_morph, changed)
+    if "name" in changed:
+        controller = _resolve_controller(adapter, root, allow_missing=False)
+        if controller is None:
+            _fail("morph name patch requires an existing morph controller")
+        _assign_controller_alias(adapter, controller, new_morph.index, new_morph.name)
     if "offsets" in changed or (old_morph.morph_type == "vertex" and "name" in changed):
         _update_selected_runtime_values(adapter, root, canonical, old_morph, new_morph)
     return new_morph
@@ -294,7 +299,7 @@ def apply_morph_create(
     input_plug = f"{controller}.inputWeight[{new_index}]"
     _call(adapter, "set_attr", input_plug, 0.0)
     _call(adapter, "set_attr", input_plug, keyable=True)
-    _call(adapter, "alias_attr", f"morph_{new_index}", input_plug)
+    _assign_controller_alias(adapter, controller, new_index, bound.name)
     if bound.morph_type != "vertex":
         _call(
             adapter,
@@ -1520,7 +1525,7 @@ def _apply_controller_plan(
         if morph.binding_identity in created_nodes.values():
             _call(adapter, "set_attr", input_plug, 0.0)
         _call(adapter, "set_attr", input_plug, keyable=True)
-        _call(adapter, "alias_attr", f"morph_{morph.index}", input_plug)
+        _assign_controller_alias(adapter, controller, morph.index, morph.name)
         if morph.morph_type != "vertex":
             _call(adapter, "connect_attr", f"{controller}.outputWeight[{morph.index}]", f"{morph.binding_identity}.weight", force=True)
 
@@ -1536,6 +1541,44 @@ def _apply_controller_plan(
         type="string",
         lock=True,
     )
+
+
+def _assign_controller_alias(
+    adapter: Any,
+    controller: str,
+    index: int,
+    display_name: str,
+) -> str:
+    """Expose one safe, unique editable morph name as a controller alias."""
+    input_plug = f"{controller}.inputWeight[{index}]"
+    aliases = list(_call(adapter, "alias_attr", controller, query=True) or ())
+    if len(aliases) % 2:
+        _fail("controller aliases must be alias/plug pairs")
+    current_alias = None
+    used = {str(alias) for alias in aliases[0::2]}
+    for alias, plug in zip(aliases[0::2], aliases[1::2]):
+        if str(plug).rsplit(".", 1)[-1] == f"inputWeight[{index}]":
+            current_alias = str(alias)
+            break
+    list_attr = getattr(adapter, "list_attr", None)
+    if callable(list_attr):
+        used.update(str(value) for value in (list_attr(controller) or ()))
+        used.update(
+            str(value) for value in (list_attr(controller, shortNames=True) or ())
+        )
+    if current_alias:
+        used.discard(current_alias)
+    alias = maya_name_utils.sanitize_unique_name(
+        display_name,
+        used,
+        fallback=f"morph_{index}",
+    )
+    if current_alias == alias:
+        return alias
+    if current_alias:
+        _call(adapter, "alias_attr", input_plug, remove=True)
+    _call(adapter, "alias_attr", alias, input_plug)
+    return alias
 
 
 def _binding_old_index(plan: Mapping[str, Any], binding: str) -> int:

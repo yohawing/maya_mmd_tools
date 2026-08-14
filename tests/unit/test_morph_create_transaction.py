@@ -43,7 +43,7 @@ def test_empty_create_writes_one_binding_and_one_controller_slot() -> None:
     assert result.index == 1
     assert result.binding_identity is not None
     assert registry.members[-1] == result.binding_identity
-    assert adapter.aliases["controller.inputWeight[1]"] == "morph_1"
+    assert adapter.aliases["controller.inputWeight[1]"] == "New"
     assert adapter.connections["controller.outputWeight[1]"] == [f"{result.binding_identity}.weight"]
 
 

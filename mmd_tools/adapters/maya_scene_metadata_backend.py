@@ -1487,8 +1487,8 @@ class MayaSceneMetadataBackend:
             for index, alias in original["aliases"].items():
                 if actual["aliases"].get(index) != alias:
                     raise MayaSceneMetadataError("existing morph controller alias changed during creation")
-        if actual["aliases"].get(morph.index) != f"morph_{morph.index}":
-            raise MayaSceneMetadataError("created morph controller alias readback mismatch")
+        if not actual["aliases"].get(morph.index):
+            raise MayaSceneMetadataError("created morph controller alias is missing")
         self._call_adapter("undo_info", closeChunk=True)
         self._write_transaction = None
 

@@ -84,6 +84,7 @@ def test_selected_adapter_writes_only_changed_morph_attrs() -> None:
         if call[0] == "set_attr"
     }
     assert written == {"mmd_morph_name", "mmd_morph_panel"}
+    assert adapter.aliases["controller.inputWeight[0]"] == "Edited"
 
 
 def test_selected_adapter_updates_only_matching_runtime_target_slots() -> None:
