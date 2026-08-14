@@ -237,6 +237,40 @@ def test_create_writes_unicode_attrs_paths_and_registry() -> None:
     assert shader_calls[1][2]["name"] == "mmdMaterial_4_File"
 
 
+def test_texture_index_preserves_slot_original_provenance_when_shader_path_is_resolved() -> None:
+    """Keep a PMX table index when the shader attr stores only the resolved path."""
+    cmds = FakeCmdsAdapter(
+        attrs={
+            ("shader", ATTR_MMD_TEXTURE_INDEX): 1,
+            ("shader", ATTR_MMD_TEXTURE_PATH): "C:/resolved/shared.png",
+            ("file", ATTR_MMD_ORIGINAL_TEXTURE_PATH): "textures/shared.png",
+            ("file", "fileTextureName"): "C:/resolved/shared.png",
+        },
+        types={"|Model_root": "transform", "shader": "dx11Shader", "file": "file"},
+        connections={"shader.MainTexture": ["file"]},
+    )
+    authoring = _authoring(cmds, FakeRegistry())
+
+    assert (
+        authoring._texture_index_for_write(
+            "shader",
+            ATTR_MMD_TEXTURE_INDEX,
+            ATTR_MMD_TEXTURE_PATH,
+            "textures/shared.png",
+        )
+        == 1
+    )
+    assert (
+        authoring._texture_index_for_write(
+            "shader",
+            ATTR_MMD_TEXTURE_INDEX,
+            ATTR_MMD_TEXTURE_PATH,
+            "textures/other.png",
+        )
+        == -1
+    )
+
+
 def test_replace_material_updates_texture_graph_and_clears_shared_toon_provenance() -> None:
     cmds = FakeCmdsAdapter()
     registry = FakeRegistry()

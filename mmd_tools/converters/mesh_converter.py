@@ -220,6 +220,20 @@ _MIGRATED_MMD_ATTRS = (
 )
 
 
+def _source_texture_path(all_textures, texture_index, resolved_path):
+    """Return the PMX source path when its authoritative table index is valid."""
+    if (
+        all_textures
+        and isinstance(texture_index, int)
+        and not isinstance(texture_index, bool)
+        and 0 <= texture_index < len(all_textures)
+        and isinstance(all_textures[texture_index], str)
+        and all_textures[texture_index]
+    ):
+        return all_textures[texture_index]
+    return resolved_path
+
+
 def _copy_shader_attr_value(source, target, attr_name) -> None:
     """Copy one compatible value or incoming connection during backend replacement."""
     if not (
@@ -2330,11 +2344,23 @@ class MeshConverter:
             ATTR_MMD_TOON_TEXTURE_INDEX: material.toon_texture_index,
         }
 
-        # テクスチャパスを保存
-        if texture_path:
-            custom_attrs["mmd_texture_path"] = texture_path
-        if sphere_texture_path:
-            custom_attrs["mmd_sphere_path"] = sphere_texture_path
+        # Persist PMX source-relative paths in canonical metadata.  The file
+        # nodes retain resolved paths separately, so export can match the
+        # authoritative texture table without appending a duplicate entry.
+        source_texture_path = _source_texture_path(
+            all_textures,
+            getattr(material, "texture_index", -1),
+            texture_path,
+        )
+        source_sphere_texture_path = _source_texture_path(
+            all_textures,
+            getattr(material, "sphere_texture_index", -1),
+            sphere_texture_path,
+        )
+        if source_texture_path:
+            custom_attrs["mmd_texture_path"] = source_texture_path
+        if source_sphere_texture_path:
+            custom_attrs["mmd_sphere_path"] = source_sphere_texture_path
 
         # スペキュラー関連の属性
         if hasattr(material, "specular"):

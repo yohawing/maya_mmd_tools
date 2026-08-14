@@ -650,6 +650,55 @@ def test_material_source_and_resolved_paths_use_file_provenance_only() -> None:
         list(backend.iter_material_metadata("|root"))
 
 
+def test_material_provenance_does_not_alias_another_hardware_texture_slot() -> None:
+    """A main-texture file must not become custom-toon provenance by path match."""
+    cmds, backend = _backend()
+    _material(cmds, "mat", shared_toon=0)
+    cmds.node_types["mat"] = "dx11Shader"
+    cmds.attrs.update(
+        {
+            ("mat", "mmd_texture_path"): "textures/shared.png",
+            ("mat", "mmd_toon_path"): "textures/shared.png",
+        }
+    )
+    cmds.nodes.add("mainFile")
+    cmds.node_types["mainFile"] = "file"
+    cmds.attrs.update(
+        {
+            ("mainFile", "mmd_original_texture_path"): "textures/shared.png",
+            ("mainFile", "fileTextureName"): "C:/resolved/shared.png",
+        }
+    )
+    cmds.connections[("mat.MainTexture", "file")] = ["mainFile"]
+
+    material = backend._read_material("mat")
+
+    assert material["resolved_texture_path"] == "C:/resolved/shared.png"
+    assert material["resolved_toon_texture_path"] is None
+
+
+def test_material_source_path_restores_slot_file_original_provenance() -> None:
+    """A resolved shader attr still exports the PMX source path from its file node."""
+    cmds, backend = _backend()
+    _material(cmds, "mat", shared_toon=0)
+    cmds.node_types["mat"] = "dx11Shader"
+    cmds.attrs[("mat", "mmd_texture_path")] = "C:/resolved/shared.png"
+    cmds.nodes.add("mainFile")
+    cmds.node_types["mainFile"] = "file"
+    cmds.attrs.update(
+        {
+            ("mainFile", "mmd_original_texture_path"): "textures/shared.png",
+            ("mainFile", "fileTextureName"): "C:/resolved/shared.png",
+        }
+    )
+    cmds.connections[("mat.MainTexture", "file")] = ["mainFile"]
+
+    material = backend._read_material("mat")
+
+    assert material["texture_path"] == "textures/shared.png"
+    assert material["resolved_texture_path"] == "C:/resolved/shared.png"
+
+
 def test_material_explicit_resolved_paths_fallback_without_file_provenance() -> None:
     cmds, backend = _backend()
     _material(cmds, "mat")

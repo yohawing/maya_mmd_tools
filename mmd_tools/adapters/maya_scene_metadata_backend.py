@@ -21,6 +21,7 @@ from typing import Any
 from mmd_tools.adapters.maya_material_shader_route import (
     MayaMaterialShaderRoute,
     material_diffuse_route,
+    material_shader_route,
 )
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter, SceneMetadataError
 from mmd_tools.core.constants import (
@@ -113,6 +114,11 @@ class MayaSceneMetadataBackend:
     _EXPLICIT_RESOLVED_TOON_PATH = "mmd_resolved_toon_texture_path"
     _ORIGINAL_TEXTURE_PATH = "mmd_original_texture_path"
     _FILE_TEXTURE_NAME = "fileTextureName"
+    _TEXTURE_SOURCE_SEMANTICS = {
+        _TEXTURE_PATH: "main",
+        _SPHERE_PATH: "sphere",
+        _TOON_PATH: "toon",
+    }
     _BONE_REGISTER_ATTRS = (
         ATTR_MMD_BONE_NAME,
         ATTR_MMD_BONE_NAME_EN,
@@ -2550,7 +2556,51 @@ class MayaSceneMetadataBackend:
         if not self._has_attr(node, attr):
             return None
         value = self._required_string(node, attr)
-        return value or None
+        if not value:
+            return None
+        # Importers may persist the resolved fileTextureName in the shader's
+        # metadata attr while the exact slot file node retains the PMX source
+        # path in mmd_original_texture_path.  Restore that source provenance
+        # before export, but only for the requested slot (never from broad
+        # shader history) and only when the attr is exactly the file's
+        # resolved path.  An intentionally authored absolute source remains
+        # unchanged when it is not a resolved-path alias.
+        file_nodes = self._texture_file_nodes(node, attr)
+        if len(file_nodes) != 1:
+            return value
+        file_node = file_nodes[0]
+        if not self._has_attr(file_node, self._ORIGINAL_TEXTURE_PATH):
+            return value
+        original = self._required_string(file_node, self._ORIGINAL_TEXTURE_PATH)
+        if not original or not self._has_attr(file_node, self._FILE_TEXTURE_NAME):
+            return value
+        resolved = self._required_string(file_node, self._FILE_TEXTURE_NAME)
+        if resolved and os.path.normcase(os.path.normpath(value)) == os.path.normcase(
+            os.path.normpath(resolved)
+        ):
+            return original
+        return value
+
+    def _texture_file_nodes(self, shader: str, source_attr: str) -> list[str]:
+        """Return file nodes connected to one exact material texture slot."""
+        queries = [f"{shader}.{source_attr}"]
+        semantic = self._TEXTURE_SOURCE_SEMANTICS.get(source_attr)
+        route = material_shader_route(self._node_type(shader))
+        if route is not None and semantic is not None:
+            slot = route.texture_slot(semantic)
+            if slot is not None:
+                queries.append(f"{shader}.{slot.texture_attribute}")
+        file_nodes: list[str] = []
+        for query in queries:
+            for candidate in self._list_connections(
+                query, source=True, destination=False, type="file"
+            ):
+                identity = self._material_identity(candidate)
+                if identity in file_nodes:
+                    continue
+                if self._node_type(identity) == "file":
+                    file_nodes.append(identity)
+        return file_nodes
 
     def _resolved_path(
         self,
@@ -2569,24 +2619,12 @@ class MayaSceneMetadataBackend:
         explicit_path = self._optional_path(shader, explicit_attr)
         if not source_path:
             return explicit_path
-        candidates: list[str] = []
-        # Attribute-level connections identify the exact texture route.  Maya
-        # ``listHistory`` is node-oriented (not plug-oriented), so query it
-        # once on the shader rather than passing a ``node.attr`` path that can
-        # be rejected by some Maya versions.
-        candidates.extend(
-            self._list_connections(
-                f"{shader}.{source_attr}", source=True, destination=False, type="file"
-            )
-        )
-        candidates.extend(self._call_adapter("list_history", shader) or [])
-        file_nodes: list[str] = []
-        for candidate in candidates:
-            identity = self._material_identity(candidate)
-            if identity in file_nodes:
-                continue
-            if self._node_type(identity) == "file":
-                file_nodes.append(identity)
+        # Query only the metadata attribute and its exact shader texture slot.
+        # A shader's history is intentionally not searched: one source path
+        # may be shared by MainTexture and ToonTexture, and broad history would
+        # incorrectly treat the other slot's file node as this slot's
+        # resolved-path provenance.
+        file_nodes = self._texture_file_nodes(shader, source_attr)
         matches: list[str] = []
         for file_node in file_nodes:
             if not self._has_attr(file_node, self._ORIGINAL_TEXTURE_PATH):

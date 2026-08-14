@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -1174,6 +1175,54 @@ class MayaMaterialAuthoring:
         if (
             prior_path == source_path
             and isinstance(prior_index, int)
+            and not isinstance(prior_index, bool)
+            and prior_index >= 0
+        ):
+            return prior_index
+        # Importers may persist the resolved fileTextureName in the shader
+        # path attr while the exact slot file node retains the PMX source
+        # path.  Preserve the table index only when both provenance values
+        # agree; a stale or cross-slot file node must invalidate the index.
+        semantic = {
+            ATTR_MMD_TEXTURE_PATH: "main",
+            ATTR_MMD_SPHERE_PATH: "sphere",
+        }.get(path_attr)
+        route = material_shader_route(str(self._call("node_type", shader)))
+        queries = [f"{shader}.{path_attr}"]
+        if route is not None and semantic is not None:
+            slot = route.texture_slot(semantic)
+            if slot is not None:
+                queries.append(f"{shader}.{slot.texture_attribute}")
+        file_nodes: list[str] = []
+        for query in queries:
+            connections = self._call(
+                "list_connections",
+                query,
+                source=True,
+                destination=False,
+                type="file",
+            ) or []
+            for candidate in connections:
+                identity = self._canonical_node(str(candidate).rsplit(".", 1)[0])
+                if identity not in file_nodes:
+                    file_nodes.append(identity)
+        if len(file_nodes) != 1:
+            return -1
+        file_node = file_nodes[0]
+        if not self._has_attr(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH):
+            return -1
+        original = self._get_attr(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH)
+        if original != source_path or not self._has_attr(file_node, "fileTextureName"):
+            return -1
+        resolved = self._get_attr(file_node, "fileTextureName")
+        if not isinstance(prior_path, str) or not isinstance(resolved, str):
+            return -1
+        if os.path.normcase(os.path.normpath(prior_path)) != os.path.normcase(
+            os.path.normpath(resolved)
+        ):
+            return -1
+        if (
+            isinstance(prior_index, int)
             and not isinstance(prior_index, bool)
             and prior_index >= 0
         ):

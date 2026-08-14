@@ -1,6 +1,7 @@
 """Real MaterialTab edit and PMX fresh-import oracle test."""
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -113,10 +114,41 @@ def _edit_custom_toon_with_material_tab(root):
 class TestMaterialExportRoundtripGUI(GuiTestBase):
     """Verify MaterialTab authoring survives PMX export and fresh import."""
 
+    @staticmethod
+    def _emit_surface_witness(surface_id, selector, interaction, fired_action, oracle):
+        witness = {
+            "surface_id": surface_id,
+            "case_id": "gui.material_export_roundtrip",
+            "selector": selector,
+            "status": "pass",
+            "runtime_witness": {
+                "interaction": interaction,
+                "fired_action": fired_action,
+                "oracle": oracle,
+                "action_count": 1,
+            },
+        }
+        print(
+            "[UI COVERAGE WITNESS] "
+            + json.dumps(witness, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            flush=True,
+        )
+
     def test_material_tab_edit_survives_pmx_fresh_import_oracle(self):
         with tempfile.TemporaryDirectory(prefix="mmd_material_roundtrip_") as temp_dir:
             output_dir = Path(temp_dir)
             source_fixture = output_dir / "custom_toon_source.pmx"
+            # The fixture deliberately points the main material texture at
+            # ``CUSTOM_TOON_PATH`` as well as using it for the custom toon
+            # slot.  MaterialPresenter now correctly rejects a changed
+            # resolved texture path when its file is missing, so provide a
+            # deterministic valid image in the temporary PMX-relative path.
+            custom_texture = output_dir / CUSTOM_TOON_PATH
+            custom_texture.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(
+                Path(__file__).resolve().parents[1] / "data" / "tex" / "diffuse.png",
+                custom_texture,
+            )
             source_data = PmxData().parse_file(str(FIXTURE_PATH))
             source_data.textures = ["textures/initial_toon.png", CUSTOM_TOON_PATH]
             source_data.materials[0].shared_toon_flag = 0
@@ -222,6 +254,28 @@ class TestMaterialExportRoundtripGUI(GuiTestBase):
             self.assertEqual(
                 maya_attribute_utils.get_attribute(result_material, ATTR_MMD_TOON_PATH),
                 CUSTOM_TOON_PATH,
+            )
+            oracle = "material_toon_spec_fields_export_fresh_import"
+            self._emit_surface_witness(
+                "material.toon_sharing",
+                "objectName=materialToonSharingCheck",
+                "QCheckBox.setChecked(objectName=materialToonSharingCheck, False); Apply; PMX export/fresh import",
+                "MaterialPresenter._on_toon_sharing_changed",
+                oracle,
+            )
+            self._emit_surface_witness(
+                "material.toon_texture_path",
+                "objectName=materialToonTexturePathEdit",
+                "QLineEdit.setText(objectName=materialToonTexturePathEdit, custom_toon.png); Apply; PMX export/fresh import",
+                "MaterialPresenter._on_value_changed",
+                oracle,
+            )
+            self._emit_surface_witness(
+                "material.toon_texture_index",
+                "objectName=materialToonTextureIndexSpin",
+                "QSpinBox.setValue(objectName=materialToonTextureIndexSpin, custom_toon_index); Apply; PMX export/fresh import",
+                "MaterialPresenter._on_value_changed",
+                oracle,
             )
 
 

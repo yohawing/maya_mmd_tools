@@ -15,6 +15,7 @@ from mmd_tools.converters.mesh_converter import (  # noqa: E402
     TRANSPARENCY_MODE_OPAQUE,
     _dx11_rendering_from_technique,
     _material_is_double_sided,
+    _source_texture_path,
     _set_mesh_double_sided,
     _technique_for_transparency,
     apply_shader_outline,
@@ -26,6 +27,61 @@ from mmd_tools.converters.mesh_material_properties import material_has_outline  
 
 
 class TestMaterialIsDoubleSided(unittest.TestCase):
+    def test_source_texture_path_prefers_authoritative_table_index(self):
+        self.assertEqual(
+            _source_texture_path(
+                ["textures/sphere.spa", "textures/body.png"],
+                1,
+                "C:/resolved/body.png",
+            ),
+            "textures/body.png",
+        )
+        self.assertEqual(
+            _source_texture_path(
+                ["textures/sphere.spa"],
+                4,
+                "C:/resolved/body.png",
+            ),
+            "C:/resolved/body.png",
+        )
+
+    def test_custom_attributes_store_table_source_paths_for_main_and_sphere(self):
+        material = SimpleNamespace(
+            material_index=0,
+            name="body",
+            name_english="Body",
+            diffuse=(1.0, 1.0, 1.0, 1.0),
+            ambient=(0.0, 0.0, 0.0),
+            specular=(0.0, 0.0, 0.0),
+            specular_coefficient=0.0,
+            toon_texture_index=-1,
+            draw_flag=0,
+            edge_color=(0.0, 0.0, 0.0, 1.0),
+            edge_size=0.0,
+            sphere_mode=1,
+            sphere_texture_index=0,
+            texture_index=1,
+            memo="",
+            shared_toon_flag=1,
+        )
+        converter = MeshConverter.__new__(MeshConverter)
+
+        with patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ) as set_custom_attributes:
+            converter._apply_custom_attributes(
+                "shader1",
+                material,
+                ["textures/sphere.spa", "textures/body.png"],
+                is_pmd=False,
+                texture_path="C:/resolved/body.png",
+                sphere_texture_path="C:/resolved/sphere.spa",
+            )
+
+        attrs = set_custom_attributes.call_args[0][1]
+        self.assertEqual(attrs["mmd_texture_path"], "textures/body.png")
+        self.assertEqual(attrs["mmd_sphere_path"], "textures/sphere.spa")
+
     def test_draw_flag_bit0_enabled(self):
         self.assertTrue(_material_is_double_sided(SimpleNamespace(draw_flag=0x01)))
 
