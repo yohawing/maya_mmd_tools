@@ -20,6 +20,7 @@ from mmd_tools.core.constants import (
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.ui.main_window import MainWindow
+from mmd_tools.ui.translations import UITranslator
 from mmd_tools.ui.qt_compat import (
     QApplication,
     QColor,
@@ -407,6 +408,38 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             self.assertEqual(delete_action.call_count, 0)
         self.assertEqual(coordinator.read_spec(self.root), before)
         self.assertEqual(view.material_list.item(1).data(Qt.UserRole), identity)
+
+    def test_material_delete_confirmation_locale_preserves_hidden_identity(self):
+        presenter, view, coordinator, identity = self._prepare_material_delete_fixture()
+        before = coordinator.read_spec(self.root)
+        selected = view.material_list.item(1)
+        index = selected.data(Qt.UserRole + 1)
+        translator = UITranslator.instance()
+        previous_language = translator.get_language()
+        alternate = "en" if previous_language != "en" else "ja"
+        try:
+            translator.set_language(alternate)
+            self.window.retranslate_all_tabs()
+            QApplication.processEvents()
+            selected = view.material_list.item(1)
+            self.assertEqual(selected.data(Qt.UserRole), identity)
+            self.assertEqual(selected.data(Qt.UserRole + 1), index)
+            self.assertEqual(presenter.current_material, identity)
+            self.assertEqual(presenter.current_material_index, index)
+            with patch.object(
+                coordinator,
+                "delete_material",
+                wraps=coordinator.delete_material,
+            ) as delete_action:
+                self._drive_material_delete_confirmation(view.delete_btn, confirm=False)
+                self.assertEqual(delete_action.call_count, 0)
+            self.assertEqual(coordinator.read_spec(self.root), before)
+            self.assertEqual(view.material_list.item(1).data(Qt.UserRole), identity)
+            self.assertEqual(view.material_list.item(1).data(Qt.UserRole + 1), index)
+        finally:
+            translator.set_language(previous_language)
+            self.window.retranslate_all_tabs()
+            QApplication.processEvents()
 
     def _register_second_bone_fixture(self):
         """Register one deterministic descendant joint through production APIs."""
