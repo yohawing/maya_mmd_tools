@@ -59,7 +59,10 @@ MAX_ADAPTER_CALLS = {
     "material_texture_apply": 510,
     "morph_name_apply": 145,
     "morph_slider_drag": 1,
-    "display_apply": 5,
+    # Atomic Display apply now performs begin/preimage, mutation, exact
+    # read-back, and Undo-chunk verification. Maya 2024 is stable at 14 calls;
+    # retain only two calls of headroom so graph scans remain visible.
+    "display_apply": 16,
     "info_focus_edit": 3,
     # Header Refresh now reloads the already-visible Material projection while
     # hidden tabs remain generation-dirty.  Keep headroom above the Maya 2024

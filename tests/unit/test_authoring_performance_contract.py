@@ -1,6 +1,7 @@
 """Pure-Python contract checks for the Authoring performance benchmark."""
 
 from tools.authoring_performance_contract import (
+    MAX_ADAPTER_CALLS,
     _CallRecorder,
     adapter_call_scope,
     case_limit_errors,
@@ -8,6 +9,10 @@ from tools.authoring_performance_contract import (
     narrow_contract_errors,
     summarize_calls,
 )
+
+
+def test_display_budget_matches_atomic_transaction_baseline():
+    assert MAX_ADAPTER_CALLS["display_apply"] == 16
 
 
 def test_distribution_reports_nearest_rank_p50_and_p95():
