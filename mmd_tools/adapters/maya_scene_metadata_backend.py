@@ -27,6 +27,9 @@ from mmd_tools.adapters.maya_material_shader_route import (
 from mmd_tools.adapters.maya_material_read_projection import (
     MayaMaterialReadProjectionAdapter,
 )
+from mmd_tools.adapters.maya_model_metadata_repository import (
+    MayaModelMetadataRepository,
+)
 from mmd_tools.adapters.maya_morph_binding_query import (
     MayaMorphBindingQueryError,
     resolve_maya_morph_binding,
@@ -522,6 +525,10 @@ class MayaSceneMetadataBackend:
 
     def __init__(self, cmds_adapter: Any) -> None:
         self._cmds = cmds_adapter
+        self._model_repository = MayaModelMetadataRepository(
+            cmds_adapter,
+            error_factory=MayaSceneMetadataError,
+        )
         self._native_authoring = NativeAuthoringCommandGateway(cmds_adapter)
         # Native writes remain opt-in until both supported Maya versions show
         # lower p50 and p95 latency than the direct Python path.
@@ -534,13 +541,7 @@ class MayaSceneMetadataBackend:
 
     def read_model_metadata(self, root: str) -> Mapping[str, Any]:
         """Return the canonical model-header mapping for an existing root."""
-        self._require_root(root)
-        return {
-            "name": self._required_string(root, ATTR_MMD_MODEL_NAME),
-            "name_english": self._required_string(root, ATTR_MMD_MODEL_NAME_EN),
-            "comment": self._required_string(root, ATTR_MMD_COMMENT),
-            "comment_english": self._required_string(root, ATTR_MMD_COMMENT_EN),
-        }
+        return self._model_repository.read_model_metadata(root)
 
     def read_material_list_projection(self, model_root: str) -> MaterialListProjection:
         """Read only list semantics and root-bounded live assignments."""
