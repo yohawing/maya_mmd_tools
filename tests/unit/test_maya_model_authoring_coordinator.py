@@ -28,6 +28,7 @@ from mmd_tools.core.morph_read_projection import (
     MorphAuthoringReadSnapshot,
     MorphBlendShapeReadProjection,
 )
+from mmd_tools.core.material_read_projection import MaterialListProjection
 
 
 def _spec() -> MmdModelAuthoringSpec:
@@ -71,6 +72,11 @@ class FakeBackend:
             ),
             topology_inspection=MorphTopologyInspection({}, {}, ()),
         )
+        self.material_list_projection = MaterialListProjection("|root", ())
+
+    def read_material_list_projection(self, _root: str) -> MaterialListProjection:
+        self.events.append("read:material_list_projection")
+        return self.material_list_projection
 
     def read_morph_authoring_snapshot(self, _root: str) -> MorphAuthoringReadSnapshot:
         self.events.append("read:morph_snapshot")
@@ -673,6 +679,15 @@ def test_read_morph_authoring_snapshot_delegates_one_combined_generation() -> No
 
     assert result is backend.morph_snapshot
     assert backend.events == ["read:morph_snapshot"]
+
+
+def test_read_material_list_projection_delegates_one_typed_generation() -> None:
+    coordinator, backend, _, _ = _coordinator()
+
+    result = coordinator.read_material_list_projection("|root")
+
+    assert result is backend.material_list_projection
+    assert backend.events == ["read:material_list_projection"]
 
 
 def test_write_display_frames_uses_only_narrow_transaction() -> None:

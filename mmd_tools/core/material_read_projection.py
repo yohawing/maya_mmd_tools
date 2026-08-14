@@ -153,27 +153,42 @@ class MaterialPreviewState:
 
 
 @dataclass(frozen=True)
+class MaterialListSemantic:
+    """Minimal authored values required to render one Material list row."""
+
+    index: int
+    binding_identity: str
+    name: str
+    name_english: str = ""
+
+    def __post_init__(self) -> None:
+        if type(self.index) is not int or self.index < 0:
+            raise ValueError("index must be a non-negative integer")
+        _identity(self.binding_identity, field="binding_identity")
+        if not isinstance(self.name, str) or not isinstance(self.name_english, str):
+            raise TypeError("material list names must be strings")
+
+
+@dataclass(frozen=True)
 class MaterialListItemProjection:
     """One semantic list row with live assignment information."""
 
-    material: MmdMaterialSpec
+    semantic: MaterialListSemantic
     assignment: MaterialAssignmentSummary
 
     def __post_init__(self) -> None:
-        if not isinstance(self.material, MmdMaterialSpec):
-            raise TypeError("material must be an MmdMaterialSpec")
+        if not isinstance(self.semantic, MaterialListSemantic):
+            raise TypeError("semantic must be a MaterialListSemantic")
         if not isinstance(self.assignment, MaterialAssignmentSummary):
             raise TypeError("assignment must be a MaterialAssignmentSummary")
-        _identity(self.material.binding_identity, field="material.binding_identity")
 
     @property
     def index(self) -> int:
-        return self.material.index
+        return self.semantic.index
 
     @property
     def binding_identity(self) -> str:
-        # __post_init__ establishes this Optional field as non-null.
-        return self.material.binding_identity  # type: ignore[return-value]
+        return self.semantic.binding_identity
 
 
 @dataclass(frozen=True)
@@ -301,6 +316,7 @@ __all__ = [
     "MaterialDetailProjection",
     "MaterialListItemProjection",
     "MaterialListProjection",
+    "MaterialListSemantic",
     "MaterialPreviewState",
     "MaterialTextureBinding",
     "MaterialTextureProvenance",

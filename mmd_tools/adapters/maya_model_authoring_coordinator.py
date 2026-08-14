@@ -36,6 +36,7 @@ from mmd_tools.core.model_authoring_spec import (
     MmdModelAuthoringSpec,
     MmdMorphSpec,
 )
+from mmd_tools.core.material_read_projection import MaterialListProjection
 from mmd_tools.core.morph_authoring import (
     classify_morph_change,
     delete_morph as delete_morph_spec,
@@ -123,6 +124,26 @@ class MayaModelAuthoringCoordinator:
     def read_spec(self, model_root: str) -> MmdModelAuthoringSpec:
         """Read the current strict scene specification for UI refreshes."""
         return self._read_current(model_root, "read_spec")
+
+    def read_material_list_projection(self, model_root: str) -> MaterialListProjection:
+        """Read one immutable Material list/assignment refresh generation."""
+
+        reader = getattr(self._backend, "read_material_list_projection", None)
+        if not callable(reader):
+            raise MayaModelAuthoringCoordinatorError(
+                "material list projection reader is unavailable"
+            )
+        try:
+            result = reader(model_root)
+        except Exception as exc:
+            raise MayaModelAuthoringCoordinatorError(
+                f"read_material_list_projection failed for root {model_root!r}: {exc}"
+            ) from exc
+        if not isinstance(result, MaterialListProjection):
+            raise MayaModelAuthoringCoordinatorError(
+                "material list projection reader returned an invalid result"
+            )
+        return result
 
     def read_morph_authoring_snapshot(self, model_root: str) -> MorphAuthoringReadSnapshot:
         """Read one combined semantic/runtime Morph refresh generation."""

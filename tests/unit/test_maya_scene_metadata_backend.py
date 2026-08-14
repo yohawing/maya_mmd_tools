@@ -8,7 +8,7 @@ import re
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -302,6 +302,64 @@ def _backend() -> tuple[FakeCmds, MayaSceneMetadataBackend]:
         }
     )
     return cmds, MayaSceneMetadataBackend(cmds)
+
+
+def test_material_list_projection_reads_only_narrow_semantics_with_bounded_calls() -> None:
+    cmds, backend = _backend()
+    cmds.nodes.update({"registry", "matA", "matB"})
+    cmds.node_types.update({"registry": "network", "matA": "lambert", "matB": "lambert"})
+    cmds.attrs.update(
+        {
+            ("|root", "mmd_model_registry"): True,
+            ("registry", "mmd_model_registry_schema"): "1",
+            ("registry", "modelRoot"): True,
+            ("registry", "materialMembers"): True,
+            ("matA", "mmd_material"): 1,
+            ("matA", "mmd_material_index"): 1,
+            ("matA", "mmd_material_name"): "材質A",
+            ("matA", "mmd_material_name_en"): "Material A",
+            ("matB", "mmd_material"): 1,
+            ("matB", "mmd_material_index"): 0,
+            ("matB", "mmd_material_name"): "材質B",
+            ("matB", "mmd_material_name_en"): "Material B",
+        }
+    )
+    cmds.connections[("|root.mmd_model_registry", None)] = ["registry"]
+    cmds.connections[("registry.modelRoot", None)] = ["|root"]
+    cmds.connections[("registry.materialMembers", None)] = ["matA", "matB"]
+
+    tracked = (
+        "object_exists",
+        "ls",
+        "list_relatives",
+        "attribute_exists",
+        "get_attr",
+        "list_connections",
+    )
+    spies = {}
+    for method in tracked:
+        spy = Mock(wraps=getattr(cmds, method))
+        setattr(cmds, method, spy)
+        spies[method] = spy
+    backend._read_material = Mock(side_effect=AssertionError("full material read forbidden"))
+    backend._source_path = Mock(side_effect=AssertionError("source path read forbidden"))
+    backend._resolved_path = Mock(side_effect=AssertionError("texture graph read forbidden"))
+
+    with patch.object(
+        SceneMetadataAdapter,
+        "read_spec",
+        side_effect=AssertionError("full spec read forbidden"),
+    ) as read_spec:
+        projection = backend.read_material_list_projection("|root")
+
+    assert tuple(item.index for item in projection.items) == (0, 1)
+    assert tuple(item.semantic.name for item in projection.items) == ("材質B", "材質A")
+    backend._read_material.assert_not_called()
+    backend._source_path.assert_not_called()
+    backend._resolved_path.assert_not_called()
+    read_spec.assert_not_called()
+    assert spies["list_relatives"].call_count == 1
+    assert sum(spy.call_count for spy in spies.values()) <= 39
 
 
 def test_display_frames_write_commits_exact_existing_payload() -> None:

@@ -10,6 +10,7 @@ from mmd_tools.core.material_read_projection import (
     MaterialDetailProjection,
     MaterialListItemProjection,
     MaterialListProjection,
+    MaterialListSemantic,
     MaterialPreviewState,
     MaterialTextureBinding,
     MaterialTextureProvenance,
@@ -24,7 +25,7 @@ def _material(index=2, binding="shader"):
 
 def _item(index=2, binding="shader"):
     return MaterialListItemProjection(
-        _material(index, binding),
+        MaterialListSemantic(index, binding, "Material"),
         MaterialAssignmentSummary(
             MaterialAssignmentKind.EXPLICIT_FACES,
             mesh_count=1,

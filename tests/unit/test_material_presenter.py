@@ -6,7 +6,10 @@ from tests.common.mock_ui import attach_mocks
 
 install_headless_ui_stubs()
 
-from mmd_tools.ui.presenters.material_presenter import MaterialPresenter  # noqa: E402
+from mmd_tools.ui.presenters.material_presenter import (  # noqa: E402
+    MATERIAL_ASSIGNMENT_ROLE,
+    MaterialPresenter,
+)
 from mmd_tools.ui.qt_compat import Qt  # noqa: E402
 from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_AMBIENT_COLOR,
@@ -27,6 +30,13 @@ from mmd_tools.core.model_authoring_spec import (  # noqa: E402
     MmdMaterialSpec,
     MmdModelAuthoringSpec,
     MmdModelSpec,
+)
+from mmd_tools.core.material_read_projection import (  # noqa: E402
+    MaterialAssignmentKind,
+    MaterialAssignmentSummary,
+    MaterialListItemProjection,
+    MaterialListProjection,
+    MaterialListSemantic,
 )
 from mmd_tools.converters.material_shader_parameters import ATTR_MMD_DIFFUSE_ALPHA  # noqa: E402
 
@@ -107,6 +117,9 @@ class TestMaterialPresenter(unittest.TestCase):
 
     def _make_authoring_presenter(self):
         coordinator = Mock()
+        coordinator.read_material_list_projection.return_value = MaterialListProjection(
+            "|model_root", ()
+        )
         self.mock_app_state.current_model_root = "|model_root"
         self.mock_maya_adapter.object_exists.return_value = True
         presenter = MaterialPresenter(
@@ -116,6 +129,19 @@ class TestMaterialPresenter(unittest.TestCase):
             authoring_coordinator=coordinator,
         )
         return presenter, coordinator
+
+    @staticmethod
+    def _list_projection(root, *rows):
+        return MaterialListProjection(
+            root,
+            tuple(
+                MaterialListItemProjection(
+                    MaterialListSemantic(index, binding, name, name_english),
+                    assignment,
+                )
+                for index, binding, name, name_english, assignment in rows
+            ),
+        )
 
     def tearDown(self):
         """テスト後のクリーンアップ"""
@@ -174,6 +200,16 @@ class TestMaterialPresenter(unittest.TestCase):
 
     def test_authoring_selection_selects_shader_and_enables_indexed_actions(self):
         presenter, _coordinator = self._make_authoring_presenter()
+        presenter._material_list_projection = self._list_projection(
+            "|model_root",
+            (
+                3,
+                "shader1",
+                "Material",
+                "",
+                MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+            ),
+        )
         item = Mock()
         item.text.return_value = "1:Material"
         item.data.side_effect = lambda role: "shader1" if role == Qt.UserRole else 3
@@ -337,19 +373,38 @@ class TestMaterialPresenter(unittest.TestCase):
             "Copy", name_english="Copy", index=6, binding_identity="shader6"
         )
         self.mock_maya_adapter.ls.return_value = ["|model_root|mesh.f[2]"]
-        with patch.object(presenter, "_append_material_row") as append_row:
+        with patch.object(presenter, "load_materials") as reload_materials, patch.object(
+            presenter, "_select_projected_binding"
+        ) as select_projected:
             self.assertTrue(presenter.create_material())
             self.assertTrue(presenter.duplicate_material())
 
         coordinator.create_material.assert_called_once_with("|model_root")
         coordinator.duplicate_material.assert_called_once_with("|model_root", 4)
-        self.assertEqual(append_row.call_count, 2)
+        self.assertEqual(reload_materials.call_count, 2)
+        self.assertEqual(
+            [call.args[0] for call in select_projected.call_args_list],
+            ["shader5", "shader6"],
+        )
         self.mock_maya_adapter.ls.assert_not_called()
 
     def test_move_material_routes_exact_index_permutation(self):
         presenter, coordinator = self._make_authoring_presenter()
         presenter.current_material = "shader1"
         presenter.current_material_index = 1
+        presenter._material_list_projection = self._list_projection(
+            "|model_root",
+            *(
+                (
+                    index,
+                    "shader{}".format(index),
+                    name,
+                    "",
+                    MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+                )
+                for index, name in enumerate(("A", "B", "C"))
+            ),
+        )
         coordinator.read_spec.return_value = MmdModelAuthoringSpec(
             model=MmdModelSpec("Model"),
             materials=(
@@ -384,15 +439,17 @@ class TestMaterialPresenter(unittest.TestCase):
             presenter.view.material_list, "selected", item
         )
 
-        with patch.object(presenter, "load_materials") as reload_materials:
+        with patch.object(presenter, "load_materials") as reload_materials, patch.object(
+            presenter, "_select_projected_binding"
+        ) as select_projected:
             self.assertTrue(presenter.move_material(-1))
 
         coordinator.move_material_fast.assert_called_once_with("|model_root", 1, 0)
         coordinator.read_spec.assert_not_called()
         coordinator.reindex_materials.assert_not_called()
-        reload_materials.assert_not_called()
-        self.assertEqual([item.data(Qt.UserRole) for item in items], ["shader1", "shader0", "shader2"])
-        self.assertEqual(presenter.view.material_list.selected.data(Qt.UserRole), "shader1")
+        reload_materials.assert_called_once_with()
+        self.assertEqual([item.data(Qt.UserRole) for item in items], ["shader0", "shader1", "shader2"])
+        select_projected.assert_called_once_with("shader1")
         self.assertEqual(presenter.current_material_index, 0)
 
     @patch("mmd_tools.ui.qt_compat.QMessageBox.question")
@@ -438,52 +495,59 @@ class TestMaterialPresenter(unittest.TestCase):
         # プレースホルダーが表示されることを確認
         self.mock_view._show_placeholder.assert_called_once()
 
-    @patch("mmd_tools.ui.presenters.material_presenter.list_model_registry_members_from_adapter")
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_load_materials_uses_registry_for_unassigned_authoring_material(
-        self, mock_maya_attribute_utils, registry_members
-    ):
+    def test_load_materials_uses_projection_for_unassigned_authoring_material(self):
         self.mock_app_state.current_model_root = "|model_root"
         self.mock_maya_adapter.object_exists.return_value = True
-        registry_members.return_value = ["unassigned_shader"]
-        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: {
-            ATTR_MMD_MATERIAL_NAME: "未割り当て材質",
-            ATTR_MMD_MATERIAL_NAME_EN: "Unassigned",
-        }.get(attr)
+        coordinator = Mock()
+        coordinator.read_material_list_projection.return_value = self._list_projection(
+            "|model_root",
+            (
+                0,
+                "unassigned_shader",
+                "未割り当て材質",
+                "Unassigned",
+                MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+            ),
+        )
+        self.presenter.authoring_coordinator = coordinator
 
         self.presenter.load_materials()
 
-        self.mock_maya_adapter.list_relatives.assert_called_once_with(
-            "|model_root",
-            allDescendents=True,
-            fullPath=True,
-            type="mesh",
-        )
+        coordinator.read_material_list_projection.assert_called_once_with("|model_root")
         self.mock_view.material_list.addItem.assert_called_once()
         added_item = self.mock_view.material_list.addItem.call_args.args[0]
         self.assertEqual(added_item.data(Qt.UserRole), "unassigned_shader")
+        self.assertEqual(added_item.data(MATERIAL_ASSIGNMENT_ROLE), "meshes=0, faces=0")
+        self.mock_maya_adapter.list_relatives.assert_not_called()
+        self.mock_maya_adapter.list_connections.assert_not_called()
+        self.mock_maya_adapter.sets.assert_not_called()
 
-    @patch("mmd_tools.ui.presenters.material_presenter.list_model_registry_members_from_adapter")
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_refresh_projects_standard_set_face_membership_into_material_row(
-        self, mock_maya_attribute_utils, registry_members
-    ):
+    def test_refresh_consumes_new_assignment_projection_atomically(self):
         self.mock_app_state.current_model_root = "|model_root"
         self.mock_maya_adapter.object_exists.return_value = True
-        registry_members.return_value = ["shader1"]
-        self.mock_maya_adapter.list_relatives.return_value = ["|model_root|mesh|meshShape"]
-
-        def list_connections(node, **kwargs):
-            if node == "shader1" and kwargs.get("type") == "shadingEngine":
-                return ["|model_root|meshSG"]
-            return []
-
-        self.mock_maya_adapter.list_connections.side_effect = list_connections
-        self.mock_maya_adapter.sets.return_value = ["|model_root|mesh.f[0:2]"]
-        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: {
-            ATTR_MMD_MATERIAL_NAME: "Material 1",
-            ATTR_MMD_MATERIAL_NAME_EN: "Material 1 EN",
-        }.get(attr, "")
+        coordinator = Mock()
+        first = self._list_projection(
+            "|model_root",
+            (
+                0,
+                "shader1",
+                "Material 1",
+                "Material 1 EN",
+                MaterialAssignmentSummary(MaterialAssignmentKind.EXPLICIT_FACES, 1, 3),
+            ),
+        )
+        second = self._list_projection(
+            "|model_root",
+            (
+                0,
+                "shader1",
+                "Material 1",
+                "Material 1 EN",
+                MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+            ),
+        )
+        coordinator.read_material_list_projection.side_effect = (first, second)
+        self.presenter.authoring_coordinator = coordinator
 
         self.presenter.load_materials()
 
@@ -491,56 +555,104 @@ class TestMaterialPresenter(unittest.TestCase):
         self.assertNotIn("meshes=", item.text())
         self.assertNotIn("faces=", item.text())
         self.assertEqual(item.data(Qt.UserRole + 2), "meshes=1, faces=3")
-        self.assertEqual(item.toolTip(), "shader1")
-        self.mock_maya_adapter.sets.assert_called_once_with("|model_root|meshSG", query=True)
+        self.assertNotEqual(item.toolTip(), "shader1")
+        self.assertIs(self.presenter._material_list_projection, first)
 
         # Maya standard-set membership is changed externally; Refresh must
         # observe the new graph rather than retaining the previous summary.
-        self.mock_maya_adapter.sets.return_value = []
         self.presenter.load_materials()
         refreshed_item = self.mock_view.material_list.addItem.call_args.args[0]
         self.assertNotIn("meshes=", refreshed_item.text())
         self.assertEqual(refreshed_item.data(Qt.UserRole + 2), "meshes=0, faces=0")
+        self.assertIs(self.presenter._material_list_projection, second)
 
-    def test_assignment_summary_accepts_short_root_and_long_members(self):
-        self.mock_maya_adapter.ls.side_effect = lambda node, **kwargs: {
-            "model_root": ["|model_root"],
-            "|model_root|mesh": ["|model_root|mesh"],
-        }.get(node, [node])
-        self.mock_maya_adapter.list_relatives.return_value = ["|model_root|mesh|meshShape"]
-        self.mock_maya_adapter.list_connections.return_value = ["meshSG"]
-        self.mock_maya_adapter.sets.return_value = ["|model_root|mesh.f[0:3]"]
+    def test_pending_dirty_refresh_defers_projection_swap_until_clean(self):
+        self.mock_app_state.current_model_root = "|model_root"
+        self.mock_maya_adapter.object_exists.return_value = True
+        coordinator = Mock()
+        first = self._list_projection("|model_root")
+        second = self._list_projection(
+            "|model_root",
+            (
+                0,
+                "shader1",
+                "Material 1",
+                "",
+                MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+            ),
+        )
+        coordinator.read_material_list_projection.side_effect = (first, second)
+        self.presenter.authoring_coordinator = coordinator
+        self.presenter.load_materials()
+        self.presenter._pending_refresh_generation = 7
+        self.presenter.has_unsaved_changes = True
 
-        summary = self.presenter._read_material_assignment_summary("model_root", "shader")
+        self.assertTrue(self.presenter.refresh_for_generation(7))
+        self.assertIs(self.presenter._material_list_projection, first)
+        self.assertEqual(coordinator.read_material_list_projection.call_count, 1)
 
-        self.assertEqual(summary, "meshes=1, faces=4")
+        self.presenter.has_unsaved_changes = False
+        self.assertTrue(self.presenter.refresh_for_generation(7))
+        self.assertIs(self.presenter._material_list_projection, second)
+        self.assertEqual(coordinator.read_material_list_projection.call_count, 2)
+
+    def test_projection_root_mismatch_fails_before_adding_any_row(self):
+        self.mock_app_state.current_model_root = "|model_root"
+        self.mock_maya_adapter.object_exists.return_value = True
+        coordinator = Mock()
+        coordinator.read_material_list_projection.return_value = self._list_projection(
+            "|other_root",
+            (
+                0,
+                "shader1",
+                "Material 1",
+                "",
+                MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+            ),
+        )
+        self.presenter.authoring_coordinator = coordinator
+
+        self.presenter.load_materials()
+
+        self.assertIsNone(self.presenter._material_list_projection)
+        self.mock_view.material_list.addItem.assert_not_called()
+
+    def test_projection_read_failure_clears_prior_selection_and_actions(self):
+        self.mock_app_state.current_model_root = "|model_root"
+        self.mock_maya_adapter.object_exists.return_value = True
+        coordinator = Mock()
+        coordinator.read_material_list_projection.side_effect = RuntimeError("read failed")
+        self.presenter.authoring_coordinator = coordinator
+        self.presenter.current_material = "staleShader"
+        self.presenter.current_material_index = 3
+
+        self.presenter.load_materials()
+
+        self.assertIsNone(self.presenter.current_material)
+        self.assertIsNone(self.presenter.current_material_index)
+        self.mock_view.duplicate_btn.setEnabled.assert_called_with(False)
+        self.mock_view.delete_btn.setEnabled.assert_called_with(False)
+        self.mock_view.reindex_up_btn.setEnabled.assert_called_with(False)
+        self.mock_view.reindex_down_btn.setEnabled.assert_called_with(False)
 
     @patch("mmd_tools.ui.presenters.material_presenter.logger")
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_load_materials_with_model(self, mock_maya_attribute_utils, mock_logger):
+    def test_load_materials_with_model(self, mock_logger):
         """モデルが選択されている場合のマテリアル読み込みテスト"""
         # モデルが存在する設定
-        self.mock_app_state.current_model_root = "test_model"
+        self.mock_app_state.current_model_root = "|test_model"
         self.mock_maya_adapter.object_exists.return_value = True
-        self.mock_maya_adapter.list_relatives.return_value = ["meshShape"]
-
-        # より詳細なlistConnectionsの設定
-        def mock_list_connections(nodes, **kwargs):
-            if kwargs.get("type") == "shadingEngine":
-                return ["SG"]
-            elif nodes == "SG":
-                return ["mat1"]
-            return None
-
-        self.mock_maya_adapter.list_connections.side_effect = mock_list_connections
-        self.mock_maya_adapter.ls.return_value = ["mat1"]
-        self.mock_maya_adapter.attribute_exists.side_effect = (
-            lambda attr, _node: attr == ATTR_MMD_MATERIAL_NAME
+        coordinator = Mock()
+        coordinator.read_material_list_projection.return_value = self._list_projection(
+            "|test_model",
+            (
+                0,
+                "mat1",
+                "Material 1",
+                "Material 1 EN",
+                MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+            ),
         )
-        mock_maya_attribute_utils.get_attribute.side_effect = lambda node, attr: {
-            "mmd_material_name": "Material 1",
-            "mmd_material_name_en": "Material 1 EN",
-        }.get(attr, "")
+        self.presenter.authoring_coordinator = coordinator
         # count() は addItem 後の件数を返す想定
         self.mock_view.material_list.count.return_value = 1
 
@@ -550,43 +662,33 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.material_list.clear.assert_called_once()
         # マテリアルがリストに追加されることを確認
         self.mock_view.material_list.addItem.assert_called()
-        self.mock_maya_adapter.list_relatives.assert_called_with(
-            "test_model",
-            allDescendents=True,
-            fullPath=True,
-            type="mesh",
-        )
-        self.mock_maya_adapter.list_connections.assert_any_call(["meshShape"], type="shadingEngine")
-        self.mock_maya_adapter.ls.assert_any_call(["mat1"], materials=True)
-        self.mock_maya_adapter.attribute_exists.assert_called_with(ATTR_MMD_MATERIAL_NAME, "mat1")
+        coordinator.read_material_list_projection.assert_called_once_with("|test_model")
+        self.mock_maya_adapter.list_relatives.assert_not_called()
+        self.mock_maya_adapter.list_connections.assert_not_called()
 
         # 一覧ロード詳細は DEBUG のみ（INFO には出さない）
-        expected = "Loaded 1 MMD materials for model: test_model"
+        expected = "Loaded 1 MMD materials for model: |test_model"
         debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
         info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
         self.assertIn(expected, debug_messages)
         self.assertNotIn(expected, info_messages)
 
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_load_materials_hides_namespace_and_path_but_preserves_full_node(
-        self,
-        mock_maya_attribute_utils,
-    ):
+    def test_load_materials_hides_namespace_and_path_but_preserves_full_node(self):
         material = "|root|outer:model:face_material"
-        self.mock_app_state.current_model_root = "test_model"
+        self.mock_app_state.current_model_root = "|test_model"
         self.mock_maya_adapter.object_exists.return_value = True
-        self.mock_maya_adapter.list_relatives.return_value = ["meshShape"]
-        self.mock_maya_adapter.list_connections.side_effect = lambda nodes, **kwargs: (
-            ["SG"] if kwargs.get("type") == "shadingEngine" else [material]
+        coordinator = Mock()
+        coordinator.read_material_list_projection.return_value = self._list_projection(
+            "|test_model",
+            (
+                0,
+                material,
+                "顔材質",
+                "Face",
+                MaterialAssignmentSummary(MaterialAssignmentKind.UNKNOWN, 0, None),
+            ),
         )
-        self.mock_maya_adapter.ls.return_value = [material]
-        self.mock_maya_adapter.attribute_exists.side_effect = (
-            lambda attr, _node: attr == ATTR_MMD_MATERIAL_NAME
-        )
-        mock_maya_attribute_utils.get_attribute.side_effect = lambda node, attr: {
-            ATTR_MMD_MATERIAL_NAME: "顔材質",
-            ATTR_MMD_MATERIAL_NAME_EN: "Face",
-        }.get(attr, "")
+        self.presenter.authoring_coordinator = coordinator
         self.mock_view.material_list.count.return_value = 1
 
         self.presenter.load_materials()
@@ -595,7 +697,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.assertEqual(item.text(), "1:顔材質（face_material） [Face]")
         self.assertEqual(item.data(Qt.UserRole), material)
         self.assertEqual(item.data(Qt.UserRole + 2), "meshes=0, faces=?")
-        self.assertEqual(item.toolTip(), material)
+        self.assertNotEqual(item.toolTip(), material)
 
     @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
@@ -604,10 +706,23 @@ class TestMaterialPresenter(unittest.TestCase):
         # モックアイテムを作成
         mock_item = Mock()
         mock_item.text.return_value = "1:Material 1（material1）"
-        mock_item.data.return_value = "material1"
+        mock_item.data.side_effect = lambda role: {
+            Qt.UserRole: "material1",
+            Qt.UserRole + 1: 0,
+        }.get(role)
 
         self.mock_maya_adapter.object_exists.return_value = True
         self.mock_maya_adapter.select.return_value = None
+        self.presenter._material_list_projection = self._list_projection(
+            "|model_root",
+            (
+                0,
+                "material1",
+                "Material 1",
+                "",
+                MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+            ),
+        )
 
         self.presenter.on_material_selected(mock_item, None)
 
@@ -622,6 +737,37 @@ class TestMaterialPresenter(unittest.TestCase):
         info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
         self.assertIn(expected, debug_messages)
         self.assertNotIn(expected, info_messages)
+
+    def test_on_material_selected_rejects_forged_hidden_binding_role(self):
+        item = Mock()
+        item.text.return_value = "1:Forged"
+        item.data.side_effect = lambda role: {
+            Qt.UserRole: "foreignShader",
+            Qt.UserRole + 1: 0,
+        }.get(role)
+        self.presenter._material_list_projection = self._list_projection(
+            "|model_root",
+            (
+                0,
+                "ownedShader",
+                "Owned",
+                "",
+                MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+            ),
+        )
+        self.presenter.current_material = "priorShader"
+        self.presenter.current_material_index = 4
+
+        self.presenter.on_material_selected(item, None)
+
+        self.mock_maya_adapter.select_fast.assert_not_called()
+        self.mock_view._set_details_enabled.assert_called_with(False)
+        self.assertIsNone(self.presenter.current_material)
+        self.assertIsNone(self.presenter.current_material_index)
+        self.mock_view.duplicate_btn.setEnabled.assert_called_with(False)
+        self.mock_view.delete_btn.setEnabled.assert_called_with(False)
+        self.mock_view.reindex_up_btn.setEnabled.assert_called_with(False)
+        self.mock_view.reindex_down_btn.setEnabled.assert_called_with(False)
 
     def test_on_selection_changed_maya_uses_fast_selection_path(self):
         item = Mock()

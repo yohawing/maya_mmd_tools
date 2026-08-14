@@ -15,8 +15,10 @@ from mmd_tools.core.constants import (
     ATTR_MMD_REGISTRY_ROOT,
     ATTR_MMD_REGISTRY_SCHEMA,
 )
-from mmd_tools.core.material_read_projection import MaterialAssignmentKind
-from mmd_tools.core.model_authoring_spec import MmdMaterialSpec
+from mmd_tools.core.material_read_projection import (
+    MaterialAssignmentKind,
+    MaterialListSemantic,
+)
 
 
 class FakeMayaAdapter:
@@ -62,6 +64,7 @@ class FakeMayaAdapter:
             "sgB": ["|root|meshB|meshBShape.f[0:7]"],
         }
         self.raising_sets = set()
+        self.intermediate_meshes = set()
 
     def ls(self, value, **kwargs):
         self.calls.append(("ls", value, tuple(sorted(kwargs.items()))))
@@ -79,6 +82,8 @@ class FakeMayaAdapter:
         self.calls.append(("get_attr", plug))
         if plug == "registry.{}".format(ATTR_MMD_REGISTRY_SCHEMA):
             return "1"
+        if plug.endswith(".intermediateObject"):
+            return plug.rsplit(".", 1)[0] in self.intermediate_meshes
         raise KeyError(plug)
 
     def list_connections(self, plug, **kwargs):
@@ -95,8 +100,8 @@ class FakeMayaAdapter:
 def _materials():
     # Deliberately reverse input order; output is semantic PMX index order.
     return (
-        MmdMaterialSpec("B", index=2, binding_identity="matB"),
-        MmdMaterialSpec("A", index=0, binding_identity="matA"),
+        MaterialListSemantic(2, "matB", "B"),
+        MaterialListSemantic(0, "matA", "A"),
     )
 
 
@@ -121,6 +126,22 @@ def test_registry_projection_orders_semantics_and_classifies_mixed_and_faces():
     assert first.assignment.face_count == 3
     assert second.assignment.kind is MaterialAssignmentKind.EXPLICIT_FACES
     assert second.assignment.face_count == 8
+
+
+def test_batch_semantic_reader_runs_once_after_canonical_ownership_observation():
+    maya = FakeMayaAdapter()
+    calls = []
+
+    def read_batch(root, bindings):
+        calls.append((root, bindings))
+        return _materials()
+
+    projection = MayaMaterialReadProjectionAdapter(
+        maya
+    ).read_list_projection_from_batch("root", read_batch)
+
+    assert calls == [("|root", ("matA", "matB"))]
+    assert tuple(item.index for item in projection.items) == (0, 2)
 
 
 def test_root_and_membership_scans_are_fixed_and_cached_per_shading_group():
@@ -196,16 +217,16 @@ def test_duplicate_registry_binding_index_and_semantic_binding_fail_closed():
 
     maya = FakeMayaAdapter()
     duplicate_index = (
-        MmdMaterialSpec("A", index=0, binding_identity="matA"),
-        MmdMaterialSpec("B", index=0, binding_identity="matB"),
+        MaterialListSemantic(0, "matA", "A"),
+        MaterialListSemantic(0, "matB", "B"),
     )
     with pytest.raises(MayaMaterialReadProjectionError, match="duplicate material index"):
         _read(maya, duplicate_index)
 
     maya = FakeMayaAdapter()
     duplicate_binding = (
-        MmdMaterialSpec("A", index=0, binding_identity="matA"),
-        MmdMaterialSpec("Again", index=1, binding_identity="matA"),
+        MaterialListSemantic(0, "matA", "A"),
+        MaterialListSemantic(1, "matA", "Again"),
     )
     with pytest.raises(MayaMaterialReadProjectionError, match="duplicate semantic"):
         _read(maya, duplicate_binding)
@@ -224,7 +245,7 @@ def test_semantic_spec_binding_must_itself_be_canonical_not_an_alias():
     maya = FakeMayaAdapter()
     maya.canonical["matAlias"] = ("matA",)
     aliased = (
-        MmdMaterialSpec("A", index=0, binding_identity="matAlias"),
+        MaterialListSemantic(0, "matAlias", "A"),
         _materials()[0],
     )
 
@@ -243,6 +264,22 @@ def test_whole_object_member_with_multiple_owned_shapes_is_ambiguous():
 
     with pytest.raises(MayaMaterialReadProjectionError, match="exactly one owned mesh"):
         _read(maya)
+
+
+def test_whole_object_transform_ignores_one_intermediate_orig_shape():
+    maya = FakeMayaAdapter()
+    maya.meshes.insert(1, "meshAOrigShape")
+    maya.canonical["meshAOrigShape"] = ("|root|meshA|meshAOrigShape",)
+    maya.canonical["|root|meshA|meshAOrigShape"] = (
+        "|root|meshA|meshAOrigShape",
+    )
+    maya.intermediate_meshes.add("|root|meshA|meshAOrigShape")
+
+    projection = _read(maya)
+
+    assignment = projection.item_for_binding("matA").assignment
+    assert assignment.kind is MaterialAssignmentKind.MIXED
+    assert assignment.mesh_count == 1
 
 
 def test_malformed_registry_never_falls_back_to_legacy_discovery():

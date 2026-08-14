@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from mmd_tools.core.constants import (
     ATTR_MMD_MATERIAL,
@@ -17,13 +17,17 @@ from mmd_tools.core.material_read_projection import (
     MaterialAssignmentSummary,
     MaterialListItemProjection,
     MaterialListProjection,
+    MaterialListSemantic,
 )
 from mmd_tools.core.maya_identity import canonical_node_identity
-from mmd_tools.core.model_authoring_spec import MmdMaterialSpec
 from mmd_tools.core.model_registry import REGISTRY_SCHEMA_VERSION
 
 
 _FACE_MEMBER = re.compile(r"^(?P<node>.+)\.f\[(?P<start>\d+)(?::(?P<end>\d+))?\]$")
+SemanticMaterialBatchReader = Callable[
+    [str, Tuple[str, ...]],
+    Tuple[MaterialListSemantic, ...],
+]
 
 
 class MayaMaterialReadProjectionError(RuntimeError):
@@ -39,19 +43,65 @@ class MayaMaterialReadProjectionAdapter:
     def read_list_projection(
         self,
         model_root: str,
-        semantic_materials: Tuple[MmdMaterialSpec, ...],
+        semantic_materials: Tuple[MaterialListSemantic, ...],
     ) -> MaterialListProjection:
         """Return PMX-indexed rows after one root mesh scan.
 
-        ``semantic_materials`` must be one already-validated backend read for
+        ``semantic_materials`` must be one already-validated narrow backend read for
         this root. This adapter never rebuilds semantic fields from Maya
         attributes or invokes a per-material semantic reader.
         """
 
         if not isinstance(semantic_materials, tuple) or not all(
-            isinstance(material, MmdMaterialSpec) for material in semantic_materials
+            isinstance(material, MaterialListSemantic) for material in semantic_materials
         ):
-            raise TypeError("semantic_materials must be a tuple of MmdMaterialSpec")
+            raise TypeError("semantic_materials must be a tuple of MaterialListSemantic")
+        root, meshes, mesh_shading_groups, owned_bindings = self._observe_ownership(
+            model_root
+        )
+        return self._project_semantics(
+            root,
+            meshes,
+            mesh_shading_groups,
+            owned_bindings,
+            semantic_materials,
+        )
+
+    def read_list_projection_from_batch(
+        self,
+        model_root: str,
+        semantic_batch_reader: SemanticMaterialBatchReader,
+    ) -> MaterialListProjection:
+        """Observe ownership once and invoke one batch semantic read.
+
+        The callback receives already-canonical owned bindings. It must read
+        only those bindings and return one immutable tuple; root/registry
+        discovery remains this adapter's responsibility.
+        """
+
+        if not callable(semantic_batch_reader):
+            raise TypeError("semantic_batch_reader must be callable")
+        root, meshes, mesh_shading_groups, owned_bindings = self._observe_ownership(
+            model_root
+        )
+        semantic_materials = semantic_batch_reader(root, owned_bindings)
+        return self._project_semantics(
+            root,
+            meshes,
+            mesh_shading_groups,
+            owned_bindings,
+            semantic_materials,
+        )
+
+    def _observe_ownership(
+        self,
+        model_root: str,
+    ) -> Tuple[
+        str,
+        Tuple[str, ...],
+        Dict[str, Tuple[str, ...]],
+        Tuple[str, ...],
+    ]:
         root = self._canonical_dag_identity(model_root, "model root")
         meshes = self._owned_meshes(root)
         mesh_shading_groups = self._mesh_shading_groups(meshes)
@@ -65,8 +115,22 @@ class MayaMaterialReadProjectionAdapter:
                     "duplicate canonical material binding {!r}".format(binding)
                 )
             owned_bindings.append(binding)
+        return root, meshes, mesh_shading_groups, tuple(owned_bindings)
 
-        material_by_binding: Dict[str, MmdMaterialSpec] = {}
+    def _project_semantics(
+        self,
+        root: str,
+        meshes: Tuple[str, ...],
+        mesh_shading_groups: Dict[str, Tuple[str, ...]],
+        owned_bindings: Tuple[str, ...],
+        semantic_materials: Tuple[MaterialListSemantic, ...],
+    ) -> MaterialListProjection:
+        if not isinstance(semantic_materials, tuple) or not all(
+            isinstance(material, MaterialListSemantic) for material in semantic_materials
+        ):
+            raise TypeError("semantic_materials must be a tuple of MaterialListSemantic")
+
+        material_by_binding: Dict[str, MaterialListSemantic] = {}
         seen_indices: Dict[int, str] = {}
         for material in semantic_materials:
             binding = self._canonical_identity(
@@ -135,6 +199,20 @@ class MayaMaterialReadProjectionAdapter:
                 raise MayaMaterialReadProjectionError(
                     "duplicate or instanced model mesh path {!r}".format(mesh)
                 )
+            try:
+                intermediate = self._adapter.get_attr(
+                    "{}.intermediateObject".format(mesh)
+                )
+            except Exception as exc:
+                raise MayaMaterialReadProjectionError(
+                    "model mesh intermediate state cannot be read: {!r}".format(mesh)
+                ) from exc
+            if type(intermediate) not in (bool, int) or intermediate not in (False, True, 0, 1):
+                raise MayaMaterialReadProjectionError(
+                    "model mesh intermediate state is invalid: {!r}".format(mesh)
+                )
+            if bool(intermediate):
+                continue
             meshes.append(mesh)
         return tuple(meshes)
 
@@ -357,4 +435,5 @@ class MayaMaterialReadProjectionAdapter:
 __all__ = [
     "MayaMaterialReadProjectionAdapter",
     "MayaMaterialReadProjectionError",
+    "SemanticMaterialBatchReader",
 ]

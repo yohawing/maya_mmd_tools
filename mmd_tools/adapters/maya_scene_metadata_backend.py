@@ -24,6 +24,9 @@ from mmd_tools.adapters.maya_material_shader_route import (
     material_diffuse_route,
     material_shader_route,
 )
+from mmd_tools.adapters.maya_material_read_projection import (
+    MayaMaterialReadProjectionAdapter,
+)
 from mmd_tools.adapters.maya_morph_binding_query import (
     MayaMorphBindingQueryError,
     resolve_maya_morph_binding,
@@ -101,6 +104,10 @@ from mmd_tools.core.constants import (
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
 )
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.material_read_projection import (
+    MaterialListProjection,
+    MaterialListSemantic,
+)
 from mmd_tools.core.morph_binding_resolver import (
     MorphBindingRequest,
     MorphBindingResolution,
@@ -532,6 +539,53 @@ class MayaSceneMetadataBackend:
             "comment": self._required_string(root, ATTR_MMD_COMMENT),
             "comment_english": self._required_string(root, ATTR_MMD_COMMENT_EN),
         }
+
+    def read_material_list_projection(self, model_root: str) -> MaterialListProjection:
+        """Read only list semantics and root-bounded live assignments."""
+
+        self._require_root(model_root)
+
+        def read_semantics(
+            canonical_root: str,
+            bindings: tuple[str, ...],
+        ) -> tuple[MaterialListSemantic, ...]:
+            # Ownership was validated by the projection adapter. Read only
+            # list fields here; full material/texture reads belong to detail.
+            if canonical_root != self._material_identity(model_root):
+                raise MayaSceneMetadataError(
+                    "material list projection root identity changed during read"
+                )
+            result = []
+            for binding in bindings:
+                if self._required_int(binding, ATTR_MMD_MATERIAL) != 1:
+                    raise MayaSceneMetadataError(
+                        f"{binding}.{ATTR_MMD_MATERIAL} must equal integer 1"
+                    )
+                result.append(
+                    MaterialListSemantic(
+                        index=self._required_int(
+                            binding,
+                            ATTR_MMD_MATERIAL_INDEX,
+                            minimum=0,
+                        ),
+                        binding_identity=binding,
+                        name=self._required_string(binding, ATTR_MMD_MATERIAL_NAME),
+                        name_english=self._required_string(
+                            binding,
+                            ATTR_MMD_MATERIAL_NAME_EN,
+                        ),
+                    )
+                )
+            return tuple(result)
+
+        try:
+            return MayaMaterialReadProjectionAdapter(
+                self._cmds
+            ).read_list_projection_from_batch(model_root, read_semantics)
+        except Exception as exc:
+            raise MayaSceneMetadataError(
+                f"failed to read material list projection for {model_root!r}: {exc}"
+            ) from exc
 
     def read_morph_authoring_snapshot(self, model_root: str) -> MorphAuthoringReadSnapshot:
         """Read semantic Morph data and its runtime projection in one generation."""

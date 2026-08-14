@@ -4,7 +4,6 @@ from collections.abc import Sequence
 from dataclasses import replace
 import math
 import os
-import re
 from typing import Protocol
 
 from mmd_tools.core import maya_attribute_utils
@@ -24,7 +23,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
-    ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_ORIGINAL_TEXTURE_PATH,
     ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_SPHERE_PATH,
@@ -34,12 +32,8 @@ from mmd_tools.core.constants import (
 )
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
-from ...core.maya_identity import canonical_node_identity
-from ...core.model_registry import (
-    REGISTRY_CATEGORY_MATERIAL,
-    list_model_registry_members_from_adapter,
-)
 from ...core.model_authoring_spec import MmdMaterialSpec, MmdModelAuthoringSpec
+from ...core.material_read_projection import MaterialListProjection
 from ...core.material_authoring import classify_material_change
 from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt
 from ..translations import UITranslator
@@ -73,6 +67,8 @@ class MaterialAuthoringCoordinator(Protocol):
 
     def read_spec(self, model_root: str) -> MmdModelAuthoringSpec: ...
 
+    def read_material_list_projection(self, model_root: str) -> MaterialListProjection: ...
+
     def replace_material(self, model_root: str, material: MmdMaterialSpec) -> MmdModelAuthoringSpec: ...
 
     def apply_material_value_patch(
@@ -103,6 +99,7 @@ class MaterialPresenter:
         self._loading_properties = False  # Flag to prevent change tracking during loading
         self._pending_refresh_generation = None
         self._last_refresh_generation = None
+        self._material_list_projection = None
         self.connect_signals()
         self._update_authoring_actions()
 
@@ -231,78 +228,56 @@ class MaterialPresenter:
             return
         self._last_refresh_generation = getattr(self.app_state, "refresh_generation", 0)
         self._pending_refresh_generation = None
-        self.view.material_list.clear()
-        self.current_material = None
-        self.current_material_index = None
-
         current_model_root = self.app_state.current_model_root
         if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
+            self._material_list_projection = None
+            self.view.material_list.clear()
+            self.current_material = None
+            self.current_material_index = None
             self.view._set_details_enabled(False)
             self.view._show_placeholder()
             self._update_authoring_actions()
             return
 
         try:
-            # MMDマテリアルノードを探す
-            # Registry ownership keeps newly-created/unassigned materials
-            # discoverable. Legacy roots retain mesh/SG discovery below.
-            registry_materials = list_model_registry_members_from_adapter(
-                self.maya_adapter,
-                current_model_root,
-                REGISTRY_CATEGORY_MATERIAL,
+            if self.authoring_coordinator is None:
+                raise RuntimeError("material list projection reader is unavailable")
+            projection = self.authoring_coordinator.read_material_list_projection(
+                current_model_root
             )
-            mmd_materials = list(registry_materials or [])
-
-            if registry_materials is None:
-                shapes = self.maya_adapter.list_relatives(current_model_root, allDescendents=True, type="mesh")
-                if shapes:
-                    shading_groups = self.maya_adapter.list_connections(shapes, type="shadingEngine")
-                    if shading_groups:
-                        shading_groups = list(set(shading_groups))
-                        for sg in shading_groups:
-                            materials = self.maya_adapter.ls(self.maya_adapter.list_connections(sg), materials=True)
-                            if materials:
-                                for mat in materials:
-                                    # MMD関連の属性があるかチェック
-                                    if self.maya_adapter.attribute_exists(ATTR_MMD_MATERIAL_NAME, mat):
-                                        mmd_materials.append(mat)
-
-            # 重複を削除
-            unique_materials = list(set(mmd_materials))
-
-            indexed_materials = []
-            for ordinal, mat in enumerate(sorted(unique_materials)):
-                material_index = (
-                    self._read_material_index(mat)
-                    if self.authoring_coordinator is not None
-                    else None
-                )
-                indexed_materials.append(
-                    (material_index if material_index is not None else ordinal, mat, material_index)
+            if not isinstance(projection, MaterialListProjection):
+                raise TypeError("material list projection reader returned an invalid result")
+            if projection.root_identity != current_model_root:
+                raise ValueError(
+                    "material list projection root does not match current model root"
                 )
 
-            assignment_summaries = {
-                mat: self._read_material_assignment_summary(current_model_root, mat)
-                for _display_index, mat, _material_index in indexed_materials
-            }
+            # Construct every row before replacing the visible generation.
+            from ..qt_compat import QListWidgetItem
 
-            # Add materials in semantic index order when canonical indices are available.
-            for display_index, mat, material_index in sorted(indexed_materials):
-                # 日本語名と英語名を取得
-                jp_name = maya_attribute_utils.get_attribute(mat, ATTR_MMD_MATERIAL_NAME)
-                en_name = maya_attribute_utils.get_attribute(mat, ATTR_MMD_MATERIAL_NAME_EN)
-
-                display_text = format_indexed_node_label(display_index + 1, jp_name, mat, en_name)
-                assignment_summary = assignment_summaries.get(mat, "meshes=0, faces=0")
-
-                # リストに追加
-                from ..qt_compat import QListWidgetItem
+            projected_items = []
+            for projected in projection.items:
+                semantic = projected.semantic
+                display_text = format_indexed_node_label(
+                    semantic.index + 1,
+                    semantic.name,
+                    semantic.binding_identity,
+                    semantic.name_english,
+                )
 
                 item = QListWidgetItem(display_text)
-                item.setData(Qt.UserRole, mat)  # 実際のマテリアル名を保存
-                item.setData(MATERIAL_INDEX_ROLE, material_index)
-                item.setData(MATERIAL_ASSIGNMENT_ROLE, assignment_summary)
-                item.setToolTip(mat)
+                item.setData(Qt.UserRole, semantic.binding_identity)
+                item.setData(MATERIAL_INDEX_ROLE, semantic.index)
+                item.setData(MATERIAL_ASSIGNMENT_ROLE, projected.assignment.label)
+                projected_items.append(item)
+
+            # Swap only after the complete immutable generation and all Qt
+            # rows were built successfully.
+            self.view.material_list.clear()
+            self.current_material = None
+            self.current_material_index = None
+            self._material_list_projection = projection
+            for item in projected_items:
                 self.view.material_list.addItem(item)
 
             # Show placeholder if no materials
@@ -314,17 +289,23 @@ class MaterialPresenter:
 
         except Exception as e:
             logger.error(f"Failed to load materials: {e}", exc_info=True)
+            self._material_list_projection = None
+            self.view.material_list.clear()
+            self.current_material = None
+            self.current_material_index = None
             self.view._set_details_enabled(False)
             self.view._show_placeholder()
+            self._update_authoring_actions()
             self.app_state.emit_status(tr_message_format("materials_load_failed", error=str(e)))
 
     def on_material_selected(self, current, previous):
         if not current:
-            self.view._set_details_enabled(False)
+            self._clear_material_selection()
             return
 
         # プレースホルダーアイテムの場合は何もしない
         if current.text().startswith("--"):
+            self._clear_material_selection()
             return
 
         # 未保存の変更がある場合は警告
@@ -346,19 +327,35 @@ class MaterialPresenter:
                 self.view.material_list.blockSignals(False)
                 return
 
-        # 実際のマテリアル名を取得（UserRoleに保存されている）
         material_name = current.data(Qt.UserRole)
-        if not material_name:
-            # 互換性のため、データがない場合はテキストを使用
-            material_name = current.text()
+        material_index = current.data(MATERIAL_INDEX_ROLE)
+        if (
+            not isinstance(material_name, str)
+            or not material_name
+            or type(material_index) is not int
+            or material_index < 0
+        ):
+            logger.error("Material list row has invalid hidden routing roles")
+            self._clear_material_selection()
+            return
+        projection = self._material_list_projection
+        try:
+            projected = (
+                projection.item_for_index(material_index)
+                if isinstance(projection, MaterialListProjection)
+                else None
+            )
+        except KeyError:
+            projected = None
+        if projected is None or projected.binding_identity != material_name:
+            logger.error("Material list row does not match the current projection")
+            self._clear_material_selection()
+            return
 
         logger.debug(f"Selected material: {material_name}")
 
         self.current_material = material_name
-        material_index = current.data(MATERIAL_INDEX_ROLE)
-        self.current_material_index = material_index if type(material_index) is int else self._read_material_index(
-            material_name
-        )
+        self.current_material_index = material_index
         # 変更フラグを事前にリセットして、ロード中の変更検知を無効化
         self.has_unsaved_changes = False
         self.view._set_details_enabled(True)
@@ -376,93 +373,20 @@ class MaterialPresenter:
 
         self.load_material_properties(material_name)
 
+    def _clear_material_selection(self):
+        """Clear routing authority and disable selection-dependent actions."""
+
+        self.current_material = None
+        self.current_material_index = None
+        self.view._set_details_enabled(False)
+        self._update_authoring_actions()
+
     def _select_material_nodes(self, nodes, *, replace=True):
         """Select material nodes without creating an undo entry when possible."""
         select_fast = getattr(self.maya_adapter, "select_fast", None)
         if callable(select_fast):
             return select_fast(nodes, replace=replace)
         return self.maya_adapter.select(nodes, replace=replace)
-
-    def _read_material_index(self, material):
-        """Read a binding index for UI routing, never as semantic authority."""
-        try:
-            if not self.maya_adapter.attribute_exists(ATTR_MMD_MATERIAL_INDEX, material):
-                return None
-            value = self.maya_adapter.get_attr(f"{material}.{ATTR_MMD_MATERIAL_INDEX}")
-            return value if type(value) is int and value >= 0 else None
-        except Exception:
-            return None
-
-    def _read_material_assignment_summary(self, model_root: str, shader: str) -> str:
-        """Read current Maya shadingEngine membership without mutating scene state.
-
-        The registry remains the material ownership/list authority.  This
-        projection only reports the live standard-set membership below the
-        current model root; export continues to collect face ownership from
-        the same Maya shading graph.
-        """
-        try:
-            canonical_root = canonical_node_identity(self.maya_adapter, model_root)
-            if canonical_root is None:
-                return "meshes=0, faces=?"
-            meshes = {
-                node
-                for node in (
-                    self.maya_adapter.list_relatives(
-                        model_root,
-                        allDescendents=True,
-                        fullPath=True,
-                        type="mesh",
-                    )
-                    or ()
-                )
-                if isinstance(node, str) and node.startswith(f"{canonical_root}|")
-            }
-            mesh_parents = {node.rsplit("|", 1)[0] for node in meshes if "|" in node}
-            shading_groups = self.maya_adapter.list_connections(shader, type="shadingEngine") or ()
-            if isinstance(shading_groups, (str, bytes, bytearray)):
-                shading_groups = (shading_groups,)
-            members_by_mesh: dict[str, int] = {}
-            explicit_face_count = 0
-            for shading_group in shading_groups:
-                if not isinstance(shading_group, str):
-                    continue
-                members = self.maya_adapter.sets(shading_group, query=True) or ()
-                if isinstance(members, (str, bytes, bytearray)):
-                    members = (members,)
-                for member in members:
-                    if not isinstance(member, str):
-                        continue
-                    base = canonical_node_identity(
-                        self.maya_adapter,
-                        member.split(".f[", 1)[0],
-                    )
-                    if base is None or not base.startswith(f"{canonical_root}|"):
-                        continue
-                    if meshes and base not in meshes and base not in mesh_parents:
-                        # Maya may return the transform instead of its shape;
-                        # retain only members that are still below this root.
-                        continue
-                    face_match = re.search(r"\.f\[(\d+)(?::(\d+))?\]", member)
-                    if face_match is None:
-                        members_by_mesh.setdefault(base, 0)
-                        continue
-                    start = int(face_match.group(1))
-                    end = int(face_match.group(2) or start)
-                    if end < start:
-                        continue
-                    members_by_mesh.setdefault(base, 0)
-                    members_by_mesh[base] += end - start + 1
-                    explicit_face_count += end - start + 1
-            mesh_count = len(members_by_mesh)
-            if mesh_count == 0:
-                return "meshes=0, faces=0"
-            face_summary = str(explicit_face_count) if explicit_face_count else "all"
-            return f"meshes={mesh_count}, faces={face_summary}"
-        except Exception:
-            # Refresh must remain usable when an older adapter lacks optional
-            # set-query support; no write or inferred ownership is performed.
-            return "meshes=0, faces=?"
 
     def _update_authoring_actions(self):
         root = self.app_state.current_model_root
@@ -544,7 +468,7 @@ class MaterialPresenter:
         return True
 
     def _run_material_create(self, operation, *args):
-        """Run create/duplicate and append exactly one selected list row."""
+        """Run create/duplicate then refresh and select its projected row."""
         root = self._authoring_root()
         if root is None:
             return False
@@ -552,7 +476,11 @@ class MaterialPresenter:
             result = getattr(self.authoring_coordinator, operation)(root, *args)
             if not isinstance(result, MmdMaterialSpec):
                 raise TypeError("material creation returned an invalid material")
-            self._append_material_row(result)
+            binding = result.binding_identity
+            if not isinstance(binding, str) or not binding:
+                raise TypeError("created material has no Maya binding identity")
+            self.load_materials()
+            self._select_projected_binding(binding)
         except Exception as exc:
             logger.error("Material authoring %s failed", operation, exc_info=True)
             self.app_state.emit_status(
@@ -562,31 +490,29 @@ class MaterialPresenter:
         self.app_state.emit_status(self.tr_message(f"material_{operation}_succeeded"))
         return True
 
-    def _append_material_row(self, material: MmdMaterialSpec) -> None:
-        """Append and select one newly-created row without reloading the list."""
-        from ..qt_compat import QListWidgetItem
+    def _select_projected_binding(self, binding: str) -> bool:
+        """Select a canonical binding only when the refreshed projection owns it."""
 
-        binding = material.binding_identity
-        if not isinstance(binding, str) or not binding:
-            raise TypeError("created material has no Maya binding identity")
-        item = QListWidgetItem(
-            format_indexed_node_label(
-                material.index + 1,
-                material.name,
-                binding,
-                material.name_english,
-            )
-        )
-        item.setData(Qt.UserRole, binding)
-        item.setData(MATERIAL_INDEX_ROLE, material.index)
-        item.setData(MATERIAL_ASSIGNMENT_ROLE, "meshes=0, faces=0")
-        item.setToolTip(binding)
-        self.view.material_list.addItem(item)
-        self.view.material_list.setCurrentItem(item)
-        self.current_material = binding
-        self.current_material_index = material.index
-        self.has_unsaved_changes = False
-        self._update_authoring_actions()
+        projection = self._material_list_projection
+        if not isinstance(projection, MaterialListProjection):
+            return False
+        try:
+            projected = projection.item_for_binding(binding)
+        except KeyError:
+            return False
+        for row in range(self.view.material_list.count()):
+            item = self.view.material_list.item(row)
+            if (
+                item is not None
+                and item.data(Qt.UserRole) == binding
+                and item.data(MATERIAL_INDEX_ROLE) == projected.index
+            ):
+                self.current_material = binding
+                self.current_material_index = projected.index
+                self.view.material_list.setCurrentItem(item)
+                self._update_authoring_actions()
+                return True
+        return False
 
     def create_material(self):
         """Request one transactional semantic material creation."""
@@ -665,74 +591,19 @@ class MaterialPresenter:
                 )
             )
             return False
-        self._swap_material_rows(position, target)
         self.current_material_index = target_index
-        for row in range(self.view.material_list.count()):
-            item = self.view.material_list.item(row)
-            if item.data(Qt.UserRole) == selected_binding:
-                self.view.material_list.setCurrentItem(item)
-                break
+        self.load_materials()
+        self._select_projected_binding(selected_binding)
         self._update_authoring_actions()
         self.app_state.emit_status(self.tr_message("material_reindex_materials_succeeded"))
         return True
 
-    def _swap_material_rows(self, first_row: int, second_row: int) -> None:
-        """Swap two existing list items and refresh only their index labels."""
-        material_list = self.view.material_list
-        if first_row == second_row:
-            return
-        count = material_list.count()
-        if type(count) is int and (first_row < 0 or second_row < 0 or max(first_row, second_row) >= count):
-            raise RuntimeError("material list rows disappeared during reindex")
-        if type(count) is not int:
-            # Headless/legacy views may not expose real list rows.  The
-            # semantic transaction has already succeeded; retain selection
-            # state without triggering a full list reload.
-            return
-        low, high = sorted((first_row, second_row))
-        take_item = getattr(material_list, "takeItem", None)
-        insert_item = getattr(material_list, "insertItem", None)
-        if callable(take_item) and callable(insert_item):
-            high_item = take_item(high)
-            low_item = take_item(low)
-            if high_item is None or low_item is None:
-                raise RuntimeError("material list rows disappeared during reindex")
-            insert_item(low, high_item)
-            insert_item(high, low_item)
-            first_item = material_list.item(first_row)
-            second_item = material_list.item(second_row)
-        else:
-            first_item = material_list.item(first_row)
-            second_item = material_list.item(second_row)
-            swap = getattr(material_list, "swapItemsAt", None)
-            if not callable(swap):
-                raise RuntimeError("material list does not support row swapping")
-            swap(first_row, second_row)
-            first_item = material_list.item(first_row)
-            second_item = material_list.item(second_row)
-
-        for row, item in ((first_row, first_item), (second_row, second_item)):
-            if item is None:
-                raise RuntimeError("material list row is missing after reindex")
-            binding = item.data(Qt.UserRole)
-            if not isinstance(binding, str) or not binding:
-                raise RuntimeError("material list row has no material binding")
-            semantic_index = row
-            item.setData(MATERIAL_INDEX_ROLE, semantic_index)
-            try:
-                jp_name = maya_attribute_utils.get_attribute(binding, ATTR_MMD_MATERIAL_NAME)
-                en_name = maya_attribute_utils.get_attribute(binding, ATTR_MMD_MATERIAL_NAME_EN)
-                item.setText(format_indexed_node_label(semantic_index + 1, jp_name, binding, en_name))
-            except Exception:
-                # Keep the existing label text when a headless adapter cannot
-                # read optional display metadata; only its numeric prefix is
-                # stale after the local row swap.
-                prior_text = item.text()
-                suffix = prior_text.split(":", 1)[1] if ":" in prior_text else prior_text
-                item.setText(f"{semantic_index + 1}:{suffix}")
-
     def load_material_properties(self, material_name):
-        """Load material properties from Maya material"""
+        """Load selected detail through the legacy path, never during list refresh.
+
+        Texture/preview graph projection is intentionally isolated here for
+        the following detail-read migration.
+        """
         self._loading_properties = True
         try:
             # Store original data for reset
