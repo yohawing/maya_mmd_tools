@@ -1195,14 +1195,17 @@ def _apply_vertex_target_plan(
         for node, target_index, alias in plan["targets"]:
             plug = f"{node}.weight[{target_index}]"
             if plan["operation"] == "delete":
+                # Keep the blendShape target payload in place.  Maya 2024 can
+                # undo the controller disconnect and metadata edits, but it
+                # does not reliably restore inputTargetItem[6000] after a
+                # removeMultiInstance call.  Logical deletion (disconnect,
+                # unmap, and zero the retained weight) preserves the target
+                # payload so Undo/Redo can restore the exact vertex morph.
                 _call(adapter, "alias_attr", plug, remove=True)
                 mapping = _read_vertex_name_mapping(adapter, node)
                 mapping.pop(str(target_index), None)
                 _write_vertex_name_mapping(adapter, node, mapping)
-                for geometry in plan["geometries"]:
-                    if geometry["group"].startswith(f"{node}."):
-                        _call(adapter, "remove_multi_instance", geometry["group"], b=True)
-                _call(adapter, "remove_multi_instance", plug, b=True)
+                _call(adapter, "set_attr", plug, 0.0)
                 continue
             if new.name != old.name:
                 flat = list(_call(adapter, "alias_attr", node, query=True) or ())

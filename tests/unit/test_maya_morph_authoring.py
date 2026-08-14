@@ -234,6 +234,7 @@ def _install_vertex_target(
     adapter.attrs[(blend_shape, "geometry")] = [geometry]
     adapter.attrs[(blend_shape, "geometryIndices")] = [2]
     adapter.attrs[(blend_shape, "weight")] = [target_index]
+    adapter.attrs[(blend_shape, f"weight[{target_index}]")] = 0.75
     adapter.attrs[(geometry, "vertexCount")] = len(source_indices)
     adapter.attrs[(geometry, ATTR_MMD_SOURCE_VERTEX_INDICES)] = list(source_indices)
     adapter.attrs[(geometry, "history")] = [blend_shape]
@@ -449,7 +450,7 @@ def test_empty_vertex_create_without_owned_mesh_rejects_before_write() -> None:
     assert not any(call[0] == "create_node" for call in adapter.calls)
 
 
-def test_vertex_delete_removes_physical_target_alias_and_mapping() -> None:
+def test_vertex_delete_logically_unmaps_and_zeroes_retained_target() -> None:
     adapter = FakeAdapter()
     old = _morph("Delete", 0, "vertex", "vertexNode")
     _install_morph(adapter, old)
@@ -465,9 +466,15 @@ def test_vertex_delete_removes_physical_target_alias_and_mapping() -> None:
 
     assert "faceBS.weight[3]" not in adapter.aliases
     assert json.loads(adapter.attrs[("faceBS", ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON)]) == {}
+    assert adapter.attrs[("faceBS", "weight[3]")] == 0.0
+    assert (
+        "disconnect_attr",
+        ("controller.outputWeight[0]", "faceBS.oldVertexAlias"),
+        {},
+    ) in adapter.calls
     removed = [call[1][0] for call in adapter.calls if call[0] == "remove_multi_instance"]
-    assert "faceBS.inputTarget[2].inputTargetGroup[3]" in removed
-    assert "faceBS.weight[3]" in removed
+    assert "faceBS.inputTarget[2].inputTargetGroup[3]" not in removed
+    assert "faceBS.weight[3]" not in removed
 
 
 def test_vertex_reindex_keeps_physical_slot_and_updates_global_mapping() -> None:

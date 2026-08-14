@@ -103,6 +103,7 @@ class FakeAdapter:
     undo_open: int = 0
     undo_close: int = 0
     undos: int = 0
+    fast_selections: list[str] = field(default_factory=list)
 
     def shading_node(self, _node_type, **kwargs):
         node = kwargs["name"]
@@ -138,6 +139,11 @@ class FakeAdapter:
     def select(self, *_args, **_kwargs):
         return None
 
+    def select_fast(self, node, replace=True):
+        del replace
+        self.fast_selections.append(node)
+        return [node]
+
 
 def test_create_and_clear_are_owned_undo_actions_and_leave_raw_unchanged():
     spec = _spec()
@@ -153,6 +159,7 @@ def test_create_and_clear_are_owned_undo_actions_and_leave_raw_unchanged():
     assert coordinator.spec.fingerprint() == spec.fingerprint()
     assert coordinator.replacements == []
     assert adapter.attrs[(shader, "mmd_work_morph_name")] == "材質モーフ"
+    assert adapter.fast_selections == [shader]
 
     service.clear("|Model")
 

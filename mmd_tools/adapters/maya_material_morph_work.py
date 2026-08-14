@@ -67,9 +67,17 @@ class MayaMaterialMorphWork:
         except Exception:
             self._rollback_undo()
             raise
-        select = getattr(self._cmds, "select", None)
-        if callable(select):
-            select(shader, replace=True)
+        # Selection is UI state only; use the API-2.0 fast path when the
+        # adapter provides it so the post-transaction selection cannot become
+        # a separate command-engine undo item.  Minimal adapters and legacy
+        # hosts retain the regular ``select`` fallback.
+        select_fast = getattr(self._cmds, "select_fast", None)
+        if callable(select_fast):
+            select_fast(shader, replace=True)
+        else:
+            select = getattr(self._cmds, "select", None)
+            if callable(select):
+                select(shader, replace=True)
         return shader
 
     def apply(self, root: str, morph_index: int, offset_index: int):
