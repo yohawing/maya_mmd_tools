@@ -27,6 +27,7 @@ from mmd_tools.adapters.maya_material_shader_route import (
 from mmd_tools.adapters.maya_material_read_projection import (
     MayaMaterialReadProjectionAdapter,
 )
+from mmd_tools.adapters.maya_metadata_read_support import MayaMetadataReadSupport
 from mmd_tools.adapters.maya_model_metadata_repository import (
     MayaModelMetadataRepository,
 )
@@ -525,10 +526,11 @@ class MayaSceneMetadataBackend:
 
     def __init__(self, cmds_adapter: Any) -> None:
         self._cmds = cmds_adapter
-        self._model_repository = MayaModelMetadataRepository(
+        self._read_support = MayaMetadataReadSupport(
             cmds_adapter,
             error_factory=MayaSceneMetadataError,
         )
+        self._model_repository = MayaModelMetadataRepository(self._read_support)
         self._native_authoring = NativeAuthoringCommandGateway(cmds_adapter)
         # Native writes remain opt-in until both supported Maya versions show
         # lower p50 and p95 latency than the direct Python path.
@@ -3809,18 +3811,10 @@ class MayaSceneMetadataBackend:
         return values[0][1]
 
     def _required(self, node: str, attr: str) -> Any:
-        if not self._has_attr(node, attr):
-            raise MayaSceneMetadataError(f"{node}.{attr} is required")
-        try:
-            return self._cmds.get_attr(f"{node}.{attr}")
-        except Exception as exc:
-            raise MayaSceneMetadataError(f"failed to read {node}.{attr}: {exc}") from exc
+        return self._read_support.required(node, attr)
 
     def _required_string(self, node: str, attr: str) -> str:
-        value = self._required(node, attr)
-        if not isinstance(value, str):
-            raise MayaSceneMetadataError(f"{node}.{attr} must be an exact string")
-        return value
+        return self._read_support.required_string(node, attr)
 
     def _required_int(
         self,
@@ -3830,39 +3824,21 @@ class MayaSceneMetadataBackend:
         minimum: int | None = None,
         maximum: int | None = None,
     ) -> int:
-        value = self._required(node, attr)
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise MayaSceneMetadataError(f"{node}.{attr} must be an integer")
-        if minimum is not None and value < minimum:
-            raise MayaSceneMetadataError(f"{node}.{attr} must be >= {minimum}")
-        if maximum is not None and value > maximum:
-            raise MayaSceneMetadataError(f"{node}.{attr} must be <= {maximum}")
-        return value
+        return self._read_support.required_int(
+            node,
+            attr,
+            minimum=minimum,
+            maximum=maximum,
+        )
 
     def _required_number(self, node: str, attr: str) -> float:
-        value = self._required(node, attr)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-            raise MayaSceneMetadataError(f"{node}.{attr} must be a finite number")
-        return float(value)
+        return self._read_support.required_number(node, attr)
 
     def _required_vector(self, node: str, attr: str) -> tuple[float, float, float]:
-        value = self._required(node, attr)
-        if isinstance(value, (list, tuple)) and len(value) == 1 and isinstance(value[0], (list, tuple)):
-            value = value[0]
-        if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence) or len(value) != 3:
-            raise MayaSceneMetadataError(f"{node}.{attr} must be a vector3")
-        numbers = []
-        for item in value:
-            if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item):
-                raise MayaSceneMetadataError(f"{node}.{attr} must contain finite numeric vector3 values")
-            numbers.append(float(item))
-        return tuple(numbers)  # type: ignore[return-value]
+        return self._read_support.required_vector(node, attr)
 
     def _has_attr(self, node: str, attr: str) -> bool:
-        try:
-            return bool(self._cmds.attribute_exists(attr, node))
-        except Exception as exc:
-            raise MayaSceneMetadataError(f"failed to inspect {node}.{attr}: {exc}") from exc
+        return self._read_support.has_attr(node, attr)
 
     def _reject_present(self, node: str, attrs: tuple[str, ...], field: str) -> None:
         present = [attr for attr in attrs if self._has_attr(node, attr)]
@@ -3886,14 +3862,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(f"{node}: stale {field} field {attr!r} has non-default payload")
 
     def _require_root(self, root: Any) -> None:
-        if not isinstance(root, str) or not root.strip():
-            raise MayaSceneMetadataError("root must be a non-empty string")
-        try:
-            exists = self._cmds.object_exists(root)
-        except Exception as exc:
-            raise MayaSceneMetadataError(f"failed to inspect root {root!r}: {exc}") from exc
-        if not exists:
-            raise MayaSceneMetadataError(f"model root does not exist: {root!r}")
+        self._read_support.require_root(root)
 
     def _require_selected_bone(self, root: str, joint: str, index: int | None) -> int:
         """Validate selected-joint ownership using only root/path/index attrs."""

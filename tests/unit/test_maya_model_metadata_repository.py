@@ -9,6 +9,7 @@ import pytest
 from mmd_tools.adapters.maya_model_metadata_repository import (
     MayaModelMetadataRepository,
 )
+from mmd_tools.adapters.maya_metadata_read_support import MayaMetadataReadSupport
 
 
 class _RepositoryError(ValueError):
@@ -37,7 +38,8 @@ class _Cmds:
 
 
 def _repository(cmds: _Cmds) -> MayaModelMetadataRepository:
-    return MayaModelMetadataRepository(cmds, error_factory=_RepositoryError)
+    support = MayaMetadataReadSupport(cmds, error_factory=_RepositoryError)
+    return MayaModelMetadataRepository(support)
 
 
 def test_reads_exact_schema_v1_model_header_fields() -> None:
