@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from maya import cmds
@@ -19,7 +20,8 @@ from mmd_tools.core.constants import ATTR_MMD_DISPLAY_FRAMES_JSON
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.ui.main_window import MainWindow
-from mmd_tools.ui.qt_compat import QApplication, QT_BINDING, Qt
+from mmd_tools.ui.qt_compat import QApplication, QDialog, QT_BINDING, QTimer, Qt
+from mmd_tools.ui.widgets.display_frame_element_dialog import DisplayFrameElementDialog
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from tests.common.maya_plugin_setup import load_mmd_tools_plugin
 from tests.common.ui_action_coverage import ActionInvocationSpy, build_surface_witness
@@ -296,6 +298,118 @@ class TestDisplayPaneRemainingGUI(GuiTestBase):
             + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
             flush=True,
         )
+
+    def _run_element_dialog_action(self, accept):
+        """Drive the production modal and return its hidden selected identity."""
+        view = self.presenter.view
+        errors = []
+        captured = {}
+        unexpected = []
+
+        def watch_modals():
+            for widget in QApplication.topLevelWidgets():
+                if not isinstance(widget, QDialog) or not widget.isVisible():
+                    continue
+                if isinstance(widget, DisplayFrameElementDialog):
+                    continue
+                unexpected.append(widget.windowTitle() or type(widget).__name__)
+                widget.reject()
+
+        watchdog = QTimer(self.window)
+        watchdog.setInterval(25)
+        watchdog.timeout.connect(watch_modals)
+        watchdog.start()
+
+        def fail_safe_close():
+            dialog = QApplication.activeModalWidget()
+            if isinstance(dialog, DisplayFrameElementDialog) and dialog.isVisible():
+                errors.append(AssertionError("Display element dialog did not close"))
+                dialog.reject()
+
+        fail_safe = QTimer(self.window)
+        fail_safe.setSingleShot(True)
+        fail_safe.setInterval(3000)
+        fail_safe.timeout.connect(fail_safe_close)
+        fail_safe.start()
+
+        def drive_dialog():
+            dialog = QApplication.activeModalWidget()
+            try:
+                self.assertIsInstance(dialog, DisplayFrameElementDialog)
+                self.assertIs(QApplication.activeModalWidget(), dialog)
+                self.assertIs(dialog.parentWidget(), view)
+                self.assertTrue(dialog.isModal())
+                candidate_list = dialog.candidate_list
+                enabled_row = next(
+                    row
+                    for row in range(candidate_list.count())
+                    if candidate_list.item(row).flags() & Qt.ItemIsEnabled
+                )
+                item = candidate_list.item(enabled_row)
+                candidate_list.scrollToItem(item)
+                QApplication.processEvents()
+                rect = candidate_list.visualItemRect(item)
+                self.assertFalse(rect.isEmpty())
+                selection_spy = QSignalSpy(candidate_list.currentRowChanged)
+                QTest.mouseClick(
+                    candidate_list.viewport(),
+                    Qt.LeftButton,
+                    pos=rect.center(),
+                )
+                QApplication.processEvents()
+                self.assertEqual(_spy_count(selection_spy), 1)
+                self.assertIs(dialog.focusWidget(), candidate_list)
+                identity = item.data(Qt.UserRole)
+                self.assertIsInstance(identity, tuple)
+                self.assertEqual(len(identity), 2)
+                captured["identity"] = (int(identity[0]), int(identity[1]))
+                button = dialog.ok_button if accept else dialog.cancel_button
+                action_spy = QSignalSpy(button.clicked)
+                captured["action_spy"] = action_spy
+                QTest.mouseClick(button, Qt.LeftButton)
+            except Exception as exc:
+                errors.append(exc)
+                if dialog is not None:
+                    dialog.reject()
+
+        QTimer.singleShot(0, drive_dialog)
+        open_spy = QSignalSpy(view.add_element_btn.clicked)
+        QTest.mouseClick(view.add_element_btn, Qt.LeftButton)
+        QApplication.processEvents()
+        fail_safe.stop()
+        watchdog.stop()
+        self.assertFalse(unexpected, unexpected)
+        self.assertFalse(errors, errors)
+        self.assertEqual(_spy_count(open_spy), 1)
+        self.assertEqual(_spy_count(captured["action_spy"]), 1)
+        return captured["identity"]
+
+    def test_display_element_dialog_accepts_hidden_semantic_identity(self):
+        """Accept adds exactly the real dialog's hidden identity to one frame."""
+        view = self.presenter.view
+        view.frame_list.setCurrentRow(0)
+        QApplication.processEvents()
+        before = deepcopy(self.presenter.frames)
+        identity = self._run_element_dialog_action(accept=True)
+        self.assertEqual(view.frame_list.currentRow(), 0)
+        self.assertEqual(self.presenter.frames[0]["elements"], before[0]["elements"] + [
+            {"type": identity[0], "index": identity[1]}
+        ])
+        self.assertEqual(self.presenter.frames[1:], before[1:])
+
+    def test_display_element_dialog_cancel_preserves_selected_frame(self):
+        """Cancel closes the real dialog without publishing its selected identity."""
+        view = self.presenter.view
+        view.frame_list.setCurrentRow(0)
+        QApplication.processEvents()
+        before = deepcopy(self.presenter.frames)
+        identity = self._run_element_dialog_action(accept=False)
+        self.assertNotIn(
+            {"type": identity[0], "index": identity[1]},
+            self.presenter.frames[0]["elements"],
+        )
+        self.assertEqual(view.frame_list.currentRow(), 0)
+        self.assertEqual(self.presenter.frames, before)
 
     def test_display_pane_remaining_surfaces(self):
         """One Display Apply owns the metadata JSON and one Maya Undo item."""
