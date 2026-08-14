@@ -381,7 +381,7 @@ def test_material_detail_projection_reuses_selected_semantic_reader() -> None:
     )
     backend.read_material_value = Mock(return_value=material)
     with patch(
-        "mmd_tools.adapters.maya_scene_metadata_backend."
+        "mmd_tools.adapters.maya_material_metadata_repository."
         "MayaMaterialReadProjectionAdapter.read_detail_projection",
         return_value=expected,
     ) as project:
