@@ -20,14 +20,32 @@ class _FakeCmds:
         self.history = {}
         self.blend_targets = {}
         self.selected = None
+        self.long_paths = {}
 
     def objExists(self, node):
         return node in self.existing
 
     def ls(self, *args, **kwargs):
         if kwargs.get("selection"):
-            return list(self.selection)
+            selected = list(self.selection)
+            if kwargs.get("long"):
+                resolved = []
+                for node in selected:
+                    matches = self.long_paths.get(node)
+                    if matches is None:
+                        resolved.append(node)
+                    elif isinstance(matches, (list, tuple)):
+                        resolved.extend(matches)
+                    else:
+                        resolved.append(matches)
+                return resolved
+            return selected
         if kwargs.get("type") == "transform":
+            if kwargs.get("long") and args:
+                query = args[0]
+                if query in self.long_paths:
+                    matches = self.long_paths[query]
+                    return list(matches) if isinstance(matches, (list, tuple)) else [matches]
             return list(self.transforms)
         if kwargs.get("materials"):
             materials = []
@@ -36,6 +54,13 @@ class _FakeCmds:
             return materials
         if kwargs.get("type") == "blendShape":
             return list(args[0] or [])
+        if kwargs.get("long") and args:
+            query = args[0]
+            if query in self.long_paths:
+                matches = self.long_paths[query]
+                return list(matches) if isinstance(matches, (list, tuple)) else [matches]
+            if isinstance(query, str):
+                return [query]
         return list(args[0] or [])
 
     def attributeQuery(self, attr, node, exists):
@@ -172,7 +197,21 @@ class TestSceneModelService(unittest.TestCase):
 
         self.assertEqual(service.list_mmd_models(), ["|group|model_root"])
 
-    def test_resolve_model_from_selection_prefers_available_full_path_then_short_name(self):
+    def test_list_mmd_models_keeps_same_leaf_roots_by_canonical_path(self):
+        cmds = _FakeCmds()
+        cmds.transforms = ["|groupA|model_root", "|groupB|model_root"]
+        cmds.attrs = {
+            "|groupA|model_root": {ATTR_MMD_MODEL_NAME: "A"},
+            "|groupB|model_root": {ATTR_MMD_MODEL_NAME: "B"},
+        }
+        service = SceneModelService(cmds_module=cmds)
+
+        self.assertEqual(
+            service.list_mmd_models(),
+            ["|groupA|model_root", "|groupB|model_root"],
+        )
+
+    def test_resolve_model_from_selection_uses_canonical_identity_only(self):
         cmds = _FakeCmds()
         cmds.selection = ["|grp|child"]
         cmds.parents = {"|grp|child": "|grp|model_root"}
@@ -180,7 +219,66 @@ class TestSceneModelService(unittest.TestCase):
         service = SceneModelService(cmds_module=cmds)
 
         self.assertEqual(service.resolve_model_from_selection(["|grp|model_root"]), "|grp|model_root")
-        self.assertEqual(service.resolve_model_from_selection(["model_root"]), "model_root")
+        # A short available root is not a second identity or a leaf-name fallback.
+        self.assertIsNone(service.resolve_model_from_selection(["model_root"]))
+
+    def test_resolve_model_from_selection_rejects_same_leaf_ambiguous_available_root(self):
+        cmds = _FakeCmds()
+        cmds.selection = ["joint"]
+        cmds.long_paths["joint"] = ["|modelA|joint", "|modelB|joint"]
+        cmds.parents = {
+            "|modelA|joint": "|modelA|model_root",
+            "|modelB|joint": "|modelB|model_root",
+        }
+        cmds.attrs = {
+            "|modelA|model_root": {ATTR_MMD_MODEL_NAME: "A"},
+            "|modelB|model_root": {ATTR_MMD_MODEL_NAME: "B"},
+        }
+        service = SceneModelService(cmds_module=cmds)
+
+        self.assertIsNone(
+            service.resolve_model_from_selection(
+                ["|modelA|model_root", "|modelB|model_root"]
+            )
+        )
+
+    def test_resolve_model_from_selection_routes_same_leaf_models_by_long_path(self):
+        cmds = _FakeCmds()
+        cmds.selection = ["|modelA|model_root|joint"]
+        cmds.parents = {
+            "|modelA|model_root|joint": "|modelA|model_root",
+        }
+        cmds.attrs = {
+            "|modelA|model_root": {ATTR_MMD_MODEL_NAME: "A"},
+            "|modelB|model_root": {ATTR_MMD_MODEL_NAME: "B"},
+        }
+        service = SceneModelService(cmds_module=cmds)
+
+        self.assertEqual(
+            service.resolve_model_from_selection(
+                ["|modelA|model_root", "|modelB|model_root"]
+            ),
+            "|modelA|model_root",
+        )
+
+    def test_resolve_model_from_selection_rejects_multi_root_selection(self):
+        cmds = _FakeCmds()
+        cmds.selection = ["|modelA|joint", "|modelB|joint"]
+        cmds.parents = {
+            "|modelA|joint": "|modelA|model_root",
+            "|modelB|joint": "|modelB|model_root",
+        }
+        cmds.attrs = {
+            "|modelA|model_root": {ATTR_MMD_MODEL_NAME: "A"},
+            "|modelB|model_root": {ATTR_MMD_MODEL_NAME: "B"},
+        }
+        service = SceneModelService(cmds_module=cmds)
+
+        self.assertIsNone(
+            service.resolve_model_from_selection(
+                ["|modelA|model_root", "|modelB|model_root"]
+            )
+        )
 
     def test_get_parent_mmd_root_returns_none_when_parent_lookup_raises(self):
         class _FailingRelativesCmds(_FakeCmds):

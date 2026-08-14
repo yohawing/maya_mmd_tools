@@ -120,6 +120,38 @@ class TestApplicationStateWithInjectedService(unittest.TestCase):
 
         self.assertEqual(app_state.current_model_root, "|MMT_TestModel_root")
 
+    def test_unresolved_selection_does_not_replace_valid_current_model(self):
+        service = _FakeSceneModelService()
+        service.models = ["|modelA|model_root", "|modelB|model_root"]
+        service.existing = set(service.models)
+        app_state = ApplicationState(scene_model_service=service)
+        app_state.current_model_root = service.models[0]
+        service.selection_model = None
+
+        self.assertFalse(app_state.select_model_from_maya_selection())
+        self.assertEqual(app_state.current_model_root, service.models[0])
+
+    def test_unresolved_current_identity_preserves_valid_current_model(self):
+        service = _FakeSceneModelService()
+        service.existing = {"current_root"}
+        app_state = ApplicationState(scene_model_service=service)
+        app_state.current_model_root = "current_root"
+
+        app_state.current_model_root = "ambiguous_root"
+
+        self.assertEqual(app_state.current_model_root, "current_root")
+
+    def test_unresolved_current_identity_preserves_current_when_validation_raises(self):
+        service = _FakeSceneModelService()
+        service.existing = {"current_root"}
+        app_state = ApplicationState(scene_model_service=service)
+        app_state.current_model_root = "current_root"
+        service.object_exists = Mock(side_effect=RuntimeError("Maya query failed"))
+
+        app_state.current_model_root = "ambiguous_root"
+
+        self.assertEqual(app_state.current_model_root, "current_root")
+
     def test_refresh_model_list_emits_empty_list_on_exception(self):
         service = _FakeSceneModelService()
         service.models = ["old_root"]

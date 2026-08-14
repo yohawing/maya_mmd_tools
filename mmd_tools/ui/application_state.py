@@ -40,13 +40,32 @@ class ApplicationState(QObject):
     def current_model_root(self, value):
         """現在のモデルを設定"""
         canonicalize = getattr(self._scene_model_service, "canonical_node", None)
+        unresolved_identity = False
         if value and callable(canonicalize):
-            value = canonicalize(value) or value
+            value = canonicalize(value)
+            unresolved_identity = value is None
+            if unresolved_identity:
+                try:
+                    if self._current_model_root and self._scene_model_service.object_exists(
+                        self._current_model_root
+                    ):
+                        logger.warning(
+                            "Ignoring unresolved current model identity while preserving '%s'",
+                            self._current_model_root,
+                        )
+                        return
+                except Exception:
+                    logger.warning(
+                        "Could not validate current model '%s'; preserving it",
+                        self._current_model_root,
+                        exc_info=True,
+                    )
+                    return
         logger.debug(f"ApplicationState: Setting current model to {value}")
-        if value != self._current_model_root:
+        if value != self._current_model_root or unresolved_identity:
             old_value = self._current_model_root
             self._current_model_root = value
-            invalid_model_root = False
+            invalid_model_root = unresolved_identity
 
             # 存在チェック
             if value and not self._scene_model_service.object_exists(value):

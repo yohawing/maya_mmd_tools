@@ -46,14 +46,17 @@ class SceneModelService:
             "*{}".format(SCENE_ROOT_SUFFIX), type="transform", long=True
         ) or []
 
-        mmd_models = []
+        mmd_models = set()
         for transform in set(namespaced + plain):
+            identity = self.canonical_node(transform)
+            if not identity:
+                continue
             if self._cmds_adapter.attribute_exists(
-                ATTR_MMD_MODEL_NAME, node=transform
+                ATTR_MMD_MODEL_NAME, node=identity
             ) or self._cmds_adapter.attribute_exists(
-                ATTR_MMD_MODEL_NAME_EN, node=transform
+                ATTR_MMD_MODEL_NAME_EN, node=identity
             ):
-                mmd_models.append(transform)
+                mmd_models.add(identity)
 
         return sorted(mmd_models)
 
@@ -96,9 +99,10 @@ class SceneModelService:
 
     def get_selected_nodes(self, node_type=None):
         """Mayaの現在選択を返す。"""
+        kwargs = {"selection": True, "long": True}
         if node_type:
-            return self._cmds_adapter.ls(selection=True, type=node_type) or []
-        return self._cmds_adapter.ls(selection=True) or []
+            kwargs["type"] = node_type
+        return self._cmds_adapter.ls(**kwargs) or []
 
     def resolve_model_from_selection(self, available_models):
         """現在選択から、available_models に含まれるMMDモデル root を推測する。"""
@@ -106,18 +110,30 @@ class SceneModelService:
         if not selected:
             return None
 
+        available_identities = set()
+        for model_root in available_models or []:
+            identity = self.canonical_node(model_root)
+            if identity:
+                available_identities.add(identity)
+
+        if not available_identities:
+            return None
+
+        selected_identities = set()
         for obj in selected:
             parent_root = self.get_parent_mmd_root(obj)
             if not parent_root:
                 continue
 
-            short_name = parent_root.split("|")[-1]
-            if parent_root in available_models:
-                return parent_root
-            if short_name in available_models:
-                return short_name
+            identity = self.canonical_node(parent_root)
+            if identity and identity in available_identities:
+                selected_identities.add(identity)
 
-        return None
+        # A multi-root selection is ambiguous; never guess a current model.
+        if len(selected_identities) != 1:
+            return None
+
+        return selected_identities.pop()
 
     def get_model_info(self, model_root):
         """モデル概要情報を収集する。"""

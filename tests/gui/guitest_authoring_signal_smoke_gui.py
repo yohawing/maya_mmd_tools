@@ -1282,6 +1282,82 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             len(invocations),
         )
 
+    def test_bone_apply_routes_same_leaf_model_by_selected_long_identity(self):
+        """A selected child joint from Model A must never write Model B."""
+        composition = self.window.authoring_composition
+        initializer = composition.model_initializer
+        parent_a = cmds.ls(
+            cmds.group(empty=True, name="identityModelA"), long=True
+        )[0]
+        parent_b = cmds.ls(
+            cmds.group(empty=True, name="identityModelB"), long=True
+        )[0]
+
+        root_a = cmds.parent(self.root, parent_a)[0]
+        second = initializer.create(
+            "pmx20-basic-v1", "Identity Smoke JP", "Identity Smoke EN"
+        )
+        root_b = cmds.parent(second.root, parent_b)[0]
+        cmds.rename(root_a, "sharedIdentityModel_root")
+        cmds.rename(root_b, "sharedIdentityModel_root")
+        root_a = cmds.ls(
+            f"{parent_a}|sharedIdentityModel_root", long=True
+        )[0]
+        root_b = cmds.ls(
+            f"{parent_b}|sharedIdentityModel_root", long=True
+        )[0]
+        self.assertNotEqual(root_a, root_b)
+        self.assertEqual(root_a.rsplit("|", 1)[-1], root_b.rsplit("|", 1)[-1])
+
+        service = self.window.app_state.scene_model_service
+        available = service.list_mmd_models()
+        self.assertIn(root_a, available)
+        self.assertIn(root_b, available)
+
+        # Keep this focused witness on BonePresenter.  Re-emitting the full
+        # current-model change would reload unrelated morph/mesh presenters,
+        # whose legacy short-shape probes cannot disambiguate the duplicate
+        # template meshes intentionally created here.
+        self.window.app_state._available_models = list(available)
+        self.window.app_state._current_model_root = root_a
+        coordinator = composition.coordinator
+        binding_a = coordinator.read_spec(root_a).bones[0].binding_identity
+        binding_b = coordinator.read_spec(root_b).bones[0].binding_identity
+        before_a = _canonical_payload(self.window, root_a)
+        before_b = _canonical_payload(self.window, root_b)
+        before_b_binding = _node_footprint(binding_b)
+
+        cmds.select(binding_a, replace=True)
+        self.assertTrue(self.window.app_state.select_model_from_maya_selection())
+        self.assertEqual(self.window.app_state.current_model_root, root_a)
+        self.window.bone_presenter.load_bones()
+        QApplication.processEvents()
+        view = self.window.bone_presenter.view
+        view.bone_list.setCurrentRow(0)
+        QApplication.processEvents()
+        view.bone_name_en_edit.setText("Only Model A")
+        QTest.mouseClick(view.apply_btn, Qt.LeftButton)
+        QApplication.processEvents()
+
+        after_a = _canonical_payload(self.window, root_a)
+        after_b = _canonical_payload(self.window, root_b)
+        self.assertEqual(after_a["spec"]["bones"][0]["name_english"], "Only Model A")
+        self.assertNotEqual(after_a, before_a)
+        self.assertEqual(after_b, before_b)
+        self.assertEqual(_node_footprint(binding_b), before_b_binding)
+        self.assertNotEqual(
+            cmds.getAttr(f"{binding_a}.{ATTR_MMD_BONE_NAME_EN}"),
+            cmds.getAttr(f"{binding_b}.{ATTR_MMD_BONE_NAME_EN}"),
+        )
+        self._emit_surface_witness(
+            "bone.apply.current_model_identity",
+            "gui.current_model_identity",
+            selector="objectName=boneApplyButton",
+            interaction="select(Model A child joint); QTest.mouseClick(boneApplyButton)",
+            fired_action="BonePresenter.apply_changes",
+            oracle="same_leaf_model_A_only_semantic_and_maya_state_changed",
+        )
+
     def test_bone_apply_fixed_axis_undo_redo(self):
         """Apply a fixed-axis vector through one real Qt click and one value patch."""
         view = self.window.bone_presenter.view
