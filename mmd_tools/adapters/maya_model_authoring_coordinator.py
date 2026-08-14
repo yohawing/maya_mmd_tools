@@ -164,6 +164,108 @@ class MayaModelAuthoringCoordinator:
         ).run()
         return self.inspect_morph_topology(model_root)
 
+    def begin_morph_preview(
+        self, model_root: str, target_plugs: Sequence[str]
+    ) -> Any:
+        """Begin one event-spanning preview action with a fixed write-set."""
+        try:
+            return self._backend.begin_morph_preview(model_root, target_plugs)
+        except Exception as exc:
+            raise MayaModelAuthoringCoordinatorError(
+                f"begin_morph_preview failed for root {model_root!r}: {exc}"
+            ) from exc
+
+    def update_morph_preview(self, session: Any, value: float) -> int:
+        """Update every fixed target without rediscovering scene bindings."""
+        try:
+            values = (value,) * len(session.targets)
+            return self._backend.apply_morph_preview(session.root, session, values)
+        except Exception as exc:
+            try:
+                self._backend.rollback_morph_preview(session.root, session)
+            except Exception as rollback_exc:
+                raise MayaModelAuthoringCoordinatorError(
+                    f"update_morph_preview failed: {exc}; rollback failed: {rollback_exc}"
+                ) from rollback_exc
+            raise MayaModelAuthoringCoordinatorError(
+                f"update_morph_preview failed: {exc}"
+            ) from exc
+
+    def commit_morph_preview(self, session: Any) -> int:
+        """Commit an event-spanning preview after exact target readback."""
+        try:
+            return self._backend.commit_morph_preview(session.root, session)
+        except Exception as exc:
+            try:
+                self._backend.rollback_morph_preview(session.root, session)
+            except Exception as rollback_exc:
+                raise MayaModelAuthoringCoordinatorError(
+                    f"commit_morph_preview failed: {exc}; rollback failed: {rollback_exc}"
+                ) from rollback_exc
+            raise MayaModelAuthoringCoordinatorError(
+                f"commit_morph_preview failed: {exc}"
+            ) from exc
+
+    def rollback_morph_preview(self, session: Any) -> None:
+        """Rollback an incomplete preview action without retargeting it."""
+        try:
+            self._backend.rollback_morph_preview(session.root, session)
+        except Exception as exc:
+            raise MayaModelAuthoringCoordinatorError(
+                f"rollback_morph_preview failed: {exc}"
+            ) from exc
+
+    def reset_morph_preview(
+        self, model_root: str, target_plugs: Sequence[str]
+    ) -> int:
+        """Reset a fixed target set in one synchronous transaction."""
+        return self._apply_morph_preview_value(
+            model_root, target_plugs, 0.0, "reset_morph_preview", "Reset MMD Morph Preview"
+        )
+
+    def set_morph_preview(
+        self, model_root: str, target_plugs: Sequence[str], value: float
+    ) -> int:
+        """Apply one non-drag preview value as one synchronous UI action."""
+        return self._apply_morph_preview_value(
+            model_root, target_plugs, value, "set_morph_preview", "MMD Morph Preview"
+        )
+
+    def _apply_morph_preview_value(
+        self,
+        model_root: str,
+        target_plugs: Sequence[str],
+        value: float,
+        operation: str,
+        chunk_name: str,
+    ) -> int:
+        holder: dict[str, Any] = {}
+
+        def begin(_targets: tuple[Any, ...]) -> None:
+            holder["session"] = self._backend.begin_morph_preview(
+                model_root, target_plugs, chunk_name=chunk_name
+            )
+
+        def mutate(_targets: tuple[Any, ...]) -> int:
+            session = holder["session"]
+            return self._backend.apply_morph_preview(
+                model_root, session, (value,) * len(session.targets)
+            )
+
+        return TransactionRunner[int](
+            operation,
+            tuple(target_plugs),
+            begin=begin,
+            mutate=mutate,
+            verify_and_commit=lambda result, _targets: self._backend.commit_morph_preview(
+                model_root, holder["session"]
+            ),
+            rollback=lambda _targets: self._backend.rollback_morph_preview(
+                model_root, holder["session"]
+            ),
+            error_factory=lambda failure: self._transaction_error(model_root, failure),
+        ).run()
+
     def write_display_frames(self, model_root: str, payload: str) -> str:
         """Persist one display-frame JSON payload without reading the full spec."""
         if not isinstance(payload, str):

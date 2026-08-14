@@ -49,8 +49,10 @@ from tests.common.maya_plugin_setup import load_mmd_tools_plugin
 
 if QT_BINDING == "PySide6":
     from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QStyle, QStyleOptionSlider
 else:
     from PySide2.QtTest import QTest
+    from PySide2.QtWidgets import QStyle, QStyleOptionSlider
 
 
 def _canonical_payload(window, root):
@@ -169,6 +171,7 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             "surfaces": [],
             "status": "running",
         }
+        self._surface_action_spies = {}
 
     def tearDown(self):
         try:
@@ -250,11 +253,15 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         interaction,
         fired_action,
         oracle,
-        action_count=1,
+        action_count=None,
         selector=None,
         attribute=None,
     ):
         """Emit one gate-compatible witness after the semantic oracle passes."""
+        if action_count is None:
+            action_spy, _control = self._surface_action_spies[surface_id]
+            action_count = action_spy.action_count
+        self.assertEqual(action_count, 1, f"{surface_id} action must fire exactly once")
         locators = [value for value in (selector, attribute) if value is not None]
         self.assertEqual(len(locators), 1, "runtime witness requires exactly one locator")
         surface_witness = {
@@ -2145,6 +2152,88 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
                 ],
             },
         )
+
+    def _prepare_morph_preview_fixture(self, count=1):
+        presenter = self.window.morph_presenter
+        view = presenter.view
+        self.window.tab_widget.setCurrentWidget(view)
+        QApplication.processEvents()
+        view.create_morph_type_provider = lambda _capabilities: "bone"
+        try:
+            for _index in range(count):
+                QTest.mouseClick(view.create_morph_btn, Qt.LeftButton)
+                QApplication.processEvents()
+        finally:
+            view.create_morph_type_provider = None
+        presenter.load_morphs()
+        QApplication.processEvents()
+        self.assertEqual(view.morph_list.count(), count)
+        controller = presenter._morph_controller
+        self.assertTrue(controller)
+        plugs = []
+        for row in range(count):
+            item = view.morph_list.item(row)
+            key = item.data(Qt.UserRole)
+            index = int(presenter.morph_data[key]["index"])
+            plug = f"{controller}.inputWeight[{index}]"
+            self.assertTrue(cmds.objExists(plug), plug)
+            plugs.append(plug)
+        view.morph_list.setCurrentRow(0)
+        QApplication.processEvents()
+        self.assertTrue(view.morph_slider.isEnabled())
+        return view, tuple(plugs)
+
+    def test_morph_preview_drag_is_one_undo_action(self):
+        view, plugs = self._prepare_morph_preview_fixture()
+        plug = plugs[0]
+        cmds.setAttr(plug, 0.0)
+        option = QStyleOptionSlider()
+        view.morph_slider.initStyleOption(option)
+        handle = view.morph_slider.style().subControlRect(
+            QStyle.CC_Slider,
+            option,
+            QStyle.SC_SliderHandle,
+            view.morph_slider,
+        )
+        QTest.mousePress(view.morph_slider, Qt.LeftButton, pos=handle.center())
+        view.morph_slider.setValue(25)
+        view.morph_slider.setValue(75)
+        QTest.mouseRelease(view.morph_slider, Qt.LeftButton)
+        QApplication.processEvents()
+        self.assertAlmostEqual(cmds.getAttr(plug), 0.75, places=7)
+        cmds.undo()
+        self.assertAlmostEqual(cmds.getAttr(plug), 0.0, places=7)
+        cmds.redo()
+        self.assertAlmostEqual(cmds.getAttr(plug), 0.75, places=7)
+
+    def test_morph_preview_reset_current_is_one_undo_action(self):
+        view, plugs = self._prepare_morph_preview_fixture()
+        plug = plugs[0]
+        cmds.setAttr(plug, 0.65)
+        view.morph_slider.blockSignals(True)
+        view.morph_slider.setValue(65)
+        view.morph_slider.blockSignals(False)
+        QTest.mouseClick(view.reset_slider_btn, Qt.LeftButton)
+        QApplication.processEvents()
+        self.assertAlmostEqual(cmds.getAttr(plug), 0.0, places=7)
+        cmds.undo()
+        self.assertAlmostEqual(cmds.getAttr(plug), 0.65, places=7)
+        cmds.redo()
+        self.assertAlmostEqual(cmds.getAttr(plug), 0.0, places=7)
+
+    def test_morph_preview_reset_all_is_one_undo_action(self):
+        view, plugs = self._prepare_morph_preview_fixture(count=2)
+        expected = (0.35, 0.8)
+        for plug, value in zip(plugs, expected):
+            cmds.setAttr(plug, value)
+        QTest.mouseClick(view.reset_all_btn, Qt.LeftButton)
+        QApplication.processEvents()
+        self.assertEqual(tuple(cmds.getAttr(plug) for plug in plugs), (0.0, 0.0))
+        cmds.undo()
+        for plug, value in zip(plugs, expected):
+            self.assertAlmostEqual(cmds.getAttr(plug), value, places=7)
+        cmds.redo()
+        self.assertEqual(tuple(cmds.getAttr(plug) for plug in plugs), (0.0, 0.0))
 
     def _display_case(self, evidence):
         view = self.window.display_pane_presenter.view

@@ -16,6 +16,7 @@ import re
 import struct
 from copy import deepcopy
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from mmd_tools.adapters.maya_material_shader_route import (
@@ -122,6 +123,15 @@ _MATERIAL_OUTLINE_ATTRS = (
 
 class MayaSceneMetadataError(SceneMetadataError):
     """Raised when Maya metadata cannot be normalized without loss."""
+
+
+@dataclass(frozen=True)
+class MorphPreviewSession:
+    """Opaque event-spanning preview identity with a fixed write-set."""
+
+    root: str
+    targets: tuple[str, ...]
+    token: object
 
 
 class MayaSceneMetadataBackend:
@@ -1246,6 +1256,141 @@ class MayaSceneMetadataBackend:
             "target_values": self._morph_value_attrs(new_morph),
             "chunk_open": True,
         }
+
+    def begin_morph_preview(
+        self,
+        model_root: str,
+        target_plugs: Sequence[str],
+        *,
+        chunk_name: str = "MMD Morph Preview",
+    ) -> MorphPreviewSession:
+        """Capture a fixed preview write-set and open one Maya undo chunk."""
+        if self._write_transaction is not None:
+            raise MayaSceneMetadataError("a metadata write transaction is already active")
+        root = self._material_identity(model_root)
+        self._require_root(root)
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError("Maya undo must be enabled for morph preview")
+        canonical = tuple(self._canonical_preview_plug(plug) for plug in target_plugs)
+        if not canonical:
+            raise MayaSceneMetadataError("morph preview requires at least one target plug")
+        if len(set(canonical)) != len(canonical):
+            raise MayaSceneMetadataError("morph preview target plugs must be unique")
+        original: dict[str, float] = {}
+        for plug in canonical:
+            if not self._call_adapter("object_exists", plug):
+                raise MayaSceneMetadataError(f"morph preview target does not exist: {plug!r}")
+            if bool(self._call_adapter("get_attr", plug, lock=True)):
+                raise MayaSceneMetadataError(f"morph preview target is locked: {plug!r}")
+            original[plug] = self._preview_weight(self._call_adapter("get_attr", plug), plug)
+        token = object()
+        self._call_adapter("undo_info", openChunk=True, chunkName=chunk_name)
+        self._write_transaction = {
+            "root": root,
+            "kind": "morph_preview",
+            "token": token,
+            "targets": canonical,
+            "original_values": original,
+            "target_values": dict(original),
+            "chunk_open": True,
+            "mutated": False,
+        }
+        return MorphPreviewSession(root=root, targets=canonical, token=token)
+
+    def apply_morph_preview(
+        self,
+        model_root: str,
+        session: MorphPreviewSession,
+        target_values: Sequence[float],
+    ) -> int:
+        """Write only the session's fixed targets and verify their exact values."""
+        transaction = self._active_morph_preview(model_root, session)
+        if len(target_values) != len(session.targets):
+            raise MayaSceneMetadataError("morph preview update value count mismatch")
+        expected = {
+            plug: self._preview_weight(value, plug)
+            for plug, value in zip(session.targets, target_values)
+        }
+        for plug, value in expected.items():
+            self._call_adapter("set_attr", plug, value)
+            transaction["mutated"] = True
+            actual = self._preview_weight(self._call_adapter("get_attr", plug), plug)
+            if actual != value:
+                raise MayaSceneMetadataError(
+                    f"morph preview readback mismatch for {plug!r}: expected {value!r}, got {actual!r}"
+                )
+        transaction["target_values"] = expected
+        return len(expected)
+
+    def commit_morph_preview(self, model_root: str, session: MorphPreviewSession) -> int:
+        """Close a preview chunk only after exact final-target readback."""
+        transaction = self._active_morph_preview(model_root, session)
+        for plug, expected in transaction["target_values"].items():
+            actual = self._preview_weight(self._call_adapter("get_attr", plug), plug)
+            if actual != expected:
+                raise MayaSceneMetadataError(
+                    f"morph preview commit readback mismatch for {plug!r}"
+                )
+        self._call_adapter("undo_info", closeChunk=True)
+        transaction["chunk_open"] = False
+        self._write_transaction = None
+        return len(transaction["targets"])
+
+    def rollback_morph_preview(self, model_root: str, session: MorphPreviewSession) -> None:
+        """Close and undo one mutated preview chunk, then verify its preimage."""
+        transaction = self._active_morph_preview(model_root, session)
+        try:
+            if transaction["chunk_open"]:
+                self._call_adapter("undo_info", closeChunk=True)
+                transaction["chunk_open"] = False
+            if transaction["mutated"]:
+                self._call_adapter("undo")
+        finally:
+            self._write_transaction = None
+        for plug, expected in transaction["original_values"].items():
+            actual = self._preview_weight(self._call_adapter("get_attr", plug), plug)
+            if actual != expected:
+                raise MayaSceneMetadataError(
+                    f"morph preview rollback preimage mismatch for {plug!r}"
+                )
+
+    def _active_morph_preview(
+        self, model_root: str, session: MorphPreviewSession
+    ) -> dict[str, Any]:
+        if not isinstance(session, MorphPreviewSession):
+            raise MayaSceneMetadataError("invalid morph preview session")
+        transaction = self._active_transaction(model_root)
+        if (
+            transaction.get("kind") != "morph_preview"
+            or transaction.get("token") is not session.token
+            or transaction.get("root") != session.root
+            or transaction.get("targets") != session.targets
+        ):
+            raise MayaSceneMetadataError("morph preview session identity mismatch")
+        return transaction
+
+    def _canonical_preview_plug(self, plug: Any) -> str:
+        if not isinstance(plug, str) or "." not in plug:
+            raise MayaSceneMetadataError(f"invalid morph preview target plug: {plug!r}")
+        node, attr = plug.rsplit(".", 1)
+        names = self._call_adapter("ls", node, long=True) or ()
+        if isinstance(names, (str, bytes, bytearray)) or len(names) != 1:
+            raise MayaSceneMetadataError(
+                f"morph preview node has no unique canonical identity: {node!r}"
+            )
+        canonical = names[0]
+        if not isinstance(canonical, str) or not canonical or not attr:
+            raise MayaSceneMetadataError(f"invalid morph preview target plug: {plug!r}")
+        return f"{canonical}.{attr}"
+
+    @staticmethod
+    def _preview_weight(value: Any, plug: str) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise MayaSceneMetadataError(f"morph preview weight must be numeric for {plug!r}")
+        result = float(value)
+        if not math.isfinite(result):
+            raise MayaSceneMetadataError(f"morph preview weight must be finite for {plug!r}")
+        return result
 
     def commit_morph_value_patch(
         self,

@@ -5,6 +5,7 @@ import json
 import re
 
 from mmd_tools.adapters import MayaCmdsAdapter
+from mmd_tools.adapters.maya_morph_binding_query import resolve_maya_morph_binding
 from ...core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
 from ...core.logger import get_logger
 from ...core.maya_identity import same_node_identity
@@ -17,6 +18,7 @@ from ...core.morph_metadata_reader import (
     parse_blendshape_morph_entries,
     PMX_MORPH_TYPE_NAMES,
 )
+from ...core.morph_binding_resolver import MorphBindingRequest
 from ...core.morph_authoring import (
     MorphReindexResult,
     classify_morph_change,
@@ -120,6 +122,10 @@ class MorphPresenter:
         self.is_updating = False
         self._pending_refresh_generation = None
         self._last_refresh_generation = None
+        self._morph_preview_session = None
+        self._morph_preview_dragging = False
+        self._morph_preview_ui_preimage = 0
+        self._last_morph_preview_value = 0
 
         self.connect_signals()
         self._set_authoring_available()
@@ -142,6 +148,12 @@ class MorphPresenter:
 
         # スライダー関連
         self.view.morph_slider.valueChanged.connect(self.on_morph_slider_changed)
+        pressed = getattr(self.view.morph_slider, "sliderPressed", None)
+        released = getattr(self.view.morph_slider, "sliderReleased", None)
+        if pressed is not None:
+            pressed.connect(self.begin_morph_slider_drag)
+        if released is not None:
+            released.connect(self.end_morph_slider_drag)
         self.view.reset_slider_btn.clicked.connect(self.reset_current_morph)
         self.view.reset_all_btn.clicked.connect(self.reset_all_morphs)
 
@@ -172,6 +184,7 @@ class MorphPresenter:
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
+        self._rollback_active_morph_preview()
         if getattr(self.app_state, "refreshing", False) is True:
             self.on_model_refresh(getattr(self.app_state, "refresh_generation", 0))
             return
@@ -180,6 +193,7 @@ class MorphPresenter:
 
     def on_model_refresh(self, generation):
         """Mark morph data stale without replacing a pending work copy."""
+        self._rollback_active_morph_preview()
         self._pending_refresh_generation = generation
 
     def _has_pending_refresh_work(self):
@@ -246,6 +260,7 @@ class MorphPresenter:
 
     def load_morphs(self):
         """モーフをロード"""
+        self._rollback_active_morph_preview()
         self._last_refresh_generation = getattr(self.app_state, "refresh_generation", 0)
         self._pending_refresh_generation = None
         self.view.morph_list.clear()
@@ -937,32 +952,6 @@ class MorphPresenter:
                 )
         return default
 
-    def _set_morph_weight(self, data, weight, morph_name="<unknown>"):
-        """接続済み morph weight plug 全てに weight を設定する。"""
-        for plug in self._iter_morph_weight_plugs(data, morph_name):
-            try:
-                self.maya_adapter.set_attr(plug, weight)
-            except Exception as e:
-                logger.warning(
-                    "Failed to set morph weight: morph=%s plug=%s error=%s",
-                    morph_name,
-                    plug,
-                    e,
-                )
-
-    def _set_blend_shape_weight(self, data, weight, morph_name="<unknown>"):
-        """接続済み blendShape target 全てに weight を設定する。"""
-        for plug in self._iter_blend_shape_weight_plugs(data, morph_name):
-            try:
-                self.maya_adapter.set_attr(plug, weight)
-            except Exception as e:
-                logger.warning(
-                    "Failed to set blendShape weight: morph=%s plug=%s error=%s",
-                    morph_name,
-                    plug,
-                    e,
-                )
-
     def _organize_morphs_by_group(self):
         """PMX panel 1-4 でモーフを整理する。
 
@@ -1070,13 +1059,16 @@ class MorphPresenter:
             weight = self._get_first_weight(data, morph_name)
             self.view.morph_slider.setValue(int(weight * 100))
             self.view.morph_value_label.setText(f"{int(weight * 100)}%")
+            self._last_morph_preview_value = int(weight * 100)
         elif data.get("morph_node") and self.maya_adapter.object_exists(data["morph_node"]):
             weight = self._get_first_weight(data, morph_name)
             self.view.morph_slider.setValue(int(weight * 100))
             self.view.morph_value_label.setText(f"{int(weight * 100)}%")
+            self._last_morph_preview_value = int(weight * 100)
         else:
             self.view.morph_slider.setValue(0)
             self.view.morph_value_label.setText("0%")
+            self._last_morph_preview_value = 0
 
         supported = self._morph_controls_supported(data)
         tooltip = "" if supported else self.view.tr("morph_runtime_unsupported", "tooltips")
@@ -1124,17 +1116,133 @@ class MorphPresenter:
         # ラベルを更新
         self.view.morph_value_label.setText(f"{value}%")
 
-        # BlendShape / network morph の共通 weight 契約へ適用
-        if self.current_morph in self.morph_data:
-            data = self.morph_data[self.current_morph]
-            weight = value / 100.0
+        weight = value / 100.0
+        if self.view.invert_check.isChecked():
+            weight = 1.0 - weight
+        weight *= self.view.multiplier_spin.value()
+        if not self._morph_preview_dragging:
+            self._morph_preview_ui_preimage = self._last_morph_preview_value
+        try:
+            if self._morph_preview_dragging:
+                if self._morph_preview_session is not None:
+                    self.authoring_coordinator.update_morph_preview(
+                        self._morph_preview_session, weight
+                    )
+                return
+            targets = self._preview_targets_for_morph(self.current_morph)
+            self.authoring_coordinator.set_morph_preview(
+                self._loaded_model_root, targets, weight
+            )
+            self._last_morph_preview_value = int(value)
+        except Exception as exc:
+            self._morph_preview_session = None
+            self._morph_preview_dragging = False
+            self._restore_morph_preview_ui()
+            logger.error("Morph preview update failed: %s", exc, exc_info=True)
 
-            # 詳細設定を適用
-            if self.view.invert_check.isChecked():
-                weight = 1.0 - weight
-            weight *= self.view.multiplier_spin.value()
+    def begin_morph_slider_drag(self):
+        """Open one fixed-target transaction for a slider press/release action."""
+        if self.is_updating or not self.current_morph:
+            return
+        self._rollback_active_morph_preview()
+        self._morph_preview_dragging = True
+        self._morph_preview_ui_preimage = self._last_morph_preview_value
+        try:
+            targets = self._preview_targets_for_morph(self.current_morph)
+            self._morph_preview_session = self.authoring_coordinator.begin_morph_preview(
+                self._loaded_model_root, targets
+            )
+        except Exception as exc:
+            self._morph_preview_dragging = False
+            self._restore_morph_preview_ui()
+            logger.error("Morph preview drag could not start: %s", exc, exc_info=True)
 
-            self._set_morph_weight(data, weight, self.current_morph)
+    def end_morph_slider_drag(self):
+        """Commit the active drag without rediscovering or retargeting plugs."""
+        session = self._morph_preview_session
+        self._morph_preview_session = None
+        self._morph_preview_dragging = False
+        if session is None:
+            return
+        try:
+            self.authoring_coordinator.commit_morph_preview(session)
+            self._last_morph_preview_value = self._slider_value()
+        except Exception as exc:
+            self._restore_morph_preview_ui()
+            logger.error("Morph preview drag commit failed: %s", exc, exc_info=True)
+
+    def _rollback_active_morph_preview(self):
+        session = self._morph_preview_session
+        self._morph_preview_session = None
+        self._morph_preview_dragging = False
+        if session is None:
+            return
+        try:
+            self.authoring_coordinator.rollback_morph_preview(session)
+            self._restore_morph_preview_ui()
+        except Exception as exc:
+            logger.error("Morph preview rollback failed: %s", exc, exc_info=True)
+
+    def _slider_value(self):
+        value = getattr(self.view.morph_slider, "value", 0)
+        return int(value() if callable(value) else value)
+
+    def _restore_morph_preview_ui(self):
+        """Restore the cached pre-action UI value without querying Maya."""
+        value = int(self._morph_preview_ui_preimage)
+        self.is_updating = True
+        try:
+            self.view.morph_slider.setValue(value)
+            self.view.morph_value_label.setText(f"{value}%")
+        finally:
+            self.is_updating = False
+
+    def _preview_targets_for_morph(self, morph_name):
+        """Resolve one cached morph to canonical writer targets once per action."""
+        if self.authoring_coordinator is None or not self._loaded_model_root:
+            raise RuntimeError("Morph preview coordinator is unavailable")
+        data = self.morph_data[morph_name]
+        try:
+            morph_index = int(data.get("index", -1))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Morph preview index is invalid") from exc
+        if self._morph_controller and morph_index >= 0:
+            return (f"{self._morph_controller}.inputWeight[{morph_index}]",)
+
+        targets = data.get("blend_shape_targets") or []
+        if not targets and data.get("blend_shape_node"):
+            targets = (
+                {
+                    "node": data.get("blend_shape_node"),
+                    "weight_attr": data.get("blend_shape_weight_attr"),
+                },
+            )
+        if targets:
+            destinations = []
+            for item in targets:
+                node = item.get("node")
+                attr = item.get("weight_attr")
+                if not node or not attr:
+                    raise RuntimeError("Legacy morph preview target is incomplete")
+                destinations.append(f"{node}.{attr}")
+            resolution = resolve_maya_morph_binding(
+                self.maya_adapter,
+                MorphBindingRequest(
+                    raw_pmx_name=str(data.get("name_jp") or morph_name),
+                    global_morph_index=morph_index,
+                    controller_identity=self._loaded_model_root,
+                    controller_slot=morph_index,
+                ),
+                destination_values=destinations,
+            )
+            return tuple(binding.weight_plug for binding in resolution.bindings)
+
+        node = data.get("morph_node")
+        attr = data.get("morph_weight_attr") or "weight"
+        names = self.maya_adapter.ls(node, long=True) if node else ()
+        if not names or len(names) != 1:
+            raise RuntimeError("Legacy network morph has no canonical identity")
+        return (f"{names[0]}.{attr}",)
 
     def filter_morphs(self, text):
         """検索テキストでモーフをフィルタ"""
@@ -1149,30 +1257,51 @@ class MorphPresenter:
 
     def reset_current_morph(self):
         """現在のモーフをリセット"""
-        self.view.morph_slider.setValue(0)
+        if not self.current_morph:
+            return
+        self._rollback_active_morph_preview()
+        try:
+            targets = self._preview_targets_for_morph(self.current_morph)
+            self.authoring_coordinator.reset_morph_preview(
+                self._loaded_model_root, targets
+            )
+        except Exception as exc:
+            logger.error("Reset current morph failed: %s", exc, exc_info=True)
+            return
+        self.is_updating = True
+        try:
+            self.view.morph_slider.setValue(0)
+            self.view.morph_value_label.setText("0%")
+            self._last_morph_preview_value = 0
+        finally:
+            self.is_updating = False
 
     def reset_all_morphs(self):
         """全てのモーフをリセット"""
-        reset_count = 0
-        for morph_name, data in self.morph_data.items():
-            for plug in self._iter_morph_weight_plugs(data, morph_name):
-                try:
-                    current_value = self.maya_adapter.get_attr(plug)
-                    if current_value != 0:
-                        self.maya_adapter.set_attr(plug, 0)
-                        reset_count += 1
-                except Exception as e:
-                    logger.warning(
-                        "Failed to reset morph weight: morph=%s plug=%s error=%s",
-                        morph_name,
-                        plug,
-                        e,
-                    )
-
-        # 現在のスライダーもリセット
-        self.view.morph_slider.setValue(0)
+        self._rollback_active_morph_preview()
+        try:
+            targets = tuple(
+                dict.fromkeys(
+                    plug
+                    for morph_name in self.morph_data
+                    for plug in self._preview_targets_for_morph(morph_name)
+                )
+            )
+            reset_count = self.authoring_coordinator.reset_morph_preview(
+                self._loaded_model_root, targets
+            )
+        except Exception as exc:
+            logger.error("Reset all morphs failed: %s", exc, exc_info=True)
+            return
+        self.is_updating = True
+        try:
+            self.view.morph_slider.setValue(0)
+            self.view.morph_value_label.setText("0%")
+            self._last_morph_preview_value = 0
+        finally:
+            self.is_updating = False
         self.app_state.emit_status(tr_message_format("morphs_reset_count", count=reset_count))
-        logger.info(f"Reset all morphs complete: reset {reset_count} morph(s)")
+        logger.info("Reset all morphs complete: reset %s target(s)", reset_count)
 
     def on_morph_type_changed(self, index):
         """モーフタイプが変更されたときの処理"""

@@ -2,6 +2,7 @@
 
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from tests.common.maya_stub import install_headless_ui_stubs
@@ -161,6 +162,8 @@ class _FakeComboBox:
 class _FakeSlider:
     def __init__(self):
         self.valueChanged = _FakeSignal()
+        self.sliderPressed = _FakeSignal()
+        self.sliderReleased = _FakeSignal()
         self.value = 0
         self.set_value_calls = []
         self.enabled = True
@@ -296,7 +299,11 @@ class _FakeMayaAdapter:
     def ls(self, *args, **kwargs):
         self.calls.append(("ls", args, kwargs))
         key = (_freeze(args), tuple(sorted(kwargs.items())))
-        return self.ls_results.get(key, [])
+        if key in self.ls_results:
+            return self.ls_results[key]
+        if len(args) == 1 and isinstance(args[0], str) and args[0] in self.existing:
+            return [args[0]]
+        return []
 
     def alias_attr(self, node, **kwargs):
         self.calls.append(("alias_attr", node, kwargs))
@@ -331,12 +338,54 @@ class _FakeMayaAdapter:
         return result
 
 
+class _FakePreviewCoordinator:
+    def __init__(self, adapter):
+        self.adapter = adapter
+        self.calls = []
+
+    def begin_morph_preview(self, root, targets):
+        session = SimpleNamespace(root=root, targets=tuple(targets))
+        self.calls.append(("begin_preview", root, tuple(targets)))
+        return session
+
+    def update_morph_preview(self, session, value):
+        self.calls.append(("update_preview", session.targets, value))
+        for plug in session.targets:
+            self.adapter.set_attr(plug, value)
+        return len(session.targets)
+
+    def commit_morph_preview(self, session):
+        self.calls.append(("commit_preview", session.targets))
+        return len(session.targets)
+
+    def rollback_morph_preview(self, session):
+        self.calls.append(("rollback_preview", session.targets))
+
+    def set_morph_preview(self, root, targets, value):
+        self.calls.append(("set_preview", root, tuple(targets), value))
+        for plug in targets:
+            self.adapter.set_attr(plug, value)
+        return len(targets)
+
+    def reset_morph_preview(self, root, targets):
+        self.calls.append(("reset_preview", root, tuple(targets)))
+        for plug in targets:
+            self.adapter.set_attr(plug, 0.0)
+        return len(targets)
+
+
 def _make_presenter(model=None, adapter=None):
     view = _FakeView()
     app_state = _FakeAppState(None)
     adapter = adapter or _FakeMayaAdapter()
-    presenter = MorphPresenter(view, app_state, maya_adapter=adapter)
+    presenter = MorphPresenter(
+        view,
+        app_state,
+        maya_adapter=adapter,
+        authoring_coordinator=_FakePreviewCoordinator(adapter),
+    )
     app_state.current_model_root = model
+    presenter._loaded_model_root = model or TEST_MODEL
     return presenter, view, app_state, adapter
 
 
@@ -351,6 +400,113 @@ def _freeze(value):
 
 
 class TestMorphPresenterHeadless(unittest.TestCase):
+    def test_slider_drag_is_one_fixed_target_session_without_scene_reads_per_move(self):
+        presenter, view, _, adapter = _make_presenter(model=TEST_MODEL)
+        presenter._morph_controller = "controller"
+        presenter.current_morph = "smile"
+        presenter.morph_data = {"smile": {"index": 3, "name_jp": "smile"}}
+        coordinator = presenter.authoring_coordinator
+
+        presenter.begin_morph_slider_drag()
+        adapter.calls.clear()
+        presenter.on_morph_slider_changed(20)
+        presenter.on_morph_slider_changed(70)
+        presenter.end_morph_slider_drag()
+
+        self.assertEqual(
+            coordinator.calls,
+            [
+                ("begin_preview", TEST_MODEL, ("controller.inputWeight[3]",)),
+                ("update_preview", ("controller.inputWeight[3]",), 0.2),
+                ("update_preview", ("controller.inputWeight[3]",), 0.7),
+                ("commit_preview", ("controller.inputWeight[3]",)),
+            ],
+        )
+        self.assertFalse(any(call[0] in {"ls", "list_connections"} for call in adapter.calls))
+
+    def test_model_switch_rolls_back_active_drag_without_retargeting(self):
+        presenter, _, app_state, _ = _make_presenter(model=TEST_MODEL)
+        presenter._morph_controller = "controllerA"
+        presenter.current_morph = "smile"
+        presenter.morph_data = {"smile": {"index": 1, "name_jp": "smile"}}
+        coordinator = presenter.authoring_coordinator
+        presenter.load_morphs = Mock()
+        presenter.begin_morph_slider_drag()
+
+        presenter.on_current_model_changed("|other")
+
+        self.assertEqual(
+            coordinator.calls[-1],
+            ("rollback_preview", ("controllerA.inputWeight[1]",)),
+        )
+        self.assertIsNone(presenter._morph_preview_session)
+
+    def test_reset_current_and_all_route_through_synchronous_transactions(self):
+        presenter, view, app_state, _ = _make_presenter(model=TEST_MODEL)
+        presenter._morph_controller = "controller"
+        presenter.current_morph = "smile"
+        presenter.morph_data = {
+            "smile": {"index": 1, "name_jp": "smile"},
+            "blink": {"index": 2, "name_jp": "blink"},
+        }
+        coordinator = presenter.authoring_coordinator
+
+        presenter.reset_current_morph()
+        presenter.reset_all_morphs()
+
+        self.assertIn(
+            ("reset_preview", TEST_MODEL, ("controller.inputWeight[1]",)),
+            coordinator.calls,
+        )
+        self.assertIn(
+            (
+                "reset_preview",
+                TEST_MODEL,
+                ("controller.inputWeight[1]", "controller.inputWeight[2]"),
+            ),
+            coordinator.calls,
+        )
+        self.assertEqual(view.morph_slider.set_value_calls, [0, 0])
+        self.assertEqual(app_state.statuses, [("Reset 2 morph(s)", None)])
+
+    def test_failed_preview_update_restores_cached_ui_without_scene_read(self):
+        presenter, view, app_state, adapter = _make_presenter(model=TEST_MODEL)
+        presenter._morph_controller = "controller"
+        presenter.current_morph = "smile"
+        presenter.morph_data = {"smile": {"index": 1, "name_jp": "smile"}}
+        presenter._last_morph_preview_value = 30
+        view.morph_slider.value = 80
+        presenter.authoring_coordinator.set_morph_preview = Mock(
+            side_effect=RuntimeError("readback failed")
+        )
+
+        presenter.on_morph_slider_changed(80)
+
+        self.assertEqual(view.morph_slider.set_value_calls, [30])
+        self.assertEqual(view.morph_value_label.text, "30%")
+        self.assertFalse(presenter._morph_preview_dragging)
+        self.assertEqual(app_state.statuses, [])
+        self.assertEqual(adapter.calls, [])
+
+    def test_failed_drag_begin_restores_cached_ui_and_clears_drag_state(self):
+        presenter, view, _, adapter = _make_presenter(model=TEST_MODEL)
+        presenter._morph_controller = "controller"
+        presenter.current_morph = "smile"
+        presenter.morph_data = {"smile": {"index": 1, "name_jp": "smile"}}
+        presenter._last_morph_preview_value = 40
+        view.morph_slider.value = 40
+        presenter.authoring_coordinator.begin_morph_preview = Mock(
+            side_effect=RuntimeError("locked")
+        )
+
+        presenter.begin_morph_slider_drag()
+
+        self.assertEqual(view.morph_slider.set_value_calls, [40])
+        self.assertEqual(view.morph_value_label.text, "40%")
+        self.assertFalse(presenter._morph_preview_dragging)
+        self.assertIsNone(presenter._morph_preview_session)
+        self.assertEqual(adapter.calls, [])
+
     def test_refresh_pending_detects_unapplied_name_and_panel_edits(self):
         presenter, view, _, _ = _make_presenter()
         presenter.current_morph = "smile"
@@ -782,14 +938,21 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         )
         adapter.attr_values.update(
             {
-                "faceBlendShapeA.mmd_blendshape_morph_names_json": json.dumps({"0": "笑顔"}, ensure_ascii=False),
-                "faceBlendShapeB.mmd_blendshape_morph_names_json": json.dumps({"0": "笑顔"}, ensure_ascii=False),
+                "faceBlendShapeA.mmd_blendshape_morph_names_json": json.dumps(
+                    {"0": {"name": "笑顔", "index": 0}}, ensure_ascii=False
+                ),
+                "faceBlendShapeB.mmd_blendshape_morph_names_json": json.dumps(
+                    {"0": {"name": "笑顔", "index": 0}}, ensure_ascii=False
+                ),
                 "faceBlendShapeA.weight[0]": 0.4,
                 "faceBlendShapeB.weight[0]": 0.4,
             }
         )
         adapter.aliases["faceBlendShapeA"] = ["smile_alias", "weight[0]"]
         adapter.aliases["faceBlendShapeB"] = ["smile_alias_split", "weight[0]"]
+        adapter.node_types.update(
+            {"faceBlendShapeA": "blendShape", "faceBlendShapeB": "blendShape"}
+        )
         presenter, view, _, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
 
         presenter.load_morphs()
@@ -807,40 +970,6 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         )
         self.assertIn(("set_attr", "faceBlendShapeA.weight[0]", 0.65), adapter.calls)
         self.assertIn(("set_attr", "faceBlendShapeB.weight[0]", 0.65), adapter.calls)
-
-    def test_stale_blendshape_alias_is_skipped_with_actionable_warning(self):
-        adapter = _FakeMayaAdapter()
-        adapter.existing.add("faceBlendShape")
-        presenter, _, _, _ = _make_presenter(adapter=adapter)
-        data = {
-            "blend_shape_node": "faceBlendShape",
-            "blend_shape_target": "Mouth_A01",
-        }
-
-        with self.assertLogs(morph_presenter_module.logger.name, level="WARNING") as logs:
-            presenter._set_blend_shape_weight(data, 0.5, "あ")
-
-        message = "\n".join(logs.output)
-        self.assertIn("morph=あ", message)
-        self.assertIn("node=faceBlendShape", message)
-        self.assertIn("plug=Mouth_A01", message)
-        self.assertNotIn(("set_attr", "faceBlendShape.Mouth_A01", 0.5), adapter.calls)
-
-    def test_reassigned_alias_uses_current_weight_index_not_stored_index(self):
-        adapter = _FakeMayaAdapter()
-        adapter.existing.update({"faceBlendShape", "faceBlendShape.weight[2]"})
-        adapter.aliases["faceBlendShape"] = ["Mouth_A01", "weight[2]"]
-        presenter, _, _, _ = _make_presenter(adapter=adapter)
-        data = {
-            "blend_shape_node": "faceBlendShape",
-            "blend_shape_target": "Mouth_A01",
-            "blend_shape_weight_attr": "weight[0]",
-        }
-
-        presenter._set_blend_shape_weight(data, 0.75, "あ")
-
-        self.assertIn(("set_attr", "faceBlendShape.weight[2]", 0.75), adapter.calls)
-        self.assertNotIn(("set_attr", "faceBlendShape.weight[0]", 0.75), adapter.calls)
 
     def test_load_morphs_falls_back_to_network_morph_nodes_for_display(self):
         adapter = _FakeMayaAdapter()
@@ -992,42 +1121,10 @@ class TestMorphPresenterHeadless(unittest.TestCase):
             presenter.reset_all_morphs()
 
         message = "\n".join(logs.output)
-        self.assertIn("morph=gone", message)
-        self.assertIn("missingNetwork", message)
-        self.assertIn(("set_attr", "faceBlendShape.weight[0]", 0), adapter.calls)
-        self.assertIn(("set_attr", "materialFlashNode.weight", 0), adapter.calls)
-        self.assertEqual(adapter.attr_values["faceBlendShape.weight[0]"], 0)
-        self.assertEqual(adapter.attr_values["materialFlashNode.weight"], 0)
-        self.assertEqual(view.morph_slider.set_value_calls, [0])
-        self.assertEqual(app_state.statuses, [("Reset 2 morph(s)", None)])
-
-    def test_morph_weight_helper_does_not_double_write_shared_plug(self):
-        adapter = _FakeMayaAdapter()
-        adapter.existing.update({"faceBlendShape", "faceBlendShape.weight[0]"})
-        adapter.aliases["faceBlendShape"] = ["smile", "weight[0]"]
-        presenter, _, _, _ = _make_presenter(adapter=adapter)
-        # Pathological case: network reference points at the same plug path as BS.
-        data = {
-            "blend_shape_node": "faceBlendShape",
-            "blend_shape_target": "smile",
-            "blend_shape_weight_attr": "weight[0]",
-            "morph_node": "faceBlendShape",
-            "morph_weight_attr": "weight[0]",
-        }
-
-        presenter._set_morph_weight(data, 0.55, "smile")
-
-        set_calls = [call for call in adapter.calls if call[0] == "set_attr"]
-        self.assertEqual(set_calls, [("set_attr", "faceBlendShape.weight[0]", 0.55)])
-
-        adapter.calls.clear()
-        presenter._morph_controller = "model_morphController"
-        data["index"] = 7
-        presenter._set_morph_weight(data, 0.25, "smile")
-        self.assertEqual(
-            [call for call in adapter.calls if call[0] == "set_attr"],
-            [("set_attr", "model_morphController.inputWeight[7]", 0.25)],
-        )
+        self.assertIn("Reset all morphs failed", message)
+        self.assertFalse(any(call[0] == "set_attr" for call in adapter.calls))
+        self.assertEqual(view.morph_slider.set_value_calls, [])
+        self.assertEqual(app_state.statuses, [])
 
     def test_organize_morphs_by_panel_not_stale_group(self):
         presenter, view, _, _ = _make_presenter()
@@ -1412,13 +1509,9 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         presenter.reset_all_morphs()
 
-        self.assertIn(("get_attr", "faceBlendShape.weight[0]"), adapter.calls)
-        self.assertIn(("get_attr", "faceBlendShape.weight[1]"), adapter.calls)
-        self.assertIn(("object_exists", "missingBlendShape"), adapter.calls)
-        self.assertIn(("set_attr", "faceBlendShape.weight[0]", 0), adapter.calls)
-        self.assertNotIn(("set_attr", "faceBlendShape.weight[1]", 0), adapter.calls)
-        self.assertEqual(view.morph_slider.set_value_calls, [0])
-        self.assertEqual(app_state.statuses, [("Reset 1 morph(s)", None)])
+        self.assertFalse(any(call[0] == "set_attr" for call in adapter.calls))
+        self.assertEqual(view.morph_slider.set_value_calls, [])
+        self.assertEqual(app_state.statuses, [])
 
     def test_apply_changes_fails_closed_without_coordinator(self):
         adapter = _FakeMayaAdapter()
