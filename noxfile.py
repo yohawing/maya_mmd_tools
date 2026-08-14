@@ -107,6 +107,9 @@ from tools.nox.native_sessions import (  # noqa: E402
     run_native_smoke as _run_native_smoke,
     run_reduction_abi_probe as _run_reduction_abi_probe,
 )
+from tools.nox.authoring_sessions import (  # noqa: E402
+    run_authoring_cross_maya_matrix as _run_authoring_cross_maya_matrix,
+)
 from tools.nox.maya_sessions import (  # noqa: E402
     run_cpp_plugin_smoke as _run_cpp_plugin_smoke,
     run_control_rig_gui_e2e as _run_control_rig_gui_e2e,
@@ -952,6 +955,23 @@ def gui_tests(session: nox.Session) -> None:
         posargs=session.posargs,
         python_executable=sys.executable,
         default_maya_version=DEFAULT_MAYA_VERSION,
+    )
+
+
+@nox.session(venv_backend="none")
+def authoring_cross_maya_matrix(session: nox.Session) -> None:
+    """Run the compact fail-closed Model Authoring Maya matrix."""
+    _run_authoring_cross_maya_matrix(
+        session,
+        posargs=session.posargs,
+        root=ROOT,
+        python_executable=sys.executable,
+        configure=_cmake_configure,
+        build=_cmake_build,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_script=_mayapy_script,
+        run_logged=_run_logged_subprocess,
     )
 
 
