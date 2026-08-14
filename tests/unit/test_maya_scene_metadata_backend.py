@@ -490,6 +490,130 @@ def _vertex_scene(
     return cmds, backend
 
 
+def _snapshot_vertex_scene() -> tuple[FakeCmds, MayaSceneMetadataBackend]:
+    cmds, backend = _vertex_scene(source_mapping=[0, 1])
+    cmds.attrs[("|root", "mmd_morph_controller")] = True
+    cmds.meshes = ["mesh"]
+    cmds.history["mesh"] = ["bs"]
+    cmds.attrs[("mesh", "intermediateObject")] = False
+    cmds.attrs[("controller", "topologyVersion")] = 1
+    cmds.attrs[("controller", "groupTopology")] = "{}"
+    return cmds, backend
+
+
+def test_morph_authoring_snapshot_shares_binding_observations_once() -> None:
+    cmds, backend = _snapshot_vertex_scene()
+    calls: list[tuple[str, str]] = []
+    original_alias_attr = cmds.alias_attr
+    original_get_attr = cmds.get_attr
+    original_list_history = cmds.list_history
+    original_list_connections = cmds.list_connections
+
+    def counted_alias_attr(node: str, **kwargs: Any) -> list[str]:
+        calls.append(("alias_attr", node))
+        return original_alias_attr(node, **kwargs)
+
+    def counted_get_attr(path: str, **kwargs: Any) -> Any:
+        if path.endswith(".mmd_blendshape_morph_names_json"):
+            calls.append(("raw_name_json", path))
+        return original_get_attr(path, **kwargs)
+
+    def counted_list_history(node: str) -> list[str]:
+        calls.append(("list_history", node))
+        return original_list_history(node)
+
+    def counted_list_connections(query: Any, **kwargs: Any) -> list[str]:
+        if query in {"|root.mmd_morph_controller", "controller.outputWeight[0]"}:
+            calls.append(("list_connections", query))
+        return original_list_connections(query, **kwargs)
+
+    cmds.alias_attr = counted_alias_attr
+    cmds.get_attr = counted_get_attr
+    cmds.list_history = counted_list_history
+    cmds.list_connections = counted_list_connections
+
+    snapshot = backend.read_morph_authoring_snapshot("|root")
+
+    assert snapshot.spec.morphs[0].binding_identity == "morph"
+    assert snapshot.projection.root_identity == "|root"
+    assert snapshot.projection.binding_for_index(0).bindings[0].blend_shape_identity == "bs"
+    assert snapshot.topology_inspection.valid is True
+    assert calls.count(("alias_attr", "bs")) == 1
+    assert calls.count(("raw_name_json", "bs.mmd_blendshape_morph_names_json")) == 1
+    assert calls.count(("list_history", "mesh")) == 1
+    assert calls.count(("list_connections", "|root.mmd_morph_controller")) == 1
+    assert calls.count(("list_connections", "controller.outputWeight[0]")) == 1
+
+
+def test_morph_authoring_snapshot_reentrant_read_fails_and_context_is_released() -> None:
+    _cmds, backend = _snapshot_vertex_scene()
+    original_read_spec = SceneMetadataAdapter.read_spec
+
+    def reentrant_read_spec(_adapter: SceneMetadataAdapter, root: str):
+        return backend.read_morph_authoring_snapshot(root)
+
+    with patch.object(SceneMetadataAdapter, "read_spec", reentrant_read_spec):
+        with pytest.raises(MayaSceneMetadataError, match="already active"):
+            backend.read_morph_authoring_snapshot("|root")
+
+    snapshot = backend.read_morph_authoring_snapshot("|root")
+    assert snapshot.spec == original_read_spec(SceneMetadataAdapter(backend), "|root")
+
+
+def test_morph_authoring_snapshot_allows_empty_model_without_controller() -> None:
+    _cmds, backend = _backend()
+
+    snapshot = backend.read_morph_authoring_snapshot("|root")
+
+    assert snapshot.spec.morphs == ()
+    assert snapshot.projection.controller_identity == ""
+    assert snapshot.projection.morphs == ()
+    assert snapshot.topology_inspection.valid is True
+
+
+def test_morph_authoring_snapshot_uses_owned_network_weight_without_controller() -> None:
+    cmds, backend = _backend()
+    _morph(cmds, "boneMorph", "bone", [], index=3)
+    cmds.attrs[("boneMorph", "weight")] = 0.0
+    _registry(cmds, morph_members=["boneMorph"])
+
+    snapshot = backend.read_morph_authoring_snapshot("|root")
+
+    projected = snapshot.projection.binding_for_index(3)
+    assert snapshot.projection.controller_identity == ""
+    assert projected.runtime_targets == ("boneMorph.weight",)
+    assert projected.runtime_supported is True
+
+
+def test_morph_authoring_snapshot_rejects_ambiguous_optional_controller() -> None:
+    cmds, backend = _backend()
+    cmds.attrs[("|root", "mmd_morph_controller")] = True
+    cmds.connections[("|root.mmd_morph_controller", None)] = ["controllerA", "controllerB"]
+
+    with pytest.raises(MayaSceneMetadataError, match="exactly one controller"):
+        backend.read_morph_authoring_snapshot("|root")
+
+
+def test_morph_authoring_snapshot_reports_group_topology_without_controller() -> None:
+    cmds, backend = _backend()
+    _morph(cmds, "boneMorph", "bone", [], index=2)
+    cmds.attrs[("boneMorph", "weight")] = 0.0
+    _morph(
+        cmds,
+        "groupMorph",
+        "group",
+        [{"morph_index": 2, "morph_rate": 0.5}],
+        index=3,
+    )
+    _registry(cmds, morph_members=["boneMorph", "groupMorph"])
+
+    snapshot = backend.read_morph_authoring_snapshot("|root")
+
+    assert snapshot.topology_inspection.valid is False
+    assert snapshot.topology_inspection.diagnostics[0].code == "version"
+    assert snapshot.projection.binding_for_index(3).runtime_supported is False
+
+
 def test_unicode_model_and_ordinary_two_bone_metadata() -> None:
     cmds, backend = _backend()
     _bone(cmds, "|root|Skeleton|root", 0)

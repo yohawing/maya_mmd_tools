@@ -11,6 +11,7 @@ from mmd_tools.adapters.maya_morph_read_projection import (
     MayaMorphReadProjectionError,
 )
 from mmd_tools.core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
+from mmd_tools.core.morph_binding_resolver import MorphBinding, MorphBindingResolution
 from mmd_tools.core.morph_read_projection import MorphProjectionRequest
 
 
@@ -331,3 +332,98 @@ def test_projects_network_capabilities_and_non_intermediate_meshes_without_bindi
 def test_topology_target_keys_fail_closed_unless_canonical_decimal(topology, error):
     with pytest.raises(MayaMorphReadProjectionError, match=error):
         MayaMorphReadProjectionAdapter._normalize_topology(topology)
+
+
+def test_validated_spec_projection_reuses_captured_vertex_resolution() -> None:
+    maya = FakeMayaAdapter()
+    resolution = MorphBindingResolution(
+        bindings=(
+            MorphBinding(
+                raw_pmx_name="Same",
+                global_morph_index=2,
+                blend_shape_identity="faceA",
+                alias="Same",
+                logical_target_index=2,
+                weight_plug="faceA.weight[2]",
+                controller_identity="controller",
+                controller_slot=2,
+            ),
+        ),
+        warnings=(),
+    )
+
+    projection = MayaMorphReadProjectionAdapter(maya).read_validated_spec_projection(
+        "|root",
+        (MorphProjectionRequest("Same", 2, "morphA"),),
+        "controller",
+        {2: resolution},
+    )
+
+    assert projection.root_identity == "|root"
+    assert projection.binding_for_index(2).bindings == resolution.bindings
+    assert not any(call[0] == "alias_attr" for call in maya.calls)
+    assert not any(
+        call[0] == "get_attr" and "mmd_blendshape_morph_names_json" in call[1]
+        for call in maya.calls
+    )
+
+
+def test_validated_spec_projection_rejects_missing_captured_resolution() -> None:
+    maya = FakeMayaAdapter()
+
+    with pytest.raises(MayaMorphReadProjectionError, match="do not match"):
+        MayaMorphReadProjectionAdapter(maya).read_validated_spec_projection(
+            "|root",
+            (MorphProjectionRequest("Same", 2, "morphA"),),
+            "controller",
+            {},
+        )
+
+
+def test_validated_spec_projection_projects_group_capability_from_cached_outputs() -> None:
+    maya = FakeMayaAdapter()
+
+    projection = MayaMorphReadProjectionAdapter(maya).read_validated_spec_projection(
+        "|root",
+        (
+            MorphProjectionRequest("Group", 2, "morphA", "group"),
+            MorphProjectionRequest("Material", 3, "morphB", "material"),
+        ),
+        "controller",
+        {},
+        {"3": ((2, 1.0),)},
+    )
+
+    assert projection.binding_for_index(2).runtime_supported is True
+    assert projection.binding_for_index(3).runtime_supported is True
+    output_calls = [
+        call for call in maya.calls if call[:2] == ("list_connections", "controller.outputWeight[3]")
+    ]
+    assert len(output_calls) == 1
+
+
+def test_runtime_only_projection_merges_owned_aliases_without_semantic_identity() -> None:
+    maya = FakeMayaAdapter()
+
+    projection = MayaMorphReadProjectionAdapter(maya).read_runtime_only_projection("root")
+
+    same = next(morph for morph in projection.morphs if morph.raw_pmx_name == "Same")
+    assert same.semantic_registered is False
+    assert same.runtime_targets == ("faceA.weight[2]", "faceB.weight[2]")
+    assert projection.controller_identity == ""
+    assert Counter(call[1] for call in maya.calls if call[0] == "list_history") == {
+        "|root|meshA": 1,
+        "|root|meshB": 1,
+    }
+    assert Counter(call[1] for call in maya.calls if call[0] == "alias_attr") == {
+        "faceA": 1,
+        "faceB": 1,
+    }
+
+
+def test_runtime_only_projection_rejects_duplicate_alias_on_one_blendshape() -> None:
+    maya = FakeMayaAdapter()
+    maya.aliases["faceA"] = ["Same", "weight[2]", "Same", "weight[3]"]
+
+    with pytest.raises(MayaMorphReadProjectionError, match="duplicate blendShape alias"):
+        MayaMorphReadProjectionAdapter(maya).read_runtime_only_projection("root")

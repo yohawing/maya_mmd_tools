@@ -30,6 +30,9 @@ class _Coordinator:
         self.calls.append(("read", (root,)))
         return self.spec
 
+    def read_morph_authoring_snapshot(self, _root):
+        raise AssertionError("snapshot read is not used by these action tests")
+
     def create_morph(self, *args):
         self.calls.append(("create", args))
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from mmd_tools.adapters.maya_morph_binding_query import (
@@ -11,7 +12,9 @@ from mmd_tools.adapters.maya_morph_binding_query import (
 )
 from mmd_tools.core.constants import ATTR_MMD_MODEL_ROOT
 from mmd_tools.core.morph_binding_resolver import (
+    MorphBinding,
     MorphBindingRequest,
+    MorphBindingResolution,
     MorphBindingResolutionError,
 )
 from mmd_tools.core.morph_read_projection import (
@@ -52,7 +55,7 @@ class MayaMorphReadProjectionAdapter:
         controller = self._controller_identity(root)
         meshes, non_intermediate_meshes, blend_shapes = self._owned_blend_shapes(root)
         registry_bindings = self._registry_morph_bindings(root)
-        cached = _CachedBindingQueryAdapter(self._adapter)
+        cached = CachedMorphBindingQueryAdapter(self._adapter)
 
         observations = []
         connected_output_indices = []
@@ -147,6 +150,255 @@ class MayaMorphReadProjectionAdapter:
                 )
             )
 
+        return MorphBlendShapeReadProjection(
+            root_identity=root,
+            controller_identity=controller,
+            owned_mesh_identities=meshes,
+            owned_blend_shape_identities=blend_shapes,
+            morphs=tuple(projected),
+            owned_non_intermediate_mesh_identities=non_intermediate_meshes,
+        )
+
+    def read_runtime_only_projection(
+        self,
+        model_root: str,
+    ) -> MorphBlendShapeReadProjection:
+        """Project bare model-owned blendShape aliases for read-only preview."""
+
+        root = self._canonical_identity(model_root, "model root")
+        meshes, non_intermediate_meshes, blend_shapes = self._owned_blend_shapes(root)
+        cached = CachedMorphBindingQueryAdapter(self._adapter)
+        bindings_by_name: Dict[str, List[MorphBinding]] = {}
+        alias_by_plug: Dict[str, str] = {}
+        for blend_shape in blend_shapes:
+            aliases = cached.alias_attr(blend_shape, query=True) or ()
+            aliases = self._require_sequence(aliases, "blendShape aliases")
+            if len(aliases) % 2:
+                raise MayaMorphReadProjectionError(
+                    "blendShape aliases must contain alias/plug pairs"
+                )
+            seen_aliases = set()
+            for alias_value, plug_value in zip(aliases[0::2], aliases[1::2]):
+                if not isinstance(alias_value, str) or not alias_value:
+                    raise MayaMorphReadProjectionError("blendShape alias is empty")
+                if alias_value in seen_aliases:
+                    raise MayaMorphReadProjectionError(
+                        "duplicate blendShape alias {!r} on {!r}".format(
+                            alias_value,
+                            blend_shape,
+                        )
+                    )
+                seen_aliases.add(alias_value)
+                target_index = self._runtime_weight_index(plug_value, blend_shape)
+                weight_plug = "{}.weight[{}]".format(blend_shape, target_index)
+                previous_alias = alias_by_plug.get(weight_plug)
+                if previous_alias is not None and previous_alias != alias_value:
+                    raise MayaMorphReadProjectionError(
+                        "runtime preview plug {!r} has ambiguous aliases".format(weight_plug)
+                    )
+                alias_by_plug[weight_plug] = alias_value
+                bindings_by_name.setdefault(alias_value, []).append(
+                    MorphBinding(
+                        raw_pmx_name=alias_value,
+                        global_morph_index=-1,
+                        blend_shape_identity=blend_shape,
+                        alias=alias_value,
+                        logical_target_index=target_index,
+                        weight_plug=weight_plug,
+                        controller_identity="",
+                        controller_slot=-1,
+                    )
+                )
+
+        projected = []
+        for runtime_index, (name, bindings) in enumerate(
+            sorted(
+                bindings_by_name.items(),
+                key=lambda item: tuple(binding.weight_plug for binding in item[1]),
+            )
+        ):
+            normalized_bindings = tuple(
+                MorphBinding(
+                    raw_pmx_name=binding.raw_pmx_name,
+                    global_morph_index=runtime_index,
+                    blend_shape_identity=binding.blend_shape_identity,
+                    alias=binding.alias,
+                    logical_target_index=binding.logical_target_index,
+                    weight_plug=binding.weight_plug,
+                    controller_identity="",
+                    controller_slot=runtime_index,
+                )
+                for binding in bindings
+            )
+            projected.append(
+                MorphBindingProjection(
+                    raw_pmx_name=name,
+                    global_morph_index=runtime_index,
+                    binding_identity=normalized_bindings[0].weight_plug,
+                    bindings=normalized_bindings,
+                    warnings=(),
+                    runtime_preview_plugs=tuple(
+                        binding.weight_plug for binding in normalized_bindings
+                    ),
+                    runtime_supported=True,
+                    semantic_registered=False,
+                )
+            )
+        return MorphBlendShapeReadProjection(
+            root_identity=root,
+            controller_identity="",
+            owned_mesh_identities=meshes,
+            owned_blend_shape_identities=blend_shapes,
+            morphs=tuple(projected),
+            owned_non_intermediate_mesh_identities=non_intermediate_meshes,
+        )
+
+    @staticmethod
+    def _runtime_weight_index(value: object, blend_shape: str) -> int:
+        if not isinstance(value, str):
+            raise MayaMorphReadProjectionError("blendShape alias plug is invalid")
+        match = re.fullmatch(r"(?:(?P<node>.+)\.)?(?:weight|w)\[(?P<index>\d+)\]", value)
+        if match is None or (
+            match.group("node") is not None and match.group("node") != blend_shape
+        ):
+            raise MayaMorphReadProjectionError(
+                "blendShape alias plug {!r} is not owned by {!r}".format(
+                    value,
+                    blend_shape,
+                )
+            )
+        return int(match.group("index"))
+
+    def read_validated_spec_projection(
+        self,
+        model_root: str,
+        requests: Iterable[MorphProjectionRequest],
+        controller_identity: str,
+        resolutions: Mapping[int, MorphBindingResolution],
+        controller_topology: Optional[Mapping[object, Iterable[Tuple[int, float]]]] = None,
+        query_adapter: Optional[Any] = None,
+    ) -> MorphBlendShapeReadProjection:
+        """Project one backend-validated Spec without rereading semantic bindings.
+
+        The caller must produce ``requests`` and ``resolutions`` during the
+        same strict backend read for ``model_root``.  Registry ownership and
+        semantic node type/name/index are therefore trusted here; Maya mesh
+        history ownership and controller output capability remain adapter
+        observations.
+        """
+
+        root = self._required_identity(model_root, "model root")
+        normalized_requests = self._normalize_requests(requests)
+        if controller_identity:
+            controller = self._required_identity(controller_identity, "morph controller")
+        else:
+            controller = ""
+        topology = self._normalize_topology(
+            {} if controller_topology is None else controller_topology
+        )
+        cached = query_adapter or CachedMorphBindingQueryAdapter(self._adapter)
+        meshes, non_intermediate_meshes, blend_shapes = self._owned_blend_shapes(root)
+
+        vertex_indices = {
+            request.global_morph_index
+            for request in normalized_requests
+            if request.morph_type == "vertex"
+        }
+        if any(
+            isinstance(index, bool) or not isinstance(index, int) or index < 0
+            for index in resolutions
+        ) or set(resolutions) != vertex_indices:
+            raise MayaMorphReadProjectionError(
+                "captured vertex binding resolutions do not match the validated Spec"
+            )
+        requests_by_index = {
+            request.global_morph_index: request for request in normalized_requests
+        }
+        for index, resolution in resolutions.items():
+            if not isinstance(resolution, MorphBindingResolution):
+                raise MayaMorphReadProjectionError(
+                    "captured morph index {} has an invalid binding resolution".format(index)
+                )
+            request = requests_by_index[index]
+            if not resolution.bindings or any(
+                binding.global_morph_index != index
+                or binding.raw_pmx_name != request.raw_pmx_name
+                or binding.controller_identity != controller
+                or binding.controller_slot != index
+                for binding in resolution.bindings
+            ):
+                raise MayaMorphReadProjectionError(
+                    "captured morph index {} binding identity is inconsistent".format(index)
+                )
+            foreign = tuple(
+                binding.blend_shape_identity
+                for binding in resolution.bindings
+                if binding.blend_shape_identity not in blend_shapes
+            )
+            if foreign:
+                raise MayaMorphReadProjectionError(
+                    "morph index {} resolves outside the model-owned mesh history: {!r}".format(
+                        index,
+                        foreign,
+                    )
+                )
+
+        if vertex_indices and not controller:
+            raise MayaMorphReadProjectionError(
+                "vertex morph projection requires a canonical controller"
+            )
+        if topology and not controller:
+            raise MayaMorphReadProjectionError(
+                "controller topology requires a canonical controller"
+            )
+        connected_output_indices = set(vertex_indices)
+        for target in topology:
+            output_plug = "{}.outputWeight[{}]".format(controller, target)
+            destinations = cached.list_connections(
+                output_plug,
+                source=False,
+                destination=True,
+                plugs=True,
+            ) or ()
+            if self._require_sequence(destinations, "controller output destinations"):
+                connected_output_indices.add(target)
+
+        capabilities = project_runtime_capabilities(
+            normalized_requests,
+            topology,
+            tuple(sorted(connected_output_indices)),
+        )
+        projected = []
+        for request, supported in zip(normalized_requests, capabilities):
+            resolution = resolutions.get(request.global_morph_index)
+            if controller:
+                runtime_preview_plugs = (
+                    "{}.inputWeight[{}]".format(
+                        controller,
+                        request.global_morph_index,
+                    ),
+                )
+            elif request.morph_type in {"bone", "material"} and cached.attribute_exists(
+                "weight", request.binding_identity
+            ):
+                runtime_preview_plugs = (
+                    "{}.weight".format(request.binding_identity),
+                )
+            else:
+                runtime_preview_plugs = ()
+            supported = bool(supported and runtime_preview_plugs)
+            projected.append(
+                MorphBindingProjection(
+                    raw_pmx_name=request.raw_pmx_name,
+                    global_morph_index=request.global_morph_index,
+                    binding_identity=request.binding_identity,
+                    bindings=resolution.bindings if resolution is not None else (),
+                    warnings=resolution.warnings if resolution is not None else (),
+                    runtime_preview_plugs=runtime_preview_plugs,
+                    runtime_supported=supported,
+                    unsupported_reason="" if supported else "runtime_output_unsupported",
+                )
+            )
         return MorphBlendShapeReadProjection(
             root_identity=root,
             controller_identity=controller,
@@ -332,8 +584,9 @@ class MayaMorphReadProjectionAdapter:
                 continue
             seen_meshes.add(shape)
             canonical_meshes.append(shape)
-            if not bool(self._call("get_attr", "{}.intermediateObject".format(shape))):
-                non_intermediate_meshes.append(shape)
+            if bool(self._call("get_attr", "{}.intermediateObject".format(shape))):
+                continue
+            non_intermediate_meshes.append(shape)
             history = self._call("list_history", shape) or ()
             history = self._require_sequence(history, "mesh history")
             candidates = self._call("ls", history, type="blendShape") or ()
@@ -359,6 +612,12 @@ class MayaMorphReadProjectionAdapter:
                 "{} {!r} has no unique canonical identity".format(label, value)
             )
         return names[0]
+
+    @staticmethod
+    def _required_identity(value: object, label: str) -> str:
+        if not isinstance(value, str) or not value:
+            raise MayaMorphReadProjectionError("{} identity is empty".format(label))
+        return value
 
     @staticmethod
     def _normalize_requests(
@@ -427,7 +686,7 @@ class MayaMorphReadProjectionAdapter:
             ) from exc
 
 
-class _CachedBindingQueryAdapter:
+class CachedMorphBindingQueryAdapter:
     """Memoize graph observations while preserving the existing query policy."""
 
     def __init__(self, adapter: Any) -> None:
@@ -464,4 +723,8 @@ class _CachedBindingQueryAdapter:
         return self._cache[key]
 
 
-__all__ = ["MayaMorphReadProjectionAdapter", "MayaMorphReadProjectionError"]
+__all__ = [
+    "CachedMorphBindingQueryAdapter",
+    "MayaMorphReadProjectionAdapter",
+    "MayaMorphReadProjectionError",
+]

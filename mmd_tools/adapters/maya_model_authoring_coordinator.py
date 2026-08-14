@@ -44,6 +44,7 @@ from mmd_tools.core.morph_authoring import (
     replace_morph as replace_morph_spec,
     replace_morph_offsets as replace_morph_offsets_spec,
 )
+from mmd_tools.core.morph_read_projection import MorphAuthoringReadSnapshot
 from mmd_tools.core.morph_topology import (
     MorphTopologyInspection,
     serialize_group_topology,
@@ -122,6 +123,25 @@ class MayaModelAuthoringCoordinator:
     def read_spec(self, model_root: str) -> MmdModelAuthoringSpec:
         """Read the current strict scene specification for UI refreshes."""
         return self._read_current(model_root, "read_spec")
+
+    def read_morph_authoring_snapshot(self, model_root: str) -> MorphAuthoringReadSnapshot:
+        """Read one combined semantic/runtime Morph refresh generation."""
+        reader = getattr(self._backend, "read_morph_authoring_snapshot", None)
+        if not callable(reader):
+            raise MayaModelAuthoringCoordinatorError(
+                "morph authoring snapshot reader is unavailable"
+            )
+        try:
+            result = reader(model_root)
+        except Exception as exc:
+            raise MayaModelAuthoringCoordinatorError(
+                f"read_morph_authoring_snapshot failed for root {model_root!r}: {exc}"
+            ) from exc
+        if not isinstance(result, MorphAuthoringReadSnapshot):
+            raise MayaModelAuthoringCoordinatorError(
+                "morph authoring snapshot reader returned an invalid result"
+            )
+        return result
 
     def begin_info_metadata_edit(self, model_root: str, attr: str) -> Any:
         """Begin one focus-spanning Info edit with a fixed root and target."""

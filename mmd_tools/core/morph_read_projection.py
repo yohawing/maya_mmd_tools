@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Tuple
+from typing import Mapping, Optional, Tuple
 
+from mmd_tools.core.model_authoring_spec import MmdModelAuthoringSpec
 from mmd_tools.core.morph_binding_resolver import MorphBinding, MorphBindingWarning
+from mmd_tools.core.morph_topology import MorphTopologyInspection
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,7 @@ class MorphBindingProjection:
     runtime_preview_plugs: Tuple[str, ...] = ()
     runtime_supported: bool = False
     unsupported_reason: str = ""
+    semantic_registered: bool = True
 
     @property
     def preview_plugs(self) -> Tuple[str, ...]:
@@ -64,6 +67,15 @@ class MorphBlendShapeReadProjection:
         if len(matches) != 1:
             raise KeyError("global morph index {!r} is not unique".format(global_morph_index))
         return matches[0]
+
+
+@dataclass(frozen=True)
+class MorphAuthoringReadSnapshot:
+    """One refresh generation of semantic and runtime morph observations."""
+
+    spec: Optional[MmdModelAuthoringSpec]
+    projection: MorphBlendShapeReadProjection
+    topology_inspection: MorphTopologyInspection
 
 
 _DIRECT_RUNTIME_SUPPORT = {
@@ -109,6 +121,7 @@ def project_runtime_capabilities(
 __all__ = [
     "MorphBindingProjection",
     "MorphBlendShapeReadProjection",
+    "MorphAuthoringReadSnapshot",
     "MorphProjectionRequest",
     "project_runtime_capabilities",
 ]

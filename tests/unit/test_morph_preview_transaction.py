@@ -47,6 +47,39 @@ def test_drag_session_fixes_targets_and_avoids_rediscovery_on_moves():
     assert cmds.undo_chunk_open is False
 
 
+def test_float_attribute_round_trip_error_is_accepted():
+    backend, cmds = _backend()
+    original_set_attr = cmds.set_attr
+
+    def set_float_attr(path, *values, **kwargs):
+        original_set_attr(path, *values, **kwargs)
+        if path == "|controller.inputWeight[0]" and values:
+            cmds.attrs[("|controller", "inputWeight[0]")] = 0.6499999761581421
+
+    cmds.set_attr = set_float_attr
+    session = backend.begin_morph_preview("|root", ("|controller.inputWeight[0]",))
+
+    assert backend.apply_morph_preview("|root", session, (0.65,)) == 1
+    assert backend.commit_morph_preview("|root", session) == 1
+
+
+def test_gross_float_attribute_readback_mismatch_still_fails_closed():
+    backend, cmds = _backend()
+    original_set_attr = cmds.set_attr
+
+    def set_wrong_attr(path, *values, **kwargs):
+        original_set_attr(path, *values, **kwargs)
+        if path == "|controller.inputWeight[0]" and values:
+            cmds.attrs[("|controller", "inputWeight[0]")] = 0.64
+
+    cmds.set_attr = set_wrong_attr
+    session = backend.begin_morph_preview("|root", ("|controller.inputWeight[0]",))
+
+    with pytest.raises(MayaSceneMetadataError, match="readback mismatch"):
+        backend.apply_morph_preview("|root", session, (0.65,))
+    backend.rollback_morph_preview("|root", session)
+
+
 def test_forced_native_preview_dispatches_one_batch_without_python_plug_loop():
     backend, cmds = _backend()
     backend._use_native_morph_weights = True

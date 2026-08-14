@@ -1,40 +1,32 @@
 """Present runtime preview and coordinator-routed PMX morph authoring UI."""
 
 from dataclasses import replace
-import json
-import re
 
 from mmd_tools.adapters import MayaCmdsAdapter
-from mmd_tools.adapters.maya_morph_binding_query import resolve_maya_morph_binding
-from ...core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
+from mmd_tools.adapters.maya_morph_authoring_snapshot_provider import (
+    MayaMorphAuthoringSnapshotProvider,
+)
 from ...core.logger import get_logger
-from ...core.maya_identity import same_node_identity
 from ...core.morph_metadata_reader import (
     MORPH_TAB_GROUP_ORDER,
     PMX_TYPE_TO_UI_INDEX,
     UI_INDEX_TO_PMX_TYPE,
     group_morph_names_by_panel,
     morph_info_from_presenter_entry,
-    parse_blendshape_morph_entries,
     PMX_MORPH_TYPE_NAMES,
 )
-from ...core.morph_binding_resolver import MorphBindingRequest
 from ...core.morph_authoring import (
     MorphReindexResult,
     classify_morph_change,
     swap_adjacent_morphs,
 )
-from ...core.morph_topology import (
-    MorphTopologyError,
-    MorphTopologyInspection,
-    parse_group_topology,
+from ...core.morph_read_projection import (
+    MorphAuthoringReadSnapshot,
+    MorphProjectionRequest,
+    project_runtime_capabilities,
 )
+from ...core.morph_topology import MorphTopologyInspection
 from ...core.model_authoring_spec import MmdMorphSpec
-from ...core.model_registry import (
-    REGISTRY_CATEGORY_MORPH,
-    list_model_registry_members_from_adapter,
-)
-from ...converters.morph_runtime_common import parse_morph_offsets_json
 from ..qt_compat import Qt, QTimer, QListWidgetItem
 from .list_presenter_helpers import (
     apply_list_filter,
@@ -47,35 +39,10 @@ from .list_presenter_helpers import (
 logger = get_logger(__name__)
 
 
-_BONE_MORPH_TYPE_INDEX = 10
-_MATERIAL_MORPH_TYPE_INDEX = 11
-_GROUP_MORPH_TYPE_INDEX = 12
-_NETWORK_MORPH_TYPES = frozenset({"bone", "material", "group"})
-_NETWORK_MORPH_TYPE_INDEX = {
-    "bone": _BONE_MORPH_TYPE_INDEX,
-    "material": _MATERIAL_MORPH_TYPE_INDEX,
-    "group": _GROUP_MORPH_TYPE_INDEX,
-}
-_WEIGHT_INDEX_RE = re.compile(r"\[(\d+)\]")
-# Fallback panel for morphs without explicit PMX panel metadata (not System/0).
-_DEFAULT_USER_PANEL = 4
 # Backward-compatible private aliases; the canonical table lives in the reader.
 _PMX_TYPE_TO_UI_INDEX = PMX_TYPE_TO_UI_INDEX
 _UI_INDEX_TO_PMX_TYPE = UI_INDEX_TO_PMX_TYPE
 _MORPH_TYPE_LETTERS = {0: "G", 1: "V", 2: "B", 3: "U", 4: "U", 5: "U", 6: "U", 7: "U", 8: "M", 9: "F", 10: "I"}
-# Runtime capability is intentionally centralized here.
-_DIRECT_RUNTIME_MORPH_CAPABILITIES = {
-    1: True,   # vertex
-    2: True,   # bone
-    3: False,  # UV
-    4: False,  # additional UV1
-    5: False,  # additional UV2
-    6: False,  # additional UV3
-    7: False,  # additional UV4
-    8: True,   # material (complete hardware-shader runtime; per material fail-closed)
-    9: False,  # flip
-    10: False, # impulse
-}
 _CREATE_MORPH_TYPES = (
     "vertex",
     "uv",
@@ -97,16 +64,51 @@ class MorphPresenter:
         maya_adapter=None,
         authoring_coordinator=None,
         material_morph_work=None,
+        morph_snapshot_provider=None,
     ):
         self.view = view
         self.app_state = app_state
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
         self.authoring_coordinator = authoring_coordinator
+        coordinator_reader = getattr(
+            authoring_coordinator, "read_morph_authoring_snapshot", None
+        )
+        if callable(coordinator_reader):
+            self.morph_snapshot_provider = authoring_coordinator
+        elif morph_snapshot_provider is not None:
+            if not callable(
+                getattr(morph_snapshot_provider, "read_morph_authoring_snapshot", None)
+            ):
+                raise TypeError("invalid morph authoring snapshot provider")
+            self.morph_snapshot_provider = morph_snapshot_provider
+        else:
+            self.morph_snapshot_provider = MayaMorphAuthoringSnapshotProvider(
+                self.maya_adapter
+            )
+        preview_methods = (
+            "begin_morph_preview",
+            "update_morph_preview",
+            "commit_morph_preview",
+            "rollback_morph_preview",
+            "set_morph_preview",
+            "reset_morph_preview",
+        )
+        if authoring_coordinator is not None and all(
+            callable(getattr(authoring_coordinator, method, None))
+            for method in preview_methods
+        ):
+            self._preview_coordinator = authoring_coordinator
+        elif all(
+            callable(getattr(self.morph_snapshot_provider, method, None))
+            for method in preview_methods
+        ):
+            self._preview_coordinator = self.morph_snapshot_provider
+        else:
+            self._preview_coordinator = None
         self.material_morph_work = material_morph_work
         self.blend_shape_node = None
         self.current_morph = None
         self.morph_data = {}  # MMDモーフデータのキャッシュ
-        self._blendshape_metadata_bindings = {}
         self._morph_capability_cache = {}
         self._morphs_by_index = {}
         self._loaded_model_root = None
@@ -261,11 +263,11 @@ class MorphPresenter:
     def load_morphs(self):
         """モーフをロード"""
         self._rollback_active_morph_preview()
-        self._last_refresh_generation = getattr(self.app_state, "refresh_generation", 0)
+        refresh_generation = getattr(self.app_state, "refresh_generation", 0)
+        self._last_refresh_generation = refresh_generation
         self._pending_refresh_generation = None
         self.view.morph_list.clear()
         self.morph_data.clear()
-        self._blendshape_metadata_bindings.clear()
         self._morph_capability_cache.clear()
         self._morphs_by_index.clear()
         self._authoring_spec = None
@@ -275,6 +277,7 @@ class MorphPresenter:
         self._authoring_ready = False
         self._controller_topology = {}
         self._topology_inspection = None
+        self.blend_shape_node = None
         topology_setter = getattr(self.view, "set_topology_repair_state", None)
         if callable(topology_setter):
             topology_setter("", False)
@@ -291,34 +294,34 @@ class MorphPresenter:
                 setter(False, "Select an MMD model to author morphs", "authoring_selection_required")
             return
 
-        self._read_authoring_spec(current_model_root)
-        self._authoring_spec_baseline = self._authoring_spec
-
-        controllers = []
-        if self.maya_adapter.attribute_exists("mmd_morph_controller", current_model_root):
-            controllers = self.maya_adapter.list_connections(
-                f"{current_model_root}.mmd_morph_controller", source=True, destination=False
-            ) or []
-        self._morph_controller = controllers[0] if len(controllers) == 1 else None
-        self._inspect_morph_topology(current_model_root)
-
-        # MMDモーフデータを収集
-        self._load_mmd_morphs(current_model_root)
-        allow_metadata_entries = not bool(self.morph_data)
-
-        # ブレンドシェイプノードを検索
-        self._load_blend_shapes(current_model_root, allow_metadata_entries=allow_metadata_entries)
-
-        # bone/material/group morph の network node を検索
-        self._load_network_morphs(current_model_root, allow_metadata_entries=allow_metadata_entries)
-
-        self._merge_authoring_morphs()
+        reader = getattr(self.morph_snapshot_provider, "read_morph_authoring_snapshot", None)
+        if not callable(reader):
+            self._loaded_model_root = None
+            self._morph_controller = None
+            self._set_authoring_error("Morph authoring snapshot reader is unavailable")
+            return
+        try:
+            snapshot = reader(current_model_root)
+            if self.app_state.current_model_root != current_model_root:
+                raise RuntimeError("current model changed during Morph snapshot read")
+            if getattr(self.app_state, "refresh_generation", 0) != refresh_generation:
+                raise RuntimeError("refresh generation changed during Morph snapshot read")
+            self._consume_authoring_snapshot(current_model_root, snapshot)
+        except Exception as exc:
+            self._loaded_model_root = None
+            self._morph_controller = None
+            self.blend_shape_node = None
+            self.morph_data.clear()
+            self.group_morphs.clear()
+            self._morphs_by_index.clear()
+            self._morph_capability_cache.clear()
+            self._set_authoring_error(f"Authoring metadata unavailable: {exc}")
+            logger.error("Failed to read morph authoring snapshot: %s", exc, exc_info=True)
+            return
 
         # Strip the legacy custom annotation once at the input boundary.
         for data in self.morph_data.values():
             data.pop("group", None)
-
-        self._cache_morph_capabilities()
 
         # グループごとにモーフを整理
         self._organize_morphs_by_group()
@@ -333,7 +336,7 @@ class MorphPresenter:
     def _set_authoring_available(self):
         """Disable semantic widgets until a complete coordinator is injected."""
         required = (
-            "read_spec",
+            "read_morph_authoring_snapshot",
             "create_morph",
             "replace_morph",
             "delete_morph",
@@ -353,28 +356,182 @@ class MorphPresenter:
         self._authoring_available = bool(available)
         self._authoring_ready = False
 
+    def _set_authoring_error(self, message):
+        self._authoring_spec = None
+        self._authoring_spec_baseline = None
+        self._authoring_morphs_by_index = {}
+        self._authoring_ready = False
+        setter = getattr(self.view, "set_authoring_controls_enabled", None)
+        if callable(setter):
+            setter(False, message, "authoring_unavailable")
+
+    def _consume_authoring_snapshot(self, root, snapshot):
+        """Publish one root/generation-validated immutable projection."""
+        if not isinstance(snapshot, MorphAuthoringReadSnapshot):
+            raise TypeError("invalid morph authoring snapshot")
+        projection = snapshot.projection
+        if projection.root_identity != root and not self._root_alias_matches_projection(
+            root,
+            projection.root_identity,
+        ):
+            raise ValueError("morph authoring snapshot root identity is stale")
+        if snapshot.spec is None:
+            if any(morph.semantic_registered for morph in projection.morphs):
+                raise ValueError("runtime-only snapshot contains semantic morph entries")
+        else:
+            if any(not morph.semantic_registered for morph in projection.morphs):
+                raise ValueError("semantic snapshot contains runtime-only morph entries")
+            spec_identities = tuple(
+                (morph.index, morph.binding_identity, morph.name)
+                for morph in snapshot.spec.morphs
+            )
+            projection_identities = tuple(
+                (morph.global_morph_index, morph.binding_identity, morph.raw_pmx_name)
+                for morph in projection.morphs
+            )
+            if spec_identities != projection_identities:
+                raise ValueError("morph authoring snapshot semantic identity mismatch")
+        if not isinstance(snapshot.topology_inspection, MorphTopologyInspection):
+            raise TypeError("invalid morph topology inspection")
+
+        self._authoring_spec = snapshot.spec
+        self._authoring_spec_baseline = snapshot.spec
+        self._authoring_morphs_by_index = {
+            morph.index: morph for morph in snapshot.spec.morphs
+        } if snapshot.spec is not None else {}
+        self._authoring_ready = bool(
+            self._authoring_available and snapshot.spec is not None
+        )
+        self._morph_controller = projection.controller_identity
+        self._topology_inspection = snapshot.topology_inspection
+        self._controller_topology = (
+            dict(snapshot.topology_inspection.stored)
+            if snapshot.topology_inspection.valid
+            else {}
+        )
+        self.blend_shape_node = (
+            projection.owned_blend_shape_identities[0]
+            if projection.owned_blend_shape_identities
+            else None
+        )
+        if snapshot.spec is not None:
+            self._merge_authoring_morphs()
+        else:
+            self._merge_runtime_only_morphs(projection.morphs)
+        self._morphs_by_index = {
+            int(data["index"]): data
+            for data in self.morph_data.values()
+            if data.get("semantic_registered", True)
+            and isinstance(data.get("index"), int)
+            and int(data["index"]) >= 0
+        }
+        self._morph_capability_cache.clear()
+        for projected in projection.morphs:
+            if projected.semantic_registered:
+                data = self._morphs_by_index[projected.global_morph_index]
+            else:
+                data = next(
+                    row
+                    for row in self.morph_data.values()
+                    if row.get("runtime_projection_index")
+                    == projected.global_morph_index
+                )
+            targets = tuple(projected.runtime_targets)
+            if not projected.semantic_registered:
+                expected_targets = tuple(
+                    binding.weight_plug for binding in projected.bindings
+                )
+                if not expected_targets:
+                    raise ValueError("runtime-only morph has no canonical preview targets")
+            elif projection.controller_identity:
+                expected_targets = (
+                    "{}.inputWeight[{}]".format(
+                        projection.controller_identity,
+                        projected.global_morph_index,
+                    ),
+                )
+            elif (
+                projected.runtime_supported
+                and data.get("mmd_morph_type") in {"bone", "material"}
+            ):
+                expected_targets = (
+                    "{}.weight".format(projected.binding_identity),
+                )
+            else:
+                expected_targets = ()
+            if targets != expected_targets:
+                raise ValueError("morph authoring snapshot runtime target identity mismatch")
+            data["runtime_targets"] = targets
+            data["blend_shape_targets"] = [
+                {
+                    "node": binding.blend_shape_identity,
+                    "target": binding.alias,
+                    "weight_attr": "weight[{}]".format(binding.logical_target_index),
+                }
+                for binding in projected.bindings
+            ]
+            if data["blend_shape_targets"]:
+                first = data["blend_shape_targets"][0]
+                data["blend_shape_node"] = first["node"]
+                data["blend_shape_target"] = first["target"]
+                data["blend_shape_weight_attr"] = first["weight_attr"]
+            self._morph_capability_cache[id(data)] = projected.runtime_supported
+
+        setter = getattr(self.view, "set_authoring_controls_enabled", None)
+        if callable(setter):
+            setter(
+                self._authoring_ready,
+                "" if self._authoring_ready else "Authoring coordinator is unavailable",
+                "" if self._authoring_ready else "authoring_unavailable",
+            )
+        topology_setter = getattr(self.view, "set_topology_repair_state", None)
+        if callable(topology_setter):
+            diagnostic = "; ".join(
+                f"{item.code}: {item.detail}"
+                for item in snapshot.topology_inspection.diagnostics
+            )
+            topology_setter(diagnostic, snapshot.topology_inspection.repairable)
+
+    def _root_alias_matches_projection(self, root, projected_root):
+        """Accept one unique long-name spelling without weakening stale-root checks."""
+
+        try:
+            matches = self.maya_adapter.ls(root, long=True) or ()
+        except Exception:
+            return False
+        return (
+            not isinstance(matches, (str, bytes, bytearray))
+            and tuple(matches) == (projected_root,)
+        )
+
+    def _merge_runtime_only_morphs(self, projections):
+        """Publish bare blendShape aliases without inventing semantic metadata."""
+
+        for projected in projections:
+            key = projected.raw_pmx_name
+            while key in self.morph_data:
+                key += "#"
+            self.morph_data[key] = {
+                "name_jp": projected.raw_pmx_name,
+                "name_en": "",
+                "panel": 4,
+                "type": 1,
+                "index": projected.global_morph_index,
+                "offsets": [],
+                "mmd_morph_type": "vertex",
+                "_pmx_type_raw": True,
+                "semantic_registered": False,
+                "runtime_projection_index": projected.global_morph_index,
+            }
+
     def _inspect_morph_topology(self, root):
         """Project topology diagnostics without repairing during load."""
         inspect = getattr(self.authoring_coordinator, "inspect_morph_topology", None)
         setter = getattr(self.view, "set_topology_repair_state", None)
         if not callable(inspect):
-            if not self._morph_controller:
-                return
-            try:
-                self._controller_topology = dict(
-                    parse_group_topology(
-                        self.maya_adapter.get_attr(
-                            f"{self._morph_controller}.topologyVersion"
-                        ),
-                        self.maya_adapter.get_attr(
-                            f"{self._morph_controller}.groupTopology"
-                        ),
-                    )
-                )
-            except (MorphTopologyError, RuntimeError, ValueError) as exc:
-                self._controller_topology = {}
-                if callable(setter):
-                    setter(f"malformed: {exc}", False)
+            self._controller_topology = {}
+            if callable(setter):
+                setter("malformed: topology inspection is unavailable", False)
             return
         try:
             result = inspect(root)
@@ -407,26 +564,6 @@ class MorphPresenter:
         except Exception as exc:
             logger.error("Failed to repair morph topology: %s", exc, exc_info=True)
             self._inspect_morph_topology(root)
-
-    def _read_authoring_spec(self, root):
-        if not self._authoring_available:
-            return
-        try:
-            spec = self.authoring_coordinator.read_spec(root)
-            self._authoring_spec = spec
-            self._authoring_morphs_by_index = {morph.index: morph for morph in spec.morphs}
-            self._authoring_ready = True
-            setter = getattr(self.view, "set_authoring_controls_enabled", None)
-            if callable(setter):
-                setter(True, "", "")
-        except Exception as exc:
-            logger.error("Failed to read morph authoring spec: %s", exc, exc_info=True)
-            self._authoring_spec = None
-            self._authoring_morphs_by_index = {}
-            self._authoring_ready = False
-            setter = getattr(self.view, "set_authoring_controls_enabled", None)
-            if callable(setter):
-                setter(False, f"Authoring metadata unavailable: {exc}", "authoring_unavailable")
 
     def _merge_authoring_morphs(self):
         """Overlay immutable semantic names/types/offsets by global PMX index."""
@@ -462,481 +599,17 @@ class MorphPresenter:
                 }
             )
             if morph.binding_identity:
+                data["binding_identity"] = morph.binding_identity
                 data.setdefault("morph_node", morph.binding_identity)
 
-    def _load_mmd_morphs(self, model_root):
-        """MMDモーフデータをロード"""
-        # MMDモーフアトリビュートを検索
-        morph_data_json = self._get_attr_safe(model_root, "mmdMorphData", "")
-        if morph_data_json:
-            try:
-                parsed = json.loads(morph_data_json)
-                if isinstance(parsed, dict):
-                    self.morph_data = parsed
-                elif isinstance(parsed, list):
-                    self.morph_data = self._index_morph_metadata(parsed)
-                else:
-                    logger.warning("Ignoring unsupported mmdMorphData schema: %s", type(parsed).__name__)
-            except Exception as e:
-                logger.error(f"Failed to parse MMD morph data: {e}", exc_info=True)
-
-    def _load_blend_shapes(self, model_root, allow_metadata_entries=True):
-        """ブレンドシェイプを検索"""
-        shapes = self.maya_adapter.list_relatives(model_root, allDescendents=True, type="mesh") or []
-        if not shapes:
-            return
-
-        # 全てのブレンドシェイプノードを収集
-        for shape in shapes:
-            history = self.maya_adapter.list_history(shape) or []
-            blend_shape_nodes = self.maya_adapter.ls(history, type="blendShape") or []
-
-            for bs_node in blend_shape_nodes:
-                # 最初のブレンドシェイプノードをデフォルトとして保存
-                if not self.blend_shape_node:
-                    self.blend_shape_node = bs_node
-
-                raw_names = self._load_blend_shape_morph_name_mapping(bs_node)
-
-                # ブレンドシェイプターゲットを取得
-                aliases = self.maya_adapter.alias_attr(bs_node, query=True) or []
-                for i in range(0, len(aliases), 2):
-                    target_name = aliases[i]
-                    target_attr = aliases[i + 1] if i + 1 < len(aliases) else ""
-                    weight_index = self._parse_weight_index(target_attr)
-                    entry = raw_names.get(weight_index)
-                    raw_name = entry["name"] if entry is not None else target_name
-                    global_index = entry.get("index") if entry is not None else None
-                    if not raw_name:
-                        continue
-                    morph_key = self._resolve_blendshape_metadata_key(
-                        raw_name, global_index=global_index, weight_index=weight_index
-                    )
-                    if morph_key is None:
-                        morph_key = raw_name if raw_name in self.morph_data else target_name
-
-                    # MMDデータと照合、なければ新規作成
-                    if morph_key not in self.morph_data:
-                        if not allow_metadata_entries:
-                            continue
-                        morph_key = raw_name
-                        # No inventing panel=0 (System). Unknown BS morphs default to Other.
-                        panel = _DEFAULT_USER_PANEL
-                        self.morph_data[morph_key] = {
-                            "name_jp": raw_name,
-                            "name_en": "",
-                            "panel": panel,
-                            "type": 0,  # 頂点モーフ
-                            "index": global_index if global_index is not None else (
-                                weight_index if weight_index is not None else -1
-                            ),
-                        }
-                    else:
-                        # Multi-mesh / multi-alias merge: keep first panel/type/index.
-                        data = self.morph_data[morph_key]
-                        if data.get("index") is None or data.get("index") == -1:
-                            if weight_index is not None:
-                                data["index"] = weight_index
-
-                    # ブレンドシェイプ情報を追加
-                    self._add_blend_shape_target(self.morph_data[morph_key], bs_node, target_name, target_attr)
-
-    @staticmethod
-    def _index_morph_metadata(entries):
-        """Convert lossless list metadata to the presenter's unique-key mapping."""
-        result = {}
-        for position, entry in enumerate(entries):
-            if not isinstance(entry, dict):
-                continue
-            data = dict(entry)
-            data["_pmx_type_raw"] = True
-            index = data.get("index", position)
-            raw_name = str(data.get("name_jp", "") or "")
-            key = raw_name
-            if not key or key in result:
-                key = f"{raw_name or '<unnamed>'} [{index}]"
-                suffix = 2
-                while key in result:
-                    key = f"{raw_name or '<unnamed>'} [{index}]#{suffix}"
-                    suffix += 1
-            result[key] = data
-        return result
-
-    def _resolve_blendshape_metadata_key(self, raw_name, *, global_index=None, weight_index=None):
-        """Resolve by PMX global index, with deterministic legacy-name fallback."""
-        if global_index is not None:
-            for key, data in self.morph_data.items():
-                if data.get("_pmx_type_raw") and int(data.get("index", -1)) == int(global_index):
-                    return key
-
-        binding_key = (str(raw_name), weight_index)
-        if binding_key in self._blendshape_metadata_bindings:
-            return self._blendshape_metadata_bindings[binding_key]
-
-        candidates = [
-            (key, data)
-            for key, data in self.morph_data.items()
-            if str(data.get("name_jp", "") or "") == str(raw_name)
-            and int(data.get("type", 1)) == 1
-        ]
-        candidates.sort(key=lambda item: int(item[1].get("index", -1)))
-        already_bound = set(self._blendshape_metadata_bindings.values())
-        selected = next((key for key, _data in candidates if key not in already_bound), None)
-        if selected is None and candidates:
-            selected = candidates[0][0]
-        if selected is not None:
-            self._blendshape_metadata_bindings[binding_key] = selected
-        return selected
-
-    def _load_blend_shape_morph_name_mapping(self, blend_shape_node):
-        """Read weight index -> raw name/global PMX index metadata."""
-        raw_json = self._get_attr_safe(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, "")
-        if not raw_json:
-            return {}
-
-        try:
-            parsed = json.loads(raw_json)
-        except (TypeError, ValueError) as e:
-            logger.debug(f"Failed to parse blendShape morph name mapping: {blend_shape_node}: {e}")
-            return {}
-
-        return parse_blendshape_morph_entries(parsed)
-
-    def _load_network_morphs(self, model_root=None, allow_metadata_entries=True):
-        """bone/material/group morph の network node metadata を一覧用に読む。"""
-        registry_members = self._registry_morph_members(model_root)
-        network_nodes = (
-            registry_members
-            if registry_members is not None
-            else self.maya_adapter.ls(type="network") or []
-        )
-        for morph_node in network_nodes:
-            if not self.maya_adapter.attribute_exists("mmd_morph_type", morph_node):
-                continue
-
-            # model root が指定され、ノードに mmd_model_root 接続がある場合はスコープチェック
-            if model_root and registry_members is None and self.maya_adapter.attribute_exists(
-                "mmd_model_root", morph_node
-            ):
-                connected_roots = self.maya_adapter.list_connections(
-                    f"{morph_node}.mmd_model_root"
-                ) or []
-                if not any(
-                    same_node_identity(self.maya_adapter, model_root, connected_root)
-                    for connected_root in connected_roots
-                ):
-                    continue
-
-            morph_type = self._get_attr_safe(morph_node, "mmd_morph_type", "")
-            if morph_type not in _NETWORK_MORPH_TYPES:
-                continue
-
-            raw_name = self._get_attr_safe(morph_node, "mmd_morph_name", "") or morph_node
-            morph_key = raw_name if raw_name in self.morph_data else morph_node
-            panel = self._read_network_panel(morph_node)
-            morph_index = self._read_network_index(morph_node)
-            if morph_key not in self.morph_data:
-                if not allow_metadata_entries:
-                    continue
-                morph_key = raw_name
-                self.morph_data[morph_key] = {
-                    "name_jp": raw_name,
-                    "name_en": self._get_attr_safe(morph_node, "mmd_morph_name_en", ""),
-                    "panel": panel,
-                    "type": _NETWORK_MORPH_TYPE_INDEX.get(morph_type, 0),
-                    "index": morph_index,
-                }
-
-            data = self.morph_data[morph_key]
-            # Multi-target / namespace merge: keep first deterministic panel/type/index.
-            if data.get("panel") is None:
-                data["panel"] = panel
-            if data.get("index") is None or data.get("index") == -1:
-                if morph_index is not None and morph_index >= 0:
-                    data["index"] = morph_index
-            english_name = self._get_attr_safe(morph_node, "mmd_morph_name_en", "")
-            if english_name and not data.get("name_en"):
-                data["name_en"] = english_name
-            data["morph_node"] = morph_node
-            data["morph_weight_attr"] = "weight"
-            data["mmd_morph_type"] = morph_type
-            if morph_type == "group":
-                data["group_morph_offsets"] = self._read_group_morph_offsets(morph_node)
-
-    def _registry_morph_members(self, model_root):
-        """Return registry morph members, or None for an old scene fallback."""
-        return list_model_registry_members_from_adapter(
-            self.maya_adapter,
-            model_root,
-            REGISTRY_CATEGORY_MORPH,
-        )
-
-    def _read_group_morph_offsets(self, morph_node):
-        """Read group references fail-closed for capability decisions."""
-        offsets = parse_morph_offsets_json(
-            morph_node,
-            "mmd_group_morph_offsets_json",
-            get_attr=lambda plug: self.maya_adapter.get_attr(plug),
-        )
-        return offsets or []
-
-    def _raw_pmx_type(self, data):
-        try:
-            stored_type = int(data.get("type", 0))
-        except (TypeError, ValueError):
-            return None
-        return stored_type if data.get("_pmx_type_raw") else UI_INDEX_TO_PMX_TYPE.get(stored_type)
-
-    def _cache_morph_capabilities(self):
-        """Evaluate graph-dependent capabilities once for the loaded model."""
-        self._morph_capability_cache.clear()
-        self._morphs_by_index = {}
-        for data in self.morph_data.values():
-            try:
-                index = int(data.get("index", -1))
-            except (TypeError, ValueError):
-                continue
-            if index >= 0:
-                self._morphs_by_index[index] = data
-
-        # Material graph traversal must finish before group references consume it.
-        ordered = sorted(
-            self.morph_data.values(),
-            key=lambda data: self._raw_pmx_type(data) == 0,
-        )
-        for data in ordered:
-            self._morph_capability_cache[id(data)] = self._evaluate_morph_controls_supported(data)
-
     def _morph_controls_supported(self, data):
-        """Return whether changing this morph's weight drives supported runtime output."""
-        cached = self._morph_capability_cache.get(id(data))
-        if cached is not None:
-            return cached
-        return self._evaluate_morph_controls_supported(data)
-
-    def _output_weight_connections(self, index):
-        """Return destinations for one generated controller element fail-soft."""
-
-        if not self._morph_controller or index < 0:
-            return []
-        plug = f"{self._morph_controller}.outputWeight[{index}]"
-        try:
-            if not self.maya_adapter.object_exists(plug):
-                return []
-            return self.maya_adapter.list_connections(
-                plug,
-                source=False,
-                destination=True,
-            ) or []
-        except Exception:
-            # Sparse multi elements can be absent on old or partially built
-            # controllers.  Capability discovery treats them as unsupported.
-            return []
-
-    def _evaluate_morph_controls_supported(self, data):
-        """Compute capability; callers should normally use the cached wrapper."""
-        raw_type = self._raw_pmx_type(data)
-        if raw_type == 8:
-            try:
-                index = int(data.get("index", -1))
-            except (TypeError, ValueError):
-                index = -1
-            if self._output_weight_connections(index):
-                return True
-            morph_node = data.get("morph_node")
-            return bool(morph_node and self.maya_adapter.object_exists(morph_node))
-        if raw_type != 0:
-            return _DIRECT_RUNTIME_MORPH_CAPABILITIES.get(raw_type, False)
-
-        if self._morph_controller:
-            try:
-                source_index = int(data.get("index", -1))
-            except (TypeError, ValueError):
-                return False
-            for target, sources in self._controller_topology.items():
-                if not any(int(group) == source_index for group, _rate in sources):
-                    continue
-                if self._output_weight_connections(int(target)):
-                    return True
-            return False
-
-        by_index = self._morphs_by_index
-        if not by_index:
-            by_index = {
-                int(candidate.get("index", -1)): candidate
-                for candidate in self.morph_data.values()
-                if str(candidate.get("index", -1)).lstrip("-").isdigit()
-                and int(candidate.get("index", -1)) >= 0
-            }
-        for offset in data.get("group_morph_offsets", []):
-            if not isinstance(offset, dict):
-                continue
-            try:
-                referenced = by_index.get(int(offset.get("morph_index", -1)))
-                rate = float(offset.get("morph_rate", 0.0))
-            except (TypeError, ValueError):
-                continue
-            if referenced is None or rate == 0.0:
-                continue
-            referenced_type = self._raw_pmx_type(referenced)
-            if referenced_type == 2 and referenced.get("morph_node"):
-                return True
-            if referenced_type == 8 and self._morph_controls_supported(referenced):
-                return True
-        return False
-
-    def _add_blend_shape_target(self, data, blend_shape_node, target_name, target_attr):
-        """Morph data に blendShape target 接続情報を追加する。"""
-        target = target_name or target_attr
-        if not target:
-            return
-
-        targets = data.setdefault("blend_shape_targets", [])
-        target_info = {"node": blend_shape_node, "target": target, "weight_attr": target_attr or target}
-        if target_info not in targets:
-            targets.append(target_info)
-
-        # 既存 UI/保存ロジックとの互換用に先頭 target を従来フィールドへも保持する。
-        data.setdefault("blend_shape_node", blend_shape_node)
-        data.setdefault("blend_shape_target", target)
-        data.setdefault("blend_shape_weight_attr", target_attr or target)
-
-    def _parse_weight_index(self, weight_attr):
-        """aliasAttr の weight[0]/w[0] 形式から index を取得する。"""
-        if not weight_attr:
-            return None
-        match = _WEIGHT_INDEX_RE.search(str(weight_attr))
-        if not match:
-            return None
-        return int(match.group(1))
-
-    def _iter_blend_shape_targets(self, data):
-        """Morph data に保存された blendShape target を順に返す。"""
-        targets = data.get("blend_shape_targets") or []
-        for target_info in targets:
-            node = target_info.get("node")
-            target = target_info.get("target")
-            if node and target:
-                yield node, target
-
-        if targets:
-            return
-
-        node = data.get("blend_shape_node")
-        target = data.get("blend_shape_target")
-        if node and target:
-            yield node, target
-
-    def _canonical_weight_attr(self, blend_shape_node, target, stored_weight_attr=None):
-        """Return canonical ``weight[n]`` for a target alias or stored plug."""
-        target_weight_index = self._parse_weight_index(target)
-        if target_weight_index is not None:
-            return f"weight[{target_weight_index}]"
-
-        aliases = self.maya_adapter.alias_attr(blend_shape_node, query=True) or []
-        for index in range(0, len(aliases), 2):
-            alias = aliases[index]
-            alias_attr = aliases[index + 1] if index + 1 < len(aliases) else ""
-            if alias != target:
-                continue
-            weight_index = self._parse_weight_index(alias_attr)
-            if weight_index is not None:
-                return f"weight[{weight_index}]"
-
-        # A stored index is only a cache. If the alias no longer resolves, using
-        # it could silently drive a different morph after scene edits.
-        return None
-
-    def _iter_blend_shape_weight_plugs(self, data, morph_name):
-        """Yield validated canonical blendShape weight plugs for one morph."""
-        targets = data.get("blend_shape_targets") or []
-        if targets:
-            entries = (
-                (
-                    target_info.get("node"),
-                    target_info.get("target"),
-                    target_info.get("weight_attr"),
-                )
-                for target_info in targets
-            )
-        else:
-            entries = (
-                (
-                    data.get("blend_shape_node"),
-                    data.get("blend_shape_target"),
-                    data.get("blend_shape_weight_attr"),
-                ),
-            )
-
-        for blend_shape_node, target, stored_weight_attr in entries:
-            if not blend_shape_node or not target or not self.maya_adapter.object_exists(blend_shape_node):
-                continue
-            weight_attr = self._canonical_weight_attr(
-                blend_shape_node,
-                target,
-                stored_weight_attr,
-            )
-            unresolved_plug = stored_weight_attr or target
-            if weight_attr is None:
-                logger.warning(
-                    "Skipping stale blendShape morph mapping: morph=%s node=%s plug=%s",
-                    morph_name,
-                    blend_shape_node,
-                    unresolved_plug,
-                )
-                continue
-            plug = f"{blend_shape_node}.{weight_attr}"
-            if not self.maya_adapter.object_exists(plug):
-                logger.warning(
-                    "Skipping missing blendShape weight plug: morph=%s node=%s plug=%s",
-                    morph_name,
-                    blend_shape_node,
-                    plug,
-                )
-                continue
-            yield plug
-
-    def _iter_network_morph_weight_plugs(self, data, morph_name):
-        """Yield scoped network morph weight plugs (bone/material/group)."""
-        morph_node = data.get("morph_node")
-        weight_attr = data.get("morph_weight_attr") or "weight"
-        if not morph_node or not weight_attr:
-            return
-        if not self.maya_adapter.object_exists(morph_node):
-            logger.warning(
-                "Skipping missing network morph node: morph=%s node=%s",
-                morph_name,
-                morph_node,
-            )
-            return
-        plug = f"{morph_node}.{weight_attr}"
-        yield plug
+        """Return the immutable capability projected for this refresh."""
+        return bool(self._morph_capability_cache.get(id(data), False))
 
     def _iter_morph_weight_plugs(self, data, morph_name):
-        """Yield deduplicated writable morph weight plugs for one morph.
-
-        Canonical blendShape ``weight[n]`` plugs come first, then the scoped
-        network ``morph_node.weight`` used by bone/material/group morphs.
-        """
-        try:
-            morph_index = int(data.get("index", -1))
-        except (TypeError, ValueError):
-            morph_index = -1
-        if self._morph_controller and morph_index >= 0:
-            yield f"{self._morph_controller}.inputWeight[{morph_index}]"
-            return
-
-        seen = set()
-        for plug in self._iter_blend_shape_weight_plugs(data, morph_name):
-            if plug in seen:
-                continue
-            seen.add(plug)
-            yield plug
-        for plug in self._iter_network_morph_weight_plugs(data, morph_name):
-            if plug in seen:
-                continue
-            seen.add(plug)
-            yield plug
+        """Yield fixed canonical targets from the current projection only."""
+        del morph_name
+        yield from tuple(data.get("runtime_targets") or ())
 
     def _get_first_weight(self, data, morph_name="<unknown>", default=0.0):
         """UI 表示用に最初に見つかった morph weight を取得する。"""
@@ -1054,13 +727,7 @@ class MorphPresenter:
         self._update_work_material_policy(semantic)
 
         # 現在の適用率
-        blend_shape_node = data.get("blend_shape_node")
-        if blend_shape_node and self.maya_adapter.object_exists(blend_shape_node):
-            weight = self._get_first_weight(data, morph_name)
-            self.view.morph_slider.setValue(int(weight * 100))
-            self.view.morph_value_label.setText(f"{int(weight * 100)}%")
-            self._last_morph_preview_value = int(weight * 100)
-        elif data.get("morph_node") and self.maya_adapter.object_exists(data["morph_node"]):
+        if data.get("runtime_targets"):
             weight = self._get_first_weight(data, morph_name)
             self.view.morph_slider.setValue(int(weight * 100))
             self.view.morph_value_label.setText(f"{int(weight * 100)}%")
@@ -1125,12 +792,12 @@ class MorphPresenter:
         try:
             if self._morph_preview_dragging:
                 if self._morph_preview_session is not None:
-                    self.authoring_coordinator.update_morph_preview(
+                    self._preview_coordinator.update_morph_preview(
                         self._morph_preview_session, weight
                     )
                 return
             targets = self._preview_targets_for_morph(self.current_morph)
-            self.authoring_coordinator.set_morph_preview(
+            self._preview_coordinator.set_morph_preview(
                 self._loaded_model_root, targets, weight
             )
             self._last_morph_preview_value = int(value)
@@ -1149,7 +816,7 @@ class MorphPresenter:
         self._morph_preview_ui_preimage = self._last_morph_preview_value
         try:
             targets = self._preview_targets_for_morph(self.current_morph)
-            self._morph_preview_session = self.authoring_coordinator.begin_morph_preview(
+            self._morph_preview_session = self._preview_coordinator.begin_morph_preview(
                 self._loaded_model_root, targets
             )
         except Exception as exc:
@@ -1165,7 +832,7 @@ class MorphPresenter:
         if session is None:
             return
         try:
-            self.authoring_coordinator.commit_morph_preview(session)
+            self._preview_coordinator.commit_morph_preview(session)
             self._last_morph_preview_value = self._slider_value()
         except Exception as exc:
             self._restore_morph_preview_ui()
@@ -1178,7 +845,7 @@ class MorphPresenter:
         if session is None:
             return
         try:
-            self.authoring_coordinator.rollback_morph_preview(session)
+            self._preview_coordinator.rollback_morph_preview(session)
             self._restore_morph_preview_ui()
         except Exception as exc:
             logger.error("Morph preview rollback failed: %s", exc, exc_info=True)
@@ -1199,50 +866,17 @@ class MorphPresenter:
 
     def _preview_targets_for_morph(self, morph_name):
         """Resolve one cached morph to canonical writer targets once per action."""
-        if self.authoring_coordinator is None or not self._loaded_model_root:
+        if self._preview_coordinator is None or not self._loaded_model_root:
             raise RuntimeError("Morph preview coordinator is unavailable")
         data = self.morph_data[morph_name]
-        try:
-            morph_index = int(data.get("index", -1))
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError("Morph preview index is invalid") from exc
-        if self._morph_controller and morph_index >= 0:
-            return (f"{self._morph_controller}.inputWeight[{morph_index}]",)
-
-        targets = data.get("blend_shape_targets") or []
-        if not targets and data.get("blend_shape_node"):
-            targets = (
-                {
-                    "node": data.get("blend_shape_node"),
-                    "weight_attr": data.get("blend_shape_weight_attr"),
-                },
-            )
-        if targets:
-            destinations = []
-            for item in targets:
-                node = item.get("node")
-                attr = item.get("weight_attr")
-                if not node or not attr:
-                    raise RuntimeError("Legacy morph preview target is incomplete")
-                destinations.append(f"{node}.{attr}")
-            resolution = resolve_maya_morph_binding(
-                self.maya_adapter,
-                MorphBindingRequest(
-                    raw_pmx_name=str(data.get("name_jp") or morph_name),
-                    global_morph_index=morph_index,
-                    controller_identity=self._loaded_model_root,
-                    controller_slot=morph_index,
-                ),
-                destination_values=destinations,
-            )
-            return tuple(binding.weight_plug for binding in resolution.bindings)
-
-        node = data.get("morph_node")
-        attr = data.get("morph_weight_attr") or "weight"
-        names = self.maya_adapter.ls(node, long=True) if node else ()
-        if not names or len(names) != 1:
-            raise RuntimeError("Legacy network morph has no canonical identity")
-        return (f"{names[0]}.{attr}",)
+        targets = tuple(data.get("runtime_targets") or ())
+        if not targets and self._morph_controller:
+            index = data.get("index")
+            if isinstance(index, int) and index >= 0:
+                targets = (f"{self._morph_controller}.inputWeight[{index}]",)
+        if not targets:
+            raise RuntimeError("Morph projection has no canonical preview target")
+        return targets
 
     def filter_morphs(self, text):
         """検索テキストでモーフをフィルタ"""
@@ -1262,7 +896,7 @@ class MorphPresenter:
         self._rollback_active_morph_preview()
         try:
             targets = self._preview_targets_for_morph(self.current_morph)
-            self.authoring_coordinator.reset_morph_preview(
+            self._preview_coordinator.reset_morph_preview(
                 self._loaded_model_root, targets
             )
         except Exception as exc:
@@ -1287,7 +921,7 @@ class MorphPresenter:
                     for plug in self._preview_targets_for_morph(morph_name)
                 )
             )
-            reset_count = self.authoring_coordinator.reset_morph_preview(
+            reset_count = self._preview_coordinator.reset_morph_preview(
                 self._loaded_model_root, targets
             )
         except Exception as exc:
@@ -1407,7 +1041,7 @@ class MorphPresenter:
             (value for value, name in PMX_MORPH_TYPE_NAMES.items() if name == morph.morph_type),
             1,
         )
-        self.morph_data[key] = {
+        data = {
             "name_jp": morph.name,
             "name_en": morph.name_english,
             "panel": morph.panel,
@@ -1418,6 +1052,24 @@ class MorphPresenter:
             "morph_node": morph.binding_identity,
             "_pmx_type_raw": True,
         }
+        if self._morph_controller:
+            data["runtime_targets"] = (
+                f"{self._morph_controller}.inputWeight[{morph.index}]",
+            )
+        self.morph_data[key] = data
+        capability = bool(morph.binding_identity) and project_runtime_capabilities(
+            (
+                MorphProjectionRequest(
+                    morph.name,
+                    morph.index,
+                    morph.binding_identity,
+                    morph.morph_type,
+                ),
+            ),
+            {},
+            (),
+        )[0]
+        self._morph_capability_cache[id(data)] = capability
         self._authoring_morphs_by_index[morph.index] = morph
         if self._authoring_spec is not None:
             self._authoring_spec = replace(
@@ -1534,6 +1186,13 @@ class MorphPresenter:
             new_index,
             old_index,
         )
+        if self._morph_controller:
+            self.morph_data[first_key]["runtime_targets"] = (
+                f"{self._morph_controller}.inputWeight[{new_index}]",
+            )
+            self.morph_data[second_key]["runtime_targets"] = (
+                f"{self._morph_controller}.inputWeight[{old_index}]",
+            )
         self._update_morph_row_order(first_key, second_key)
 
         by_binding = {
@@ -1773,33 +1432,3 @@ class MorphPresenter:
         if self.current_morph:
             self.load_morph_details(self.current_morph)
             logger.info(f"Reset changes to morph '{self.current_morph}'")
-
-    def _read_network_panel(self, morph_node):
-        """Read ``mmd_morph_panel``; missing attr defaults to Other, not System."""
-        if not self.maya_adapter.attribute_exists("mmd_morph_panel", morph_node):
-            return _DEFAULT_USER_PANEL
-        panel = self._get_attr_safe(morph_node, "mmd_morph_panel", _DEFAULT_USER_PANEL)
-        try:
-            return int(panel)
-        except (TypeError, ValueError):
-            return _DEFAULT_USER_PANEL
-
-    def _read_network_index(self, morph_node):
-        """Read ``mmd_morph_index`` when present; otherwise ``-1``."""
-        if not self.maya_adapter.attribute_exists("mmd_morph_index", morph_node):
-            return -1
-        index = self._get_attr_safe(morph_node, "mmd_morph_index", -1)
-        try:
-            return int(index)
-        except (TypeError, ValueError):
-            return -1
-
-    def _get_attr_safe(self, node, attr, default=None):
-        """属性を安全に取得"""
-        try:
-            if self.maya_adapter.attribute_exists(attr, node):
-                value = self.maya_adapter.get_attr(f"{node}.{attr}")
-                return value if value is not None else default
-        except Exception as e:
-            logger.debug(f"Failed to get attribute {node}.{attr}: {e}")
-        return default

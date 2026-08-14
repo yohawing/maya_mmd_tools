@@ -24,6 +24,10 @@ from mmd_tools.core.morph_topology import (
     MorphTopologyDiagnostic,
     MorphTopologyInspection,
 )
+from mmd_tools.core.morph_read_projection import (
+    MorphAuthoringReadSnapshot,
+    MorphBlendShapeReadProjection,
+)
 
 
 def _spec() -> MmdModelAuthoringSpec:
@@ -56,6 +60,21 @@ class FakeBackend:
         self.info_value = "old"
         self.info_fail_update = False
         self.info_fail_rollback_pending = None
+        self.morph_snapshot = MorphAuthoringReadSnapshot(
+            spec=scene,
+            projection=MorphBlendShapeReadProjection(
+                root_identity="|root",
+                controller_identity="controller",
+                owned_mesh_identities=(),
+                owned_blend_shape_identities=(),
+                morphs=(),
+            ),
+            topology_inspection=MorphTopologyInspection({}, {}, ()),
+        )
+
+    def read_morph_authoring_snapshot(self, _root: str) -> MorphAuthoringReadSnapshot:
+        self.events.append("read:morph_snapshot")
+        return self.morph_snapshot
 
     def begin_info_metadata_edit(self, root: str, attr: str) -> Any:
         self.info_session = type(
@@ -645,6 +664,15 @@ def test_read_spec_rehydrates_a_strict_previous_module_generation() -> None:
 
     assert type(result) is MmdModelAuthoringSpec
     assert result.to_mapping() == current.to_mapping()
+
+
+def test_read_morph_authoring_snapshot_delegates_one_combined_generation() -> None:
+    coordinator, backend, _, _ = _coordinator()
+
+    result = coordinator.read_morph_authoring_snapshot("|root")
+
+    assert result is backend.morph_snapshot
+    assert backend.events == ["read:morph_snapshot"]
 
 
 def test_write_display_frames_uses_only_narrow_transaction() -> None:

@@ -28,6 +28,10 @@ from mmd_tools.adapters.maya_morph_binding_query import (
     MayaMorphBindingQueryError,
     resolve_maya_morph_binding,
 )
+from mmd_tools.adapters.maya_morph_read_projection import (
+    CachedMorphBindingQueryAdapter,
+    MayaMorphReadProjectionAdapter,
+)
 from mmd_tools.adapters.native_authoring_command import (
     NativeAuthoringCommandError,
     NativeAuthoringCommandGateway,
@@ -99,7 +103,12 @@ from mmd_tools.core.constants import (
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.morph_binding_resolver import (
     MorphBindingRequest,
+    MorphBindingResolution,
     MorphBindingResolutionError,
+)
+from mmd_tools.core.morph_read_projection import (
+    MorphAuthoringReadSnapshot,
+    MorphProjectionRequest,
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core.model_authoring_spec import (
@@ -147,6 +156,16 @@ class InfoMetadataSession:
     root: str
     attr: str
     token: object
+
+
+@dataclass
+class _MorphSnapshotReadContext:
+    """Refresh-local observations shared by semantic and projection reads."""
+
+    root: str
+    query: CachedMorphBindingQueryAdapter
+    controller: str | None
+    resolutions: dict[int, MorphBindingResolution]
 
 
 class MayaSceneMetadataBackend:
@@ -502,6 +521,7 @@ class MayaSceneMetadataBackend:
             == "native"
         )
         self._write_transaction: dict[str, Any] | None = None
+        self._morph_snapshot_read_context: _MorphSnapshotReadContext | None = None
 
     def read_model_metadata(self, root: str) -> Mapping[str, Any]:
         """Return the canonical model-header mapping for an existing root."""
@@ -512,6 +532,107 @@ class MayaSceneMetadataBackend:
             "comment": self._required_string(root, ATTR_MMD_COMMENT),
             "comment_english": self._required_string(root, ATTR_MMD_COMMENT_EN),
         }
+
+    def read_morph_authoring_snapshot(self, model_root: str) -> MorphAuthoringReadSnapshot:
+        """Read semantic Morph data and its runtime projection in one generation."""
+
+        if self._morph_snapshot_read_context is not None:
+            raise MayaSceneMetadataError("a morph authoring snapshot read is already active")
+        root = self._material_identity(model_root)
+        self._require_root(root)
+        context = _MorphSnapshotReadContext(
+            root=root,
+            query=CachedMorphBindingQueryAdapter(self._cmds),
+            controller=None,
+            resolutions={},
+        )
+        self._morph_snapshot_read_context = context
+        try:
+            spec = SceneMetadataAdapter(self).read_spec(root)
+            controller = self._snapshot_morph_controller(context, required=False)
+            if controller:
+                version = context.query.get_attr(f"{controller}.topologyVersion")
+                source = context.query.get_attr(f"{controller}.groupTopology")
+                inspection = inspect_group_topology(spec.morphs, version, source)
+            elif any(morph.morph_type in {"group", "flip"} for morph in spec.morphs):
+                inspection = inspect_group_topology(spec.morphs, None, None)
+            else:
+                inspection = MorphTopologyInspection({}, {}, ())
+            requests = tuple(
+                MorphProjectionRequest(
+                    raw_pmx_name=morph.name,
+                    global_morph_index=morph.index,
+                    binding_identity=self._required_snapshot_binding(morph.binding_identity),
+                    morph_type=morph.morph_type,
+                )
+                for morph in spec.morphs
+            )
+            projection = MayaMorphReadProjectionAdapter(
+                self._cmds
+            ).read_validated_spec_projection(
+                root,
+                requests,
+                controller,
+                context.resolutions,
+                inspection.stored if inspection.valid else {},
+                query_adapter=context.query,
+            )
+            return MorphAuthoringReadSnapshot(
+                spec=spec,
+                projection=projection,
+                topology_inspection=inspection,
+            )
+        except Exception as exc:
+            raise MayaSceneMetadataError(
+                f"failed to read morph authoring snapshot for {root!r}: {exc}"
+            ) from exc
+        finally:
+            self._morph_snapshot_read_context = None
+
+    @staticmethod
+    def _required_snapshot_binding(value: str | None) -> str:
+        if not isinstance(value, str) or not value:
+            raise MayaSceneMetadataError(
+                "morph authoring snapshot requires every semantic binding identity"
+            )
+        return value
+
+    def _snapshot_morph_controller(
+        self,
+        context: _MorphSnapshotReadContext,
+        *,
+        required: bool = True,
+    ) -> str:
+        if context is not self._morph_snapshot_read_context:
+            raise MayaSceneMetadataError("morph snapshot read context identity mismatch")
+        if context.controller is not None:
+            return context.controller
+        if not context.query.attribute_exists("mmd_morph_controller", context.root):
+            if required:
+                raise MayaSceneMetadataError(
+                    f"{context.root}.mmd_morph_controller is required"
+                )
+            return ""
+        controllers = context.query.list_connections(
+            f"{context.root}.mmd_morph_controller",
+            source=True,
+            destination=False,
+        ) or ()
+        if isinstance(controllers, (str, bytes, bytearray)):
+            raise MayaSceneMetadataError(
+                f"{context.root}.mmd_morph_controller must be a connection sequence"
+            )
+        if not controllers and not required:
+            return ""
+        if len(controllers) != 1:
+            raise MayaSceneMetadataError(
+                f"{context.root}.mmd_morph_controller must have exactly one controller"
+            )
+        names = context.query.ls(controllers[0], long=True) or ()
+        if isinstance(names, (str, bytes, bytearray)) or len(names) != 1:
+            raise MayaSceneMetadataError("morph controller has no unique canonical identity")
+        context.controller = names[0]
+        return context.controller
 
     def read_bone_value(
         self,
@@ -1515,7 +1636,7 @@ class MayaSceneMetadataBackend:
                     except Exception:
                         transaction["mutated"] = True
                         break
-                    if actual != original:
+                    if not self._preview_weights_equal(actual, original):
                         transaction["mutated"] = True
                         break
                 raise
@@ -1524,7 +1645,7 @@ class MayaSceneMetadataBackend:
                 self._call_adapter("set_attr", plug, value)
                 transaction["mutated"] = True
                 actual = self._preview_weight(self._call_adapter("get_attr", plug), plug)
-                if actual != value:
+                if not self._preview_weights_equal(actual, value):
                     raise MayaSceneMetadataError(
                         f"morph preview readback mismatch for {plug!r}: expected {value!r}, got {actual!r}"
                     )
@@ -1536,7 +1657,7 @@ class MayaSceneMetadataBackend:
         transaction = self._active_morph_preview(model_root, session)
         for plug, expected in transaction["target_values"].items():
             actual = self._preview_weight(self._call_adapter("get_attr", plug), plug)
-            if actual != expected:
+            if not self._preview_weights_equal(actual, expected):
                 raise MayaSceneMetadataError(
                     f"morph preview commit readback mismatch for {plug!r}"
                 )
@@ -1558,7 +1679,7 @@ class MayaSceneMetadataBackend:
             self._write_transaction = None
         for plug, expected in transaction["original_values"].items():
             actual = self._preview_weight(self._call_adapter("get_attr", plug), plug)
-            if actual != expected:
+            if not self._preview_weights_equal(actual, expected):
                 raise MayaSceneMetadataError(
                     f"morph preview rollback preimage mismatch for {plug!r}"
                 )
@@ -1600,6 +1721,11 @@ class MayaSceneMetadataBackend:
         if not math.isfinite(result):
             raise MayaSceneMetadataError(f"morph preview weight must be finite for {plug!r}")
         return result
+
+    @staticmethod
+    def _preview_weights_equal(actual: float, expected: float) -> bool:
+        """Accept only the bounded round-trip error of Maya float attributes."""
+        return math.isclose(actual, expected, rel_tol=1e-7, abs_tol=1e-7)
 
     def commit_morph_value_patch(
         self,
@@ -2693,16 +2819,27 @@ class MayaSceneMetadataBackend:
         are the sole source of truth.  Any missing or ambiguous ownership or
         source-index mapping fails closed before a spec is published.
         """
-        controllers = tuple(
-            self._list_connections(
-                f"{root}.mmd_morph_controller", source=True, destination=False
+        context = self._morph_snapshot_read_context
+        if context is not None:
+            canonical_root = root if root == context.root else self._material_identity(root)
+            if canonical_root != context.root:
+                raise MayaSceneMetadataError(
+                    "morph snapshot read attempted to cross model-root identity"
+                )
+            controller = self._snapshot_morph_controller(context)
+            query_adapter = context.query
+        else:
+            controllers = tuple(
+                self._list_connections(
+                    f"{root}.mmd_morph_controller", source=True, destination=False
+                )
             )
-        )
-        if len(controllers) != 1:
-            raise MayaSceneMetadataError(
-                f"{root}.mmd_morph_controller must have exactly one controller for vertex morphs"
-            )
-        controller = self._material_identity(controllers[0])
+            if len(controllers) != 1:
+                raise MayaSceneMetadataError(
+                    f"{root}.mmd_morph_controller must have exactly one controller for vertex morphs"
+                )
+            controller = self._material_identity(controllers[0])
+            query_adapter = self._cmds
         request = MorphBindingRequest(
             raw_pmx_name=raw_name,
             global_morph_index=morph_index,
@@ -2710,13 +2847,20 @@ class MayaSceneMetadataBackend:
             controller_slot=morph_index,
         )
         try:
-            resolution = resolve_maya_morph_binding(self._cmds, request)
+            resolution = resolve_maya_morph_binding(query_adapter, request)
         except (MayaMorphBindingQueryError, MorphBindingResolutionError) as exc:
             raise MayaSceneMetadataError(
                 f"vertex morph {binding!r} binding resolution failed: {exc}"
             ) from exc
         for warning in resolution.warnings:
             logger.warning("[%s] %s", warning.code, warning.message)
+        if context is not None:
+            previous = context.resolutions.get(morph_index)
+            if previous is not None and previous != resolution:
+                raise MayaSceneMetadataError(
+                    f"morph snapshot captured conflicting resolution for index {morph_index}"
+                )
+            context.resolutions[morph_index] = resolution
 
         scale = self._required_number(root, ATTR_MMD_IMPORT_SCALE)
         if scale <= 0.0:
