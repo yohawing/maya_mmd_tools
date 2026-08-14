@@ -5,17 +5,20 @@ MorphTab の GUI テスト
 
 import json
 import unittest
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from maya import cmds
 
 from tests.common.gui_test_base import GuiTestBase, requires_gui
+from tests.common.maya_plugin_setup import load_mmd_tools_plugin
 from tests.common.ui_action_coverage import (
     ActionInvocationSpy,
     QtSignalInvocationSpy,
     build_surface_witness,
 )
 from mmd_tools.ui.application_state import ApplicationState
+from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.adapters import MayaCmdsAdapter
 from mmd_tools.adapters.maya_morph_authoring_snapshot_provider import (
     MayaMorphAuthoringSnapshotProvider,
@@ -24,11 +27,14 @@ from mmd_tools.ui.presenters.morph_presenter import MorphPresenter
 from mmd_tools.ui.qt_compat import QApplication, QT_BINDING, Qt
 from mmd_tools.ui.tabs.morph_tab import MorphTab
 from mmd_tools.core.morph_topology import MorphTopologyInspection
+from mmd_tools.core.model_authoring_spec import MmdMorphSpec
 
 if QT_BINDING == "PySide6":
     from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QStyle, QStyleOptionSlider
 else:
     from PySide2.QtTest import QTest
+    from PySide2.QtWidgets import QStyle, QStyleOptionSlider
 
 
 def _emit_witness(surface_id, locator_key, locator, interaction, oracle, action_spy, control):
@@ -340,6 +346,149 @@ class TestMorphTabGUI(GuiTestBase):
         finally:
             presenter = None
             tab.deleteLater()
+            QApplication.processEvents()
+            cmds.file(new=True, force=True)
+
+    def test_pending_preview_model_switch_isolates_runtime_projection_and_undo(self):
+        """A pending preview cannot route B's reset or survive a model swap."""
+        cmds.file(new=True, force=True)
+        load_mmd_tools_plugin(Path(__file__).resolve().parents[2], cmds_module=cmds)
+        window = MainWindow()
+        try:
+            composition = window.authoring_composition
+            self.assertIsNotNone(composition)
+            coordinator = composition.coordinator
+            root_a = composition.model_initializer.create(
+                "pmx20-basic-v1", "Morph Isolation A", "Morph Isolation A"
+            ).root
+            root_b = composition.model_initializer.create(
+                "pmx20-basic-v1", "Morph Isolation B", "Morph Isolation B"
+            ).root
+            for index, shape in enumerate(
+                cmds.listRelatives(
+                    root_b,
+                    allDescendents=True,
+                    type="mesh",
+                    fullPath=True,
+                )
+                or ()
+            ):
+                cmds.rename(shape, "morphIsolationBShape{}".format(index))
+            coordinator.create_morph(
+                root_a,
+                MmdMorphSpec("Isolation A Morph", name_english="A Original", morph_type="bone"),
+            )
+            coordinator.create_morph(
+                root_b,
+                MmdMorphSpec("Isolation B Morph", name_english="B Original", morph_type="bone"),
+            )
+
+            presenter = window.morph_presenter
+            view = presenter.view
+            window.show()
+            window.tab_widget.setCurrentWidget(view)
+            window.app_state.refresh_model_list()
+            available = window.app_state.available_models
+            self.assertIn(root_a, available)
+            self.assertIn(root_b, available)
+
+            def select_model(root):
+                cmds.select(root, replace=True)
+                self.assertTrue(window.app_state.select_model_from_maya_selection())
+                QApplication.processEvents()
+                self.assertEqual(window.app_state.current_model_root, root)
+                self.assertEqual(presenter._loaded_model_root, root)
+
+            def select_only_morph(root):
+                spec = coordinator.read_spec(root)
+                self.assertEqual(len(spec.morphs), 1)
+                morph = spec.morphs[0]
+                self.assertEqual(view.morph_list.count(), 1)
+                item = view.morph_list.item(0)
+                view.morph_list.setCurrentItem(item)
+                QApplication.processEvents()
+                key = item.data(Qt.UserRole)
+                data = presenter.morph_data[key]
+                self.assertEqual(data["binding_identity"], morph.binding_identity)
+                targets = tuple(data.get("runtime_targets") or ())
+                self.assertEqual(len(targets), 1)
+                self.assertTrue(cmds.objExists(targets[0]))
+                return morph, key, targets[0], presenter._authoring_spec, data
+
+            select_model(root_a)
+            morph_a, key_a, plug_a, spec_a, data_a = select_only_morph(root_a)
+            self.assertEqual(presenter.current_morph, key_a)
+            view.morph_name_en_edit.setText("A Pending Edit")
+            option = QStyleOptionSlider()
+            view.morph_slider.initStyleOption(option)
+            handle = view.morph_slider.style().subControlRect(
+                QStyle.CC_Slider,
+                option,
+                QStyle.SC_SliderHandle,
+                view.morph_slider,
+            )
+            QTest.mousePress(view.morph_slider, Qt.LeftButton, pos=handle.center())
+            view.morph_slider.setValue(40)
+            QApplication.processEvents()
+            self.assertIsNotNone(presenter._morph_preview_session)
+            self.assertAlmostEqual(cmds.getAttr(plug_a), 0.4, places=7)
+
+            select_model(root_b)
+            QTest.mouseRelease(view.morph_slider, Qt.LeftButton, pos=handle.center())
+            QApplication.processEvents()
+            morph_b, key_b, plug_b, spec_b, data_b = select_only_morph(root_b)
+            self.assertNotEqual(morph_b.binding_identity, morph_a.binding_identity)
+            self.assertNotEqual(plug_b, plug_a)
+            self.assertAlmostEqual(cmds.getAttr(plug_b), 0.0, places=7)
+            self.assertIsNot(spec_b, spec_a)
+            self.assertIsNot(data_b, data_a)
+            self.assertEqual(presenter.current_morph, key_b)
+            self.assertEqual(view.morph_name_en_edit.text(), "B Original")
+            self.assertAlmostEqual(cmds.getAttr(plug_a), 0.0, places=7)
+            self.assertIsNone(presenter._morph_preview_session)
+            self.assertEqual(
+                coordinator.read_spec(root_a).morphs[0].name_english,
+                "A Original",
+            )
+
+            cmds.setAttr(plug_b, 0.65)
+            view.morph_slider.blockSignals(True)
+            view.morph_slider.setValue(65)
+            view.morph_slider.blockSignals(False)
+            cmds.flushUndo()
+            with patch.object(
+                coordinator,
+                "reset_morph_preview",
+                wraps=coordinator.reset_morph_preview,
+            ) as reset_action:
+                QTest.mouseClick(view.reset_slider_btn, Qt.LeftButton)
+                QApplication.processEvents()
+                self.assertEqual(reset_action.call_count, 1)
+                self.assertEqual(reset_action.call_args.args, (root_b, (plug_b,)))
+            self.assertAlmostEqual(cmds.getAttr(plug_b), 0.0, places=7)
+            self.assertAlmostEqual(cmds.getAttr(plug_a), 0.0, places=7)
+            cmds.undo()
+            self.assertAlmostEqual(cmds.getAttr(plug_b), 0.65, places=7)
+            self.assertAlmostEqual(cmds.getAttr(plug_a), 0.0, places=7)
+            cmds.redo()
+            self.assertAlmostEqual(cmds.getAttr(plug_b), 0.0, places=7)
+            self.assertAlmostEqual(cmds.getAttr(plug_a), 0.0, places=7)
+
+            select_model(root_a)
+            morph_a_after, key_a_after, plug_a_after, spec_a_after, data_a_after = (
+                select_only_morph(root_a)
+            )
+            self.assertIsNot(spec_a_after, spec_b)
+            self.assertIsNot(data_a_after, data_b)
+            self.assertEqual(morph_a_after.binding_identity, morph_a.binding_identity)
+            self.assertEqual(key_a_after, key_a)
+            self.assertEqual(plug_a_after, plug_a)
+            self.assertEqual(view.morph_name_en_edit.text(), "A Original")
+            self.assertNotEqual(view.morph_name_en_edit.text(), "A Pending Edit")
+            self.assertAlmostEqual(cmds.getAttr(plug_a_after), 0.0, places=7)
+        finally:
+            window.close()
+            window.deleteLater()
             QApplication.processEvents()
             cmds.file(new=True, force=True)
 
