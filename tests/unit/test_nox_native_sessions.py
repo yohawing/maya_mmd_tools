@@ -290,6 +290,7 @@ class NativeSessionsTest(unittest.TestCase):
             "tools/maya_morph_binding_query_smoke.py",
             "tools/maya_morph_weight_command_smoke.py",
             "tools/maya_material_value_command_smoke.py",
+            "tools/maya_material_outline_command_smoke.py",
         ])
         self.assertTrue(all(kwargs["env"] is env for _args, kwargs in session.runs))
 

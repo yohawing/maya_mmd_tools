@@ -10,8 +10,14 @@ from typing import Any, Dict, Iterable, Mapping
 COMMAND_SET_ATTRS = "mmdAuthoringSetAttrs"
 COMMAND_SET_MORPH_WEIGHTS = "mmdAuthoringSetMorphWeights"
 COMMAND_SET_MATERIAL_VALUES = "mmdAuthoringSetMaterialValues"
+COMMAND_SET_MATERIAL_OUTLINE = "mmdAuthoringSetMaterialOutline"
 _ALLOWED_COMMANDS = frozenset(
-    (COMMAND_SET_ATTRS, COMMAND_SET_MORPH_WEIGHTS, COMMAND_SET_MATERIAL_VALUES)
+    (
+        COMMAND_SET_ATTRS,
+        COMMAND_SET_MORPH_WEIGHTS,
+        COMMAND_SET_MATERIAL_VALUES,
+        COMMAND_SET_MATERIAL_OUTLINE,
+    )
 )
 _PROTOCOL_VERSION = 1
 
@@ -187,5 +193,56 @@ class NativeAuthoringCommandGateway:
         ):
             raise NativeCommandProtocolError(
                 "Native material value command returned invalid canonical values"
+            )
+        return result
+
+    def set_material_outline(
+        self,
+        root: str,
+        shader: str,
+        material_index: int,
+        updates: Iterable[Mapping[str, Any]],
+        outline_preimage: Mapping[str, Any],
+        outline_target: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Apply one Python-expanded Material value plus DX11 outline patch."""
+        request_updates = [dict(update) for update in updates]
+        result = self.execute(
+            COMMAND_SET_MATERIAL_OUTLINE,
+            {
+                "root": root,
+                "shader": shader,
+                "material_index": material_index,
+                "updates": request_updates,
+                "outline_preimage": dict(outline_preimage),
+                "outline_target": dict(outline_target),
+            },
+        )
+        fields = result.get("fields")
+        plugs = result.get("plugs")
+        values = result.get("values")
+        expected_fields = [update.get("field") for update in request_updates] + list(
+            outline_target
+        )
+        expected_values = [update.get("value") for update in request_updates] + list(
+            outline_target.values()
+        )
+        if (
+            not isinstance(fields, list)
+            or fields != expected_fields
+            or len(set(fields)) != len(fields)
+            or not isinstance(plugs, list)
+            or len(plugs) != len(fields)
+            or len(set(plugs)) != len(plugs)
+            or not all(isinstance(plug, str) and plug for plug in plugs)
+            or not isinstance(values, list)
+            or len(values) != len(fields)
+            or not all(
+                _material_readback_matches(expected, actual)
+                for expected, actual in zip(expected_values, values)
+            )
+        ):
+            raise NativeCommandProtocolError(
+                "Native material outline command returned invalid canonical values"
             )
         return result

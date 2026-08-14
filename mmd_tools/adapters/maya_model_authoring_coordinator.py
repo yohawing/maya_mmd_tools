@@ -668,6 +668,19 @@ class MayaModelAuthoringCoordinator:
                         "native material value patch returned an invalid material"
                     )
                 return native_result
+        native_outline_patch = getattr(
+            self._materials, "try_apply_native_material_outline_patch", None
+        )
+        if outline_enabled is not None and callable(native_outline_patch):
+            native_result = native_outline_patch(
+                model_root, previous, material, outline_enabled
+            )
+            if native_result is not None:
+                if not isinstance(native_result, MmdMaterialSpec):
+                    raise MayaModelAuthoringCoordinatorError(
+                        "native material outline patch returned an invalid material"
+                    )
+                return native_result
         structural_patch = getattr(self._materials, "apply_material_value_patch", None)
         outline_patch = getattr(self._materials, "apply_material_outline", None)
         if not callable(structural_patch):

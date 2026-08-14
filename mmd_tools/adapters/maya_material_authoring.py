@@ -299,6 +299,90 @@ class MayaMaterialAuthoring:
             return None
         return new_material
 
+    def try_apply_native_material_outline_patch(
+        self,
+        model_root: str,
+        old_material: MmdMaterialSpec,
+        new_material: MmdMaterialSpec,
+        outline_enabled: bool,
+    ) -> MmdMaterialSpec | None:
+        """Use the dedicated native DX11 outline command when registered."""
+        mode = os.environ.get("MMD_AUTHORING_MATERIAL_OUTLINE_MODE", "auto").strip().lower()
+        if mode not in {"auto", "native", "python"}:
+            raise MayaMaterialAuthoringError(
+                "MMD_AUTHORING_MATERIAL_OUTLINE_MODE must be auto, native, or python"
+            )
+        if mode == "python":
+            return None
+        if type(outline_enabled) is not bool:
+            raise MayaMaterialAuthoringError("material outline intent must be a bool")
+        root = self._require_root(model_root)
+        self._require_material(old_material)
+        self._require_material(new_material)
+        route = classify_material_change(old_material, new_material)
+        if route not in {"value", "noop"}:
+            raise MayaMaterialAuthoringError(
+                "native material outline command requires a value or noop patch"
+            )
+        binding = old_material.binding_identity
+        if not isinstance(binding, str) or not binding:
+            raise MayaMaterialAuthoringError("native material outline patch requires a binding identity")
+        if new_material.binding_identity != binding or new_material.index != old_material.index:
+            raise MayaMaterialAuthoringError("native material outline patch cannot change identity")
+        resolved = self._resolve_material_value_binding(root, old_material)
+        if resolved is None or resolved[0] != binding:
+            raise MayaMaterialAuthoringError(
+                f"material {old_material.index} binding is not resolvable under root {root!r}"
+            )
+        if self._call("node_type", binding) != "dx11Shader":
+            raise MayaMaterialAuthoringError("material outline intent requires a dx11Shader")
+        outline_preimage = self._capture_material_outline(binding)
+        from mmd_tools.converters.mesh_converter import expected_shader_outline_preview
+
+        transparency = outline_preimage["mmdTransparencyMode"]
+        outline_target = expected_shader_outline_preview(
+            str(outline_preimage["technique"]["value"] or ""),
+            transparency["value"] if transparency["exists"] else None,
+            new_material.draw_flags,
+            outline_enabled,
+            new_material.edge_size,
+            edge_size_exists=bool(outline_preimage["EdgeSize"]["exists"]),
+        )
+        updates = (
+            self._material_value_updates(binding, old_material, new_material)
+            if route == "value"
+            else []
+        )
+        if not bool(self._call("undo_info", query=True, state=True)):
+            raise MayaMaterialAuthoringError(
+                "Maya undo must be enabled for native material outline patches"
+            )
+        try:
+            self._native_authoring_gateway.set_material_outline(
+                root,
+                binding,
+                old_material.index,
+                updates,
+                outline_preimage,
+                outline_target,
+            )
+        except NativeCommandUnavailable:
+            if mode == "native":
+                raise
+            return None
+        return new_material
+
+    def _capture_material_outline(self, shader: str) -> dict[str, dict[str, Any]]:
+        """Capture the fixed DX11 policy fingerprint for a TOCTOU precondition."""
+        result = {}
+        for attr in _MATERIAL_OUTLINE_ATTRS:
+            exists = self._has_attr(shader, attr)
+            result[attr] = {
+                "exists": exists,
+                "value": self._get_attr(shader, attr) if exists else None,
+            }
+        return result
+
     def _material_value_updates(
         self,
         shader: str,

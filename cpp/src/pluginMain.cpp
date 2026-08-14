@@ -34,6 +34,7 @@
 #include "MmdAuthoringMorphBindingQuery.h"
 #include "MmdAuthoringMorphWeightCommand.h"
 #include "MmdAuthoringMaterialValueCommand.h"
+#include "MmdAuthoringMaterialOutlineCommand.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -54,6 +55,7 @@ static bool sCppRegisteredMmdAuthoringSetAttrsCommand = false;
 static bool sCppRegisteredMmdAuthoringMorphBindingQueryCommand = false;
 static bool sCppRegisteredMmdAuthoringMorphWeightCommand = false;
 static bool sCppRegisteredMmdAuthoringMaterialValueCommand = false;
+static bool sCppRegisteredMmdAuthoringMaterialOutlineCommand = false;
 static MmdNativeCasterRenderOverride* sMmdNativeCasterOverride = nullptr;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
@@ -420,6 +422,16 @@ MStatus initializePlugin(MObject obj)
         sCppRegisteredMmdAuthoringMaterialValueCommand = true;
     }
 
+    status = plugin.registerCommand("mmdAuthoringSetMaterialOutline",
+                                    MmdAuthoringSetMaterialOutlineCommand::creator,
+                                    MmdAuthoringSetMaterialOutlineCommand::newSyntax);
+    if (!status) {
+        MGlobal::displayWarning(
+            "mmdAuthoringSetMaterialOutline registration failed; native material outline writes are unavailable.");
+    } else {
+        sCppRegisteredMmdAuthoringMaterialOutlineCommand = true;
+    }
+
     return MS::kSuccess;
 }
 
@@ -438,6 +450,12 @@ MStatus uninitializePlugin(MObject obj)
             "Cannot unload mmd_tools_cpp while native receiver shaders are active; "
             "close or replace the scene first.");
         return MS::kFailure;
+    }
+
+    if (sCppRegisteredMmdAuthoringMaterialOutlineCommand) {
+        status = plugin.deregisterCommand("mmdAuthoringSetMaterialOutline");
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredMmdAuthoringMaterialOutlineCommand = false;
     }
 
     if (sCppRegisteredMmdAuthoringMaterialValueCommand) {
