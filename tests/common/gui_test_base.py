@@ -2,6 +2,7 @@
 
 import unittest
 import functools
+import time
 import maya.cmds as cmds
 
 
@@ -61,9 +62,10 @@ class GuiTestBase(unittest.TestCase):
 class _LifecycleTextTestResult(unittest.TextTestResult):
     """Text result that flushes per-test lifecycle messages to its stream."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, timing_recorder=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._unfinished_test_ids = set()
+        self._timing_recorder = timing_recorder
 
     def _write_lifecycle(self, test, phase, outcome=None):
         message = f"[GUI TEST] {phase} {test.id()}"
@@ -75,10 +77,14 @@ class _LifecycleTextTestResult(unittest.TextTestResult):
     def startTest(self, test):
         super().startTest(test)
         self._unfinished_test_ids.add(id(test))
+        if self._timing_recorder is not None:
+            self._timing_recorder.start_test(test)
         self._write_lifecycle(test, "START")
 
     def _write_test_end(self, test, outcome):
         self._unfinished_test_ids.discard(id(test))
+        if self._timing_recorder is not None:
+            self._timing_recorder.record_outcome(test, outcome)
         self._write_lifecycle(test, "END", outcome)
 
     def addSuccess(self, test):
@@ -95,6 +101,11 @@ class _LifecycleTextTestResult(unittest.TextTestResult):
 
     def addSkip(self, test, reason):
         super().addSkip(test, reason)
+        parent_test = getattr(test, "test_case", None)
+        if parent_test is not None:
+            if self._timing_recorder is not None:
+                self._timing_recorder.record_outcome(parent_test, "skipped")
+            return
         self._write_test_end(test, "skipped")
 
     def addExpectedFailure(self, test, err):
@@ -105,10 +116,87 @@ class _LifecycleTextTestResult(unittest.TextTestResult):
         super().addUnexpectedSuccess(test)
         self._write_test_end(test, "unexpected_success")
 
+    def addSubTest(self, test, subtest, err):
+        super().addSubTest(test, subtest, err)
+        if err is not None and self._timing_recorder is not None:
+            outcome = (
+                "failure"
+                if issubclass(err[0], test.failureException)
+                else "error"
+            )
+            self._timing_recorder.record_outcome(test, outcome)
+
     def stopTest(self, test):
         if id(test) in self._unfinished_test_ids:
-            self._write_test_end(test, "unknown")
+            known_outcome = (
+                self._timing_recorder.outcome_for(test)
+                if self._timing_recorder is not None
+                else None
+            )
+            self._write_test_end(test, known_outcome or "unknown")
+        if self._timing_recorder is not None:
+            # unittest calls stopTest only after tearDown and cleanup hooks.
+            self._timing_recorder.finish_test(test)
         super().stopTest(test)
+
+
+class _TestTimingRecorder:
+    """Collect per-test elapsed time without running tests a second time."""
+
+    _OUTCOME_PRIORITY = {
+        "not_run": 0,
+        "unknown": 1,
+        "success": 1,
+        "skipped": 2,
+        "expected_failure": 2,
+        "unexpected_success": 3,
+        "failure": 4,
+        "error": 5,
+    }
+
+    def __init__(self, test_ids):
+        self.tests = [
+            {"id": test_id, "status": "not_run", "elapsed_seconds": None}
+            for test_id in test_ids
+        ]
+        self._by_id = {entry["id"]: entry for entry in self.tests}
+        self._started = {}
+
+    def start_test(self, test):
+        self._started[id(test)] = time.perf_counter()
+
+    def record_outcome(self, test, outcome):
+        entry = self._by_id.get(test.id())
+        if entry is None:
+            entry = {"id": test.id(), "status": "not_run", "elapsed_seconds": None}
+            self.tests.append(entry)
+            self._by_id[test.id()] = entry
+        current = entry["status"]
+        if self._OUTCOME_PRIORITY.get(outcome, 1) >= self._OUTCOME_PRIORITY.get(current, 1):
+            entry["status"] = outcome
+
+    def outcome_for(self, test):
+        entry = self._by_id.get(test.id())
+        if entry is None or entry["status"] == "not_run":
+            return None
+        return entry["status"]
+
+    def finish_test(self, test, outcome=None):
+        if outcome is not None:
+            self.record_outcome(test, outcome)
+        started = self._started.pop(id(test), None)
+        entry = self._by_id.get(test.id())
+        if started is not None:
+            entry["elapsed_seconds"] = max(0.0, time.perf_counter() - started)
+
+
+def _iter_tests(suite):
+    """Yield leaf tests from a nested unittest suite."""
+    for test in suite:
+        if isinstance(test, unittest.TestSuite):
+            yield from _iter_tests(test)
+        else:
+            yield test
 
 
 class GuiTestRunner:
@@ -118,7 +206,7 @@ class GuiTestRunner:
     """
 
     @staticmethod
-    def run_tests_from_command(log_file_path, test_dir_str, test_filter=None):
+    def run_tests_from_command(log_file_path, test_dir_str, test_filter=None, timing_report_path=None):
         """
         Discovers and runs tests, redirecting output to a log file.
 
@@ -126,6 +214,7 @@ class GuiTestRunner:
             log_file_path (str): The absolute path to the log file.
             test_dir_str (str): The relative path to the test directory.
             test_filter (str | None): Optional substring matched against test IDs.
+            timing_report_path (str | None): Optional JSON timing report path.
         """
         import logging
         import sys
@@ -156,6 +245,11 @@ class GuiTestRunner:
         sys.stdout = log_file
         sys.stderr = log_file
         status = "ERROR"
+        timing_report = None
+        timing_recorder = None
+        timing_helpers = None
+        discovery_started = None
+        tests_started = None
 
         try:
             print(f"Starting GUI tests. Project root: {project_root}")
@@ -169,31 +263,103 @@ class GuiTestRunner:
             loader = unittest.TestLoader()
 
             # Use discover to find all test modules in the specified directory
+            discovery_started = time.perf_counter()
             discovered_suite = loader.discover(str(test_dir), pattern="guitest_*.py", top_level_dir=str(project_root))
             if test_filter:
                 discovered_suite = GuiTestRunner._filter_suite(discovered_suite, test_filter)
             suite.addTest(discovered_suite)
+            discovery_elapsed = max(0.0, time.perf_counter() - discovery_started)
+            timing_recorder = _TestTimingRecorder(test.id() for test in _iter_tests(suite))
+
+            if timing_report_path:
+                from tests import run_gui_tests as timing_helpers
+
+                fallback = timing_helpers.new_timing_report("unknown", test_dir_str, test_filter)
+                timing_report = timing_helpers.read_timing_report(timing_report_path, fallback)
+                timing_report["phases"]["discovery"] = {
+                    "status": "passed",
+                    "elapsed_seconds": discovery_elapsed,
+                }
+                timing_report["phases"]["tests"] = {
+                    "status": "running",
+                    "elapsed_seconds": None,
+                }
+                timing_report["tests"] = timing_recorder.tests
+                timing_helpers.write_timing_report(timing_report_path, timing_report)
 
             if suite.countTestCases() == 0:
                 print("No tests found.")
                 status = "NO_TESTS"
+                if timing_report is not None:
+                    timing_report["phases"]["tests"] = {
+                        "status": "no_tests",
+                        "elapsed_seconds": 0.0,
+                    }
                 return status
 
             # Run tests
             print(f"Found {suite.countTestCases()} tests to run.")
+            def result_factory(*args, **kwargs):
+                return _LifecycleTextTestResult(
+                    *args,
+                    timing_recorder=timing_recorder,
+                    **kwargs,
+                )
+
+            tests_started = time.perf_counter()
             runner = unittest.TextTestRunner(
                 stream=log_file,
                 verbosity=2,
-                resultclass=_LifecycleTextTestResult,
+                resultclass=result_factory,
             )
             result = runner.run(suite)
+            tests_elapsed = max(0.0, time.perf_counter() - tests_started)
             status = "PASS" if result.wasSuccessful() else "FAIL"
+            if timing_report is not None:
+                timing_report["phases"]["tests"] = {
+                    "status": "passed" if status == "PASS" else "failed",
+                    "elapsed_seconds": tests_elapsed,
+                }
             return status
 
         except Exception:
             logging.error("An unexpected error occurred during test execution.", exc_info=True)
+            if timing_report_path:
+                if timing_report is None:
+                    from tests import run_gui_tests as timing_helpers
+
+                    fallback = timing_helpers.new_timing_report("unknown", test_dir_str, test_filter)
+                    timing_report = timing_helpers.read_timing_report(timing_report_path, fallback)
+                if timing_report["phases"]["discovery"]["status"] == "blocked":
+                    timing_report["phases"]["discovery"] = {
+                        "status": "failed",
+                        "elapsed_seconds": (
+                            max(0.0, time.perf_counter() - discovery_started)
+                            if discovery_started is not None
+                            else None
+                        ),
+                    }
+                elif timing_report["phases"]["tests"]["status"] in {"blocked", "running"}:
+                    timing_report["phases"]["tests"] = {
+                        "status": "failed",
+                        "elapsed_seconds": (
+                            max(0.0, time.perf_counter() - tests_started)
+                            if tests_started is not None
+                            else None
+                        ),
+                    }
             return status
         finally:
+            if timing_report_path:
+                if timing_report is None:
+                    from tests import run_gui_tests as timing_helpers
+
+                    fallback = timing_helpers.new_timing_report("unknown", test_dir_str, test_filter)
+                    timing_report = timing_helpers.read_timing_report(timing_report_path, fallback)
+                if timing_recorder is not None:
+                    timing_report["tests"] = timing_recorder.tests
+                timing_report["status"] = status
+                timing_helpers.write_timing_report(timing_report_path, timing_report)
             print(f"\n//-- GUI TEST FINISHED --// status={status}")
             log_file.flush()
             log_file.close()

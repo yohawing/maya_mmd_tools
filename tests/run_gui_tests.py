@@ -8,6 +8,7 @@ and streams the results from a log file.
 import sys
 import time
 import argparse
+import json
 import logging
 import os
 import re
@@ -34,6 +35,7 @@ MAYA_PYTHON_READY_TIMEOUT = 120  # seconds
 MAYA_PYTHON_READY_POLL_INTERVAL = 0.25  # second
 GUI_TEST_FINISHED_MARKER = "//-- GUI TEST FINISHED --//"
 GUI_TEST_STATUSES = frozenset(("PASS", "FAIL", "NO_TESTS", "ERROR"))
+TIMING_REPORT_SCHEMA_VERSION = 1
 _COMPLETION_RE = re.compile(
     rf"^{re.escape(GUI_TEST_FINISHED_MARKER)}\s+status=(?P<status>[A-Z_]+)\s*$"
 )
@@ -41,6 +43,66 @@ _COMPLETION_RE = re.compile(
 # --- Logger Setup ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def new_timing_report(maya_version, test_path, test_filter):
+    """Return an unstarted, versioned GUI timing report."""
+    return {
+        "schema_version": TIMING_REPORT_SCHEMA_VERSION,
+        "runner": "maya_gui",
+        "maya_version": str(maya_version),
+        "test_path": test_path,
+        "test_filter": test_filter,
+        "status": "ERROR",
+        "phases": {
+            "startup": {"status": "blocked", "elapsed_seconds": None},
+            "discovery": {"status": "blocked", "elapsed_seconds": None},
+            "tests": {"status": "blocked", "elapsed_seconds": None},
+            "shutdown": {"status": "blocked", "elapsed_seconds": None},
+        },
+        "tests": [],
+        "test_counts": {},
+        "slowest_tests": [],
+    }
+
+
+def read_timing_report(path, fallback):
+    """Read a timing report, returning *fallback* if Maya wrote no valid JSON."""
+    try:
+        report = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return fallback
+    if report.get("schema_version") != TIMING_REPORT_SCHEMA_VERSION:
+        return fallback
+    return report
+
+
+def finalize_timing_report(report):
+    """Add deterministic counts and the 20 slowest executed tests."""
+    counts = {}
+    timed_tests = []
+    for test in report.get("tests", []):
+        status = test.get("status", "unknown")
+        counts[status] = counts.get(status, 0) + 1
+        elapsed = test.get("elapsed_seconds")
+        if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
+            timed_tests.append(test)
+    timed_tests.sort(key=lambda item: (-item["elapsed_seconds"], item["id"]))
+    report["test_counts"] = counts
+    report["slowest_tests"] = [dict(item) for item in timed_tests[:20]]
+    return report
+
+
+def write_timing_report(path, report):
+    """Atomically persist a GUI timing report."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(path.name + ".tmp")
+    temporary_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary_path.replace(path)
 
 
 def parse_completion_status(line):
@@ -128,6 +190,11 @@ def main():
         default=None,
         help="Path to the GUI test log (relative to project root; default: logs/ui_test_results.log)",
     )
+    parser.add_argument(
+        "--timing_report",
+        default=None,
+        help="Path to timing JSON (default: <log stem>.timing.json beside the log)",
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
@@ -136,6 +203,13 @@ def main():
         log_file_path = project_root / log_file_path
     log_file_path = log_file_path.resolve()
     log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    timing_report_path = Path(args.timing_report) if args.timing_report else log_file_path.with_suffix(".timing.json")
+    if not timing_report_path.is_absolute():
+        timing_report_path = project_root / timing_report_path
+    timing_report_path = timing_report_path.resolve()
+    maya_timing_report_path = timing_report_path.with_name(
+        timing_report_path.name + ".maya-partial"
+    )
     log_dir = log_file_path.parent
     readiness_marker = log_dir / f".maya_commandport_ready_{args.maya_version}_{os.getpid()}.txt"
     commandport_script = (log_dir / f"commandport_{COMMAND_PORT}.mel").resolve()
@@ -144,12 +218,22 @@ def main():
     if log_file_path.exists():
         log_file_path.unlink()
 
+    timing_report = new_timing_report(args.maya_version, args.test_path, args.test_filter)
+    write_timing_report(timing_report_path, timing_report)
+    write_timing_report(maya_timing_report_path, timing_report)
+
     maya_process = None
     maya_process_id = None
     command_port_ready = False
     maya_app_dir = Path(tempfile.mkdtemp(prefix=f"maya_mmd_tools_gui_{args.maya_version}_"))
     maya_launched = False
     maya_exited = False
+    completion_status = "ERROR"
+    startup_started = None
+    shutdown_started = None
+    shutdown_failed = False
+    tests_dispatched = False
+    execution_timed_out = False
     try:
         # 1. Find and launch Maya
         maya_exe = maya_commandport.maya_exe(args.maya_version)
@@ -161,6 +245,7 @@ def main():
         }
         if args.vp2_device_override:
             env_overrides["MAYA_VP2_DEVICE_OVERRIDE"] = args.vp2_device_override
+        startup_started = time.perf_counter()
         maya_process = maya_commandport.launch_maya(
             version=args.maya_version,
             project_root=project_root,
@@ -197,6 +282,12 @@ Path({str(readiness_marker)!r}).write_text("ready", encoding="utf-8")
             timeout=maya_python_ready_timeout(args.maya_version),
         )
         logger.info("Maya Python commandPort readiness marker found: %s", readiness_marker)
+        timing_report["phases"]["startup"] = {
+            "status": "passed",
+            "elapsed_seconds": max(0.0, time.perf_counter() - startup_started),
+        }
+        write_timing_report(timing_report_path, timing_report)
+        write_timing_report(maya_timing_report_path, timing_report)
 
         # 2. Prepare and send the test execution command
         test_command = f"""
@@ -210,21 +301,38 @@ from tests.common.gui_test_base import GuiTestRunner
 log_path = {str(log_file_path)!r}
 test_dir = {args.test_path!r}
 test_filter = {args.test_filter!r}
-GuiTestRunner.run_tests_from_command(log_path, test_dir, test_filter)
+timing_report_path = {str(maya_timing_report_path)!r}
+GuiTestRunner.run_tests_from_command(log_path, test_dir, test_filter, timing_report_path)
 """
         maya_commandport.send_python(COMMAND_PORT, test_command, label="<gui-test-runner-command>")
+        tests_dispatched = True
 
         # 3. Monitor the log file for results
         status = monitor_log_file(log_file_path, TEST_EXECUTION_TIMEOUT)
+        completion_status = status
         if status != "PASS":
             logger.error("GUI tests completed with status %s", status)
             return 1
 
     except Exception as e:
         logger.error(f"An error occurred: {e}", exc_info=True)
+        if isinstance(e, TimeoutError) and tests_dispatched:
+            completion_status = "TIMEOUT"
+            execution_timed_out = True
+        if timing_report["phases"]["startup"]["status"] == "blocked" and startup_started is not None:
+            timing_report["phases"]["startup"] = {
+                "status": "failed",
+                "elapsed_seconds": max(0.0, time.perf_counter() - startup_started),
+            }
+            # Persist before ``finally`` reloads any partial report written by
+            # Maya.  Startup failures happen before the in-Maya runner can
+            # update this file.
+            write_timing_report(timing_report_path, timing_report)
         return 1
     finally:
         # 4. Clean up
+        if maya_launched:
+            shutdown_started = time.perf_counter()
         if command_port_ready:
             # Explorer launches are intentionally detached and have no process
             # handle.  Quit only the Maya instance on this runner's commandPort;
@@ -248,9 +356,11 @@ GuiTestRunner.run_tests_from_command(log_path, test_dir, test_filter)
                         )
                 else:
                     maya_commandport.wait_for_port_close(COMMAND_PORT, timeout=30)
+                    maya_exited = True
                 if maya_process is not None:
                     maya_exited = True
             except Exception as e:
+                shutdown_failed = True
                 if maya_process:
                     logger.warning("Failed to quit owned Maya process gracefully, killing it: %s", e)
                     maya_process.kill()
@@ -279,6 +389,35 @@ GuiTestRunner.run_tests_from_command(log_path, test_dir, test_filter)
             shutil.rmtree(maya_app_dir, ignore_errors=True)
         else:
             logger.warning("Keeping isolated Maya profile for the still-running test process: %s", maya_app_dir)
+
+        report_source = maya_timing_report_path if tests_dispatched else timing_report_path
+        timing_report = read_timing_report(report_source, timing_report)
+        if execution_timed_out:
+            if timing_report["phases"]["discovery"]["status"] in {"blocked", "running"}:
+                timing_report["phases"]["discovery"] = {
+                    "status": "timed_out",
+                    "elapsed_seconds": timing_report["phases"]["discovery"].get("elapsed_seconds"),
+                }
+            elif timing_report["phases"]["tests"]["status"] in {"blocked", "running"}:
+                timing_report["phases"]["tests"] = {
+                    "status": "timed_out",
+                    "elapsed_seconds": timing_report["phases"]["tests"].get("elapsed_seconds"),
+                }
+        timing_report["status"] = completion_status
+        if shutdown_started is not None:
+            shutdown_failed = shutdown_failed or (maya_launched and not maya_exited)
+            timing_report["phases"]["shutdown"] = {
+                "status": "failed" if shutdown_failed else "passed",
+                "elapsed_seconds": max(0.0, time.perf_counter() - shutdown_started),
+            }
+        finalize_timing_report(timing_report)
+        write_timing_report(timing_report_path, timing_report)
+        if maya_exited or not maya_launched:
+            try:
+                maya_timing_report_path.unlink()
+            except FileNotFoundError:
+                pass
+        logger.info("GUI timing report: %s", timing_report_path)
 
     logger.info("GUI test run finished successfully.")
     return 0
