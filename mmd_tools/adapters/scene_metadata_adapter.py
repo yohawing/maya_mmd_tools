@@ -14,6 +14,7 @@ import copy
 from typing import Any, Protocol
 
 from mmd_tools.core import model_authoring_spec as _authoring_spec
+from mmd_tools.adapters.transaction_runner import TransactionFailure, TransactionRunner
 
 
 class SceneMetadataError(ValueError):
@@ -282,24 +283,43 @@ class SceneMetadataAdapter:
         except Exception as exc:
             raise SceneMetadataError(f"failed to serialize spec for root {model_root!r}: {exc}") from exc
 
-        transaction_started = False
-        try:
+        def begin(_targets: tuple[Any, ...]) -> None:
             self._write_call(model_root, "begin", "begin_write")
-            transaction_started = True
+
+        def mutate(_targets: tuple[Any, ...]) -> None:
             self._write_call(model_root, "model", "apply_model_metadata", payload["model"])
             self._write_call(model_root, "bones", "apply_bone_metadata", payload["bones"])
             self._write_call(model_root, "materials", "apply_material_metadata", payload["materials"])
             self._write_call(model_root, "morphs", "apply_morph_metadata", payload["morphs"])
+
+        def verify_and_commit(_result: None, _targets: tuple[Any, ...]) -> None:
             self._write_call(model_root, "commit", "commit_write")
-        except SceneMetadataError as exc:
-            if transaction_started:
-                self._rollback_write(model_root, exc)
-            raise
-        except Exception as exc:
-            error = SceneMetadataError(f"failed to write semantic metadata for root {model_root!r}: {exc}")
-            if transaction_started:
-                self._rollback_write(model_root, error)
-            raise error from exc
+
+        TransactionRunner(
+            "write_spec",
+            (model_root,),
+            begin=begin,
+            mutate=mutate,
+            verify_and_commit=verify_and_commit,
+            rollback=lambda _targets: self._backend.rollback_write(model_root),
+            error_factory=lambda failure: self._write_transaction_error(model_root, failure),
+        ).run()
+
+    @staticmethod
+    def _write_transaction_error(model_root: str, failure: TransactionFailure) -> SceneMetadataError:
+        """Preserve the public write error while adapting runner failures."""
+
+        if failure.rollback_error is None and isinstance(failure.original_error, SceneMetadataError):
+            return failure.original_error
+        if failure.rollback_error is None:
+            return SceneMetadataError(
+                f"failed to write semantic metadata for root {model_root!r}: "
+                f"{failure.original_error}"
+            )
+        return SceneMetadataError(
+            f"{failure.original_error}; rollback failed for root {model_root!r}: "
+            f"{failure.rollback_error}"
+        )
 
     def _write_call(self, model_root: str, section: str, method_name: str, payload: Any = None) -> None:
         try:
@@ -312,15 +332,6 @@ class SceneMetadataAdapter:
                 method(model_root, copy.deepcopy(payload))
         except Exception as exc:
             raise SceneMetadataError(f"failed to write {section} metadata for root {model_root!r}: {exc}") from exc
-
-    def _rollback_write(self, model_root: str, original_error: SceneMetadataError) -> None:
-        try:
-            method = getattr(self._backend, "rollback_write")
-            method(model_root)
-        except Exception as rollback_error:
-            raise SceneMetadataError(
-                f"{original_error}; rollback failed for root {model_root!r}: {rollback_error}"
-            ) from rollback_error
 
     def begin_material_reindex(
         self,

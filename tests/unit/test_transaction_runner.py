@@ -207,6 +207,17 @@ def test_caller_error_factory_can_preserve_specific_exception_type() -> None:
         runner.run()
 
 
+def test_error_factory_can_return_original_error_without_self_cause() -> None:
+    original = RuntimeError("original")
+    runner = _runner([], begin_error=original, error_factory=lambda failure: failure.original_error)
+
+    with pytest.raises(RuntimeError, match="original") as raised:
+        runner.run()
+
+    assert raised.value is original
+    assert raised.value.__cause__ is None
+
+
 def test_failed_run_can_be_retried_without_duplicate_rollback() -> None:
     events: List[Any] = []
     mutate_calls = 0

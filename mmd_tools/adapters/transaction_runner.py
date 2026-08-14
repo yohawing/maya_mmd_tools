@@ -116,7 +116,7 @@ class TransactionRunner(Generic[ResultT]):
             # A failed begin did not open a transaction and must never invoke
             # rollback.  Keep the begin error as the direct cause.
             failure = self._make_failure("begin", exc, targets)
-            raise self._customize(failure) from exc
+            self._raise_customized(failure, exc)
 
         self._started = True
         try:
@@ -149,10 +149,18 @@ class TransactionRunner(Generic[ResultT]):
             self._rollback(targets)
         except Exception as rollback_error:
             failure = self._make_failure(phase, original_error, targets, rollback_error)
-            raise self._customize(failure) from rollback_error
+            self._raise_customized(failure, rollback_error)
 
         failure = self._make_failure(phase, original_error, targets)
-        raise self._customize(failure) from original_error
+        self._raise_customized(failure, original_error)
+
+    def _raise_customized(self, failure: TransactionFailure, cause: Exception) -> None:
+        """Raise a caller error without creating a self-referential cause."""
+
+        custom_error = self._customize(failure)
+        if custom_error is cause:
+            raise custom_error
+        raise custom_error from cause
 
     def _make_failure(
         self,

@@ -46,6 +46,7 @@ from mmd_tools.core.morph_authoring import (
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core.logger import get_logger
+from mmd_tools.adapters.transaction_runner import TransactionFailure, TransactionRunner
 
 
 logger = get_logger(__name__)
@@ -842,10 +843,16 @@ class MayaModelAuthoringCoordinator:
             structural_change = apply_morph_create
             direct_change = True
 
-        started = False
-        try:
-            new_index = begin(model_root, morph)
-            started = True
+        new_index_holder: dict[str, Any] = {}
+
+        def begin_transaction(_targets: tuple[Any, ...]) -> None:
+            # The index is assigned by the backend's begin hook.  Capture it
+            # without validating here so an invalid result is treated as a
+            # post-begin mutation failure and is rolled back exactly once.
+            new_index_holder["value"] = begin(model_root, morph)
+
+        def mutate(_targets: tuple[Any, ...]) -> MmdMorphSpec:
+            new_index = new_index_holder.get("value")
             if isinstance(new_index, bool) or not isinstance(new_index, int) or new_index < 0:
                 raise TypeError("morph creation transaction returned an invalid index")
             candidate = replace(morph, index=new_index)
@@ -865,21 +872,16 @@ class MayaModelAuthoringCoordinator:
                 or result.offsets
             ):
                 raise TypeError("morph creation binding operation returned an invalid morph")
-            commit(model_root, result)
-            started = False
             return result
-        except Exception as exc:
-            if started:
-                try:
-                    self._backend.rollback_write(model_root)
-                except Exception as rollback_exc:
-                    raise MayaModelAuthoringCoordinatorError(
-                        f"create_morph failed for root {model_root!r}: {exc}; "
-                        f"rollback failed: {rollback_exc}"
-                    ) from rollback_exc
-            raise MayaModelAuthoringCoordinatorError(
-                f"create_morph failed for root {model_root!r}: {exc}"
-            ) from exc
+
+        return self._run_transaction(
+            model_root,
+            "create_morph",
+            (model_root,),
+            begin_transaction,
+            mutate,
+            lambda result, _targets: commit(model_root, result),
+        )
 
     def replace_morph(self, model_root: str, morph: MmdMorphSpec) -> MmdModelAuthoringSpec:
         """Replace one morph's semantic metadata and runtime binding state."""
@@ -1083,6 +1085,36 @@ class MayaModelAuthoringCoordinator:
 
 
     # Transaction core ----------------------------------------------------
+    def _run_transaction(
+        self,
+        model_root: str,
+        operation: str,
+        target_identities: Sequence[Any],
+        begin: Callable[[tuple[Any, ...]], Any],
+        mutate: Callable[[tuple[Any, ...]], Any],
+        verify_and_commit: Callable[[Any, tuple[Any, ...]], Any],
+        validate_result: Callable[[Any, tuple[Any, ...]], Any] | None = None,
+    ) -> Any:
+        """Adapt callback-owned backend transactions to the common runner."""
+
+        return TransactionRunner(
+            operation,
+            target_identities,
+            begin=begin,
+            mutate=mutate,
+            validate_result=validate_result,
+            verify_and_commit=verify_and_commit,
+            rollback=lambda _targets: self._backend.rollback_write(model_root),
+            error_factory=lambda failure: self._transaction_error(model_root, failure),
+        ).run()
+
+    @staticmethod
+    def _transaction_error(model_root: str, failure: TransactionFailure) -> MayaModelAuthoringCoordinatorError:
+        message = f"{failure.operation} failed for root {model_root!r}: {failure.original_error}"
+        if failure.rollback_error is not None:
+            message += f"; rollback failed: {failure.rollback_error}"
+        return MayaModelAuthoringCoordinatorError(message)
+
     def _narrow_next_material_index(self, model_root: str, operation: str) -> int:
         """Read only registry material indices for a trailing allocation."""
         reader = getattr(self._metadata, "next_material_index", None)
@@ -1120,10 +1152,10 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 f"{operation} requires a material binding creation API; no Maya writes were performed"
             )
-        started = False
-        try:
+        def begin_transaction(_targets: tuple[Any, ...]) -> None:
             begin(model_root, material.index)
-            started = True
+
+        def mutate(_targets: tuple[Any, ...]) -> MmdMaterialSpec:
             result = structural(model_root, material, narrow=True)
             if isinstance(result, tuple):
                 bound = result[0]
@@ -1131,20 +1163,16 @@ class MayaModelAuthoringCoordinator:
                 bound = result
             if not isinstance(bound, MmdMaterialSpec):
                 raise TypeError("material creation binding operation returned an invalid material")
-            commit(model_root, bound)
-            started = False
             return bound
-        except Exception as exc:
-            if started:
-                try:
-                    self._backend.rollback_write(model_root)
-                except Exception as rollback_exc:
-                    raise MayaModelAuthoringCoordinatorError(
-                        f"{operation} failed for root {model_root!r}: {exc}; rollback failed: {rollback_exc}"
-                    ) from rollback_exc
-            raise MayaModelAuthoringCoordinatorError(
-                f"{operation} failed for root {model_root!r}: {exc}"
-            ) from exc
+
+        return self._run_transaction(
+            model_root,
+            operation,
+            (model_root, material.index),
+            begin_transaction,
+            mutate,
+            lambda result, _targets: commit(model_root, result),
+        )
 
     def _execute_bone_register(
         self,
@@ -1156,27 +1184,23 @@ class MayaModelAuthoringCoordinator:
         commit: Callable[[str, MmdBoneSpec], Any],
     ) -> MmdBoneSpec:
         """Run selected-joint registration without full metadata hooks."""
-        started = False
-        try:
+        def begin_transaction(_targets: tuple[Any, ...]) -> None:
             begin(model_root, bone)
-            started = True
+
+        def mutate(_targets: tuple[Any, ...]) -> MmdBoneSpec:
             bound = structural_write()
             if not isinstance(bound, MmdBoneSpec):
                 raise TypeError("selected-joint registration returned an invalid bone")
-            commit(model_root, bound)
-            started = False
             return bound
-        except Exception as exc:
-            if started:
-                try:
-                    self._backend.rollback_write(model_root)
-                except Exception as rollback_exc:
-                    raise MayaModelAuthoringCoordinatorError(
-                        f"{operation} failed for root {model_root!r}: {exc}; rollback failed: {rollback_exc}"
-                    ) from rollback_exc
-            raise MayaModelAuthoringCoordinatorError(
-                f"{operation} failed for root {model_root!r}: {exc}"
-            ) from exc
+
+        return self._run_transaction(
+            model_root,
+            operation,
+            (model_root, bone.binding_identity),
+            begin_transaction,
+            mutate,
+            lambda result, _targets: commit(model_root, result),
+        )
 
     def _execute(
         self,
@@ -1185,13 +1209,16 @@ class MayaModelAuthoringCoordinator:
         target: MmdModelAuthoringSpec,
         structural_write: Callable[[], MmdModelAuthoringSpec],
     ) -> MmdModelAuthoringSpec:
-        started = False
-        try:
+        def begin_transaction(_targets: tuple[Any, ...]) -> None:
             self._backend.begin_write(model_root)
-            started = True
+
+        def mutate(_targets: tuple[Any, ...]) -> MmdModelAuthoringSpec:
             bound_target = structural_write()
             if not isinstance(bound_target, MmdModelAuthoringSpec):
                 raise TypeError("structural binding operation returned an invalid spec")
+            return bound_target
+
+        def verify_and_commit(bound_target: MmdModelAuthoringSpec, _targets: tuple[Any, ...]) -> None:
             self._backend.rebase_write_bindings(model_root, bound_target)
             payload = bound_target.to_mapping()
             self._backend.apply_model_metadata(model_root, payload["model"])
@@ -1199,20 +1226,15 @@ class MayaModelAuthoringCoordinator:
             self._backend.apply_material_metadata(model_root, payload["materials"])
             self._backend.apply_morph_metadata(model_root, payload["morphs"])
             self._backend.commit_write(model_root)
-            started = False
-            return bound_target
-        except Exception as exc:
-            if started:
-                try:
-                    self._backend.rollback_write(model_root)
-                except Exception as rollback_exc:
-                    raise MayaModelAuthoringCoordinatorError(
-                        f"{operation} failed for root {model_root!r}: {exc}; "
-                        f"rollback failed: {rollback_exc}"
-                    ) from rollback_exc
-            raise MayaModelAuthoringCoordinatorError(
-                f"{operation} failed for root {model_root!r}: {exc}"
-            ) from exc
+
+        return self._run_transaction(
+            model_root,
+            operation,
+            (model_root,),
+            begin_transaction,
+            mutate,
+            verify_and_commit,
+        )
 
     def _execute_material_reindex_fast(
         self,
@@ -1225,28 +1247,23 @@ class MayaModelAuthoringCoordinator:
         commit: Callable[[str, MaterialReindexResult], Any],
     ) -> MaterialReindexResult:
         """Run adjacent material swap without full-spec metadata hooks."""
-        started = False
-        try:
+        def begin_transaction(_targets: tuple[Any, ...]) -> None:
             begin(model_root, index, new_position)
-            started = True
+
+        def mutate(_targets: tuple[Any, ...]) -> MaterialReindexResult:
             result = structural_write(model_root, index, new_position)
             if not isinstance(result, MaterialReindexResult):
                 raise TypeError("material reindex binding operation returned an invalid result")
-            commit(model_root, result)
-            started = False
             return result
-        except Exception as exc:
-            if started:
-                try:
-                    self._backend.rollback_write(model_root)
-                except Exception as rollback_exc:
-                    raise MayaModelAuthoringCoordinatorError(
-                        f"{operation} failed for root {model_root!r}: {exc}; "
-                        f"rollback failed: {rollback_exc}"
-                    ) from rollback_exc
-            raise MayaModelAuthoringCoordinatorError(
-                f"{operation} failed for root {model_root!r}: {exc}"
-            ) from exc
+
+        return self._run_transaction(
+            model_root,
+            operation,
+            (model_root, index, new_position),
+            begin_transaction,
+            mutate,
+            lambda result, _targets: commit(model_root, result),
+        )
 
     def _execute_morph_reindex(
         self,
@@ -1259,28 +1276,23 @@ class MayaModelAuthoringCoordinator:
         commit: Callable[[str, MorphReindexResult], Any],
     ) -> MorphReindexResult:
         """Run adjacent morph swap without generic metadata hooks."""
-        started = False
-        try:
+        def begin_transaction(_targets: tuple[Any, ...]) -> None:
             begin(model_root, index, new_position)
-            started = True
+
+        def mutate(_targets: tuple[Any, ...]) -> MorphReindexResult:
             result = structural_write()
             if not isinstance(result, MorphReindexResult):
                 raise TypeError("morph reindex binding operation returned an invalid result")
-            commit(model_root, result)
-            started = False
             return result
-        except Exception as exc:
-            if started:
-                try:
-                    self._backend.rollback_write(model_root)
-                except Exception as rollback_exc:
-                    raise MayaModelAuthoringCoordinatorError(
-                        f"{operation} failed for root {model_root!r}: {exc}; "
-                        f"rollback failed: {rollback_exc}"
-                    ) from rollback_exc
-            raise MayaModelAuthoringCoordinatorError(
-                f"{operation} failed for root {model_root!r}: {exc}"
-            ) from exc
+
+        return self._run_transaction(
+            model_root,
+            operation,
+            (model_root, index, new_position),
+            begin_transaction,
+            mutate,
+            lambda result, _targets: commit(model_root, result),
+        )
 
     def _execute_material_patch(
         self,
@@ -1294,28 +1306,25 @@ class MayaModelAuthoringCoordinator:
         commit: Callable[[str, str, MmdMaterialSpec], Any],
     ) -> MmdMaterialSpec:
         """Run a selected-shader patch with no full metadata hooks."""
-        started = False
-        try:
+        def begin_transaction(_targets: tuple[Any, ...]) -> None:
             begin(model_root, binding, old_material, new_material)
-            started = True
+
+        def mutate(_targets: tuple[Any, ...]) -> MmdMaterialSpec:
             bound_target = structural_write()
             if not isinstance(bound_target, MmdMaterialSpec):
                 raise TypeError("material value patch binding operation returned an invalid material")
-            commit(model_root, binding, new_material)
-            started = False
             return bound_target
-        except Exception as exc:
-            if started:
-                try:
-                    self._backend.rollback_write(model_root)
-                except Exception as rollback_exc:
-                    raise MayaModelAuthoringCoordinatorError(
-                        f"{operation} failed for root {model_root!r}: {exc}; "
-                        f"rollback failed: {rollback_exc}"
-                    ) from rollback_exc
-            raise MayaModelAuthoringCoordinatorError(
-                f"{operation} failed for root {model_root!r}: {exc}"
-            ) from exc
+
+        # Commit the caller's intended semantic value, not the structural
+        # mutation result, which may contain Maya-normalized values.
+        return self._run_transaction(
+            model_root,
+            operation,
+            (model_root, binding),
+            begin_transaction,
+            mutate,
+            lambda _result, _targets: commit(model_root, binding, new_material),
+        )
 
     def _execute_bone_value_patch(
         self,
@@ -1329,28 +1338,23 @@ class MayaModelAuthoringCoordinator:
         commit: Callable[[str, str, MmdBoneSpec], Any],
     ) -> MmdBoneSpec:
         """Run a selected-bone value patch without full metadata hooks."""
-        started = False
-        try:
+        def begin_transaction(_targets: tuple[Any, ...]) -> None:
             begin(model_root, binding, old_bone, new_bone)
-            started = True
+
+        def mutate(_targets: tuple[Any, ...]) -> MmdBoneSpec:
             bound_target = structural_write()
             if not isinstance(bound_target, MmdBoneSpec):
                 raise TypeError("bone value patch binding operation returned an invalid bone")
-            commit(model_root, binding, new_bone)
-            started = False
             return bound_target
-        except Exception as exc:
-            if started:
-                try:
-                    self._backend.rollback_write(model_root)
-                except Exception as rollback_exc:
-                    raise MayaModelAuthoringCoordinatorError(
-                        f"{operation} failed for root {model_root!r}: {exc}; "
-                        f"rollback failed: {rollback_exc}"
-                    ) from rollback_exc
-            raise MayaModelAuthoringCoordinatorError(
-                f"{operation} failed for root {model_root!r}: {exc}"
-            ) from exc
+
+        return self._run_transaction(
+            model_root,
+            operation,
+            (model_root, binding),
+            begin_transaction,
+            mutate,
+            lambda _result, _targets: commit(model_root, binding, new_bone),
+        )
 
     def _execute_morph_value_patch(
         self,
@@ -1364,28 +1368,23 @@ class MayaModelAuthoringCoordinator:
         commit: Callable[[str, str, MmdMorphSpec], Any],
     ) -> MmdMorphSpec:
         """Run a selected-morph patch without full metadata hooks."""
-        started = False
-        try:
+        def begin_transaction(_targets: tuple[Any, ...]) -> None:
             begin(model_root, binding, old_morph, new_morph)
-            started = True
+
+        def mutate(_targets: tuple[Any, ...]) -> MmdMorphSpec:
             bound_target = structural_write()
             if not isinstance(bound_target, MmdMorphSpec):
                 raise TypeError("morph value patch binding operation returned an invalid morph")
-            commit(model_root, binding, new_morph)
-            started = False
             return bound_target
-        except Exception as exc:
-            if started:
-                try:
-                    self._backend.rollback_write(model_root)
-                except Exception as rollback_exc:
-                    raise MayaModelAuthoringCoordinatorError(
-                        f"{operation} failed for root {model_root!r}: {exc}; "
-                        f"rollback failed: {rollback_exc}"
-                    ) from rollback_exc
-            raise MayaModelAuthoringCoordinatorError(
-                f"{operation} failed for root {model_root!r}: {exc}"
-            ) from exc
+
+        return self._run_transaction(
+            model_root,
+            operation,
+            (model_root, binding),
+            begin_transaction,
+            mutate,
+            lambda _result, _targets: commit(model_root, binding, new_morph),
+        )
 
     def _read_current(self, model_root: str, operation: str) -> MmdModelAuthoringSpec:
         if not isinstance(model_root, str) or not model_root.strip():
