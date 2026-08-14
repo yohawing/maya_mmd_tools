@@ -773,6 +773,77 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             oracle="same_leaf_model_A_only_semantic_and_maya_state_changed",
         )
 
+    def test_bone_list_click_keyboard_routes_canonical_selection_to_one_apply(self):
+        """A real row click and keyboard move route one canonical Bone Apply."""
+        presenter = self.window.bone_presenter
+        view = presenter.view
+        self.window.tab_widget.setCurrentWidget(view)
+        bindings = self._register_second_bone_fixture()
+        QApplication.processEvents()
+
+        self.assertEqual(view.bone_list.count(), 2)
+        first_item = view.bone_list.item(0)
+        second_item = view.bone_list.item(1)
+        first_identity = first_item.data(Qt.UserRole)
+        second_identity = second_item.data(Qt.UserRole)
+        self.assertEqual((first_identity, second_identity), bindings)
+        for item, identity in (
+            (first_item, first_identity),
+            (second_item, second_identity),
+        ):
+            self.assertTrue(identity.startswith("|"), identity)
+            self.assertNotEqual(item.text(), identity)
+            self.assertNotIn(identity, item.text())
+
+        view.bone_list.scrollToItem(first_item)
+        QApplication.processEvents()
+        first_rect = view.bone_list.visualItemRect(first_item)
+        self.assertTrue(first_rect.isValid())
+        self.assertTrue(view.bone_list.viewport().rect().contains(first_rect.center()))
+        QTest.mouseClick(
+            view.bone_list.viewport(),
+            Qt.LeftButton,
+            pos=first_rect.center(),
+        )
+        QApplication.processEvents()
+        self.assertIs(view.bone_list.currentItem(), first_item)
+        self.assertEqual(presenter.current_bone, first_identity)
+        self.assertEqual(cmds.ls(selection=True, long=True), [first_identity])
+
+        QTest.keyClick(view.bone_list, Qt.Key_Down)
+        QApplication.processEvents()
+        self.assertIs(view.bone_list.currentItem(), second_item)
+        self.assertEqual(presenter.current_bone, second_identity)
+        selected = tuple(cmds.ls(selection=True, long=True) or ())
+        self.assertEqual(selected, (second_identity,))
+        self.assertEqual(self.window.app_state.current_model_root, self.root)
+        resolved_root = self.window.app_state.scene_model_service.resolve_model_from_selection(
+            (self.root,)
+        )
+        self.assertEqual(resolved_root, self.root)
+        self.assertEqual(self.window.app_state.current_model_root, self.root)
+
+        before_first = cmds.getAttr(f"{first_identity}.{ATTR_MMD_BONE_NAME_EN}")
+        before_second = cmds.getAttr(f"{second_identity}.{ATTR_MMD_BONE_NAME_EN}")
+        edited_name = "Keyboard Selected Bone"
+        view.bone_name_en_edit.setText(edited_name)
+        coordinator = self.window.authoring_composition.coordinator
+        with patch.object(
+            coordinator,
+            "apply_bone_value_patch",
+            wraps=coordinator.apply_bone_value_patch,
+        ) as apply_action:
+            QTest.mouseClick(view.apply_btn, Qt.LeftButton)
+            QApplication.processEvents()
+            self.assertEqual(apply_action.call_count, 1)
+
+        self.assertEqual(cmds.getAttr(f"{first_identity}.{ATTR_MMD_BONE_NAME_EN}"), before_first)
+        self.assertEqual(cmds.getAttr(f"{second_identity}.{ATTR_MMD_BONE_NAME_EN}"), edited_name)
+        cmds.undo()
+        self.assertEqual(cmds.getAttr(f"{second_identity}.{ATTR_MMD_BONE_NAME_EN}"), before_second)
+        cmds.redo()
+        self.assertEqual(cmds.getAttr(f"{second_identity}.{ATTR_MMD_BONE_NAME_EN}"), edited_name)
+
 
 
 
