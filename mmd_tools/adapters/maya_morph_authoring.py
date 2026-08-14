@@ -44,6 +44,11 @@ from mmd_tools.core.morph_binding_resolver import (
     MorphBindingResolutionError,
 )
 from mmd_tools.core.morph_authoring import MorphReindexResult, classify_morph_change
+from mmd_tools.core.morph_topology import (
+    TOPOLOGY_VERSION,
+    compute_group_topology,
+    serialize_group_topology,
+)
 from mmd_tools.converters.morph_converter import pmx_vertex_offset_to_maya_tuple
 
 
@@ -1573,15 +1578,15 @@ def _apply_controller_plan(
         if morph.morph_type != "vertex":
             _call(adapter, "connect_attr", f"{controller}.outputWeight[{morph.index}]", f"{morph.binding_identity}.weight", force=True)
 
-    topology = _group_topology(spec)
+    topology = compute_group_topology(spec.morphs)
     _call(adapter, "set_attr", f"{controller}.topologyVersion", lock=False)
-    _call(adapter, "set_attr", f"{controller}.topologyVersion", 1, lock=True)
+    _call(adapter, "set_attr", f"{controller}.topologyVersion", TOPOLOGY_VERSION, lock=True)
     _call(adapter, "set_attr", f"{controller}.groupTopology", lock=False)
     _call(
         adapter,
         "set_attr",
         f"{controller}.groupTopology",
-        json.dumps(topology, separators=(",", ":")),
+        serialize_group_topology(topology),
         type="string",
         lock=True,
     )
@@ -1632,33 +1637,6 @@ def _binding_old_index(plan: Mapping[str, Any], binding: str) -> int:
     if old_indices is not None:
         return int(old_indices[binding])
     _fail(f"missing old controller index for {binding!r}")
-
-
-def _group_topology(spec: MmdModelAuthoringSpec) -> dict[str, list[list[float | int]]]:
-    expanding = {
-        morph.index: morph
-        for morph in spec.morphs
-        if morph.morph_type in {"group", "flip"}
-    }
-    rates: dict[int, dict[int, float]] = {}
-
-    def expand(source: int, current: int, rate: float, path: set[int]) -> None:
-        for offset in expanding[current].offsets:
-            target = int(offset["morph_index"])
-            next_rate = rate * float(offset.get("morph_rate", offset.get("flip_rate", 0.0)))
-            if target in path:
-                continue
-            sources = rates.setdefault(target, {})
-            sources[source] = sources.get(source, 0.0) + next_rate
-            if target in expanding:
-                expand(source, target, next_rate, path | {target})
-
-    for index in expanding:
-        expand(index, index, 1.0, {index})
-    return {
-        str(target): [[source, rate] for source, rate in sorted(sources.items())]
-        for target, sources in sorted(rates.items())
-    }
 
 
 def _write_morph(adapter: Any, node: str, morph: MmdMorphSpec) -> None:

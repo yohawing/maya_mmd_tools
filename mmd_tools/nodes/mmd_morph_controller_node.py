@@ -1,8 +1,8 @@
 """Model-scoped, type-agnostic PMX Group morph weight expansion."""
 
-import json
-
 import maya.api.OpenMaya as om
+
+from mmd_tools.core.morph_topology import TOPOLOGY_VERSION, parse_group_topology
 
 
 class MmdMorphControllerNode(om.MPxNode):
@@ -11,7 +11,7 @@ class MmdMorphControllerNode(om.MPxNode):
     kTypeName = "mmdMorphController"
     kTypeId = om.MTypeId(0x0012800B)
     kClassify = "utility/general"
-    kTopologyVersion = 1
+    kTopologyVersion = TOPOLOGY_VERSION
 
     aInputWeight = None
     aTopologyVersion = None
@@ -71,16 +71,10 @@ class MmdMorphControllerNode(om.MPxNode):
 
     @classmethod
     def _parse_topology(cls, version, source):
-        if version != cls.kTopologyVersion:
-            return {}
-        try:
-            parsed = json.loads(source)
-            return {
-                int(target): [(int(group), float(rate)) for group, rate in sources]
-                for target, sources in parsed.items()
-            }
-        except (AttributeError, TypeError, ValueError):
-            return {}
+        return {
+            int(target): tuple(sources)
+            for target, sources in parse_group_topology(version, source).items()
+        }
 
 
 def creator():

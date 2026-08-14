@@ -4,6 +4,10 @@ from maya import cmds
 from mmd_tools.ui.presenters import morph_presenter as morph_presenter_module
 from mmd_tools.ui.presenters.morph_presenter import MorphPresenter
 from mmd_tools.ui.translations import UITranslator
+from mmd_tools.core.morph_topology import (
+    MorphTopologyDiagnostic,
+    MorphTopologyInspection,
+)
 from tests.common.mock_ui import attach_mocks
 from tests.common.maya_test_base import MayaTestBase
 
@@ -88,6 +92,40 @@ class TestMorphPresenter(MayaTestBase):
         self.assertEqual(self.presenter.morph_data, {})
         self.assertEqual(self.presenter.group_morphs, {})
         self.mock_view.set_morph_details_enabled.assert_called_with(False)
+
+    def test_topology_diagnostic_enables_explicit_repair_without_mutating_load(self):
+        inspection = MorphTopologyInspection(
+            {"1": ((0, 0.5),)},
+            {},
+            (MorphTopologyDiagnostic("stale", "cache differs"),),
+        )
+        coordinator = MagicMock()
+        coordinator.inspect_morph_topology.return_value = inspection
+        self.presenter.authoring_coordinator = coordinator
+
+        self.presenter._inspect_morph_topology("|root")
+
+        coordinator.inspect_morph_topology.assert_called_once_with("|root")
+        coordinator.repair_morph_topology.assert_not_called()
+        self.mock_view.set_topology_repair_state.assert_called_once_with(
+            "stale: cache differs", True
+        )
+        self.assertEqual(self.presenter._controller_topology, {})
+
+    def test_explicit_topology_repair_reloads_only_after_valid_readback(self):
+        inspection = MorphTopologyInspection(
+            {"1": ((0, 0.5),)}, {"1": ((0, 0.5),)}, ()
+        )
+        coordinator = MagicMock()
+        coordinator.repair_morph_topology.return_value = inspection
+        self.presenter.authoring_coordinator = coordinator
+        self.mock_app_state.current_model_root = "|root"
+        self.presenter.load_morphs = MagicMock()
+
+        self.presenter.repair_morph_topology()
+
+        coordinator.repair_morph_topology.assert_called_once_with("|root")
+        self.presenter.load_morphs.assert_called_once_with()
 
     def test_load_morphs_with_model(self):
         """モデルがある場合のモーフロードのテスト"""

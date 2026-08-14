@@ -22,6 +22,11 @@ from ...core.morph_authoring import (
     classify_morph_change,
     swap_adjacent_morphs,
 )
+from ...core.morph_topology import (
+    MorphTopologyError,
+    MorphTopologyInspection,
+    parse_group_topology,
+)
 from ...core.model_authoring_spec import MmdMorphSpec
 from ...core.model_registry import (
     REGISTRY_CATEGORY_MORPH,
@@ -104,6 +109,8 @@ class MorphPresenter:
         self._morphs_by_index = {}
         self._loaded_model_root = None
         self._morph_controller = None
+        self._controller_topology = {}
+        self._topology_inspection = None
         self._authoring_spec = None
         self._authoring_spec_baseline = None
         self._morph_edit_baseline = None
@@ -155,6 +162,7 @@ class MorphPresenter:
             ("create_work_material_btn", "clicked", self.create_work_material),
             ("apply_work_material_btn", "clicked", self.apply_work_material),
             ("clear_work_material_btn", "clicked", self.clear_work_material),
+            ("repair_topology_btn", "clicked", self.repair_morph_topology),
         )
         for widget_name, signal_name, callback in optional_signals:
             widget = getattr(self.view, widget_name, None)
@@ -250,6 +258,11 @@ class MorphPresenter:
         self._morph_edit_baseline = None
         self._authoring_morphs_by_index.clear()
         self._authoring_ready = False
+        self._controller_topology = {}
+        self._topology_inspection = None
+        topology_setter = getattr(self.view, "set_topology_repair_state", None)
+        if callable(topology_setter):
+            topology_setter("", False)
         self.group_morphs.clear()
         self.current_morph = None
         self.view.set_morph_details_enabled(False)
@@ -272,6 +285,7 @@ class MorphPresenter:
                 f"{current_model_root}.mmd_morph_controller", source=True, destination=False
             ) or []
         self._morph_controller = controllers[0] if len(controllers) == 1 else None
+        self._inspect_morph_topology(current_model_root)
 
         # MMDモーフデータを収集
         self._load_mmd_morphs(current_model_root)
@@ -323,6 +337,61 @@ class MorphPresenter:
             )
         self._authoring_available = bool(available)
         self._authoring_ready = False
+
+    def _inspect_morph_topology(self, root):
+        """Project topology diagnostics without repairing during load."""
+        inspect = getattr(self.authoring_coordinator, "inspect_morph_topology", None)
+        setter = getattr(self.view, "set_topology_repair_state", None)
+        if not callable(inspect):
+            if not self._morph_controller:
+                return
+            try:
+                self._controller_topology = dict(
+                    parse_group_topology(
+                        self.maya_adapter.get_attr(
+                            f"{self._morph_controller}.topologyVersion"
+                        ),
+                        self.maya_adapter.get_attr(
+                            f"{self._morph_controller}.groupTopology"
+                        ),
+                    )
+                )
+            except (MorphTopologyError, RuntimeError, ValueError) as exc:
+                self._controller_topology = {}
+                if callable(setter):
+                    setter(f"malformed: {exc}", False)
+            return
+        try:
+            result = inspect(root)
+            if not isinstance(result, MorphTopologyInspection):
+                raise TypeError("invalid morph topology inspection")
+            self._topology_inspection = result
+            self._controller_topology = dict(result.stored) if result.valid else {}
+            diagnostic = "; ".join(
+                f"{item.code}: {item.detail}" for item in result.diagnostics
+            )
+            if callable(setter):
+                setter(diagnostic, result.repairable)
+        except Exception as exc:
+            self._controller_topology = {}
+            logger.error("Failed to inspect morph topology: %s", exc, exc_info=True)
+            if callable(setter):
+                setter(f"malformed: {exc}", False)
+
+    def repair_morph_topology(self):
+        """Run the explicit raw-offset-authoritative repair action."""
+        root = self.app_state.current_model_root
+        repair = getattr(self.authoring_coordinator, "repair_morph_topology", None)
+        if not root or not callable(repair):
+            return
+        try:
+            result = repair(root)
+            if not isinstance(result, MorphTopologyInspection) or not result.valid:
+                raise RuntimeError("topology repair did not produce a valid readback")
+            self.load_morphs()
+        except Exception as exc:
+            logger.error("Failed to repair morph topology: %s", exc, exc_info=True)
+            self._inspect_morph_topology(root)
 
     def _read_authoring_spec(self, root):
         if not self._authoring_available:
@@ -667,14 +736,9 @@ class MorphPresenter:
         if self._morph_controller:
             try:
                 source_index = int(data.get("index", -1))
-                topology = json.loads(self.maya_adapter.get_attr(
-                    f"{self._morph_controller}.groupTopology"
-                ) or "{}")
-            except (RuntimeError, TypeError, ValueError):
+            except (TypeError, ValueError):
                 return False
-            if not isinstance(topology, dict):
-                return False
-            for target, sources in topology.items():
+            for target, sources in self._controller_topology.items():
                 if not any(int(group) == source_index for group, _rate in sources):
                     continue
                 if self._output_weight_connections(int(target)):

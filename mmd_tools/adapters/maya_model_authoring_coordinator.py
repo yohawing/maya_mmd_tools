@@ -44,6 +44,10 @@ from mmd_tools.core.morph_authoring import (
     replace_morph as replace_morph_spec,
     replace_morph_offsets as replace_morph_offsets_spec,
 )
+from mmd_tools.core.morph_topology import (
+    MorphTopologyInspection,
+    serialize_group_topology,
+)
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.constants import ATTR_MMD_DISPLAY_FRAMES_JSON
@@ -118,6 +122,47 @@ class MayaModelAuthoringCoordinator:
     def read_spec(self, model_root: str) -> MmdModelAuthoringSpec:
         """Read the current strict scene specification for UI refreshes."""
         return self._read_current(model_root, "read_spec")
+
+    def inspect_morph_topology(self, model_root: str) -> MorphTopologyInspection:
+        """Return read-only diagnostics for the derived controller cache."""
+        inspect = getattr(self._backend, "inspect_morph_topology", None)
+        if not callable(inspect):
+            raise MayaModelAuthoringCoordinatorError(
+                "morph topology inspection is unavailable"
+            )
+        result = inspect(model_root)
+        if not isinstance(result, MorphTopologyInspection):
+            raise MayaModelAuthoringCoordinatorError(
+                "morph topology inspection returned an invalid result"
+            )
+        return result
+
+    def repair_morph_topology(self, model_root: str) -> MorphTopologyInspection:
+        """Explicitly repair only the derived controller cache."""
+        inspection = self.inspect_morph_topology(model_root)
+        if not inspection.repairable:
+            raise MayaModelAuthoringCoordinatorError("morph topology is not repairable")
+        source = serialize_group_topology(inspection.expected)
+
+        def error_factory(failure: TransactionFailure) -> Exception:
+            return MayaModelAuthoringCoordinatorError(str(failure))
+
+        TransactionRunner[str](
+            "repair_morph_topology",
+            (model_root,),
+            begin=lambda _targets: self._backend.begin_morph_topology_repair(
+                model_root, source
+            ),
+            mutate=lambda _targets: self._backend.apply_morph_topology_repair(
+                model_root, source
+            ),
+            verify_and_commit=lambda result, _targets: self._backend.commit_morph_topology_repair(
+                model_root, result
+            ),
+            rollback=lambda _targets: self._backend.rollback_write(model_root),
+            error_factory=error_factory,
+        ).run()
+        return self.inspect_morph_topology(model_root)
 
     def write_display_frames(self, model_root: str, payload: str) -> str:
         """Persist one display-frame JSON payload without reading the full spec."""

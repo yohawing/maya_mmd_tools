@@ -5,6 +5,7 @@ MorphTab の GUI テスト
 
 import json
 import unittest
+from unittest.mock import MagicMock
 
 from maya import cmds
 
@@ -13,6 +14,7 @@ from mmd_tools.ui.application_state import ApplicationState
 from mmd_tools.ui.presenters.morph_presenter import MorphPresenter
 from mmd_tools.ui.qt_compat import QApplication, Qt
 from mmd_tools.ui.tabs.morph_tab import MorphTab
+from mmd_tools.core.morph_topology import MorphTopologyInspection
 
 
 def _emit_witness(surface_id, locator_key, locator, interaction, fired_action, oracle):
@@ -81,6 +83,71 @@ class TestMorphTabGUI(GuiTestBase):
                 self.assertFalse(hasattr(tab, name), name)
         finally:
             tab.deleteLater()
+
+    def test_topology_repair_action_is_diagnostic_only(self):
+        """Repair is hidden when healthy and explicit when stale."""
+        tab = MorphTab()
+        try:
+            self.assertFalse(tab.repair_topology_btn.isVisible())
+            tab.set_topology_repair_state("stale: controller cache differs", True)
+            tab.show()
+            QApplication.processEvents()
+            self.assertTrue(tab.repair_topology_btn.isVisible())
+            self.assertTrue(tab.repair_topology_btn.isEnabled())
+            self.assertEqual(
+                tab.repair_topology_btn.toolTip(),
+                tab.tr("repair_topology", "tooltips"),
+            )
+            self.assertEqual(
+                tab.topology_diagnostic_label.text(),
+                tab.tr("topology_issue", "labels"),
+            )
+            _emit_witness(
+                "morph.topology_repair",
+                "objectName",
+                "morphRepairTopologyButton",
+                "show stale topology diagnostic",
+                "MorphTab.set_topology_repair_state",
+                "repair action visible and enabled only for repairable diagnostic",
+            )
+        finally:
+            tab.deleteLater()
+
+    def test_topology_repair_button_routes_to_coordinator_and_refresh(self):
+        """The real button invokes explicit repair and refreshes after readback."""
+        cmds.file(new=True, force=True)
+        root = cmds.group(empty=True, name="morphTopologyRepairGuiRoot")
+        tab = MorphTab()
+        state = ApplicationState()
+        state.current_model_root = None
+        coordinator = MagicMock()
+        coordinator.repair_morph_topology.return_value = MorphTopologyInspection(
+            {}, {}, ()
+        )
+        presenter = MorphPresenter(tab, state, authoring_coordinator=coordinator)
+        presenter.load_morphs = MagicMock()
+        state.current_model_root = root
+        QApplication.processEvents()
+        presenter.load_morphs.reset_mock()
+        try:
+            tab.set_topology_repair_state("stale: controller cache differs", True)
+            tab.repair_topology_btn.click()
+            QApplication.processEvents()
+            coordinator.repair_morph_topology.assert_called_once_with(
+                state.current_model_root
+            )
+            presenter.load_morphs.assert_called_once_with()
+            _emit_witness(
+                "morph.topology_repair.action",
+                "objectName",
+                "morphRepairTopologyButton",
+                "click repair topology",
+                "MorphPresenter.repair_morph_topology",
+                "coordinator repair completed before one presenter refresh",
+            )
+        finally:
+            tab.deleteLater()
+            cmds.delete(root)
 
     def test_mouth_alias_slider_updates_canonical_blendshape_weight(self):
         """MorphTab の実 slider signal が Mouth_A01 の weight[0] を更新する。"""

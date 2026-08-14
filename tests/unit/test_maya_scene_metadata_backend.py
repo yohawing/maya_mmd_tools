@@ -25,6 +25,7 @@ class FakeCmds:
         self.descendants: list[str] = []
         self.meshes: list[str] = []
         self.attrs: dict[tuple[str, str], Any] = {}
+        self.locks: dict[tuple[str, str], bool] = {}
         self.node_types: dict[str, str] = {"|root": "transform"}
         self.connections: dict[tuple[str, str | None], list[str]] = {}
         self.history: dict[str, list[str]] = {}
@@ -33,6 +34,7 @@ class FakeCmds:
         self.long_names: dict[str, str] = {}
         self.undo_enabled = True
         self.undo_snapshot: dict[tuple[str, str], Any] | None = None
+        self.undo_lock_snapshot: dict[tuple[str, str], bool] | None = None
         self.undo_chunk_open = False
         self.write_history: list[str] = []
         self.fail_set_path: str | None = None
@@ -59,6 +61,8 @@ class FakeCmds:
 
     def get_attr(self, path: str, **kwargs: Any) -> Any:
         node, attr = path.rsplit(".", 1)
+        if kwargs.get("lock"):
+            return self.locks.get((node, attr), False)
         if kwargs.get("multiIndices"):
             return self.attrs.get((node, attr), [])
         return self.attrs[(node, attr)]
@@ -101,6 +105,10 @@ class FakeCmds:
         if path == self.ignore_set_path:
             return
         node, attr = path.rsplit(".", 1)
+        if "lock" in kwargs:
+            self.locks[(node, attr)] = bool(kwargs["lock"])
+        if not values and "lock" in kwargs:
+            return
         if kwargs.get("type") == "double3":
             self.attrs[(node, attr)] = [tuple(values)]
         else:
@@ -121,6 +129,7 @@ class FakeCmds:
             if self.undo_chunk_open:
                 raise RuntimeError("chunk already open")
             self.undo_snapshot = deepcopy(self.attrs)
+            self.undo_lock_snapshot = deepcopy(self.locks)
             self.undo_chunk_open = True
             return None
         if kwargs.get("closeChunk"):
@@ -137,6 +146,7 @@ class FakeCmds:
         if self.undo_snapshot is None:
             raise RuntimeError("nothing to undo")
         self.attrs = self.undo_snapshot
+        self.locks = self.undo_lock_snapshot or {}
         self.undo_snapshot = None
 
     def ls(self, *nodes: str, **kwargs: Any) -> list[str]:
@@ -1122,6 +1132,90 @@ def test_invalid_registry_never_falls_back_to_legacy_morph() -> None:
 
     with pytest.raises(MayaSceneMetadataError, match="unsupported registry schema"):
         list(backend.iter_morph_metadata("|root"))
+
+
+def _topology_scene() -> tuple[FakeCmds, MayaSceneMetadataBackend]:
+    cmds, backend = _backend()
+    _morph(cmds, "groupMorph", "group", [{"morph_index": 1, "morph_rate": 0.5}], index=0)
+    _morph(cmds, "boneMorph", "bone", [], index=1)
+    _registry(cmds, morph_members=["groupMorph", "boneMorph"])
+    cmds.nodes.add("controller")
+    cmds.node_types["controller"] = "mmdMorphController"
+    cmds.connections[("|root.mmd_morph_controller", None)] = ["controller"]
+    cmds.attrs[("controller", "topologyVersion")] = 1
+    cmds.attrs[("controller", "groupTopology")] = "{}"
+    return cmds, backend
+
+
+def test_morph_topology_inspection_is_read_only_and_reports_stale() -> None:
+    cmds, backend = _topology_scene()
+    before = deepcopy(cmds.attrs)
+
+    inspection = backend.inspect_morph_topology("|root")
+
+    assert inspection.repairable
+    assert inspection.diagnostics[0].code == "stale"
+    assert cmds.attrs == before
+    assert cmds.write_history == []
+
+
+def test_legacy_vertex_topology_inspection_uses_narrow_projection() -> None:
+    cmds, backend = _backend()
+    _morph(cmds, "legacyVertex", "vertex", [], legacy_root=True)
+    cmds.nodes.add("controller")
+    cmds.node_types["controller"] = "mmdMorphController"
+    cmds.attrs[("|root", "mmd_morph_controller")] = True
+    cmds.connections[("|root.mmd_morph_controller", None)] = ["controller"]
+    cmds.attrs[("controller", "topologyVersion")] = 1
+    cmds.attrs[("controller", "groupTopology")] = "{}"
+
+    inspection = backend.inspect_morph_topology("|root")
+
+    assert inspection.valid
+    assert cmds.write_history == []
+
+
+def test_morph_topology_repair_exact_readback_and_undo() -> None:
+    cmds, backend = _topology_scene()
+    expected = '{"1":[[0,0.5]]}'
+
+    backend.begin_morph_topology_repair("|root", expected)
+    backend.apply_morph_topology_repair("|root", expected)
+    backend.commit_morph_topology_repair("|root", expected)
+
+    assert cmds.attrs[("controller", "groupTopology")] == expected
+    assert backend.inspect_morph_topology("|root").valid
+    cmds.undo()
+    assert cmds.attrs[("controller", "groupTopology")] == "{}"
+
+
+def test_morph_topology_repair_readback_failure_rolls_back_once() -> None:
+    cmds, backend = _topology_scene()
+    expected = '{"1":[[0,0.5]]}'
+    cmds.ignore_set_path = "controller.groupTopology"
+
+    backend.begin_morph_topology_repair("|root", expected)
+    backend.apply_morph_topology_repair("|root", expected)
+    with pytest.raises(MayaSceneMetadataError, match="readback mismatch"):
+        backend.commit_morph_topology_repair("|root", expected)
+    backend.rollback_write("|root")
+
+    assert cmds.undo_count == 1
+    assert cmds.attrs[("controller", "groupTopology")] == "{}"
+
+
+def test_morph_topology_repair_first_write_failure_does_not_undo_prior_action() -> None:
+    cmds, backend = _topology_scene()
+    expected = '{"1":[[0,0.5]]}'
+    cmds.fail_set_path = "controller.topologyVersion"
+
+    backend.begin_morph_topology_repair("|root", expected)
+    with pytest.raises(MayaSceneMetadataError, match="injected set failure"):
+        backend.apply_morph_topology_repair("|root", expected)
+    backend.rollback_write("|root")
+
+    assert cmds.undo_count == 0
+    assert cmds.attrs[("controller", "groupTopology")] == "{}"
 
 
 def _writable_scene() -> tuple[FakeCmds, MayaSceneMetadataBackend, SceneMetadataAdapter]:

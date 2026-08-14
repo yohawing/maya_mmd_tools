@@ -101,6 +101,12 @@ from mmd_tools.core.model_authoring_spec import (
     MmdModelAuthoringSpec,
     MmdMorphSpec,
 )
+from mmd_tools.core.morph_topology import (
+    TOPOLOGY_VERSION,
+    MorphTopologyInspection,
+    inspect_group_topology,
+    serialize_group_topology,
+)
 
 
 logger = get_logger(__name__)
@@ -122,6 +128,138 @@ class MayaSceneMetadataBackend:
     """Read model, material, PMX bone, and morph metadata from an adapter."""
 
     _MATERIAL_MORPH_OFFSETS_JSON = "mmd_material_morph_offsets_json"
+
+    def inspect_morph_topology(self, model_root: str) -> MorphTopologyInspection:
+        """Inspect derived controller topology without changing the scene."""
+        self._require_root(model_root)
+        root = self._material_identity(model_root)
+        members = self._registry_morph_members(root)
+        if members is None:
+            members = self._legacy_morph_members(root)
+        morphs = []
+        for member in members:
+            node = self._material_identity(member)
+            morph_type = self._required_string(node, "mmd_morph_type")
+            offsets = []
+            if morph_type in {"group", "flip"}:
+                attr = {
+                    "group": "mmd_group_morph_offsets_json",
+                    "flip": ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
+                }[morph_type]
+                offsets = self._required_morph_offsets(node, attr, morph_type)
+            morphs.append(
+                {
+                    "index": self._required_int(
+                        node, "mmd_morph_index", minimum=0
+                    ),
+                    "morph_type": morph_type,
+                    "offsets": offsets,
+                }
+            )
+        controllers = self._list_connections(
+            f"{root}.mmd_morph_controller", source=True, destination=False
+        )
+        if len(controllers) != 1:
+            raise MayaSceneMetadataError(
+                "morph topology inspection requires exactly one morph controller"
+            )
+        controller = self._material_identity(controllers[0])
+        version = self._call_adapter("get_attr", f"{controller}.topologyVersion")
+        source = self._call_adapter("get_attr", f"{controller}.groupTopology")
+        return inspect_group_topology(morphs, version, source)
+
+    def begin_morph_topology_repair(self, model_root: str, expected_source: str) -> None:
+        """Open an explicit derived-topology-only repair transaction."""
+        if self._write_transaction is not None:
+            raise MayaSceneMetadataError("a metadata write transaction is already active")
+        inspection = self.inspect_morph_topology(model_root)
+        if not inspection.repairable:
+            raise MayaSceneMetadataError("morph topology is not repairable")
+        canonical = serialize_group_topology(inspection.expected)
+        if expected_source != canonical:
+            raise MayaSceneMetadataError("morph topology repair target is stale")
+        root = self._material_identity(model_root)
+        controllers = self._list_connections(
+            f"{root}.mmd_morph_controller", source=True, destination=False
+        )
+        controller = self._material_identity(controllers[0])
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError("Maya undo must be enabled for morph topology repair")
+        original = {
+            "version": self._call_adapter("get_attr", f"{controller}.topologyVersion"),
+            "source": self._call_adapter("get_attr", f"{controller}.groupTopology"),
+            "version_locked": bool(
+                self._call_adapter(
+                    "get_attr", f"{controller}.topologyVersion", lock=True
+                )
+            ),
+            "source_locked": bool(
+                self._call_adapter(
+                    "get_attr", f"{controller}.groupTopology", lock=True
+                )
+            ),
+        }
+        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Morph Topology Repair")
+        self._write_transaction = {
+            "root": root,
+            "kind": "morph_topology_repair",
+            "controller": controller,
+            "original_values": original,
+            "expected_source": canonical,
+            "chunk_open": True,
+            "mutated": False,
+        }
+
+    def apply_morph_topology_repair(self, model_root: str, expected_source: str) -> str:
+        """Write only the two derived controller cache attributes."""
+        transaction = self._active_transaction(model_root)
+        if transaction.get("kind") != "morph_topology_repair":
+            raise MayaSceneMetadataError("active transaction is not a morph topology repair")
+        if expected_source != transaction["expected_source"]:
+            raise MayaSceneMetadataError("morph topology repair target changed")
+        controller = transaction["controller"]
+        self._call_adapter("set_attr", f"{controller}.topologyVersion", lock=False)
+        transaction["mutated"] = True
+        self._call_adapter("set_attr", f"{controller}.topologyVersion", TOPOLOGY_VERSION, lock=True)
+        self._call_adapter("set_attr", f"{controller}.groupTopology", lock=False)
+        self._call_adapter(
+            "set_attr", f"{controller}.groupTopology", expected_source, type="string", lock=True
+        )
+        return expected_source
+
+    def commit_morph_topology_repair(self, model_root: str, result: str) -> None:
+        """Exact-readback and close an explicit topology repair."""
+        transaction = self._active_transaction(model_root)
+        if transaction.get("kind") != "morph_topology_repair":
+            raise MayaSceneMetadataError("active transaction is not a morph topology repair")
+        controller = transaction["controller"]
+        actual = {
+            "version": self._call_adapter("get_attr", f"{controller}.topologyVersion"),
+            "source": self._call_adapter("get_attr", f"{controller}.groupTopology"),
+            "version_locked": bool(
+                self._call_adapter(
+                    "get_attr", f"{controller}.topologyVersion", lock=True
+                )
+            ),
+            "source_locked": bool(
+                self._call_adapter(
+                    "get_attr", f"{controller}.groupTopology", lock=True
+                )
+            ),
+        }
+        expected = {
+            "version": TOPOLOGY_VERSION,
+            "source": transaction["expected_source"],
+            "version_locked": True,
+            "source_locked": True,
+        }
+        if result != transaction["expected_source"] or actual != expected:
+            raise MayaSceneMetadataError("morph topology repair readback mismatch")
+        inspection = self.inspect_morph_topology(model_root)
+        if not inspection.valid:
+            raise MayaSceneMetadataError("morph topology remains invalid after repair")
+        self._call_adapter("undo_info", closeChunk=True)
+        self._write_transaction = None
 
     _DIFFUSE_ALPHA = "mmd_diffuse_alpha"
     _EDGE_ALPHA = "mmd_edge_alpha"
@@ -1923,6 +2061,33 @@ class MayaSceneMetadataBackend:
 
     def rollback_write(self, model_root: str) -> None:
         transaction = self._active_transaction(model_root)
+        if transaction.get("kind") == "morph_topology_repair":
+            try:
+                if transaction["chunk_open"]:
+                    self._call_adapter("undo_info", closeChunk=True)
+                    transaction["chunk_open"] = False
+                if transaction["mutated"]:
+                    self._call_adapter("undo")
+            finally:
+                self._write_transaction = None
+            controller = transaction["controller"]
+            actual = {
+                "version": self._call_adapter("get_attr", f"{controller}.topologyVersion"),
+                "source": self._call_adapter("get_attr", f"{controller}.groupTopology"),
+                "version_locked": bool(
+                    self._call_adapter(
+                        "get_attr", f"{controller}.topologyVersion", lock=True
+                    )
+                ),
+                "source_locked": bool(
+                    self._call_adapter(
+                        "get_attr", f"{controller}.groupTopology", lock=True
+                    )
+                ),
+            }
+            if actual != transaction["original_values"]:
+                raise MayaSceneMetadataError("morph topology rollback preimage mismatch")
+            return
         if transaction.get("kind") == "display_frames":
             try:
                 if transaction["chunk_open"]:

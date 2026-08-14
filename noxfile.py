@@ -2311,6 +2311,19 @@ def maya_vertex_morph_authoring_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_morph_topology_repair_smoke(session: nox.Session) -> None:
+    """Verify explicit topology repair and Undo in Maya standalone."""
+    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_version)
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tools/maya_morph_topology_repair_smoke.py"),
+        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def maya_model_template_smoke(session: nox.Session) -> None:
     """Create both packaged model templates in Maya standalone and verify them.
 

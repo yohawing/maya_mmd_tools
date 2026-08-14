@@ -24,6 +24,14 @@ from mmd_tools.core.constants import (
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
 )
 from mmd_tools.core.morph_metadata_reader import PMX_MORPH_TYPE_NAMES
+from mmd_tools.core.morph_topology import (
+    TOPOLOGY_VERSION,
+    compute_group_topology,
+    inspect_group_topology,
+    MorphTopologyError,
+    parse_raw_offsets_json,
+    serialize_group_topology,
+)
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.converters.morph_scene_metadata import (
     iter_morph_network_metadata,
@@ -346,38 +354,22 @@ class MorphConverter:
             )
             cmds.aliasAttr(alias, input_plug)
 
-        weight_expanding_morphs = {
-            index: morph
-            for index, morph in enumerate(pmx_data.morphs)
-            if morph.morph_type in (PmxMorphType.GroupMorph, PmxMorphType.FlipMorph)
-        }
-        group_rates: Dict[int, Dict[int, float]] = {}
-
-        def expand(source: int, current: int, rate: float, path: Set[int]) -> None:
-            for offset in getattr(weight_expanding_morphs[current], "offsets", []):
-                try:
-                    target = int(offset["morph_index"])
-                    offset_rate = offset.get("morph_rate", offset.get("flip_rate", 0.0))
-                    next_rate = rate * float(offset_rate)
-                except (KeyError, TypeError, ValueError):
-                    continue
-                if target in path:
-                    continue
-                sources = group_rates.setdefault(target, {})
-                sources[source] = sources.get(source, 0.0) + next_rate
-                if target in weight_expanding_morphs:
-                    expand(source, target, next_rate, path | {target})
-
-        for morph_index in weight_expanding_morphs:
-            expand(morph_index, morph_index, 1.0, {morph_index})
-        topology = {
-            str(target): [[source, rate] for source, rate in sorted(sources.items())]
-            for target, sources in sorted(group_rates.items())
-        }
-        cmds.setAttr(f"{controller}.topologyVersion", 1, lock=True)
+        topology_rows = []
+        for index, morph in enumerate(pmx_data.morphs):
+            morph_type = {
+                PmxMorphType.GroupMorph: "group",
+                PmxMorphType.FlipMorph: "flip",
+            }.get(morph.morph_type, "leaf")
+            topology_rows.append({
+                "index": index,
+                "morph_type": morph_type,
+                "offsets": tuple(getattr(morph, "offsets", ())),
+            })
+        topology = compute_group_topology(topology_rows)
+        cmds.setAttr(f"{controller}.topologyVersion", TOPOLOGY_VERSION, lock=True)
         cmds.setAttr(
             f"{controller}.groupTopology",
-            json.dumps(topology, separators=(",", ":")),
+            serialize_group_topology(topology),
             type="string",
             lock=True,
         )
@@ -617,6 +609,8 @@ class MorphConverter:
                     )
                     continue
                 if not cmds.attributeQuery(offsets_attr, node=morph_node, exists=True):
+                    if metadata.morph_type in {"group", "flip"}:
+                        raise ValueError(f"missing {offsets_attr} attribute")
                     self.logger.warning(
                         f"skip morph node {morph_node}: missing {offsets_attr} attribute"
                     )
@@ -624,12 +618,22 @@ class MorphConverter:
 
                 try:
                     offsets_json = cmds.getAttr(f"{morph_node}.{offsets_attr}")
-                    offsets = json.loads(offsets_json) if offsets_json else []
-                except (TypeError, json.JSONDecodeError) as e:
+                    offsets = (
+                        parse_raw_offsets_json(offsets_json)
+                        if metadata.morph_type in {"group", "flip"}
+                        else json.loads(offsets_json) if offsets_json else []
+                    )
+                except (TypeError, json.JSONDecodeError, MorphTopologyError) as e:
+                    if metadata.morph_type in {"group", "flip"}:
+                        raise ValueError(f"invalid JSON in {offsets_attr}: {e}") from e
                     self.logger.warning(f"skip morph node {morph_node}: invalid JSON in {offsets_attr}: {e}")
                     continue
 
                 if not isinstance(offsets, list):
+                    if metadata.morph_type in {"group", "flip"}:
+                        raise ValueError(
+                            f"{offsets_attr} data must be list, got {type(offsets).__name__}"
+                        )
                     self.logger.warning(
                         f"skip morph node {morph_node}: offsets data must be list, got {type(offsets).__name__}"
                     )
@@ -646,12 +650,38 @@ class MorphConverter:
                     morph_payload["index"] = metadata.index
                 morphs.append(morph_payload)
             except Exception as e:
+                if metadata.morph_type in {"group", "flip"}:
+                    raise ValueError(
+                        f"morph_topology:malformed:{morph_node}:{e}"
+                    ) from e
                 self.logger.warning(f"skip morph node {morph_node}: {e}")
 
         return _order_morphs_by_index_if_grouped(
             morphs,
             require_contiguous=require_contiguous,
         )
+
+    @staticmethod
+    def validate_controller_topology_for_export(
+        root_group: str, morphs: List[Dict[str, Any]]
+    ) -> None:
+        """Fail export closed when the derived controller cache is invalid."""
+        if not cmds.attributeQuery("mmd_morph_controller", node=root_group, exists=True):
+            return
+        controllers = cmds.listConnections(
+            f"{root_group}.mmd_morph_controller", source=True, destination=False
+        ) or []
+        if len(controllers) != 1:
+            raise ValueError("morph_topology:malformed:controller ownership is ambiguous")
+        controller = controllers[0]
+        inspection = inspect_group_topology(
+            morphs,
+            cmds.getAttr(f"{controller}.topologyVersion"),
+            cmds.getAttr(f"{controller}.groupTopology"),
+        )
+        if inspection.diagnostics:
+            diagnostic = inspection.diagnostics[0]
+            raise ValueError(f"morph_topology:{diagnostic.code}:{diagnostic.detail}")
 
     @staticmethod
     def _raw_morph_name(morph) -> str:

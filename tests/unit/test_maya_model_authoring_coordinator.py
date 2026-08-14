@@ -20,6 +20,10 @@ from mmd_tools.core.model_authoring_spec import (
     MmdMorphSpec,
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+from mmd_tools.core.morph_topology import (
+    MorphTopologyDiagnostic,
+    MorphTopologyInspection,
+)
 
 
 def _spec() -> MmdModelAuthoringSpec:
@@ -46,6 +50,38 @@ class FakeBackend:
         self.rollback_count = 0
         self.fail_section: str | None = None
         self.display_payload = "old"
+        self.topology_source = "{}"
+        self.topology_fail_commit = False
+
+    def inspect_morph_topology(self, _root: str) -> MorphTopologyInspection:
+        expected = {"1": ((0, 0.5),)}
+        if self.topology_source == '{"1":[[0,0.5]]}':
+            return MorphTopologyInspection(expected, expected, ())
+        return MorphTopologyInspection(
+            expected,
+            {},
+            (MorphTopologyDiagnostic("stale", "stale"),),
+        )
+
+    def begin_morph_topology_repair(self, _root: str, source: str) -> None:
+        self.active = True
+        self.snapshot = self.scene
+        self._topology_snapshot = self.topology_source
+        self._topology_target = source
+        self.events.append("begin:topology")
+
+    def apply_morph_topology_repair(self, _root: str, source: str) -> str:
+        assert self.active and source == self._topology_target
+        self.topology_source = source
+        self.events.append("apply:topology")
+        return source
+
+    def commit_morph_topology_repair(self, _root: str, result: str) -> None:
+        self.events.append("commit:topology")
+        if self.topology_fail_commit:
+            raise RuntimeError("topology readback failed")
+        assert result == self.topology_source
+        self.active = False
 
     def begin_write(self, _root: str) -> None:
         if self.active:
@@ -164,6 +200,8 @@ class FakeBackend:
 
     def rollback_write(self, _root: str) -> None:
         assert self.active and self.snapshot is not None
+        if hasattr(self, "_topology_snapshot"):
+            self.topology_source = self._topology_snapshot
         self.scene = self.snapshot
         self.active = False
         self.rollback_count += 1
@@ -503,6 +541,31 @@ def _assert_one_successful_transaction(backend: FakeBackend) -> None:
     assert backend.rollback_count == 0
     assert backend.events.count("begin") == 1
     assert backend.events[-1] == "commit"
+
+
+def test_repair_morph_topology_uses_explicit_transaction_and_returns_clean_inspection() -> None:
+    coordinator, backend, _, _ = _coordinator()
+
+    result = coordinator.repair_morph_topology("|root")
+
+    assert result.valid
+    assert backend.topology_source == '{"1":[[0,0.5]]}'
+    assert backend.events[-3:] == [
+        "begin:topology",
+        "apply:topology",
+        "commit:topology",
+    ]
+
+
+def test_repair_morph_topology_commit_failure_rolls_back_exactly_once() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    backend.topology_fail_commit = True
+
+    with pytest.raises(MayaModelAuthoringCoordinatorError, match="verify/commit"):
+        coordinator.repair_morph_topology("|root")
+
+    assert backend.topology_source == "{}"
+    assert backend.rollback_count == 1
 
 
 def test_read_spec_rehydrates_a_strict_previous_module_generation() -> None:

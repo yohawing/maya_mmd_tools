@@ -91,6 +91,15 @@ class MorphTab(BaseTab):
         self.refresh_morphs_btn = self.morph_refresh_toolbar.button("refresh")
         self.refresh_morphs_btn.setObjectName("morphRefreshButton")
         toolbar_layout.addWidget(self.morph_refresh_toolbar)
+        self.topology_diagnostic_label = QLabel("")
+        self.topology_diagnostic_label.setObjectName("morphTopologyDiagnosticLabel")
+        self.repair_topology_btn = QPushButton(self.tr("repair_topology", "buttons"))
+        self.repair_topology_btn.setObjectName("morphRepairTopologyButton")
+        self.repair_topology_btn.setVisible(False)
+        self.repair_topology_btn.setEnabled(False)
+        self.topology_diagnostic_label.setVisible(False)
+        toolbar_layout.addWidget(self.topology_diagnostic_label)
+        toolbar_layout.addWidget(self.repair_topology_btn)
         self.morph_authoring_toolbar = AuthoringToolbar(
             actions=("create", "delete", "move_up", "move_down"),
             labels={
@@ -356,6 +365,22 @@ class MorphTab(BaseTab):
             widget.setEnabled(active)
             widget.setToolTip(tooltip)
 
+    def set_topology_repair_state(self, diagnostic="", repairable=False):
+        """Show the compact explicit repair action only for a diagnostic."""
+        visible = bool(diagnostic)
+        self.topology_diagnostic_label.setText(
+            self.tr("topology_issue", "labels") if visible else ""
+        )
+        self.topology_diagnostic_label.setToolTip(diagnostic)
+        self.topology_diagnostic_label.setVisible(visible)
+        self.repair_topology_btn.setVisible(visible)
+        self.repair_topology_btn.setEnabled(bool(visible and repairable))
+        self.repair_topology_btn.setToolTip(
+            self.tr("repair_topology", "tooltips")
+            if repairable
+            else diagnostic
+        )
+
     def choose_create_morph_type(self, capabilities):
         """Show creation-only morph types and return the selected PMX type."""
         if callable(self.create_morph_type_provider):
@@ -403,6 +428,7 @@ class MorphTab(BaseTab):
         self.create_work_material_btn.setText(self.tr("create_work_material", "buttons"))
         self.apply_work_material_btn.setText(self.tr("apply_work_material", "buttons"))
         self.clear_work_material_btn.setText(self.tr("clear_work_material", "buttons"))
+        self.repair_topology_btn.setText(self.tr("repair_topology", "buttons"))
 
         # ComboBox items - Panel
         self.panel_combo.clear()

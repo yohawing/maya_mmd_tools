@@ -2228,12 +2228,18 @@ class ExportSceneCollector:
             vertex_offset += len(mesh_vertices)
 
         morphs = list(vertex_morphs_by_name.values())
+        morph_converter = MorphConverter()
         morphs.extend(
-            MorphConverter().collect_morphs_from_scene_for_export(
+            morph_converter.collect_morphs_from_scene_for_export(
                 root_group=root,
                 require_contiguous=False,
             )
         )
+        topology_validator = getattr(
+            morph_converter, "validate_controller_topology_for_export", None
+        )
+        if callable(topology_validator):
+            topology_validator(root, morphs)
         morphs = _order_morphs_by_index_if_grouped(
             morphs,
             strip_index=True,

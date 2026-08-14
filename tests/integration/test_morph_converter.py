@@ -1367,6 +1367,39 @@ class TestMorphConverter(MayaTestBase):
             *(result.get("material_morph_nodes", [])),
         )
 
+    def test_export_collection_rejects_malformed_group_authority(self):
+        mesh_name = self._create_test_mesh()
+
+        class FakeGroupMorph:
+            name = "broken_group"
+            name_english = ""
+            panel = 4
+            morph_type = PmxMorphType.GroupMorph
+            offsets = [{"morph_index": 0, "morph_rate": 0.5}]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type("FakePmxData", (), {"morphs": [FakeGroupMorph()]})()
+        converter = MorphConverter()
+        result = converter.convert_pmx_morphs(fake_data, mesh_name)
+        group_node = result["group_morph_nodes"][0]
+        cmds.setAttr(
+            f"{group_node}.mmd_group_morph_offsets_json",
+            "{broken",
+            type="string",
+        )
+
+        with self.assertRaisesRegex(ValueError, "morph_topology:malformed"):
+            converter.collect_morphs_from_scene_for_export()
+        cmds.setAttr(
+            f"{group_node}.mmd_group_morph_offsets_json",
+            '[{"morph_index":0,"morph_index":1,"morph_rate":0.5}]',
+            type="string",
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate raw offset field"):
+            converter.collect_morphs_from_scene_for_export()
+
     def test_simple_blendshape_creation(self):
         """シンプルなblendShape作成のテスト（Mayaの基本機能確認）"""
         # ベースメッシュを作成
