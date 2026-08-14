@@ -23,6 +23,7 @@ from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.ui.qt_compat import QApplication, QT_BINDING, Qt
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from tests.common.maya_plugin_setup import load_mmd_tools_plugin
+from tests.common.ui_action_coverage import build_surface_witness
 
 if QT_BINDING == "PySide6":
     from PySide6.QtTest import QTest
@@ -38,8 +39,10 @@ class QSignalSpy:
     GUI checks without depending on a binding-specific testing helper.
     """
 
-    def __init__(self, signal):
+    def __init__(self, signal, source_control=None, action_name="unassigned"):
         self._count = 0
+        self.action_name = action_name
+        self.source_control = source_control
         signal.connect(self._on_signal)
 
     def _on_signal(self, *_args):
@@ -47,6 +50,18 @@ class QSignalSpy:
 
     def count(self):
         return self._count
+
+    @property
+    def action_count(self):
+        return self._count
+
+
+_LAST_ACTION = [None, None]
+
+
+def _remember_action(spy, control):
+    _LAST_ACTION[:] = [spy, control]
+    return spy
 
 
 DISPLAY_SURFACES = {
@@ -113,6 +128,7 @@ def _qtest_click(widget, signal=None):
 
     signal = signal or widget.clicked
     spy = QSignalSpy(signal)
+    _remember_action(spy, widget)
     widget.setFocus()
     QTest.mouseClick(widget, Qt.LeftButton)
     QApplication.processEvents()
@@ -141,6 +157,7 @@ def _qtest_list_row(list_widget, row):
         key = Qt.Key_Down
     list_widget.setFocus()
     spy = QSignalSpy(list_widget.currentRowChanged)
+    _remember_action(spy, list_widget)
     QTest.keyClick(list_widget, key)
     QApplication.processEvents()
     if list_widget.currentRow() != row:
@@ -150,7 +167,7 @@ def _qtest_list_row(list_widget, row):
     return _spy_count(spy)
 
 
-def _qtest_set_combo_index(combo, index):
+def _qtest_set_combo_index(combo, index, action_name="unassigned"):
     """Choose a combo entry with keyboard events and return signal count."""
 
     if not 0 <= index < combo.count():
@@ -160,7 +177,12 @@ def _qtest_set_combo_index(combo, index):
         raise AssertionError(
             f"combo index transition must be adjacent: current={current}, target={index}"
         )
-    spy = QSignalSpy(combo.currentIndexChanged)
+    spy = QSignalSpy(
+        combo.currentIndexChanged,
+        source_control=combo,
+        action_name=action_name,
+    )
+    _remember_action(spy, combo)
     QTest.mouseClick(combo, Qt.LeftButton)
     key = Qt.Key_Down if index > current else Qt.Key_Up
     QTest.keyClick(combo, key)
@@ -249,19 +271,27 @@ class TestDisplayPaneRemainingGUI(GuiTestBase):
         finally:
             super().tearDown()
 
-    def _witness(self, surface_id, interaction, fired_action, oracle, action_count=1):
-        payload = {
-            "surface_id": surface_id,
-            "case_id": "gui.display_pane_tab",
-            "selector": DISPLAY_SURFACES[surface_id],
-            "status": "pass",
-            "runtime_witness": {
-                "interaction": interaction,
-                "fired_action": fired_action,
-                "oracle": oracle,
-                "action_count": int(action_count),
-            },
-        }
+    def _witness(
+        self,
+        surface_id,
+        interaction,
+        fired_action,
+        oracle,
+        action_spy=None,
+        control=None,
+    ):
+        if action_spy is None or control is None:
+            action_spy, control = _LAST_ACTION
+            action_spy.action_name = fired_action
+        payload = build_surface_witness(
+            surface_id=surface_id,
+            case_id="gui.display_pane_tab",
+            selector=DISPLAY_SURFACES[surface_id],
+            interaction=interaction,
+            oracle=oracle,
+            action_spy=action_spy,
+            control=control,
+        )
         print(
             "[UI COVERAGE WITNESS] "
             + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -363,6 +393,7 @@ class TestDisplayPaneRemainingGUI(GuiTestBase):
 
         self.assertEqual(_qtest_list_row(view.frame_list, 2), 1)
         item_spy = QSignalSpy(view.item_table.itemSelectionChanged)
+        _remember_action(item_spy, view.item_table)
         item_rect = view.item_table.visualItemRect(view.item_table.item(0, 0))
         QTest.mouseClick(view.item_table.viewport(), Qt.LeftButton, pos=item_rect.center())
         QApplication.processEvents()
@@ -406,6 +437,7 @@ class TestDisplayPaneRemainingGUI(GuiTestBase):
         view.name_en_edit.setText("Display Coverage Frame")
         before = _display_payload(self.root)
         apply_spy = QSignalSpy(view.apply_btn.clicked)
+        _remember_action(apply_spy, view.apply_btn)
         QTest.mouseClick(view.apply_btn, Qt.LeftButton)
         QApplication.processEvents()
         self.assertEqual(_spy_count(apply_spy), 1)
@@ -437,6 +469,7 @@ class TestDisplayPaneRemainingGUI(GuiTestBase):
         # in-memory list.  A one-click signal spy proves exactly one action.
         view.name_en_edit.setText("stale work copy")
         refresh_spy = QSignalSpy(view.refresh_btn.clicked)
+        _remember_action(refresh_spy, view.refresh_btn)
         QTest.mouseClick(view.refresh_btn, Qt.LeftButton)
         QApplication.processEvents()
         self.assertEqual(_spy_count(refresh_spy), 1)
@@ -477,19 +510,27 @@ class TestPhysicsRemainingGUI(GuiTestBase):
         finally:
             super().tearDown()
 
-    def _witness(self, surface_id, interaction, fired_action, oracle, action_count=1):
-        payload = {
-            "surface_id": surface_id,
-            "case_id": "gui.physics_tab",
-            "selector": PHYSICS_SURFACES[surface_id],
-            "status": "pass",
-            "runtime_witness": {
-                "interaction": interaction,
-                "fired_action": fired_action,
-                "oracle": oracle,
-                "action_count": int(action_count),
-            },
-        }
+    def _witness(
+        self,
+        surface_id,
+        interaction,
+        fired_action,
+        oracle,
+        action_spy=None,
+        control=None,
+    ):
+        if action_spy is None or control is None:
+            action_spy, control = _LAST_ACTION
+            action_spy.action_name = fired_action
+        payload = build_surface_witness(
+            surface_id=surface_id,
+            case_id="gui.physics_tab",
+            selector=PHYSICS_SURFACES[surface_id],
+            interaction=interaction,
+            oracle=oracle,
+            action_spy=action_spy,
+            control=control,
+        )
         print(
             "[UI COVERAGE WITNESS] "
             + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -503,6 +544,7 @@ class TestPhysicsRemainingGUI(GuiTestBase):
 
         # Refresh is a real signal and should preserve both populated lists.
         refresh_spy = QSignalSpy(view.refresh_btn.clicked)
+        _remember_action(refresh_spy, view.refresh_btn)
         QTest.mouseClick(view.refresh_btn, Qt.LeftButton)
         QApplication.processEvents()
         self.assertEqual(_spy_count(refresh_spy), 1)
@@ -568,6 +610,7 @@ class TestPhysicsRemainingGUI(GuiTestBase):
         # provably fired exactly once.  Clearing is cleanup, not a second
         # reported action.
         rigid_search_spy = QSignalSpy(view.rigid_body_search_edit.textChanged)
+        _remember_action(rigid_search_spy, view.rigid_body_search_edit)
         QTest.mouseClick(view.rigid_body_search_edit, Qt.LeftButton)
         QTest.keyClicks(view.rigid_body_search_edit, "~")
         QApplication.processEvents()
@@ -581,7 +624,10 @@ class TestPhysicsRemainingGUI(GuiTestBase):
         )
         view.rigid_body_search_edit.clear()
 
+        view.list_tabs.setCurrentIndex(1)
+        QApplication.processEvents()
         joint_search_spy = QSignalSpy(view.joint_search_edit.textChanged)
+        _remember_action(joint_search_spy, view.joint_search_edit)
         QTest.mouseClick(view.joint_search_edit, Qt.LeftButton)
         QTest.keyClicks(view.joint_search_edit, "~")
         QApplication.processEvents()
@@ -594,6 +640,8 @@ class TestPhysicsRemainingGUI(GuiTestBase):
             "all joint rows hidden for a guaranteed non-matching query",
         )
         view.joint_search_edit.clear()
+        view.list_tabs.setCurrentIndex(0)
+        QApplication.processEvents()
 
         # Rigid-body binding and vectors share one validated Apply transaction;
         # every field is edited with QTest and the Maya attributes are checked
@@ -612,7 +660,12 @@ class TestPhysicsRemainingGUI(GuiTestBase):
             "related": related_before,
         }
         target_related_index = _adjacent_combo_index(related_combo)
-        related_signal_count = _qtest_set_combo_index(related_combo, target_related_index)
+        related_signal_count = _qtest_set_combo_index(
+            related_combo,
+            target_related_index,
+            "PhysicsPresenter.on_rigid_body_changed",
+        )
+        related_evidence = tuple(_LAST_ACTION)
         self.assertEqual(related_signal_count, 1)
         related_after = view.binding_selection("rigid_related_bone")
         self.assertNotEqual(related_after, related_before)
@@ -620,12 +673,27 @@ class TestPhysicsRemainingGUI(GuiTestBase):
         # The chosen values exercise all three vector components regardless of
         # the fixture's authored shape type.
         view.rigid_shape_size_edit.setComponentCount(3)
-        for spin, value in zip(view.rigid_shape_size_edit.spins, (0.61, 0.72, 0.83)):
-            _qtest_set_spin(spin, value)
-        for spin, value in zip(view.rigid_position_edit.spins, (1.1, 2.2, 3.3)):
-            _qtest_set_spin(spin, value)
-        for spin, value in zip(view.rigid_rotation_edit.spins, (11.0, 22.0, 33.0)):
-            _qtest_set_spin(spin, value)
+        shape_size_spy = QSignalSpy(
+            view.rigid_shape_size_edit.valueChanged,
+            source_control=view.rigid_shape_size_edit,
+            action_name="PhysicsPresenter.on_rigid_body_changed",
+        )
+        _qtest_set_spin(view.rigid_shape_size_edit.spins[0], 0.61)
+        self.assertEqual(_spy_count(shape_size_spy), 1)
+        position_spy = QSignalSpy(
+            view.rigid_position_edit.valueChanged,
+            source_control=view.rigid_position_edit,
+            action_name="PhysicsPresenter.on_rigid_body_changed",
+        )
+        _qtest_set_spin(view.rigid_position_edit.spins[0], 1.1)
+        self.assertEqual(_spy_count(position_spy), 1)
+        rotation_spy = QSignalSpy(
+            view.rigid_rotation_edit.valueChanged,
+            source_control=view.rigid_rotation_edit,
+            action_name="PhysicsPresenter.on_rigid_body_changed",
+        )
+        _qtest_set_spin(view.rigid_rotation_edit.spins[0], 11.0)
+        self.assertEqual(_spy_count(rotation_spy), 1)
         self.assertEqual(_qtest_click(view.apply_btn), 1)
         QApplication.processEvents()
         rigid_after = {
@@ -652,29 +720,37 @@ class TestPhysicsRemainingGUI(GuiTestBase):
             "QTest.keyClick(objectName=rigidRelatedBoneCombo, Qt.Key_Down); QTest.mouseClick(objectName=physicsApplyButton)",
             "PhysicsPresenter.apply_changes",
             "rigidBodyShape.relatedBone connection/index changed and Undo/Redo restored it",
+            *related_evidence,
         )
         self._witness(
             "physics.rigid_shape_size",
             "QTest.edit(objectName=physicsRigidShapeSizeEdit); QTest.mouseClick(objectName=physicsApplyButton)",
             "PhysicsPresenter.apply_changes",
             "rigidBodyShape.shapeSizeX/Y/Z equals edited values with Undo/Redo",
+            shape_size_spy,
+            view.rigid_shape_size_edit,
         )
         self._witness(
             "physics.rigid_position",
             "QTest.edit(objectName=physicsRigidPositionEdit); QTest.mouseClick(objectName=physicsApplyButton)",
             "PhysicsPresenter.apply_changes",
             "rigidBodyShape.positionX/Y/Z equals edited values with Undo/Redo",
+            position_spy,
+            view.rigid_position_edit,
         )
         self._witness(
             "physics.rigid_rotation",
             "QTest.edit(objectName=physicsRigidRotationEdit); QTest.mouseClick(objectName=physicsApplyButton)",
             "PhysicsPresenter.apply_changes",
             "rigidBodyShape.rotationX/Y/Z equals edited values with Undo/Redo",
+            rotation_spy,
+            view.rigid_rotation_edit,
         )
 
         # Joint bindings and transform vectors use a second validated Apply
         # transaction, with the same direct-DAG and Undo/Redo oracle.
         view.list_tabs.setCurrentIndex(1)
+        view.joint_list.setCurrentRow(-1)
         view.joint_list.setCurrentRow(0)
         QApplication.processEvents()
         joint_shape = self.presenter._current_shape
@@ -683,16 +759,42 @@ class TestPhysicsRemainingGUI(GuiTestBase):
         self.assertGreater(view.joint_body_b_combo.count(), 1)
         body_a_index = _adjacent_combo_index(view.joint_body_a_combo)
         body_b_index = _adjacent_combo_index(view.joint_body_b_combo)
-        self.assertEqual(_qtest_set_combo_index(view.joint_body_a_combo, body_a_index), 1)
-        self.assertEqual(_qtest_set_combo_index(view.joint_body_b_combo, body_b_index), 1)
+        self.assertEqual(
+            _qtest_set_combo_index(
+                view.joint_body_a_combo,
+                body_a_index,
+                "PhysicsPresenter.on_joint_changed",
+            ),
+            1,
+        )
+        body_a_evidence = tuple(_LAST_ACTION)
+        self.assertEqual(
+            _qtest_set_combo_index(
+                view.joint_body_b_combo,
+                body_b_index,
+                "PhysicsPresenter.on_joint_changed",
+            ),
+            1,
+        )
+        body_b_evidence = tuple(_LAST_ACTION)
         joint_before = {
             "position": tuple(cmds.getAttr(f"{joint_shape}.position{axis}") for axis in "XYZ"),
             "rotation": tuple(cmds.getAttr(f"{joint_shape}.rotation{axis}") for axis in "XYZ"),
         }
-        for spin, value in zip(view.joint_position_edit.spins, (4.4, 5.5, 6.6)):
-            _qtest_set_spin(spin, value)
-        for spin, value in zip(view.joint_rotation_edit.spins, (44.0, 55.0, 66.0)):
-            _qtest_set_spin(spin, value)
+        joint_position_spy = QSignalSpy(
+            view.joint_position_edit.valueChanged,
+            source_control=view.joint_position_edit,
+            action_name="PhysicsPresenter.on_joint_changed",
+        )
+        _qtest_set_spin(view.joint_position_edit.spins[0], 4.4)
+        self.assertEqual(_spy_count(joint_position_spy), 1)
+        joint_rotation_spy = QSignalSpy(
+            view.joint_rotation_edit.valueChanged,
+            source_control=view.joint_rotation_edit,
+            action_name="PhysicsPresenter.on_joint_changed",
+        )
+        _qtest_set_spin(view.joint_rotation_edit.spins[0], 44.0)
+        self.assertEqual(_spy_count(joint_rotation_spy), 1)
         self.assertEqual(_qtest_click(view.apply_btn), 1)
         QApplication.processEvents()
         joint_after = {
@@ -716,24 +818,30 @@ class TestPhysicsRemainingGUI(GuiTestBase):
             "QTest.keyClick(objectName=jointRigidBodyACombo, Qt.Key_Down); QTest.mouseClick(objectName=physicsApplyButton)",
             "PhysicsPresenter.apply_changes",
             "jointShape.rigidBodyA connection/index validated on Maya DAG",
+            *body_a_evidence,
         )
         self._witness(
             "physics.joint_body_b",
             "QTest.keyClick(objectName=jointRigidBodyBCombo, Qt.Key_Down); QTest.mouseClick(objectName=physicsApplyButton)",
             "PhysicsPresenter.apply_changes",
             "jointShape.rigidBodyB connection/index validated on Maya DAG",
+            *body_b_evidence,
         )
         self._witness(
             "physics.joint_position",
             "QTest.edit(objectName=physicsJointPositionEdit); QTest.mouseClick(objectName=physicsApplyButton)",
             "PhysicsPresenter.apply_changes",
             "jointShape.positionX/Y/Z equals edited values with Undo/Redo",
+            joint_position_spy,
+            view.joint_position_edit,
         )
         self._witness(
             "physics.joint_rotation",
             "QTest.edit(objectName=physicsJointRotationEdit); QTest.mouseClick(objectName=physicsApplyButton)",
             "PhysicsPresenter.apply_changes",
             "jointShape.rotationX/Y/Z equals edited values with Undo/Redo",
+            joint_rotation_spy,
+            view.joint_rotation_edit,
         )
 
 

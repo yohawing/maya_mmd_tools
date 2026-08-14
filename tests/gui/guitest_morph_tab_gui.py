@@ -10,6 +10,11 @@ from unittest.mock import MagicMock
 from maya import cmds
 
 from tests.common.gui_test_base import GuiTestBase, requires_gui
+from tests.common.ui_action_coverage import (
+    ActionInvocationSpy,
+    QtSignalInvocationSpy,
+    build_surface_witness,
+)
 from mmd_tools.ui.application_state import ApplicationState
 from mmd_tools.ui.presenters.morph_presenter import MorphPresenter
 from mmd_tools.ui.qt_compat import QApplication, Qt
@@ -17,21 +22,19 @@ from mmd_tools.ui.tabs.morph_tab import MorphTab
 from mmd_tools.core.morph_topology import MorphTopologyInspection
 
 
-def _emit_witness(surface_id, locator_key, locator, interaction, fired_action, oracle):
+def _emit_witness(surface_id, locator_key, locator, interaction, oracle, action_spy, control):
     """Emit one deterministic runtime witness for the coverage gate."""
 
-    evidence = {
-        "surface_id": surface_id,
-        "case_id": "gui.morph_tab",
-        locator_key: locator,
-        "status": "pass",
-        "runtime_witness": {
-            "interaction": interaction,
-            "fired_action": fired_action,
-            "oracle": oracle,
-            "action_count": 1,
-        },
-    }
+    locator_args = {locator_key: locator}
+    evidence = build_surface_witness(
+        surface_id=surface_id,
+        case_id="gui.morph_tab",
+        interaction=interaction,
+        oracle=oracle,
+        action_spy=action_spy,
+        control=control,
+        **locator_args,
+    )
     print(
         "[UI COVERAGE WITNESS] "
         + json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -89,7 +92,12 @@ class TestMorphTabGUI(GuiTestBase):
         tab = MorphTab()
         try:
             self.assertFalse(tab.repair_topology_btn.isVisible())
-            tab.set_topology_repair_state("stale: controller cache differs", True)
+            action_spy = ActionInvocationSpy.wrap(
+                "MorphTab.set_topology_repair_state",
+                tab.set_topology_repair_state,
+                tab.repair_topology_btn,
+            )
+            action_spy("stale: controller cache differs", True)
             tab.show()
             QApplication.processEvents()
             self.assertTrue(tab.repair_topology_btn.isVisible())
@@ -104,11 +112,12 @@ class TestMorphTabGUI(GuiTestBase):
             )
             _emit_witness(
                 "morph.topology_repair",
-                "objectName",
-                "morphRepairTopologyButton",
+                "selector",
+                "objectName=morphRepairTopologyButton",
                 "show stale topology diagnostic",
-                "MorphTab.set_topology_repair_state",
                 "repair action visible and enabled only for repairable diagnostic",
+                action_spy,
+                tab.repair_topology_btn,
             )
         finally:
             tab.deleteLater()
@@ -121,29 +130,35 @@ class TestMorphTabGUI(GuiTestBase):
         state = ApplicationState()
         state.current_model_root = None
         coordinator = MagicMock()
-        coordinator.repair_morph_topology.return_value = MorphTopologyInspection(
-            {}, {}, ()
+        repair_spy = ActionInvocationSpy.wrap(
+            "MorphPresenter.repair_morph_topology",
+            coordinator.repair_morph_topology,
+            tab.repair_topology_btn,
         )
+        repair_spy._handler.return_value = MorphTopologyInspection({}, {}, ())
+        coordinator.repair_morph_topology = repair_spy
         presenter = MorphPresenter(tab, state, authoring_coordinator=coordinator)
         presenter.load_morphs = MagicMock()
         state.current_model_root = root
         QApplication.processEvents()
         presenter.load_morphs.reset_mock()
         try:
+            tab.show()
+            QApplication.processEvents()
             tab.set_topology_repair_state("stale: controller cache differs", True)
             tab.repair_topology_btn.click()
             QApplication.processEvents()
-            coordinator.repair_morph_topology.assert_called_once_with(
-                state.current_model_root
-            )
+            self.assertEqual(repair_spy.action_count, 1)
+            self.assertEqual(repair_spy.calls[0][0], (state.current_model_root,))
             presenter.load_morphs.assert_called_once_with()
             _emit_witness(
                 "morph.topology_repair.action",
-                "objectName",
-                "morphRepairTopologyButton",
+                "selector",
+                "objectName=morphRepairTopologyButton",
                 "click repair topology",
-                "MorphPresenter.repair_morph_topology",
                 "coordinator repair completed before one presenter refresh",
+                repair_spy,
+                tab.repair_topology_btn,
             )
         finally:
             tab.deleteLater()
@@ -163,6 +178,8 @@ class TestMorphTabGUI(GuiTestBase):
         tab = MorphTab()
         presenter = None
         try:
+            tab.show()
+            QApplication.processEvents()
             app_state = ApplicationState()
             presenter = MorphPresenter(tab, app_state)
             # Set the fixture after construction so no delayed initial-load
@@ -174,8 +191,18 @@ class TestMorphTabGUI(GuiTestBase):
             self.assertEqual(tab.morph_list.count(), 1)
             self.assertEqual(tab.morph_list.item(0).text(), "0:V|Mouth_A01")
             self.assertEqual(tab.morph_list.item(0).data(Qt.UserRole), "Mouth_A01")
+            list_spy = QtSignalInvocationSpy(
+                "MorphPresenter.on_morph_selected",
+                tab.morph_list.currentItemChanged,
+                tab.morph_list,
+            )
             tab.morph_list.setCurrentRow(0)
             QApplication.processEvents()
+            value_spy = QtSignalInvocationSpy(
+                "MorphPresenter.set_morph_weight",
+                tab.morph_slider.valueChanged,
+                tab.morph_slider,
+            )
             tab.morph_slider.setValue(65)
             QApplication.processEvents()
 
@@ -189,16 +216,18 @@ class TestMorphTabGUI(GuiTestBase):
                 "selector",
                 "objectName=morphList",
                 "QTest.setCurrentRow(objectName=morphList, 0)",
-                "MorphPresenter.load_morphs",
                 "canonical Mouth_A01 morph row displayed and selected",
+                list_spy,
+                tab.morph_list,
             )
             _emit_witness(
                 "morph.value",
                 "attribute",
                 "morph_slider",
                 "QTest.setValue(attribute=morph_slider, 65)",
-                "MorphPresenter.set_morph_weight",
                 "Mouth_A01 blendShape weight equals 0.65",
+                value_spy,
+                tab.morph_slider,
             )
         finally:
             presenter = None

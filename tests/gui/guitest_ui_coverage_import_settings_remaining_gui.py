@@ -31,6 +31,11 @@ from mmd_tools.validation.export_validator import (
     ExportValidationReport,
 )
 from tests.common.gui_test_base import GuiTestBase, requires_gui
+from tests.common.ui_action_coverage import (
+    ActionInvocationSpy,
+    QtSignalInvocationSpy,
+    build_surface_witness,
+)
 
 try:
     from PySide6.QtTest import QTest
@@ -244,11 +249,10 @@ class TestUiCoverageImportSettingsRemainingGUI(GuiTestBase):
         self._ensure_widget_visible(widget)
         self.assertTrue(widget.isVisible(), widget.objectName() or type(widget).__name__)
         self.assertTrue(widget.isEnabled(), widget.objectName() or type(widget).__name__)
-        events = []
-        widget.clicked.connect(lambda *_args: events.append(True))
+        action_spy = QtSignalInvocationSpy("pending", widget.clicked, widget)
         QTest.mouseClick(widget, Qt.LeftButton)
         self._pump()
-        if not events:
+        if not action_spy.action_count:
             # Maya 2024's PySide2 can reject a synthetic mouse coordinate for
             # a checkbox inside a scrolled splitter even after the page is
             # active.  Keyboard activation remains a real Qt interaction on
@@ -256,7 +260,10 @@ class TestUiCoverageImportSettingsRemainingGUI(GuiTestBase):
             widget.setFocus()
             QTest.keyClick(widget, Qt.Key_Space)
             self._pump()
-        self.assertEqual(events, [True], widget.objectName() or type(widget).__name__)
+        self.assertEqual(action_spy.action_count, 1, widget.objectName() or type(widget).__name__)
+        self._last_action_spy = action_spy
+        self._last_action_control = widget
+        return action_spy
 
     @staticmethod
     def _ensure_widget_visible(widget):
@@ -284,42 +291,47 @@ class TestUiCoverageImportSettingsRemainingGUI(GuiTestBase):
         QApplication.processEvents()
 
     def _set_line_once(self, widget, value):
-        events = []
-        widget.textChanged.connect(lambda *_args: events.append(True))
+        action_spy = QtSignalInvocationSpy("pending", widget.textChanged, widget)
         widget.setText(value)
         self._pump()
-        self.assertEqual(events, [True], widget.objectName() or type(widget).__name__)
+        self.assertEqual(action_spy.action_count, 1, widget.objectName() or type(widget).__name__)
+        self._last_action_spy = action_spy
+        self._last_action_control = widget
+        return action_spy
 
     def _set_value_once(self, widget, value):
-        events = []
-        widget.valueChanged.connect(lambda *_args: events.append(True))
+        action_spy = QtSignalInvocationSpy("pending", widget.valueChanged, widget)
         widget.setValue(value)
         self._pump()
-        self.assertEqual(events, [True], widget.objectName() or type(widget).__name__)
+        self.assertEqual(action_spy.action_count, 1, widget.objectName() or type(widget).__name__)
+        self._last_action_spy = action_spy
+        self._last_action_control = widget
+        return action_spy
 
     def _set_combo_once(self, widget, value):
-        events = []
-        widget.currentTextChanged.connect(lambda *_args: events.append(True))
+        action_spy = QtSignalInvocationSpy("pending", widget.currentTextChanged, widget)
         widget.setCurrentText(value)
         self._pump()
-        self.assertEqual(events, [True], widget.objectName() or type(widget).__name__)
+        self.assertEqual(action_spy.action_count, 1, widget.objectName() or type(widget).__name__)
+        self._last_action_spy = action_spy
+        self._last_action_control = widget
+        return action_spy
 
-    def _emit(self, surface_id, locator, interaction, fired_action, oracle, action_count=1):
+    def _emit(self, surface_id, locator, interaction, fired_action, oracle):
         """Print the gate-compatible witness after the semantic oracle passes."""
 
-        witness = {
-            "surface_id": surface_id,
-            "case_id": _CASE_ID,
-            "status": "pass",
-            "runtime_witness": {
-                "interaction": interaction,
-                "fired_action": fired_action,
-                "oracle": oracle,
-                "action_count": action_count,
-            },
-        }
         locator_key = "attribute" if surface_id in _ATTRIBUTE_SURFACE_IDS else "selector"
-        witness[locator_key] = locator
+        action_spy = self._last_action_spy
+        action_spy.action_name = fired_action
+        witness = build_surface_witness(
+            surface_id=surface_id,
+            case_id=_CASE_ID,
+            interaction=interaction,
+            oracle=oracle,
+            action_spy=action_spy,
+            control=self._last_action_control,
+            **{locator_key: locator},
+        )
         print(
             "[UI COVERAGE WITNESS] "
             + json.dumps(witness, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -542,14 +554,18 @@ class TestUiCoverageImportSettingsRemainingGUI(GuiTestBase):
 
         editor = view.model_name_en_edit
         old_value = cmds.getAttr(f"{self.template.root}.{ATTR_MMD_MODEL_NAME_EN}")
-        edit_events = []
-        editor.textChanged.connect(lambda *_args: edit_events.append(True))
+        original_update = self.window.info_presenter.update_model_info
+        edit_spy = ActionInvocationSpy.wrap("pending", original_update, editor)
+        self.window.info_presenter.update_model_info = edit_spy
         editor.setFocus()
         editor.setText("Coverage English Name")
         self._pump()
+        self.window.info_presenter.update_model_info = original_update
         editor.clearFocus()
         self._pump()
-        self.assertEqual(edit_events, [True])
+        self.assertEqual(edit_spy.action_count, 1)
+        self._last_action_spy = edit_spy
+        self._last_action_control = editor
         self.assertEqual(cmds.getAttr(f"{self.template.root}.{ATTR_MMD_MODEL_NAME_EN}"), "Coverage English Name")
         cmds.undo()
         self.assertEqual(cmds.getAttr(f"{self.template.root}.{ATTR_MMD_MODEL_NAME_EN}"), old_value)
@@ -559,14 +575,18 @@ class TestUiCoverageImportSettingsRemainingGUI(GuiTestBase):
 
         editor = view.comment_en_edit
         old_value = cmds.getAttr(f"{self.template.root}.{ATTR_MMD_COMMENT_EN}")
-        edit_events = []
-        editor.textChanged.connect(lambda *_args: edit_events.append(True))
+        original_update = self.window.info_presenter.update_model_info
+        edit_spy = ActionInvocationSpy.wrap("pending", original_update, editor)
+        self.window.info_presenter.update_model_info = edit_spy
         editor.setFocus()
         editor.setPlainText("Coverage English Comment")
         self._pump()
+        self.window.info_presenter.update_model_info = original_update
         editor.clearFocus()
         self._pump()
-        self.assertEqual(edit_events, [True])
+        self.assertEqual(edit_spy.action_count, 1)
+        self._last_action_spy = edit_spy
+        self._last_action_control = editor
         self.assertEqual(cmds.getAttr(f"{self.template.root}.{ATTR_MMD_COMMENT_EN}"), "Coverage English Comment")
         cmds.undo()
         self.assertEqual(cmds.getAttr(f"{self.template.root}.{ATTR_MMD_COMMENT_EN}"), old_value)
@@ -587,7 +607,7 @@ class TestUiCoverageImportSettingsRemainingGUI(GuiTestBase):
         # then drive the confirmation-backed Reset action with a deterministic
         # QMessageBox response.
         self._set_value_once(view.file_history_limit_spin, 77)
-        view.save_settings_btn.click()
+        self._click_once(view.save_settings_btn)
         self._pump()
         self.assertEqual(service.get(settings_keys.UI_GENERAL_FILE_HISTORY_LIMIT), 77)
         reset_events = []
@@ -628,14 +648,14 @@ class TestUiCoverageImportSettingsRemainingGUI(GuiTestBase):
         self._emit("settings.import", _SETTINGS_SELECTORS["settings.import"], "QTest.mouseClick(objectName=settingsImportButton)", "SettingsPresenter.import_settings", "file_history_limit imported=33")
 
         view.file_history_limit_spin.setValue(41)
-        view.save_settings_btn.click()
+        self._click_once(view.save_settings_btn)
         self._pump()
         self.assertEqual(service.get(settings_keys.UI_GENERAL_FILE_HISTORY_LIMIT), 41)
         self._emit("settings.file_history_limit", _SETTINGS_SELECTORS["settings.file_history_limit"], "QTest.edit(objectName=settingsFileHistoryLimitSpin,41); click Save", "SettingsPresenter.save_all_settings", "stored=41")
 
         log_path = str(temp_root / "coverage.log")
         self._set_line_once(view.log_file_path_edit, log_path)
-        view.save_settings_btn.click()
+        self._click_once(view.save_settings_btn)
         self._pump()
         self.assertEqual(service.get(settings_keys.LOGGING_LOG_FILE_PATH), log_path)
         self._emit("settings.log_file_path", _SETTINGS_SELECTORS["settings.log_file_path"], "QTest.edit(objectName=settingsLogFilePathEdit)", "SettingsPresenter.save_all_settings", "stored=coverage.log")

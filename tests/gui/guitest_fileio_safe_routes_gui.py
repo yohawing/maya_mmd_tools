@@ -32,6 +32,7 @@ from mmd_tools.ui.create_model_dialog import CreateModelDialog
 from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.ui.qt_compat import QApplication, QDialog, QTimer, Qt
 from tests.common.gui_test_base import GuiTestBase, requires_gui
+from tests.common.ui_action_coverage import QtSignalInvocationSpy, build_surface_witness
 
 
 _DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "for_unit_test"
@@ -39,21 +40,18 @@ _PMX_FIXTURE = _DATA_DIR / "test_1bone_cube.pmx"
 _VMD_FIXTURE = _DATA_DIR / "test_1bone_cube_motion.vmd"
 
 
-def _emit_witness(surface_id, locator, interaction, fired_action, oracle):
+def _emit_witness(surface_id, locator, interaction, oracle, action_spy, control):
     """Emit one deterministic runtime witness for the coverage gate."""
 
-    evidence = {
-        "surface_id": surface_id,
-        "case_id": "gui.fileio_safe_routes",
-        "attribute": locator,
-        "status": "pass",
-        "runtime_witness": {
-            "interaction": interaction,
-            "fired_action": fired_action,
-            "oracle": oracle,
-            "action_count": 1,
-        },
-    }
+    evidence = build_surface_witness(
+        surface_id=surface_id,
+        case_id="gui.fileio_safe_routes",
+        attribute=locator,
+        interaction=interaction,
+        oracle=oracle,
+        action_spy=action_spy,
+        control=control,
+    )
     print(
         "[UI COVERAGE WITNESS] "
         + json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -158,7 +156,15 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
     def _import_model_from_button(self):
         """Fill the production path edit and click the real PMX import button."""
         view = self.window.import_export_tab
+        path_spy = QtSignalInvocationSpy(
+            "ImportExportPresenter.import_model.path_changed",
+            view.import_path_edit.textChanged,
+            view.import_path_edit,
+        )
         view.import_path_edit.setText(str(self.pmx_path))
+        button_spy = QtSignalInvocationSpy(
+            "ImportExportPresenter.import_model", view.import_button.clicked, view.import_button
+        )
         self._arm_modal_watchdog()
         view.import_button.click()
         self._drain_until(
@@ -167,6 +173,7 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
             description="Current Model after PMX import button",
         )
         self._stop_modal_watchdog()
+        self._import_model_action_spies = (path_spy, button_spy)
         return self.window.app_state.current_model_root
 
     def _assert_imported_scene_contract(self, root):
@@ -245,19 +252,22 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
         root = self._import_model_from_button()
         self._assert_imported_scene_contract(root)
         self.assertEqual(self.window.app_state.current_model_root, root)
+        path_spy, button_spy = self._import_model_action_spies
         _emit_witness(
             "import_export.import_path",
             "import_path_edit",
             "QTest.setText(attribute=import_path_edit, PMX fixture)",
-            "ImportExportPresenter.import_model",
             "import path retained and PMX source metadata/registry verified",
+            path_spy,
+            self.window.import_export_tab.import_path_edit,
         )
         _emit_witness(
             "import_export.import_model",
             "import_button",
             "QTest.click(attribute=import_button)",
-            "ImportExportPresenter.import_model",
             "canonical root, mesh, registry, material, and history created",
+            button_spy,
+            self.window.import_export_tab.import_button,
         )
 
     def test_new_model_button_uses_real_modal_and_undo_redo_lifecycle(self):
@@ -291,6 +301,11 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
         presenter.create_model_dialog_factory = factory
         self._active_create_dialog = None
         self._arm_modal_watchdog(lambda: self._active_create_dialog)
+        new_model_spy = QtSignalInvocationSpy(
+            "ImportExportPresenter.create_model",
+            self.window.import_export_tab.new_model_button.clicked,
+            self.window.import_export_tab.new_model_button,
+        )
         self.window.import_export_tab.new_model_button.click()
         self._drain_until(
             lambda: bool(self.window.app_state.current_model_root)
@@ -330,15 +345,31 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
             "import_export.new_model",
             "new_model_button",
             "QTest.click(attribute=new_model_button) and submit CreateModelDialog",
-            "ImportExportPresenter.create_model",
             "template transaction fingerprint restored by Undo/Redo",
+            new_model_spy,
+            self.window.import_export_tab.new_model_button,
         )
 
     def test_vmd_button_targets_current_model_and_creates_keys_timeline_history(self):
         """The real VMD button keys the imported PMX joint and updates timeline/history."""
         root = self._import_model_from_button()
         view = self.window.import_export_tab
+        path_spy = QtSignalInvocationSpy(
+            "ImportExportPresenter.import_vmd.path_changed",
+            view.vmd_path_edit.textChanged,
+            view.vmd_path_edit,
+        )
         view.vmd_path_edit.setText(str(self.vmd_path))
+        import_spy = QtSignalInvocationSpy(
+            "ImportExportPresenter.import_vmd",
+            view.import_vmd_button.clicked,
+            view.import_vmd_button,
+        )
+        history_spy = QtSignalInvocationSpy(
+            "UnifiedFileHistory.updated",
+            view.unified_history_list.model().rowsInserted,
+            view.unified_history_list,
+        )
         self._arm_modal_watchdog()
         view.import_vmd_button.click()
 
@@ -360,22 +391,25 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
             "import_export.vmd_path",
             "vmd_path_edit",
             "QTest.setText(attribute=vmd_path_edit, VMD fixture)",
-            "ImportExportPresenter.import_vmd",
             "VMD path routed to current imported model",
+            path_spy,
+            view.vmd_path_edit,
         )
         _emit_witness(
             "import_export.import_vmd",
             "import_vmd_button",
             "QTest.click(attribute=import_vmd_button)",
-            "ImportExportPresenter.import_vmd",
             "joint keys, playback range, current root, and history verified",
+            import_spy,
+            view.import_vmd_button,
         )
         _emit_witness(
             "import_export.history",
             "unified_history_list",
             "QTest.inspect(attribute=unified_history_list)",
-            "UnifiedFileHistory.updated",
             "PMX and VMD entries are visible in the production history list",
+            history_spy,
+            view.unified_history_list,
         )
 
 

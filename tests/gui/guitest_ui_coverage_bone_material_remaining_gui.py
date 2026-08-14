@@ -21,6 +21,7 @@ from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.ui.qt_compat import QApplication, QT_BINDING, Qt
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from tests.common.maya_plugin_setup import load_mmd_tools_plugin
+from tests.common.ui_action_coverage import ActionInvocationSpy, build_surface_witness
 
 if QT_BINDING == "PySide6":
     from PySide6.QtTest import QTest
@@ -38,6 +39,8 @@ class QSignalSpy:
 
     def __init__(self, signal):
         self._count = 0
+        self.action_name = "unassigned"
+        self._signal = signal
         signal.connect(self._on_signal)
 
     def _on_signal(self, *_args):
@@ -45,6 +48,14 @@ class QSignalSpy:
 
     def count(self):
         return self._count
+
+    @property
+    def action_count(self):
+        return self._count
+
+    def stop(self):
+        self._signal.disconnect(self._on_signal)
+        return self
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -65,7 +76,7 @@ def _qtest_click(widget):
     spy = QSignalSpy(signal)
     QTest.mouseClick(widget, Qt.LeftButton)
     QApplication.processEvents()
-    return _spy_count(spy)
+    return spy
 
 
 def _ensure_widget_visible(widget):
@@ -93,7 +104,7 @@ def _qtest_list_row(list_widget, row):
     rect = list_widget.visualItemRect(item)
     QTest.mouseClick(list_widget.viewport(), Qt.LeftButton, pos=rect.center())
     QApplication.processEvents()
-    return _spy_count(spy)
+    return spy
 
 
 def _qtest_set_combo_index(combo, index):
@@ -107,7 +118,7 @@ def _qtest_set_combo_index(combo, index):
         QTest.keyClick(combo, Qt.Key_Down)
     QTest.keyClick(combo, Qt.Key_Enter)
     QApplication.processEvents()
-    return _spy_count(spy)
+    return spy
 
 
 def _qtest_choose_combo_item(combo, index):
@@ -125,7 +136,7 @@ def _qtest_choose_combo_item(combo, index):
     spy = QSignalSpy(combo.currentIndexChanged)
     QTest.keyClick(combo, Qt.Key_Down)
     QApplication.processEvents()
-    return _spy_count(spy)
+    return spy
 
 
 def _spec_payload(window, root):
@@ -163,20 +174,20 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             super().tearDown()
 
     @staticmethod
-    def _emit(surface_id, case_id, selector, interaction, fired_action, oracle):
+    def _emit(
+        surface_id, case_id, selector, interaction, fired_action, oracle, action_spy, control
+    ):
         """Print one deterministic runtime witness (the gate requires count 1)."""
-        witness = {
-            "surface_id": surface_id,
-            "case_id": case_id,
-            "selector": selector,
-            "status": "pass",
-            "runtime_witness": {
-                "interaction": interaction,
-                "fired_action": fired_action,
-                "oracle": oracle,
-                "action_count": 1,
-            },
-        }
+        action_spy.action_name = fired_action
+        witness = build_surface_witness(
+            surface_id=surface_id,
+            case_id=case_id,
+            selector=selector,
+            interaction=interaction,
+            oracle=oracle,
+            action_spy=action_spy,
+            control=control,
+        )
         print(
             "[UI COVERAGE WITNESS] "
             + json.dumps(witness, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -211,7 +222,7 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
         self.window.tab_widget.setCurrentWidget(view)
         view.show()
         QApplication.processEvents()
-        self.assertEqual(_qtest_list_row(view.material_list, 0), 1)
+        self.assertEqual(_qtest_list_row(view.material_list, 0).action_count, 1)
         coordinator = self.window.authoring_composition.coordinator
         before = _spec_payload(self.window, self.root)
         material = coordinator.read_spec(self.root).materials[0]
@@ -226,14 +237,17 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "mmd_tools.ui.presenters.material_presenter.QFileDialog.getOpenFileName",
             side_effect=[(str(TEXTURE), "Image Files (*.png)"), (str(TEXTURE), "Sphere Maps (*.png)")],
         ):
-            self.assertEqual(_qtest_click(view.texture_browse_btn), 1)
-            self.assertEqual(_qtest_click(view.sphere_map_browse_btn), 1)
+            texture_browse_spy = _qtest_click(view.texture_browse_btn)
+            sphere_browse_spy = _qtest_click(view.sphere_map_browse_btn)
+            self.assertEqual(texture_browse_spy.action_count, 1)
+            self.assertEqual(sphere_browse_spy.action_count, 1)
         self.assertEqual(view.texture_path_edit.text(), str(TEXTURE))
         self.assertEqual(view.sphere_map_path_edit.text(), str(TEXTURE))
 
         # Click the combo controls as a real user would, then select the
         # deterministic semantic values for the transaction.
-        self.assertEqual(_qtest_set_combo_index(view.sphere_mode_combo, 1), 1)
+        sphere_mode_spy = _qtest_set_combo_index(view.sphere_mode_combo, 1)
+        self.assertEqual(sphere_mode_spy.action_count, 1)
         # The basic template starts with custom toon mode, so the shared toon
         # combo is disabled until its owning check box is toggled on.
         _ensure_widget_visible(view.toon_sharing_check)
@@ -245,25 +259,26 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
         QApplication.processEvents()
         self.assertEqual(_spy_count(toon_spy), 1)
         self.assertTrue(view.toon_texture_combo.isEnabled())
-        self.assertEqual(_qtest_choose_combo_item(view.toon_texture_combo, 2), 1)
+        toon_texture_spy = _qtest_choose_combo_item(view.toon_texture_combo, 2)
+        self.assertEqual(toon_texture_spy.action_count, 1)
         QApplication.processEvents()
         self.assertEqual(view.sphere_mode_combo.currentIndex(), 1)
         self.assertEqual(view.toon_texture_combo.currentIndex(), 2)
 
-        calls = []
         original_binding_patch = coordinator.apply_material_binding_patch
-
-        def observe_binding_patch(*args, **kwargs):
-            calls.append("MayaModelAuthoringCoordinator.apply_material_binding_patch")
-            return original_binding_patch(*args, **kwargs)
-
-        coordinator.apply_material_binding_patch = observe_binding_patch
+        binding_spy = ActionInvocationSpy.wrap(
+            "MayaModelAuthoringCoordinator.apply_material_binding_patch",
+            original_binding_patch,
+            view.apply_btn,
+        )
+        coordinator.apply_material_binding_patch = binding_spy
         try:
-            self.assertEqual(_qtest_click(view.apply_btn), 1)
+            apply_signal_spy = _qtest_click(view.apply_btn)
+            self.assertEqual(apply_signal_spy.action_count, 1)
         finally:
             coordinator.apply_material_binding_patch = original_binding_patch
 
-        self.assertEqual(calls, ["MayaModelAuthoringCoordinator.apply_material_binding_patch"])
+        self.assertEqual(binding_spy.action_count, 1)
         after = _spec_payload(self.window, self.root)
         material_after = coordinator.read_spec(self.root).materials[0]
         self.assertEqual(material_after.resolved_texture_path, str(TEXTURE))
@@ -299,6 +314,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=materialTextureBrowseButton); Apply",
             "MaterialPresenter._apply_authoring_changes -> apply_material_binding_patch",
             oracle,
+            binding_spy,
+            view.texture_path_edit,
         )
         self._emit(
             "material.texture_browse",
@@ -307,6 +324,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=materialTextureBrowseButton)",
             "MaterialPresenter.browse_file('texture')",
             "material_texture_path_dialog_selection_and_file_connection",
+            texture_browse_spy,
+            view.texture_browse_btn,
         )
         self._emit(
             "material.sphere_map_path",
@@ -315,6 +334,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=materialSphereMapBrowseButton); Apply",
             "MaterialPresenter._apply_authoring_changes -> apply_material_binding_patch",
             oracle,
+            binding_spy,
+            view.sphere_map_path_edit,
         )
         self._emit(
             "material.sphere_map_browse",
@@ -323,6 +344,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=materialSphereMapBrowseButton)",
             "MaterialPresenter.browse_file('sphere')",
             "material_sphere_path_dialog_selection_and_mmd_attrs",
+            sphere_browse_spy,
+            view.sphere_map_browse_btn,
         )
         self._emit(
             "material.sphere_mode",
@@ -331,6 +354,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=materialSphereModeCombo); select index 1; Apply",
             "MaterialPresenter._apply_authoring_changes -> apply_material_binding_patch",
             oracle,
+            binding_spy,
+            view.sphere_mode_combo,
         )
         self._emit(
             "material.toon_texture",
@@ -339,6 +364,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=materialToonTextureCombo); select index 2; Apply",
             "MaterialPresenter._apply_authoring_changes -> apply_material_binding_patch",
             "material_toon_texture_index_and_complete_spec_undo_redo",
+            binding_spy,
+            view.toon_texture_combo,
         )
 
     def test_bone_remaining_reference_actions(self):
@@ -346,7 +373,7 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
         bindings = self._register_bones()
         presenter = self.window.bone_presenter
         view = presenter.view
-        self.assertEqual(_qtest_list_row(view.bone_list, 0), 1)
+        self.assertEqual(_qtest_list_row(view.bone_list, 0).action_count, 1)
         self.assertEqual(view.bone_list.count(), 3)
 
         # Refresh is a read-only production reload and must preserve the
@@ -354,7 +381,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
         before_rows = tuple(
             view.bone_list.item(index).data(Qt.UserRole) for index in range(view.bone_list.count())
         )
-        self.assertEqual(_qtest_click(view.refresh_btn), 1)
+        refresh_spy = _qtest_click(view.refresh_btn)
+        self.assertEqual(refresh_spy.action_count, 1)
         after_rows = tuple(
             view.bone_list.item(index).data(Qt.UserRole) for index in range(view.bone_list.count())
         )
@@ -362,7 +390,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
 
         # Select the registered child so the read-only parent field is loaded
         # with the canonical root identity and its compact presentation label.
-        self.assertEqual(_qtest_list_row(view.bone_list, 1), 1)
+        parent_spy = _qtest_list_row(view.bone_list, 1)
+        self.assertEqual(parent_spy.action_count, 1)
         self.assertEqual(view.parent_bone_edit.property("mmdBindingIdentity"), bindings[0])
         self.assertTrue(view.parent_bone_edit.text())
         self.assertNotIn("|", view.parent_bone_edit.text())
@@ -374,6 +403,7 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
         view.search_edit.setText("uiCoverageSecondBone")
         QApplication.processEvents()
         self.assertEqual(_spy_count(search_spy), 1)
+        search_spy.stop()
         visible_rows = [
             view.bone_list.item(index).data(Qt.UserRole)
             for index in range(view.bone_list.count())
@@ -385,10 +415,11 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
         self.assertEqual(sum(not view.bone_list.item(i).isHidden() for i in range(3)), 3)
 
         # Select IK target through the real Maya-selection bridge.
-        self.assertEqual(_qtest_list_row(view.bone_list, 0), 1)
+        self.assertEqual(_qtest_list_row(view.bone_list, 0).action_count, 1)
         view.ik_enabled_check.setChecked(True)
         cmds.select(bindings[1], replace=True)
-        self.assertEqual(_qtest_click(view.select_ik_target_btn), 1)
+        ik_target_spy = _qtest_click(view.select_ik_target_btn)
+        self.assertEqual(ik_target_spy.action_count, 1)
         self.assertEqual(view.ik_target_edit.property("mmdBindingIdentity"), bindings[1])
         self.assertTrue(view.ik_target_edit.text())
         self.assertNotIn("|", view.ik_target_edit.text())
@@ -396,30 +427,36 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
         # Add two links, move each direction, then remove one.  The table's
         # UserRole identity is the semantic oracle for all four toolbar actions.
         cmds.select(bindings[2], replace=True)
-        self.assertEqual(_qtest_click(view.add_ik_link_btn), 1)
+        first_add_spy = _qtest_click(view.add_ik_link_btn)
+        self.assertEqual(first_add_spy.action_count, 1)
         cmds.select(bindings[1], replace=True)
-        self.assertEqual(_qtest_click(view.add_ik_link_btn), 1)
+        add_spy = _qtest_click(view.add_ik_link_btn)
+        self.assertEqual(add_spy.action_count, 1)
         self.assertEqual(view.ik_links_table.rowCount(), 2)
         self.assertEqual(view.ik_links_table.item(0, 0).data(Qt.UserRole), bindings[2])
         self.assertEqual(view.ik_links_table.item(1, 0).data(Qt.UserRole), bindings[1])
 
         view.ik_links_table.setCurrentCell(1, 0)
-        self.assertEqual(_qtest_click(view.move_up_btn), 1)
+        move_up_spy = _qtest_click(view.move_up_btn)
+        self.assertEqual(move_up_spy.action_count, 1)
         self.assertEqual(view.ik_links_table.item(0, 0).data(Qt.UserRole), bindings[1])
         self.assertEqual(view.ik_links_table.item(1, 0).data(Qt.UserRole), bindings[2])
         view.ik_links_table.setCurrentCell(0, 0)
-        self.assertEqual(_qtest_click(view.move_down_btn), 1)
+        move_down_spy = _qtest_click(view.move_down_btn)
+        self.assertEqual(move_down_spy.action_count, 1)
         self.assertEqual(view.ik_links_table.item(0, 0).data(Qt.UserRole), bindings[2])
         self.assertEqual(view.ik_links_table.item(1, 0).data(Qt.UserRole), bindings[1])
         view.ik_links_table.setCurrentCell(0, 0)
-        self.assertEqual(_qtest_click(view.remove_ik_link_btn), 1)
+        remove_spy = _qtest_click(view.remove_ik_link_btn)
+        self.assertEqual(remove_spy.action_count, 1)
         self.assertEqual(view.ik_links_table.rowCount(), 1)
         self.assertEqual(view.ik_links_table.item(0, 0).data(Qt.UserRole), bindings[1])
 
         # Select grant parent through the same selection bridge, independently
         # from IK target selection.
         cmds.select(bindings[0], replace=True)
-        self.assertEqual(_qtest_click(view.select_grant_parent_btn), 1)
+        grant_spy = _qtest_click(view.select_grant_parent_btn)
+        self.assertEqual(grant_spy.action_count, 1)
         self.assertEqual(view.grant_parent_edit.property("mmdBindingIdentity"), bindings[0])
         self.assertTrue(view.grant_parent_edit.text())
         self.assertNotIn("|", view.grant_parent_edit.text())
@@ -431,6 +468,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=boneRefreshButton)",
             "BonePresenter.load_bones",
             "bone_row_user_role_identities_preserved_after_refresh",
+            refresh_spy,
+            view.refresh_btn,
         )
         self._emit(
             "bone.parent",
@@ -439,6 +478,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=boneList, row=1)",
             "BonePresenter.load_bone_properties",
             "parent_edit_read_only_canonical_identity_and_compact_label",
+            parent_spy,
+            view.parent_bone_edit,
         )
         self._emit(
             "bone.search",
@@ -447,6 +488,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=boneSearchEdit); setText('uiCoverageSecondBone')",
             "BonePresenter.filter_bones",
             "bone_search_visibility_and_canonical_identity",
+            search_spy,
+            view.search_edit,
         )
         self._emit(
             "bone.select_ik_target",
@@ -455,6 +498,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=boneSelectIkTargetButton)",
             "BonePresenter.select_bone_dialog('ik_target')",
             "ik_target_edit_mmdBindingIdentity_and_compact_label",
+            ik_target_spy,
+            view.select_ik_target_btn,
         )
         self._emit(
             "bone.add_ik_link",
@@ -463,6 +508,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=boneAddIkLinkButton)",
             "BonePresenter.add_ik_link",
             "ik_links_table_row_identity_after_two_adds",
+            add_spy,
+            view.add_ik_link_btn,
         )
         self._emit(
             "bone.remove_ik_link",
@@ -471,6 +518,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=boneRemoveIkLinkButton)",
             "BonePresenter.remove_ik_link",
             "ik_links_table_row_identity_after_remove",
+            remove_spy,
+            view.remove_ik_link_btn,
         )
         self._emit(
             "bone.move_ik_link_up",
@@ -479,6 +528,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=boneMoveIkLinkUpButton)",
             "BonePresenter.move_ik_link(-1)",
             "ik_links_table_order_after_move_up",
+            move_up_spy,
+            view.move_up_btn,
         )
         self._emit(
             "bone.move_ik_link_down",
@@ -487,6 +538,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=boneMoveIkLinkDownButton)",
             "BonePresenter.move_ik_link(1)",
             "ik_links_table_order_after_move_down",
+            move_down_spy,
+            view.move_down_btn,
         )
         self._emit(
             "bone.select_grant_parent",
@@ -495,6 +548,8 @@ class TestBoneMaterialRemainingGUI(GuiTestBase):
             "QTest.mouseClick(objectName=boneSelectGrantParentButton)",
             "BonePresenter.select_bone_dialog('grant_parent')",
             "grant_parent_edit_mmdBindingIdentity_and_compact_label",
+            grant_spy,
+            view.select_grant_parent_btn,
         )
 
 

@@ -46,6 +46,7 @@ from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.ui.qt_compat import QApplication, QColor, QMessageBox, QT_BINDING, Qt
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from tests.common.maya_plugin_setup import load_mmd_tools_plugin
+from tests.common.ui_action_coverage import ActionInvocationSpy, QtSignalInvocationSpy
 
 if QT_BINDING == "PySide6":
     from PySide6.QtTest import QTest
@@ -286,6 +287,13 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             flush=True,
         )
 
+    def _observe_surface_signal(self, surface_id, action_name, control, signal=None):
+        action_spy = QtSignalInvocationSpy(
+            action_name, signal or control.clicked, control
+        )
+        self._surface_action_spies[surface_id] = (action_spy, control)
+        return action_spy
+
     def _emit_bone_action_witness(
         self, surface_id, selector, fired_action, oracle, action_count
     ):
@@ -441,6 +449,85 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         QApplication.processEvents()
         before = _canonical_payload(self.window, self.root)
 
+        def observe(surface_id, action_spy, control):
+            self._surface_action_spies[surface_id] = (action_spy, control)
+
+        observe(
+            "material.name_jp",
+            QtSignalInvocationSpy(
+                "MaterialPresenter._on_value_changed", view.material_jp_name_edit.textChanged
+                , view.material_jp_name_edit
+            ),
+            view.material_jp_name_edit,
+        )
+        for surface_id, swatch, color_name in (
+            ("material.diffuse_color", view.diffuse_color_widget, "diffuse"),
+            ("material.specular_color", view.specular_color_widget, "specular"),
+            ("material.ambient_color", view.ambient_color_widget, "ambient"),
+            ("material.edge_color", view.edge_color_widget, "edge"),
+        ):
+            swatch_spy = ActionInvocationSpy.wrap(
+                "MaterialPresenter.pick_color('{}')".format(color_name),
+                swatch.mousePressEvent,
+                swatch,
+            )
+            swatch.mousePressEvent = swatch_spy
+            observe(surface_id, swatch_spy, swatch)
+        flag_values = (
+            (view.both_face_check, True),
+            (view.ground_shadow_check, False),
+            (view.self_shadow_map_check, True),
+            (view.self_shadow_check, False),
+            (view.edge_draw_check, True),
+            (view.vertex_color_check, False),
+            (view.point_draw_check, True),
+            (view.line_draw_check, False),
+        )
+        for surface_id, control, signal in (
+            ("material.transparency", view.transparency_spin, view.transparency_spin.valueChanged),
+            (
+                "material.specular_coefficient",
+                view.specular_coefficient_spin,
+                view.specular_coefficient_spin.valueChanged,
+            ),
+            ("material.double_sided", view.both_face_check, view.both_face_check.stateChanged),
+            (
+                "material.ground_shadow",
+                view.ground_shadow_check,
+                view.ground_shadow_check.stateChanged,
+            ),
+            (
+                "material.self_shadow_map",
+                view.self_shadow_map_check,
+                view.self_shadow_map_check.stateChanged,
+            ),
+            (
+                "material.self_shadow",
+                view.self_shadow_check,
+                view.self_shadow_check.stateChanged,
+            ),
+            ("material.edge_draw", view.edge_draw_check, view.edge_draw_check.stateChanged),
+            (
+                "material.vertex_color",
+                view.vertex_color_check,
+                view.vertex_color_check.stateChanged,
+            ),
+            ("material.point_draw", view.point_draw_check, view.point_draw_check.stateChanged),
+            ("material.line_draw", view.line_draw_check, view.line_draw_check.stateChanged),
+            ("material.edge_size", view.edge_size_spin, view.edge_size_spin.valueChanged),
+        ):
+            for flag_control, expected in flag_values:
+                if control is flag_control:
+                    control.setChecked(not expected)
+                    break
+            observe(
+                surface_id,
+                QtSignalInvocationSpy(
+                    "MaterialPresenter._on_value_changed", signal, control
+                ),
+                control,
+            )
+
         view.material_jp_name_edit.setText("UI材質")
         view.material_en_name_edit.setText("UI Material Values")
         chosen_colors = (
@@ -470,19 +557,14 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
                 self.assertAlmostEqual(actual, channel, places=6, msg=key)
         view.transparency_spin.setValue(0.25)
         view.specular_coefficient_spin.setValue(0.6)
-        flag_values = (
-            (view.both_face_check, True),
-            (view.ground_shadow_check, False),
-            (view.self_shadow_map_check, True),
-            (view.self_shadow_check, False),
-            (view.edge_draw_check, True),
-            (view.vertex_color_check, False),
-            (view.point_draw_check, True),
-            (view.line_draw_check, False),
-        )
         for control, checked in flag_values:
             control.setChecked(checked)
         view.edge_size_spin.setValue(1.25)
+        # Freeze each direct-edit delta before Apply/Reset repopulates the widgets.
+        # Those refresh emissions are lifecycle noise, not another user action.
+        for action_spy, _control in self._surface_action_spies.values():
+            if isinstance(action_spy, QtSignalInvocationSpy):
+                action_spy.stop()
         view.apply_btn.click()
         QApplication.processEvents()
 
@@ -505,12 +587,23 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(material["draw_flags"], 0x55)
         self.assertEqual(_changed_spec_sections(before, after), ["materials"])
 
+        search_spy = QtSignalInvocationSpy(
+            "MaterialPresenter.on_search_text_changed",
+            view.search_edit.textChanged,
+            view.search_edit,
+        )
+        observe("material.search", search_spy, view.search_edit)
         view.search_edit.setText("UI材質")
         QApplication.processEvents()
         self.assertFalse(view.material_list.item(0).isHidden())
+        search_spy.stop()
         view.search_edit.clear()
         view.material_jp_name_edit.setText("discarded")
         view.transparency_spin.setValue(0.9)
+        reset_spy = QtSignalInvocationSpy(
+            "MaterialPresenter.reset_changes", view.reset_btn.clicked, view.reset_btn
+        )
+        observe("material.reset", reset_spy, view.reset_btn)
         view.reset_btn.click()
         QApplication.processEvents()
         self.assertEqual(view.material_jp_name_edit.text(), "UI材質")
@@ -1092,6 +1185,11 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         ) as morph_load, patch.object(self.window.display_pane_presenter, "refresh") as display_refresh, patch.object(
             self.window.physics_presenter, "refresh_physics"
         ) as physics_refresh:
+            self._observe_surface_signal(
+                "header.refresh",
+                "ApplicationState.refresh_model_list(explicit=True)",
+                self.window.header_widget.refresh_btn,
+            )
             self.window.header_widget.refresh_btn.click()
             QApplication.processEvents()
             self.assertEqual(self.window.app_state.refresh_generation, generation + 1)
@@ -1123,6 +1221,9 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
     def test_material_toolbar_crud_reindex_and_undo(self):
         """Exercise every supported Material toolbar action through real buttons."""
         view = self.window.material_presenter.view
+        self._observe_surface_signal(
+            "material.refresh", "MaterialPresenter.load_materials", view.refresh_btn
+        )
         view.refresh_btn.click()
         QApplication.processEvents()
         self.assertEqual(view.material_list.count(), 1)
@@ -1136,6 +1237,9 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         )
 
         before_create = _canonical_payload(self.window, self.root)
+        self._observe_surface_signal(
+            "material.create", "MaterialPresenter.create_material", view.create_btn
+        )
         view.create_btn.click()
         QApplication.processEvents()
         after_create = _canonical_payload(self.window, self.root)
@@ -1158,6 +1262,9 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         view.material_list.setCurrentRow(1)
         QApplication.processEvents()
         before_duplicate = _canonical_payload(self.window, self.root)
+        self._observe_surface_signal(
+            "material.duplicate", "MaterialPresenter.duplicate_material", view.duplicate_btn
+        )
         view.duplicate_btn.click()
         QApplication.processEvents()
         after_duplicate = _canonical_payload(self.window, self.root)
@@ -1179,6 +1286,9 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         view.material_list.setCurrentRow(2)
         QApplication.processEvents()
         before_move_up = _canonical_payload(self.window, self.root)
+        self._observe_surface_signal(
+            "material.move_up", "MaterialPresenter.move_material(-1)", view.reindex_up_btn
+        )
         view.reindex_up_btn.click()
         QApplication.processEvents()
         after_move_up = _canonical_payload(self.window, self.root)
@@ -1197,6 +1307,9 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         )
 
         before_move_down = _canonical_payload(self.window, self.root)
+        self._observe_surface_signal(
+            "material.move_down", "MaterialPresenter.move_material(1)", view.reindex_down_btn
+        )
         view.reindex_down_btn.click()
         QApplication.processEvents()
         after_move_down = _canonical_payload(self.window, self.root)
@@ -1222,6 +1335,9 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             "mmd_tools.ui.qt_compat.QMessageBox.question",
             return_value=QMessageBox.Yes,
         ):
+            self._observe_surface_signal(
+                "material.delete", "MaterialPresenter.delete_material", view.delete_btn
+            )
             view.delete_btn.click()
         QApplication.processEvents()
         after_delete = _canonical_payload(self.window, self.root)
@@ -1410,6 +1526,11 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         view.bone_list.setCurrentRow(0)
         QApplication.processEvents()
         view.bone_name_en_edit.setText("Only Model A")
+        self._observe_surface_signal(
+            "bone.apply.current_model_identity",
+            "BonePresenter.apply_changes",
+            view.apply_btn,
+        )
         QTest.mouseClick(view.apply_btn, Qt.LeftButton)
         QApplication.processEvents()
 
@@ -1935,12 +2056,28 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
 
     def _material_case(self, evidence):
         view = self.window.material_presenter.view
+        view.material_list.setCurrentRow(-1)
+        self._observe_surface_signal(
+            "material.list",
+            "MaterialPresenter.on_material_selected",
+            view.material_list,
+            view.material_list.currentItemChanged,
+        )
         view.material_list.setCurrentRow(0)
         QApplication.processEvents()
         before = _canonical_payload(self.window, self.root)
         binding = self.window.authoring_composition.coordinator.read_spec(self.root).materials[0].binding_identity
         binding_before = _node_footprint(binding)
+        self._observe_surface_signal(
+            "material.name_en",
+            "MaterialPresenter._on_value_changed",
+            view.material_en_name_edit,
+            view.material_en_name_edit.textChanged,
+        )
         view.material_en_name_edit.setText("UI Material")
+        self._observe_surface_signal(
+            "material.apply", "MaterialPresenter.apply_changes", view.apply_btn
+        )
         view.apply_btn.click()
         QApplication.processEvents()
         after = _canonical_payload(self.window, self.root)
@@ -1994,11 +2131,24 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
 
     def _bone_case(self, evidence):
         view = self.window.bone_presenter.view
+        view.bone_list.setCurrentRow(-1)
+        self._observe_surface_signal(
+            "bone.list",
+            "BonePresenter.on_bone_selected",
+            view.bone_list,
+            view.bone_list.currentItemChanged,
+        )
         view.bone_list.setCurrentRow(0)
         QApplication.processEvents()
         before = _canonical_payload(self.window, self.root)
         binding = self.window.authoring_composition.coordinator.read_spec(self.root).bones[0].binding_identity
         binding_before = _node_footprint(binding)
+        self._observe_surface_signal(
+            "bone.name_en",
+            "BonePresenter.apply_changes",
+            view.bone_name_en_edit,
+            view.bone_name_en_edit.textChanged,
+        )
         view.bone_name_en_edit.setText("UI Root")
         coordinator = self.window.authoring_composition.coordinator
         original_apply_bone_value_patch = coordinator.apply_bone_value_patch
@@ -2108,6 +2258,9 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             return "group"
 
         view.create_morph_type_provider = choose_group
+        self._observe_surface_signal(
+            "morph.create", "MorphPresenter.create_morph", view.create_morph_btn
+        )
         view.create_morph_btn.clicked.connect(lambda: clicks.append(True))
         try:
             view.create_morph_btn.click()
@@ -2240,10 +2393,28 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.window.display_pane_presenter.refresh()
         before = _canonical_payload(self.window, self.root)
         root_before = _node_footprint(self.root)
+        self._observe_surface_signal(
+            "display_pane.add_frame", "DisplayPanePresenter.add_frame", view.add_frame_btn
+        )
         view.add_frame_btn.click()
         QApplication.processEvents()
+        self._observe_surface_signal(
+            "display_pane.frame_name_jp",
+            "DisplayPanePresenter.on_frame_properties_changed",
+            view.name_jp_edit,
+            view.name_jp_edit.textChanged,
+        )
         view.name_jp_edit.setText("UI表示枠")
+        self._observe_surface_signal(
+            "display_pane.frame_name_en",
+            "DisplayPanePresenter.on_frame_properties_changed",
+            view.name_en_edit,
+            view.name_en_edit.textChanged,
+        )
         view.name_en_edit.setText("UI Frame")
+        self._observe_surface_signal(
+            "display_pane.apply", "DisplayPanePresenter.apply", view.apply_btn
+        )
         view.apply_btn.click()
         QApplication.processEvents()
         after = _canonical_payload(self.window, self.root)

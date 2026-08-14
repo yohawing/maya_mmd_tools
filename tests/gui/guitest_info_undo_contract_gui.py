@@ -8,23 +8,21 @@ import maya.cmds as cmds
 from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.ui.qt_compat import QApplication
 from tests.common.gui_test_base import GuiTestBase, requires_gui
+from tests.common.ui_action_coverage import QtSignalInvocationSpy, build_surface_witness
 
 
-def _emit_witness(surface_id, locator, interaction, fired_action, oracle):
+def _emit_witness(surface_id, locator, interaction, oracle, action_spy, control):
     """Emit one deterministic runtime witness for the coverage gate."""
 
-    evidence = {
-        "surface_id": surface_id,
-        "case_id": "gui.info_undo",
-        "attribute": locator,
-        "status": "pass",
-        "runtime_witness": {
-            "interaction": interaction,
-            "fired_action": fired_action,
-            "oracle": oracle,
-            "action_count": 1,
-        },
-    }
+    evidence = build_surface_witness(
+        surface_id=surface_id,
+        case_id="gui.info_undo",
+        attribute=locator,
+        interaction=interaction,
+        oracle=oracle,
+        action_spy=action_spy,
+        control=control,
+    )
     print(
         "[UI COVERAGE WITNESS] "
         + json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -56,6 +54,7 @@ class TestInfoUndoContractGUI(GuiTestBase):
         self.window = MainWindow()
         self.window.show()
         self.window.app_state.current_model_root = self.template.root
+        self.window.tab_widget.setCurrentWidget(self.window.info_presenter.view)
         QApplication.processEvents()
 
     def tearDown(self):
@@ -74,6 +73,9 @@ class TestInfoUndoContractGUI(GuiTestBase):
 
         editor.setFocus()
         editor.setText("Undo Contract JP 1")
+        action_spy = QtSignalInvocationSpy(
+            "InfoPresenter.update_model_info", editor.textChanged, editor
+        )
         editor.setText("Undo Contract JP 2")
         QApplication.processEvents()
         self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_model_name"), "Undo Contract JP 2")
@@ -90,8 +92,9 @@ class TestInfoUndoContractGUI(GuiTestBase):
             "info.model_name_jp",
             "model_name_jp_edit",
             "QTest.edit(attribute=model_name_jp_edit, Undo Contract JP 2)",
-            "InfoPresenter.update_model_info",
             "Maya attr write and Undo/Redo restored model_name_jp",
+            action_spy,
+            editor,
         )
 
     def test_qtextedit_focus_session_immediate_write_and_undo_redo(self):
@@ -101,6 +104,9 @@ class TestInfoUndoContractGUI(GuiTestBase):
 
         editor.setFocus()
         editor.setPlainText("コメント 1")
+        action_spy = QtSignalInvocationSpy(
+            "InfoPresenter.update_model_info", editor.textChanged, editor
+        )
         editor.setPlainText("コメント 2")
         QApplication.processEvents()
         self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_comment"), "コメント 2")
@@ -116,8 +122,9 @@ class TestInfoUndoContractGUI(GuiTestBase):
             "info.comment_jp",
             "comment_jp_edit",
             "QTest.edit(attribute=comment_jp_edit, コメント 2)",
-            "InfoPresenter.update_model_info",
             "Maya attr write and Undo/Redo restored comment_jp",
+            action_spy,
+            editor,
         )
 
     def test_root_deletion_and_window_teardown_close_info_session(self):

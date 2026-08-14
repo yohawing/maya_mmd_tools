@@ -21,9 +21,15 @@ from mmd_tools.core.logger import get_logger, set_all_logger_levels
 from mmd_tools.core.settings import get_settings
 from mmd_tools.services.settings_service import SettingsService
 from mmd_tools.ui.main_window import MainWindow
-from mmd_tools.ui.qt_compat import QApplication, QSettings
+from mmd_tools.ui.qt_compat import QApplication, QSettings, QT_BINDING, Qt
 from mmd_tools.ui.translations import UITranslator
 from tests.common.gui_test_base import GuiTestBase, requires_gui
+from tests.common.ui_action_coverage import QtSignalInvocationSpy, build_surface_witness
+
+if QT_BINDING == "PySide6":
+    from PySide6.QtTest import QTest
+else:
+    from PySide2.QtTest import QTest
 
 
 _SETTING_KEYS = (
@@ -102,21 +108,28 @@ def _port_is_open(port):
         return False
 
 
-def _emit_witness(surface_id, locator_key, locator, interaction, fired_action, oracle):
+def _emit_witness(
+    surface_id,
+    locator_key,
+    locator,
+    interaction,
+    oracle,
+    action_spy,
+    control,
+    interaction_control=None,
+):
     """Emit one deterministic runtime witness for the coverage gate."""
 
-    evidence = {
-        "surface_id": surface_id,
-        "case_id": "gui.settings_side_effects",
-        locator_key: locator,
-        "status": "pass",
-        "runtime_witness": {
-            "interaction": interaction,
-            "fired_action": fired_action,
-            "oracle": oracle,
-            "action_count": 1,
-        },
-    }
+    evidence = build_surface_witness(
+        surface_id=surface_id,
+        case_id="gui.settings_side_effects",
+        interaction=interaction,
+        oracle=oracle,
+        action_spy=action_spy,
+        control=control,
+        interaction_control=interaction_control,
+        **{locator_key: locator},
+    )
     print(
         "[UI COVERAGE WITNESS] "
         + json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -224,10 +237,17 @@ class TestSettingsSideEffects(GuiTestBase):
     def test_settings_controls_apply_real_side_effects(self):
         settings_tab = self.window.settings_presenter.view
         try:
+            self.window.tab_widget.setCurrentWidget(settings_tab)
+            QApplication.processEvents()
             # Language combo signal: all nine tabs are checked by widget
             # identity, and Display Pane's child label must be retranslated.
             current_language = settings_tab.language_combo.currentData()
             target_language = "en" if current_language != "en" else "ja"
+            language_spy = QtSignalInvocationSpy(
+                "SettingsPresenter.set_language",
+                settings_tab.language_combo.currentIndexChanged,
+                source_control=settings_tab.language_combo,
+            )
             self._select_language(settings_tab.language_combo, target_language)
             translator = UITranslator.instance()
             expected_tabs = (
@@ -256,6 +276,15 @@ class TestSettingsSideEffects(GuiTestBase):
                 cmds.optionVar(query=_option_var_name(settings_keys.UI_GENERAL_LANGUAGE)),
                 target_language,
             )
+            _emit_witness(
+                "settings.language",
+                "selector",
+                "objectName=settingsLanguageCombo",
+                "QTest.setCurrentIndex(objectName=settingsLanguageCombo)",
+                "language persisted and translated all tabs",
+                language_spy,
+                settings_tab.language_combo,
+            )
 
             # Fresh service/window read the language persisted by the combo
             # signal, without invoking the presenter directly.
@@ -277,11 +306,53 @@ class TestSettingsSideEffects(GuiTestBase):
             self.window.tab_widget.setCurrentWidget(settings_tab)
             QApplication.processEvents()
 
+            tab_surface_spies = {}
+            tab_bar = self.window.tab_widget.tabBar()
+            for surface_id, _key, widget in (
+                ("import_export.tab_selector", "file_io", self.window.import_export_tab),
+                ("export.tab_selector", "export_workflow", self.window.export_tab),
+                ("info.tab_selector", "info", self.window.info_presenter.view),
+                ("material.tab_selector", "material", self.window.material_presenter.view),
+                ("bone.tab_selector", "bone", self.window.bone_presenter.view),
+                ("morph.tab_selector", "morph", self.window.morph_tab),
+                ("display_pane.tab_selector", "display_pane", self.window.display_pane_tab),
+                ("physics.tab_selector", "physics", self.window.physics_tab),
+                ("settings.tab_selector", "settings", settings_tab),
+            ):
+                target_index = self.window.tab_widget.indexOf(widget)
+                prep_index = (target_index + 1) % self.window.tab_widget.count()
+                self.window.tab_widget.setCurrentIndex(prep_index)
+                QApplication.processEvents()
+                tab_spy = QtSignalInvocationSpy(
+                    "MainWindow._on_main_tab_changed",
+                    self.window.tab_widget.currentChanged,
+                    source_control=self.window.tab_widget,
+                )
+                QTest.mouseClick(
+                    tab_bar,
+                    Qt.LeftButton,
+                    pos=tab_bar.tabRect(target_index).center(),
+                )
+                QApplication.processEvents()
+                tab_spy.stop()
+                self.assertIs(self.window.tab_widget.currentWidget(), widget)
+                self.assertEqual(tab_spy.action_count, 1)
+                tab_surface_spies[surface_id] = (
+                    tab_spy,
+                    widget,
+                    self.window.tab_widget,
+                )
+
             # Development Mode is driven by its checkbox signal.  Selecting a
             # free port first makes the auto-open deterministic and owned by
             # this test.
             port = _free_local_port()
             self._owned_ports.add(port)
+            port_spy = QtSignalInvocationSpy(
+                "SettingsPresenter.set_command_port",
+                settings_tab.command_port_spin.valueChanged,
+                settings_tab.command_port_spin,
+            )
             settings_tab.command_port_spin.setValue(port)
             settings_tab.development_mode_check.click()
             self.assertTrue(_drain_events_until(settings_tab.development_mode_check.isChecked))
@@ -291,13 +362,31 @@ class TestSettingsSideEffects(GuiTestBase):
             self.assertEqual(settings_tab.open_command_port_btn.text(), translator.translate("close_command_port", "buttons"))
 
             # The same production button must close and reopen the port.
+            close_port_spy = QtSignalInvocationSpy(
+                "SettingsPresenter.toggle_command_port",
+                settings_tab.open_command_port_btn.clicked,
+                settings_tab.open_command_port_btn,
+            )
             settings_tab.open_command_port_btn.click()
+            close_port_spy.stop()
             self.assertTrue(_drain_events_until(lambda: not _port_is_open(port)))
             self.assertEqual(settings_tab.open_command_port_btn.text(), translator.translate("open_command_port", "buttons"))
+            open_port_spy = QtSignalInvocationSpy(
+                "SettingsPresenter.toggle_command_port",
+                settings_tab.open_command_port_btn.clicked,
+                settings_tab.open_command_port_btn,
+            )
             settings_tab.open_command_port_btn.click()
+            open_port_spy.stop()
             self.assertTrue(_drain_events_until(lambda: _port_is_open(port)))
             self.assertEqual(settings_tab.open_command_port_btn.text(), translator.translate("close_command_port", "buttons"))
+            development_spy = QtSignalInvocationSpy(
+                "SettingsPresenter.set_development_mode",
+                settings_tab.development_mode_check.clicked,
+                settings_tab.development_mode_check,
+            )
             settings_tab.development_mode_check.click()
+            development_spy.stop()
             self.assertFalse(settings_tab.development_mode_check.isChecked())
             self.assertFalse(settings_tab.dev_tools_group.isVisible())
             self.assertTrue(_drain_events_until(lambda: not _port_is_open(port)))
@@ -321,10 +410,26 @@ class TestSettingsSideEffects(GuiTestBase):
                 test_logger.warning("disabled logging probe")
                 self.assertEqual(handler.records, [])
 
+                logging_spy = QtSignalInvocationSpy(
+                    "SettingsPresenter.set_logging_enabled",
+                    settings_tab.logging_enabled_check.clicked,
+                    settings_tab.logging_enabled_check,
+                )
                 settings_tab.logging_enabled_check.click()
                 error_index = settings_tab.log_level_combo.findText("ERROR")
                 self.assertGreaterEqual(error_index, 0)
+                level_spy = QtSignalInvocationSpy(
+                    "SettingsPresenter.set_log_level",
+                    settings_tab.log_level_combo.currentIndexChanged,
+                    settings_tab.log_level_combo,
+                )
                 settings_tab.log_level_combo.setCurrentIndex(error_index)
+                level_spy.stop()
+                save_spy = QtSignalInvocationSpy(
+                    "SettingsPresenter.save_all_settings",
+                    settings_tab.save_settings_btn.clicked,
+                    settings_tab.save_settings_btn,
+                )
                 settings_tab.save_settings_btn.click()
                 self.assertTrue(SettingsService().get(settings_keys.LOGGING_ENABLED))
                 self.assertEqual(SettingsService().get(settings_keys.LOGGING_LEVEL), "ERROR")
@@ -340,77 +445,104 @@ class TestSettingsSideEffects(GuiTestBase):
                 test_logger.remove_handler(handler)
                 handler.close()
 
+            # Restore the normal enabled Development Mode surface while the
+            # already-frozen witnesses for its child controls are emitted.
+            settings_tab.development_mode_check.click()
+            self.assertTrue(_drain_events_until(settings_tab.dev_tools_group.isVisible))
+
+            surface_spies = {
+                "settings.save": (save_spy, settings_tab.save_settings_btn),
+                "settings.development_mode": (
+                    development_spy,
+                    settings_tab.development_mode_check,
+                ),
+                "settings.command_port": (port_spy, settings_tab.command_port_spin),
+                "settings.open_command_port": (
+                    open_port_spy,
+                    settings_tab.open_command_port_btn,
+                ),
+                "settings.logging_enabled": (
+                    logging_spy,
+                    settings_tab.logging_enabled_check,
+                ),
+                "settings.log_level": (level_spy, settings_tab.log_level_combo),
+            }
+            surface_spies.update(
+                (surface_id, (spy, widget))
+                for surface_id, (spy, widget, _interaction_control) in tab_surface_spies.items()
+            )
+
             for surface_id, locator_key, locator, interaction, fired_action, oracle in (
                 (
                     "import_export.tab_selector",
                     "selector",
                     "objectName=ImportExportTab",
-                    "Settings language combo retranslated ImportExportTab",
-                    "UITranslator.language_changed",
+                    "QTest.mouseClick(mainTabBar, ImportExportTab)",
+                    "MainWindow._on_main_tab_changed",
                     "tab identity and translated label match import_export",
                 ),
                 (
                     "export.tab_selector",
                     "attribute",
                     "export_tab",
-                    "Settings language combo retranslated export_tab",
-                    "UITranslator.language_changed",
+                    "QTest.mouseClick(mainTabBar, export_tab)",
+                    "MainWindow._on_main_tab_changed",
                     "tab identity and translated label match export",
                 ),
                 (
                     "info.tab_selector",
                     "selector",
                     "objectName=InfoTab",
-                    "Settings language combo retranslated InfoTab",
-                    "UITranslator.language_changed",
+                    "QTest.mouseClick(mainTabBar, InfoTab)",
+                    "MainWindow._on_main_tab_changed",
                     "tab identity and translated label match info",
                 ),
                 (
                     "material.tab_selector",
                     "selector",
                     "objectName=MaterialTab",
-                    "Settings language combo retranslated MaterialTab",
-                    "UITranslator.language_changed",
+                    "QTest.mouseClick(mainTabBar, MaterialTab)",
+                    "MainWindow._on_main_tab_changed",
                     "tab identity and translated label match material",
                 ),
                 (
                     "bone.tab_selector",
                     "selector",
                     "objectName=BoneTab",
-                    "Settings language combo retranslated BoneTab",
-                    "UITranslator.language_changed",
+                    "QTest.mouseClick(mainTabBar, BoneTab)",
+                    "MainWindow._on_main_tab_changed",
                     "tab identity and translated label match bone",
                 ),
                 (
                     "morph.tab_selector",
                     "selector",
                     "objectName=MorphTab",
-                    "Settings language combo retranslated MorphTab",
-                    "UITranslator.language_changed",
+                    "QTest.mouseClick(mainTabBar, MorphTab)",
+                    "MainWindow._on_main_tab_changed",
                     "tab identity and translated label match morph",
                 ),
                 (
                     "display_pane.tab_selector",
                     "selector",
                     "objectName=DisplayPaneTab",
-                    "Settings language combo retranslated DisplayPaneTab",
-                    "UITranslator.language_changed",
+                    "QTest.mouseClick(mainTabBar, DisplayPaneTab)",
+                    "MainWindow._on_main_tab_changed",
                     "tab identity and child label match display_pane",
                 ),
                 (
                     "physics.tab_selector",
                     "selector",
                     "objectName=PhysicsTab",
-                    "Settings language combo retranslated PhysicsTab",
-                    "UITranslator.language_changed",
+                    "QTest.mouseClick(mainTabBar, PhysicsTab)",
+                    "MainWindow._on_main_tab_changed",
                     "tab identity and translated label match physics",
                 ),
                 (
                     "settings.tab_selector",
                     "selector",
                     "objectName=SettingsTab",
-                    "Settings language combo retranslated SettingsTab",
-                    "UITranslator.language_changed",
+                    "QTest.mouseClick(mainTabBar, SettingsTab)",
+                    "MainWindow._on_main_tab_changed",
                     "tab identity and translated label match settings",
                 ),
                 (
@@ -428,14 +560,6 @@ class TestSettingsSideEffects(GuiTestBase):
                     "QTest.click(objectName=settingsDevelopmentModeCheck)",
                     "SettingsPresenter.set_development_mode",
                     "development mode visibility, command port, and close state verified",
-                ),
-                (
-                    "settings.language",
-                    "selector",
-                    "objectName=settingsLanguageCombo",
-                    "QTest.setCurrentIndex(objectName=settingsLanguageCombo)",
-                    "SettingsPresenter.set_language",
-                    "language persisted and reloaded by a fresh MainWindow",
                 ),
                 (
                     "settings.command_port",
@@ -470,13 +594,24 @@ class TestSettingsSideEffects(GuiTestBase):
                     "ERROR persisted and only error record accepted by handler",
                 ),
             ):
+                action_spy, control = surface_spies[surface_id]
+                if surface_id.endswith(".tab_selector"):
+                    self.window.tab_widget.setCurrentWidget(control)
+                    QApplication.processEvents()
+                else:
+                    self.window.tab_widget.setCurrentWidget(settings_tab)
+                    QApplication.processEvents()
                 _emit_witness(
                     surface_id,
                     locator_key,
                     locator,
                     interaction,
-                    fired_action,
                     oracle,
+                    action_spy,
+                    control,
+                    self.window.tab_widget
+                    if surface_id.endswith(".tab_selector")
+                    else None,
                 )
         finally:
             self._close_owned_ports()

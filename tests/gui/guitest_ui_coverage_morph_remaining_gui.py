@@ -19,6 +19,11 @@ from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.ui.qt_compat import QApplication, Qt, QT_BINDING
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from tests.common.maya_plugin_setup import load_mmd_tools_plugin
+from tests.common.ui_action_coverage import (
+    ActionInvocationSpy,
+    QtSignalInvocationSpy,
+    build_surface_witness,
+)
 
 if QT_BINDING == "PySide6":
     from PySide6.QtTest import QTest
@@ -120,22 +125,27 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             cmds.file(new=True, force=True)
             super().tearDown()
 
-    def _emit(self, surface_id, selector, interaction, fired_action, oracle, *, attribute=None):
-        witness = {
-            "surface_id": surface_id,
-            "case_id": CASE_ID,
-            "status": "pass",
-            "runtime_witness": {
-                "interaction": interaction,
-                "fired_action": fired_action,
-                "oracle": oracle,
-                "action_count": 1,
-            },
-        }
-        if attribute is None:
-            witness["selector"] = selector
-        else:
-            witness["attribute"] = attribute
+    def _emit(
+        self,
+        surface_id,
+        selector,
+        interaction,
+        oracle,
+        action_spy,
+        control,
+        *,
+        attribute=None,
+    ):
+        locator = {"selector": selector} if attribute is None else {"attribute": attribute}
+        witness = build_surface_witness(
+            surface_id=surface_id,
+            case_id=CASE_ID,
+            interaction=interaction,
+            oracle=oracle,
+            action_spy=action_spy,
+            control=control,
+            **locator,
+        )
         print(
             "[UI COVERAGE WITNESS] "
             + json.dumps(witness, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -161,6 +171,11 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
     def test_morph_refresh_search_and_detail_selector(self):
         """Refresh, text filter, and the single semantic-detail tab."""
         before = tuple(self.presenter.morph_data)
+        refresh_spy = QtSignalInvocationSpy(
+            "MorphPresenter.load_morphs",
+            self.view.refresh_morphs_btn.clicked,
+            self.view.refresh_morphs_btn,
+        )
         QTest.mouseClick(self.view.refresh_morphs_btn, Qt.LeftButton)
         QApplication.processEvents()
         self.assertEqual(tuple(self.presenter.morph_data), before)
@@ -169,11 +184,17 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.refresh",
             "objectName=morphRefreshButton",
             "QTest.mouseClick(objectName=morphRefreshButton, Qt.LeftButton)",
-            "MorphPresenter.load_morphs",
             "morph_list_reloaded_and_three_semantic_rows_present",
+            refresh_spy,
+            self.view.refresh_morphs_btn,
         )
 
         self.view.search_edit.clear()
+        search_spy = QtSignalInvocationSpy(
+            "MorphPresenter.filter_morphs",
+            self.view.search_edit.textChanged,
+            self.view.search_edit,
+        )
         self.view.search_edit.setText("Morph A")
         QApplication.processEvents()
         visible = [
@@ -186,13 +207,17 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.search",
             "objectName=morphSearchEdit",
             "QTest.setText(objectName=morphSearchEdit, 'Morph A')",
-            "MorphPresenter.filter_morphs",
             "only_matching_morph_row_visible",
+            search_spy,
+            self.view.search_edit,
         )
 
         self.view.search_edit.clear()
         self.assertEqual(self.view.detail_tabs.count(), 1)
         tab_bar = self.view.detail_tabs.tabBar()
+        detail_spy = QtSignalInvocationSpy(
+            "QTabWidget.tabBarClicked", tab_bar.tabBarClicked, self.view.detail_tabs
+        )
         QTest.mouseClick(tab_bar, Qt.LeftButton, pos=tab_bar.tabRect(0).center())
         QApplication.processEvents()
         self.assertEqual(self.view.detail_tabs.currentIndex(), 0)
@@ -200,8 +225,9 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.detail_selector",
             "detail_tabs",
             "QTest.mouseClick(detail_tabs.tabBar().tabRect(0))",
-            "QTabWidget.currentIndexChanged",
             "single_basic_information_tab_selected",
+            detail_spy,
+            self.view.detail_tabs,
             attribute="detail_tabs",
         )
 
@@ -211,6 +237,11 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
         controller = self.presenter._morph_controller
         self.assertTrue(controller)
 
+        invert_spy = QtSignalInvocationSpy(
+            "MorphPresenter.on_morph_slider_changed",
+            self.view.invert_check.clicked,
+            self.view.invert_check,
+        )
         QTest.mouseClick(self.view.invert_check, Qt.LeftButton)
         self.view.morph_slider.setValue(25)
         QApplication.processEvents()
@@ -219,11 +250,17 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.invert",
             "objectName=morphInvertCheck",
             "QTest.mouseClick(objectName=morphInvertCheck); QTest.value(morph_slider, 25)",
-            "MorphPresenter.on_morph_slider_changed",
             "inverted_slider_weight_written_to_maya_controller",
+            invert_spy,
+            self.view.invert_check,
         )
 
         self.view.invert_check.setChecked(False)
+        multiplier_spy = QtSignalInvocationSpy(
+            "MorphPresenter.on_morph_slider_changed",
+            self.view.multiplier_spin.valueChanged,
+            self.view.multiplier_spin,
+        )
         self.view.multiplier_spin.setValue(0.5)
         self.view.morph_slider.setValue(40)
         QApplication.processEvents()
@@ -232,10 +269,16 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.multiplier",
             "objectName=morphMultiplierSpin",
             "QTest.value(objectName=morphMultiplierSpin, 0.5); QTest.value(morph_slider, 40)",
-            "MorphPresenter.on_morph_slider_changed",
             "multiplied_slider_weight_written_to_maya_controller",
+            multiplier_spy,
+            self.view.multiplier_spin,
         )
 
+        reset_slider_spy = QtSignalInvocationSpy(
+            "MorphPresenter.reset_current_morph",
+            self.view.reset_slider_btn.clicked,
+            self.view.reset_slider_btn,
+        )
         QTest.mouseClick(self.view.reset_slider_btn, Qt.LeftButton)
         QApplication.processEvents()
         self.assertAlmostEqual(cmds.getAttr(f"{controller}.inputWeight[0]"), 0.0, places=5)
@@ -244,8 +287,9 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.reset_slider",
             "objectName=morphResetSliderButton",
             "QTest.mouseClick(objectName=morphResetSliderButton, Qt.LeftButton)",
-            "MorphPresenter.reset_current_morph",
             "current_morph_controller_weight_zero_and_slider_zero",
+            reset_slider_spy,
+            self.view.reset_slider_btn,
         )
 
         self._select_index(1)
@@ -253,6 +297,11 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
         self.view.morph_slider.setValue(65)
         self._select_index(0)
         self.view.morph_slider.setValue(35)
+        reset_all_spy = QtSignalInvocationSpy(
+            "MorphPresenter.reset_all_morphs",
+            self.view.reset_all_btn.clicked,
+            self.view.reset_all_btn,
+        )
         QTest.mouseClick(self.view.reset_all_btn, Qt.LeftButton)
         QApplication.processEvents()
         self.assertAlmostEqual(cmds.getAttr(f"{controller}.inputWeight[0]"), 0.0, places=5)
@@ -261,8 +310,9 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.reset_all",
             "objectName=morphResetAllButton",
             "QTest.mouseClick(objectName=morphResetAllButton, Qt.LeftButton)",
-            "MorphPresenter.reset_all_morphs",
             "all_nonzero_morph_controller_weights_zeroed",
+            reset_all_spy,
+            self.view.reset_all_btn,
         )
 
     def test_morph_metadata_apply_reset_and_fixed_type(self):
@@ -270,26 +320,38 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
         self._select_index(0)
         before = self.coordinator.read_spec(self.root)
         self.assertEqual(before.morphs[0].name, "Morph A")
-        self.view.morph_name_jp_edit.clear()
+        name_jp_spy = QtSignalInvocationSpy(
+            "MorphPresenter.on_value_changed",
+            self.view.morph_name_jp_edit.textChanged,
+            self.view.morph_name_jp_edit,
+        )
         self.view.morph_name_jp_edit.setText("更新JP")
-        self.view.morph_name_en_edit.clear()
+        name_en_spy = QtSignalInvocationSpy(
+            "MorphPresenter.on_value_changed",
+            self.view.morph_name_en_edit.textChanged,
+            self.view.morph_name_en_edit,
+        )
         self.view.morph_name_en_edit.setText("Updated EN")
+        panel_spy = QtSignalInvocationSpy(
+            "MorphPresenter.on_value_changed",
+            self.view.panel_combo.currentIndexChanged,
+            self.view.panel_combo,
+        )
         self.view.panel_combo.setCurrentIndex(2)
 
-        calls = []
         original = self.coordinator.apply_morph_value_patch
-
-        def observe(*args, **kwargs):
-            calls.append("MayaModelAuthoringCoordinator.apply_morph_value_patch")
-            return original(*args, **kwargs)
-
-        self.coordinator.apply_morph_value_patch = observe
+        apply_spy = ActionInvocationSpy.wrap(
+            "MayaModelAuthoringCoordinator.apply_morph_value_patch",
+            original,
+            self.view.apply_btn,
+        )
+        self.coordinator.apply_morph_value_patch = apply_spy
         try:
             QTest.mouseClick(self.view.apply_btn, Qt.LeftButton)
             QApplication.processEvents()
         finally:
             self.coordinator.apply_morph_value_patch = original
-        self.assertEqual(calls, ["MayaModelAuthoringCoordinator.apply_morph_value_patch"])
+        self.assertEqual(apply_spy.action_count, 1)
         after = self.coordinator.read_spec(self.root)
         updated = next(item for item in after.morphs if item.index == 0)
         self.assertEqual(updated.name, "更新JP")
@@ -299,29 +361,33 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.apply",
             "objectName=morphApplyButton",
             "QTest.mouseClick(objectName=morphApplyButton, Qt.LeftButton)",
-            calls[0],
             "semantic_morph_metadata_patch_and_undo_redo",
+            apply_spy,
+            self.view.apply_btn,
         )
         self._emit(
             "morph.name_jp",
             "objectName=morphNameJpEdit",
             "QTest.setText(objectName=morphNameJpEdit, '更新JP'); QTest.mouseClick(morphApplyButton)",
-            calls[0],
             "semantic_morph_name_maya_metadata_and_undo_redo",
+            name_jp_spy,
+            self.view.morph_name_jp_edit,
         )
         self._emit(
             "morph.name_en",
             "objectName=morphNameEnEdit",
             "QTest.setText(objectName=morphNameEnEdit, 'Updated EN'); QTest.mouseClick(morphApplyButton)",
-            calls[0],
             "semantic_morph_name_english_maya_metadata_and_undo_redo",
+            name_en_spy,
+            self.view.morph_name_en_edit,
         )
         self._emit(
             "morph.panel",
             "objectName=morphPanelCombo",
             "QTest.setCurrentIndex(objectName=morphPanelCombo, 2); QTest.mouseClick(morphApplyButton)",
-            calls[0],
             "semantic_morph_panel_maya_metadata_and_undo_redo",
+            panel_spy,
+            self.view.panel_combo,
         )
 
         cmds.undo()
@@ -332,6 +398,9 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
         self.assertEqual(redone.name, "更新JP")
 
         self.view.morph_name_jp_edit.setText("discarded")
+        reset_spy = QtSignalInvocationSpy(
+            "MorphPresenter.reset_changes", self.view.reset_btn.clicked, self.view.reset_btn
+        )
         QTest.mouseClick(self.view.reset_btn, Qt.LeftButton)
         QApplication.processEvents()
         self.assertEqual(self.view.morph_name_jp_edit.text(), "更新JP")
@@ -339,21 +408,29 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.reset",
             "objectName=morphResetButton",
             "QTest.mouseClick(objectName=morphResetButton, Qt.LeftButton)",
-            "MorphPresenter.reset_changes",
             "metadata_edits_discarded_and_current_semantic_values_reloaded",
+            reset_spy,
+            self.view.reset_btn,
         )
 
         self.assertFalse(self.view.morph_type_combo.isEnabled())
         fixed_type = self.view.morph_type_combo.currentIndex()
-        QTest.mouseClick(self.view.morph_type_combo, Qt.LeftButton)
+        self._select_index(1)
+        type_spy = QtSignalInvocationSpy(
+            "MorphPresenter.load_morph_details",
+            self.view.morph_list.currentItemChanged,
+            self.view.morph_list,
+        )
+        self._select_index(0)
         QApplication.processEvents()
         self.assertEqual(self.view.morph_type_combo.currentIndex(), fixed_type)
         self._emit(
             "morph.type",
             "objectName=morphTypeCombo",
-            "QTest.mouseClick(disabled objectName=morphTypeCombo)",
-            "MorphPresenter.load_morph_details",
+            "QTest.select(objectName=morphList, morph index 0)",
             "morph_type_fixed_after_creation_and_combo_unchanged",
+            type_spy,
+            self.view.morph_list,
         )
 
     def test_morph_delete_and_adjacent_reindex(self):
@@ -362,20 +439,19 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
         # its retained blendShape target, controller binding, and metadata.
         self._select_index(1)
         before = self._morph_order()
-        delete_calls = []
         original_delete = self.coordinator.delete_morph
-
-        def observe_delete(*args, **kwargs):
-            delete_calls.append("MayaModelAuthoringCoordinator.delete_morph")
-            return original_delete(*args, **kwargs)
-
-        self.coordinator.delete_morph = observe_delete
+        delete_spy = ActionInvocationSpy.wrap(
+            "MayaModelAuthoringCoordinator.delete_morph",
+            original_delete,
+            self.view.delete_morph_btn,
+        )
+        self.coordinator.delete_morph = delete_spy
         try:
             QTest.mouseClick(self.view.delete_morph_btn, Qt.LeftButton)
             QApplication.processEvents()
         finally:
             self.coordinator.delete_morph = original_delete
-        self.assertEqual(delete_calls, ["MayaModelAuthoringCoordinator.delete_morph"])
+        self.assertEqual(delete_spy.action_count, 1)
         after = self._morph_order()
         self.assertEqual(len(after), 2)
         cmds.undo()
@@ -386,8 +462,9 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.delete",
             "objectName=morphDeleteButton",
             "QTest.mouseClick(objectName=morphDeleteButton, Qt.LeftButton)",
-            delete_calls[0],
             "morph_spec_binding_registry_and_undo_redo",
+            delete_spy,
+            self.view.delete_morph_btn,
         )
 
         # Rebuild a clean fixture for the two independent adjacent swaps.
@@ -395,20 +472,19 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
         self.setUp()
         self._select_index(1)
         up_before = self._morph_order()
-        up_calls = []
         original_move = self.coordinator.move_morph
-
-        def observe_move(*args, **kwargs):
-            up_calls.append("MayaModelAuthoringCoordinator.move_morph")
-            return original_move(*args, **kwargs)
-
-        self.coordinator.move_morph = observe_move
+        up_spy = ActionInvocationSpy.wrap(
+            "MayaModelAuthoringCoordinator.move_morph",
+            original_move,
+            self.view.move_morph_up_btn,
+        )
+        self.coordinator.move_morph = up_spy
         try:
             QTest.mouseClick(self.view.move_morph_up_btn, Qt.LeftButton)
             QApplication.processEvents()
         finally:
             self.coordinator.move_morph = original_move
-        self.assertEqual(up_calls, ["MayaModelAuthoringCoordinator.move_morph"])
+        self.assertEqual(up_spy.action_count, 1)
         up_after = self._morph_order()
         self.assertEqual(up_after[0][1], "Morph B")
         cmds.undo()
@@ -419,28 +495,28 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.move_up",
             "objectName=morphMoveUpButton",
             "QTest.mouseClick(objectName=morphMoveUpButton, Qt.LeftButton)",
-            up_calls[0],
             "adjacent_morph_binding_order_swapped_and_undo_redo",
+            up_spy,
+            self.view.move_morph_up_btn,
         )
 
         self.tearDown()
         self.setUp()
         self._select_index(0)
         down_before = self._morph_order()
-        down_calls = []
         original_move = self.coordinator.move_morph
-
-        def observe_move_down(*args, **kwargs):
-            down_calls.append("MayaModelAuthoringCoordinator.move_morph")
-            return original_move(*args, **kwargs)
-
-        self.coordinator.move_morph = observe_move_down
+        down_spy = ActionInvocationSpy.wrap(
+            "MayaModelAuthoringCoordinator.move_morph",
+            original_move,
+            self.view.move_morph_down_btn,
+        )
+        self.coordinator.move_morph = down_spy
         try:
             QTest.mouseClick(self.view.move_morph_down_btn, Qt.LeftButton)
             QApplication.processEvents()
         finally:
             self.coordinator.move_morph = original_move
-        self.assertEqual(down_calls, ["MayaModelAuthoringCoordinator.move_morph"])
+        self.assertEqual(down_spy.action_count, 1)
         down_after = self._morph_order()
         self.assertEqual(down_after[0][1], "Morph B")
         cmds.undo()
@@ -451,23 +527,31 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.move_down",
             "objectName=morphMoveDownButton",
             "QTest.mouseClick(objectName=morphMoveDownButton, Qt.LeftButton)",
-            down_calls[0],
             "adjacent_morph_binding_order_swapped_and_undo_redo",
+            down_spy,
+            self.view.move_morph_down_btn,
         )
 
     def test_morph_work_offset_selector(self):
         """Material morph exposes one deterministic temporary-work offset."""
         self._select_index(2)
         self.assertEqual(self.view.work_offset_combo.count(), 1)
-        self.view.work_offset_combo.setCurrentIndex(0)
+        offset_spy = QtSignalInvocationSpy(
+            "QComboBox.activated",
+            self.view.work_offset_combo.activated,
+            self.view.work_offset_combo,
+        )
+        self.view.work_offset_combo.setFocus()
+        QTest.keyClick(self.view.work_offset_combo, Qt.Key_Enter)
         QApplication.processEvents()
         self.assertEqual(int(self.view.work_offset_combo.currentData()), 0)
         self._emit(
             "morph.work_offset",
             "objectName=morphWorkOffsetCombo",
-            "QTest.setCurrentIndex(objectName=morphWorkOffsetCombo, 0)",
-            "QComboBox.currentIndexChanged",
+            "QTest.keyClick(objectName=morphWorkOffsetCombo, Qt.Key_Enter)",
             "material_morph_offset_zero_selected_with_semantic_label",
+            offset_spy,
+            self.view.work_offset_combo,
         )
 
     def test_morph_work_material_create_apply_clear(self):
@@ -476,20 +560,17 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
         work = self.window.authoring_composition.material_morph_work
         self.assertIsNotNone(work)
 
-        create_calls = []
         original_create = work.create
-
-        def observe_create(*args, **kwargs):
-            create_calls.append("MayaMaterialMorphWork.create")
-            return original_create(*args, **kwargs)
-
-        work.create = observe_create
+        create_spy = ActionInvocationSpy.wrap(
+            "MayaMaterialMorphWork.create", original_create, self.view.create_work_material_btn
+        )
+        work.create = create_spy
         try:
             QTest.mouseClick(self.view.create_work_material_btn, Qt.LeftButton)
             QApplication.processEvents()
         finally:
             work.create = original_create
-        self.assertEqual(create_calls, ["MayaMaterialMorphWork.create"])
+        self.assertEqual(create_spy.action_count, 1)
         members = model_registry.list_model_registry_members(
             self.root, model_registry.REGISTRY_CATEGORY_MATERIAL_MORPH_WORK
         )
@@ -514,26 +595,24 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.create_work_material",
             "objectName=morphCreateWorkMaterialButton",
             "QTest.mouseClick(objectName=morphCreateWorkMaterialButton, Qt.LeftButton)",
-            create_calls[0],
             "owned_work_shader_registered_and_undoable",
+            create_spy,
+            self.view.create_work_material_btn,
         )
 
         # Change one work-shader value so Apply has a semantic delta.
         cmds.setAttr(f"{shader}.baseColor", 0.9, 0.8, 0.7, type="float3")
-        apply_calls = []
         original_apply = work.apply
-
-        def observe_apply(*args, **kwargs):
-            apply_calls.append("MayaMaterialMorphWork.apply")
-            return original_apply(*args, **kwargs)
-
-        work.apply = observe_apply
+        work_apply_spy = ActionInvocationSpy.wrap(
+            "MayaMaterialMorphWork.apply", original_apply, self.view.apply_work_material_btn
+        )
+        work.apply = work_apply_spy
         try:
             QTest.mouseClick(self.view.apply_work_material_btn, Qt.LeftButton)
             QApplication.processEvents()
         finally:
             work.apply = original_apply
-        self.assertEqual(apply_calls, ["MayaMaterialMorphWork.apply"])
+        self.assertEqual(work_apply_spy.action_count, 1)
         applied = self.coordinator.read_spec(self.root).morphs[2]
         self.assertNotEqual(applied.offsets[0]["diffuse"][:3], _material_offset()["diffuse"][:3])
         cmds.undo()
@@ -549,24 +628,22 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.apply_work_material",
             "objectName=morphApplyWorkMaterialButton",
             "QTest.mouseClick(objectName=morphApplyWorkMaterialButton, Qt.LeftButton)",
-            apply_calls[0],
             "material_morph_offsets_changed_through_coordinator_transaction",
+            work_apply_spy,
+            self.view.apply_work_material_btn,
         )
 
-        clear_calls = []
         original_clear = work.clear
-
-        def observe_clear(*args, **kwargs):
-            clear_calls.append("MayaMaterialMorphWork.clear")
-            return original_clear(*args, **kwargs)
-
-        work.clear = observe_clear
+        clear_spy = ActionInvocationSpy.wrap(
+            "MayaMaterialMorphWork.clear", original_clear, self.view.clear_work_material_btn
+        )
+        work.clear = clear_spy
         try:
             QTest.mouseClick(self.view.clear_work_material_btn, Qt.LeftButton)
             QApplication.processEvents()
         finally:
             work.clear = original_clear
-        self.assertEqual(clear_calls, ["MayaMaterialMorphWork.clear"])
+        self.assertEqual(clear_spy.action_count, 1)
         self.assertEqual(
             model_registry.list_model_registry_members(
                 self.root, model_registry.REGISTRY_CATEGORY_MATERIAL_MORPH_WORK
@@ -593,8 +670,9 @@ class TestMorphRemainingCoverageGUI(GuiTestBase):
             "morph.clear_work_material",
             "objectName=morphClearWorkMaterialButton",
             "QTest.mouseClick(objectName=morphClearWorkMaterialButton, Qt.LeftButton)",
-            clear_calls[0],
             "material_morph_work_registry_unregistered_and_canonical_offsets_preserved",
+            clear_spy,
+            self.view.clear_work_material_btn,
         )
 
 
