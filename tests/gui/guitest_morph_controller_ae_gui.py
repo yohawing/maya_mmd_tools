@@ -6,6 +6,7 @@ import unittest
 from maya import cmds, mel
 
 from mmd_tools.ui import morph_controller_ae
+from mmd_tools.ui.qt_compat import QApplication
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from tests.common.maya_plugin_setup import load_mmd_tools_plugin
 
@@ -40,13 +41,21 @@ class TestMorphControllerAttributeEditorGUI(GuiTestBase):
 
         template_info = mel.eval("whatIs AEmmdMorphControllerTemplate")
         self.assertNotIn("Unknown", template_info)
-        window = cmds.window("mmdMorphControllerAeTest")
-        cmds.columnLayout(adjustableColumn=True)
-        controls = morph_controller_ae._build_weight_controls(controller)
-        cmds.showWindow(window)
+        morph_controller_ae._WEIGHT_COLUMNS.clear()
+        cmds.select(controller, replace=True)
+        mel.eval(f'showEditorExact "{controller}"')
+        QApplication.processEvents()
+        column = morph_controller_ae._WEIGHT_COLUMNS[-1]
+        controls = cmds.layout(column, query=True, childArray=True) or []
 
         self.assertEqual(len(controls), 1)
+        morph_frame = cmds.layout(column, query=True, parent=True)
+        while morph_frame and not cmds.frameLayout(morph_frame, exists=True):
+            morph_frame = cmds.layout(morph_frame, query=True, parent=True)
+        self.assertTrue(morph_frame)
+        self.assertEqual(cmds.frameLayout(morph_frame, query=True, label=True), "Morph Weights")
         control = controls[0]
+        self.assertEqual(cmds.control(control, query=True, parent=True), column)
         self.assertEqual(
             cmds.attrFieldSliderGrp(control, query=True, attribute=True),
             f"{controller}.inputWeight[0]",

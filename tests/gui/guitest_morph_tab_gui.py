@@ -166,6 +166,7 @@ class TestMorphTabGUI(GuiTestBase):
             tab.morph_list.setCurrentRow(0)
             QApplication.processEvents()
 
+            self.assertEqual(cmds.ls(selection=True, long=True), cmds.ls(controller, long=True))
             self.assertTrue(tab.morph_slider.isEnabled())
             tab.morph_slider.setValue(65)
             self.assertAlmostEqual(cmds.getAttr(controller + ".inputWeight[7]"), 0.65)

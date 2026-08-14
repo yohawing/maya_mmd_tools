@@ -1332,10 +1332,11 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
     def test_on_morph_selected_loads_details_via_adapter_and_updates_view(self):
         adapter = _FakeMayaAdapter()
-        adapter.existing.update({"faceBlendShape", "faceBlendShape.weight[0]"})
+        adapter.existing.update({"controller", "faceBlendShape", "faceBlendShape.weight[0]"})
         adapter.attr_values["faceBlendShape.weight[0]"] = 0.42
         adapter.aliases["faceBlendShape"] = ["smile", "weight[0]"]
         presenter, view, _, _ = _make_presenter(adapter=adapter)
+        presenter._morph_controller = "controller"
         presenter.morph_data = {
             "smile": {
                 "name_jp": "笑顔",
@@ -1350,6 +1351,8 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         }
 
         presenter.on_morph_selected(_FakeItem("0:V|笑顔 [smile]", "smile"), None)
+
+        self.assertIn(("select", "controller", {"replace": True}), adapter.calls)
 
         self.assertEqual(presenter.current_morph, "smile")
         self.assertEqual(view.details_enabled_calls, [True])

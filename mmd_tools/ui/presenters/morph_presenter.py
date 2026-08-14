@@ -886,6 +886,12 @@ class MorphPresenter:
         self.current_morph = morph_name
         logger.debug(f"Selected morph: {morph_name}")
 
+        if self._morph_controller and self.maya_adapter.object_exists(self._morph_controller):
+            try:
+                self.maya_adapter.select(self._morph_controller, replace=True)
+            except Exception as exc:
+                logger.debug("Failed to select morph controller %s: %s", self._morph_controller, exc)
+
         self.view.set_morph_details_enabled(True)
         self.load_morph_details(morph_name)
 
