@@ -15,6 +15,7 @@ import pytest
 from mmd_tools.adapters.maya_scene_metadata_backend import MayaSceneMetadataBackend, MayaSceneMetadataError
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter, SceneMetadataError
 from mmd_tools.core.model_authoring_spec import MmdMorphSpec
+from mmd_tools.core.maya_name_utils import sanitize_text
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 
@@ -338,8 +339,7 @@ def _vertex_scene(
     cmds.attrs[("|root", "mmd_import_scale")] = 1.0
     cmds.connections[("|root.mmd_morph_controller", None)] = ["controller"]
     cmds.connections[("controller.outputWeight[0]", None)] = [destination]
-    if alias_pairs is not None:
-        cmds.aliases["bs"] = alias_pairs
+    cmds.aliases["bs"] = alias_pairs or ["モーフ0", "weight[3]"]
     cmds.attrs[("bs", "mmd_blendshape_morph_names_json")] = json.dumps(
         {"3": {"name": "モーフ0", "index": 0}}, ensure_ascii=False
     )
@@ -966,6 +966,42 @@ def test_vertex_blendshape_alias_destination_resolves_weight_index() -> None:
     metadata = list(backend.iter_morph_metadata("|root"))[0]
 
     assert metadata["offsets"][0]["vertex_index"] == 1
+
+
+@pytest.mark.parametrize(
+    ("entry_change", "expected"),
+    [
+        ({"name": "別名", "index": 0}, "stale_raw_name_mapping"),
+        ({"name": "モーフ0", "index": 9}, "stale_raw_name_mapping"),
+        (None, "stale_raw_name_mapping"),
+    ],
+)
+def test_vertex_blendshape_raw_mapping_mismatch_fails_closed(
+    entry_change: dict[str, Any] | None,
+    expected: str,
+) -> None:
+    cmds, backend = _vertex_scene()
+    mapping = {} if entry_change is None else {"3": entry_change}
+    cmds.attrs[("bs", "mmd_blendshape_morph_names_json")] = json.dumps(
+        mapping,
+        ensure_ascii=False,
+    )
+
+    with pytest.raises(MayaSceneMetadataError, match=expected) as captured:
+        list(backend.iter_morph_metadata("|root"))
+
+    assert captured.value.__cause__ is not None
+
+
+def test_vertex_blendshape_legacy_alias_fallback_logs_stable_warning(caplog: Any) -> None:
+    cmds, backend = _vertex_scene()
+    cmds.attrs.pop(("bs", "mmd_blendshape_morph_names_json"))
+    cmds.aliases["bs"] = [sanitize_text("モーフ0"), "weight[3]"]
+
+    metadata = list(backend.iter_morph_metadata("|root"))[0]
+
+    assert metadata["offsets"][0]["vertex_index"] == 1
+    assert "legacy_sanitized_alias_fallback" in caplog.text
 
 
 def test_vertex_blendshape_source_mapping_reads_nested_parent_array() -> None:

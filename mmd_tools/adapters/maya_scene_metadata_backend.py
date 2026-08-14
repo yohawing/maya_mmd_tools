@@ -23,6 +23,10 @@ from mmd_tools.adapters.maya_material_shader_route import (
     material_diffuse_route,
     material_shader_route,
 )
+from mmd_tools.adapters.maya_morph_binding_query import (
+    MayaMorphBindingQueryError,
+    resolve_maya_morph_binding,
+)
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter, SceneMetadataError
 from mmd_tools.core.constants import (
     ATTR_MMD_AXIS_DIRECTION,
@@ -55,7 +59,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_Z_AXIS_DIRECTION,
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
-    ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
     ATTR_MMD_MODEL_ROOT,
@@ -86,6 +89,11 @@ from mmd_tools.core.constants import (
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
 )
+from mmd_tools.core.logger import get_logger
+from mmd_tools.core.morph_binding_resolver import (
+    MorphBindingRequest,
+    MorphBindingResolutionError,
+)
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core.model_authoring_spec import (
     MmdBoneSpec,
@@ -93,6 +101,9 @@ from mmd_tools.core.model_authoring_spec import (
     MmdModelAuthoringSpec,
     MmdMorphSpec,
 )
+
+
+logger = get_logger(__name__)
 
 
 class MayaSceneMetadataError(SceneMetadataError):
@@ -2013,8 +2024,9 @@ class MayaSceneMetadataBackend:
                 raise MayaSceneMetadataError(
                     f"{node} vertex morph requires an explicit model root for blendShape binding"
                 )
+            raw_name = self._required_string(node, "mmd_morph_name")
             index = self._required_int(node, "mmd_morph_index", minimum=0)
-            offsets = self._read_vertex_blendshape_offsets(root, node, index)
+            offsets = self._read_vertex_blendshape_offsets(root, node, raw_name, index)
         else:
             try:
                 offsets_attr = attr_by_type[morph_type]
@@ -2023,9 +2035,9 @@ class MayaSceneMetadataBackend:
             offsets = self._required_morph_offsets(node, offsets_attr, morph_type)
         unsupported = morph_type in {"flip", "impulse"}
         return {
-            "name": self._required_string(node, "mmd_morph_name"),
+            "name": raw_name if morph_type == "vertex" else self._required_string(node, "mmd_morph_name"),
             "name_english": self._required_string(node, "mmd_morph_name_en"),
-            "index": self._required_int(node, "mmd_morph_index", minimum=0),
+            "index": index if morph_type == "vertex" else self._required_int(node, "mmd_morph_index", minimum=0),
             "panel": self._required_int(node, "mmd_morph_panel", minimum=0, maximum=4),
             "morph_type": morph_type,
             "offsets": offsets,
@@ -2038,6 +2050,7 @@ class MayaSceneMetadataBackend:
         self,
         root: str,
         binding: str,
+        raw_name: str,
         morph_index: int,
     ) -> list[dict[str, Any]]:
         """Read sparse PMX deltas from the exact controller-owned blendShapes.
@@ -2057,39 +2070,29 @@ class MayaSceneMetadataBackend:
                 f"{root}.mmd_morph_controller must have exactly one controller for vertex morphs"
             )
         controller = self._material_identity(controllers[0])
-        destinations = tuple(
-            self._list_connections(
-                f"{controller}.outputWeight[{morph_index}]",
-                source=False,
-                destination=True,
-                plugs=True,
-            )
+        request = MorphBindingRequest(
+            raw_pmx_name=raw_name,
+            global_morph_index=morph_index,
+            controller_identity=controller,
+            controller_slot=morph_index,
         )
-        if not destinations:
+        try:
+            resolution = resolve_maya_morph_binding(self._cmds, request)
+        except (MayaMorphBindingQueryError, MorphBindingResolutionError) as exc:
             raise MayaSceneMetadataError(
-                f"vertex morph {binding!r} has no blendShape output binding"
-            )
+                f"vertex morph {binding!r} binding resolution failed: {exc}"
+            ) from exc
+        for warning in resolution.warnings:
+            logger.warning("[%s] %s", warning.code, warning.message)
 
         scale = self._required_number(root, ATTR_MMD_IMPORT_SCALE)
         if scale <= 0.0:
             raise MayaSceneMetadataError(f"{root}.{ATTR_MMD_IMPORT_SCALE} must be positive")
         offsets: dict[int, tuple[float, float, float]] = {}
         target_seen = False
-        for destination in destinations:
-            destination = str(destination)
-            if "." not in destination:
-                raise MayaSceneMetadataError(
-                    f"vertex morph {morph_index} output is not a blendShape plug: {destination!r}"
-                )
-            blend_shape, target_index = self._resolve_vertex_weight_destination(
-                destination, morph_index
-            )
-            mapping = self._read_vertex_target_mapping(blend_shape)
-            entry = mapping.get(str(target_index))
-            if not isinstance(entry, Mapping) or entry.get("index") != morph_index:
-                raise MayaSceneMetadataError(
-                    f"blendShape {blend_shape!r} target {target_index} metadata does not match morph {morph_index}"
-                )
+        for resolved_binding in resolution.bindings:
+            blend_shape = resolved_binding.blend_shape_identity
+            target_index = resolved_binding.logical_target_index
             geometries = tuple(
                 self._call_adapter("blend_shape", blend_shape, query=True, geometry=True) or ()
             )
@@ -2168,41 +2171,6 @@ class MayaSceneMetadataBackend:
             if any(abs(value) > 1e-8 for value in offsets[index])
         ]
 
-    def _resolve_vertex_weight_destination(
-        self, destination: str, morph_index: int
-    ) -> tuple[str, int]:
-        """Resolve an explicit weight plug or one unique blendShape alias."""
-        if "." not in destination:
-            raise MayaSceneMetadataError(
-                f"vertex morph {morph_index} has invalid output {destination!r}"
-            )
-        raw_node, plug_or_alias = destination.rsplit(".", 1)
-        node = self._material_identity(raw_node)
-        explicit = re.fullmatch(r"(?:weight|w)\[(\d+)\]", plug_or_alias)
-        if explicit is not None:
-            if self._node_type(node) != "blendShape":
-                raise MayaSceneMetadataError(
-                    f"vertex morph {morph_index} has non-blendShape output {destination!r}"
-                )
-            return node, int(explicit.group(1))
-        if self._node_type(node) != "blendShape":
-            raise MayaSceneMetadataError(
-                f"vertex morph {morph_index} has non-blendShape output {destination!r}"
-            )
-        flat = list(self._call_adapter("alias_attr", node, query=True) or ())
-        matches: list[int] = []
-        for candidate_alias, plug in zip(flat[0::2], flat[1::2]):
-            if str(candidate_alias) != plug_or_alias:
-                continue
-            plug_match = re.fullmatch(r"(?:weight|w)\[(\d+)\]", str(plug))
-            if plug_match is not None:
-                matches.append(int(plug_match.group(1)))
-        if len(matches) != 1:
-            raise MayaSceneMetadataError(
-                f"vertex morph {morph_index} alias output is ambiguous: {destination!r}"
-            )
-        return node, matches[0]
-
     def _read_vertex_source_indices(self, geometry: str) -> list[int]:
         """Resolve local vertex order to PMX source indices.
 
@@ -2251,24 +2219,6 @@ class MayaSceneMetadataBackend:
             seen.add(source_index)
             source_indices.append(source_index)
         return source_indices
-
-    def _read_vertex_target_mapping(self, blend_shape: str) -> dict[str, Any]:
-        if not self._has_attr(blend_shape, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON):
-            raise MayaSceneMetadataError(
-                f"blendShape {blend_shape!r} is missing {ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}"
-            )
-        raw = self._required_string(blend_shape, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON)
-        try:
-            value = json.loads(raw)
-        except (TypeError, ValueError) as exc:
-            raise MayaSceneMetadataError(
-                f"{blend_shape}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON} must contain JSON"
-            ) from exc
-        if not isinstance(value, Mapping):
-            raise MayaSceneMetadataError(
-                f"{blend_shape}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON} must contain an object"
-            )
-        return dict(value)
 
     def _required_morph_offsets(self, node: str, attr: str, morph_type: str) -> list[dict[str, Any]]:
         raw = self._required_string(node, attr)
