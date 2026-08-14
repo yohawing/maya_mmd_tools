@@ -1035,6 +1035,29 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         before = _canonical_payload(self.window, self.root)
         topology = _semantic_topology(self.window, self.root)
         spec = self.window.authoring_composition.coordinator.read_spec(self.root)
+        material_presenter = self.window.material_presenter
+        morph_presenter = self.window.morph_presenter
+        material_projection_before = material_presenter._material_list_projection
+        morph_spec_before = morph_presenter._authoring_spec
+        group_before = spec.morphs[-1]
+        group_data_before = next(
+            data
+            for data in morph_presenter.morph_data.values()
+            if int(data.get("index", -1)) == group_before.index
+        )
+        morph_snapshot_before = (
+            self.window.authoring_composition.coordinator.read_morph_authoring_snapshot(
+                self.root
+            )
+        )
+        group_projection_before = morph_snapshot_before.projection.binding_for_index(
+            group_before.index
+        )
+        runtime_before = tuple(
+            (plug, cmds.getAttr(plug))
+            for plug in group_projection_before.runtime_targets
+        )
+        self.assertEqual(len(runtime_before), 1)
         dg_before = {
             "material": _node_footprint(spec.materials[0].binding_identity),
             "bone": _node_footprint(spec.bones[0].binding_identity),
@@ -1065,12 +1088,91 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         for domain in ("material", "bone", "morph", "display"):
             self.assertEqual(dg_after[domain]["attributes"], dg_before[domain]["attributes"])
             self.assertEqual(dg_after[domain]["connections"], dg_before[domain]["connections"])
+
+        material_view = material_presenter.view
+        self.window.tab_widget.setCurrentWidget(material_view)
+        QApplication.processEvents()
+        material_presenter.load_materials()
+        QApplication.processEvents()
+        material_projection_after = material_presenter._material_list_projection
+        self.assertIsNotNone(material_projection_after)
+        self.assertIsNot(material_projection_after, material_projection_before)
+        self.assertEqual(material_projection_after.root_identity, reopened_root)
+        reopened_material = reopened_spec.materials[0]
+        projected_material = material_projection_after.item_for_index(
+            reopened_material.index
+        )
+        self.assertEqual(
+            projected_material.binding_identity,
+            reopened_material.binding_identity,
+        )
+        self.assertTrue(cmds.objExists(projected_material.binding_identity))
+        material_view.material_list.setCurrentRow(reopened_material.index)
+        QApplication.processEvents()
+        self.assertEqual(
+            material_presenter.current_material,
+            reopened_material.binding_identity,
+        )
+        rendered_material = material_presenter.material_data["_authoring_material"]
+        self.assertEqual(rendered_material["index"], reopened_material.index)
+        self.assertEqual(
+            rendered_material["binding_identity"],
+            reopened_material.binding_identity,
+        )
+        self.assertEqual(
+            rendered_material["name_english"],
+            "Persistence Material",
+        )
+
+        morph_view = morph_presenter.view
+        self.window.tab_widget.setCurrentWidget(morph_view)
+        QApplication.processEvents()
+        morph_presenter.load_morphs()
+        QApplication.processEvents()
+        self.assertEqual(morph_presenter._loaded_model_root, reopened_root)
+        self.assertIsNot(morph_presenter._authoring_spec, morph_spec_before)
+        reopened_group = reopened_spec.morphs[-1]
+        group_key_after, group_data_after = next(
+            (key, data)
+            for key, data in morph_presenter.morph_data.items()
+            if int(data.get("index", -1)) == reopened_group.index
+        )
+        self.assertIsNot(group_data_after, group_data_before)
+        self.assertEqual(group_data_after["mmd_morph_type"], "group")
+        self.assertEqual(
+            group_data_after["binding_identity"],
+            reopened_group.binding_identity,
+        )
+        self.assertTrue(cmds.objExists(group_data_after["binding_identity"]))
+        runtime_after = tuple(
+            (plug, cmds.getAttr(plug))
+            for plug in tuple(group_data_after.get("runtime_targets") or ())
+        )
+        self.assertEqual(len(runtime_after), 1)
+        self.assertEqual(runtime_after, runtime_before)
+        for plug, _value in runtime_after:
+            self.assertTrue(cmds.objExists(plug))
+        group_row = next(
+            row
+            for row in range(morph_view.morph_list.count())
+            if morph_view.morph_list.item(row).data(Qt.UserRole) == group_key_after
+        )
+        morph_view.morph_list.setCurrentRow(group_row)
+        QApplication.processEvents()
+        self.assertEqual(morph_presenter.current_morph, group_key_after)
+        self.assertEqual(
+            morph_presenter.morph_data[group_key_after]["binding_identity"],
+            reopened_group.binding_identity,
+        )
         self.root = reopened_root
         evidence.update(
             selector="mainTabWidget",
             fingerprint=_fingerprint(after),
             semantic_topology=topology,
             authored_domains=["material", "bone", "morph", "display"],
+            reopened_material_projection_root=material_projection_after.root_identity,
+            reopened_morph_projection_root=morph_presenter._loaded_model_root,
+            reopened_group_runtime_targets=len(runtime_after),
         )
 
 
