@@ -286,6 +286,7 @@ class NativeSessionsTest(unittest.TestCase):
             "tests/cpp/smoke_python_rig_fallback.py",
             "tests/cpp/smoke_runtime_node.py",
             "tests/cpp/focused_physics_solver_world_toggle.py",
+            "tools/maya_authoring_command_support_smoke.py",
         ])
         self.assertTrue(all(kwargs["env"] is env for _args, kwargs in session.runs))
 

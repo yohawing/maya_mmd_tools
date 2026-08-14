@@ -289,6 +289,26 @@ class TestMayaCmdsAdapter(unittest.TestCase):
         self.assertIs(self.adapter.undo(), expected)
         self.cmds.undo.assert_called_once_with()
 
+    def test_command_exists_delegates_exact_name(self):
+        self.cmds.mmdAuthoringSetAttrs = Mock()
+
+        self.assertTrue(self.adapter.command_exists("mmdAuthoringSetAttrs"))
+
+    def test_command_exists_rejects_missing_name(self):
+        class _Commands:
+            pass
+
+        self.assertFalse(MayaCmdsAdapter(_Commands()).command_exists("missingCommand"))
+
+    def test_invoke_native_command_delegates_payload(self):
+        expected = '{"version":1}'
+        self.cmds.mmdAuthoringSetAttrs.return_value = expected
+
+        result = self.adapter.invoke_native_command("mmdAuthoringSetAttrs", payload="{}")
+
+        self.assertEqual(result, expected)
+        self.cmds.mmdAuthoringSetAttrs.assert_called_once_with(payload="{}")
+
 
 if __name__ == "__main__":
     unittest.main()

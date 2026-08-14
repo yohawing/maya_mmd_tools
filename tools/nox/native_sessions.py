@@ -225,6 +225,7 @@ def run_maya_smoke(
         "tests/cpp/smoke_python_rig_fallback.py",
         "tests/cpp/smoke_runtime_node.py",
         "tests/cpp/focused_physics_solver_world_toggle.py",
+        "tools/maya_authoring_command_support_smoke.py",
     ):
         session.run(str(mayapy_path), mayapy_script(mayapy_path, script), env=env, external=True)
 

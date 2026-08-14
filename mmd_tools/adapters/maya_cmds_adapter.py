@@ -258,3 +258,11 @@ class MayaCmdsAdapter:
             firstMaterialIndex=int(first_index),
             secondMaterialIndex=int(second_index),
         )
+
+    def command_exists(self, command):
+        """Return whether Maya has a registered command with this exact name."""
+        return callable(getattr(self._cmds, command, None))
+
+    def invoke_native_command(self, command, **kwargs):
+        """Invoke a previously allowlisted native command by exact name."""
+        return getattr(self._cmds, command)(**kwargs)

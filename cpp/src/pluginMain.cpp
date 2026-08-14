@@ -30,6 +30,7 @@
 #include "MmdRenderGeometryOverride.h"
 #include "MmdRenderOverride.h"
 #include "MmdRenderShape.h"
+#include "MmdAuthoringCommandSupport.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -46,6 +47,7 @@ static bool sCppRegisteredMmdRenderQueueUpdateCommand = false;
 static bool sCppRegisteredMmdRenderQueueReindexCommand = false;
 static bool sCppRegisteredMmdNativeCasterOverride = false;
 static bool sCppRegisteredMmdNativeCasterWitnessCommand = false;
+static bool sCppRegisteredMmdAuthoringSetAttrsCommand = false;
 static MmdNativeCasterRenderOverride* sMmdNativeCasterOverride = nullptr;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
@@ -102,29 +104,36 @@ MStatus initializePlugin(MObject obj)
 
     auto cleanupMmdRenderWitness = [&plugin]() {
         MStatus cleanupStatus;
-        if (sCppRegisteredMmdRenderWitnessCommand) {
-            cleanupStatus = plugin.deregisterCommand("mmdRenderWitness");
+        bool cleanupSucceeded = true;
+        if (sCppRegisteredMmdRenderQueueReindexCommand) {
+            cleanupStatus = plugin.deregisterCommand("mmdRenderQueueReindex");
             if (!cleanupStatus) {
                 MGlobal::displayWarning(
-                    "Failed to roll back mmdRenderWitness command.");
+                    "Failed to roll back mmdRenderQueueReindex command.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdRenderQueueReindexCommand = false;
             }
-            sCppRegisteredMmdRenderWitnessCommand = false;
         }
         if (sCppRegisteredMmdRenderQueueUpdateCommand) {
             cleanupStatus = plugin.deregisterCommand("mmdRenderQueueUpdate");
             if (!cleanupStatus) {
                 MGlobal::displayWarning(
                     "Failed to roll back mmdRenderQueueUpdate command.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdRenderQueueUpdateCommand = false;
             }
-            sCppRegisteredMmdRenderQueueUpdateCommand = false;
         }
-        if (sCppRegisteredMmdRenderQueueReindexCommand) {
-            cleanupStatus = plugin.deregisterCommand("mmdRenderQueueReindex");
+        if (sCppRegisteredMmdRenderWitnessCommand) {
+            cleanupStatus = plugin.deregisterCommand("mmdRenderWitness");
             if (!cleanupStatus) {
                 MGlobal::displayWarning(
-                    "Failed to roll back mmdRenderQueueReindex command.");
+                    "Failed to roll back mmdRenderWitness command.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdRenderWitnessCommand = false;
             }
-            sCppRegisteredMmdRenderQueueReindexCommand = false;
         }
         if (sCppRegisteredMmdRenderOverride) {
             cleanupStatus = MHWRender::MDrawRegistry::deregisterGeometryOverrideCreator(
@@ -133,17 +142,22 @@ MStatus initializePlugin(MObject obj)
             if (!cleanupStatus) {
                 MGlobal::displayWarning(
                     "Failed to roll back mmdRenderShape geometry override.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdRenderOverride = false;
             }
-            sCppRegisteredMmdRenderOverride = false;
         }
         if (sCppRegisteredMmdRenderShape) {
             cleanupStatus = plugin.deregisterNode(MmdRenderShape::id);
             if (!cleanupStatus) {
                 MGlobal::displayWarning(
                     "Failed to roll back mmdRenderShape node.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdRenderShape = false;
             }
-            sCppRegisteredMmdRenderShape = false;
         }
+        return cleanupSucceeded;
     };
 
     // Opt-in VP2 ownership witness.  This is a custom surface shape
@@ -281,6 +295,95 @@ MStatus initializePlugin(MObject obj)
             "MHWRender::MRenderer unavailable; native caster override skipped.");
     }
 
+    status = plugin.registerCommand("mmdAuthoringSetAttrs",
+                                    MmdAuthoringSetAttrsCommand::creator,
+                                    MmdAuthoringSetAttrsCommand::newSyntax);
+    if (!status) {
+        // This is the final registration step.  Roll back every capability
+        // installed above so a command-name collision cannot leave a partial
+        // plug-in surface in Maya.
+        bool cleanupSucceeded = true;
+        MStatus cleanupStatus;
+        if (sCppRegisteredMmdNativeCasterOverride && renderer) {
+            cleanupStatus = renderer->deregisterOverride(sMmdNativeCasterOverride);
+            if (!cleanupStatus) {
+                MGlobal::displayError(
+                    "Failed to roll back mmdNativeCaster override; keeping its pointer and registration state.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdNativeCasterOverride = false;
+                MmdNativeCasterRenderOverride::markRegistered(false);
+                delete sMmdNativeCasterOverride;
+                sMmdNativeCasterOverride = nullptr;
+            }
+        }
+        if (sCppRegisteredMmdNativeCasterWitnessCommand) {
+            cleanupStatus = plugin.deregisterCommand("mmdNativeCasterWitness");
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdNativeCasterWitness command; registration remains tracked.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdNativeCasterWitnessCommand = false;
+            }
+        }
+        if (sCppRegisteredPhysicsBoneDriver) {
+            cleanupStatus = plugin.deregisterNode(MmdPhysicsBoneDriverNode::id);
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdPhysicsBoneDriver node; registration remains tracked.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredPhysicsBoneDriver = false;
+            }
+        }
+        if (sCppRegisteredCcdIk) {
+            cleanupStatus = plugin.deregisterNode(MmdCcdIkNode::id);
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdCcdIk node; registration remains tracked.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredCcdIk = false;
+            }
+        }
+        if (sCppRegisteredAppend) {
+            cleanupStatus = plugin.deregisterNode(MmdAppendNode::id);
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdAppend node; registration remains tracked.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredAppend = false;
+            }
+        }
+        if (!cleanupMmdRenderWitness()) {
+            cleanupSucceeded = false;
+        }
+        cleanupStatus = plugin.deregisterCommand("mmdWeldUvSeamVertices");
+        if (!cleanupStatus) {
+            MGlobal::displayWarning("Failed to roll back mmdWeldUvSeamVertices command.");
+            cleanupSucceeded = false;
+        }
+        cleanupStatus = plugin.deregisterCommand("mmdFastLoad");
+        if (!cleanupStatus) {
+            MGlobal::displayWarning("Failed to roll back mmdFastLoad command.");
+            cleanupSucceeded = false;
+        }
+        cleanupStatus = plugin.deregisterNode(MmdRuntimeNode::id);
+        if (!cleanupStatus) {
+            MGlobal::displayWarning("Failed to roll back mmdRuntimeInstance node.");
+            cleanupSucceeded = false;
+        }
+        if (!cleanupSucceeded) {
+            MGlobal::displayError(
+                "mmdAuthoringSetAttrs registration failed and rollback was incomplete; "
+                "remaining registrations were kept alive and tracked.");
+        }
+        return status;
+    }
+    sCppRegisteredMmdAuthoringSetAttrsCommand = true;
+
     return MS::kSuccess;
 }
 
@@ -299,6 +402,12 @@ MStatus uninitializePlugin(MObject obj)
             "Cannot unload mmd_tools_cpp while native receiver shaders are active; "
             "close or replace the scene first.");
         return MS::kFailure;
+    }
+
+    if (sCppRegisteredMmdAuthoringSetAttrsCommand) {
+        status = plugin.deregisterCommand("mmdAuthoringSetAttrs");
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredMmdAuthoringSetAttrsCommand = false;
     }
 
     if (sCppRegisteredMmdRenderWitnessCommand) {

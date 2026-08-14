@@ -74,6 +74,7 @@ set(SOURCES
     MmdAppendNode.cpp
     MmdCcdIkNode.cpp
     MmdPhysicsBoneDriverNode.cpp
+    MmdAuthoringCommandSupport.cpp
 )
 
 set(HEADERS
@@ -90,6 +91,7 @@ set(HEADERS
     MmdCcdIkNode.h
     MmdCoordinateUtils.h
     MmdPhysicsBoneDriverNode.h
+    MmdAuthoringCommandSupport.h
 )
 
 add_library(mmd_tools_cpp SHARED ${SOURCES} ${HEADERS})
