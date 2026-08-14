@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -11,9 +12,11 @@ from mmd_tools.adapters.maya_morph_binding_query import (
     MayaMorphBindingQueryError,
     resolve_maya_morph_binding,
 )
+from mmd_tools.adapters.native_morph_binding_query import NativeMorphBindingObservations
 from mmd_tools.core.morph_binding_resolver import (
     MorphBindingRequest,
     MorphBindingResolutionError,
+    MorphDestinationObservation,
 )
 
 
@@ -61,6 +64,23 @@ def _request() -> MorphBindingRequest:
         controller_identity="controller",
         controller_slot=4,
     )
+
+
+def test_native_opt_in_observations_match_python_resolution():
+    maya = FakeMaya()
+    request = _request()
+    python_resolution = resolve_maya_morph_binding(maya, request)
+    native = Mock()
+    native.query_if_available.return_value = NativeMorphBindingObservations(
+        destinations=(
+            MorphDestinationObservation("|rig|faceBS", "blendShape", "|rig|faceBS.weight[7]"),
+        ),
+        aliases={"|rig|faceBS": (("RenamedAlias", "|rig|faceBS.weight[7]"),)},
+        raw_mappings={"|rig|faceBS": {"7": {"name": "笑い", "index": 4}}},
+    )
+    adapter = Mock()
+    assert resolve_maya_morph_binding(adapter, request, native_query=native) == python_resolution
+    assert adapter.method_calls == []
 
 
 def test_query_canonicalizes_alias_destination_and_uses_raw_identity() -> None:

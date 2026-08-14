@@ -31,6 +31,7 @@
 #include "MmdRenderOverride.h"
 #include "MmdRenderShape.h"
 #include "MmdAuthoringCommandSupport.h"
+#include "MmdAuthoringMorphBindingQuery.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -48,6 +49,7 @@ static bool sCppRegisteredMmdRenderQueueReindexCommand = false;
 static bool sCppRegisteredMmdNativeCasterOverride = false;
 static bool sCppRegisteredMmdNativeCasterWitnessCommand = false;
 static bool sCppRegisteredMmdAuthoringSetAttrsCommand = false;
+static bool sCppRegisteredMmdAuthoringMorphBindingQueryCommand = false;
 static MmdNativeCasterRenderOverride* sMmdNativeCasterOverride = nullptr;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
@@ -384,6 +386,16 @@ MStatus initializePlugin(MObject obj)
     }
     sCppRegisteredMmdAuthoringSetAttrsCommand = true;
 
+    status = plugin.registerCommand("mmdAuthoringQueryMorphBindings",
+                                    MmdAuthoringMorphBindingQueryCommand::creator,
+                                    MmdAuthoringMorphBindingQueryCommand::newSyntax);
+    if (!status) {
+        MGlobal::displayWarning(
+            "mmdAuthoringQueryMorphBindings registration failed; native morph query is unavailable.");
+    } else {
+        sCppRegisteredMmdAuthoringMorphBindingQueryCommand = true;
+    }
+
     return MS::kSuccess;
 }
 
@@ -402,6 +414,12 @@ MStatus uninitializePlugin(MObject obj)
             "Cannot unload mmd_tools_cpp while native receiver shaders are active; "
             "close or replace the scene first.");
         return MS::kFailure;
+    }
+
+    if (sCppRegisteredMmdAuthoringMorphBindingQueryCommand) {
+        status = plugin.deregisterCommand("mmdAuthoringQueryMorphBindings");
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredMmdAuthoringMorphBindingQueryCommand = false;
     }
 
     if (sCppRegisteredMmdAuthoringSetAttrsCommand) {

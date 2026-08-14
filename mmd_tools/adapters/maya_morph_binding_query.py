@@ -13,6 +13,7 @@ from mmd_tools.core.morph_binding_resolver import (
     MorphDestinationObservation,
     resolve_morph_binding,
 )
+from mmd_tools.adapters.native_morph_binding_query import NativeMorphBindingQueryGateway
 
 
 class MayaMorphBindingQueryError(RuntimeError):
@@ -23,8 +24,21 @@ def resolve_maya_morph_binding(
     adapter: Any,
     request: MorphBindingRequest,
     destination_values: Optional[Iterable[str]] = None,
+    native_query: Optional[NativeMorphBindingQueryGateway] = None,
 ) -> MorphBindingResolution:
     """Resolve one controller slot from narrowly queried Maya scene state."""
+    if destination_values is None and native_query is not None:
+        native = native_query.query_if_available(
+            request.controller_identity,
+            request.controller_slot,
+        )
+        if native is not None:
+            return resolve_morph_binding(
+                request,
+                native.destinations,
+                native.aliases,
+                native.raw_mappings,
+            )
     output_plug = "{}.outputWeight[{}]".format(
         request.controller_identity,
         request.controller_slot,
