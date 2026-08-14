@@ -89,7 +89,7 @@ def _errors(manifest, ui_manifest):
         errors.append("surface_ids")
     if coverage.get("target_primary_layer") != "headless_qt":
         errors.append("surface_target_layer")
-    if coverage.get("target_owner") != "source surface.case_id":
+    if coverage.get("target_owner") != "headless.authoring_ui_surface_matrix":
         errors.append("surface_owner_rule")
     known_case_ids = {case.get("id") for case in ui_manifest.get("cases", [])}
     if any(
@@ -97,17 +97,15 @@ def _errors(manifest, ui_manifest):
         for surface in source_surfaces
     ):
         errors.append("surface_owner")
-    if coverage.get("status") != "gap" or not coverage.get("gap"):
-        errors.append("surface_gap")
+    if coverage.get("status") != "complete" or not coverage.get("completion"):
+        errors.append("surface_completion")
     current_layer = coverage.get("current_primary_layer")
     if current_layer not in LAYERS:
         errors.append("surface_current_layer")
-    if coverage.get("status") == "gap" and (
-        current_layer != "real_maya" or coverage.get("target_primary_layer") != "headless_qt"
-    ):
-        errors.append("surface_gap_layers")
+    if current_layer != "headless_qt":
+        errors.append("surface_current_layer")
     cases_by_id = {case.get("id"): case for case in ui_manifest.get("cases", [])}
-    if coverage.get("status") == "gap":
+    if coverage.get("status") != "complete":
         invalid_status_cases = set()
         for surface in source_surfaces:
             case = cases_by_id.get(surface.get("case_id"), {})
@@ -152,6 +150,11 @@ def _errors(manifest, ui_manifest):
             errors.append("contract_layer")
         representative = contract["representative_test"]
         if not _test_id_exists(representative):
+            errors.append("representative_path")
+        related = contract.get("related_representative_tests", [])
+        if not isinstance(related, list) or any(
+            not _test_id_exists(item) for item in related
+        ):
             errors.append("representative_path")
         if not isinstance(contract["redundant_test"], list):
             errors.append("redundant_test")
@@ -215,6 +218,18 @@ def test_checked_in_inventory_is_valid_and_tracks_all_qt_surfaces():
     assert _errors(_load(MANIFEST_PATH), _load(UI_MANIFEST_PATH)) == []
 
 
+def test_mixed_persistence_owns_four_domain_setups_and_one_boundary():
+    manifest = _load(MANIFEST_PATH)
+    contract = next(
+        item
+        for item in manifest["contracts"]
+        if item["contract_id"] == "authoring.persistence.mixed_scene"
+    )
+    assert contract["setup_domains"] == ["material", "bone", "morph", "display_pane"]
+    assert contract["cost_evidence"]["metric"] == "persistence_boundaries"
+    assert contract["cost_evidence"]["value"] == 1
+
+
 def test_schema_and_layer_mutations_fail_closed():
     manifest = _load(MANIFEST_PATH)
     ui_manifest = _load(UI_MANIFEST_PATH)
@@ -227,9 +242,9 @@ def test_surface_count_owner_and_gap_mutations_fail_closed():
     manifest = _load(MANIFEST_PATH)
     ui_manifest = _load(UI_MANIFEST_PATH)
     manifest["surface_coverage"].update(
-        {"expected_surface_count": 229, "target_owner": "manual", "status": "complete"}
+        {"expected_surface_count": 229, "target_owner": "manual", "status": "gap"}
     )
-    assert {"surface_count", "surface_owner_rule", "surface_gap"}.issubset(
+    assert {"surface_count", "surface_owner_rule", "surface_completion"}.issubset(
         _errors(manifest, ui_manifest)
     )
 
@@ -249,25 +264,14 @@ def test_surface_owner_must_reference_a_known_ui_case():
     assert "surface_owner" in _errors(manifest, ui_manifest)
 
 
-def test_current_layer_and_gap_require_real_maya_case_evidence():
+def test_complete_surface_matrix_requires_headless_qt_layer():
     manifest = _load(MANIFEST_PATH)
     ui_manifest = _load(UI_MANIFEST_PATH)
-    manifest["surface_coverage"]["current_primary_layer"] = "headless_qt"
-    owned_case_id = next(
-        surface["case_id"]
-        for surface in ui_manifest["surfaces"]
-        if surface["disposition"] == "qt_case"
-    )
-    next(case for case in ui_manifest["cases"] if case["id"] == owned_case_id)[
-        "required_maya_versions"
-    ] = []
-    assert {"surface_gap_layers", "surface_current_evidence"}.issubset(
-        _errors(manifest, ui_manifest)
-    )
+    manifest["surface_coverage"]["current_primary_layer"] = "real_maya"
+    assert "surface_current_layer" in _errors(manifest, ui_manifest)
 
 
-def test_current_surface_owner_rejects_planned_or_invalid_maya_versions():
-    manifest = _load(MANIFEST_PATH)
+def test_complete_surface_owner_is_current_headless_case_without_maya_versions():
     ui_manifest = _load(UI_MANIFEST_PATH)
     owned_case_id = next(
         surface["case_id"]
@@ -275,13 +279,9 @@ def test_current_surface_owner_rejects_planned_or_invalid_maya_versions():
         if surface["disposition"] == "qt_case"
     )
     owned_case = next(case for case in ui_manifest["cases"] if case["id"] == owned_case_id)
-    owned_case["status"] = "planned"
-    assert "surface_current_evidence" in _errors(manifest, ui_manifest)
-
-    ui_manifest = _load(UI_MANIFEST_PATH)
-    owned_case = next(case for case in ui_manifest["cases"] if case["id"] == owned_case_id)
-    owned_case["required_maya_versions"] = ["latest"]
-    assert "surface_current_evidence" in _errors(manifest, ui_manifest)
+    assert owned_case["status"] == "current"
+    assert owned_case["execution_layer"] == "headless_qt"
+    assert "required_maya_versions" not in owned_case
 
 
 def test_duplicate_surface_and_contract_ids_fail_closed():

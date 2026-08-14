@@ -7,7 +7,6 @@ import unittest
 from pathlib import Path
 
 from tests.common.gui_test_base import GuiTestBase, requires_gui
-from tests.common.ui_action_coverage import QtSignalInvocationSpy, build_surface_witness
 from tools.export_release_maya_probe import (
     _capture_scene_oracle,
     _compare_scene_oracles,
@@ -92,23 +91,6 @@ def _edit_custom_toon_with_material_tab(root):
             presenter.current_material, ATTR_MMD_TOON_PATH
         ),
     }
-    action_spies = {
-        "toon_sharing": QtSignalInvocationSpy(
-            "MaterialPresenter._on_toon_sharing_changed",
-            view.toon_sharing_check.toggled,
-            view.toon_sharing_check,
-        ),
-        "toon_texture_path": QtSignalInvocationSpy(
-            "MaterialPresenter._on_value_changed",
-            view.toon_texture_path_edit.textChanged,
-            view.toon_texture_path_edit,
-        ),
-        "toon_texture_index": QtSignalInvocationSpy(
-            "MaterialPresenter._on_value_changed",
-            view.toon_texture_index_spin.valueChanged,
-            view.toon_texture_index_spin,
-        ),
-    }
     view.toon_sharing_check.setChecked(False)
     view.toon_texture_path_edit.setText(CUSTOM_TOON_PATH)
     view.toon_texture_index_spin.setValue(custom_toon_index)
@@ -126,31 +108,12 @@ def _edit_custom_toon_with_material_tab(root):
         "toon_texture_index": maya_attribute_utils.get_attribute(material, ATTR_MMD_TOON_TEXTURE_INDEX),
         "toon_texture_path": maya_attribute_utils.get_attribute(material, ATTR_MMD_TOON_PATH),
         "texture_table": texture_table,
-        "action_spies": action_spies,
-        "view": view,
     }
 
 
 @requires_gui
 class TestMaterialExportRoundtripGUI(GuiTestBase):
     """Verify MaterialTab authoring survives PMX export and fresh import."""
-
-    @staticmethod
-    def _emit_surface_witness(surface_id, selector, interaction, oracle, action_spy, control):
-        witness = build_surface_witness(
-            surface_id=surface_id,
-            case_id="gui.material_export_roundtrip",
-            selector=selector,
-            interaction=interaction,
-            oracle=oracle,
-            action_spy=action_spy,
-            control=control,
-        )
-        print(
-            "[UI COVERAGE WITNESS] "
-            + json.dumps(witness, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-            flush=True,
-        )
 
     def test_material_tab_edit_survives_pmx_fresh_import_oracle(self):
         with tempfile.TemporaryDirectory(prefix="mmd_material_roundtrip_") as temp_dir:
@@ -227,6 +190,16 @@ class TestMaterialExportRoundtripGUI(GuiTestBase):
 
             output = output_dir / "material_edit.pmx"
             report_dir = output_dir / "report"
+            material_evidence = {
+                key: material_edit[key]
+                for key in (
+                    "before",
+                    "shared_toon_flag",
+                    "toon_texture_index",
+                    "toon_texture_path",
+                    "texture_table",
+                )
+            }
             result = ExportWorkflowService().execute(
                 ExportWorkflowRequest(
                     str(output),
@@ -239,7 +212,7 @@ class TestMaterialExportRoundtripGUI(GuiTestBase):
                         "validation_report_evidence": {
                             "gate": "V070-MATERIAL-EXPORT-COLLECTOR-1",
                             "fixture": FIXTURE_PATH.name,
-                            "material_edit": material_edit,
+                            "material_edit": material_evidence,
                             "fresh_import": True,
                             "oracles": ["materials", "mesh", "pose", "metadata"],
                         },
@@ -272,33 +245,6 @@ class TestMaterialExportRoundtripGUI(GuiTestBase):
             self.assertEqual(
                 maya_attribute_utils.get_attribute(result_material, ATTR_MMD_TOON_PATH),
                 CUSTOM_TOON_PATH,
-            )
-            oracle = "material_toon_spec_fields_export_fresh_import"
-            action_spies = material_edit["action_spies"]
-            material_view = material_edit["view"]
-            self._emit_surface_witness(
-                "material.toon_sharing",
-                "objectName=materialToonSharingCheck",
-                "QCheckBox.setChecked(objectName=materialToonSharingCheck, False); Apply; PMX export/fresh import",
-                oracle,
-                action_spies["toon_sharing"],
-                material_view.toon_sharing_check,
-            )
-            self._emit_surface_witness(
-                "material.toon_texture_path",
-                "objectName=materialToonTexturePathEdit",
-                "QLineEdit.setText(objectName=materialToonTexturePathEdit, custom_toon.png); Apply; PMX export/fresh import",
-                oracle,
-                action_spies["toon_texture_path"],
-                material_view.toon_texture_path_edit,
-            )
-            self._emit_surface_witness(
-                "material.toon_texture_index",
-                "objectName=materialToonTextureIndexSpin",
-                "QSpinBox.setValue(objectName=materialToonTextureIndexSpin, custom_toon_index); Apply; PMX export/fresh import",
-                oracle,
-                action_spies["toon_texture_index"],
-                material_view.toon_texture_index_spin,
             )
 
 

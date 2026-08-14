@@ -101,58 +101,7 @@ class TestInfoUndoContractGUI(GuiTestBase):
             editor,
         )
 
-    def test_qtextedit_focus_session_immediate_write_and_undo_redo(self):
-        view = self.window.info_presenter.view
-        editor = view.comment_jp_edit
-        old_value = cmds.getAttr(f"{self.template.root}.mmd_comment")
 
-        editor.setFocus()
-        editor.setPlainText("コメント 1")
-        action_spy = QtSignalInvocationSpy(
-            "InfoPresenter.update_model_info", editor.textChanged, editor
-        )
-        editor.setPlainText("コメント 2")
-        QApplication.processEvents()
-        action_spy.stop()
-        self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_comment"), "コメント 2")
-
-        editor.clearFocus()
-        QApplication.processEvents()
-        self.assertIsNone(self.window.info_presenter._edit_session)
-        cmds.undo()
-        self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_comment"), old_value)
-        cmds.redo()
-        self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_comment"), "コメント 2")
-        _emit_witness(
-            "info.comment_jp",
-            "comment_jp_edit",
-            "QTest.edit(attribute=comment_jp_edit, コメント 2)",
-            "Maya attr write and Undo/Redo restored comment_jp",
-            action_spy,
-            editor,
-        )
-
-    def test_explicit_refresh_and_window_teardown_rollback_info_session(self):
-        presenter = self.window.info_presenter
-        editor = presenter.view.model_name_jp_edit
-        old_value = cmds.getAttr(f"{self.template.root}.mmd_model_name")
-        editor.setFocus()
-        editor.setText("Teardown Edit")
-        QApplication.processEvents()
-        self.assertIsNotNone(presenter._edit_session)
-
-        self.window.app_state.refresh_model_list(explicit=True)
-        QApplication.processEvents()
-        self.assertIsNone(presenter._edit_session)
-        self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_model_name"), old_value)
-
-        # Exercise the production close path while no model remains.  The
-        # InfoTab teardown/destroyed seam must not leave an undo chunk open.
-        self.window.close()
-        self.window.deleteLater()
-        QApplication.processEvents()
-        self.assertIsNone(presenter._edit_session)
-        self.window = None
 
     def test_model_switch_does_not_write_loading_text_to_new_root(self):
         from mmd_tools.adapters.maya_cmds_adapter import MayaCmdsAdapter

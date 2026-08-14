@@ -39,7 +39,13 @@ def _minimal_manifest():
                 "settings",
             )
         ],
-        "cases": [{"id": "case.one", "required_maya_versions": ["2024", "2026"]}],
+        "cases": [
+            {
+                "id": "case.one",
+                "execution_layer": "real_maya",
+                "required_maya_versions": ["2024", "2026"],
+            }
+        ],
         "surfaces": [
             {
                 "id": "import_export.surface",
@@ -68,7 +74,7 @@ def _report(cases, surfaces=None):
             "runtime_witness",
             {
                 "interaction": "QTest.click(import_export.surface)",
-                "fired_action": "import_model",
+                "fired_action": "example.Presenter.import_model",
                 "oracle": "model_loaded",
                 "action_count": 1,
             },
@@ -87,6 +93,18 @@ def test_checked_in_manifest_is_structurally_valid_and_inventories_all_tabs():
     assert result["valid"]
     assert result["tab_count"] == 9
     assert result["surface_count"] >= 200
+
+
+def test_case_execution_layer_is_required_and_fail_closed():
+    manifest = _minimal_manifest()
+    manifest["cases"][0].pop("execution_layer")
+    assert "invalid_execution_layer" in _errors(validate_manifest(manifest))
+
+
+def test_headless_case_must_not_claim_maya_versions():
+    manifest = _minimal_manifest()
+    manifest["cases"][0]["execution_layer"] = "headless_qt"
+    assert "headless_case_has_maya_versions" in _errors(validate_manifest(manifest))
 
 
 def test_missing_tab_fails_closed():
@@ -141,6 +159,23 @@ def test_qt_case_requires_known_case_and_no_reason_fields():
     assert "invalid_reason_fields" in _errors(result)
 
 
+def test_qt_case_requires_fully_qualified_expected_handler():
+    manifest = _qt_case_manifest()
+    manifest["surfaces"][0]["expected_handler"] = "raw_signal"
+
+    assert "invalid_expected_handler" in _errors(validate_manifest(manifest))
+
+
+def test_report_handler_must_match_manifest_mapping():
+    manifest = _qt_case_manifest()
+    report = _aggregate_from_inventory(manifest, {"case.one": ("2024", "2026")})
+    report["surfaces"][0]["runtime_witness"]["fired_action"] = (
+        "example.Presenter.other"
+    )
+
+    assert "handler_mismatch" in _errors(validate_report(manifest, report))
+
+
 def test_non_qt_disposition_requires_reason_fields():
     manifest = _minimal_manifest()
     surface = manifest["surfaces"][0]
@@ -159,7 +194,13 @@ def _qt_case_manifest():
     manifest = _minimal_manifest()
     manifest["surfaces"][0].pop("reason_code")
     manifest["surfaces"][0].pop("reason")
-    manifest["surfaces"][0].update({"disposition": "qt_case", "case_id": "case.one"})
+    manifest["surfaces"][0].update(
+        {
+            "disposition": "qt_case",
+            "case_id": "case.one",
+            "expected_handler": "example.Presenter.import_model",
+        }
+    )
     return manifest
 
 
@@ -387,6 +428,12 @@ def _aggregate_from_inventory(manifest, versions_by_case):
             "surface_id": surface["id"],
             "case_id": surface["case_id"],
             "status": "pass",
+            "runtime_witness": {
+                "interaction": "production control interaction",
+                "fired_action": surface["expected_handler"],
+                "oracle": "production handler exact once",
+                "action_count": 1,
+            },
         }
         locator_key = "selector" if "selector" in surface else "attribute"
         evidence[locator_key] = surface[locator_key]
@@ -401,26 +448,29 @@ def _required_versions_by_qt_case(manifest):
         if surface["disposition"] == "qt_case"
     }
     return {
-        case["id"]: tuple(case["required_maya_versions"])
+        case["id"]: tuple(case.get("required_maya_versions", ()))
         for case in manifest["cases"]
         if case["id"] in case_ids
     }
 
 
-def test_real_gui_case_aggregate_reports_missing_info_2026_evidence():
-    manifest = _load_manifest()
-    versions = _required_versions_by_qt_case(manifest)
-    versions["gui.info_undo"] = ("2024",)
-    result = validate_report(manifest, _aggregate_from_inventory(manifest, versions))
-    assert "missing_required_version_evidence" in _errors(result)
-    assert not any(error["code"] == "missing_surface_evidence" for error in result["errors"])
-
-
-def test_real_gui_case_aggregate_passes_when_both_maya_versions_are_present():
+def test_checked_in_headless_aggregate_does_not_require_maya_versions():
     manifest = _load_manifest()
     versions = _required_versions_by_qt_case(manifest)
     result = validate_report(manifest, _aggregate_from_inventory(manifest, versions))
     assert result["valid"]
+    assert versions == {"headless.authoring_ui_surface_matrix": ()}
+
+
+def test_headless_case_rejects_required_maya_versions():
+    manifest = _load_manifest()
+    owner = next(
+        case
+        for case in manifest["cases"]
+        if case["id"] == "headless.authoring_ui_surface_matrix"
+    )
+    owner["required_maya_versions"] = ["2024"]
+    assert "headless_case_has_maya_versions" in _errors(validate_manifest(manifest))
 
 
 def test_manifest_fails_when_qt_case_count_drops_below_floor():
@@ -437,7 +487,7 @@ def test_manifest_fails_when_qt_case_count_drops_below_floor():
 def _builder_surface(**witness_overrides):
     witness = {
         "interaction": "click(boneApplyButton)",
-        "fired_action": "bone.apply",
+        "fired_action": "example.Presenter.import_model",
         "oracle": "bone_spec_maya_footprint_undo_redo",
         "action_count": 1,
     }

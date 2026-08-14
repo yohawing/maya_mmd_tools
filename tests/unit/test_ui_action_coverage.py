@@ -132,7 +132,7 @@ def test_spies_reject_missing_source_control(qapp):
 
 def test_measured_witness_preserves_coverage_report_schema(qapp):
     root, button = _clickable_surface()
-    handler = ActionInvocationSpy.wrap("Presenter.apply", lambda: None, button)
+    handler = ActionInvocationSpy.wrap("example.Presenter.apply", lambda: None, button)
     button.clicked.connect(handler)
     QTest.mouseClick(button, Qt.LeftButton)
     qapp.processEvents()
@@ -171,7 +171,7 @@ def test_measured_witness_preserves_coverage_report_schema(qapp):
             {
                 "id": "headless.test_apply",
                 "status": "current",
-                "required_maya_versions": ["2024"],
+                "execution_layer": "headless_qt",
                 "source": "tests/unit/test_ui_action_coverage.py",
             }
         ],
@@ -183,6 +183,7 @@ def test_measured_witness_preserves_coverage_report_schema(qapp):
                 "selector": "objectName=testApplyButton",
                 "disposition": "qt_case",
                 "case_id": "headless.test_apply",
+                "expected_handler": "example.Presenter.apply",
             }
         ],
         "unmapped_surfaces": [],
@@ -194,7 +195,6 @@ def test_measured_witness_preserves_coverage_report_schema(qapp):
             {
                 "case_id": "headless.test_apply",
                 "status": "pass",
-                "maya_versions": ["2024"],
             }
         ],
         "surfaces": [surface],

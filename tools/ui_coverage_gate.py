@@ -33,6 +33,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 GATE_ID = "V070-UI-COVERAGE-1"
 SCHEMA_VERSION = 1
 DISPOSITIONS = {"qt_case", "blocked", "not_run", "excluded"}
+EXECUTION_LAYERS = {"headless_qt", "real_maya", "persistence"}
 TAB_IDS = (
     "import_export",
     "export",
@@ -47,6 +48,7 @@ TAB_IDS = (
 _PASS_STATUSES = {"pass", "passed", "ok", "success", "succeeded"}
 _RUNTIME_WITNESS_TEXT_FIELDS = ("interaction", "fired_action", "oracle")
 _RUNTIME_WITNESS_MARKER = "[UI COVERAGE WITNESS] "
+_HANDLER_PATH = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){2,}$")
 
 
 def _error(code: str, path: str, message: str) -> Dict[str, str]:
@@ -139,8 +141,26 @@ def validate_manifest(manifest: Mapping[str, Any]) -> Dict[str, Any]:
         if case_id in case_ids:
             errors.append(_error("duplicate_case_id", f"cases[{index}].id", case_id))
         case_ids.append(case_id)
+        execution_layer = case.get("execution_layer")
+        if execution_layer not in EXECUTION_LAYERS:
+            errors.append(
+                _error(
+                    "invalid_execution_layer",
+                    f"cases[{index}].execution_layer",
+                    "must be headless_qt, real_maya, or persistence",
+                )
+            )
+        has_versions_field = "required_maya_versions" in case
         versions = _normalise_versions(case.get("required_maya_versions"))
-        if not versions:
+        if execution_layer == "headless_qt" and has_versions_field:
+            errors.append(
+                _error(
+                    "headless_case_has_maya_versions",
+                    f"cases[{index}].required_maya_versions",
+                    "headless_qt evidence must not claim Maya versions",
+                )
+            )
+        elif execution_layer != "headless_qt" and not versions:
             errors.append(
                 _error(
                     "invalid_required_versions",
@@ -224,6 +244,17 @@ def validate_manifest(manifest: Mapping[str, Any]) -> Dict[str, Any]:
                 errors.append(_error("unknown_case", f"{path}.case_id", str(surface.get("case_id"))))
             if has_reason_code or has_reason:
                 errors.append(_error("invalid_reason_fields", path, "qt_case cannot have reason fields"))
+            expected_handler = surface.get("expected_handler")
+            if not isinstance(expected_handler, str) or not _HANDLER_PATH.fullmatch(
+                expected_handler.strip()
+            ):
+                errors.append(
+                    _error(
+                        "invalid_expected_handler",
+                        f"{path}.expected_handler",
+                        "qt_case requires a fully-qualified production handler",
+                    )
+                )
         else:
             if not has_reason_code or not has_reason:
                 errors.append(
@@ -418,6 +449,17 @@ def validate_report(manifest: Mapping[str, Any], report: Mapping[str, Any]) -> D
             path=f"report.surfaces[{surface_id}]",
             errors=errors,
         )
+        runtime_witness = evidence.get("runtime_witness")
+        if isinstance(runtime_witness, Mapping) and runtime_witness.get(
+            "fired_action"
+        ) != surface.get("expected_handler"):
+            errors.append(
+                _error(
+                    "handler_mismatch",
+                    f"report.surfaces[{surface_id}].runtime_witness.fired_action",
+                    str(runtime_witness.get("fired_action")),
+                )
+            )
 
     return {
         "valid": not errors,

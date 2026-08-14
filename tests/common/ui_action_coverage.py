@@ -47,6 +47,42 @@ class ActionInvocationSpy:
         return spy
 
 
+class PreconstructionMethodSpy:
+    """Wrap a production class method before a view binds its Qt signals."""
+
+    def __init__(self, action_name: str, owner: Any, method_name: str) -> None:
+        if not action_name.strip():
+            raise ValueError("action_name must be non-empty")
+        original = getattr(owner, method_name)
+        if not callable(original):
+            raise TypeError("handler must be callable")
+        self.action_name = action_name
+        self.owner = owner
+        self.method_name = method_name
+        self.original = original
+        self.source_control = None
+        self._coverage_source_required = True
+        self.calls = []  # type: list[tuple[tuple[Any, ...], Dict[str, Any]]]
+
+    @property
+    def action_count(self) -> int:
+        return len(self.calls)
+
+    def wrapper(self, instance: Any, *args: Any, **kwargs: Any) -> Any:
+        self.calls.append(((instance,) + args, dict(kwargs)))
+        return self.original(instance, *args, **kwargs)
+
+    def install(self, monkeypatch: Any) -> "PreconstructionMethodSpy":
+        spy = self
+
+        @wraps(self.original)
+        def wrapped(instance: Any, *args: Any, **kwargs: Any) -> Any:
+            return spy.wrapper(instance, *args, **kwargs)
+
+        monkeypatch.setattr(self.owner, self.method_name, wrapped)
+        return self
+
+
 class QtSignalInvocationSpy:
     """Count a control's primary Qt action signal through a real connection."""
 
@@ -84,6 +120,8 @@ def build_surface_witness(
     action_spy: Any,
     control: Any,
     interaction_control: Any = None,
+    control_ready: Optional[bool] = None,
+    interaction_ready: Optional[bool] = None,
     selector: Optional[str] = None,
     attribute: Optional[str] = None,
     status: str = "pass",
@@ -105,9 +143,19 @@ def build_surface_witness(
         raise AssertionError("action spy source control is required")
     if source_control is not None and source_control is not interaction_control:
         raise AssertionError("action spy source must match the interaction control")
-    if not control.isVisible() or not control.isEnabled():
+    control_ready = (
+        bool(control.isVisible() and control.isEnabled())
+        if control_ready is None
+        else control_ready
+    )
+    interaction_ready = (
+        bool(interaction_control.isVisible() and interaction_control.isEnabled())
+        if interaction_ready is None
+        else interaction_ready
+    )
+    if not control_ready:
         raise AssertionError("runtime witness control must be visible and enabled")
-    if not interaction_control.isVisible() or not interaction_control.isEnabled():
+    if not interaction_ready:
         raise AssertionError("runtime witness interaction control must be visible and enabled")
     if action_spy.action_count != 1:
         raise AssertionError(
