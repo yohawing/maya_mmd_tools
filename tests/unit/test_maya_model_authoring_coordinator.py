@@ -28,7 +28,13 @@ from mmd_tools.core.morph_read_projection import (
     MorphAuthoringReadSnapshot,
     MorphBlendShapeReadProjection,
 )
-from mmd_tools.core.material_read_projection import MaterialListProjection
+from mmd_tools.core.material_read_projection import (
+    MaterialAssignmentKind,
+    MaterialAssignmentSummary,
+    MaterialDetailProjection,
+    MaterialListProjection,
+    MaterialPreviewState,
+)
 
 
 def _spec() -> MmdModelAuthoringSpec:
@@ -73,10 +79,21 @@ class FakeBackend:
             topology_inspection=MorphTopologyInspection({}, {}, ()),
         )
         self.material_list_projection = MaterialListProjection("|root", ())
+        self.material_detail_projection = MaterialDetailProjection(
+            "|root",
+            scene.materials[0],
+            MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+            (),
+            MaterialPreviewState("lambert", False),
+        )
 
     def read_material_list_projection(self, _root: str) -> MaterialListProjection:
         self.events.append("read:material_list_projection")
         return self.material_list_projection
+
+    def read_material_detail_projection(self, _root, _index, _binding, _assignment):
+        self.events.append("read:material_detail_projection")
+        return self.material_detail_projection
 
     def read_morph_authoring_snapshot(self, _root: str) -> MorphAuthoringReadSnapshot:
         self.events.append("read:morph_snapshot")
@@ -688,6 +705,30 @@ def test_read_material_list_projection_delegates_one_typed_generation() -> None:
 
     assert result is backend.material_list_projection
     assert backend.events == ["read:material_list_projection"]
+
+
+def test_read_material_detail_projection_delegates_and_checks_identity() -> None:
+    coordinator, backend, *_ = _coordinator()
+    assignment = MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0)
+
+    result = coordinator.read_material_detail_projection(
+        "|root", 0, "material0", assignment
+    )
+
+    assert result is backend.material_detail_projection
+    assert backend.events == ["read:material_detail_projection"]
+
+    backend.material_detail_projection = MaterialDetailProjection(
+        "|other",
+        backend.scene.materials[0],
+        assignment,
+        (),
+        MaterialPreviewState("lambert", False),
+    )
+    with pytest.raises(MayaModelAuthoringCoordinatorError, match="wrong binding"):
+        coordinator.read_material_detail_projection(
+            "|root", 0, "material0", assignment
+        )
 
 
 def test_write_display_frames_uses_only_narrow_transaction() -> None:

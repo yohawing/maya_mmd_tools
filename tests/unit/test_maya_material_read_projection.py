@@ -14,11 +14,15 @@ from mmd_tools.core.constants import (
     ATTR_MMD_REGISTRY_MATERIAL_MEMBERS,
     ATTR_MMD_REGISTRY_ROOT,
     ATTR_MMD_REGISTRY_SCHEMA,
+    ATTR_MMD_SHADER_OUTLINE_ENABLED,
 )
 from mmd_tools.core.material_read_projection import (
     MaterialAssignmentKind,
     MaterialListSemantic,
+    MaterialAssignmentSummary,
+    MaterialTextureSlot,
 )
+from mmd_tools.core.model_authoring_spec import MmdMaterialSpec
 
 
 class FakeMayaAdapter:
@@ -39,6 +43,10 @@ class FakeMayaAdapter:
             "sgB": ("sgB",),
             "sgFace": ("sgFace",),
             "fileA": ("fileA",),
+            "mainFile": ("mainFile",),
+            "mainAlias": ("mainFile",),
+            "sphereFile": ("sphereFile",),
+            "toonFile": ("toonFile",),
         }
         self.meshes = ["meshAShape", "meshBShape"]
         self.attributes = {
@@ -65,6 +73,13 @@ class FakeMayaAdapter:
         }
         self.raising_sets = set()
         self.intermediate_meshes = set()
+        self.node_types = {
+            "matA": "dx11Shader",
+            "matB": "standardSurface",
+            "mainFile": "file",
+            "sphereFile": "file",
+            "toonFile": "file",
+        }
 
     def ls(self, value, **kwargs):
         self.calls.append(("ls", value, tuple(sorted(kwargs.items()))))
@@ -96,6 +111,10 @@ class FakeMayaAdapter:
             raise RuntimeError("sets query unavailable")
         return list(self.set_members.get(shading_group, ()))
 
+    def node_type(self, node):
+        self.calls.append(("node_type", node))
+        return self.node_types.get(node, "")
+
 
 def _materials():
     # Deliberately reverse input order; output is semantic PMX index order.
@@ -110,6 +129,135 @@ def _read(maya, materials=None):
         "root",
         _materials() if materials is None else materials,
     )
+
+
+def test_detail_projection_uses_only_exact_hardware_texture_slots():
+    maya = FakeMayaAdapter()
+    maya.connections.update(
+        {
+            "matA.MainTexture": ["mainFile"],
+            "matA.SphereTexture": ["sphereFile"],
+            "matA.ToonTexture": ["toonFile"],
+            # A broad material connection deliberately points elsewhere; the
+            # detail reader must never inspect it as texture provenance.
+            "matA": ["toonFile"],
+        }
+    )
+    maya.attributes.add(("matA", ATTR_MMD_SHADER_OUTLINE_ENABLED))
+    old_get_attr = maya.get_attr
+
+    def get_attr(plug):
+        if plug == "matA.{}".format(ATTR_MMD_SHADER_OUTLINE_ENABLED):
+            maya.calls.append(("get_attr", plug))
+            return 0
+        return old_get_attr(plug)
+
+    maya.get_attr = get_attr
+    material = MmdMaterialSpec(
+        "Material",
+        index=0,
+        binding_identity="matA",
+        draw_flags=0x10,
+        texture_path="textures/body.png",
+        resolved_texture_path="C:/model/body.png",
+        sphere_texture_path="textures/body.png",
+        resolved_sphere_texture_path="C:/model/sphere.spa",
+        shared_toon=False,
+        toon_texture_path="textures/body.png",
+        resolved_toon_texture_path="C:/model/toon.bmp",
+    )
+
+    detail = MayaMaterialReadProjectionAdapter(maya).read_detail_projection(
+        "root",
+        material,
+        MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+    )
+
+    assert tuple(texture.slot for texture in detail.textures) == (
+        MaterialTextureSlot.MAIN,
+        MaterialTextureSlot.SPHERE,
+        MaterialTextureSlot.TOON,
+    )
+    assert tuple(texture.binding.file_node_identity for texture in detail.textures) == (
+        "mainFile",
+        "sphereFile",
+        "toonFile",
+    )
+    assert detail.preview.shader_type == "dx11Shader"
+    assert detail.preview.outline_enabled is False
+    assert not any(call[0] == "list_connections" and call[1] == "matA" for call in maya.calls)
+
+
+def test_detail_projection_reads_legacy_dx11_technique_and_rejects_ambiguous_slot():
+    maya = FakeMayaAdapter()
+    maya.attributes.add(("matA", "technique"))
+    old_get_attr = maya.get_attr
+
+    def get_attr(plug):
+        if plug == "matA.technique":
+            return "MMD_NoEdge"
+        return old_get_attr(plug)
+
+    maya.get_attr = get_attr
+    material = MmdMaterialSpec("Material", index=0, binding_identity="matA")
+    adapter = MayaMaterialReadProjectionAdapter(maya)
+    detail = adapter.read_detail_projection(
+        "root",
+        material,
+        MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+    )
+    assert detail.preview.outline_enabled is False
+
+    maya.connections["matA.MainTexture"] = ["mainFile", "toonFile"]
+    with pytest.raises(MayaMaterialReadProjectionError, match="ambiguous"):
+        adapter.read_detail_projection(
+            "root",
+            material,
+            MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+        )
+
+
+def test_detail_projection_stock_shader_exposes_main_slot_only_and_canonicalizes_aliases():
+    maya = FakeMayaAdapter()
+    maya.connections["matB.baseColor"] = ["mainAlias", "mainFile"]
+    material = MmdMaterialSpec(
+        "Material",
+        index=2,
+        binding_identity="matB",
+        texture_path="body.png",
+        resolved_texture_path="C:/model/body.png",
+    )
+
+    detail = MayaMaterialReadProjectionAdapter(maya).read_detail_projection(
+        "root",
+        material,
+        MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+    )
+
+    assert len(detail.textures) == 1
+    assert detail.textures[0].slot is MaterialTextureSlot.MAIN
+    assert detail.textures[0].binding.file_node_identity == "mainFile"
+    queried = [call[1] for call in maya.calls if call[0] == "list_connections"]
+    assert queried == ["matB.baseColor"]
+
+
+def test_detail_projection_rejects_non_integral_outline_preview_value():
+    maya = FakeMayaAdapter()
+    maya.attributes.add(("matA", ATTR_MMD_SHADER_OUTLINE_ENABLED))
+    old_get_attr = maya.get_attr
+
+    def get_attr(plug):
+        if plug == "matA.{}".format(ATTR_MMD_SHADER_OUTLINE_ENABLED):
+            return 0.5
+        return old_get_attr(plug)
+
+    maya.get_attr = get_attr
+    with pytest.raises(MayaMaterialReadProjectionError, match="bool or integer 0/1"):
+        MayaMaterialReadProjectionAdapter(maya).read_detail_projection(
+            "root",
+            MmdMaterialSpec("Material", index=0, binding_identity="matA"),
+            MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+        )
 
 
 def test_registry_projection_orders_semantics_and_classifies_mixed_and_faces():

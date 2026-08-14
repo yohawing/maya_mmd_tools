@@ -11,21 +11,6 @@ from mmd_tools.ui.presenters.material_presenter import (  # noqa: E402
     MaterialPresenter,
 )
 from mmd_tools.ui.qt_compat import Qt  # noqa: E402
-from mmd_tools.core.constants import (  # noqa: E402
-    ATTR_MMD_AMBIENT_COLOR,
-    ATTR_MMD_DIFFUSE_COLOR,
-    ATTR_MMD_MATERIAL_NAME,
-    ATTR_MMD_MATERIAL_NAME_EN,
-    ATTR_MMD_SPECULAR_COLOR,
-    ATTR_MMD_ORIGINAL_TEXTURE_PATH,
-    ATTR_MMD_SPHERE_PATH,
-    ATTR_MMD_SPHERE_MODE,
-    ATTR_MMD_EDGE_COLOR,
-    ATTR_MMD_EDGE_SIZE,
-    ATTR_MMD_SHADER_OUTLINE_ENABLED,
-    ATTR_MMD_DRAW_FLAGS,
-    ATTR_MMD_TOON_TEXTURE_INDEX,
-)
 from mmd_tools.core.model_authoring_spec import (  # noqa: E402
     MmdMaterialSpec,
     MmdModelAuthoringSpec,
@@ -34,11 +19,15 @@ from mmd_tools.core.model_authoring_spec import (  # noqa: E402
 from mmd_tools.core.material_read_projection import (  # noqa: E402
     MaterialAssignmentKind,
     MaterialAssignmentSummary,
+    MaterialDetailProjection,
     MaterialListItemProjection,
     MaterialListProjection,
     MaterialListSemantic,
+    MaterialPreviewState,
+    MaterialTextureBinding,
+    MaterialTextureProvenance,
+    MaterialTextureSlot,
 )
-from mmd_tools.converters.material_shader_parameters import ATTR_MMD_DIFFUSE_ALPHA  # noqa: E402
 
 
 class TestMaterialPresenter(unittest.TestCase):
@@ -190,12 +179,9 @@ class TestMaterialPresenter(unittest.TestCase):
     def test_apply_changes_fails_closed_without_coordinator(self):
         self.presenter.current_material = "legacy_material"
 
-        with patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils") as attrs:
-            result = self.presenter.apply_changes()
+        result = self.presenter.apply_changes()
 
         self.assertIsNone(result)
-        attrs.set_attribute.assert_not_called()
-        attrs.set_custom_attributes.assert_not_called()
         self.mock_app_state.emit_status.assert_called_once()
 
     def test_authoring_selection_selects_shader_and_enables_indexed_actions(self):
@@ -309,7 +295,7 @@ class TestMaterialPresenter(unittest.TestCase):
 
         self.mock_maya_adapter.node_type.return_value = "standardSurface"
         self.mock_view.shader_outline_check.isChecked.return_value = True
-        with patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils") as attrs, patch(
+        with patch(
             "mmd_tools.converters.mesh_converter.apply_shader_outline"
         ) as apply_outline:
             result = self.presenter.apply_changes()
@@ -335,8 +321,6 @@ class TestMaterialPresenter(unittest.TestCase):
         self.assertIsNone(replacement.resolved_toon_texture_path)
         self.assertEqual(replacement.toon_texture_index, 5)
         self.assertEqual(replacement.memo, prior.memo)
-        attrs.set_attribute.assert_not_called()
-        attrs.set_custom_attributes.assert_not_called()
         apply_outline.assert_not_called()
         self.assertFalse(self.presenter.has_unsaved_changes)
         self.assertEqual(self.presenter.material_data["_authoring_fingerprint"], result.fingerprint())
@@ -355,12 +339,9 @@ class TestMaterialPresenter(unittest.TestCase):
         self.presenter.app_state.current_model_root = "|model_root"
         self.presenter.material_data = {"diffuse": (1.0, 0.5)}
 
-        with patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils") as attrs:
-            self.presenter.apply_changes()
+        self.presenter.apply_changes()
 
         coordinator.replace_material.assert_not_called()
-        attrs.set_attribute.assert_not_called()
-        attrs.set_custom_attributes.assert_not_called()
         self.assertTrue(self.mock_app_state.emit_status.called)
 
     def test_create_and_duplicate_do_not_read_or_forward_maya_selection(self):
@@ -467,24 +448,7 @@ class TestMaterialPresenter(unittest.TestCase):
             self.assertTrue(presenter.delete_material())
         coordinator.delete_material.assert_called_once_with("|model_root", 5)
 
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_material_utils")
-    def test_load_texture_provenance_uses_material_utils(self, mock_maya_material_utils):
-        self.mock_maya_adapter.attribute_exists.return_value = True
-        mock_maya_material_utils.get_mmd_original_texture_path.return_value = "textures/original.png"
-
-        self.presenter._load_texture_provenance("file1")
-
-        self.mock_maya_adapter.attribute_exists.assert_called_once_with(ATTR_MMD_ORIGINAL_TEXTURE_PATH, "file1")
-        mock_maya_material_utils.get_mmd_original_texture_path.assert_called_once_with("file1")
-        self.assertEqual(self.presenter.material_data["original_pmx_texture_path"], "textures/original.png")
-        self.mock_view.original_pmx_path_edit.setText.assert_called_once_with("textures/original.png")
-
-    def _set_existing_mmd_attribute_query(self, missing_attrs=()):
-        missing = set(missing_attrs)
-        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, node: attr not in missing
-
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_load_materials_with_no_model(self, mock_maya_attribute_utils):
+    def test_load_materials_with_no_model(self):
         """モデルが選択されていない場合のマテリアル読み込みテスト"""
         self.presenter.load_materials()
 
@@ -700,8 +664,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.assertNotEqual(item.toolTip(), material)
 
     @patch("mmd_tools.ui.presenters.material_presenter.logger")
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_on_material_selected(self, mock_maya_attribute_utils, mock_logger):
+    def test_on_material_selected(self, mock_logger):
         """マテリアル選択時の処理テスト"""
         # モックアイテムを作成
         mock_item = Mock()
@@ -724,12 +687,14 @@ class TestMaterialPresenter(unittest.TestCase):
             ),
         )
 
-        self.presenter.on_material_selected(mock_item, None)
+        with patch.object(self.presenter, "load_material_properties") as load_detail:
+            self.presenter.on_material_selected(mock_item, None)
 
         # マテリアルが選択されることを確認
         self.mock_maya_adapter.select_fast.assert_called_with("material1", replace=True)
         # 詳細が有効化されることを確認
         self.mock_view._set_details_enabled.assert_called_with(True)
+        load_detail.assert_called_once_with("material1")
 
         # 選択ログは DEBUG のみ（INFO には出さない）
         expected = "Selected material: material1"
@@ -780,117 +745,117 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.select_fast.assert_called_once_with(["material1"], replace=True)
         self.mock_maya_adapter.select.assert_not_called()
 
-    @patch("mmd_tools.ui.presenters.material_presenter.logger")
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_load_material_properties_dx11shader(self, mock_maya_attribute_utils, mock_logger):
-        """dx11Shaderのプロパティ読み込みテスト"""
-        material_name = "test_material"
-        self.mock_maya_adapter.node_type.return_value = "dx11Shader"
-        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, node: (
-            attr
-            in [
-                "DiffuseColorRGB",
-                "SpecularColor",
-                "AmbientColor",
-                "MainTexture",
-                ATTR_MMD_SHADER_OUTLINE_ENABLED,
-            ]
+    def test_selected_detail_projection_renders_semantics_provenance_and_preview(self):
+        presenter, coordinator = self._make_authoring_presenter()
+        assignment = MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0)
+        projection = self._list_projection(
+            "|model_root",
+            (0, "shader", "Material", "Material", assignment),
+        )
+        presenter._material_list_projection = projection
+        presenter.current_material = "shader"
+        presenter.current_material_index = 0
+        material = MmdMaterialSpec(
+            "Material",
+            name_english="Material EN",
+            index=0,
+            binding_identity="shader",
+            texture_path="textures/body.png",
+            resolved_texture_path="C:/model/body.png",
+            sphere_texture_path="textures/sphere.spa",
+            resolved_sphere_texture_path="C:/model/sphere.spa",
+            draw_flags=0x10,
+        )
+        coordinator.read_material_detail_projection.return_value = MaterialDetailProjection(
+            "|model_root",
+            material,
+            assignment,
+            (
+                MaterialTextureProvenance(
+                    MaterialTextureSlot.MAIN,
+                    material.texture_path,
+                    material.resolved_texture_path,
+                    MaterialTextureBinding(MaterialTextureSlot.MAIN, "shader.baseColor"),
+                ),
+                MaterialTextureProvenance(
+                    MaterialTextureSlot.SPHERE,
+                    material.sphere_texture_path,
+                    material.resolved_sphere_texture_path,
+                ),
+            ),
+            MaterialPreviewState("dx11Shader", False),
         )
 
-        # 色データの設定
-        mock_maya_attribute_utils.get_attribute.side_effect = lambda node, attr: {
-            ATTR_MMD_MATERIAL_NAME: "テストマテリアル",
-            ATTR_MMD_MATERIAL_NAME_EN: "Test Material",
-            "DiffuseColorRGB": (1.0, 0.5, 0.0),
-            "SpecularColor": (0.8, 0.8, 0.8),
-            "AmbientColor": (0.2, 0.2, 0.2),
-            "mmd_specular_coefficient": 0.5,
-            "transparency": (0.1,),
-            ATTR_MMD_SPHERE_PATH: "sphere.spa",
-            ATTR_MMD_SPHERE_MODE: 1,
-            ATTR_MMD_DRAW_FLAGS: 0x1F,
-            ATTR_MMD_EDGE_COLOR: (0.0, 0.0, 0.0, 1.0),
-            ATTR_MMD_EDGE_SIZE: 1.0,
-            ATTR_MMD_SHADER_OUTLINE_ENABLED: True,
-            ATTR_MMD_TOON_TEXTURE_INDEX: 0,
-            "fileTextureName": "textures/main.png",
-        }.get(attr, None)
+        presenter.load_material_properties("shader")
 
-        # テクスチャ接続の設定
-        self.mock_maya_adapter.list_connections.return_value = ["file1"]
+        coordinator.read_material_detail_projection.assert_called_once_with(
+            "|model_root", 0, "shader", assignment
+        )
+        self.mock_view.texture_path_edit.setText.assert_called_with("C:/model/body.png")
+        self.mock_view.sphere_map_path_edit.setText.assert_called_with(
+            "C:/model/sphere.spa"
+        )
+        self.mock_view.shader_outline_check.setChecked.assert_called_with(False)
+        self.assertEqual(
+            presenter.material_data["original_pmx_texture_path"],
+            "textures/body.png",
+        )
+        self.mock_maya_adapter.list_connections.assert_not_called()
+        self.mock_maya_adapter.attribute_exists.assert_not_called()
 
-        self.presenter.load_material_properties(material_name)
+    def test_selected_detail_failure_clears_routing_and_disables_stale_controls(self):
+        presenter, coordinator = self._make_authoring_presenter()
+        assignment = MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0)
+        presenter._material_list_projection = self._list_projection(
+            "|model_root",
+            (0, "shaderB", "B", "", assignment),
+        )
+        presenter.current_material = "shaderB"
+        presenter.current_material_index = 0
+        presenter.material_data = {"jp_name": "stale A"}
+        coordinator.read_material_detail_projection.side_effect = RuntimeError("broken")
 
-        # 各フィールドに値が設定されることを確認
-        self.mock_view.material_jp_name_edit.setText.assert_called_with("テストマテリアル")
-        self.mock_view.material_en_name_edit.setText.assert_called_with("Test Material")
-        self.mock_view.specular_coefficient_spin.setValue.assert_called_with(0.5)
-        self.mock_view.texture_path_edit.setText.assert_called_with("textures/main.png")
-        self.mock_view.shader_outline_check.setChecked.assert_called_with(True)
+        presenter.load_material_properties("shaderB")
 
-        # テクスチャロード詳細は DEBUG のみ（INFO には出さない）
-        expected = "Loaded texture: textures/main.png"
-        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
-        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
-        self.assertIn(expected, debug_messages)
-        self.assertNotIn(expected, info_messages)
+        self.assertIsNone(presenter.current_material)
+        self.assertIsNone(presenter.current_material_index)
+        self.assertEqual(presenter.material_data, {})
+        self.mock_view._set_details_enabled.assert_called_with(False)
+        self.mock_view.duplicate_btn.setEnabled.assert_called_with(False)
 
-    @patch("mmd_tools.ui.presenters.material_presenter.logger")
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_load_material_properties_no_texture_logs_debug(self, mock_maya_attribute_utils, mock_logger):
-        """テクスチャ未検出の詳細ログは DEBUG のみ。"""
-        material_name = "test_material"
-        self.mock_maya_adapter.node_type.return_value = "lambert"
-        self.mock_maya_adapter.attribute_exists.return_value = False
-        self.mock_maya_adapter.list_connections.return_value = None
-        mock_maya_attribute_utils.get_attribute.return_value = None
+    def test_stale_model_projection_fails_before_detail_read(self):
+        presenter, coordinator = self._make_authoring_presenter()
+        assignment = MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0)
+        presenter._material_list_projection = self._list_projection(
+            "|old_root",
+            (0, "shader", "Old", "", assignment),
+        )
+        presenter.current_material = "shader"
+        presenter.current_material_index = 0
 
-        self.presenter.load_material_properties(material_name)
+        presenter.load_material_properties("shader")
 
-        self.assertEqual(self.presenter.material_data.get("texture"), "")
-        self.mock_view.texture_path_edit.clear.assert_called()
+        coordinator.read_material_detail_projection.assert_not_called()
+        self.assertIsNone(presenter.current_material)
+        self.mock_view._set_details_enabled.assert_called_with(False)
 
-        expected = f"No texture found for material: {material_name}"
-        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
-        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
-        self.assertIn(expected, debug_messages)
-        self.assertNotIn(expected, info_messages)
-
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_standard_surface_load_prefers_canonical_mmd_colors(self, mock_maya_attribute_utils):
-        self.mock_maya_adapter.node_type.return_value = "standardSurface"
-        canonical = {
-            ATTR_MMD_DIFFUSE_COLOR: (0.1, 0.2, 0.3),
-            ATTR_MMD_SPECULAR_COLOR: (0.4, 0.5, 0.6),
-            ATTR_MMD_AMBIENT_COLOR: (0.7, 0.8, 0.9),
+    def test_effective_main_texture_display_preserves_authored_source_on_apply(self):
+        prior = MmdMaterialSpec(
+            "Material",
+            index=0,
+            binding_identity="shader",
+            texture_path="textures/body.png",
+            resolved_texture_path="C:/model/body.png",
+        )
+        self.presenter.material_data = {
+            "original_pmx_texture_path": "textures/body.png"
         }
-        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr in canonical
-        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: canonical.get(attr)
+        self.mock_view.texture_path_edit.text.return_value = "C:/model/body.png"
 
-        self.presenter.load_material_properties("standard_material")
+        source, resolved = self.presenter._authoring_main_texture_paths(prior)
 
-        self.assertEqual(self.presenter.material_data["diffuse"], canonical[ATTR_MMD_DIFFUSE_COLOR])
-        self.assertEqual(self.presenter.material_data["specular"], canonical[ATTR_MMD_SPECULAR_COLOR])
-        self.assertEqual(self.presenter.material_data["ambient"], canonical[ATTR_MMD_AMBIENT_COLOR])
-        queried = [call.args[1] for call in mock_maya_attribute_utils.get_attribute.call_args_list]
-        self.assertNotIn("baseColor", queried)
-        self.assertNotIn("specularColor", queried)
-        self.assertNotIn("ambientColor", queried)
-
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_standard_surface_load_prefers_canonical_mmd_diffuse_alpha(
-        self, mock_maya_attribute_utils
-    ):
-        """StandardSurface の Reset でも canonical diffuse alpha を復元する。"""
-        self.mock_maya_adapter.node_type.return_value = "standardSurface"
-        canonical = {ATTR_MMD_DIFFUSE_ALPHA: 0.75}
-        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr in canonical
-        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: canonical.get(attr)
-
-        self.presenter.load_material_properties("standard_material")
-
-        self.assertEqual(self.presenter.material_data["transparency"], 0.25)
-        self.mock_view.transparency_spin.setValue.assert_called_with(0.25)
+        self.assertEqual(source, "textures/body.png")
+        self.assertEqual(resolved, "C:/model/body.png")
 
     def test_update_color_widget_with_valid_color(self):
         """有効な色データでのカラーウィジェット更新テスト"""
@@ -907,12 +872,27 @@ class TestMaterialPresenter(unittest.TestCase):
         self.presenter.current_material = "shader"
         self.presenter.material_data = {
             "shader_outline_enabled": False,
+            "shader_type": "dx11Shader",
             "edge_size": 1.0,
         }
         self.mock_maya_adapter.node_type.return_value = "dx11Shader"
         self.mock_view.shader_outline_check.isChecked.return_value = False
 
         self.assertIsNone(self.presenter._viewport_outline_intent(material, material))
+        self.mock_maya_adapter.node_type.assert_not_called()
+
+    def test_changed_outline_uses_projected_shader_type_without_maya_read(self):
+        prior = MmdMaterialSpec(
+            "Material", index=0, edge_size=1.0, binding_identity="shader"
+        )
+        self.presenter.current_material = "shader"
+        self.presenter.material_data = {
+            "shader_outline_enabled": False,
+            "shader_type": "dx11Shader",
+        }
+        self.mock_view.shader_outline_check.isChecked.return_value = True
+
+        self.assertTrue(self.presenter._viewport_outline_intent(prior, prior))
         self.mock_maya_adapter.node_type.assert_not_called()
 
     def test_update_color_widget_with_invalid_color(self):
@@ -926,50 +906,6 @@ class TestMaterialPresenter(unittest.TestCase):
         # 要素不足の色データ
         self.presenter._update_color_widget(widget, (1.0, 0.5))
         widget.setStyleSheet.assert_called_with("background-color: rgb(128, 128, 128); border: 1px solid black;")
-
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_load_rgb_only_edge_scene_defaults_separate_alpha(self, mock_maya_attribute_utils):
-        self.mock_maya_adapter.node_type.return_value = "dx11Shader"
-        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr == "mmd_edge_color"
-        self.mock_maya_adapter.list_connections.return_value = None
-        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: (
-            (0.2, 0.3, 0.4) if attr == "mmd_edge_color" else None
-        )
-
-        self.presenter.load_material_properties("legacy_mat")
-
-        self.assertEqual(self.presenter.material_data["edge_color"], (0.2, 0.3, 0.4))
-        self.assertEqual(self.presenter.material_data["edge_alpha"], 1.0)
-
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_load_separate_edge_alpha_attribute(self, mock_maya_attribute_utils):
-        self.mock_maya_adapter.node_type.return_value = "GLSLShader"
-        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr in {
-            "mmd_edge_color",
-            "mmd_edge_alpha",
-        }
-        self.mock_maya_adapter.list_connections.return_value = None
-        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: {
-            "mmd_edge_color": (0.2, 0.3, 0.4),
-            "mmd_edge_alpha": 0.25,
-        }.get(attr)
-
-        self.presenter.load_material_properties("current_mat")
-
-        self.assertEqual(self.presenter.material_data["edge_alpha"], 0.25)
-
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_legacy_undriven_hardware_color_remains_loadable(self, mock_maya_attribute_utils):
-        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr == "DiffuseColorRGB"
-        self.mock_maya_adapter.list_connections.return_value = []
-        mock_maya_attribute_utils.get_attribute.return_value = (0.3, 0.4, 0.5)
-
-        value, owned = self.presenter._load_base_value(
-            "legacy", "diffuse_color", ("DiffuseColorRGB",), (0.5, 0.5, 0.5)
-        )
-
-        self.assertEqual(value, (0.3, 0.4, 0.5))
-        self.assertTrue(owned)
 
     def test_on_search_text_changed(self):
         """検索機能のテスト"""
@@ -997,6 +933,10 @@ class TestMaterialPresenter(unittest.TestCase):
         items[0].setHidden.assert_called_with(True)
         items[1].setHidden.assert_called_with(True)
         items[2].setHidden.assert_called_with(False)
+        for item in items:
+            item.data.assert_not_called()
+        self.mock_maya_adapter.attribute_exists.assert_not_called()
+        self.mock_maya_adapter.get_attr.assert_not_called()
 
     @patch("mmd_tools.ui.presenters.material_presenter.QColorDialog")
     def test_pick_color(self, mock_color_dialog):

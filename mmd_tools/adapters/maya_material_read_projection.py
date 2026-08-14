@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from mmd_tools.core.constants import (
     ATTR_MMD_MATERIAL,
+    ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_MODEL_REGISTRY,
     ATTR_MMD_REGISTRY_MATERIAL_MEMBERS,
     ATTR_MMD_REGISTRY_ROOT,
@@ -15,11 +16,18 @@ from mmd_tools.core.constants import (
 from mmd_tools.core.material_read_projection import (
     MaterialAssignmentKind,
     MaterialAssignmentSummary,
+    MaterialDetailProjection,
     MaterialListItemProjection,
     MaterialListProjection,
     MaterialListSemantic,
+    MaterialPreviewState,
+    MaterialTextureBinding,
+    MaterialTextureProvenance,
+    MaterialTextureSlot,
 )
+from mmd_tools.adapters.maya_material_shader_route import material_shader_route
 from mmd_tools.core.maya_identity import canonical_node_identity
+from mmd_tools.core.model_authoring_spec import MmdMaterialSpec
 from mmd_tools.core.model_registry import REGISTRY_SCHEMA_VERSION
 
 
@@ -39,6 +47,128 @@ class MayaMaterialReadProjectionAdapter:
 
     def __init__(self, adapter: Any) -> None:
         self._adapter = adapter
+
+    def read_detail_projection(
+        self,
+        model_root: str,
+        material: MmdMaterialSpec,
+        assignment: MaterialAssignmentSummary,
+    ) -> MaterialDetailProjection:
+        """Project one selected material without broad shader-graph discovery."""
+
+        if not isinstance(material, MmdMaterialSpec):
+            raise TypeError("material must be an MmdMaterialSpec")
+        if not isinstance(assignment, MaterialAssignmentSummary):
+            raise TypeError("assignment must be a MaterialAssignmentSummary")
+        root = self._canonical_dag_identity(model_root, "model root")
+        shader = self._canonical_identity(
+            material.binding_identity,
+            "material binding",
+        )
+        if material.binding_identity != shader:
+            raise MayaMaterialReadProjectionError(
+                "material binding_identity must already be canonical"
+            )
+        shader_type = self._adapter.node_type(shader)
+        if not isinstance(shader_type, str) or not shader_type:
+            raise MayaMaterialReadProjectionError(
+                "material shader type must be a non-empty string"
+            )
+        route = material_shader_route(shader_type)
+        semantic_slots = {
+            "main": MaterialTextureSlot.MAIN,
+            "sphere": MaterialTextureSlot.SPHERE,
+            "toon": MaterialTextureSlot.TOON,
+        }
+        paths = {
+            MaterialTextureSlot.MAIN: (
+                material.texture_path,
+                material.resolved_texture_path,
+            ),
+            MaterialTextureSlot.SPHERE: (
+                material.sphere_texture_path,
+                material.resolved_sphere_texture_path,
+            ),
+            MaterialTextureSlot.TOON: (
+                material.toon_texture_path,
+                material.resolved_toon_texture_path,
+            ),
+        }
+        if route is None and any(
+            source_path or resolved_path
+            for source_path, resolved_path in paths.values()
+        ):
+            raise MayaMaterialReadProjectionError(
+                "unsupported shader type cannot project authored texture paths"
+            )
+        textures = []
+        for slot_route in (() if route is None else route.texture_slots):
+            slot = semantic_slots[slot_route.semantic]
+            shader_plug = "{}.{}".format(shader, slot_route.texture_attribute)
+            raw = self._adapter.list_connections(
+                shader_plug,
+                source=True,
+                destination=False,
+                type="file",
+            ) or ()
+            candidates = self._sequence(raw, "{} texture file nodes".format(slot.value))
+            file_nodes = []
+            for candidate in candidates:
+                identity = self._canonical_identity(candidate, "texture file node")
+                if self._adapter.node_type(identity) != "file":
+                    raise MayaMaterialReadProjectionError(
+                        "{} texture source is not a file node".format(slot.value)
+                    )
+                if identity not in file_nodes:
+                    file_nodes.append(identity)
+            if len(file_nodes) > 1:
+                raise MayaMaterialReadProjectionError(
+                    "{} texture slot has ambiguous file nodes".format(slot.value)
+                )
+            binding = MaterialTextureBinding(
+                slot,
+                shader_plug,
+                file_nodes[0] if file_nodes else None,
+            )
+            source_path, resolved_path = paths[slot]
+            textures.append(
+                MaterialTextureProvenance(
+                    slot,
+                    source_path,
+                    resolved_path,
+                    binding,
+                )
+            )
+
+        outline_enabled = False
+        if self._adapter.attribute_exists(ATTR_MMD_SHADER_OUTLINE_ENABLED, shader):
+            raw_outline = self._adapter.get_attr(
+                "{}.{}".format(shader, ATTR_MMD_SHADER_OUTLINE_ENABLED)
+            )
+            if not (
+                type(raw_outline) is bool
+                or (type(raw_outline) is int and raw_outline in (0, 1))
+            ):
+                raise MayaMaterialReadProjectionError(
+                    "material outline preview must be bool or integer 0/1"
+                )
+            outline_enabled = bool(raw_outline)
+        elif shader_type == "dx11Shader" and self._adapter.attribute_exists(
+            "technique", shader
+        ):
+            technique = self._adapter.get_attr("{}.technique".format(shader))
+            if not isinstance(technique, str):
+                raise MayaMaterialReadProjectionError(
+                    "legacy DX11 technique must be a string"
+                )
+            outline_enabled = bool(technique) and "NoEdge" not in technique
+        return MaterialDetailProjection(
+            root,
+            material,
+            assignment,
+            tuple(textures),
+            MaterialPreviewState(shader_type, outline_enabled),
+        )
 
     def read_list_projection(
         self,

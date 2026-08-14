@@ -105,6 +105,8 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.material_read_projection import (
+    MaterialAssignmentSummary,
+    MaterialDetailProjection,
     MaterialListProjection,
     MaterialListSemantic,
 )
@@ -585,6 +587,25 @@ class MayaSceneMetadataBackend:
         except Exception as exc:
             raise MayaSceneMetadataError(
                 f"failed to read material list projection for {model_root!r}: {exc}"
+            ) from exc
+
+    def read_material_detail_projection(
+        self,
+        model_root: str,
+        index: int,
+        binding: str,
+        assignment: MaterialAssignmentSummary,
+    ) -> MaterialDetailProjection:
+        """Read one selected material's semantics, exact slots, and preview."""
+
+        try:
+            material = self.read_material_value(model_root, binding, index)
+            return MayaMaterialReadProjectionAdapter(
+                self._cmds
+            ).read_detail_projection(model_root, material, assignment)
+        except Exception as exc:
+            raise MayaSceneMetadataError(
+                f"failed to read material detail projection for {binding!r}: {exc}"
             ) from exc
 
     def read_morph_authoring_snapshot(self, model_root: str) -> MorphAuthoringReadSnapshot:

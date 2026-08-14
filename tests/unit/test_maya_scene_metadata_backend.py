@@ -14,7 +14,13 @@ import pytest
 
 from mmd_tools.adapters.maya_scene_metadata_backend import MayaSceneMetadataBackend, MayaSceneMetadataError
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter, SceneMetadataError
-from mmd_tools.core.model_authoring_spec import MmdMorphSpec
+from mmd_tools.core.model_authoring_spec import MmdMaterialSpec, MmdMorphSpec
+from mmd_tools.core.material_read_projection import (
+    MaterialAssignmentKind,
+    MaterialAssignmentSummary,
+    MaterialDetailProjection,
+    MaterialPreviewState,
+)
 from mmd_tools.core.constants import ATTR_MMD_COMMENT, ATTR_MMD_MODEL_NAME
 from mmd_tools.core.maya_name_utils import sanitize_text
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
@@ -360,6 +366,32 @@ def test_material_list_projection_reads_only_narrow_semantics_with_bounded_calls
     read_spec.assert_not_called()
     assert spies["list_relatives"].call_count == 1
     assert sum(spy.call_count for spy in spies.values()) <= 39
+
+
+def test_material_detail_projection_reuses_selected_semantic_reader() -> None:
+    cmds, backend = _backend()
+    material = MmdMaterialSpec("Material", index=0, binding_identity="mat")
+    assignment = MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0)
+    expected = MaterialDetailProjection(
+        "|root",
+        material,
+        assignment,
+        (),
+        MaterialPreviewState("lambert", False),
+    )
+    backend.read_material_value = Mock(return_value=material)
+    with patch(
+        "mmd_tools.adapters.maya_scene_metadata_backend."
+        "MayaMaterialReadProjectionAdapter.read_detail_projection",
+        return_value=expected,
+    ) as project:
+        result = backend.read_material_detail_projection(
+            "|root", 0, "mat", assignment
+        )
+
+    assert result is expected
+    backend.read_material_value.assert_called_once_with("|root", "mat", 0)
+    project.assert_called_once_with("|root", material, assignment)
 
 
 def test_display_frames_write_commits_exact_existing_payload() -> None:

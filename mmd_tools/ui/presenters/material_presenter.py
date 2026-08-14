@@ -6,34 +6,14 @@ import math
 import os
 from typing import Protocol
 
-from mmd_tools.core import maya_attribute_utils
-from mmd_tools.core import maya_material_utils
-from mmd_tools.converters.material_shader_parameters import (
-    ATTR_MMD_EDGE_ALPHA,
-    ATTR_MMD_DIFFUSE_ALPHA,
-)
-from mmd_tools.core.constants import (
-    ATTR_MMD_DRAW_FLAGS,
-    ATTR_MMD_DIFFUSE_COLOR,
-    ATTR_MMD_SPECULAR_COLOR,
-    ATTR_MMD_AMBIENT_COLOR,
-    ATTR_MMD_SHININESS,
-    ATTR_MMD_EDGE_COLOR,
-    ATTR_MMD_EDGE_SIZE,
-    ATTR_MMD_SHADER_OUTLINE_ENABLED,
-    ATTR_MMD_MATERIAL_NAME,
-    ATTR_MMD_MATERIAL_NAME_EN,
-    ATTR_MMD_ORIGINAL_TEXTURE_PATH,
-    ATTR_MMD_SPHERE_MODE,
-    ATTR_MMD_SPHERE_PATH,
-    ATTR_MMD_SHARED_TOON_FLAG,
-    ATTR_MMD_TOON_PATH,
-    ATTR_MMD_TOON_TEXTURE_INDEX,
-)
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
 from ...core.model_authoring_spec import MmdMaterialSpec, MmdModelAuthoringSpec
-from ...core.material_read_projection import MaterialListProjection
+from ...core.material_read_projection import (
+    MaterialDetailProjection,
+    MaterialListProjection,
+    MaterialTextureSlot,
+)
 from ...core.material_authoring import classify_material_change
 from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt
 from ..translations import UITranslator
@@ -68,6 +48,10 @@ class MaterialAuthoringCoordinator(Protocol):
     def read_spec(self, model_root: str) -> MmdModelAuthoringSpec: ...
 
     def read_material_list_projection(self, model_root: str) -> MaterialListProjection: ...
+
+    def read_material_detail_projection(
+        self, model_root: str, index: int, binding: str, assignment: object
+    ) -> MaterialDetailProjection: ...
 
     def replace_material(self, model_root: str, material: MmdMaterialSpec) -> MmdModelAuthoringSpec: ...
 
@@ -599,382 +583,152 @@ class MaterialPresenter:
         return True
 
     def load_material_properties(self, material_name):
-        """Load selected detail through the legacy path, never during list refresh.
-
-        Texture/preview graph projection is intentionally isolated here for
-        the following detail-read migration.
-        """
+        """Read and render one immutable selected-material detail generation."""
         self._loading_properties = True
         try:
-            # Store original data for reset
-            self.material_data = {}
-
-            # Japanese name
-            jp_name = maya_attribute_utils.get_attribute(material_name, ATTR_MMD_MATERIAL_NAME)
-            self.view.material_jp_name_edit.setText(jp_name if jp_name else "")
-            self.material_data["jp_name"] = jp_name if jp_name else ""
-
-            # English name
-            en_name = maya_attribute_utils.get_attribute(material_name, ATTR_MMD_MATERIAL_NAME_EN)
-            self.view.material_en_name_edit.setText(en_name if en_name else "")
-            self.material_data["en_name"] = en_name if en_name else ""
-
-            # Get basic colors
-            # Check shader type
-            shader_type = self.maya_adapter.node_type(material_name)
-
-            diffuse_fallbacks = (
-                ("DiffuseColorRGB", "g_Diffuse")
-                if shader_type in ("dx11Shader", "GLSLShader")
-                else (("baseColor",) if shader_type == "standardSurface" else ("color",))
-            )
-            diffuse_color, diffuse_owned = self._load_base_value(
+            root = self.app_state.current_model_root
+            index = self.current_material_index
+            projection = self._material_list_projection
+            if (
+                not isinstance(root, str)
+                or not root
+                or type(index) is not int
+                or not isinstance(projection, MaterialListProjection)
+                or projection.root_identity != root
+            ):
+                raise RuntimeError("selected material detail routing is unavailable")
+            projected = projection.item_for_index(index)
+            if projected.binding_identity != material_name:
+                raise RuntimeError("selected material detail binding is stale")
+            coordinator = self.authoring_coordinator
+            if coordinator is None:
+                raise RuntimeError("material detail projection reader is unavailable")
+            detail = coordinator.read_material_detail_projection(
+                root,
+                index,
                 material_name,
-                ATTR_MMD_DIFFUSE_COLOR,
-                diffuse_fallbacks,
-                (0.5, 0.5, 0.5),
+                projected.assignment,
             )
-            self.material_data["_diffuse_base_owned"] = diffuse_owned
-            self.material_data["diffuse"] = diffuse_color
-            self._update_color_widget(self.view.diffuse_color_widget, diffuse_color)
-
-            # Get specular color
-            specular_fallbacks = (
-                ("SpecularColor",)
-                if shader_type in ("dx11Shader", "GLSLShader")
-                else ("specularColor",)
-            )
-            specular_color, specular_owned = self._load_base_value(
-                material_name,
-                ATTR_MMD_SPECULAR_COLOR,
-                specular_fallbacks,
-                (0.5, 0.5, 0.5),
-            )
-            self.material_data["_specular_base_owned"] = specular_owned
-
-            # タプルが正しい形式であることを確認
-            if not isinstance(specular_color, (list, tuple)) or len(specular_color) < 3:
-                specular_color = (0.5, 0.5, 0.5)
-
-            self.material_data["specular"] = specular_color
-            self._update_color_widget(self.view.specular_color_widget, specular_color)
-
-            # Get ambient - Maya doesn't have ambient by default, check if attr exists
-            ambient_fallbacks = (
-                ("AmbientColor",)
-                if shader_type in ("dx11Shader", "GLSLShader")
-                else ("ambientColor",)
-            )
-            ambient_color, ambient_owned = self._load_base_value(
-                material_name,
-                ATTR_MMD_AMBIENT_COLOR,
-                ambient_fallbacks,
-                (0.5, 0.5, 0.5),
-            )
-            self.material_data["_ambient_base_owned"] = ambient_owned
-
-            # タプルが正しい形式であることを確認
-            if not isinstance(ambient_color, (list, tuple)) or len(ambient_color) < 3:
-                ambient_color = (0.5, 0.5, 0.5)
-
-            self.material_data["ambient"] = ambient_color
-            self._update_color_widget(self.view.ambient_color_widget, ambient_color)
-
-            # Get specular coefficient (MMD style)
-            if shader_type == "standardSurface":
-                standard_specular_weight = float(self._get_attr_safe(material_name, "specular", 0.5))
-                self.material_data["_standard_specular_weight"] = standard_specular_weight
-                if self.maya_adapter.attribute_exists("mmd_specular_coefficient", material_name):
-                    specular_coefficient = maya_attribute_utils.get_attribute(
-                        material_name, "mmd_specular_coefficient"
-                    )
-                elif self.maya_adapter.attribute_exists(ATTR_MMD_SHININESS, material_name):
-                    specular_coefficient = maya_attribute_utils.get_attribute(
-                        material_name, ATTR_MMD_SHININESS
-                    )
-                else:
-                    specular_coefficient = standard_specular_weight
-                self.material_data["_specular_power_base_owned"] = True
-            elif shader_type in ("dx11Shader", "GLSLShader") and self.maya_adapter.attribute_exists(
-                "mmd_specular_coefficient", material_name
-            ):
-                specular_coefficient = maya_attribute_utils.get_attribute(material_name, "mmd_specular_coefficient")
-                self.material_data["_specular_power_base_owned"] = True
-            elif shader_type in ("dx11Shader", "GLSLShader") and self.maya_adapter.attribute_exists(
-                ATTR_MMD_SHININESS, material_name
-            ):
-                specular_coefficient = maya_attribute_utils.get_attribute(material_name, ATTR_MMD_SHININESS)
-                self.material_data["_specular_power_base_owned"] = True
-            elif shader_type in ("dx11Shader", "GLSLShader") and self._plug_is_unconnected(
-                material_name, "Shininess"
-            ):
-                specular_coefficient = maya_attribute_utils.get_attribute(material_name, "Shininess")
-                self.material_data["_specular_power_base_owned"] = True
-            elif self.maya_adapter.attribute_exists("specular", material_name):
-                specular_coefficient = maya_attribute_utils.get_attribute(material_name, "specular")
-                self.material_data["_specular_power_base_owned"] = True
-            else:
-                specular_coefficient = 0.5
-                self.material_data["_specular_power_base_owned"] = False
-            self.material_data["_authored_specular_coefficient"] = specular_coefficient
-            # MaterialTab's form contract is 0..1 for every backend. Preserve
-            # out-of-range imported PMX values separately until the user edits.
-            specular_coefficient = max(0.0, min(1.0, float(specular_coefficient)))
-            self.material_data["specular_coefficient"] = specular_coefficient
-            self.view.specular_coefficient_spin.setValue(specular_coefficient)
-
-            # Get transparency (PMX style)
-            if self.maya_adapter.attribute_exists(ATTR_MMD_DIFFUSE_ALPHA, material_name):
-                diffuse_alpha = float(maya_attribute_utils.get_attribute(material_name, ATTR_MMD_DIFFUSE_ALPHA))
-                self.material_data["_diffuse_alpha_base_owned"] = True
-                transparency = 1.0 - diffuse_alpha
-            elif shader_type in ("dx11Shader", "GLSLShader") and self._plug_is_unconnected(
-                material_name, "DiffuseColorA"
-            ):
-                transparency = 1.0 - float(maya_attribute_utils.get_attribute(material_name, "DiffuseColorA"))
-                self.material_data["_diffuse_alpha_base_owned"] = True
-            elif self.maya_adapter.attribute_exists("opacity", material_name):
-                # StandardSurfaceの場合
-                opacity = maya_attribute_utils.get_attribute(material_name, "opacity")
-                transparency = 1.0 - opacity[0]  # Convert opacity to transparency
-            elif self.maya_adapter.attribute_exists("transparency", material_name):
-                transparency_val = maya_attribute_utils.get_attribute(material_name, "transparency")
-                transparency = transparency_val[0]
-            else:
-                transparency = 0.0
-                self.material_data["_diffuse_alpha_base_owned"] = False
-            self.material_data["transparency"] = transparency
-            self.view.transparency_spin.setValue(transparency)
-
-            # Get texture paths
-            # Check which attribute to look for connections
-            texture_attrs = []
-            if shader_type == "standardSurface":
-                texture_attrs.append(f"{material_name}.baseColor")
-            elif shader_type in ("dx11Shader", "GLSLShader"):
-                # Hardware shader texture slots use the same names.
-                if self.maya_adapter.attribute_exists("MainTexture", material_name):
-                    texture_attrs.append(f"{material_name}.MainTexture")
-                if self.maya_adapter.attribute_exists("DiffuseTexture", material_name):
-                    texture_attrs.append(f"{material_name}.DiffuseTexture")
-            if self.maya_adapter.attribute_exists("color", material_name):
-                texture_attrs.append(f"{material_name}.color")
-            # Also check for direct outColor connections
-            if self.maya_adapter.attribute_exists("outColor", material_name):
-                texture_attrs.append(f"{material_name}.outColor")
-
-            # Debug: Log available attributes
-            logger.debug(f"Material type: {shader_type}")
-            logger.debug(f"Checking texture attributes: {texture_attrs}")
-
-            # Also check all connections to the material
-            all_connections = self.maya_adapter.list_connections(material_name, source=True, destination=False, plugs=True) or []
-            logger.debug(f"All connections to {material_name}: {all_connections}")
-
-            file_node = None
-            # First try direct attribute connections
-            for attr in texture_attrs:
-                connections = self.maya_adapter.list_connections(attr, type="file", source=True, destination=False)
-                if connections:
-                    file_node = connections
-                    logger.debug(f"Found file node connected to {attr}: {connections[0]}")
-                    break
-
-            # If not found, check for file nodes in the material's shading group
-            if not file_node:
-                shading_groups = self.maya_adapter.list_connections(material_name, type="shadingEngine")
-                if shading_groups:
-                    logger.debug(f"Found shading groups: {shading_groups}")
-                    for sg in shading_groups:
-                        file_nodes = self.maya_adapter.ls(self.maya_adapter.list_connections(sg), type="file") or []
-                        if file_nodes:
-                            file_node = file_nodes
-                            logger.debug(f"Found file nodes in shading group {sg}: {file_nodes}")
-                            break
-
-            if file_node:
-                texture_path = maya_attribute_utils.get_attribute(file_node[0], "fileTextureName")
-                self.material_data["texture"] = texture_path
-                self.view.texture_path_edit.setText(texture_path)
-                self._load_texture_provenance(file_node[0])
-                logger.debug(f"Loaded texture: {texture_path}")
-            else:
-                # Check if there's a stored texture path in MMD attributes
-                mmd_texture_path = self._get_attr_safe(material_name, "mmd_texture_path", "")
-                if mmd_texture_path:
-                    self.material_data["texture"] = mmd_texture_path
-                    self.view.texture_path_edit.setText(mmd_texture_path)
-                    self._set_texture_provenance_fields("")
-                    logger.debug(f"Loaded texture from MMD attribute: {mmd_texture_path}")
-                else:
-                    self.material_data["texture"] = ""
-                    self.view.texture_path_edit.clear()
-                    self._set_texture_provenance_fields("")
-                    logger.debug(f"No texture found for material: {material_name}")
-
-            # Get MMD-specific attributes if they exist
-            self._load_mmd_attributes(material_name)
-            self.material_data["_loaded_base_snapshot"] = {
-                "diffuse": self.material_data.get("diffuse"),
-                "specular": self.material_data.get("specular"),
-                "ambient": self.material_data.get("ambient"),
-                "transparency": self.material_data.get("transparency"),
-                "specular_coefficient": self.material_data.get("specular_coefficient"),
-            }
-
-        except Exception as e:
+            if not isinstance(detail, MaterialDetailProjection):
+                raise TypeError("material detail projection reader returned an invalid result")
+            self._render_material_detail(detail)
+        except Exception as exc:
             logger.error(
-                f"Failed to load material details for {material_name}: {e}",
+                f"Failed to load material details for {material_name}: {exc}",
                 exc_info=True,
             )
+            self.material_data = {}
+            self._clear_material_selection()
         finally:
             self._loading_properties = False
-            # プロパティの読み込み完了後、変更フラグを確実にリセット
             self.has_unsaved_changes = False
+
+    def _render_material_detail(self, detail):
+        """Render authored semantics separately from effective preview state."""
+        material = detail.material
+        self.material_data = {
+            "jp_name": material.name,
+            "en_name": material.name_english,
+            "diffuse": material.diffuse[:3],
+            "specular": material.specular,
+            "ambient": material.ambient,
+            "transparency": 1.0 - material.diffuse[3],
+            "specular_coefficient": material.specular_coefficient,
+            "draw_flags": material.draw_flags,
+            "edge_color": material.edge_color[:3],
+            "edge_alpha": material.edge_color[3],
+            "edge_size": material.edge_size,
+            "edge_size_view": max(0.0, min(2.0, material.edge_size)),
+            "shader_outline_enabled": detail.preview.outline_enabled,
+            "shader_type": detail.preview.shader_type,
+            "_authoring_material": material.to_mapping(),
+        }
+        self.view.material_jp_name_edit.setText(material.name)
+        self.view.material_en_name_edit.setText(material.name_english)
+        self._update_color_widget(self.view.diffuse_color_widget, material.diffuse)
+        self._update_color_widget(self.view.specular_color_widget, material.specular)
+        self._update_color_widget(self.view.ambient_color_widget, material.ambient)
+        self.view.transparency_spin.setValue(self.material_data["transparency"])
+        self.view.specular_coefficient_spin.setValue(
+            max(0.0, min(1.0, material.specular_coefficient))
+        )
+
+        texture_by_slot = {texture.slot: texture for texture in detail.textures}
+        main = texture_by_slot.get(MaterialTextureSlot.MAIN)
+        main_source = main.source_path if main is not None else material.texture_path
+        main_resolved = (
+            main.resolved_path if main is not None else material.resolved_texture_path
+        )
+        main_effective = main_resolved or main_source or ""
+        self.material_data["texture"] = main_effective
+        self.material_data["original_pmx_texture_path"] = main_source or ""
+        self.view.texture_path_edit.setText(main_effective)
+        self._set_texture_provenance_fields(main_source or "")
+
+        sphere = texture_by_slot.get(MaterialTextureSlot.SPHERE)
+        sphere_source = (
+            sphere.source_path if sphere is not None else material.sphere_texture_path
+        )
+        sphere_resolved = (
+            sphere.resolved_path
+            if sphere is not None
+            else material.resolved_sphere_texture_path
+        )
+        sphere_effective = sphere_resolved or sphere_source or ""
+        self.material_data["sphere_map"] = sphere_effective
+        self.view.sphere_map_path_edit.setText(sphere_effective)
+        self.material_data["sphere_mode"] = material.sphere_mode
+        self.view.sphere_mode_combo.setCurrentIndex(material.sphere_mode)
+
+        shared_toon_flag = int(material.shared_toon)
+        toon_index = (
+            material.toon_texture_index
+            if material.toon_texture_index is not None
+            else -1
+        )
+        toon = texture_by_slot.get(MaterialTextureSlot.TOON)
+        toon_source = toon.source_path if toon is not None else material.toon_texture_path
+        toon_resolved = (
+            toon.resolved_path if toon is not None else material.resolved_toon_texture_path
+        )
+        toon_effective = toon_resolved or toon_source or ""
+        self.material_data["shared_toon_flag"] = shared_toon_flag
+        self.material_data["toon_index"] = toon_index
+        self.view.toon_texture_combo.setCurrentIndex(
+            max(0, min(9, toon_index if toon_index >= 0 else 0))
+        )
+        toon_sharing_check = getattr(self.view, "toon_sharing_check", None)
+        if toon_sharing_check is not None:
+            toon_sharing_check.setChecked(material.shared_toon)
+        toon_texture_path_edit = getattr(self.view, "toon_texture_path_edit", None)
+        if toon_texture_path_edit is not None:
+            toon_texture_path_edit.setText("" if material.shared_toon else toon_effective)
+        toon_texture_index_spin = getattr(self.view, "toon_texture_index_spin", None)
+        if toon_texture_index_spin is not None:
+            toon_texture_index_spin.setValue(
+                -1 if material.shared_toon else toon_index
+            )
+        self._set_toon_controls_enabled(material.shared_toon)
+
+        for control, mask in (
+            (self.view.both_face_check, 0x01),
+            (self.view.ground_shadow_check, 0x02),
+            (self.view.self_shadow_map_check, 0x04),
+            (self.view.self_shadow_check, 0x08),
+            (self.view.edge_draw_check, 0x10),
+            (self.view.vertex_color_check, 0x20),
+            (self.view.point_draw_check, 0x40),
+            (self.view.line_draw_check, 0x80),
+        ):
+            control.setChecked(bool(material.draw_flags & mask))
+        self.view.shader_outline_check.setChecked(detail.preview.outline_enabled)
+        self._update_color_widget(self.view.edge_color_widget, material.edge_color)
+        self.view.edge_size_spin.setValue(self.material_data["edge_size_view"])
 
     def _set_texture_provenance_fields(self, original_path):
         """Update read-only texture provenance fields when the view provides them."""
-
         if hasattr(self.view, "original_pmx_path_edit"):
             self.view.original_pmx_path_edit.setText(original_path or "")
-
-    def _load_texture_provenance(self, file_node):
-        original_path = ""
-        try:
-            if self.maya_adapter.attribute_exists(ATTR_MMD_ORIGINAL_TEXTURE_PATH, file_node):
-                original_path = maya_material_utils.get_mmd_original_texture_path(file_node)
-        except Exception:
-            logger.debug("Failed to read original PMX texture path from %s", file_node, exc_info=True)
-        self.material_data["original_pmx_texture_path"] = original_path
-        self._set_texture_provenance_fields(original_path)
-
-    def _load_mmd_attributes(self, material_name):
-        """Load MMD-specific attributes from material"""
-        # Debug: List all attributes on the material
-        try:
-            all_attrs = self.maya_adapter.list_attr(material_name, userDefined=True) or []
-            if all_attrs:
-                logger.debug(f"User-defined attributes on {material_name}: {all_attrs}")
-
-            # dx11Shaderの場合、uniformParametersをチェック
-            if self.maya_adapter.node_type(material_name) == "dx11Shader":
-                uniform_params = self.maya_adapter.list_attr(material_name + ".uniformParameters") or []
-                if uniform_params:
-                    logger.debug(f"Uniform parameters on {material_name}: {uniform_params}")
-        except Exception:
-            pass
-
-        # Sphere map
-        sphere_path = self._get_attr_safe(material_name, ATTR_MMD_SPHERE_PATH, "")
-        if not sphere_path:
-            # mmd_sphere_pathカスタムアトリビュートからも確認
-            sphere_path = self._get_attr_safe(material_name, "mmd_sphere_path", "")
-
-        self.material_data["sphere_map"] = sphere_path
-        self.view.sphere_map_path_edit.setText(sphere_path)
-
-        # Sphere mode
-        sphere_mode = self._get_attr_safe(material_name, ATTR_MMD_SPHERE_MODE, 0)
-        self.material_data["sphere_mode"] = sphere_mode
-        self.view.sphere_mode_combo.setCurrentIndex(sphere_mode)
-
-        # Toon texture
-        shared_toon_flag = self._get_attr_safe(material_name, ATTR_MMD_SHARED_TOON_FLAG, 1)
-        try:
-            shared_toon_flag = int(shared_toon_flag)
-        except (TypeError, ValueError):
-            shared_toon_flag = 1
-        shared_toon_flag = 1 if shared_toon_flag else 0
-        toon_index = self._get_attr_safe(material_name, ATTR_MMD_TOON_TEXTURE_INDEX, 0)
-        try:
-            toon_index = int(toon_index)
-        except (TypeError, ValueError):
-            toon_index = 0
-        self.material_data["shared_toon_flag"] = shared_toon_flag
-        self.material_data["toon_index"] = toon_index
-        self.view.toon_texture_combo.setCurrentIndex(max(0, min(9, toon_index)))
-        toon_sharing_check = getattr(self.view, "toon_sharing_check", None)
-        toon_texture_path_edit = getattr(self.view, "toon_texture_path_edit", None)
-        toon_texture_index_spin = getattr(self.view, "toon_texture_index_spin", None)
-        if toon_sharing_check is not None:
-            toon_sharing_check.setChecked(bool(shared_toon_flag))
-        if toon_texture_path_edit is not None:
-            toon_texture_path_edit.setText(
-                "" if shared_toon_flag else self._get_attr_safe(material_name, ATTR_MMD_TOON_PATH, "")
-            )
-        if toon_texture_index_spin is not None:
-            toon_texture_index_spin.setValue(toon_index if not shared_toon_flag else -1)
-        self._set_toon_controls_enabled(bool(shared_toon_flag))
-
-        # Draw flags
-        draw_flags = self._get_attr_safe(material_name, ATTR_MMD_DRAW_FLAGS, 0x1F)
-        self.material_data["draw_flags"] = draw_flags
-
-        self.view.both_face_check.setChecked(bool(draw_flags & 0x01))
-        self.view.ground_shadow_check.setChecked(bool(draw_flags & 0x02))
-        self.view.self_shadow_map_check.setChecked(bool(draw_flags & 0x04))
-        self.view.self_shadow_check.setChecked(bool(draw_flags & 0x08))
-        self.view.edge_draw_check.setChecked(bool(draw_flags & 0x10))
-        self.view.vertex_color_check.setChecked(bool(draw_flags & 0x20))
-        self.view.point_draw_check.setChecked(bool(draw_flags & 0x40))
-        self.view.line_draw_check.setChecked(bool(draw_flags & 0x80))
-
-        # Viewport outline is an opt-in display setting, independent from the
-        # authored PMX Edge Drawing bit above.
-        outline_enabled = bool(
-            self._get_attr_safe(material_name, ATTR_MMD_SHADER_OUTLINE_ENABLED, False)
-        )
-        self.material_data["shader_outline_enabled"] = outline_enabled
-        self.view.shader_outline_check.setChecked(outline_enabled)
-
-        # Edge properties
-        edge_color = self._get_attr_safe(material_name, ATTR_MMD_EDGE_COLOR, (0.0, 0.0, 0.0, 1.0))
-        edge_alpha = float(self._get_attr_safe(material_name, ATTR_MMD_EDGE_ALPHA, 1.0))
-        # エッジカラーの形式を確認
-        if isinstance(edge_color, (list, tuple)):
-            if len(edge_color) == 4:
-                # Legacy double4 scenes predate the separate alpha attribute.
-                if not self.maya_adapter.attribute_exists(ATTR_MMD_EDGE_ALPHA, material_name):
-                    edge_alpha = float(edge_color[3])
-                edge_color = edge_color[:3]  # Remove alpha
-            elif len(edge_color) < 3:
-                edge_color = (0.0, 0.0, 0.0)
-        else:
-            edge_color = (0.0, 0.0, 0.0)
-
-        self.material_data["edge_color"] = edge_color
-        self._update_color_widget(self.view.edge_color_widget, edge_color)
-
-        self.material_data["edge_alpha"] = edge_alpha
-        raw_edge_size = float(self._get_attr_safe(material_name, ATTR_MMD_EDGE_SIZE, 1.0))
-        visible_edge_size = max(0.0, min(2.0, raw_edge_size))
-        self.material_data["edge_size"] = raw_edge_size
-        self.material_data["edge_size_view"] = visible_edge_size
-        self.view.edge_size_spin.setValue(visible_edge_size)
-
-    def _get_attr_safe(self, node, attr, default):
-        """Get attribute value safely, return default if not exists"""
-        if self.maya_adapter.attribute_exists(attr, node):
-            return maya_attribute_utils.get_attribute(node, attr)
-        return default
-
-    def _plug_is_unconnected(self, node, attr):
-        if not self.maya_adapter.attribute_exists(attr, node):
-            return False
-        return not bool(
-            self.maya_adapter.list_connections(
-                f"{node}.{attr}", source=True, destination=False, plugs=True
-            ) or []
-        )
-
-    def _load_base_value(self, node, authored_attr, fallback_attrs, default):
-        """Read authored data first; never treat a driven final plug as base."""
-        if self.maya_adapter.attribute_exists(authored_attr, node):
-            return maya_attribute_utils.get_attribute(node, authored_attr), True
-        for attr in fallback_attrs:
-            if self._plug_is_unconnected(node, attr):
-                return maya_attribute_utils.get_attribute(node, attr), True
-        return default, False
 
     @staticmethod
     def _base_value_changed(current, loaded):
@@ -1191,7 +945,7 @@ class MaterialPresenter:
         edge_size_changed = abs(float(prior.edge_size) - float(material.edge_size)) > 1e-6
         if enabled == previous_enabled and (not enabled or not edge_size_changed):
             return None
-        if self.maya_adapter.node_type(self.current_material) != "dx11Shader":
+        if self.material_data.get("shader_type") != "dx11Shader":
             return None
         return enabled
 
@@ -1485,14 +1239,8 @@ class MaterialPresenter:
         )
 
     def _material_filter_terms(self, item):
-        """Return searchable terms for a material list item."""
-        material = item.data(Qt.UserRole)
-        return (
-            item.text(),
-            material,
-            maya_attribute_utils.get_attribute(material, ATTR_MMD_MATERIAL_NAME) if material else "",
-            maya_attribute_utils.get_attribute(material, ATTR_MMD_MATERIAL_NAME_EN) if material else "",
-        )
+        """Search only the already-projected human-facing row text."""
+        return (item.text(),)
 
     def on_selection_changed_maya(self):
         """リスト選択が変更されたときにMayaでも選択する"""

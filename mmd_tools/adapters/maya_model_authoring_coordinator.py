@@ -36,7 +36,11 @@ from mmd_tools.core.model_authoring_spec import (
     MmdModelAuthoringSpec,
     MmdMorphSpec,
 )
-from mmd_tools.core.material_read_projection import MaterialListProjection
+from mmd_tools.core.material_read_projection import (
+    MaterialAssignmentSummary,
+    MaterialDetailProjection,
+    MaterialListProjection,
+)
 from mmd_tools.core.morph_authoring import (
     classify_morph_change,
     delete_morph as delete_morph_spec,
@@ -142,6 +146,40 @@ class MayaModelAuthoringCoordinator:
         if not isinstance(result, MaterialListProjection):
             raise MayaModelAuthoringCoordinatorError(
                 "material list projection reader returned an invalid result"
+            )
+        return result
+
+    def read_material_detail_projection(
+        self,
+        model_root: str,
+        index: int,
+        binding: str,
+        assignment: MaterialAssignmentSummary,
+    ) -> MaterialDetailProjection:
+        """Read one immutable selected-material detail generation."""
+
+        reader = getattr(self._backend, "read_material_detail_projection", None)
+        if not callable(reader):
+            raise MayaModelAuthoringCoordinatorError(
+                "material detail projection reader is unavailable"
+            )
+        try:
+            result = reader(model_root, index, binding, assignment)
+        except Exception as exc:
+            raise MayaModelAuthoringCoordinatorError(
+                f"read_material_detail_projection failed for root {model_root!r}: {exc}"
+            ) from exc
+        if not isinstance(result, MaterialDetailProjection):
+            raise MayaModelAuthoringCoordinatorError(
+                "material detail projection reader returned an invalid result"
+            )
+        if (
+            result.root_identity != model_root
+            or result.material.index != index
+            or result.material.binding_identity != binding
+        ):
+            raise MayaModelAuthoringCoordinatorError(
+                "material detail projection returned the wrong binding"
             )
         return result
 
