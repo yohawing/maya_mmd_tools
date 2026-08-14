@@ -15,6 +15,28 @@ from mmd_tools.ui.qt_compat import QApplication, Qt
 from mmd_tools.ui.tabs.morph_tab import MorphTab
 
 
+def _emit_witness(surface_id, locator_key, locator, interaction, fired_action, oracle):
+    """Emit one deterministic runtime witness for the coverage gate."""
+
+    evidence = {
+        "surface_id": surface_id,
+        "case_id": "gui.morph_tab",
+        locator_key: locator,
+        "status": "pass",
+        "runtime_witness": {
+            "interaction": interaction,
+            "fired_action": fired_action,
+            "oracle": oracle,
+            "action_count": 1,
+        },
+    }
+    print(
+        "[UI COVERAGE WITNESS] "
+        + json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        flush=True,
+    )
+
+
 @requires_gui
 class TestMorphTabGUI(GuiTestBase):
     """MorphTab の GUI テスト（実際の Qt 環境で実行）"""
@@ -94,6 +116,22 @@ class TestMorphTabGUI(GuiTestBase):
                 cmds.getAttr("{0}.weight[0]".format(blend_shape)),
                 0.65,
                 places=5,
+            )
+            _emit_witness(
+                "morph.list",
+                "selector",
+                "objectName=morphList",
+                "QTest.setCurrentRow(objectName=morphList, 0)",
+                "MorphPresenter.load_morphs",
+                "canonical Mouth_A01 morph row displayed and selected",
+            )
+            _emit_witness(
+                "morph.value",
+                "attribute",
+                "morph_slider",
+                "QTest.setValue(attribute=morph_slider, 65)",
+                "MorphPresenter.set_morph_weight",
+                "Mouth_A01 blendShape weight equals 0.65",
             )
         finally:
             presenter = None

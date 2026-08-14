@@ -1,5 +1,6 @@
 """Real Qt/Maya proof for the Info metadata undo contract."""
 
+import json
 import unittest
 
 import maya.cmds as cmds
@@ -7,6 +8,28 @@ import maya.cmds as cmds
 from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.ui.qt_compat import QApplication
 from tests.common.gui_test_base import GuiTestBase, requires_gui
+
+
+def _emit_witness(surface_id, locator, interaction, fired_action, oracle):
+    """Emit one deterministic runtime witness for the coverage gate."""
+
+    evidence = {
+        "surface_id": surface_id,
+        "case_id": "gui.info_undo",
+        "attribute": locator,
+        "status": "pass",
+        "runtime_witness": {
+            "interaction": interaction,
+            "fired_action": fired_action,
+            "oracle": oracle,
+            "action_count": 1,
+        },
+    }
+    print(
+        "[UI COVERAGE WITNESS] "
+        + json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        flush=True,
+    )
 
 
 @requires_gui
@@ -63,6 +86,13 @@ class TestInfoUndoContractGUI(GuiTestBase):
         self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_model_name"), old_value)
         cmds.redo()
         self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_model_name"), "Undo Contract JP 2")
+        _emit_witness(
+            "info.model_name_jp",
+            "model_name_jp_edit",
+            "QTest.edit(attribute=model_name_jp_edit, Undo Contract JP 2)",
+            "InfoPresenter.update_model_info",
+            "Maya attr write and Undo/Redo restored model_name_jp",
+        )
 
     def test_qtextedit_focus_session_immediate_write_and_undo_redo(self):
         view = self.window.info_presenter.view
@@ -82,6 +112,13 @@ class TestInfoUndoContractGUI(GuiTestBase):
         self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_comment"), old_value)
         cmds.redo()
         self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_comment"), "コメント 2")
+        _emit_witness(
+            "info.comment_jp",
+            "comment_jp_edit",
+            "QTest.edit(attribute=comment_jp_edit, コメント 2)",
+            "InfoPresenter.update_model_info",
+            "Maya attr write and Undo/Redo restored comment_jp",
+        )
 
     def test_root_deletion_and_window_teardown_close_info_session(self):
         presenter = self.window.info_presenter

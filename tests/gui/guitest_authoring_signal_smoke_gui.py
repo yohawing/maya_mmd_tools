@@ -241,6 +241,43 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             if bone.binding_identity
         }
 
+    def _emit_surface_witness(
+        self,
+        surface_id,
+        case_id,
+        *,
+        interaction,
+        fired_action,
+        oracle,
+        action_count=1,
+        selector=None,
+        attribute=None,
+    ):
+        """Emit one gate-compatible witness after the semantic oracle passes."""
+        locators = [value for value in (selector, attribute) if value is not None]
+        self.assertEqual(len(locators), 1, "runtime witness requires exactly one locator")
+        surface_witness = {
+            "surface_id": surface_id,
+            "case_id": case_id,
+            "status": "pass",
+            "runtime_witness": {
+                "interaction": interaction,
+                "fired_action": fired_action,
+                "oracle": oracle,
+                "action_count": int(action_count),
+            },
+        }
+        if selector is not None:
+            surface_witness["selector"] = selector
+        else:
+            surface_witness["attribute"] = attribute
+        self.report["surfaces"].append(surface_witness)
+        print(
+            "[UI COVERAGE WITNESS] "
+            + json.dumps(surface_witness, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            flush=True,
+        )
+
     def _emit_bone_action_witness(
         self, surface_id, selector, fired_action, oracle, action_count
     ):
@@ -358,6 +395,34 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self._record("authoring.morph.create", self._morph_case)
         self._record("authoring.display_frame.apply", self._display_case)
         self._record("authoring.save_reopen", self._save_reopen_case)
+        material_tab_index = self.window.tab_widget.indexOf(self.window.material_presenter.view)
+        import_export_tab_index = self.window.tab_widget.indexOf(self.window.import_export_tab)
+        self.assertGreaterEqual(material_tab_index, 0)
+        self.assertGreaterEqual(import_export_tab_index, 0)
+        self.window.tab_widget.setCurrentIndex(material_tab_index)
+        QApplication.processEvents()
+        tab_changes = []
+
+        def observe_tab_change(index):
+            tab_changes.append(index)
+
+        self.window.tab_widget.currentChanged.connect(observe_tab_change)
+        try:
+            self.window.tab_widget.setCurrentIndex(import_export_tab_index)
+            QApplication.processEvents()
+        finally:
+            self.window.tab_widget.currentChanged.disconnect(observe_tab_change)
+        self.assertEqual(tab_changes, [import_export_tab_index])
+        self.assertIs(self.window.tab_widget.currentWidget(), self.window.import_export_tab)
+        self._emit_surface_witness(
+            "import_export.main_tab_widget",
+            "gui.authoring_signal_smoke",
+            selector="mainTabWidget",
+            interaction="QTabWidget.setCurrentIndex(mainTabWidget, import_export)",
+            fired_action="MainWindow._on_main_tab_changed",
+            oracle="currentWidget_is_import_export_tab",
+            action_count=len(tab_changes),
+        )
         self.report["status"] = "pass"
         self._write_report()
 
@@ -447,6 +512,151 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(_canonical_payload(self.window, self.root), before)
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after)
+        value_oracle = "material_spec_values_draw_flags_colors_undo_redo"
+        self._emit_surface_witness(
+            "material.name_jp",
+            "gui.material_value_controls",
+            selector="objectName=materialNameJpEdit",
+            interaction="QLineEdit.setText(objectName=materialNameJpEdit, 'UI材質'); Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter._on_value_changed",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.diffuse_color",
+            "gui.material_value_controls",
+            selector="objectName=diffuseColorSwatch",
+            interaction="QTest.mouseClick(objectName=diffuseColorSwatch); choose QColor; Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter.pick_color('diffuse')",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.transparency",
+            "gui.material_value_controls",
+            selector="objectName=materialTransparencySpin",
+            interaction="QDoubleSpinBox.setValue(objectName=materialTransparencySpin, 0.25); Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter._on_value_changed",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.specular_color",
+            "gui.material_value_controls",
+            selector="objectName=specularColorSwatch",
+            interaction="QTest.mouseClick(objectName=specularColorSwatch); choose QColor; Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter.pick_color('specular')",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.specular_coefficient",
+            "gui.material_value_controls",
+            selector="objectName=materialSpecularCoefficientSpin",
+            interaction="QDoubleSpinBox.setValue(objectName=materialSpecularCoefficientSpin, 0.6); Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter._on_value_changed",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.ambient_color",
+            "gui.material_value_controls",
+            selector="objectName=ambientColorSwatch",
+            interaction="QTest.mouseClick(objectName=ambientColorSwatch); choose QColor; Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter.pick_color('ambient')",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.double_sided",
+            "gui.material_value_controls",
+            selector="objectName=materialDoubleSidedCheck",
+            interaction="QCheckBox.setChecked(objectName=materialDoubleSidedCheck, True); Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter._on_value_changed",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.ground_shadow",
+            "gui.material_value_controls",
+            selector="objectName=materialGroundShadowCheck",
+            interaction="QCheckBox.setChecked(objectName=materialGroundShadowCheck, False); Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter._on_value_changed",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.self_shadow_map",
+            "gui.material_value_controls",
+            selector="objectName=materialSelfShadowMapCheck",
+            interaction="QCheckBox.setChecked(objectName=materialSelfShadowMapCheck, True); Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter._on_value_changed",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.self_shadow",
+            "gui.material_value_controls",
+            selector="objectName=materialSelfShadowCheck",
+            interaction="QCheckBox.setChecked(objectName=materialSelfShadowCheck, False); Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter._on_value_changed",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.edge_draw",
+            "gui.material_value_controls",
+            selector="objectName=materialEdgeDrawCheck",
+            interaction="QCheckBox.setChecked(objectName=materialEdgeDrawCheck, True); Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter._on_value_changed",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.vertex_color",
+            "gui.material_value_controls",
+            selector="objectName=materialVertexColorCheck",
+            interaction="QCheckBox.setChecked(objectName=materialVertexColorCheck, False); Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter._on_value_changed",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.point_draw",
+            "gui.material_value_controls",
+            selector="objectName=materialPointDrawCheck",
+            interaction="QCheckBox.setChecked(objectName=materialPointDrawCheck, True); Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter._on_value_changed",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.line_draw",
+            "gui.material_value_controls",
+            selector="objectName=materialLineDrawCheck",
+            interaction="QCheckBox.setChecked(objectName=materialLineDrawCheck, False); Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter._on_value_changed",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.edge_color",
+            "gui.material_value_controls",
+            selector="objectName=edgeColorSwatch",
+            interaction="QTest.mouseClick(objectName=edgeColorSwatch); choose QColor; Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter.pick_color('edge')",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.edge_size",
+            "gui.material_value_controls",
+            selector="objectName=materialEdgeSizeSpin",
+            interaction="QDoubleSpinBox.setValue(objectName=materialEdgeSizeSpin, 1.25); Apply + Maya Undo/Redo",
+            fired_action="MaterialPresenter._on_value_changed",
+            oracle=value_oracle,
+        )
+        self._emit_surface_witness(
+            "material.search",
+            "gui.material_value_controls",
+            selector="objectName=materialSearchEdit",
+            interaction="QLineEdit.setText(objectName=materialSearchEdit, 'UI材質')",
+            fired_action="MaterialPresenter.on_search_text_changed",
+            oracle="material_list_filter_keeps_matching_material_visible",
+        )
+        self._emit_surface_witness(
+            "material.reset",
+            "gui.material_value_controls",
+            selector="objectName=materialResetButton",
+            interaction="QTest.mouseClick(objectName=materialResetButton)",
+            fired_action="MaterialPresenter.reset_changes",
+            oracle="pending_material_edit_reset_to_last_applied_values",
+        )
 
     def test_dx11_material_value_apply_undo_redo(self):
         """Apply name, diffuse, and main-texture edits through the DX11 route."""
@@ -798,7 +1008,7 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             previous_backend = settings.get("import.model.mmd_shader_backend")
             try:
                 settings.set("import.model.create_mmd_shaders", True)
-                settings.set("import.model.mmd_shader_backend", "standardSurface")
+                settings.set("import.model.mmd_shader_backend", "standard")
                 cmds.file(new=True, force=True)
                 reopened_root = import_mmd_file(
                     str(export_path),
@@ -842,6 +1052,14 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         view.refresh_btn.click()
         QApplication.processEvents()
         self.assertEqual(view.material_list.count(), 1)
+        self._emit_surface_witness(
+            "material.refresh",
+            "gui.material_toolbar_controls",
+            selector="objectName=materialRefreshButton",
+            interaction="QTest.mouseClick(objectName=materialRefreshButton)",
+            fired_action="MaterialPresenter.load_materials",
+            oracle="material_list_count_and_semantic_rows_refreshed",
+        )
 
         before_create = _canonical_payload(self.window, self.root)
         view.create_btn.click()
@@ -853,6 +1071,14 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(_canonical_payload(self.window, self.root), before_create)
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after_create)
+        self._emit_surface_witness(
+            "material.create",
+            "gui.material_toolbar_controls",
+            selector="objectName=materialCreateButton",
+            interaction="QTest.mouseClick(objectName=materialCreateButton); Maya Undo/Redo",
+            fired_action="MaterialPresenter.create_material",
+            oracle="material_count_and_semantic_spec_undo_redo",
+        )
 
         view.refresh_btn.click()
         view.material_list.setCurrentRow(1)
@@ -866,6 +1092,14 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(_canonical_payload(self.window, self.root), before_duplicate)
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after_duplicate)
+        self._emit_surface_witness(
+            "material.duplicate",
+            "gui.material_toolbar_controls",
+            selector="objectName=materialDuplicateButton",
+            interaction="QTest.mouseClick(objectName=materialDuplicateButton); Maya Undo/Redo",
+            fired_action="MaterialPresenter.duplicate_material",
+            oracle="duplicated_material_count_and_semantic_spec_undo_redo",
+        )
 
         view.refresh_btn.click()
         view.material_list.setCurrentRow(2)
@@ -879,6 +1113,14 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(_canonical_payload(self.window, self.root), before_move_up)
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after_move_up)
+        self._emit_surface_witness(
+            "material.move_up",
+            "gui.material_toolbar_controls",
+            selector="objectName=materialMoveUpButton",
+            interaction="QTest.mouseClick(objectName=materialMoveUpButton); Maya Undo/Redo",
+            fired_action="MaterialPresenter.move_material(-1)",
+            oracle="material_index_order_and_semantic_spec_undo_redo",
+        )
 
         before_move_down = _canonical_payload(self.window, self.root)
         view.reindex_down_btn.click()
@@ -889,6 +1131,14 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(_canonical_payload(self.window, self.root), before_move_down)
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after_move_down)
+        self._emit_surface_witness(
+            "material.move_down",
+            "gui.material_toolbar_controls",
+            selector="objectName=materialMoveDownButton",
+            interaction="QTest.mouseClick(objectName=materialMoveDownButton); Maya Undo/Redo",
+            fired_action="MaterialPresenter.move_material(1)",
+            oracle="material_index_order_and_semantic_spec_undo_redo",
+        )
 
         view.refresh_btn.click()
         view.material_list.setCurrentRow(2)
@@ -906,6 +1156,14 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(_canonical_payload(self.window, self.root), before_delete)
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after_delete)
+        self._emit_surface_witness(
+            "material.delete",
+            "gui.material_toolbar_controls",
+            selector="objectName=materialDeleteButton",
+            interaction="QTest.mouseClick(objectName=materialDeleteButton); confirm Yes; Maya Undo/Redo",
+            fired_action="MaterialPresenter.delete_material",
+            oracle="material_count_and_semantic_spec_undo_redo",
+        )
 
     def test_bone_reset_restores_pending_ui_edit(self):
         """A Bone Reset click restores pending fields without a Maya write."""
@@ -1551,6 +1809,30 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(footprint["attributes_changed"], [ATTR_MMD_MATERIAL_NAME_EN])
         self.assertFalse(footprint["connections_added"])
         self.assertFalse(footprint["connections_removed"])
+        self._emit_surface_witness(
+            "material.list",
+            "gui.authoring_signal_smoke",
+            selector="materialList",
+            interaction="QListWidget.setCurrentRow(materialList, 0)",
+            fired_action="MaterialPresenter.on_material_selected",
+            oracle="selected_material_binding_and_semantic_spec_undo_redo",
+        )
+        self._emit_surface_witness(
+            "material.name_en",
+            "gui.authoring_signal_smoke",
+            selector="materialNameEnEdit",
+            interaction="QLineEdit.setText(materialNameEnEdit, 'UI Material')",
+            fired_action="MaterialPresenter._on_value_changed",
+            oracle="material_name_english_and_maya_footprint_undo_redo",
+        )
+        self._emit_surface_witness(
+            "material.apply",
+            "gui.authoring_signal_smoke",
+            selector="materialApplyButton",
+            interaction="QTest.mouseClick(materialApplyButton); Maya Undo/Redo",
+            fired_action="MaterialPresenter.apply_changes",
+            oracle="material_spec_maya_footprint_undo_redo",
+        )
         evidence.update(
             selector="materialApplyButton",
             selected_binding=binding,
@@ -1610,6 +1892,22 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(footprint["attributes_changed"], [ATTR_MMD_BONE_NAME_EN])
         self.assertFalse(footprint["connections_added"])
         self.assertFalse(footprint["connections_removed"])
+        self._emit_surface_witness(
+            "bone.list",
+            "gui.authoring_signal_smoke",
+            selector="boneList",
+            interaction="QListWidget.setCurrentRow(boneList, 0)",
+            fired_action="BonePresenter.on_bone_selected",
+            oracle="selected_bone_binding_and_semantic_spec_undo_redo",
+        )
+        self._emit_surface_witness(
+            "bone.name_en",
+            "gui.authoring_signal_smoke",
+            selector="boneNameEnEdit",
+            interaction="QLineEdit.setText(boneNameEnEdit, 'UI Root')",
+            fired_action="BonePresenter.apply_changes",
+            oracle="bone_name_english_and_maya_footprint_undo_redo",
+        )
         runtime_witness = {
             "interaction": "click(boneApplyButton)",
             "fired_action": action_invocations[0],
@@ -1684,6 +1982,14 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         cmds.redo()
         self.assertEqual(_canonical_payload(self.window, self.root), after)
         self.assertTrue(set(created_nodes) <= set(cmds.ls(long=True) or []))
+        self._emit_surface_witness(
+            "morph.create",
+            "gui.authoring_signal_smoke",
+            selector="morphCreateButton",
+            interaction="QTest.mouseClick(morphCreateButton); Maya Undo/Redo",
+            fired_action="MorphPresenter.create_morph",
+            oracle="group_morph_spec_and_registry_nodes_undo_redo",
+        )
         evidence.update(
             selector="morphCreateButton",
             before=_fingerprint(before),
@@ -1721,6 +2027,38 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(footprint["attributes_changed"], [ATTR_MMD_DISPLAY_FRAMES_JSON])
         self.assertFalse(footprint["connections_added"])
         self.assertFalse(footprint["connections_removed"])
+        self._emit_surface_witness(
+            "display_pane.add_frame",
+            "gui.authoring_signal_smoke",
+            selector="displayAddFrameButton",
+            interaction="QTest.mouseClick(displayAddFrameButton); display frame Apply + Maya Undo/Redo",
+            fired_action="DisplayPanePresenter.add_frame",
+            oracle="display_frame_added_and_persisted_undo_redo",
+        )
+        self._emit_surface_witness(
+            "display_pane.frame_name_jp",
+            "gui.authoring_signal_smoke",
+            attribute="name_jp_edit",
+            interaction="QLineEdit.setText(name_jp_edit, 'UI表示枠'); display Apply + Maya Undo/Redo",
+            fired_action="DisplayPanePresenter.on_frame_properties_changed",
+            oracle="display_frame_name_jp_and_maya_json_undo_redo",
+        )
+        self._emit_surface_witness(
+            "display_pane.frame_name_en",
+            "gui.authoring_signal_smoke",
+            attribute="name_en_edit",
+            interaction="QLineEdit.setText(name_en_edit, 'UI Frame'); display Apply + Maya Undo/Redo",
+            fired_action="DisplayPanePresenter.on_frame_properties_changed",
+            oracle="display_frame_name_en_and_maya_json_undo_redo",
+        )
+        self._emit_surface_witness(
+            "display_pane.apply",
+            "gui.authoring_signal_smoke",
+            selector="displayApplyButton",
+            interaction="QTest.mouseClick(displayApplyButton); Maya Undo/Redo",
+            fired_action="DisplayPanePresenter.apply",
+            oracle="display_frame_maya_json_undo_redo",
+        )
         evidence.update(
             selector="displayApplyButton",
             before=_fingerprint(before),

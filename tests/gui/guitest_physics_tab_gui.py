@@ -4,6 +4,7 @@ These tests run only with a real Qt application. Scene collection and Maya
 selection behavior remain covered by the presenter unit tests.
 """
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +26,35 @@ from mmd_tools.ui.translations import UITranslator
 
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
+
+
+PHYSICS_SURFACE_LOCATORS = {
+    "physics.list_selector": ("attribute", "list_tabs"),
+    "physics.rigid_list": ("selector", "objectName=rigidBodyList"),
+    "physics.joint_list": "objectName=jointList",
+    "physics.apply": "objectName=physicsApplyButton",
+    "physics.reset": "objectName=physicsResetButton",
+    "physics.rigid_name": "objectName=physicsRigidNameEdit",
+    "physics.rigid_name_english": "objectName=physicsRigidNameEnglishEdit",
+    "physics.rigid_shape": "objectName=physicsRigidShapeCombo",
+    "physics.rigid_physics_mode": "objectName=physicsRigidPhysicsModeCombo",
+    "physics.rigid_collision_group": "objectName=physicsRigidCollisionGroupSpin",
+    "physics.rigid_collision_mask": "objectName=physicsRigidCollisionMaskEdit",
+    "physics.rigid_mass": "objectName=physicsRigidMassEdit",
+    "physics.rigid_linear_damping": "objectName=physicsRigidLinearDampingEdit",
+    "physics.rigid_angular_damping": "objectName=physicsRigidAngularDampingEdit",
+    "physics.rigid_restitution": "objectName=physicsRigidRestitutionEdit",
+    "physics.rigid_friction": "objectName=physicsRigidFrictionEdit",
+    "physics.joint_name": "objectName=physicsJointNameEdit",
+    "physics.joint_name_english": "objectName=physicsJointNameEnglishEdit",
+    "physics.joint_type": "objectName=physicsJointTypeCombo",
+    "physics.joint_translation_min": "objectName=physicsJointTranslationMinEdit",
+    "physics.joint_translation_max": "objectName=physicsJointTranslationMaxEdit",
+    "physics.joint_rotation_min": "objectName=physicsJointRotationMinEdit",
+    "physics.joint_rotation_max": "objectName=physicsJointRotationMaxEdit",
+    "physics.joint_spring_translation": "objectName=physicsJointSpringTranslationEdit",
+    "physics.joint_spring_rotation": "objectName=physicsJointSpringRotationEdit",
+}
 
 
 def _import_fixture(path, namespace):
@@ -66,6 +96,37 @@ def _assert_mapping_almost_equal(test, actual, expected, fields):
 @requires_gui
 class TestPhysicsTabGUI(GuiTestBase):
     """Lock the Physics tab widget contract."""
+
+    @staticmethod
+    def _emit_surface_witness(surface_id, interaction, fired_action, oracle, action_count=1):
+        """Emit one manifest-addressable witness after its semantic oracle passes."""
+        locator = PHYSICS_SURFACE_LOCATORS[surface_id]
+        if isinstance(locator, tuple):
+            locator_key, locator_value = locator
+        else:
+            locator_key, locator_value = "selector", locator
+        payload = {
+            "surface_id": surface_id,
+            "case_id": "gui.physics_tab",
+            locator_key: locator_value,
+            "status": "pass",
+            "runtime_witness": {
+                "interaction": interaction,
+                "fired_action": fired_action,
+                "oracle": oracle,
+                "action_count": int(action_count),
+            },
+        }
+        print(
+            "[UI COVERAGE WITNESS] "
+            + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            flush=True,
+        )
+
+    @staticmethod
+    def _surface_selector(surface_id):
+        locator = PHYSICS_SURFACE_LOCATORS[surface_id]
+        return locator[1] if isinstance(locator, tuple) else locator
 
     def test_shell_structure_and_defaults(self):
         tab = PhysicsTab()
@@ -315,6 +376,12 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertTrue(tab.physics_details_content.isEnabled())
             self.assertTrue(tab.apply_btn.isEnabled())
             self.assertTrue(tab.reset_btn.isEnabled())
+            self._emit_surface_witness(
+                "physics.rigid_list",
+                "QTest.setCurrentRow(objectName=rigidBodyList, 0)",
+                "PhysicsPresenter._on_rigid_body_selected",
+                "rigid body details enabled for the selected Maya collider",
+            )
             for button in (tab.create_btn, tab.duplicate_btn, tab.delete_btn):
                 self.assertTrue(button.isHidden())
             rigid_shape = _shape_from_item(tab.rigid_body_list.currentItem())
@@ -362,6 +429,32 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertGreater(
                 cmds.getAttr(f"{rigid_shape}.outDescriptorVersion"), rigid_version_before
             )
+            self._emit_surface_witness(
+                "physics.apply",
+                "QTest.mouseClick(objectName=physicsApplyButton, Qt.LeftButton)",
+                "PhysicsPresenter.apply_changes",
+                "all edited rigid-body attrs and descriptor version updated in Maya",
+            )
+            for surface_id, field in (
+                ("physics.rigid_name", "nameJp"),
+                ("physics.rigid_name_english", "nameEn"),
+                ("physics.rigid_shape", "shapeType"),
+                ("physics.rigid_physics_mode", "physicsMode"),
+                ("physics.rigid_collision_group", "collisionGroup"),
+                ("physics.rigid_collision_mask", "collisionMask"),
+                ("physics.rigid_mass", "mass"),
+                ("physics.rigid_linear_damping", "linearDamping"),
+                ("physics.rigid_angular_damping", "angularDamping"),
+                ("physics.rigid_restitution", "restitution"),
+                ("physics.rigid_friction", "friction"),
+            ):
+                self._emit_surface_witness(
+                    surface_id,
+                    "QTest.edit(%s); QTest.mouseClick(objectName=physicsApplyButton, Qt.LeftButton)"
+                    % self._surface_selector(surface_id),
+                    "PhysicsPresenter.apply_changes",
+                    f"Maya rigid-body attr {field} equals the edited semantic value",
+                )
 
             cmds.undo()
             for attr, expected in rigid_original.items():
@@ -396,8 +489,21 @@ class TestPhysicsTabGUI(GuiTestBase):
                 self.assertAlmostEqual(actual, expected, places=5)
 
             tab.list_tabs.setCurrentIndex(1)
+            QApplication.processEvents()
+            self._emit_surface_witness(
+                "physics.list_selector",
+                "QTest.setCurrentIndex(attribute=list_tabs, 1)",
+                "PhysicsPresenter._on_list_tab_changed",
+                "joint list tab selected and joint form route activated",
+            )
             tab.joint_list.setCurrentRow(0)
             QApplication.processEvents()
+            self._emit_surface_witness(
+                "physics.joint_list",
+                "QTest.setCurrentRow(objectName=jointList, 0)",
+                "PhysicsPresenter._on_joint_selected",
+                "joint details loaded for the selected Maya physics joint",
+            )
             joint_shape = _shape_from_item(tab.joint_list.currentItem())
             joint_attrs = (
                 "nameJp", "nameEn", "jointType",
@@ -450,6 +556,12 @@ class TestPhysicsTabGUI(GuiTestBase):
                 ),
             ):
                 self.assertAlmostEqual(actual, expected, places=5)
+            self._emit_surface_witness(
+                "physics.reset",
+                "QTest.mouseClick(objectName=physicsResetButton, Qt.LeftButton)",
+                "PhysicsPresenter.reset_changes",
+                "joint translation limits restored from the selected Maya node",
+            )
             tab.joint_name_edit.setText("UI編集ジョイント")
             tab.joint_name_english_edit.setText("UIEditedJoint")
             tab.joint_type_combo.setCurrentIndex(2)
@@ -480,6 +592,24 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertGreater(
                 cmds.getAttr(f"{joint_shape}.outDescriptorVersion"), joint_version_before
             )
+            for surface_id, field in (
+                ("physics.joint_name", "nameJp"),
+                ("physics.joint_name_english", "nameEn"),
+                ("physics.joint_type", "jointType"),
+                ("physics.joint_translation_min", "translationLimitMin"),
+                ("physics.joint_translation_max", "translationLimitMax"),
+                ("physics.joint_rotation_min", "rotationLimitMin"),
+                ("physics.joint_rotation_max", "rotationLimitMax"),
+                ("physics.joint_spring_translation", "springTranslation"),
+                ("physics.joint_spring_rotation", "springRotation"),
+            ):
+                self._emit_surface_witness(
+                    surface_id,
+                    "QTest.edit(%s); QTest.mouseClick(objectName=physicsApplyButton, Qt.LeftButton)"
+                    % self._surface_selector(surface_id),
+                    "PhysicsPresenter.apply_changes",
+                    f"Maya joint attr {field} equals the edited semantic value",
+                )
             cmds.undo()
             for attr, expected in joint_original.items():
                 actual = cmds.getAttr(f"{joint_shape}.{attr}")

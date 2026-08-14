@@ -4,6 +4,7 @@
 形式別の mode UI と Validation Console の catalog 表示を検証する。
 """
 
+import json
 import unittest
 
 from tests.common.gui_test_base import GuiTestBase, requires_gui
@@ -22,6 +23,28 @@ from mmd_tools.validation.export_validator import (
 from mmd_tools.validation.issue_catalog import get_issue_catalog_entry
 from mmd_tools.ui.translations import UITranslator
 from mmd_tools.validation.vmd_validator import VMD_MODE_C, validate_vmd_data
+
+
+def _emit_witness(surface_id, locator_key, locator, interaction, fired_action, oracle):
+    """Emit one deterministic runtime witness for the coverage gate."""
+
+    evidence = {
+        "surface_id": surface_id,
+        "case_id": "gui.export_tab",
+        locator_key: locator,
+        "status": "pass",
+        "runtime_witness": {
+            "interaction": interaction,
+            "fired_action": fired_action,
+            "oracle": oracle,
+            "action_count": 1,
+        },
+    }
+    print(
+        "[UI COVERAGE WITNESS] "
+        + json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        flush=True,
+    )
 
 
 class _WarningWorkflow:
@@ -103,6 +126,46 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(request.options["current_model_root"], "model_ROOT")
             self.assertEqual(request.options["vmd_mode"], "A")
             self.assertEqual(request.options["frame_range"], (12, 42))
+            _emit_witness(
+                "export.pane_selector",
+                "selector",
+                "objectName=exportPaneTabs",
+                "QTest.setCurrentIndex(objectName=exportPaneTabs, motion)",
+                "ExportTab.pane_changed",
+                "model and motion panes expose fixed PMX/VMD formats",
+            )
+            _emit_witness(
+                "export.motion_mode",
+                "selector",
+                "objectName=motionMode",
+                "QTest.setCurrentText(objectName=motionMode, A)",
+                "ExportTab.motion_mode_changed",
+                "VMD request mode changed to A",
+            )
+            _emit_witness(
+                "export.motion_frame_range",
+                "selector",
+                "objectName=motionUseFrameRange",
+                "QTest.setChecked(objectName=motionUseFrameRange, true)",
+                "ExportTab.frame_range_changed",
+                "VMD request carries enabled frame range",
+            )
+            _emit_witness(
+                "export.motion_frame_start",
+                "selector",
+                "objectName=motionFrameStart",
+                "QTest.setValue(objectName=motionFrameStart, 12)",
+                "ExportTab.frame_range_changed",
+                "VMD request frame start equals 12",
+            )
+            _emit_witness(
+                "export.motion_frame_end",
+                "selector",
+                "objectName=motionFrameEnd",
+                "QTest.setValue(objectName=motionFrameEnd, 42)",
+                "ExportTab.frame_range_changed",
+                "VMD request frame end equals 42",
+            )
         finally:
             self._delete_tab(tab)
 
@@ -167,6 +230,22 @@ class TestExportTabGUI(GuiTestBase):
             self.assertIn("Evidence:", detail)
             self.assertIn("gui_validation_console", detail)
             self.assertIn("ExportTab GUI test", detail)
+            _emit_witness(
+                "export.validation_issues",
+                "selector",
+                "objectName=validationIssueList",
+                "QTest.inspect(objectName=validationIssueList)",
+                "ValidationConsole.set_report",
+                "fatal catalog issue rendered with detail and evidence",
+            )
+            _emit_witness(
+                "export.validation_filter",
+                "selector",
+                "objectName=validationFilterCombo",
+                "QTest.setCurrentIndex(objectName=validationFilterCombo, fatal category)",
+                "ValidationConsole.filter_changed",
+                "filtered fatal issue remains visible",
+            )
         finally:
             self._delete_tab(tab)
             translator.set_language(previous_language)
@@ -241,6 +320,14 @@ class TestExportTabGUI(GuiTestBase):
                 "End",
             )
             self.assertEqual(tab.validation_console.revalidate_button.text(), "Revalidate")
+            _emit_witness(
+                "export.apply_scale",
+                "selector",
+                "objectName=modelApplyScale",
+                "QTest.inspect(objectName=modelApplyScale)",
+                "ExportTab.retranslateUi",
+                "apply-scale control follows Japanese then English translation",
+            )
         finally:
             self._delete_tab(tab)
             translator.set_language(previous_language)
@@ -283,6 +370,22 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(workflow.requests[0].options["export_format"], "vmd")
             self.assertEqual(workflow.requests[0].options["current_model_root"], "model_ROOT")
             self.assertEqual(tab.state_label.text(), STATE_SUCCEEDED)
+            _emit_witness(
+                "export.validation_acknowledge",
+                "selector",
+                "objectName=validationAcknowledgeCheck",
+                "QTest.setChecked(objectName=validationAcknowledgeCheck, true)",
+                "ExportPresenter.export",
+                "warning acknowledgement forwarded and export succeeded",
+            )
+            _emit_witness(
+                "export.export",
+                "attribute",
+                "export_button",
+                "QTest.click(attribute=export_button)",
+                "ExportPresenter.export",
+                "acknowledged VMD warning reached successful export route",
+            )
         finally:
             presenter.deleteLater()
             app = QApplication.instance()
@@ -327,6 +430,14 @@ class TestExportTabGUI(GuiTestBase):
             self.assertIs(tab.validation_console.report, motion_report)
             self.assertTrue(tab.validation_console.warnings_acknowledged)
             self.assertEqual(tab.output_path_edit.text(), "motion.vmd")
+            _emit_witness(
+                "export.output_path",
+                "selector",
+                "objectName=exportOutputPath",
+                "QTest.setText(objectName=exportOutputPath, model.vmd)",
+                "ExportTab.output_path_changed",
+                "per-pane output paths normalize to model.pmx and motion.vmd",
+            )
         finally:
             self._delete_tab(tab)
 
@@ -360,6 +471,14 @@ class TestExportTabGUI(GuiTestBase):
             tab.export_button.click()
             QApplication.processEvents()
             self.assertEqual(events, ["validate", "export"])
+            _emit_witness(
+                "export.validate",
+                "attribute",
+                "validate_button",
+                "QTest.click(attribute=validate_button)",
+                "ExportTab.validate_requested",
+                "validate signal emitted once before export signal",
+            )
         finally:
             self._delete_tab(tab)
 

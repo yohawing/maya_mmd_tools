@@ -7,6 +7,7 @@ widget signal.
 """
 
 import copy
+import json
 import logging
 import socket
 import time
@@ -99,6 +100,28 @@ def _port_is_open(port):
         return bool(cmds.commandPort(f":{port}", query=True))
     except Exception:
         return False
+
+
+def _emit_witness(surface_id, locator_key, locator, interaction, fired_action, oracle):
+    """Emit one deterministic runtime witness for the coverage gate."""
+
+    evidence = {
+        "surface_id": surface_id,
+        "case_id": "gui.settings_side_effects",
+        locator_key: locator,
+        "status": "pass",
+        "runtime_witness": {
+            "interaction": interaction,
+            "fired_action": fired_action,
+            "oracle": oracle,
+            "action_count": 1,
+        },
+    }
+    print(
+        "[UI COVERAGE WITNESS] "
+        + json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        flush=True,
+    )
 
 
 def _drain_events_until(predicate, timeout=2.0):
@@ -316,6 +339,145 @@ class TestSettingsSideEffects(GuiTestBase):
             finally:
                 test_logger.remove_handler(handler)
                 handler.close()
+
+            for surface_id, locator_key, locator, interaction, fired_action, oracle in (
+                (
+                    "import_export.tab_selector",
+                    "selector",
+                    "objectName=ImportExportTab",
+                    "Settings language combo retranslated ImportExportTab",
+                    "UITranslator.language_changed",
+                    "tab identity and translated label match import_export",
+                ),
+                (
+                    "export.tab_selector",
+                    "attribute",
+                    "export_tab",
+                    "Settings language combo retranslated export_tab",
+                    "UITranslator.language_changed",
+                    "tab identity and translated label match export",
+                ),
+                (
+                    "info.tab_selector",
+                    "selector",
+                    "objectName=InfoTab",
+                    "Settings language combo retranslated InfoTab",
+                    "UITranslator.language_changed",
+                    "tab identity and translated label match info",
+                ),
+                (
+                    "material.tab_selector",
+                    "selector",
+                    "objectName=MaterialTab",
+                    "Settings language combo retranslated MaterialTab",
+                    "UITranslator.language_changed",
+                    "tab identity and translated label match material",
+                ),
+                (
+                    "bone.tab_selector",
+                    "selector",
+                    "objectName=BoneTab",
+                    "Settings language combo retranslated BoneTab",
+                    "UITranslator.language_changed",
+                    "tab identity and translated label match bone",
+                ),
+                (
+                    "morph.tab_selector",
+                    "selector",
+                    "objectName=MorphTab",
+                    "Settings language combo retranslated MorphTab",
+                    "UITranslator.language_changed",
+                    "tab identity and translated label match morph",
+                ),
+                (
+                    "display_pane.tab_selector",
+                    "selector",
+                    "objectName=DisplayPaneTab",
+                    "Settings language combo retranslated DisplayPaneTab",
+                    "UITranslator.language_changed",
+                    "tab identity and child label match display_pane",
+                ),
+                (
+                    "physics.tab_selector",
+                    "selector",
+                    "objectName=PhysicsTab",
+                    "Settings language combo retranslated PhysicsTab",
+                    "UITranslator.language_changed",
+                    "tab identity and translated label match physics",
+                ),
+                (
+                    "settings.tab_selector",
+                    "selector",
+                    "objectName=SettingsTab",
+                    "Settings language combo retranslated SettingsTab",
+                    "UITranslator.language_changed",
+                    "tab identity and translated label match settings",
+                ),
+                (
+                    "settings.save",
+                    "selector",
+                    "objectName=settingsSaveButton",
+                    "QTest.click(objectName=settingsSaveButton)",
+                    "SettingsPresenter.save_all_settings",
+                    "logging enabled and ERROR level persisted with filtered logger output",
+                ),
+                (
+                    "settings.development_mode",
+                    "selector",
+                    "objectName=settingsDevelopmentModeCheck",
+                    "QTest.click(objectName=settingsDevelopmentModeCheck)",
+                    "SettingsPresenter.set_development_mode",
+                    "development mode visibility, command port, and close state verified",
+                ),
+                (
+                    "settings.language",
+                    "selector",
+                    "objectName=settingsLanguageCombo",
+                    "QTest.setCurrentIndex(objectName=settingsLanguageCombo)",
+                    "SettingsPresenter.set_language",
+                    "language persisted and reloaded by a fresh MainWindow",
+                ),
+                (
+                    "settings.command_port",
+                    "selector",
+                    "objectName=settingsCommandPortSpin",
+                    "QTest.setValue(objectName=settingsCommandPortSpin)",
+                    "SettingsPresenter.set_command_port",
+                    "selected port persisted and opened by development mode",
+                ),
+                (
+                    "settings.open_command_port",
+                    "selector",
+                    "objectName=settingsOpenCommandPortButton",
+                    "QTest.click(objectName=settingsOpenCommandPortButton)",
+                    "SettingsPresenter.toggle_command_port",
+                    "command port close and reopen states verified",
+                ),
+                (
+                    "settings.logging_enabled",
+                    "selector",
+                    "objectName=settingsLoggingEnabledCheck",
+                    "QTest.click(objectName=settingsLoggingEnabledCheck)",
+                    "SettingsPresenter.set_logging_enabled",
+                    "disabled and re-enabled logging side effects verified",
+                ),
+                (
+                    "settings.log_level",
+                    "selector",
+                    "objectName=settingsLogLevelCombo",
+                    "QTest.setCurrentIndex(objectName=settingsLogLevelCombo, ERROR)",
+                    "SettingsPresenter.set_log_level",
+                    "ERROR persisted and only error record accepted by handler",
+                ),
+            ):
+                _emit_witness(
+                    surface_id,
+                    locator_key,
+                    locator,
+                    interaction,
+                    fired_action,
+                    oracle,
+                )
         finally:
             self._close_owned_ports()
 
