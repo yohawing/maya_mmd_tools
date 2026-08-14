@@ -937,6 +937,120 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             edited_name,
         )
 
+    def test_material_pending_edit_switches_models_without_cross_root_cache(self):
+        """Model switching discards A's draft and routes one Apply only to B."""
+        presenter = self.window.material_presenter
+        view = presenter.view
+        composition = self.window.authoring_composition
+        coordinator = composition.coordinator
+        root_a = self.root
+        root_b = composition.model_initializer.create(
+            "pmx20-basic-v1", "Isolation B JP", "Isolation B EN"
+        ).root
+        mesh_shapes_b = cmds.listRelatives(
+            root_b, allDescendents=True, fullPath=True, type="mesh"
+        ) or []
+        self.assertGreaterEqual(len(mesh_shapes_b), 1)
+        mesh_parents_b = []
+        for index, shape in enumerate(mesh_shapes_b):
+            mesh_parents_b.append(cmds.listRelatives(shape, parent=True, fullPath=True)[0])
+            cmds.rename(shape, f"materialIsolationBMeshShape{index}")
+        for index, parent in enumerate(dict.fromkeys(mesh_parents_b)):
+            cmds.rename(parent, f"materialIsolationBMesh{index}")
+        self.window.tab_widget.setCurrentWidget(view)
+        self.window.app_state.refresh_model_list()
+        available = self.window.app_state.available_models
+        self.assertIn(root_a, available)
+        self.assertIn(root_b, available)
+        presenter.load_materials()
+        QApplication.processEvents()
+
+        def select_model(root):
+            cmds.select(root, replace=True)
+            self.assertTrue(self.window.app_state.select_model_from_maya_selection())
+            QApplication.processEvents()
+            self.assertEqual(self.window.app_state.current_model_root, root)
+
+        select_model(root_a)
+        view.material_list.setCurrentRow(0)
+        QApplication.processEvents()
+        material_a = coordinator.read_spec(root_a).materials[0]
+        before_a_name = material_a.name_english
+        projection_a = presenter._material_list_projection
+        self.assertEqual(projection_a.root_identity, root_a)
+        self.assertEqual(presenter.current_material, material_a.binding_identity)
+        self.assertEqual(
+            presenter.material_data["_authoring_material"]["binding_identity"],
+            material_a.binding_identity,
+        )
+
+        pending_a_name = "Pending Model A Material"
+        view.material_en_name_edit.setText(pending_a_name)
+        QApplication.processEvents()
+        self.assertTrue(presenter.has_unsaved_changes)
+
+        select_model(root_b)
+        view.material_list.setCurrentRow(0)
+        QApplication.processEvents()
+        material_b = coordinator.read_spec(root_b).materials[0]
+        before_b_name = material_b.name_english
+        projection_b = presenter._material_list_projection
+        self.assertIsNot(projection_b, projection_a)
+        self.assertEqual(projection_b.root_identity, root_b)
+        self.assertEqual(presenter.current_material, material_b.binding_identity)
+        self.assertEqual(presenter.current_material_index, material_b.index)
+        self.assertEqual(
+            presenter.material_data["_authoring_material"]["binding_identity"],
+            material_b.binding_identity,
+        )
+        self.assertEqual(view.material_en_name_edit.text(), before_b_name)
+        self.assertFalse(presenter.has_unsaved_changes)
+
+        edited_b_name = "Only Model B Material"
+        view.material_en_name_edit.setText(edited_b_name)
+        with patch.object(
+            coordinator,
+            "apply_material_value_patch",
+            wraps=coordinator.apply_material_value_patch,
+        ) as apply_action:
+            QTest.mouseClick(view.apply_btn, Qt.LeftButton)
+            QApplication.processEvents()
+            self.assertEqual(apply_action.call_count, 1)
+
+        self.assertEqual(
+            coordinator.read_spec(root_a).materials[0].name_english,
+            before_a_name,
+        )
+        self.assertEqual(
+            coordinator.read_spec(root_b).materials[0].name_english,
+            edited_b_name,
+        )
+        cmds.undo()
+        self.assertEqual(
+            coordinator.read_spec(root_b).materials[0].name_english,
+            before_b_name,
+        )
+        cmds.redo()
+        self.assertEqual(
+            coordinator.read_spec(root_b).materials[0].name_english,
+            edited_b_name,
+        )
+
+        select_model(root_a)
+        view.material_list.setCurrentRow(0)
+        QApplication.processEvents()
+        projection_a_reselected = presenter._material_list_projection
+        self.assertIsNot(projection_a_reselected, projection_b)
+        self.assertEqual(projection_a_reselected.root_identity, root_a)
+        self.assertEqual(presenter.current_material, material_a.binding_identity)
+        self.assertEqual(presenter.current_material_index, material_a.index)
+        self.assertEqual(
+            presenter.material_data["_authoring_material"]["binding_identity"],
+            material_a.binding_identity,
+        )
+        self.assertEqual(view.material_en_name_edit.text(), before_a_name)
+        self.assertNotEqual(view.material_en_name_edit.text(), pending_a_name)
+
 
 
 
