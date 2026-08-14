@@ -659,6 +659,15 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 "apply_material_value_patch received binding-sensitive fields"
             )
+        native_patch = getattr(self._materials, "try_apply_native_material_value_patch", None)
+        if route == "value" and outline_enabled is None and callable(native_patch):
+            native_result = native_patch(model_root, previous, material)
+            if native_result is not None:
+                if not isinstance(native_result, MmdMaterialSpec):
+                    raise MayaModelAuthoringCoordinatorError(
+                        "native material value patch returned an invalid material"
+                    )
+                return native_result
         structural_patch = getattr(self._materials, "apply_material_value_patch", None)
         outline_patch = getattr(self._materials, "apply_material_outline", None)
         if not callable(structural_patch):

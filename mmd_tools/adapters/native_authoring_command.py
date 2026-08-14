@@ -9,7 +9,10 @@ from typing import Any, Dict, Iterable, Mapping
 
 COMMAND_SET_ATTRS = "mmdAuthoringSetAttrs"
 COMMAND_SET_MORPH_WEIGHTS = "mmdAuthoringSetMorphWeights"
-_ALLOWED_COMMANDS = frozenset((COMMAND_SET_ATTRS, COMMAND_SET_MORPH_WEIGHTS))
+COMMAND_SET_MATERIAL_VALUES = "mmdAuthoringSetMaterialValues"
+_ALLOWED_COMMANDS = frozenset(
+    (COMMAND_SET_ATTRS, COMMAND_SET_MORPH_WEIGHTS, COMMAND_SET_MATERIAL_VALUES)
+)
 _PROTOCOL_VERSION = 1
 
 
@@ -56,6 +59,26 @@ def _finite_number(value: Any) -> bool:
         return False
 
 
+def _material_readback_matches(expected: Any, actual: Any) -> bool:
+    """Compare native canonical storage without accepting malformed JSON values."""
+    if type(expected) in (str, bool, int):
+        return type(actual) is type(expected) and actual == expected
+    if type(expected) is float:
+        return _finite_number(actual) and math.isclose(
+            float(actual), expected, rel_tol=1.0e-6, abs_tol=1.0e-7
+        )
+    if isinstance(expected, (list, tuple)):
+        return (
+            isinstance(actual, list)
+            and len(actual) == len(expected)
+            and all(
+                _material_readback_matches(expected_item, actual_item)
+                for expected_item, actual_item in zip(expected, actual)
+            )
+        )
+    return False
+
+
 class NativeAuthoringCommandGateway:
     """Invoke only explicitly allowlisted native commands with JSON payloads."""
 
@@ -65,7 +88,8 @@ class NativeAuthoringCommandGateway:
     def execute(self, command: str, payload: Mapping[str, Any]) -> Dict[str, Any]:
         if command not in _ALLOWED_COMMANDS:
             raise ValueError(f"Native Authoring command is not allowlisted: {command}")
-        if not self._cmds.command_exists(command):
+        command_exists = getattr(self._cmds, "command_exists", None)
+        if not callable(command_exists) or not command_exists(command):
             raise NativeCommandUnavailable(f"Native Authoring command is unavailable: {command}")
         request = dict(payload)
         request["version"] = _PROTOCOL_VERSION
@@ -121,5 +145,47 @@ class NativeAuthoringCommandGateway:
         ):
             raise NativeCommandProtocolError(
                 "Native morph command returned invalid canonical values"
+            )
+        return result
+
+    def set_material_values(
+        self,
+        root: str,
+        shader: str,
+        material_index: int,
+        updates: Iterable[Mapping[str, Any]],
+    ) -> Dict[str, Any]:
+        """Write one Python-expanded semantic Material value patch."""
+        request_updates = [dict(update) for update in updates]
+        result = self.execute(
+            COMMAND_SET_MATERIAL_VALUES,
+            {
+                "root": root,
+                "shader": shader,
+                "material_index": material_index,
+                "updates": request_updates,
+            },
+        )
+        fields = result.get("fields")
+        plugs = result.get("plugs")
+        values = result.get("values")
+        expected_fields = [update.get("field") for update in request_updates]
+        if (
+            not isinstance(fields, list)
+            or fields != expected_fields
+            or len(set(fields)) != len(fields)
+            or not isinstance(plugs, list)
+            or len(plugs) != len(fields)
+            or len(set(plugs)) != len(plugs)
+            or not all(isinstance(plug, str) and plug for plug in plugs)
+            or not isinstance(values, list)
+            or len(values) != len(fields)
+            or not all(
+                _material_readback_matches(update.get("value"), value)
+                for update, value in zip(request_updates, values)
+            )
+        ):
+            raise NativeCommandProtocolError(
+                "Native material value command returned invalid canonical values"
             )
         return result

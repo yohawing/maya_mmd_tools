@@ -77,6 +77,7 @@ set(SOURCES
     MmdAuthoringCommandSupport.cpp
     MmdAuthoringMorphBindingQuery.cpp
     MmdAuthoringMorphWeightCommand.cpp
+    MmdAuthoringMaterialValueCommand.cpp
 )
 
 set(HEADERS
@@ -96,6 +97,7 @@ set(HEADERS
     MmdAuthoringCommandSupport.h
     MmdAuthoringMorphBindingQuery.h
     MmdAuthoringMorphWeightCommand.h
+    MmdAuthoringMaterialValueCommand.h
 )
 
 add_library(mmd_tools_cpp SHARED ${SOURCES} ${HEADERS})

@@ -46,6 +46,10 @@ from mmd_tools.core.constants import (
     ATTR_MMD_TOON_TEXTURE_INDEX,
 )
 from mmd_tools.core.model_authoring_spec import MmdMaterialSpec, MmdModelAuthoringSpec
+from mmd_tools.adapters.native_authoring_command import (
+    NativeAuthoringCommandGateway,
+    NativeCommandUnavailable,
+)
 
 
 REGISTRY_CATEGORY_MATERIAL = "material"
@@ -90,6 +94,7 @@ class MayaMaterialAuthoring:
         *,
         runtime_rebuilders: Mapping[str, Any] | None = None,
         native_queue_reindexer: Any | None = None,
+        native_authoring_gateway: Any | None = None,
     ) -> None:
         self._cmds = cmds_adapter
         self._registry = registry_api
@@ -98,6 +103,11 @@ class MayaMaterialAuthoring:
         else:
             self._runtime_rebuilders = dict(runtime_rebuilders)
         self._native_queue_reindexer = native_queue_reindexer
+        self._native_authoring_gateway = (
+            native_authoring_gateway
+            if native_authoring_gateway is not None
+            else NativeAuthoringCommandGateway(cmds_adapter)
+        )
 
     def create_material(
         self,
@@ -235,6 +245,105 @@ class MayaMaterialAuthoring:
             )
         self._write_material_value_attrs(binding, old_material, new_material)
         return new_material
+
+    def try_apply_native_material_value_patch(
+        self,
+        model_root: str,
+        old_material: MmdMaterialSpec,
+        new_material: MmdMaterialSpec,
+    ) -> MmdMaterialSpec | None:
+        """Use the dedicated native command, or return ``None`` when unavailable.
+
+        Python retains semantic classification, binding resolution, shader
+        route policy, and fixed write-set expansion.  A registered command
+        failure is deliberately propagated and never falls back after a
+        possibly attempted mutation.
+        """
+        mode = os.environ.get("MMD_AUTHORING_MATERIAL_VALUE_MODE", "auto").strip().lower()
+        if mode not in {"auto", "native", "python"}:
+            raise MayaMaterialAuthoringError(
+                "MMD_AUTHORING_MATERIAL_VALUE_MODE must be auto, native, or python"
+            )
+        if mode == "python":
+            return None
+        root = self._require_root(model_root)
+        self._require_material(old_material)
+        self._require_material(new_material)
+        if classify_material_change(old_material, new_material) != "value":
+            raise MayaMaterialAuthoringError("native material value command requires a value patch")
+        binding = old_material.binding_identity
+        if not isinstance(binding, str) or not binding:
+            raise MayaMaterialAuthoringError("native material value patch requires a binding identity")
+        if new_material.binding_identity != binding or new_material.index != old_material.index:
+            raise MayaMaterialAuthoringError("native material value patch cannot change identity")
+        resolved = self._resolve_material_value_binding(root, old_material)
+        if resolved is None or resolved[0] != binding:
+            raise MayaMaterialAuthoringError(
+                f"material {old_material.index} binding is not resolvable under root {root!r}"
+            )
+        updates = self._material_value_updates(binding, old_material, new_material)
+        if not bool(self._call("undo_info", query=True, state=True)):
+            raise MayaMaterialAuthoringError(
+                "Maya undo must be enabled for native material value patches"
+            )
+        try:
+            self._native_authoring_gateway.set_material_values(
+                root,
+                binding,
+                old_material.index,
+                updates,
+            )
+        except NativeCommandUnavailable:
+            if mode == "native":
+                raise
+            return None
+        return new_material
+
+    def _material_value_updates(
+        self,
+        shader: str,
+        old: MmdMaterialSpec,
+        new: MmdMaterialSpec,
+    ) -> list[dict[str, Any]]:
+        """Expand semantic intent to the dedicated command's fixed fields."""
+        old_mapping = old.to_mapping()
+        new_mapping = new.to_mapping()
+        changed = {field for field in old_mapping if old_mapping[field] != new_mapping[field]}
+        updates: list[dict[str, Any]] = []
+
+        def add(field: str, value: Any) -> None:
+            updates.append({"field": field, "value": value})
+
+        if "name" in changed:
+            add("name", new.name)
+        if "name_english" in changed:
+            add("name_english", new.name_english)
+        if "diffuse" in changed:
+            add("diffuse_color", list(new.diffuse[:3]))
+            add("diffuse_alpha", new.diffuse[3])
+            route = material_diffuse_route(
+                str(self._call("node_type", shader)),
+                has_main_texture=bool(old.resolved_texture_path or old.texture_path),
+            )
+            if route is not None:
+                add("viewport_diffuse", list(new.diffuse[:3]))
+        if "specular" in changed:
+            add("specular", list(new.specular))
+        if "specular_coefficient" in changed:
+            add("specular_coefficient", new.specular_coefficient)
+        if "ambient" in changed:
+            add("ambient", list(new.ambient))
+        if "draw_flags" in changed:
+            add("draw_flags", new.draw_flags)
+            add("edge_flag", bool(new.draw_flags & 0x10))
+        if "edge_color" in changed:
+            add("edge_color", list(new.edge_color[:3]))
+            add("edge_alpha", new.edge_color[3])
+        if "edge_size" in changed:
+            add("edge_size", new.edge_size)
+        if "memo" in changed:
+            add("memo", new.memo)
+        return updates
 
     def apply_material_binding_patch(
         self,
