@@ -7,19 +7,13 @@ from mmd_tools.adapters import MayaCmdsAdapter
 from mmd_tools.core.bone_authoring import BoneResetPlan
 from mmd_tools.core.model_authoring_spec import MmdBoneSpec
 from ...core.logger import get_logger
-from ...core.maya_attribute_utils import (
-    get_attribute,
-    set_custom_attributes,
-)
+from ...core.maya_attribute_utils import get_attribute
 from ...core.maya_scene_utils import object_exists
 from ...core.constants import (
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_DEFORM_LAYER,
-    ATTR_MMD_BONE_OFFSET,
-    ATTR_MMD_CONNECTION_BONE,
-    ATTR_MMD_IK_TARGET,
     ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_IK_LOOP,
     ATTR_MMD_IK_LIMIT_ANGLE,
@@ -1416,55 +1410,3 @@ class BonePresenter:
             logger.debug(f"Failed to get attribute {attr} from {node}: {e}")
             pass
         return default
-
-    def _ensure_mmd_attributes(self, joint):
-        """MMD用カスタム属性が存在することを確認"""
-        attrs = [
-            (ATTR_MMD_BONE_NAME, "string", ""),
-            (ATTR_MMD_BONE_NAME_EN, "string", ""),
-            (
-                ATTR_MMD_BONE_FLAGS,
-                "long",
-                int(PmxBoneFlag.ROTATABLE | PmxBoneFlag.DISPLAY),
-            ),
-            (ATTR_MMD_DEFORM_LAYER, "long", 0),
-            (ATTR_MMD_BONE_OFFSET, "double3", None),
-            (ATTR_MMD_CONNECTION_BONE, "string", ""),
-            (ATTR_MMD_IK_TARGET, "string", ""),
-            (ATTR_MMD_IK_LOOP, "long", 10),
-            (ATTR_MMD_IK_LIMIT_ANGLE, "double", 2.0),
-            (ATTR_MMD_IK_LINKS, "string", "[]"),  # JSON文字列として保存
-            (ATTR_MMD_GRANT_PARENT, "string", ""),
-            (ATTR_MMD_GRANT_RATE, "double", 1.0),
-            (ATTR_MMD_FIXED_AXIS, "double3", None),
-            (ATTR_MMD_LOCAL_X_AXIS, "double3", None),
-            (ATTR_MMD_LOCAL_Z_AXIS, "double3", None),
-            (ATTR_MMD_EXTERNAL_PARENT_KEY, "long", -1),
-        ]
-
-        for attr_name, attr_type, default in attrs:
-            if not self.maya_adapter.attribute_exists(attr_name, joint):
-                if attr_type == "double3":
-                    # double3アトリビュートを作成
-                    defaults = {
-                        ATTR_MMD_BONE_OFFSET: [0.0, -1.0, 0.0],
-                        ATTR_MMD_FIXED_AXIS: [0.0, 0.0, 1.0],
-                        ATTR_MMD_LOCAL_X_AXIS: [1.0, 0.0, 0.0],
-                        ATTR_MMD_LOCAL_Z_AXIS: [0.0, 0.0, 1.0],
-                    }
-                    default_value = defaults.get(attr_name, [0.0, 0.0, 0.0])
-                    set_custom_attributes(joint, {attr_name: default_value})
-                else:
-                    # その他のアトリビュートを作成
-                    if default is not None:
-                        set_custom_attributes(joint, {attr_name: default})
-                    else:
-                        # デフォルト値がない場合はタイプに応じて初期値を設定
-                        if attr_type == "string":
-                            set_custom_attributes(joint, {attr_name: ""})
-                        elif attr_type == "double":
-                            set_custom_attributes(joint, {attr_name: 0.0})
-                        elif attr_type == "long":
-                            set_custom_attributes(joint, {attr_name: 0})
-                        elif attr_type == "bool":
-                            set_custom_attributes(joint, {attr_name: False})

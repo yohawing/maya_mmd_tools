@@ -7,8 +7,8 @@ import maya.cmds as cmds
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
-    ATTR_MMD_DEFORM_LAYER,
 )
+from mmd_tools.core.model_authoring_spec import MmdBoneSpec
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from tests.common.mock_ui import attach_mocks
 from tests.common.maya_test_base import MayaTestBase
@@ -18,6 +18,17 @@ from mmd_tools.ui.application_state import ApplicationState
 from mmd_tools.ui.translations import UITranslator
 
 UITranslator.instance().set_language("en")
+
+
+def _set_test_bone_names(joint, name_jp, name_en):
+    """Create only the Maya metadata needed by this presenter's read fixtures."""
+    for attribute, value in (
+        (ATTR_MMD_BONE_NAME, name_jp),
+        (ATTR_MMD_BONE_NAME_EN, name_en),
+    ):
+        if not cmds.attributeQuery(attribute, node=joint, exists=True):
+            cmds.addAttr(joint, longName=attribute, dataType="string")
+        cmds.setAttr(f"{joint}.{attribute}", value, type="string")
 
 
 class TestBonePresenter(MayaTestBase):
@@ -227,18 +238,9 @@ class TestBonePresenter(MayaTestBase):
         cmds.select(clear=True)
         cmds.parent(self.test_bone1, self.test_model)
 
-        # MMD属性を追加
-        self.presenter._ensure_mmd_attributes(self.test_bone1)
-        self.presenter._ensure_mmd_attributes(self.test_bone2)
-        self.presenter._ensure_mmd_attributes(self.test_bone3)
-
-        # 基本的なMMD属性を設定
-        cmds.setAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME}", "テストボーン1", type="string")
-        cmds.setAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME_EN}", "test_bone1", type="string")
-        cmds.setAttr(f"{self.test_bone2}.{ATTR_MMD_BONE_NAME}", "テストボーン2", type="string")
-        cmds.setAttr(f"{self.test_bone2}.{ATTR_MMD_BONE_NAME_EN}", "test_bone2", type="string")
-        cmds.setAttr(f"{self.test_bone3}.{ATTR_MMD_BONE_NAME}", "テストボーン3", type="string")
-        cmds.setAttr(f"{self.test_bone3}.{ATTR_MMD_BONE_NAME_EN}", "test_bone3", type="string")
+        _set_test_bone_names(self.test_bone1, "テストボーン1", "test_bone1")
+        _set_test_bone_names(self.test_bone2, "テストボーン2", "test_bone2")
+        _set_test_bone_names(self.test_bone3, "テストボーン3", "test_bone3")
 
     def tearDown(self):
         """テスト後のクリーンアップ"""
@@ -253,6 +255,10 @@ class TestBonePresenter(MayaTestBase):
         self.assertEqual(self.presenter.bone_list_items, {})
         self.assertEqual(self.presenter.all_bones, [])
         self.assertFalse(self.presenter.is_updating)
+
+    def test_presenter_has_no_direct_metadata_writer(self):
+        """Bone metadata writes stay behind the injected authoring coordinator."""
+        self.assertFalse(hasattr(BonePresenter, "_ensure_mmd_attributes"))
 
     def test_refresh_pending_detects_axis_vector_edit(self):
         presenter = BonePresenter.__new__(BonePresenter)
@@ -326,9 +332,8 @@ class TestBonePresenter(MayaTestBase):
 
         # ボーンが読み込まれたことを確認
         self.assertEqual(len(self.presenter.bone_list_items), 3)
-        self.assertIn(self.test_bone1, self.presenter.bone_list_items)
-        self.assertIn(self.test_bone2, self.presenter.bone_list_items)
-        self.assertIn(self.test_bone3, self.presenter.bone_list_items)
+        long_bones = set(cmds.ls((self.test_bone1, self.test_bone2, self.test_bone3), long=True))
+        self.assertEqual(set(self.presenter.bone_list_items), long_bones)
 
         # 一覧ロード詳細は DEBUG のみ（INFO には出さない）
         expected = f"Loaded 3 bones for model: {self.test_model}"
@@ -410,22 +415,37 @@ class TestBonePresenter(MayaTestBase):
         self.mock_view.ik_links_group.setVisible.assert_called_with(False)
 
     def test_apply_changes(self):
-        """変更適用のテスト"""
-        # 現在のボーンを設定
+        """Apply routes value metadata through the authoring coordinator."""
         self.presenter.current_bone = self.test_bone1
+        self.presenter.current_bone_index = 0
+        existing = MmdBoneSpec(
+            "テストボーン1",
+            name_english="test_bone1",
+            index=0,
+            binding_identity=self.test_bone1,
+        )
+        coordinator = Mock()
+        coordinator.read_bone_value.return_value = existing
+        coordinator.apply_bone_value_patch.side_effect = lambda _root, bone: bone
+        self.presenter.authoring_coordinator = coordinator
+        self.presenter.bone_data = {
+            "structural": self.presenter._structural_ui_state(existing.flags)
+        }
 
-        # UI の値を設定
         self.mock_view.bone_name_jp_edit.text.return_value = "新しい名前"
         self.mock_view.bone_name_en_edit.text.return_value = "new_name"
         self.mock_view.deform_layer_spin.value.return_value = 2
 
-        # 変更を適用
         self.presenter.apply_changes()
 
-        # 属性が更新されたことを確認
-        self.assertEqual(cmds.getAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME}"), "新しい名前")
-        self.assertEqual(cmds.getAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME_EN}"), "new_name")
-        self.assertEqual(cmds.getAttr(f"{self.test_bone1}.{ATTR_MMD_DEFORM_LAYER}"), 2)
+        coordinator.read_bone_value.assert_called_once_with(
+            self.test_model, 0, self.test_bone1
+        )
+        root, replacement = coordinator.apply_bone_value_patch.call_args[0]
+        self.assertEqual(root, self.test_model)
+        self.assertEqual(replacement.name, "新しい名前")
+        self.assertEqual(replacement.name_english, "new_name")
+        self.assertEqual(replacement.transform_layer, 2)
 
 
     def test_grant_settings_toggle(self):
