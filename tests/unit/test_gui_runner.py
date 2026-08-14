@@ -341,9 +341,221 @@ class GuiTestRunnerTests(unittest.TestCase):
             run_gui_tests.maya_python_ready_timeout("2027"),
         )
         self.assertEqual(
+            run_gui_tests.TEST_EXECUTION_TIMEOUT,
+            run_gui_tests.maya_python_ready_timeout("2026.2"),
+        )
+        self.assertEqual(
             run_gui_tests.MAYA_PYTHON_READY_TIMEOUT,
             run_gui_tests.maya_python_ready_timeout("2024"),
         )
+
+    def test_attach_handshake_accepts_matching_nonce_and_maya_major(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "attach.json"
+
+            def respond(port, _code, label):
+                self.assertEqual(7788, port)
+                self.assertEqual("<maya-gui-attach-handshake>", label)
+                marker.write_text(
+                    json.dumps(
+                        {
+                            "protocol": run_gui_tests.ATTACH_HANDSHAKE_PROTOCOL,
+                            "token": "owned-token",
+                            "maya_major": "2024",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            with mock.patch.object(
+                run_gui_tests.maya_commandport,
+                "send_python",
+                side_effect=respond,
+            ):
+                run_gui_tests.verify_attached_maya(
+                    7788,
+                    marker,
+                    "2024.2",
+                    token="owned-token",
+                )
+
+    def test_attach_handshake_rejects_an_unowned_response(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "attach.json"
+
+            def respond(_port, _code, label=None):
+                self.assertEqual("<maya-gui-attach-handshake>", label)
+                marker.write_text(
+                    json.dumps(
+                        {
+                            "protocol": run_gui_tests.ATTACH_HANDSHAKE_PROTOCOL,
+                            "token": "different-owner",
+                            "maya_major": "2024",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            with mock.patch.object(
+                run_gui_tests.maya_commandport,
+                "send_python",
+                side_effect=respond,
+            ), self.assertRaisesRegex(RuntimeError, "ownership response did not match"):
+                run_gui_tests.verify_attached_maya(
+                    7788,
+                    marker,
+                    "2024",
+                    token="owned-token",
+                )
+
+    def test_attach_handshake_rejects_a_different_maya_major(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "attach.json"
+
+            def respond(_port, _code, label=None):
+                marker.write_text(
+                    json.dumps(
+                        {
+                            "protocol": run_gui_tests.ATTACH_HANDSHAKE_PROTOCOL,
+                            "token": "owned-token",
+                            "maya_major": "2025",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            with mock.patch.object(
+                run_gui_tests.maya_commandport,
+                "send_python",
+                side_effect=respond,
+            ), self.assertRaisesRegex(RuntimeError, "ownership response did not match"):
+                run_gui_tests.verify_attached_maya(
+                    7788,
+                    marker,
+                    "2024",
+                    token="owned-token",
+                )
+
+    def test_attach_existing_dispatches_tests_without_launch_or_shutdown(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "attached.log"
+            timing_path = Path(temp_dir) / "attached.timing.json"
+            with mock.patch.object(run_gui_tests.maya_commandport, "is_port_open", return_value=True), \
+                 mock.patch.object(run_gui_tests, "verify_attached_maya") as verify, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "send_python") as send_python, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "launch_maya") as launch, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "quit_maya") as quit_maya, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "terminate_maya_process") as terminate, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "close_process_logs"), \
+                 mock.patch.object(run_gui_tests, "monitor_log_file", return_value="PASS"), \
+                 mock.patch.object(
+                     sys,
+                     "argv",
+                     [
+                         "run_gui_tests.py",
+                         "--attach-existing",
+                         "--port",
+                         "7788",
+                         "--log_path",
+                         str(log_path),
+                         "--timing_report",
+                         str(timing_path),
+                     ],
+                 ):
+                self.assertEqual(0, run_gui_tests.main())
+
+            verify.assert_called_once()
+            self.assertEqual(7788, verify.call_args.args[0])
+            self.assertTrue(any(call.args[0] == 7788 for call in send_python.call_args_list))
+            launch.assert_not_called()
+            quit_maya.assert_not_called()
+            terminate.assert_not_called()
+            report = json.loads(timing_path.read_text(encoding="utf-8"))
+            self.assertEqual("PASS", report["status"])
+            self.assertEqual("passed", report["phases"]["startup"]["status"])
+            self.assertEqual("skipped", report["phases"]["shutdown"]["status"])
+
+    def test_attach_existing_rejects_closed_port_without_lifecycle_actions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "closed.log"
+            with mock.patch.object(run_gui_tests.maya_commandport, "is_port_open", return_value=False), \
+                 mock.patch.object(run_gui_tests, "verify_attached_maya") as verify, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "send_python") as send_python, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "launch_maya") as launch, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "quit_maya") as quit_maya, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "terminate_maya_process") as terminate, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "close_process_logs"), \
+                 mock.patch.object(
+                     sys,
+                     "argv",
+                     [
+                         "run_gui_tests.py",
+                         "--attach-existing",
+                         "--port",
+                         "7788",
+                         "--log_path",
+                         str(log_path),
+                     ],
+                 ):
+                self.assertEqual(1, run_gui_tests.main())
+
+            verify.assert_not_called()
+            send_python.assert_not_called()
+            launch.assert_not_called()
+            quit_maya.assert_not_called()
+            terminate.assert_not_called()
+
+    def test_attach_timeout_preserves_external_maya_lifecycle(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "timeout.log"
+            timing_path = Path(temp_dir) / "timeout.timing.json"
+            with mock.patch.object(run_gui_tests.maya_commandport, "is_port_open", return_value=True), \
+                 mock.patch.object(run_gui_tests, "verify_attached_maya"), \
+                 mock.patch.object(run_gui_tests.maya_commandport, "send_python"), \
+                 mock.patch.object(run_gui_tests.maya_commandport, "quit_maya") as quit_maya, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "terminate_maya_process") as terminate, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "close_process_logs"), \
+                 mock.patch.object(
+                     run_gui_tests,
+                     "monitor_log_file",
+                     side_effect=TimeoutError("attached timeout"),
+                 ), \
+                 mock.patch.object(
+                     sys,
+                     "argv",
+                     [
+                         "run_gui_tests.py",
+                         "--attach-existing",
+                         "--port",
+                         "7788",
+                         "--log_path",
+                         str(log_path),
+                         "--timing_report",
+                         str(timing_path),
+                     ],
+                 ):
+                self.assertEqual(1, run_gui_tests.main())
+
+            quit_maya.assert_not_called()
+            terminate.assert_not_called()
+            report = json.loads(timing_path.read_text(encoding="utf-8"))
+            self.assertEqual("TIMEOUT", report["status"])
+            self.assertEqual("skipped", report["phases"]["shutdown"]["status"])
+
+    def test_attach_existing_rejects_a_process_environment_override(self):
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                "run_gui_tests.py",
+                "--attach-existing",
+                "--vp2_device_override",
+                "VirtualDeviceDx11",
+            ],
+        ), self.assertRaises(SystemExit) as raised, redirect_stderr(io.StringIO()):
+            run_gui_tests.main()
+
+        self.assertEqual(2, raised.exception.code)
 
     def test_explorer_cleanup_quits_without_process_handle(self):
         with mock.patch.object(sys, "platform", "win32"), \
