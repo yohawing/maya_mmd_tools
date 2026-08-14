@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+from pathlib import Path
 
 from maya import cmds, standalone
 
@@ -20,6 +21,8 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core import maya_attribute_utils
 from mmd_tools.core.model_authoring_spec import MmdMorphSpec
+from mmd_tools.ui.presenters.animation_presenter import AnimationPresenter
+from tests.common.maya_plugin_setup import load_mmd_tools_plugin
 
 
 def _target(root: str, name: str, source_indices: tuple[int, ...], target_index: int):
@@ -66,11 +69,15 @@ def _target(root: str, name: str, source_indices: tuple[int, ...], target_index:
 def main() -> int:
     standalone.initialize(name="python")
     try:
+        load_mmd_tools_plugin(
+            Path(__file__).resolve().parents[1],
+            required_node_types=("mmdMorphController",),
+            cmds_module=cmds,
+        )
         root = cmds.createNode("transform", name="Model")
         face_bs, face_plug = _target(root, "face", (4, 7, 8, 10), 3)
         body_bs, body_plug = _target(root, "body", (9, 12, 13, 15), 8)
-        controller = cmds.createNode("network", name="vertexSmokeController")
-        cmds.addAttr(controller, longName="outputWeight", attributeType="double", multi=True)
+        controller = cmds.createNode("mmdMorphController", name="vertexSmokeController")
         cmds.addAttr(root, longName="mmd_morph_controller", attributeType="message")
         cmds.addAttr(root, longName="mmd_import_scale", attributeType="double")
         cmds.setAttr(f"{root}.mmd_import_scale", 2.0)
@@ -169,6 +176,19 @@ def main() -> int:
             )
             assert mapping[str(target_index)] == {"name": "Empty", "index": 1}
 
+        presenter = object.__new__(AnimationPresenter)
+        presenter.maya_adapter = adapter
+        presenter._morph_indices = {}
+        presenter._morph_targets = {}
+        presenter._network_morph_targets = {}
+        presenter._morph_controller = controller
+        presenter._collect_morph_infos(cmds.ls(root, long=True)[0], {})
+        assert presenter._morph_indices["Empty"] == 1
+        presenter._set_morph_weight("Empty", 0.5)
+        for plug in created_plugs:
+            assert abs(float(cmds.getAttr(plug)) - 0.5) < 1e-6, plug
+        cmds.setAttr(f"{controller}.inputWeight[1]", 0.0)
+
         sculpt_target = create_plans[0]["targets"][0]
         sculpt_blend_shape = sculpt_target["blend_shape"]
         sculpt_target_index = sculpt_target["target_index"]
@@ -194,6 +214,9 @@ def main() -> int:
         }
         assert sculpt_points
         cmds.connectAttr(f"{controller}.outputWeight[1]", sculpt_plug)
+        cmds.setAttr(f"{controller}.inputWeight[1]", 1.0)
+        for plug in created_plugs:
+            assert abs(float(cmds.getAttr(plug)) - 1.0) < 1e-6, plug
 
         delete_plans = _vertex_target_plan(
             adapter,

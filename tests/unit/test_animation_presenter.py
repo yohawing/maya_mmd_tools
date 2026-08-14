@@ -1668,6 +1668,27 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         self.assertEqual(info.panel, 2)
         self.assertEqual(presenter._morph_targets["笑い"], [("blendShape1", 0)])
 
+    def test_new_vertex_morph_uses_blendshape_global_index_with_stale_root_metadata(self):
+        blend_shapes = {
+            "body_mesh": {
+                "blendShape1": {
+                    "type": "blendShape",
+                    "morph_json": {"0": {"name": "新規", "index": 19}},
+                }
+            }
+        }
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=blend_shapes,
+            morph_data=[],
+        )
+        presenter._morph_controller = "morphController"
+
+        presenter._on_morph_weight_changed("新規", 0.625)
+
+        self.assertEqual(presenter._morph_indices["新規"], 19)
+        self.assertEqual(adapter._set_attrs["morphController.inputWeight[19]"], 0.625)
+        self.assertNotIn("blendShape1.weight[0]", adapter._set_attrs)
+
     def test_morph_targets_tracked(self):
         presenter, _, _, _ = self._make_with_morphs(
             blend_shapes=SAMPLE_BLEND_SHAPES,

@@ -1862,7 +1862,10 @@ class AnimationPresenter:
                 info = metadata.get(global_index) if isinstance(global_index, int) else None
                 info = info or metadata_by_name.get(raw_name)
                 if info is None:
-                    info = MorphInfo(raw_name, "", 4, "vertex", weight_index)
+                    resolved_index = global_index if isinstance(global_index, int) else weight_index
+                    info = MorphInfo(raw_name, "", 4, "vertex", resolved_index)
+                if isinstance(global_index, int):
+                    self._morph_indices[info.name] = global_index
                 self._morph_targets.setdefault(info.name, []).append((bs_node, weight_index))
                 if info.name not in seen_names:
                     seen_names.add(info.name)
