@@ -146,6 +146,9 @@
       "semantic_boundary": "related_bone_and_joint_messages",
       "primary_layer": "real_maya",
       "representative_test": "tests/gui/guitest_ui_coverage_display_physics_remaining_gui.py::TestPhysicsRemainingGUI::test_physics_remaining_surfaces",
+      "related_representative_tests": [
+        "tests/gui/guitest_ui_coverage_display_physics_remaining_gui.py::TestPhysicsRemainingGUI::test_physics_joint_binding_message"
+      ],
       "redundant_test": [],
       "cost_evidence": {
         "metric": "representative_actions",

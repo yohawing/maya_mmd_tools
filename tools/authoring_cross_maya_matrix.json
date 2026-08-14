@@ -1,0 +1,349 @@
+{
+  "schema_version": 1,
+  "matrix_id": "AUTHORING-CROSS-MAYA-MATRIX-1",
+  "supported_maya_versions": [
+    "2024",
+    "2026"
+  ],
+  "source_manifests": {
+    "ui_surfaces": "tools/ui_coverage_manifest.json",
+    "semantic_contracts": "tools/authoring_test_layer_manifest.json"
+  },
+  "profiles": {
+    "focused": {
+      "required_maya_versions": [
+        "2024"
+      ],
+      "case_selection": "selected_domains",
+      "run_version_independent_lane_once": true
+    },
+    "version_sensitive": {
+      "required_maya_versions": [
+        "2024",
+        "2026"
+      ],
+      "case_selection": "selected_domains",
+      "run_version_independent_lane_once": true
+    },
+    "release_candidate": {
+      "required_maya_versions": [
+        "2024",
+        "2026"
+      ],
+      "case_selection": "all_representatives",
+      "run_version_independent_lane_once": true,
+      "require_clean_worktree": true
+    }
+  },
+  "change_kind_policy": {
+    "default": "focused",
+    "qt6": "version_sensitive",
+    "maya_api": "version_sensitive",
+    "native": "version_sensitive",
+    "serialization": "version_sensitive"
+  },
+  "required_domains": [
+    "main_window",
+    "import_export",
+    "export",
+    "info",
+    "material",
+    "bone",
+    "morph",
+    "display_pane",
+    "physics"
+  ],
+  "required_boundaries": [
+    "production_main_window",
+    "domain_mutation",
+    "undo_redo",
+    "blendshape_dg",
+    "native_cpp_command",
+    "production_modal",
+    "save_reopen"
+  ],
+  "surface_trace": {
+    "source_selector": {
+      "disposition": "qt_case"
+    },
+    "expected_surface_count": 230,
+    "version_independent_owner": "headless.authoring_ui_surface_matrix",
+    "tab_representatives": {
+      "import_export": [
+        "gui.modal_new_model"
+      ],
+      "export": [
+        "gui.material_pmx_fresh_import"
+      ],
+      "info": [
+        "gui.info_focus"
+      ],
+      "material": [
+        "gui.material_main_texture",
+        "gui.material_pmx_fresh_import",
+        "native.material_value",
+        "native.material_outline"
+      ],
+      "bone": [
+        "gui.bone_identity"
+      ],
+      "morph": [
+        "gui.morph_preview",
+        "maya.vertex_blendshape",
+        "native.morph_binding_query",
+        "native.morph_weight"
+      ],
+      "display_pane": [
+        "gui.display_atomic"
+      ],
+      "physics": [
+        "gui.physics_joint_messages"
+      ]
+    },
+    "headless_only_tabs": {
+      "settings": "Application preferences do not mutate a Maya scene; all Settings handlers are covered by the version-independent production-surface matrix."
+    }
+  },
+  "cases": [
+    {
+      "id": "gui.main_window_refresh",
+      "runner": "gui_batch",
+      "domains": [
+        "main_window"
+      ],
+      "proves": [
+        "production_main_window"
+      ],
+      "origin_kind": "matrix_policy",
+      "rationale": "The cross-version lane needs one production MainWindow refresh and deferred-tab boundary that is broader than a single semantic domain contract.",
+      "test_path": "tests/gui",
+      "test_filter": "test_header_refresh_defers_hidden_authoring_tabs",
+      "test_id": "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_header_refresh_defers_hidden_authoring_tabs"
+    },
+    {
+      "id": "gui.info_focus",
+      "runner": "gui_batch",
+      "domains": [
+        "info"
+      ],
+      "proves": [
+        "production_main_window",
+        "domain_mutation",
+        "undo_redo"
+      ],
+      "contract_id": "info.focus_session.undo_model_switch",
+      "test_path": "tests/gui",
+      "test_filter": "test_focus_session_immediate_write_and_undo_redo",
+      "test_id": "tests.gui.guitest_info_undo_contract_gui.TestInfoUndoContractGUI.test_focus_session_immediate_write_and_undo_redo"
+    },
+    {
+      "id": "gui.material_main_texture",
+      "runner": "gui_batch",
+      "domains": [
+        "material"
+      ],
+      "proves": [
+        "production_main_window",
+        "domain_mutation",
+        "undo_redo"
+      ],
+      "contract_id": "material.values.dg_undo",
+      "test_path": "tests/gui",
+      "test_filter": "test_dx11_material_main_texture_apply_undo_redo",
+      "test_id": "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_dx11_material_main_texture_apply_undo_redo"
+    },
+    {
+      "id": "gui.bone_identity",
+      "runner": "gui_batch",
+      "domains": [
+        "bone"
+      ],
+      "proves": [
+        "production_main_window",
+        "domain_mutation"
+      ],
+      "contract_id": "bone.canonical_identity.same_leaf",
+      "test_path": "tests/gui",
+      "test_filter": "test_bone_apply_routes_same_leaf_model_by_selected_long_identity",
+      "test_id": "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_bone_apply_routes_same_leaf_model_by_selected_long_identity"
+    },
+    {
+      "id": "gui.morph_preview",
+      "runner": "gui_batch",
+      "domains": [
+        "morph"
+      ],
+      "proves": [
+        "production_main_window",
+        "domain_mutation",
+        "undo_redo"
+      ],
+      "contract_id": "morph.controller_blendshape.preview_transaction",
+      "test_path": "tests/gui",
+      "test_filter": "test_morph_preview_drag_is_one_undo_action",
+      "test_id": "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_morph_preview_drag_is_one_undo_action"
+    },
+    {
+      "id": "gui.display_atomic",
+      "runner": "gui_batch",
+      "domains": [
+        "display_pane"
+      ],
+      "proves": [
+        "production_main_window",
+        "domain_mutation",
+        "undo_redo"
+      ],
+      "contract_id": "display.metadata.atomic_json_undo",
+      "test_path": "tests/gui",
+      "test_filter": "test_display_pane_remaining_surfaces",
+      "test_id": "tests.gui.guitest_ui_coverage_display_physics_remaining_gui.TestDisplayPaneRemainingGUI.test_display_pane_remaining_surfaces"
+    },
+    {
+      "id": "gui.physics_joint_messages",
+      "runner": "gui_batch",
+      "domains": [
+        "physics"
+      ],
+      "proves": [
+        "production_main_window",
+        "domain_mutation",
+        "undo_redo"
+      ],
+      "contract_id": "physics.related_bone_joint_messages",
+      "test_path": "tests/gui",
+      "test_filter": "test_physics_joint_binding_message",
+      "test_id": "tests.gui.guitest_ui_coverage_display_physics_remaining_gui.TestPhysicsRemainingGUI.test_physics_joint_binding_message"
+    },
+    {
+      "id": "gui.modal_new_model",
+      "runner": "gui_batch",
+      "domains": [
+        "import_export"
+      ],
+      "proves": [
+        "production_main_window",
+        "domain_mutation",
+        "undo_redo",
+        "production_modal"
+      ],
+      "contract_id": "fileio.production_modal_import",
+      "test_path": "tests/gui",
+      "test_filter": "test_new_model_button_uses_real_modal_and_undo_redo_lifecycle",
+      "test_id": "tests.gui.guitest_fileio_safe_routes_gui.TestFileIOSafeRoutesGUI.test_new_model_button_uses_real_modal_and_undo_redo_lifecycle"
+    },
+    {
+      "id": "gui.mixed_save_reopen",
+      "runner": "gui_batch",
+      "domains": [
+        "material",
+        "bone",
+        "morph",
+        "display_pane"
+      ],
+      "proves": [
+        "production_main_window",
+        "domain_mutation",
+        "save_reopen"
+      ],
+      "contract_id": "authoring.persistence.mixed_scene",
+      "test_path": "tests/gui",
+      "test_filter": "test_authoring_signals_undo_redo_and_save_reopen",
+      "test_id": "tests.gui.guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_authoring_signals_undo_redo_and_save_reopen"
+    },
+    {
+      "id": "gui.material_pmx_fresh_import",
+      "runner": "gui_batch",
+      "domains": [
+        "export",
+        "material"
+      ],
+      "proves": [
+        "domain_mutation",
+        "undo_redo",
+        "save_reopen"
+      ],
+      "contract_id": "material.persistence.pmx_fresh_import",
+      "test_path": "tests/gui",
+      "test_filter": "test_material_tab_edit_survives_pmx_fresh_import_oracle",
+      "test_id": "tests.gui.guitest_material_export_roundtrip_gui.TestMaterialExportRoundtripGUI.test_material_tab_edit_survives_pmx_fresh_import_oracle"
+    },
+    {
+      "id": "maya.vertex_blendshape",
+      "runner": "mayapy",
+      "domains": [
+        "morph"
+      ],
+      "proves": [
+        "domain_mutation",
+        "blendshape_dg"
+      ],
+      "origin_kind": "standalone_smoke",
+      "rationale": "The semantic inventory has no GUI contract for direct blendShape target topology; this standalone probe is the focused Maya DG boundary.",
+      "script": "tools/maya_vertex_morph_authoring_smoke.py",
+      "requires_cpp_plugin": false
+    },
+    {
+      "id": "native.morph_binding_query",
+      "runner": "mayapy",
+      "domains": [
+        "morph"
+      ],
+      "proves": [
+        "native_cpp_command"
+      ],
+      "origin_kind": "native_smoke",
+      "rationale": "The native morph binding query has no GUI surface and requires exact plugin command registration and Maya result validation.",
+      "script": "tools/maya_morph_binding_query_smoke.py",
+      "requires_cpp_plugin": true
+    },
+    {
+      "id": "native.morph_weight",
+      "runner": "mayapy",
+      "domains": [
+        "morph"
+      ],
+      "proves": [
+        "domain_mutation",
+        "undo_redo",
+        "native_cpp_command"
+      ],
+      "origin_kind": "native_smoke",
+      "rationale": "The undoable native morph weight command is a language-boundary representative rather than a separate GUI semantic contract.",
+      "script": "tools/maya_morph_weight_command_smoke.py",
+      "requires_cpp_plugin": true
+    },
+    {
+      "id": "native.material_value",
+      "runner": "mayapy",
+      "domains": [
+        "material"
+      ],
+      "proves": [
+        "domain_mutation",
+        "undo_redo",
+        "native_cpp_command"
+      ],
+      "origin_kind": "native_smoke",
+      "rationale": "The undoable native material value command is verified directly because the semantic GUI contract also permits a Python fallback route.",
+      "script": "tools/maya_material_value_command_smoke.py",
+      "requires_cpp_plugin": true
+    },
+    {
+      "id": "native.material_outline",
+      "runner": "mayapy",
+      "domains": [
+        "material"
+      ],
+      "proves": [
+        "domain_mutation",
+        "undo_redo",
+        "native_cpp_command"
+      ],
+      "origin_kind": "native_smoke",
+      "rationale": "The undoable native material outline command is verified directly because the semantic GUI contract also permits a Python fallback route.",
+      "script": "tools/maya_material_outline_command_smoke.py",
+      "requires_cpp_plugin": true
+    }
+  ]
+}
