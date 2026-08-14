@@ -219,10 +219,15 @@ class PhysicsPresenter:
         # them here gives Refresh a Maya-free pending-work predicate.
         for editor in getattr(self.view, "_physics_editors", {}).values():
             editor = editor[1] if isinstance(editor, tuple) else editor
-            for signal_name in ("textChanged", "valueChanged", "currentIndexChanged"):
+            # Connect only the editor's highest-level semantic signal.  A
+            # QSpinBox emits both textChanged and valueChanged for one
+            # committed edit, which would otherwise dispatch this Action
+            # twice.
+            for signal_name in ("currentIndexChanged", "valueChanged", "textChanged"):
                 signal = getattr(editor, signal_name, None)
                 if signal is not None and hasattr(signal, "connect"):
                     signal.connect(self._mark_form_dirty)
+                    break
 
     def _mark_form_dirty(self, *_args):
         if not self._loading_form:

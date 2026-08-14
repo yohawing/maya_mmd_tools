@@ -109,6 +109,24 @@ class TestPresenterModuleStructure(unittest.TestCase):
         self.assertIn("RIGID_BODIES_GROUP", self.source)
         self.assertIn("CONSTRAINTS_GROUP", self.source)
 
+    def test_dirty_tracking_connects_one_semantic_signal_per_editor(self):
+        connect_loop = next(
+            node
+            for node in ast.walk(self.tree)
+            if isinstance(node, ast.For)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "signal_name"
+        )
+        signal_names = ast.literal_eval(connect_loop.iter)
+        self.assertEqual(
+            signal_names,
+            ("currentIndexChanged", "valueChanged", "textChanged"),
+        )
+        self.assertTrue(
+            any(isinstance(node, ast.Break) for node in ast.walk(connect_loop)),
+            "dirty tracking must stop after the first supported semantic signal",
+        )
+
 
 class TestRigidBodyFieldKeys(unittest.TestCase):
     """Verify presenter returns field keys matching the tab's _physics_editors."""
