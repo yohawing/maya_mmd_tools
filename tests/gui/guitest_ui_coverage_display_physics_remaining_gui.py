@@ -498,6 +498,104 @@ class TestDisplayPaneRemainingGUI(GuiTestBase):
         cmds.redo()
         self.assertEqual(_display_payload(self.root), after)
 
+    def test_display_two_model_pending_work_never_crosses_apply_or_undo(self):
+        """Switching roots discards A's work copy before one B-only Apply."""
+        view = self.presenter.view
+        root_a = self.root
+        template_b = self.window.authoring_composition.model_initializer.create(
+            DISPLAY_FIXTURE_ID,
+            "Display Isolation B JP",
+            "Display Isolation B EN",
+        )
+        root_b = template_b.root
+        mesh_shapes_b = cmds.listRelatives(
+            root_b,
+            allDescendents=True,
+            fullPath=True,
+            type="mesh",
+        ) or []
+        self.assertGreaterEqual(len(mesh_shapes_b), 1)
+        mesh_parents_b = []
+        for index, shape in enumerate(mesh_shapes_b):
+            mesh_parents_b.append(
+                cmds.listRelatives(shape, parent=True, fullPath=True)[0]
+            )
+            cmds.rename(shape, f"displayIsolationBMeshShape{index}")
+        for index, parent in enumerate(dict.fromkeys(mesh_parents_b)):
+            cmds.rename(parent, f"displayIsolationBMesh{index}")
+        payload_a = _display_payload(root_a)
+        payload_b_before = _display_payload(root_b)
+
+        view.frame_list.setCurrentRow(1)
+        QApplication.processEvents()
+        pending_a = "Pending A Must Not Cross Roots"
+        view.name_en_edit.setText(pending_a)
+        QApplication.processEvents()
+        self.assertTrue(self.presenter._has_pending_refresh_work())
+        self.assertEqual(_display_payload(root_a), payload_a)
+        self.assertEqual(self.window.app_state.current_model_root, root_a)
+
+        self.window.app_state.current_model_root = root_b
+        QApplication.processEvents()
+        self.assertEqual(self.window.app_state.current_model_root, root_b)
+        self.assertEqual(self.presenter.frames, payload_b_before)
+        self.assertEqual(self.presenter._original_frames, payload_b_before)
+        self.assertEqual(view.frame_list.currentRow(), 0)
+        self.assertNotIn(
+            pending_a,
+            tuple(frame["name_english"] for frame in self.presenter.frames),
+        )
+        self.assertFalse(
+            any("displayCoverageBone" in label for label in self.presenter._bone_choices)
+        )
+
+        view.frame_list.setCurrentRow(1)
+        QApplication.processEvents()
+        selected_b_before = deepcopy(self.presenter.frames[1])
+        updated_b = (
+            "Facial"
+            if selected_b_before["name_english"] != "Facial"
+            else "Expressions"
+        )
+        view.name_en_edit.setText(updated_b)
+        QApplication.processEvents()
+        coordinator = self.window.authoring_composition.coordinator
+        apply_spy = ActionInvocationSpy.wrap(
+            "MayaModelAuthoringCoordinator.write_display_frames.two_model",
+            coordinator.write_display_frames,
+            view.apply_btn,
+        )
+        coordinator.write_display_frames = apply_spy
+        QTest.mouseClick(view.apply_btn, Qt.LeftButton)
+        QApplication.processEvents()
+        self.assertEqual(apply_spy.action_count, 1)
+        payload_b_after = _display_payload(root_b)
+        self.assertEqual(payload_b_after[1]["name_english"], updated_b)
+        self.assertEqual(_display_payload(root_a), payload_a)
+        self.assertEqual(cmds.undoInfo(query=True, undoName=True), "Edit Display Frames")
+
+        cmds.undo()
+        self.assertEqual(_display_payload(root_b), payload_b_before)
+        self.assertEqual(_display_payload(root_a), payload_a)
+        cmds.redo()
+        self.assertEqual(_display_payload(root_b), payload_b_after)
+        self.assertEqual(_display_payload(root_a), payload_a)
+
+        self.window.app_state.current_model_root = root_a
+        QApplication.processEvents()
+        self.assertEqual(self.window.app_state.current_model_root, root_a)
+        self.assertEqual(self.presenter.frames, payload_a)
+        self.assertEqual(self.presenter._original_frames, payload_a)
+        self.assertEqual(view.frame_list.currentRow(), 0)
+        self.assertNotIn(
+            pending_a,
+            tuple(frame["name_english"] for frame in self.presenter.frames),
+        )
+        self.assertTrue(
+            any("displayCoverageBone" in label for label in self.presenter._bone_choices)
+        )
+        self.assertEqual(_display_payload(root_b), payload_b_after)
+
 
 
 @requires_gui
