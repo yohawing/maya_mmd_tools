@@ -108,6 +108,8 @@ class FakeAdapter:
         self.calls.append(("disconnect_attr", (source, destination), {}))
         if destination in self.connections.get(source, []):
             self.connections[source].remove(destination)
+        if source in self.connections.get(destination, []):
+            self.connections[destination].remove(source)
 
     def alias_attr(self, *args: str, **kwargs: Any) -> Any:
         if kwargs.get("query"):
@@ -143,11 +145,25 @@ class FakeAdapter:
             self.attrs[(name, "weight")] = []
             self.calls.append(("blend_shape", (node,), kwargs))
             return [name]
+        if kwargs.get("edit") and kwargs.get("target"):
+            base, target_index, target, target_weight = kwargs["target"]
+            assert base == target
+            assert target_weight == 1.0
+            item = (
+                f"{node}.inputTarget[0].inputTargetGroup[{target_index}]"
+                ".inputTargetItem[6000]"
+            )
+            self.connections[f"{item}.inputGeomTarget"] = [f"{base}Shape.worldMesh[0]"]
+            self.aliases[f"{node}.weight[{target_index}]"] = str(base).rsplit("|", 1)[-1]
+            self.calls.append(("blend_shape", (node,), kwargs))
+            return [node]
         raise AssertionError(kwargs)
 
     def list_relatives(self, node: str, **kwargs: Any) -> list[str]:
         if kwargs.get("allDescendents") and kwargs.get("type") == "mesh":
             return [item for item, kind in self.types.items() if kind == "mesh" and item.startswith(f"{node}|")]
+        if kwargs.get("parent") and node == "|Model|faceShape":
+            return ["|Model|face"]
         return []
 
     def list_history(self, node: str) -> list[str]:
@@ -418,6 +434,7 @@ def test_vertex_offset_preflight_rejects_missing_full_weight_item_without_write(
 
 def test_empty_vertex_create_builds_exportable_target_and_controller_binding() -> None:
     adapter = FakeAdapter()
+    adapter.types["|Model|face"] = "transform"
     adapter.types["|Model|faceShape"] = "mesh"
     adapter.types["|Model|faceShapeOrig"] = "mesh"
     adapter.attrs[("|Model|faceShape", "vertexCount")] = 2
@@ -438,6 +455,29 @@ def test_empty_vertex_create_builds_exportable_target_and_controller_binding() -
     assert adapter.connections["controller.outputWeight[0]"] == [
         "mmdVertexMorph_0_blendShape.weight[0]"
     ]
+    target_item = (
+        "mmdVertexMorph_0_blendShape.inputTarget[0].inputTargetGroup[0]"
+        ".inputTargetItem[6000]"
+    )
+    typed_array_calls = [
+        call
+        for call in adapter.calls
+        if call[0] == "set_attr" and call[1][0].startswith(target_item)
+    ]
+    assert typed_array_calls == []
+    assert (
+        "blend_shape",
+        ("mmdVertexMorph_0_blendShape",),
+        {"edit": True, "target": ("|Model|face", 0, "|Model|face", 1.0)},
+    ) in adapter.calls
+    assert (
+        "disconnect_attr",
+        (
+            "|Model|faceShape.worldMesh[0]",
+            f"{target_item}.inputGeomTarget",
+        ),
+        {},
+    ) in adapter.calls
 
 
 def test_empty_vertex_create_without_owned_mesh_rejects_before_write() -> None:

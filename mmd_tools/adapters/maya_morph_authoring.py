@@ -1222,25 +1222,82 @@ def _apply_vertex_target_plan(
                 mapping[str(target_index)] = {"name": new.name, "index": new.index}
                 _write_vertex_name_mapping(adapter, node, mapping)
         for geometry in plan["geometries"]:
-            item = geometry["item"]
-            components = geometry["components"]
-            points = geometry["points"]
-            _call(
+            _write_vertex_target_deltas(
                 adapter,
-                "set_attr",
-                f"{item}.inputComponentsTarget",
-                len(components),
-                *components,
-                type="componentList",
+                geometry["item"],
+                geometry["components"],
+                geometry["points"],
             )
-            _call(
-                adapter,
-                "set_attr",
-                f"{item}.inputPointsTarget",
-                len(points),
-                *points,
-                type="pointArray",
-            )
+
+
+def _write_vertex_target_deltas(
+    adapter: Any,
+    item: str,
+    components: Sequence[str],
+    points: Sequence[tuple[float, float, float, float]],
+) -> None:
+    """Write blendShape deltas without creating Maya's malformed empty arrays."""
+    if len(components) != len(points):
+        _fail(f"vertex target {item!r} points/components lengths differ")
+    component_values = (len(components), *components) if components else ()
+    point_values = (len(points), *points) if points else ()
+    _call(
+        adapter,
+        "set_attr",
+        f"{item}.inputComponentsTarget",
+        *component_values,
+        type="componentList",
+    )
+    _call(
+        adapter,
+        "set_attr",
+        f"{item}.inputPointsTarget",
+        *point_values,
+        type="pointArray",
+    )
+
+
+def _initialize_empty_vertex_target(
+    adapter: Any,
+    blend_shape: str,
+    shape: str,
+    geometry_index: int,
+    target_index: int,
+) -> None:
+    """Register an editable empty target through Maya's blendShape command."""
+    parents = tuple(_call(adapter, "list_relatives", shape, parent=True, fullPath=True) or ())
+    if len(parents) != 1:
+        _fail(f"vertex target shape {shape!r} has no unique parent transform")
+    base = _canonical_node(adapter, str(parents[0]))
+    _call(
+        adapter,
+        "blend_shape",
+        blend_shape,
+        edit=True,
+        target=(base, target_index, base, 1.0),
+    )
+    item = (
+        f"{blend_shape}.inputTarget[{geometry_index}].inputTargetGroup[{target_index}]"
+        ".inputTargetItem[6000]"
+    )
+    geometry_plug = f"{item}.inputGeomTarget"
+    sources = tuple(
+        _call(
+            adapter,
+            "list_connections",
+            geometry_plug,
+            source=True,
+            destination=False,
+            plugs=True,
+        )
+        or ()
+    )
+    if len(sources) != 1:
+        _fail(f"empty vertex target {item!r} has no unique temporary geometry source")
+    _call(adapter, "disconnect_attr", str(sources[0]), geometry_plug)
+    plug = f"{blend_shape}.weight[{target_index}]"
+    if _call(adapter, "alias_attr", plug, query=True):
+        _call(adapter, "alias_attr", plug, remove=True)
 
 
 def _apply_new_vertex_targets(adapter: Any, controller: str, plan: Mapping[str, Any]) -> None:
@@ -1274,22 +1331,16 @@ def _apply_new_vertex_targets(adapter: Any, controller: str, plan: Mapping[str, 
         )
         components = target["components"]
         points = target["points"]
-        _call(
-            adapter,
-            "set_attr",
-            f"{item}.inputComponentsTarget",
-            len(components),
-            *components,
-            type="componentList",
-        )
-        _call(
-            adapter,
-            "set_attr",
-            f"{item}.inputPointsTarget",
-            len(points),
-            *points,
-            type="pointArray",
-        )
+        if components or points:
+            _write_vertex_target_deltas(adapter, item, components, points)
+        else:
+            _initialize_empty_vertex_target(
+                adapter,
+                blend_shape,
+                target["shape"],
+                int(geometry_index),
+                target_index,
+            )
         plug = f"{blend_shape}.weight[{target_index}]"
         flat = list(_call(adapter, "alias_attr", blend_shape, query=True) or ())
         alias = maya_name_utils.sanitize_unique_name(
@@ -1804,22 +1855,7 @@ def _patch_vertex_runtime_values(
                 f"{node}.inputTarget[{int(geometry_index)}].inputTargetGroup[{target_index}]"
                 ".inputTargetItem[6000]"
             )
-            _call(
-                adapter,
-                "set_attr",
-                f"{item}.inputComponentsTarget",
-                len(components),
-                *components,
-                type="componentList",
-            )
-            _call(
-                adapter,
-                "set_attr",
-                f"{item}.inputPointsTarget",
-                len(points),
-                *points,
-                type="pointArray",
-            )
+            _write_vertex_target_deltas(adapter, item, components, points)
             target_count += 1
     expected = {int(offset["vertex_index"]) for offset in new.offsets}
     if target_count == 0 or covered != expected:

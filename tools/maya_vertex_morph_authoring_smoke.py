@@ -169,6 +169,32 @@ def main() -> int:
             )
             assert mapping[str(target_index)] == {"name": "Empty", "index": 1}
 
+        sculpt_target = create_plans[0]["targets"][0]
+        sculpt_blend_shape = sculpt_target["blend_shape"]
+        sculpt_target_index = sculpt_target["target_index"]
+        sculpt_shape = sculpt_target["shape"]
+        sculpt_mesh = cmds.listRelatives(sculpt_shape, parent=True, fullPath=True)[0]
+        sculpt_plug = f"{sculpt_blend_shape}.weight[{sculpt_target_index}]"
+        cmds.disconnectAttr(f"{controller}.outputWeight[1]", sculpt_plug)
+        cmds.setAttr(sculpt_plug, 1.0)
+        cmds.sculptTarget(sculpt_blend_shape, edit=True, target=sculpt_target_index)
+        cmds.move(0.1, 0.0, 0.0, f"{sculpt_mesh}.vtx[0]", relative=True)
+        cmds.sculptTarget(sculpt_blend_shape, edit=True, target=-1)
+        sculpt_item = (
+            f"{sculpt_blend_shape}.inputTarget[0].inputTargetGroup[{sculpt_target_index}]"
+            ".inputTargetItem[6000]"
+        )
+        sculpt_components = cmds.getAttr(f"{sculpt_item}.inputComponentsTarget") or []
+        sculpt_points = cmds.getAttr(f"{sculpt_item}.inputPointsTarget") or []
+        assert sculpt_components, {
+            "blend_shape": sculpt_blend_shape,
+            "shape": sculpt_shape,
+            "target_index": sculpt_target_index,
+            "weight": cmds.getAttr(sculpt_plug),
+        }
+        assert sculpt_points
+        cmds.connectAttr(f"{controller}.outputWeight[1]", sculpt_plug)
+
         delete_plans = _vertex_target_plan(
             adapter,
             cmds.ls(root, long=True)[0],
@@ -201,7 +227,12 @@ def main() -> int:
             )
             assert mapping[str(target_index)] == {"name": "Move Wide", "index": 2}
 
-        print(json.dumps({"success": True, "targets": 2, "topology": True}, separators=(",", ":")))
+        print(
+            json.dumps(
+                {"success": True, "targets": 2, "topology": True, "sculpt_edit": True},
+                separators=(",", ":"),
+            )
+        )
         return 0
     finally:
         standalone.uninitialize()
