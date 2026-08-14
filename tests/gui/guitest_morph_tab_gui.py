@@ -16,10 +16,19 @@ from tests.common.ui_action_coverage import (
     build_surface_witness,
 )
 from mmd_tools.ui.application_state import ApplicationState
+from mmd_tools.adapters import MayaCmdsAdapter
+from mmd_tools.adapters.maya_morph_authoring_snapshot_provider import (
+    MayaMorphAuthoringSnapshotProvider,
+)
 from mmd_tools.ui.presenters.morph_presenter import MorphPresenter
-from mmd_tools.ui.qt_compat import QApplication, Qt
+from mmd_tools.ui.qt_compat import QApplication, QT_BINDING, Qt
 from mmd_tools.ui.tabs.morph_tab import MorphTab
 from mmd_tools.core.morph_topology import MorphTopologyInspection
+
+if QT_BINDING == "PySide6":
+    from PySide6.QtTest import QTest
+else:
+    from PySide2.QtTest import QTest
 
 
 def _emit_witness(surface_id, locator_key, locator, interaction, oracle, action_spy, control):
@@ -229,6 +238,105 @@ class TestMorphTabGUI(GuiTestBase):
                 value_spy,
                 tab.morph_slider,
             )
+        finally:
+            presenter = None
+            tab.deleteLater()
+            QApplication.processEvents()
+            cmds.file(new=True, force=True)
+
+    def test_visible_morph_row_mouse_and_keyboard_selection_preview_canonical_target(self):
+        """Real input keeps the hidden alias identity and previews only its fixed plug."""
+        cmds.file(new=True, force=True)
+        root = cmds.group(empty=True, name="morphSelectionLifecycleModel")
+        mesh = cmds.polyCube(name="morphSelectionLifecycleMesh")[0]
+        first_target = cmds.polyCube(name="Mouth_A01_selectionTarget")[0]
+        second_target = cmds.polyCube(name="Mouth_A02_selectionTarget")[0]
+        cmds.parent(mesh, root)
+        blend_shape = cmds.blendShape(
+            first_target,
+            second_target,
+            mesh,
+            name="morphSelectionLifecycleBlendShape",
+        )[0]
+        cmds.aliasAttr("Mouth_A01", f"{blend_shape}.weight[0]")
+        cmds.aliasAttr("Mouth_A02", f"{blend_shape}.weight[1]")
+        cmds.delete(first_target, second_target)
+
+        tab = MorphTab()
+        presenter = None
+        try:
+            tab.resize(900, 520)
+            tab.show()
+            QApplication.processEvents()
+            app_state = ApplicationState()
+            adapter = MayaCmdsAdapter()
+            snapshot_provider = MayaMorphAuthoringSnapshotProvider(adapter)
+            preview_spy = ActionInvocationSpy.wrap(
+                "MorphAuthoringSnapshotProvider.set_morph_preview",
+                snapshot_provider.set_morph_preview,
+                tab.morph_slider,
+            )
+            snapshot_provider.set_morph_preview = preview_spy
+            presenter = MorphPresenter(
+                tab,
+                app_state,
+                maya_adapter=adapter,
+                morph_snapshot_provider=snapshot_provider,
+            )
+            app_state._current_model_root = root
+            presenter.load_morphs()
+            QApplication.processEvents()
+
+            self.assertEqual(tab.morph_list.count(), 2)
+            first_item = tab.morph_list.item(0)
+            second_item = tab.morph_list.item(1)
+            self.assertEqual(first_item.data(Qt.UserRole), "Mouth_A01")
+            self.assertEqual(second_item.data(Qt.UserRole), "Mouth_A02")
+
+            tab.morph_list.scrollToItem(first_item)
+            QApplication.processEvents()
+            first_rect = tab.morph_list.visualItemRect(first_item)
+            self.assertFalse(first_rect.isEmpty())
+            self.assertTrue(tab.morph_list.viewport().rect().contains(first_rect.center()))
+            mouse_selection_spy = QtSignalInvocationSpy(
+                "MorphPresenter.on_morph_selected.mouse",
+                tab.morph_list.currentItemChanged,
+                tab.morph_list,
+            )
+            QTest.mouseClick(
+                tab.morph_list.viewport(),
+                Qt.LeftButton,
+                pos=first_rect.center(),
+            )
+            QApplication.processEvents()
+            mouse_selection_spy.stop()
+            self.assertEqual(mouse_selection_spy.action_count, 1)
+            self.assertIs(tab.morph_list.currentItem(), first_item)
+            self.assertEqual(presenter.current_morph, "Mouth_A01")
+
+            keyboard_selection_spy = QtSignalInvocationSpy(
+                "MorphPresenter.on_morph_selected.keyboard",
+                tab.morph_list.currentItemChanged,
+                tab.morph_list,
+            )
+            tab.morph_list.setFocus()
+            QTest.keyClick(tab.morph_list, Qt.Key_Down)
+            QApplication.processEvents()
+            keyboard_selection_spy.stop()
+            self.assertEqual(keyboard_selection_spy.action_count, 1)
+            self.assertIs(tab.morph_list.currentItem(), second_item)
+            self.assertEqual(presenter.current_morph, "Mouth_A02")
+
+            tab.morph_slider.setFocus()
+            QTest.keyClick(tab.morph_slider, Qt.Key_Right)
+            QApplication.processEvents()
+            self.assertEqual(preview_spy.action_count, 1)
+            self.assertEqual(
+                preview_spy.calls[0][0][1],
+                (f"{blend_shape}.weight[1]",),
+            )
+            self.assertAlmostEqual(cmds.getAttr(f"{blend_shape}.weight[0]"), 0.0)
+            self.assertAlmostEqual(cmds.getAttr(f"{blend_shape}.weight[1]"), 0.01)
         finally:
             presenter = None
             tab.deleteLater()
