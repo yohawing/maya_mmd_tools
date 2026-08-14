@@ -76,6 +76,7 @@ set(SOURCES
     MmdPhysicsBoneDriverNode.cpp
     MmdAuthoringCommandSupport.cpp
     MmdAuthoringMorphBindingQuery.cpp
+    MmdAuthoringMorphWeightCommand.cpp
 )
 
 set(HEADERS
@@ -94,6 +95,7 @@ set(HEADERS
     MmdPhysicsBoneDriverNode.h
     MmdAuthoringCommandSupport.h
     MmdAuthoringMorphBindingQuery.h
+    MmdAuthoringMorphWeightCommand.h
 )
 
 add_library(mmd_tools_cpp SHARED ${SOURCES} ${HEADERS})

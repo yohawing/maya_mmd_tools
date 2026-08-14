@@ -32,6 +32,7 @@
 #include "MmdRenderShape.h"
 #include "MmdAuthoringCommandSupport.h"
 #include "MmdAuthoringMorphBindingQuery.h"
+#include "MmdAuthoringMorphWeightCommand.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -50,6 +51,7 @@ static bool sCppRegisteredMmdNativeCasterOverride = false;
 static bool sCppRegisteredMmdNativeCasterWitnessCommand = false;
 static bool sCppRegisteredMmdAuthoringSetAttrsCommand = false;
 static bool sCppRegisteredMmdAuthoringMorphBindingQueryCommand = false;
+static bool sCppRegisteredMmdAuthoringMorphWeightCommand = false;
 static MmdNativeCasterRenderOverride* sMmdNativeCasterOverride = nullptr;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
@@ -396,6 +398,16 @@ MStatus initializePlugin(MObject obj)
         sCppRegisteredMmdAuthoringMorphBindingQueryCommand = true;
     }
 
+    status = plugin.registerCommand("mmdAuthoringSetMorphWeights",
+                                    MmdAuthoringSetMorphWeightsCommand::creator,
+                                    MmdAuthoringSetMorphWeightsCommand::newSyntax);
+    if (!status) {
+        MGlobal::displayWarning(
+            "mmdAuthoringSetMorphWeights registration failed; native morph writes are unavailable.");
+    } else {
+        sCppRegisteredMmdAuthoringMorphWeightCommand = true;
+    }
+
     return MS::kSuccess;
 }
 
@@ -414,6 +426,12 @@ MStatus uninitializePlugin(MObject obj)
             "Cannot unload mmd_tools_cpp while native receiver shaders are active; "
             "close or replace the scene first.");
         return MS::kFailure;
+    }
+
+    if (sCppRegisteredMmdAuthoringMorphWeightCommand) {
+        status = plugin.deregisterCommand("mmdAuthoringSetMorphWeights");
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredMmdAuthoringMorphWeightCommand = false;
     }
 
     if (sCppRegisteredMmdAuthoringMorphBindingQueryCommand) {

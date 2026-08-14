@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Dict, Iterable, Mapping
 
 
 COMMAND_SET_ATTRS = "mmdAuthoringSetAttrs"
-_ALLOWED_COMMANDS = frozenset((COMMAND_SET_ATTRS,))
+COMMAND_SET_MORPH_WEIGHTS = "mmdAuthoringSetMorphWeights"
+_ALLOWED_COMMANDS = frozenset((COMMAND_SET_ATTRS, COMMAND_SET_MORPH_WEIGHTS))
 _PROTOCOL_VERSION = 1
 
 
@@ -43,6 +45,15 @@ def _strict_object(pairs):
             raise ValueError(f"duplicate JSON key: {key}")
         result[key] = value
     return result
+
+
+def _finite_number(value: Any) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 class NativeAuthoringCommandGateway:
@@ -88,3 +99,27 @@ class NativeAuthoringCommandGateway:
     def set_attrs(self, updates: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
         """Run the fixed Authoring witness write set as one Maya Undo item."""
         return self.execute(COMMAND_SET_ATTRS, {"updates": [dict(update) for update in updates]})
+
+    def set_morph_weights(self, updates: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
+        """Write a fixed, discovered morph target set as one native command."""
+        request_updates = [dict(update) for update in updates]
+        result = self.execute(
+            COMMAND_SET_MORPH_WEIGHTS,
+            {"updates": request_updates},
+        )
+        plugs = result.get("plugs")
+        values = result.get("values")
+        if (
+            not isinstance(plugs, list)
+            or not plugs
+            or not all(isinstance(plug, str) and plug for plug in plugs)
+            or len(set(plugs)) != len(plugs)
+            or not isinstance(values, list)
+            or len(values) != len(plugs)
+            or plugs != [update.get("plug") for update in request_updates]
+            or not all(_finite_number(value) for value in values)
+        ):
+            raise NativeCommandProtocolError(
+                "Native morph command returned invalid canonical values"
+            )
+        return result

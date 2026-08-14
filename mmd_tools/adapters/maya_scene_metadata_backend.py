@@ -28,6 +28,12 @@ from mmd_tools.adapters.maya_morph_binding_query import (
     MayaMorphBindingQueryError,
     resolve_maya_morph_binding,
 )
+from mmd_tools.adapters.native_authoring_command import (
+    NativeAuthoringCommandError,
+    NativeAuthoringCommandGateway,
+    NativeCommandProtocolError,
+    NativeCommandUnavailable,
+)
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter, SceneMetadataError
 from mmd_tools.core.constants import (
     ATTR_MMD_AXIS_DIRECTION,
@@ -488,6 +494,13 @@ class MayaSceneMetadataBackend:
 
     def __init__(self, cmds_adapter: Any) -> None:
         self._cmds = cmds_adapter
+        self._native_authoring = NativeAuthoringCommandGateway(cmds_adapter)
+        # Native writes remain opt-in until both supported Maya versions show
+        # lower p50 and p95 latency than the direct Python path.
+        self._use_native_morph_weights = (
+            os.environ.get("MMD_AUTHORING_MORPH_WEIGHT_MODE", "python").strip().lower()
+            == "native"
+        )
         self._write_transaction: dict[str, Any] | None = None
 
     def read_model_metadata(self, root: str) -> Mapping[str, Any]:
@@ -1467,14 +1480,54 @@ class MayaSceneMetadataBackend:
             plug: self._preview_weight(value, plug)
             for plug, value in zip(session.targets, target_values)
         }
-        for plug, value in expected.items():
-            self._call_adapter("set_attr", plug, value)
-            transaction["mutated"] = True
-            actual = self._preview_weight(self._call_adapter("get_attr", plug), plug)
-            if actual != value:
-                raise MayaSceneMetadataError(
-                    f"morph preview readback mismatch for {plug!r}: expected {value!r}, got {actual!r}"
-                )
+        native_updates = [
+            {"plug": plug, "value": value} for plug, value in expected.items()
+        ]
+        use_python = not self._use_native_morph_weights
+        if self._use_native_morph_weights:
+            try:
+                if not hasattr(self._cmds, "command_exists"):
+                    raise NativeCommandUnavailable("adapter has no native command surface")
+                result = self._native_authoring.set_morph_weights(native_updates)
+                canonical_values = result["values"]
+                expected = {
+                    plug: self._preview_weight(value, plug)
+                    for plug, value in zip(session.targets, canonical_values)
+                }
+                transaction["mutated"] = True
+            except NativeCommandUnavailable:
+                use_python = True
+            except NativeCommandProtocolError:
+                # Maya returned from a registered command, but its envelope
+                # cannot prove whether the no-op-looking command was queued.
+                # Undo it even when all observed values equal the preimage.
+                transaction["mutated"] = True
+                raise
+            except NativeAuthoringCommandError:
+                # A transport/protocol failure can occur after Maya executed
+                # the command. Preserve enough state for the coordinator's
+                # rollback to undo the whole event-spanning preview safely.
+                for plug, original in transaction["original_values"].items():
+                    try:
+                        actual = self._preview_weight(
+                            self._call_adapter("get_attr", plug), plug
+                        )
+                    except Exception:
+                        transaction["mutated"] = True
+                        break
+                    if actual != original:
+                        transaction["mutated"] = True
+                        break
+                raise
+        if use_python:
+            for plug, value in expected.items():
+                self._call_adapter("set_attr", plug, value)
+                transaction["mutated"] = True
+                actual = self._preview_weight(self._call_adapter("get_attr", plug), plug)
+                if actual != value:
+                    raise MayaSceneMetadataError(
+                        f"morph preview readback mismatch for {plug!r}: expected {value!r}, got {actual!r}"
+                    )
         transaction["target_values"] = expected
         return len(expected)
 
