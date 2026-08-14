@@ -20,7 +20,15 @@ from mmd_tools.core.constants import (
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.ui.main_window import MainWindow
-from mmd_tools.ui.qt_compat import QApplication, QColor, QT_BINDING, Qt
+from mmd_tools.ui.qt_compat import (
+    QApplication,
+    QColor,
+    QDialog,
+    QFileDialog,
+    QT_BINDING,
+    QTimer,
+    Qt,
+)
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from tests.common.maya_plugin_setup import load_mmd_tools_plugin
 from tests.common.ui_action_coverage import QtSignalInvocationSpy
@@ -182,6 +190,108 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         )
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(self.report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _drive_material_file_picker(self, button, target_path=None):
+        """Drive the production QFileDialog with a watchdog and hard timeout."""
+        errors = []
+        unexpected = []
+        captured = {}
+
+        def reject_unexpected_modals():
+            for widget in QApplication.topLevelWidgets():
+                if not isinstance(widget, QDialog) or not widget.isVisible():
+                    continue
+                if isinstance(widget, QFileDialog):
+                    continue
+                unexpected.append(widget.windowTitle() or type(widget).__name__)
+                widget.reject()
+
+        watchdog = QTimer(self.window)
+        watchdog.setInterval(25)
+        watchdog.timeout.connect(reject_unexpected_modals)
+        watchdog.start()
+
+        def fail_safe():
+            dialog = QApplication.activeModalWidget()
+            errors.append(AssertionError("material file picker exceeded 3 seconds"))
+            if isinstance(dialog, QDialog):
+                dialog.reject()
+
+        timeout = QTimer(self.window)
+        timeout.setSingleShot(True)
+        timeout.timeout.connect(fail_safe)
+        timeout.start(3000)
+
+        def drive_dialog():
+            dialog = QApplication.activeModalWidget()
+            try:
+                self.assertIsInstance(dialog, QFileDialog)
+                self.assertIs(QApplication.activeModalWidget(), dialog)
+                self.assertIs(dialog.parentWidget(), self.window.material_presenter.view)
+                captured["dialog"] = dialog
+                if target_path is None:
+                    QTest.keyClick(dialog, Qt.Key_Escape)
+                else:
+                    dialog.selectFile(str(target_path))
+                    QTest.keyClick(dialog, Qt.Key_Enter)
+            except Exception as exc:
+                errors.append(exc)
+                if isinstance(dialog, QDialog):
+                    dialog.reject()
+
+        QTimer.singleShot(0, drive_dialog)
+        action_spy = QtSignalInvocationSpy(
+            "MaterialPresenter.browse_file",
+            button.clicked,
+            button,
+        )
+        was_non_native = QApplication.testAttribute(Qt.AA_DontUseNativeDialogs)
+        try:
+            QApplication.setAttribute(Qt.AA_DontUseNativeDialogs, True)
+            self.assertTrue(QApplication.testAttribute(Qt.AA_DontUseNativeDialogs))
+            QTest.mouseClick(button, Qt.LeftButton)
+            QApplication.processEvents()
+        finally:
+            timeout.stop()
+            watchdog.stop()
+            QApplication.setAttribute(Qt.AA_DontUseNativeDialogs, was_non_native)
+        self.assertFalse(unexpected, unexpected)
+        self.assertFalse(errors, errors)
+        self.assertEqual(action_spy.action_count, 1)
+        self.assertIsInstance(captured.get("dialog"), QFileDialog)
+
+    def test_material_texture_file_picker_accepts_semantic_slot(self):
+        """Accept publishes one selected path to the main-texture work slot."""
+        presenter = self.window.material_presenter
+        view = presenter.view
+        self.window.tab_widget.setCurrentWidget(view)
+        presenter.load_materials()
+        view.material_list.setCurrentRow(0)
+        QApplication.processEvents()
+        sphere_before = view.sphere_map_path_edit.text()
+        with tempfile.TemporaryDirectory(prefix="mmd_material_picker_") as temp_dir:
+            texture_path = Path(temp_dir) / "accepted.png"
+            texture_path.write_bytes(b"picker")
+            self._drive_material_file_picker(view.texture_browse_btn, texture_path)
+            self.assertEqual(Path(view.texture_path_edit.text()), texture_path)
+            self.assertEqual(Path(presenter.material_data["texture_path"]), texture_path)
+        self.assertEqual(view.sphere_map_path_edit.text(), sphere_before)
+
+    def test_material_texture_file_picker_cancel_preserves_semantic_slot(self):
+        """Cancel leaves the main-texture work slot and dirty flag unchanged."""
+        presenter = self.window.material_presenter
+        view = presenter.view
+        self.window.tab_widget.setCurrentWidget(view)
+        presenter.load_materials()
+        view.material_list.setCurrentRow(0)
+        QApplication.processEvents()
+        path_before = view.texture_path_edit.text()
+        data_before = presenter.material_data.get("texture_path")
+        dirty_before = presenter.has_unsaved_changes
+        self._drive_material_file_picker(view.texture_browse_btn)
+        self.assertEqual(view.texture_path_edit.text(), path_before)
+        self.assertEqual(presenter.material_data.get("texture_path"), data_before)
+        self.assertEqual(presenter.has_unsaved_changes, dirty_before)
 
     def _register_second_bone_fixture(self):
         """Register one deterministic descendant joint through production APIs."""
