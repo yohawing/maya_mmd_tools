@@ -891,19 +891,19 @@ class MayaSceneMetadataBackend:
         self._full_metadata_transaction.rebase_write_bindings(model_root, target_spec)
 
     def apply_model_metadata(self, model_root: str, metadata: Mapping[str, Any]) -> None:
-        transaction = self._active_transaction(model_root)
+        transaction = self._full_metadata_transaction.require_active(model_root)
         self._model_metadata_writer.write(transaction, metadata)
 
     def apply_bone_metadata(self, model_root: str, metadata: Iterable[Mapping[str, Any]]) -> None:
-        transaction = self._active_transaction(model_root)
+        transaction = self._full_metadata_transaction.require_active(model_root)
         self._bone_metadata_writer.write(transaction, metadata)
 
     def apply_material_metadata(self, model_root: str, metadata: Iterable[Mapping[str, Any]]) -> None:
-        transaction = self._active_transaction(model_root)
+        transaction = self._full_metadata_transaction.require_active(model_root)
         self._material_metadata_writer.write(transaction, metadata)
 
     def apply_morph_metadata(self, model_root: str, metadata: Iterable[Mapping[str, Any]]) -> None:
-        transaction = self._active_transaction(model_root)
+        transaction = self._full_metadata_transaction.require_active(model_root)
         self._morph_metadata_writer.write(transaction, metadata)
 
     def commit_write(self, model_root: str) -> None:
@@ -2532,7 +2532,10 @@ class MayaSceneMetadataBackend:
         return value if isinstance(value, str) else ""
 
     def _call_adapter(self, method: str, *args: Any, **kwargs: Any) -> Any:
-        return self._read_support.call_adapter(method, *args, **kwargs)
+        result = self._read_support.call_adapter(method, *args, **kwargs)
+        if method in {"set_attr", "add_attr", "delete_attr"}:
+            self._full_metadata_transaction.mark_mutation()
+        return result
 
     def _agreed_vector_alias(self, joint: str, attrs: tuple[str, ...]) -> tuple[float, float, float]:
         values = [(attr, self._required_vector(joint, attr)) for attr in attrs if self._has_attr(joint, attr)]

@@ -1717,6 +1717,49 @@ def test_each_apply_hook_fails_closed_before_unsafe_changes(section: str) -> Non
     finally:
         backend.rollback_write("|root")
     assert adapter.read_spec("|root").fingerprint() == original.fingerprint()
+    assert cmds.undo_count == 0
+    assert backend._write_transaction is None
+
+
+@pytest.mark.parametrize("section", ["model", "bone", "material", "morph"])
+def test_aggregate_apply_hooks_reject_narrow_transaction_before_any_write(section: str) -> None:
+    cmds, backend, adapter = _writable_scene()
+    backend.begin_display_frames_write("|root")
+    writes_before = len(cmds.write_history)
+
+    try:
+        with pytest.raises(MayaSceneMetadataError, match="not a full metadata write"):
+            if section == "model":
+                backend.apply_model_metadata("|root", {})
+            elif section == "bone":
+                backend.apply_bone_metadata("|root", [])
+            elif section == "material":
+                backend.apply_material_metadata("|root", [])
+            else:
+                backend.apply_morph_metadata("|root", [])
+        assert len(cmds.write_history) == writes_before
+        assert backend._write_transaction is not None
+        assert backend._write_transaction["kind"] == "display_frames"
+    finally:
+        backend.rollback_write("|root")
+
+
+def test_full_rebase_and_commit_hooks_reject_narrow_transaction_before_any_write() -> None:
+    cmds, backend, adapter = _writable_scene()
+    original = adapter.read_spec("|root")
+    backend.begin_display_frames_write("|root")
+    writes_before = len(cmds.write_history)
+
+    try:
+        with pytest.raises(MayaSceneMetadataError, match="not a full metadata write"):
+            backend.rebase_write_bindings("|root", original)
+        with pytest.raises(MayaSceneMetadataError, match="not a full metadata write"):
+            backend.commit_write("|root")
+        assert len(cmds.write_history) == writes_before
+        assert backend._write_transaction is not None
+        assert backend._write_transaction["kind"] == "display_frames"
+    finally:
+        backend.rollback_write("|root")
 
 
 def test_commit_fingerprint_mismatch_rolls_back_all_prior_sections() -> None:
@@ -1742,7 +1785,7 @@ def test_commit_fingerprint_mismatch_rolls_back_all_prior_sections() -> None:
     ],
 )
 def test_set_failure_in_each_apply_section_rolls_back_partial_writes(failed_path: str) -> None:
-    cmds, _, adapter = _writable_scene()
+    cmds, backend, adapter = _writable_scene()
     original = adapter.read_spec("|root")
     target = replace(
         original,
@@ -1758,6 +1801,8 @@ def test_set_failure_in_each_apply_section_rolls_back_partial_writes(failed_path
 
     assert adapter.read_spec("|root").fingerprint() == original.fingerprint()
     assert cmds.undo_chunk_open is False
+    assert cmds.undo_count == 1
+    assert backend._write_transaction is None
 
 
 def test_explicit_rollback_restores_original_fingerprint() -> None:

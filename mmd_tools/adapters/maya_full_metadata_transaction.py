@@ -74,12 +74,23 @@ class MayaFullMetadataTransaction:
             },
             "bindings_rebased": False,
             "chunk_open": False,
+            "mutated": False,
         }
         context.call_adapter(
             "undo_info", openChunk=True, chunkName="MMD Authoring Metadata"
         )
         transaction["chunk_open"] = True
         context.set_active_transaction(transaction)
+
+    def require_active(self, model_root: str) -> Transaction:
+        """Return the active full transaction for aggregate metadata hooks."""
+        return self._full_transaction(model_root)
+
+    def mark_mutation(self) -> None:
+        """Record a successful Maya mutation owned by this full transaction."""
+        transaction = self._context.get_active_transaction()
+        if transaction is not None and self._is_full_transaction(transaction):
+            transaction["mutated"] = True
 
     def rebase_write_bindings(
         self,
@@ -149,6 +160,7 @@ class MayaFullMetadataTransaction:
                 f"metadata transaction fingerprint mismatch: expected {expected}, got {actual}"
             )
         context.call_adapter("undo_info", closeChunk=True)
+        transaction["chunk_open"] = False
         context.set_active_transaction(None)
 
     def rollback_write(self, model_root: str) -> None:
@@ -159,7 +171,9 @@ class MayaFullMetadataTransaction:
             if transaction["chunk_open"]:
                 context.call_adapter("undo_info", closeChunk=True)
                 transaction["chunk_open"] = False
-            context.call_adapter("undo")
+            if transaction["mutated"]:
+                context.call_adapter("undo")
+                transaction["mutated"] = False
         finally:
             # Keep the backend registry clear even when Maya's undo operation
             # itself fails, matching the existing full-transaction boundary.
@@ -170,11 +184,14 @@ class MayaFullMetadataTransaction:
 
     def _full_transaction(self, model_root: str) -> Transaction:
         transaction = self._context.active_transaction(model_root)
-        if transaction.get("kind") != self._KIND:
+        if not self._is_full_transaction(transaction):
             raise self._context.error_factory(
                 "active transaction is not a full metadata write"
             )
         return transaction
+
+    def _is_full_transaction(self, transaction: Transaction) -> bool:
+        return transaction.get("kind") == self._KIND
 
 
 __all__ = [

@@ -157,6 +157,7 @@ def test_commit_mismatch_keeps_chunk_for_runner_rollback() -> None:
     authority = context.authority()
     authority.begin_write("|root")
     context.scene = replace(context.scene, model=MmdModelSpec(name="tampered"))
+    authority.mark_mutation()
 
     with pytest.raises(ValueError, match="fingerprint mismatch"):
         authority.commit_write("|root")
@@ -175,6 +176,23 @@ def test_commit_mismatch_keeps_chunk_for_runner_rollback() -> None:
         "undo_info",
         "undo_info",
         "undo",
+    ]
+
+
+def test_empty_rollback_closes_owned_chunk_without_global_undo() -> None:
+    context = _FakeContext()
+    authority = context.authority()
+    authority.begin_write("|root")
+
+    authority.rollback_write("|root")
+
+    assert context.active is None
+    assert context.chunk_open is False
+    assert context.undo_count == 0
+    assert [call[0] for call in context.calls] == [
+        "undo_info",
+        "undo_info",
+        "undo_info",
     ]
 
 
