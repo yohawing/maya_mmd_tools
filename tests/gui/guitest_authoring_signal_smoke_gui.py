@@ -845,6 +845,105 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         cmds.redo()
         self.assertEqual(cmds.getAttr(f"{second_identity}.{ATTR_MMD_BONE_NAME_EN}"), edited_name)
 
+    def test_bone_pending_edit_switches_models_without_cross_root_cache(self):
+        """A draft never crosses a real child-joint switch into Model B."""
+        presenter = self.window.bone_presenter
+        view = presenter.view
+        composition = self.window.authoring_composition
+        coordinator = composition.coordinator
+        root_a = self.root
+        root_b = composition.model_initializer.create(
+            "pmx20-basic-v1", "Bone Isolation B JP", "Bone Isolation B EN"
+        ).root
+        mesh_shapes_b = cmds.listRelatives(
+            root_b, allDescendents=True, fullPath=True, type="mesh"
+        ) or []
+        self.assertGreaterEqual(len(mesh_shapes_b), 1)
+        mesh_parents_b = []
+        for index, shape in enumerate(mesh_shapes_b):
+            mesh_parents_b.append(cmds.listRelatives(shape, parent=True, fullPath=True)[0])
+            cmds.rename(shape, f"boneIsolationBMeshShape{index}")
+        for index, parent in enumerate(dict.fromkeys(mesh_parents_b)):
+            cmds.rename(parent, f"boneIsolationBMesh{index}")
+
+        self.window.tab_widget.setCurrentWidget(view)
+        self.window.app_state.refresh_model_list()
+        available = self.window.app_state.available_models
+        self.assertIn(root_a, available)
+        self.assertIn(root_b, available)
+        presenter.load_bones()
+        QApplication.processEvents()
+        bone_a = coordinator.read_spec(root_a).bones[0]
+        bone_b = coordinator.read_spec(root_b).bones[0]
+        self.assertTrue(bone_a.binding_identity.startswith("|"))
+        self.assertTrue(bone_b.binding_identity.startswith("|"))
+
+        def select_bone(root, binding):
+            cmds.select(binding, replace=True)
+            self.assertTrue(self.window.app_state.select_model_from_maya_selection())
+            QApplication.processEvents()
+            self.assertEqual(self.window.app_state.current_model_root, root)
+            view.bone_list.setCurrentRow(0)
+            QApplication.processEvents()
+            self.assertEqual(presenter.current_bone, binding)
+            self.assertEqual(tuple(cmds.ls(selection=True, long=True) or ()), (binding,))
+
+        select_bone(root_a, bone_a.binding_identity)
+        before_a_name = bone_a.name_english
+        pending_a_name = "Pending Model A Bone"
+        view.bone_name_en_edit.setText(pending_a_name)
+        QApplication.processEvents()
+        self.assertTrue(presenter._has_pending_refresh_work())
+
+        select_bone(root_b, bone_b.binding_identity)
+        before_b_name = bone_b.name_english
+
+        def assert_b_routing():
+            self.assertEqual(self.window.app_state.current_model_root, root_b)
+            self.assertEqual(presenter.current_bone, bone_b.binding_identity)
+            self.assertEqual(presenter.current_bone_index, bone_b.index)
+            self.assertEqual(
+                tuple(cmds.ls(selection=True, long=True) or ()),
+                (bone_b.binding_identity,),
+            )
+            self.assertEqual(set(presenter._registered_indices), {bone_b.binding_identity})
+            self.assertEqual(set(presenter.bone_list_items), {bone_b.binding_identity})
+            self.assertNotIn(bone_a.binding_identity, presenter.all_bones)
+
+        assert_b_routing()
+        self.assertEqual(view.bone_name_en_edit.text(), before_b_name)
+        self.assertFalse(presenter._has_pending_refresh_work())
+
+        edited_b_name = "Only Model B Bone"
+        view.bone_name_en_edit.setText(edited_b_name)
+        with patch.object(
+            coordinator,
+            "apply_bone_value_patch",
+            wraps=coordinator.apply_bone_value_patch,
+        ) as apply_action:
+            QTest.mouseClick(view.apply_btn, Qt.LeftButton)
+            QApplication.processEvents()
+            self.assertEqual(apply_action.call_count, 1)
+
+        self.assertEqual(coordinator.read_spec(root_a).bones[0].name_english, before_a_name)
+        self.assertEqual(coordinator.read_spec(root_b).bones[0].name_english, edited_b_name)
+        cmds.undo()
+        self.assertEqual(coordinator.read_spec(root_a).bones[0].name_english, before_a_name)
+        self.assertEqual(coordinator.read_spec(root_b).bones[0].name_english, before_b_name)
+        assert_b_routing()
+        cmds.redo()
+        self.assertEqual(coordinator.read_spec(root_a).bones[0].name_english, before_a_name)
+        self.assertEqual(coordinator.read_spec(root_b).bones[0].name_english, edited_b_name)
+        assert_b_routing()
+
+        select_bone(root_a, bone_a.binding_identity)
+        self.assertEqual(presenter.current_bone_index, bone_a.index)
+        self.assertEqual(set(presenter._registered_indices), {bone_a.binding_identity})
+        self.assertEqual(set(presenter.bone_list_items), {bone_a.binding_identity})
+        self.assertNotIn(bone_b.binding_identity, presenter.all_bones)
+        self.assertEqual(view.bone_name_en_edit.text(), before_a_name)
+        self.assertNotEqual(view.bone_name_en_edit.text(), pending_a_name)
+
     def test_material_list_click_keyboard_routes_canonical_selection_to_one_apply(self):
         """Real row navigation routes one Apply to only the selected material."""
         presenter = self.window.material_presenter
