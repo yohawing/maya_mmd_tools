@@ -12,6 +12,7 @@ from mmd_tools.adapters.native_authoring_command import (
     NativeAuthoringCommandGateway,
     NativeCommandDomainError,
     NativeCommandProtocolError,
+    NativeCommandTransportError,
     NativeCommandUnavailable,
 )
 from mmd_tools.core.model_authoring_spec import MmdMaterialSpec
@@ -212,23 +213,80 @@ def test_native_route_rejects_disabled_undo_before_transport(monkeypatch):
     assert gateway.calls == []
 
 
-def test_coordinator_native_success_bypasses_python_undo_transaction():
+def test_coordinator_native_success_uses_shared_python_transaction():
     coordinator, backend, materials, _ = _coordinator()
     prior = backend.scene.materials[0]
     target = replace(prior, name_english="native")
+    events = backend.events
     coordinator._metadata.read_material_value = lambda *_args: prior
+    materials.native_material_value_patch_available = lambda: True
     materials.try_apply_native_material_value_patch = lambda _root, old, new: (
+        events.append("native") or
         new if old == prior else None
     )
     materials.apply_material_value_patch = lambda *_args: (_ for _ in ()).throw(
         AssertionError("Python mutation fallback is forbidden after native success")
     )
-    backend.begin_material_value_patch = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("Python undo chunk is forbidden around the undoable native command")
+    backend.begin_material_value_patch = lambda *_args: events.append("begin:native")
+    coordinator._metadata.commit_material_value_patch = lambda *_args: events.append(
+        "commit:native"
     )
 
     assert coordinator.apply_material_value_patch("|root", target) == target
-    assert backend.events == []
+    assert backend.events == ["begin:native", "native", "commit:native"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        NativeCommandTransportError("transport"),
+        NativeCommandProtocolError("protocol"),
+        NativeCommandDomainError("domain", "domain", "prepare"),
+    ],
+)
+def test_coordinator_native_failures_rollback_shared_transaction(failure):
+    coordinator, backend, materials, _ = _coordinator()
+    prior = backend.scene.materials[0]
+    target = replace(prior, name_english="native")
+    coordinator._metadata.read_material_value = lambda *_args: prior
+    materials.native_material_value_patch_available = lambda: True
+    materials.try_apply_native_material_value_patch = lambda *_args: (_ for _ in ()).throw(
+        failure
+    )
+    materials.apply_material_value_patch = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("registered native failure must not fall back to Python")
+    )
+    backend.begin_material_value_patch = lambda *_args: backend.events.append("begin:native")
+    coordinator._metadata.commit_material_value_patch = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("failed native command must not commit")
+    )
+    backend.rollback_write = lambda *_args: backend.events.append("rollback:native")
+
+    with pytest.raises(Exception, match="apply_material_value_patch failed"):
+        coordinator.apply_material_value_patch("|root", target)
+
+    assert backend.events == ["begin:native", "rollback:native"]
+
+
+def test_unavailable_native_command_falls_back_before_shared_transaction():
+    coordinator, backend, materials, _ = _coordinator()
+    prior = backend.scene.materials[0]
+    target = replace(prior, name_english="python")
+    coordinator._metadata.read_material_value = lambda *_args: prior
+    materials.native_material_value_patch_available = lambda: False
+    materials.try_apply_native_material_value_patch = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("unavailable native command must not be invoked")
+    )
+    materials.apply_material_value_patch = lambda _root, _old, new: (
+        backend.events.append("python") or new
+    )
+    backend.begin_material_value_patch = lambda *_args: backend.events.append("begin:python")
+    coordinator._metadata.commit_material_value_patch = lambda *_args: backend.events.append(
+        "commit:python"
+    )
+
+    assert coordinator.apply_material_value_patch("|root", target) == target
+    assert backend.events == ["begin:python", "python", "commit:python"]
 
 
 def test_cpp_registry_preflight_checks_schema_backlink_and_unique_membership():

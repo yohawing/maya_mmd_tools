@@ -738,28 +738,6 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 "apply_material_value_patch received binding-sensitive fields"
             )
-        native_patch = getattr(self._materials, "try_apply_native_material_value_patch", None)
-        if route == "value" and outline_enabled is None and callable(native_patch):
-            native_result = native_patch(model_root, previous, material)
-            if native_result is not None:
-                if not isinstance(native_result, MmdMaterialSpec):
-                    raise MayaModelAuthoringCoordinatorError(
-                        "native material value patch returned an invalid material"
-                    )
-                return native_result
-        native_outline_patch = getattr(
-            self._materials, "try_apply_native_material_outline_patch", None
-        )
-        if outline_enabled is not None and callable(native_outline_patch):
-            native_result = native_outline_patch(
-                model_root, previous, material, outline_enabled
-            )
-            if native_result is not None:
-                if not isinstance(native_result, MmdMaterialSpec):
-                    raise MayaModelAuthoringCoordinatorError(
-                        "native material outline patch returned an invalid material"
-                    )
-                return native_result
         structural_patch = getattr(self._materials, "apply_material_value_patch", None)
         outline_patch = getattr(self._materials, "apply_material_outline", None)
         if not callable(structural_patch):
@@ -803,6 +781,79 @@ class MayaModelAuthoringCoordinator:
 
             begin_patch = begin_with_outline
             commit_patch = commit_with_outline
+
+        native_patch = getattr(self._materials, "try_apply_native_material_value_patch", None)
+        native_available = getattr(
+            self._materials, "native_material_value_patch_available", None
+        )
+        if (
+            route == "value"
+            and outline_enabled is None
+            and callable(native_patch)
+            and callable(native_available)
+            and native_available()
+        ):
+            def native_value_write() -> MmdMaterialSpec:
+                result = native_patch(model_root, previous, material)
+                if not isinstance(result, MmdMaterialSpec):
+                    raise TypeError(
+                        "native material value patch became unavailable or returned an invalid material"
+                    )
+                return result
+
+            return self._execute_material_patch(
+                model_root,
+                "apply_material_value_patch",
+                previous,
+                material,
+                binding,
+                begin_patch,
+                native_value_write,
+                commit_patch,
+            )
+
+        native_outline_patch = getattr(
+            self._materials, "try_apply_native_material_outline_patch", None
+        )
+        native_outline_available = getattr(
+            self._materials, "native_material_outline_patch_available", None
+        )
+        if (
+            outline_enabled is not None
+            and callable(native_outline_patch)
+            and callable(native_outline_available)
+            and native_outline_available()
+        ):
+            native_outline_target: dict[str, Any] = {}
+
+            def native_outline_write() -> MmdMaterialSpec:
+                nonlocal outline_target
+                result = native_outline_patch(
+                    model_root,
+                    previous,
+                    material,
+                    outline_enabled,
+                    outline_target_sink=native_outline_target,
+                )
+                if not isinstance(result, MmdMaterialSpec):
+                    raise TypeError(
+                        "native material outline patch became unavailable or returned an invalid material"
+                    )
+                if not native_outline_target:
+                    raise ValueError("native material outline patch returned no outline target")
+                outline_target = native_outline_target
+                return result
+
+            return self._execute_material_patch(
+                model_root,
+                "apply_material_value_patch",
+                previous,
+                material,
+                binding,
+                begin_patch,
+                native_outline_write,
+                commit_patch,
+            )
 
         return self._execute_material_patch(
             model_root,

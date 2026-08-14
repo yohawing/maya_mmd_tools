@@ -8,7 +8,7 @@ undo transactions remain the responsibility of the caller.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 import json
 import os
@@ -47,6 +47,8 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core.model_authoring_spec import MmdMaterialSpec, MmdModelAuthoringSpec
 from mmd_tools.adapters.native_authoring_command import (
+    COMMAND_SET_MATERIAL_OUTLINE,
+    COMMAND_SET_MATERIAL_VALUES,
     NativeAuthoringCommandGateway,
     NativeCommandUnavailable,
 )
@@ -299,12 +301,29 @@ class MayaMaterialAuthoring:
             return None
         return new_material
 
+    def native_material_value_patch_available(self) -> bool:
+        """Return whether the configured value command can run without writing."""
+        mode = os.environ.get("MMD_AUTHORING_MATERIAL_VALUE_MODE", "auto").strip().lower()
+        if mode not in {"auto", "native", "python"}:
+            raise MayaMaterialAuthoringError(
+                "MMD_AUTHORING_MATERIAL_VALUE_MODE must be auto, native, or python"
+            )
+        if mode == "python":
+            return False
+        checker = getattr(self._native_authoring_gateway, "command_available", None)
+        if callable(checker):
+            return mode == "native" or bool(checker(COMMAND_SET_MATERIAL_VALUES))
+        # Custom gateways may not expose a read-only availability probe.  Let
+        # the command call make the final decision in that integration path.
+        return True
+
     def try_apply_native_material_outline_patch(
         self,
         model_root: str,
         old_material: MmdMaterialSpec,
         new_material: MmdMaterialSpec,
         outline_enabled: bool,
+        outline_target_sink: MutableMapping[str, Any] | None = None,
     ) -> MmdMaterialSpec | None:
         """Use the dedicated native DX11 outline command when registered."""
         mode = os.environ.get("MMD_AUTHORING_MATERIAL_OUTLINE_MODE", "auto").strip().lower()
@@ -370,7 +389,23 @@ class MayaMaterialAuthoring:
             if mode == "native":
                 raise
             return None
+        if outline_target_sink is not None:
+            outline_target_sink.update(outline_target)
         return new_material
+
+    def native_material_outline_patch_available(self) -> bool:
+        """Return whether the configured outline command can run without writing."""
+        mode = os.environ.get("MMD_AUTHORING_MATERIAL_OUTLINE_MODE", "auto").strip().lower()
+        if mode not in {"auto", "native", "python"}:
+            raise MayaMaterialAuthoringError(
+                "MMD_AUTHORING_MATERIAL_OUTLINE_MODE must be auto, native, or python"
+            )
+        if mode == "python":
+            return False
+        checker = getattr(self._native_authoring_gateway, "command_available", None)
+        if callable(checker):
+            return mode == "native" or bool(checker(COMMAND_SET_MATERIAL_OUTLINE))
+        return True
 
     def _capture_material_outline(self, shader: str) -> dict[str, dict[str, Any]]:
         """Capture the fixed DX11 policy fingerprint for a TOCTOU precondition."""

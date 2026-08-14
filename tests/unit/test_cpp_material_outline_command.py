@@ -17,6 +17,7 @@ from tests.unit.test_maya_material_authoring import (
     FakeRegistry,
     _material,
 )
+from tests.unit.test_maya_model_authoring_coordinator import _coordinator
 from mmd_tools.adapters.maya_material_authoring import MayaMaterialAuthoring
 
 
@@ -177,6 +178,66 @@ def test_auto_does_not_fallback_after_registered_outline_failure(monkeypatch):
     gateway.set_material_outline = fail_registered
     with pytest.raises(NativeCommandProtocolError, match="registered command failed"):
         adapter.try_apply_native_material_outline_patch("|Model_root", old, old, False)
+
+
+def test_coordinator_native_outline_uses_shared_transaction_and_python_readback():
+    coordinator, backend, materials, _ = _coordinator()
+    prior = backend.scene.materials[0]
+    events = backend.events
+    coordinator._metadata.read_material_value = lambda *_args: prior
+    materials.native_material_outline_patch_available = lambda: True
+
+    def native_outline(_root, _old, new, _enabled, *, outline_target_sink):
+        events.append("native:outline")
+        outline_target_sink.update(
+            {
+                "technique": {"exists": True, "value": "MainOutline"},
+                "EdgeSize": {"exists": True, "value": 1.0},
+                "mmd_shader_outline_enabled": {"exists": True, "value": True},
+                "mmdDoubleSided": {"exists": True, "value": False},
+                "mmdTransparencyMode": {"exists": True, "value": "opaque"},
+            }
+        )
+        return new
+
+    materials.try_apply_native_material_outline_patch = native_outline
+    materials.apply_material_value_patch = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("native outline must not fall back after availability")
+    )
+    materials.apply_material_outline = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("native outline must not use the Python outline writer")
+    )
+    backend.begin_material_value_patch = lambda *_args: events.append("begin:outline")
+    backend.commit_material_value_patch = lambda *_args: events.append("commit:outline")
+
+    assert coordinator.apply_material_value_patch("|root", prior, outline_enabled=True) == prior
+    assert events == ["begin:outline", "native:outline", "commit:outline"]
+
+
+def test_coordinator_registered_outline_failure_rolls_back_without_python_fallback():
+    coordinator, backend, materials, _ = _coordinator()
+    prior = backend.scene.materials[0]
+    coordinator._metadata.read_material_value = lambda *_args: prior
+    materials.native_material_outline_patch_available = lambda: True
+    materials.try_apply_native_material_outline_patch = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        NativeCommandProtocolError("registered outline failure")
+    )
+    materials.apply_material_value_patch = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("registered native failure must not fall back")
+    )
+    materials.apply_material_outline = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("registered native failure must not use Python outline")
+    )
+    backend.begin_material_value_patch = lambda *_args: backend.events.append("begin:outline")
+    backend.commit_material_value_patch = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("registered native failure must not commit")
+    )
+    backend.rollback_write = lambda *_args: backend.events.append("rollback:outline")
+
+    with pytest.raises(Exception, match="apply_material_value_patch failed"):
+        coordinator.apply_material_value_patch("|root", prior, outline_enabled=True)
+
+    assert backend.events == ["begin:outline", "rollback:outline"]
 
 
 def test_cpp_source_fixes_identity_policy_and_transaction_authority():

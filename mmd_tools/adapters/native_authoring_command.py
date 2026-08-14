@@ -91,11 +91,17 @@ class NativeAuthoringCommandGateway:
     def __init__(self, cmds_adapter: Any) -> None:
         self._cmds = cmds_adapter
 
-    def execute(self, command: str, payload: Mapping[str, Any]) -> Dict[str, Any]:
+    def command_available(self, command: str) -> bool:
+        """Check command registration without invoking or mutating Maya."""
         if command not in _ALLOWED_COMMANDS:
             raise ValueError(f"Native Authoring command is not allowlisted: {command}")
         command_exists = getattr(self._cmds, "command_exists", None)
-        if not callable(command_exists) or not command_exists(command):
+        return callable(command_exists) and bool(command_exists(command))
+
+    def execute(self, command: str, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        if command not in _ALLOWED_COMMANDS:
+            raise ValueError(f"Native Authoring command is not allowlisted: {command}")
+        if not self.command_available(command):
             raise NativeCommandUnavailable(f"Native Authoring command is unavailable: {command}")
         request = dict(payload)
         request["version"] = _PROTOCOL_VERSION
