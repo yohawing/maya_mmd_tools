@@ -11,6 +11,7 @@ from maya import cmds, standalone
 from mmd_tools.adapters.maya_cmds_adapter import MayaCmdsAdapter
 from mmd_tools.adapters.maya_scene_metadata_backend import MayaSceneMetadataBackend
 from mmd_tools.adapters.maya_morph_authoring import (
+    MayaMorphAuthoringError,
     _apply_vertex_target_plan,
     _new_vertex_target_plans,
     _vertex_target_plan,
@@ -102,7 +103,8 @@ def main() -> int:
             ),
         )
         controller_plan = {
-            "outputs": {"vertexNode": (f"{face_bs}.oldAlias", f"{body_bs}.oldAlias")}
+            "controller": cmds.ls(controller, long=True)[0],
+            "outputs": {"vertexNode": (f"{face_bs}.oldAlias", f"{body_bs}.w[8]")},
         }
         plans = _vertex_target_plan(
             adapter,
@@ -147,6 +149,7 @@ def main() -> int:
         offsets = MayaSceneMetadataBackend(adapter)._read_vertex_blendshape_offsets(
             cmds.ls(root, long=True)[0],
             "vertexNode",
+            "Move Wide",
             0,
         )
         assert offsets == [
@@ -224,7 +227,14 @@ def main() -> int:
             {"emptyNode": replace(empty, binding_identity="emptyNode")},
             {},
             [],
-            {"outputs": {"emptyNode": tuple(f"{plug.split('.', 1)[0]}.Empty" for plug in created_plugs)}},
+            {
+                "controller": cmds.ls(controller, long=True)[0],
+                "outputs": {
+                    "emptyNode": tuple(
+                        f"{plug.split('.', 1)[0]}.Empty" for plug in created_plugs
+                    )
+                },
+            },
             None,
         )
         for plug in created_plugs:
@@ -234,13 +244,71 @@ def main() -> int:
         assert all(not alias for alias in remaining_aliases.values()), remaining_aliases
 
         reindexed = replace(new, index=2)
+        face_mapping_path = f"{face_bs}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}"
+        face_mapping = cmds.getAttr(face_mapping_path)
+        cmds.setAttr(
+            face_mapping_path,
+            json.dumps({"3": {"name": "Stale", "index": 0}}),
+            type="string",
+        )
+        try:
+            _vertex_target_plan(
+                adapter,
+                cmds.ls(root, long=True)[0],
+                {"vertexNode": new},
+                {"vertexNode": reindexed},
+                [],
+                {
+                    "controller": cmds.ls(controller, long=True)[0],
+                    "outputs": {"vertexNode": (f"{face_bs}.weight[3]",)},
+                },
+                None,
+            )
+        except MayaMorphAuthoringError as exc:
+            assert "stale_raw_name_mapping" in str(exc)
+        else:
+            raise AssertionError("stale raw-name mapping was accepted")
+        finally:
+            cmds.setAttr(face_mapping_path, face_mapping, type="string")
+
+        try:
+            _vertex_target_plan(
+                adapter,
+                cmds.ls(root, long=True)[0],
+                {"vertexNode": new},
+                {"vertexNode": reindexed},
+                [],
+                {
+                    "controller": cmds.ls(controller, long=True)[0],
+                    "outputs": {
+                        "vertexNode": (
+                            f"{face_bs}.Move_Wide",
+                            f"{face_bs}.weight[3]",
+                        )
+                    },
+                },
+                None,
+            )
+        except MayaMorphAuthoringError as exc:
+            assert "duplicate_blendshape_candidate" in str(exc)
+        else:
+            raise AssertionError("duplicate blendShape candidate was accepted")
+
         reindex_plans = _vertex_target_plan(
             adapter,
             cmds.ls(root, long=True)[0],
             {"vertexNode": new},
             {"vertexNode": reindexed},
             [],
-            {"outputs": {"vertexNode": (f"{face_bs}.Move_Wide", f"{body_bs}.Move_Wide")}},
+            {
+                "controller": cmds.ls(controller, long=True)[0],
+                "outputs": {
+                    "vertexNode": (
+                        f"{face_bs}.weight[3]",
+                        f"{body_bs}.Move_Wide",
+                    )
+                },
+            },
             None,
         )
         _apply_vertex_target_plan(adapter, controller, reindex_plans)

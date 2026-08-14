@@ -244,6 +244,7 @@ def test_vertex_runtime_patch_writes_exact_selected_target() -> None:
     adapter.connections["|Model.mmd_morph_controller"] = ["controller"]
     adapter.types["controller"] = "mmdMorphController"
     adapter.connections["controller.outputWeight[0]"] = ["bs.weight[3]"]
+    adapter.aliases["bs.weight[3]"] = "Morph"
     adapter.attrs[("bs", "geometry")] = ["mesh"]
     adapter.attrs[("bs", "geometryIndices")] = [0]
     old = _morph(

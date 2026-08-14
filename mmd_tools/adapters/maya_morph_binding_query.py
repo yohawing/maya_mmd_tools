@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from mmd_tools.core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
 from mmd_tools.core.morph_binding_resolver import (
@@ -22,20 +22,23 @@ class MayaMorphBindingQueryError(RuntimeError):
 def resolve_maya_morph_binding(
     adapter: Any,
     request: MorphBindingRequest,
+    destination_values: Optional[Iterable[str]] = None,
 ) -> MorphBindingResolution:
     """Resolve one controller slot from narrowly queried Maya scene state."""
     output_plug = "{}.outputWeight[{}]".format(
         request.controller_identity,
         request.controller_slot,
     )
-    destinations = _call(
-        adapter,
-        "list_connections",
-        output_plug,
-        source=False,
-        destination=True,
-        plugs=True,
-    ) or ()
+    destinations = destination_values
+    if destinations is None:
+        destinations = _call(
+            adapter,
+            "list_connections",
+            output_plug,
+            source=False,
+            destination=True,
+            plugs=True,
+        ) or ()
     if isinstance(destinations, (str, bytes, bytearray)):
         raise MayaMorphBindingQueryError(
             "list_connections({!r}) returned a scalar".format(output_plug)

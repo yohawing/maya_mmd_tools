@@ -91,6 +91,23 @@ def test_query_collects_multiple_blendshape_destinations() -> None:
     ]
 
 
+def test_query_uses_supplied_destination_snapshot_without_graph_requery() -> None:
+    maya = FakeMaya()
+
+    def unexpected_query(*_args: Any, **_kwargs: Any) -> list[str]:
+        raise AssertionError("output graph must not be queried twice")
+
+    maya.list_connections = unexpected_query  # type: ignore[method-assign]
+
+    resolution = resolve_maya_morph_binding(
+        maya,
+        _request(),
+        destination_values=("faceBS.RenamedAlias",),
+    )
+
+    assert resolution.bindings[0].logical_target_index == 7
+
+
 def test_query_preserves_resolver_error_for_stale_raw_mapping() -> None:
     maya = FakeMaya()
     maya.raw["|rig|faceBS"]["7"]["name"] = "別名"

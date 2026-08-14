@@ -13,6 +13,7 @@ install_maya_stub()
 from mmd_tools.adapters.maya_morph_authoring import (  # noqa: E402
     MayaMorphAuthoringError,
     apply_morph_spec_change,
+    apply_morph_value_patch,
 )
 from mmd_tools.core.model_authoring_spec import (  # noqa: E402
     MmdModelAuthoringSpec,
@@ -21,6 +22,7 @@ from mmd_tools.core.model_authoring_spec import (  # noqa: E402
 )
 from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
 
@@ -389,6 +391,70 @@ def test_vertex_name_and_panel_update_alias_mapping_and_network_metadata() -> No
     assert mapping == {"3": {"name": "Smile Wide", "index": 0}}
 
 
+def test_selected_vertex_patch_resolves_old_alias_before_rename() -> None:
+    adapter = FakeAdapter()
+    old = _morph("Smile", 0, "vertex", "vertexNode")
+    _install_morph(adapter, old)
+    _install_vertex_target(adapter, old)
+    adapter.attrs[("|Model", ATTR_MMD_IMPORT_SCALE)] = 1.0
+    new = replace(old, name="Smile Wide")
+
+    result = apply_morph_value_patch(
+        "|Model",
+        old,
+        new,
+        adapter,
+        FakeRegistry(["vertexNode"]),
+    )
+
+    assert result == new
+    assert adapter.aliases["faceBS.weight[3]"] == "Smile_Wide"
+    mapping = json.loads(adapter.attrs[("faceBS", ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON)])
+    assert mapping == {"3": {"name": "Smile Wide", "index": 0}}
+
+
+def test_selected_vertex_patch_rejects_stale_raw_mapping_before_write() -> None:
+    adapter = FakeAdapter()
+    old = _morph("Smile", 0, "vertex", "vertexNode")
+    _install_morph(adapter, old)
+    _install_vertex_target(adapter, old)
+    adapter.attrs[("faceBS", ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON)] = json.dumps(
+        {"3": {"name": "Different", "index": 0}}
+    )
+    calls_before = list(adapter.calls)
+
+    with pytest.raises(MayaMorphAuthoringError, match="stale_raw_name_mapping"):
+        apply_morph_value_patch(
+            "|Model",
+            old,
+            replace(old, name="Smile Wide"),
+            adapter,
+            FakeRegistry(["vertexNode"]),
+        )
+
+    assert adapter.calls == calls_before
+
+
+def test_selected_vertex_patch_rejects_duplicate_same_blendshape_before_write() -> None:
+    adapter = FakeAdapter()
+    old = _morph("Smile", 0, "vertex", "vertexNode")
+    _install_morph(adapter, old)
+    _install_vertex_target(adapter, old)
+    adapter.connections["controller.outputWeight[0]"].append("faceBS.weight[3]")
+    calls_before = list(adapter.calls)
+
+    with pytest.raises(MayaMorphAuthoringError, match="duplicate_blendshape_candidate"):
+        apply_morph_value_patch(
+            "|Model",
+            old,
+            replace(old, name="Smile Wide"),
+            adapter,
+            FakeRegistry(["vertexNode"]),
+        )
+
+    assert adapter.calls == calls_before
+
+
 def test_vertex_offsets_rewrite_split_mesh_full_weight_sparse_targets() -> None:
     adapter = FakeAdapter()
     old = _morph(
@@ -428,12 +494,12 @@ def test_vertex_offsets_rewrite_split_mesh_full_weight_sparse_targets() -> None:
     component_calls = [call for call in adapter.calls if call[0] == "set_attr" and call[2].get("type") == "componentList"]
     point_calls = [call for call in adapter.calls if call[0] == "set_attr" and call[2].get("type") == "pointArray"]
     assert [call[1][0] for call in component_calls] == [
-        "faceBS.inputTarget[2].inputTargetGroup[3].inputTargetItem[6000].inputComponentsTarget",
         "bodyBS.inputTarget[2].inputTargetGroup[8].inputTargetItem[6000].inputComponentsTarget",
+        "faceBS.inputTarget[2].inputTargetGroup[3].inputTargetItem[6000].inputComponentsTarget",
     ]
     assert component_calls[0][1][1:] == (1, "vtx[0]")
-    assert point_calls[0][1][1:] == (1, (2.0, 4.0, -6.0, 1.0))
-    assert point_calls[1][1][1:] == (1, (-2.0, 1.0, 4.0, 1.0))
+    assert point_calls[0][1][1:] == (1, (-2.0, 1.0, 4.0, 1.0))
+    assert point_calls[1][1][1:] == (1, (2.0, 4.0, -6.0, 1.0))
 
 
 def test_vertex_offset_preflight_rejects_missing_full_weight_item_without_write() -> None:

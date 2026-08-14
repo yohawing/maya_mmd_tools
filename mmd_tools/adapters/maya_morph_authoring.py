@@ -19,6 +19,10 @@ import math
 import re
 from typing import Any
 
+from mmd_tools.adapters.maya_morph_binding_query import (
+    MayaMorphBindingQueryError,
+    resolve_maya_morph_binding,
+)
 from mmd_tools.core import model_registry
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
@@ -32,12 +36,19 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MODEL_REGISTRY,
 )
 from mmd_tools.core import maya_name_utils
+from mmd_tools.core.logger import get_logger
 from mmd_tools.core.model_authoring_spec import MmdModelAuthoringSpec, MmdMorphSpec
+from mmd_tools.core.morph_binding_resolver import (
+    MorphBinding,
+    MorphBindingRequest,
+    MorphBindingResolutionError,
+)
 from mmd_tools.core.morph_authoring import MorphReindexResult, classify_morph_change
 from mmd_tools.converters.morph_converter import pmx_vertex_offset_to_maya_tuple
 
 
 REGISTRY_CATEGORY_MORPH = "morph"
+logger = get_logger(__name__)
 _UNSUPPORTED_TYPES = {"flip", "impulse"}
 _OFFSET_ATTRS = {
     # Vertex offsets live in the owned blendShape target.  Keep no duplicate
@@ -123,14 +134,33 @@ def apply_morph_value_patch(
         for field in old_morph.to_mapping()
         if old_morph.to_mapping()[field] != new_morph.to_mapping()[field]
     }
+    vertex_bindings: tuple[MorphBinding, ...] = ()
+    controller = None
+    if old_morph.morph_type == "vertex" and ({"name", "offsets"} & changed):
+        controller = _resolve_controller(adapter, root, allow_missing=False)
+        if controller is None:
+            _fail("selected vertex morph patch requires an existing morph controller")
+        vertex_bindings = _resolve_existing_vertex_bindings(
+            adapter,
+            controller,
+            old_morph,
+            controller_slot=old_morph.index,
+        )
     _write_morph_values(adapter, canonical, old_morph, new_morph, changed)
     if "name" in changed:
-        controller = _resolve_controller(adapter, root, allow_missing=False)
+        controller = controller or _resolve_controller(adapter, root, allow_missing=False)
         if controller is None:
             _fail("morph name patch requires an existing morph controller")
         _assign_controller_alias(adapter, controller, new_morph.index, new_morph.name)
     if "offsets" in changed or (old_morph.morph_type == "vertex" and "name" in changed):
-        _update_selected_runtime_values(adapter, root, canonical, old_morph, new_morph)
+        _update_selected_runtime_values(
+            adapter,
+            root,
+            canonical,
+            old_morph,
+            new_morph,
+            vertex_bindings=vertex_bindings,
+        )
     return new_morph
 
 
@@ -164,7 +194,19 @@ def apply_morph_reindex(
             _fail(f"morph binding {binding!r} must be a network node")
         morph_index = _read_int(adapter, binding, "mmd_morph_index")
         morph_type = _read_string(adapter, binding, "mmd_morph_type")
-        records.append({"binding": binding, "index": morph_index, "morph_type": morph_type})
+        morph_name = (
+            _read_string(adapter, binding, "mmd_morph_name")
+            if morph_type == "vertex"
+            else ""
+        )
+        records.append(
+            {
+                "binding": binding,
+                "index": morph_index,
+                "morph_type": morph_type,
+                "name": morph_name,
+            }
+        )
     by_index = {record["index"]: record for record in records}
     if len(by_index) != len(records) or set(by_index) != set(range(len(records))):
         _fail("morph indices must be a contiguous registry-owned range")
@@ -188,7 +230,7 @@ def apply_morph_reindex(
         if display_frames is not None
         else None
     )
-    vertex_state = _capture_vertex_reindex_state(adapter, records, controller_state)
+    vertex_state = _capture_vertex_reindex_state(adapter, records, controller, controller_state)
     runtime_state = _capture_runtime_reindex_state(adapter, records, swap)
 
     # Every preflight above completes before the first Maya write.
@@ -565,6 +607,7 @@ def _strict_index(value: Any, field: str) -> int:
 def _capture_vertex_reindex_state(
     adapter: Any,
     records: Sequence[Mapping[str, Any]],
+    controller: str,
     controller_state: Mapping[int, Mapping[str, Any]],
 ) -> tuple[dict[str, Any], ...]:
     captured: list[dict[str, Any]] = []
@@ -574,21 +617,54 @@ def _capture_vertex_reindex_state(
         index = int(record["index"])
         if index not in controller_state:
             continue
-        for destination in controller_state[index]["destinations"]:
-            node, target_index = _resolve_vertex_weight_destination(adapter, str(destination), index)
-            if _call(adapter, "node_type", node) != "blendShape":
-                continue
+        bindings = _resolve_existing_vertex_bindings(
+            adapter,
+            controller,
+            MmdMorphSpec(
+                name=str(record["name"]),
+                index=index,
+                morph_type="vertex",
+                binding_identity=str(record["binding"]),
+            ),
+            controller_slot=index,
+            destination_values=controller_state[index]["destinations"],
+        )
+        for binding in bindings:
+            node = binding.blend_shape_identity
+            target_index = binding.logical_target_index
             mapping = _read_vertex_name_mapping(adapter, node)
-            entry = mapping.get(str(target_index))
-            entry_index = entry.get("index") if isinstance(entry, Mapping) else None
-            if (
-                not isinstance(entry_index, int)
-                or isinstance(entry_index, bool)
-                or entry_index != index
-            ):
-                _fail(f"vertex target {node}.weight[{target_index}] metadata does not match index {index}")
             captured.append({"node": node, "target_index": target_index, "mapping": mapping})
     return tuple(captured)
+
+
+def _resolve_existing_vertex_bindings(
+    adapter: Any,
+    controller: str,
+    morph: MmdMorphSpec,
+    *,
+    controller_slot: int,
+    destination_values: Any = None,
+) -> tuple[MorphBinding, ...]:
+    """Resolve one existing vertex morph before any rename or mapping write."""
+    request = MorphBindingRequest(
+        raw_pmx_name=morph.name,
+        global_morph_index=morph.index,
+        controller_identity=controller,
+        controller_slot=controller_slot,
+    )
+    try:
+        resolution = resolve_maya_morph_binding(
+            adapter,
+            request,
+            destination_values=destination_values,
+        )
+    except (MayaMorphBindingQueryError, MorphBindingResolutionError) as exc:
+        raise MayaMorphAuthoringError(
+            f"vertex morph {morph.index} target binding resolution failed: {exc}"
+        ) from exc
+    for warning in resolution.warnings:
+        logger.warning("[%s] %s", warning.code, warning.message)
+    return resolution.bindings
 
 
 def _apply_vertex_reindex_state(
@@ -897,9 +973,6 @@ def _validate_vertex_oracle(
             _fail("vertex morph type edits require explicit target conversion")
 
 
-_WEIGHT_DESTINATION = re.compile(r"^(?P<node>[^.]+)\.(?:weight|w)\[(?P<index>\d+)\]$")
-
-
 def _vertex_target_plan(
     adapter: Any,
     root: str,
@@ -921,27 +994,24 @@ def _vertex_target_plan(
         index_changed = not deleted and new.index != old.index
         if not deleted and not name_changed and not offsets_changed and not index_changed:
             continue
-        destinations = tuple(controller_plan["outputs"].get(binding, ()))
         targets: list[tuple[str, int, str]] = []
-        seen_nodes: set[str] = set()
-        for destination in destinations:
-            node, target_index = _resolve_vertex_weight_destination(adapter, str(destination), old.index)
-            if _call(adapter, "node_type", node) != "blendShape":
-                _fail(f"vertex morph {old.index} output is not a blendShape: {node!r}")
-            if node in seen_nodes:
-                _fail(f"vertex morph {old.index} has multiple targets on blendShape {node!r}")
-            seen_nodes.add(node)
-            plug = f"{node}.weight[{target_index}]"
-            alias = _call(adapter, "alias_attr", plug, query=True)
-            if not isinstance(alias, str) or not alias:
-                _fail(f"vertex target {plug!r} has no unique alias")
-            mapping = _read_vertex_name_mapping(adapter, node)
-            entry = mapping.get(str(target_index))
-            if not isinstance(entry, Mapping) or entry.get("name") != old.name or entry.get("index") != old.index:
-                _fail(f"vertex target {plug!r} metadata does not match old_spec")
-            targets.append((node, target_index, alias))
-        if not targets:
-            _fail(f"vertex morph {old.index} has no exact blendShape target binding")
+        controller = controller_plan.get("controller")
+        if not isinstance(controller, str) or not controller:
+            _fail(f"vertex morph {old.index} has no controller identity")
+        for resolved in _resolve_existing_vertex_bindings(
+            adapter,
+            controller,
+            old,
+            controller_slot=old.index,
+            destination_values=controller_plan["outputs"].get(binding, ()),
+        ):
+            targets.append(
+                (
+                    resolved.blend_shape_identity,
+                    resolved.logical_target_index,
+                    resolved.alias,
+                )
+            )
 
         scale = _resolve_vertex_scale(root, model_scale_resolver) if offsets_changed else 1.0
         geometry_plans: list[dict[str, Any]] = []
@@ -1002,33 +1072,6 @@ def _vertex_target_plan(
         )
     )
     return tuple(plans)
-
-
-def _resolve_vertex_weight_destination(
-    adapter: Any,
-    destination: str,
-    morph_index: int,
-) -> tuple[str, int]:
-    match = _WEIGHT_DESTINATION.fullmatch(destination)
-    if match is not None:
-        return _canonical_node(adapter, match.group("node")), int(match.group("index"))
-    if "." not in destination:
-        _fail(f"vertex morph {morph_index} has invalid output {destination!r}")
-    raw_node, alias = destination.rsplit(".", 1)
-    node = _canonical_node(adapter, raw_node)
-    if _call(adapter, "node_type", node) != "blendShape":
-        _fail(f"vertex morph {morph_index} has non-blendShape output {destination!r}")
-    flat = list(_call(adapter, "alias_attr", node, query=True) or ())
-    matches = []
-    for candidate_alias, plug in zip(flat[0::2], flat[1::2]):
-        if str(candidate_alias) != alias:
-            continue
-        plug_match = re.fullmatch(r"(?:weight|w)\[(\d+)\]", str(plug))
-        if plug_match is not None:
-            matches.append(int(plug_match.group(1)))
-    if len(matches) != 1:
-        _fail(f"vertex morph {morph_index} alias output is ambiguous: {destination!r}")
-    return node, matches[0]
 
 
 def _new_vertex_target_plans(
@@ -1476,6 +1519,7 @@ def _controller_plan(
         if old.morph_type != "vertex" and f"{binding}.weight" not in destinations:
             _fail(f"controller output {old.index} is not connected to {binding}.weight")
     return {
+        "controller": controller,
         "inputs": inputs,
         "outputs": outputs,
         "new_indices": new_index_by_binding,
@@ -1666,6 +1710,8 @@ def _update_selected_runtime_values(
     binding: str,
     old: MmdMorphSpec,
     new: MmdMorphSpec,
+    *,
+    vertex_bindings: tuple[MorphBinding, ...] = (),
 ) -> None:
     """Refresh existing evaluator contribution constants for one morph.
 
@@ -1679,7 +1725,14 @@ def _update_selected_runtime_values(
     elif old.morph_type == "material":
         _patch_material_runtime_values(adapter, binding, new)
     elif old.morph_type == "vertex":
-        _patch_vertex_runtime_values(adapter, root, binding, old, new)
+        _patch_vertex_runtime_values(
+            adapter,
+            root,
+            binding,
+            old,
+            new,
+            vertex_bindings=vertex_bindings,
+        )
 
 
 def _runtime_nodes(adapter: Any, node_type: str) -> tuple[str, ...]:
@@ -1826,33 +1879,16 @@ def _patch_vertex_runtime_values(
     binding: str,
     old: MmdMorphSpec,
     new: MmdMorphSpec,
+    *,
+    vertex_bindings: tuple[MorphBinding, ...],
 ) -> None:
     """Update selected imported blendShape target point arrays in place."""
-    controllers = tuple(
-        _call(adapter, "list_connections", f"{root}.mmd_morph_controller", source=True, destination=False)
-        or ()
-    )
-    if len(controllers) != 1:
-        _fail(f"selected vertex morph {binding!r} has no unique morph controller")
-    controller = str(controllers[0])
-    destinations = tuple(
-        _call(
-            adapter,
-            "list_connections",
-            f"{controller}.outputWeight[{new.index}]",
-            source=False,
-            destination=True,
-            plugs=True,
-        )
-        or ()
-    )
     scale = _read_model_scale(adapter, root)
     covered: set[int] = set()
     target_count = 0
-    for destination in destinations:
-        node, target_index = _resolve_vertex_weight_destination(adapter, str(destination), new.index)
-        if _call(adapter, "node_type", node) != "blendShape":
-            _fail(f"selected vertex morph {binding!r} has non-blendShape output {destination!r}")
+    for resolved in vertex_bindings:
+        node = resolved.blend_shape_identity
+        target_index = resolved.logical_target_index
         geometries = tuple(_call(adapter, "blend_shape", node, query=True, geometry=True) or ())
         geometry_indices = tuple(
             _call(adapter, "blend_shape", node, query=True, geometryIndices=True) or ()
@@ -1860,7 +1896,6 @@ def _patch_vertex_runtime_values(
         if len(geometries) != len(geometry_indices) or not geometries:
             _fail(f"blendShape {node!r} has ambiguous geometry indices")
         mapping = _read_vertex_name_mapping(adapter, node)
-        entry = mapping.get(str(target_index))
         if new.name != old.name:
             aliases = list(_call(adapter, "alias_attr", node, query=True) or ())
             old_alias = None
@@ -1876,6 +1911,7 @@ def _patch_vertex_runtime_values(
             if old_alias:
                 _call(adapter, "alias_attr", f"{node}.weight[{target_index}]", remove=True)
             _call(adapter, "alias_attr", replacement, f"{node}.weight[{target_index}]")
+        entry = mapping.get(str(target_index))
         if not isinstance(entry, Mapping) or entry.get("name") != new.name or entry.get("index") != new.index:
             # Name edits are persisted on the network binding; update the
             # selected blendShape annotation before writing point values.

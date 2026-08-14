@@ -88,6 +88,7 @@ class _ReindexAdapter:
             node = f"|Root|{name}"
             self.attrs[(node, "mmd_morph_index")] = index
             self.attrs[(node, "mmd_morph_type")] = "flip"
+            self.attrs[(node, "mmd_morph_name")] = name
             self.attrs[(node, "mmd_flip_morph_offsets_json")] = "[]"
             self.connections.setdefault(f"|Root|controller.outputWeight[{index}]", []).append(
                 f"{node}.weight"
@@ -305,6 +306,8 @@ def test_adapter_remaps_exact_vertex_target_name_mapping():
     adapter.attrs[("|Root|blend", "mmd_blendshape_morph_names_json")] = (
         '{"0":{"name":"m0","index":0},"1":{"name":"m1","index":1}}'
     )
+    adapter.aliases["|Root|blend.weight[0]"] = "m0"
+    adapter.aliases["|Root|blend.weight[1]"] = "m1"
     adapter.connections["|Root|controller.outputWeight[0]"] = ["|Root|blend.weight[0]"]
     adapter.connections["|Root|controller.outputWeight[1]"] = ["|Root|blend.weight[1]"]
     apply_morph_reindex("|Root", 0, 1, adapter, registry_api=_Registry())
