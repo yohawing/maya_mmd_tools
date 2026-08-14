@@ -42,14 +42,109 @@ class _FailingCase(unittest.TestCase):
         self.fail("expected failure")
 
 
+class _AttachedCmds:
+    """Minimal Maya command stub for the attached-scene rollback guard."""
+
+    def __init__(self):
+        self.path = ""
+        self.modified = False
+        self.selection = []
+        self.undo_calls = 0
+        self._chunk_snapshot = None
+        self._chunk_open = False
+
+    def file(self, **kwargs):
+        if kwargs.get("query") and kwargs.get("sceneName"):
+            return self.path
+        if kwargs.get("query") and kwargs.get("modified"):
+            return self.modified
+        raise AssertionError(f"unexpected file command: {kwargs}")
+
+    def ls(self, **kwargs):
+        if kwargs.get("selection"):
+            return list(self.selection)
+        raise AssertionError(f"unexpected ls command: {kwargs}")
+
+    def undoInfo(self, **kwargs):
+        if kwargs.get("query") and kwargs.get("state"):
+            return True
+        if kwargs.get("openChunk"):
+            self._chunk_snapshot = (self.path, self.modified, list(self.selection))
+            self._chunk_open = True
+            return None
+        if kwargs.get("closeChunk"):
+            self._chunk_open = False
+            return None
+        raise AssertionError(f"unexpected undoInfo command: {kwargs}")
+
+    def undo(self):
+        self.undo_calls += 1
+        self.path, self.modified, selection = self._chunk_snapshot
+        self.selection = list(selection)
+
+    def select(self, values=None, **kwargs):
+        if kwargs.get("clear"):
+            self.selection = []
+        else:
+            self.selection = list(values or [])
+
+
 class GuiTestRunnerTests(unittest.TestCase):
-    def run_runner(self, discovered_suite=None, discover_error=None, test_filter=None):
+    def run_runner(
+        self,
+        discovered_suite=None,
+        discover_error=None,
+        test_filter=None,
+        preserve_attached_scene=False,
+    ):
         with tempfile.TemporaryDirectory() as temp_dir:
             log_path = Path(temp_dir) / "gui.log"
             with mock.patch.object(unittest.TestLoader, "discover", side_effect=discover_error or (lambda *args, **kwargs: discovered_suite)):
                 with redirect_stdout(sys.__stdout__), redirect_stderr(sys.__stderr__):
-                    status = GuiTestRunner.run_tests_from_command(str(log_path), "tests/gui", test_filter)
+                    status = GuiTestRunner.run_tests_from_command(
+                        str(log_path),
+                        "tests/gui",
+                        test_filter,
+                        preserve_attached_scene=preserve_attached_scene,
+                    )
             return status, log_path.read_text(encoding="utf-8")
+
+    def test_attached_scene_guard_rejects_file_replacement_without_undo(self):
+        fake_cmds = _AttachedCmds()
+        guard = gui_test_base._AttachedSceneGuard()
+        with mock.patch.object(gui_test_base, "cmds", fake_cmds):
+            guard.start()
+            with self.assertRaisesRegex(RuntimeError, "cannot replace"):
+                fake_cmds.file(new=True, force=True)
+            guard.finish()
+
+        self.assertEqual(0, fake_cmds.undo_calls)
+        self.assertFalse(fake_cmds.modified)
+        self.assertEqual([], fake_cmds.selection)
+
+    def test_attached_scene_guard_rolls_back_owned_edits_and_selection(self):
+        fake_cmds = _AttachedCmds()
+        guard = gui_test_base._AttachedSceneGuard()
+        with mock.patch.object(gui_test_base, "cmds", fake_cmds):
+            guard.start()
+            fake_cmds.modified = True
+            fake_cmds.selection = ["|temporary"]
+            guard.finish()
+
+        self.assertEqual(1, fake_cmds.undo_calls)
+        self.assertFalse(fake_cmds.modified)
+        self.assertEqual([], fake_cmds.selection)
+
+    def test_attached_runner_finishes_scene_guard(self):
+        guard = mock.Mock()
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(_PassingCase)
+        with mock.patch.object(gui_test_base, "_AttachedSceneGuard", return_value=guard) as guard_type:
+            status, _ = self.run_runner(suite, preserve_attached_scene=True)
+
+        self.assertEqual("PASS", status)
+        guard_type.assert_called_once_with()
+        guard.start.assert_called_once_with()
+        guard.finish.assert_called_once_with()
 
     def run_runner_with_timing(self, discovered_suite=None, discover_error=None):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -354,15 +449,23 @@ class GuiTestRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             marker = Path(temp_dir) / "attach.json"
 
-            def respond(port, _code, label):
+            def respond(port, code, label):
                 self.assertEqual(7788, port)
                 self.assertEqual("<maya-gui-attach-handshake>", label)
+                self.assertIn(run_gui_tests.ATTACH_SESSION_ENVIRONMENT, code)
+                self.assertIn('cmds.file(query=True, sceneName=True)', code)
+                self.assertIn('cmds.file(query=True, modified=True)', code)
+                self.assertIn('cmds.ls(selection=True, long=True)', code)
                 marker.write_text(
                     json.dumps(
                         {
                             "protocol": run_gui_tests.ATTACH_HANDSHAKE_PROTOCOL,
                             "token": "owned-token",
                             "maya_major": "2024",
+                            "session_identity": run_gui_tests.ATTACH_SESSION_ID,
+                            "scene_path": "",
+                            "modified": False,
+                            "selection": [],
                         }
                     ),
                     encoding="utf-8",
@@ -402,6 +505,105 @@ class GuiTestRunnerTests(unittest.TestCase):
                 "send_python",
                 side_effect=respond,
             ), self.assertRaisesRegex(RuntimeError, "ownership response did not match"):
+                 run_gui_tests.verify_attached_maya(
+                    7788,
+                    marker,
+                    "2024",
+                    token="owned-token",
+                )
+
+    def test_attach_handshake_rejects_a_dirty_attached_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "attach.json"
+
+            def respond(_port, _code, label=None):
+                self.assertEqual("<maya-gui-attach-handshake>", label)
+                marker.write_text(
+                    json.dumps(
+                        {
+                            "protocol": run_gui_tests.ATTACH_HANDSHAKE_PROTOCOL,
+                            "token": "owned-token",
+                            "maya_major": "2024",
+                            "session_identity": run_gui_tests.ATTACH_SESSION_ID,
+                            "scene_path": "",
+                            "modified": True,
+                            "selection": [],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            with mock.patch.object(
+                run_gui_tests.maya_commandport,
+                "send_python",
+                side_effect=respond,
+            ), self.assertRaisesRegex(RuntimeError, "dedicated, clean test session"):
+                run_gui_tests.verify_attached_maya(
+                    7788,
+                    marker,
+                    "2024",
+                    token="owned-token",
+                )
+
+    def test_attach_handshake_rejects_a_normal_saved_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "attach.json"
+
+            def respond(_port, _code, label=None):
+                self.assertEqual("<maya-gui-attach-handshake>", label)
+                marker.write_text(
+                    json.dumps(
+                        {
+                            "protocol": run_gui_tests.ATTACH_HANDSHAKE_PROTOCOL,
+                            "token": "owned-token",
+                            "maya_major": "2024",
+                            "session_identity": None,
+                            "scene_path": "C:/work/character.ma",
+                            "modified": False,
+                            "selection": [],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            with mock.patch.object(
+                run_gui_tests.maya_commandport,
+                "send_python",
+                side_effect=respond,
+            ), self.assertRaisesRegex(RuntimeError, "dedicated, clean test session"):
+                run_gui_tests.verify_attached_maya(
+                    7788,
+                    marker,
+                    "2024",
+                    token="owned-token",
+                )
+
+    def test_attach_handshake_rejects_ambiguous_session_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "attach.json"
+
+            def respond(_port, _code, label=None):
+                self.assertEqual("<maya-gui-attach-handshake>", label)
+                marker.write_text(
+                    json.dumps(
+                        {
+                            "protocol": run_gui_tests.ATTACH_HANDSHAKE_PROTOCOL,
+                            "token": "owned-token",
+                            "maya_major": "2024",
+                            "session_identity": run_gui_tests.ATTACH_SESSION_ID,
+                            "scene_path": "",
+                            "modified": False,
+                            "selection": ["|unrelatedNode"],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            with mock.patch.object(
+                run_gui_tests.maya_commandport,
+                "send_python",
+                side_effect=respond,
+            ), self.assertRaisesRegex(RuntimeError, "dedicated, clean test session"):
                 run_gui_tests.verify_attached_maya(
                     7788,
                     marker,
@@ -558,6 +760,67 @@ class GuiTestRunnerTests(unittest.TestCase):
 
         self.assertEqual(2, raised.exception.code)
 
+    def test_attach_session_rejection_does_not_dispatch_or_touch_external_lifecycle(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "rejected.log"
+            timing_path = Path(temp_dir) / "rejected.timing.json"
+            attach_marker = log_path.parent / (
+                f".maya_commandport_attach_2024_7788_{run_gui_tests.os.getpid()}.json"
+            )
+
+            def respond(_port, _code, label=None):
+                self.assertEqual("<maya-gui-attach-handshake>", label)
+                attach_marker.write_text(
+                    json.dumps(
+                        {
+                            "protocol": run_gui_tests.ATTACH_HANDSHAKE_PROTOCOL,
+                            "token": "owned-token",
+                            "maya_major": "2024",
+                            "session_identity": run_gui_tests.ATTACH_SESSION_ID,
+                            "scene_path": "",
+                            "modified": True,
+                            "selection": [],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            with mock.patch.object(run_gui_tests.maya_commandport, "is_port_open", return_value=True), \
+                 mock.patch.object(run_gui_tests.secrets, "token_hex", return_value="owned-token"), \
+                 mock.patch.object(
+                     run_gui_tests.maya_commandport,
+                     "send_python",
+                     side_effect=respond,
+                 ) as send_python, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "quit_maya") as quit_maya, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "terminate_maya_process") as terminate, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "close_process_logs"), \
+                 mock.patch.object(
+                     sys,
+                     "argv",
+                     [
+                         "run_gui_tests.py",
+                         "--attach-existing",
+                         "--port",
+                         "7788",
+                         "--log_path",
+                         str(log_path),
+                         "--timing_report",
+                         str(timing_path),
+                     ],
+                 ):
+                self.assertEqual(1, run_gui_tests.main())
+
+            self.assertEqual(
+                ["<maya-gui-attach-handshake>"],
+                [call.kwargs["label"] for call in send_python.call_args_list],
+            )
+            quit_maya.assert_not_called()
+            terminate.assert_not_called()
+            report = json.loads(timing_path.read_text(encoding="utf-8"))
+            self.assertEqual("ERROR", report["status"])
+            self.assertEqual("skipped", report["phases"]["shutdown"]["status"])
+
     def test_batch_manifest_is_strict_versioned_and_ordered(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -650,6 +913,36 @@ class GuiTestRunnerTests(unittest.TestCase):
         self.assertEqual(2, run_case.call_count)
         self.assertEqual(4, restore.call_count)
         self.assertEqual(1, log.count(run_gui_tests.GUI_TEST_FINISHED_MARKER))
+
+    def test_batch_runner_preserves_attached_scene_when_requested(self):
+        cases = [{"id": "attached", "test_path": "tests/gui", "test_filter": "test_attached"}]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "batch.log"
+            report_path = Path(temp_dir) / "batch.timing.json"
+            run_gui_tests.write_timing_report(
+                report_path,
+                run_gui_tests.new_batch_report("2024", cases),
+            )
+            with mock.patch(
+                "tests.common.gui_test_base._batch_environment_snapshot",
+                return_value={},
+            ), mock.patch(
+                "tests.common.gui_test_base._restore_batch_environment",
+            ) as restore, mock.patch.object(
+                GuiTestRunner,
+                "run_tests_from_command",
+                return_value="PASS",
+            ) as run_case:
+                status = GuiTestRunner.run_batch_from_command(
+                    str(log_path),
+                    cases,
+                    str(report_path),
+                    new_scene=False,
+                )
+
+        self.assertEqual("PASS", status)
+        self.assertEqual([False, False], [call.kwargs["new_scene"] for call in restore.call_args_list])
+        self.assertTrue(run_case.call_args.kwargs["preserve_attached_scene"])
 
     def test_batch_runner_records_cleanup_failure_and_runs_remaining_case(self):
         cases = [
@@ -873,6 +1166,7 @@ class GuiTestRunnerTests(unittest.TestCase):
             report = json.loads(timing_path.read_text(encoding="utf-8"))
 
         self.assertIn("run_batch_from_command", command)
+        self.assertIn("new_scene=False", command)
         self.assertIn("'id': 'one'", command)
         self.assertEqual(["PASS", "PASS"], [entry["status"] for entry in report["cases"]])
         self.assertEqual("skipped", report["phases"]["shutdown"]["status"])

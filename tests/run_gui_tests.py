@@ -35,6 +35,10 @@ LOG_POLL_INTERVAL = 1  # second
 MAYA_PYTHON_READY_TIMEOUT = 120  # seconds
 MAYA_PYTHON_READY_POLL_INTERVAL = 0.25  # second
 ATTACH_HANDSHAKE_PROTOCOL = "maya_mmd_tools_gui_attach_v1"
+# Existing-session attach requires an explicit opt-in from the Maya process;
+# clean scene state alone is not treated as proof of a dedicated test session.
+ATTACH_SESSION_ENVIRONMENT = "MAYA_MMD_TOOLS_GUI_TEST_SESSION"
+ATTACH_SESSION_ID = "maya_mmd_tools_gui_test_v1"
 GUI_TEST_FINISHED_MARKER = "//-- GUI TEST FINISHED --//"
 GUI_TEST_STATUSES = frozenset(("PASS", "FAIL", "NO_TESTS", "ERROR"))
 TIMING_REPORT_SCHEMA_VERSION = 1
@@ -296,12 +300,17 @@ def verify_attached_maya(port, marker_path, maya_version, token=None, timeout=No
     handshake_token = token or secrets.token_hex(32)
     handshake_command = f"""
 import json
+import os
 from pathlib import Path
 import maya.cmds as cmds
 Path({str(marker_path)!r}).write_text(json.dumps({{
     "protocol": {ATTACH_HANDSHAKE_PROTOCOL!r},
     "token": {handshake_token!r},
     "maya_major": str(int(cmds.about(apiVersion=True)) // 10000),
+    "session_identity": os.environ.get({ATTACH_SESSION_ENVIRONMENT!r}),
+    "scene_path": str(cmds.file(query=True, sceneName=True) or ""),
+    "modified": bool(cmds.file(query=True, modified=True)),
+    "selection": [str(item) for item in (cmds.ls(selection=True, long=True) or [])],
 }}, sort_keys=True), encoding="utf-8")
 """
     try:
@@ -331,14 +340,28 @@ Path({str(marker_path)!r}).write_text(json.dumps({{
         if invalid_response:
             raise RuntimeError(f"refusing attach: commandPort :{port} returned an invalid handshake")
         raise RuntimeError(f"refusing attach: commandPort :{port} did not prove runner ownership")
+    if not isinstance(response, dict):
+        raise RuntimeError(f"refusing attach: commandPort :{port} returned an invalid handshake")
 
-    expected = {
+    ownership = {
         "protocol": ATTACH_HANDSHAKE_PROTOCOL,
         "token": handshake_token,
         "maya_major": str(maya_version).split(".", 1)[0],
     }
-    if response != expected:
+    if any(response.get(key) != value for key, value in ownership.items()):
         raise RuntimeError(f"refusing attach: commandPort :{port} ownership response did not match")
+
+    expected = {
+        **ownership,
+        "session_identity": ATTACH_SESSION_ID,
+        "scene_path": "",
+        "modified": False,
+        "selection": [],
+    }
+    if response != expected:
+        raise RuntimeError(
+            f"refusing attach: commandPort :{port} did not prove a dedicated, clean test session"
+        )
 
 
 def main():
@@ -380,7 +403,10 @@ def main():
     parser.add_argument(
         "--attach-existing",
         action="store_true",
-        help="Attach to a verified existing Maya commandPort and leave Maya running",
+        help=(
+            "Attach only to a dedicated clean Maya session with "
+            f"{ATTACH_SESSION_ENVIRONMENT}={ATTACH_SESSION_ID}; leave Maya running"
+        ),
     )
     parser.add_argument(
         "--port",
@@ -522,6 +548,7 @@ GuiTestRunner.run_batch_from_command(
     {str(log_file_path)!r},
     {batch_cases!r},
     {str(maya_timing_report_path)!r},
+    new_scene={not args.attach_existing!r},
 )
 """
         else:
@@ -537,7 +564,13 @@ log_path = {str(log_file_path)!r}
 test_dir = {args.test_path!r}
 test_filter = {args.test_filter!r}
 timing_report_path = {str(maya_timing_report_path)!r}
-GuiTestRunner.run_tests_from_command(log_path, test_dir, test_filter, timing_report_path)
+GuiTestRunner.run_tests_from_command(
+    log_path,
+    test_dir,
+    test_filter,
+    timing_report_path,
+    preserve_attached_scene={args.attach_existing!r},
+)
 """
         tests_dispatched_started = time.perf_counter()
         maya_commandport.send_python(args.port, test_command, label="<gui-test-runner-command>")

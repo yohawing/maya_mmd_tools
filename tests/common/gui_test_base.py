@@ -11,6 +11,30 @@ _BATCH_QSETTINGS_SCOPES = (
     ("maya_mmd_tools", "ImportExportTab"),
 )
 
+_ATTACHED_FILE_MUTATION_FLAGS = frozenset(
+    {
+        "new",
+        "open",
+        "o",
+        "save",
+        "s",
+        "saveDisk",
+        "rename",
+        "import",
+        "i",
+        "reference",
+        "r",
+        "loadReference",
+        "lr",
+        "removeReference",
+        "rr",
+        "exportAll",
+        "exportSelected",
+        "ea",
+        "es",
+    }
+)
+
 
 def _script_job_ids():
     """Return the IDs of current Maya scriptJobs without touching existing jobs."""
@@ -91,6 +115,107 @@ def _restore_batch_environment(snapshot, new_scene=True):
             errors.append(f"scene reset: {exc}")
     if errors:
         raise RuntimeError("; ".join(errors))
+
+
+class _AttachedSceneGuard:
+    """Protect an externally owned Maya scene during one GUI test command.
+
+    Attached sessions are explicitly clean and dedicated before dispatch.  The
+    guard still prevents test fixtures from replacing or saving that scene and
+    rolls back ordinary node edits through one owned undo chunk.  It never
+    resets the scene with ``cmds.file(new=True, force=True)``.
+    """
+
+    def __init__(self):
+        self._original_file = None
+        self._scene_path = None
+        self._modified = None
+        self._selection = ()
+        self._chunk_open = False
+        self._undo_performed = False
+
+    def start(self):
+        """Capture the attached scene and install the fail-closed file guard."""
+        self._scene_path = str(cmds.file(query=True, sceneName=True) or "")
+        self._modified = bool(cmds.file(query=True, modified=True))
+        self._selection = tuple(cmds.ls(selection=True, long=True) or ())
+        if not bool(cmds.undoInfo(query=True, state=True)):
+            raise RuntimeError("attached GUI tests require Maya Undo to be enabled")
+
+        self._original_file = cmds.file
+        original_file = self._original_file
+
+        def guarded_file(*args, **kwargs):
+            if any(bool(kwargs.get(flag)) for flag in _ATTACHED_FILE_MUTATION_FLAGS):
+                raise RuntimeError(
+                    "attached GUI tests cannot replace, save, import, or export the external scene"
+                )
+            return original_file(*args, **kwargs)
+
+        cmds.undoInfo(openChunk=True, chunkName="MMD GUI Attached Test")
+        self._chunk_open = True
+        try:
+            cmds.file = guarded_file
+        except Exception:
+            cmds.undoInfo(closeChunk=True)
+            self._chunk_open = False
+            raise
+
+    def finish(self):
+        """Restore scene state and remove the temporary command wrapper."""
+        errors = []
+        try:
+            current_path = str(cmds.file(query=True, sceneName=True) or "")
+            current_modified = bool(cmds.file(query=True, modified=True))
+            changed = current_path != self._scene_path or current_modified != self._modified
+        except Exception as exc:
+            errors.append(f"attached scene state probe: {exc}")
+            changed = True
+
+        if self._original_file is not None:
+            try:
+                cmds.file = self._original_file
+            except Exception as exc:
+                errors.append(f"attached file guard restore: {exc}")
+
+        try:
+            if self._chunk_open:
+                cmds.undoInfo(closeChunk=True)
+                self._chunk_open = False
+            if changed:
+                cmds.undo()
+                self._undo_performed = True
+        except Exception as exc:
+            errors.append(f"attached scene rollback: {exc}")
+
+        try:
+            if self._selection:
+                cmds.select(list(self._selection), replace=True)
+            else:
+                cmds.select(clear=True)
+        except Exception as exc:
+            errors.append(f"attached selection restore: {exc}")
+
+        try:
+            actual_path = str(cmds.file(query=True, sceneName=True) or "")
+            actual_modified = bool(cmds.file(query=True, modified=True))
+            actual_selection = tuple(cmds.ls(selection=True, long=True) or ())
+            if actual_path != self._scene_path:
+                errors.append(
+                    f"attached scene path changed: expected {self._scene_path!r}, got {actual_path!r}"
+                )
+            if actual_modified != self._modified:
+                errors.append(
+                    f"attached modified state changed: expected {self._modified!r}, got {actual_modified!r}"
+                )
+            if actual_selection != self._selection:
+                errors.append(
+                    f"attached selection changed: expected {self._selection!r}, got {actual_selection!r}"
+                )
+        except Exception as exc:
+            errors.append(f"attached scene restore probe: {exc}")
+        if errors:
+            raise RuntimeError("; ".join(errors))
 
 
 def skip_if_no_gui(func):
@@ -299,6 +424,7 @@ class GuiTestRunner:
         test_filter=None,
         timing_report_path=None,
         emit_completion_marker=True,
+        preserve_attached_scene=False,
     ):
         """
         Discovers and runs tests, redirecting output to a log file.
@@ -308,6 +434,7 @@ class GuiTestRunner:
             test_dir_str (str): The relative path to the test directory.
             test_filter (str | None): Optional substring matched against test IDs.
             timing_report_path (str | None): Optional JSON timing report path.
+            preserve_attached_scene (bool): Protect the externally owned scene.
         """
         import logging
         import sys
@@ -343,8 +470,14 @@ class GuiTestRunner:
         timing_helpers = None
         discovery_started = None
         tests_started = None
+        attached_scene_guard = None
+        attached_scene_guard_started = False
 
         try:
+            if preserve_attached_scene:
+                attached_scene_guard = _AttachedSceneGuard()
+                attached_scene_guard.start()
+                attached_scene_guard_started = True
             print(f"Starting GUI tests. Project root: {project_root}")
             print(f"Test directory: {test_dir}")
             if test_filter:
@@ -443,6 +576,13 @@ class GuiTestRunner:
                     }
             return status
         finally:
+            if attached_scene_guard_started:
+                try:
+                    attached_scene_guard.finish()
+                except Exception as exc:
+                    logging.error("Attached Maya scene cleanup failed", exc_info=True)
+                    print(f"Attached Maya scene cleanup failed: {exc}")
+                    status = "ERROR"
             if timing_report_path:
                 if timing_report is None:
                     from tests import run_gui_tests as timing_helpers
@@ -470,8 +610,8 @@ class GuiTestRunner:
             logging.root.setLevel(original_log_level)
 
     @staticmethod
-    def run_batch_from_command(log_file_path, cases, timing_report_path):
-        """Run focused manifest cases sequentially in one isolated Maya session."""
+    def run_batch_from_command(log_file_path, cases, timing_report_path, new_scene=True):
+        """Run focused manifest cases, optionally preserving the attached scene."""
         import os
         from pathlib import Path
         from tests import run_gui_tests as report_helpers
@@ -504,7 +644,7 @@ class GuiTestRunner:
             )
             try:
                 try:
-                    _restore_batch_environment(snapshot, new_scene=True)
+                    _restore_batch_environment(snapshot, new_scene=new_scene)
                 except Exception as exc:
                     entry["status"] = "BLOCKED"
                     entry["blocked_reason"] = str(exc)
@@ -530,6 +670,7 @@ class GuiTestRunner:
                     case["test_filter"],
                     str(case_report_path),
                     emit_completion_marker=False,
+                    preserve_attached_scene=not new_scene,
                 )
                 case_report = report_helpers.read_timing_report(case_report_path, case_report)
                 report_helpers.finalize_timing_report(case_report)
@@ -546,7 +687,7 @@ class GuiTestRunner:
             finally:
                 entry["elapsed_seconds"] = max(0.0, time.perf_counter() - started)
                 try:
-                    _restore_batch_environment(snapshot, new_scene=True)
+                    _restore_batch_environment(snapshot, new_scene=new_scene)
                 except Exception as exc:
                     entry["status"] = "ERROR"
                     entry["cleanup_error"] = str(exc)
