@@ -22,7 +22,7 @@ from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.ui.qt_compat import QApplication, QT_BINDING, Qt
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from tests.common.maya_plugin_setup import load_mmd_tools_plugin
-from tests.common.ui_action_coverage import build_surface_witness
+from tests.common.ui_action_coverage import ActionInvocationSpy, build_surface_witness
 
 if QT_BINDING == "PySide6":
     from PySide6.QtTest import QTest
@@ -310,6 +310,74 @@ class TestDisplayPaneRemainingGUI(GuiTestBase):
         self.assertEqual(_spy_count(apply_spy), 1)
         after = _display_payload(self.root)
         self.assertNotEqual(after, before)
+        self.assertEqual(cmds.undoInfo(query=True, undoName=True), "Edit Display Frames")
+        cmds.undo()
+        self.assertEqual(_display_payload(self.root), before)
+        cmds.redo()
+        self.assertEqual(_display_payload(self.root), after)
+
+    def test_display_frame_mouse_keyboard_selection_applies_one_semantic_index(self):
+        """Real list input applies only the keyboard-selected display-frame index."""
+        view = self.presenter.view
+        self.assertGreaterEqual(view.frame_list.count(), 2)
+        # Preparation selection stays outside the observed click action.
+        view.frame_list.setCurrentRow(1)
+        view.frame_list.scrollToItem(view.frame_list.item(0))
+        QApplication.processEvents()
+
+        first_rect = view.frame_list.visualItemRect(view.frame_list.item(0))
+        self.assertFalse(first_rect.isEmpty())
+        self.assertTrue(view.frame_list.viewport().rect().contains(first_rect.center()))
+        mouse_spy = QSignalSpy(view.frame_list.currentRowChanged)
+        QTest.mouseClick(
+            view.frame_list.viewport(),
+            Qt.LeftButton,
+            pos=first_rect.center(),
+        )
+        QApplication.processEvents()
+        self.assertEqual(_spy_count(mouse_spy), 1)
+        self.assertEqual(view.frame_list.currentRow(), 0)
+        self.assertEqual(self.presenter.frames[0], _display_payload(self.root)[0])
+
+        keyboard_spy = QSignalSpy(view.frame_list.currentRowChanged)
+        view.frame_list.setFocus()
+        QTest.keyClick(view.frame_list, Qt.Key_Down)
+        QApplication.processEvents()
+        self.assertEqual(_spy_count(keyboard_spy), 1)
+        self.assertEqual(view.frame_list.currentRow(), 1)
+
+        before = _display_payload(self.root)
+        selected_before = dict(before[1])
+        nonselected_before = dict(before[0])
+        self.assertEqual(self.presenter.frames[1], selected_before)
+        self.assertEqual(self.presenter.frames[0], nonselected_before)
+
+        # Keep the required facial semantic identity while making one visible
+        # selected-frame edit.  Both values are recognized facial names.
+        updated_english = (
+            "Facial"
+            if selected_before["name_english"] != "Facial"
+            else "Expressions"
+        )
+        view.name_en_edit.setText(updated_english)
+        QApplication.processEvents()
+        coordinator = self.window.authoring_composition.coordinator
+        apply_spy = ActionInvocationSpy.wrap(
+            "MayaModelAuthoringCoordinator.write_display_frames",
+            coordinator.write_display_frames,
+            view.apply_btn,
+        )
+        coordinator.write_display_frames = apply_spy
+        clicked_spy = QSignalSpy(view.apply_btn.clicked)
+        QTest.mouseClick(view.apply_btn, Qt.LeftButton)
+        QApplication.processEvents()
+
+        self.assertEqual(_spy_count(clicked_spy), 1)
+        self.assertEqual(apply_spy.action_count, 1)
+        after = _display_payload(self.root)
+        self.assertEqual(after[0], nonselected_before)
+        self.assertEqual(after[1]["name_english"], updated_english)
+        self.assertNotEqual(after[1], selected_before)
         self.assertEqual(cmds.undoInfo(query=True, undoName=True), "Edit Display Frames")
         cmds.undo()
         self.assertEqual(_display_payload(self.root), before)
