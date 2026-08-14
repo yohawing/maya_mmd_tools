@@ -16,6 +16,7 @@ from tools.export_release_gate import (
     _require_build_path,
     _run_fail_fixture_matrix,
     _maya_path,
+    _gui_test_args,
     _capture_release_provenance,
     _validate_binding_gate_artifact,
     _validate_ffi_build_step,
@@ -49,6 +50,31 @@ class ExportReleaseGateTests(unittest.TestCase):
         ) as resolver:
             self.assertEqual(_maya_path("2024"), Path("custom-maya/mayapy"))
         resolver.assert_called_once_with("2024")
+
+    def test_full_gui_args_use_windows_dx11_virtual_device_only_on_windows(self):
+        """Full Windows GUI evidence fixes the VP2 backend deterministically."""
+        log_path = Path("build/gui-2024.log")
+        base = ["--maya_version", "2024", "--log_path", str(log_path)]
+        with mock.patch.object(RELEASE_GATE.platform, "system", return_value="Windows"):
+            self.assertEqual(
+                _gui_test_args(version="2024", log_path=log_path, full_gui=True),
+                [*base, "--vp2_device_override", "VirtualDeviceDx11"],
+            )
+            self.assertEqual(
+                _gui_test_args(version="2024", log_path=log_path, full_gui=False),
+                [
+                    *base,
+                    "--test_path",
+                    "tests/gui",
+                    "--test_filter",
+                    "tests.gui.guitest_export_tab_gui",
+                ],
+            )
+        with mock.patch.object(RELEASE_GATE.platform, "system", return_value="Linux"):
+            self.assertEqual(
+                _gui_test_args(version="2024", log_path=log_path, full_gui=True),
+                base,
+            )
 
     def test_maya_vmd_probe_explicitly_acknowledges_mode_c_warning(self):
         """The Maya probe accepts the explicit Mode C raw-provenance warning."""

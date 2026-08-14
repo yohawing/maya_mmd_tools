@@ -2004,6 +2004,28 @@ def _maya_path(version: str) -> Path:
     return Path(resolve_mayapy(version))
 
 
+def _gui_test_args(*, version: str, log_path: Path, full_gui: bool) -> list[str]:
+    """Build the GUI runner arguments for one Maya release-gate process."""
+    args = [
+        "--maya_version",
+        version,
+        "--log_path",
+        str(log_path),
+    ]
+    if full_gui and platform.system() == "Windows":
+        args.extend(["--vp2_device_override", "VirtualDeviceDx11"])
+    if not full_gui:
+        args.extend(
+            [
+                "--test_path",
+                "tests/gui",
+                "--test_filter",
+                "tests.gui.guitest_export_tab_gui",
+            ]
+        )
+    return args
+
+
 def _mmd_anim_provenance(report_path: Path | None) -> dict[str, Any]:
     """Keep executable and checkout provenance distinct in the release summary."""
     provenance: dict[str, Any] = {
@@ -2124,21 +2146,11 @@ def build_release_summary(
         else:
             gui_log_path = out_dir / f"gui-{version}.log"
             gui_log_paths[version] = gui_log_path
-            gui_args = [
-                "--maya_version",
-                version,
-                "--log_path",
-                str(gui_log_path),
-            ]
-            if not full_gui:
-                gui_args.extend(
-                    [
-                        "--test_path",
-                        "tests/gui",
-                        "--test_filter",
-                        "tests.gui.guitest_export_tab_gui",
-                    ]
-                )
+            gui_args = _gui_test_args(
+                version=version,
+                log_path=gui_log_path,
+                full_gui=full_gui,
+            )
             steps.append(
                 _run_command(
                     f"gui_export_workflow_{version}" if not full_gui else f"gui_tests_{version}",
