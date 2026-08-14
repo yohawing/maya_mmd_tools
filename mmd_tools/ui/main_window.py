@@ -357,7 +357,11 @@ class MainWindow(QMainWindow):
 
         # Display Pane Tab (PMX display-frame editor; independent of Animator Toolset)
         display_pane_tab = DisplayPaneTab()
-        self.display_pane_presenter = DisplayPanePresenter(display_pane_tab, self.app_state)
+        self.display_pane_presenter = DisplayPanePresenter(
+            display_pane_tab,
+            self.app_state,
+            **authoring_kwargs,
+        )
         self.tab_widget.addTab(display_pane_tab, translator.translate("display_pane", "tabs"))
         self.display_pane_tab = display_pane_tab
 

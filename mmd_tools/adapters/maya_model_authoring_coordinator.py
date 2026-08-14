@@ -46,6 +46,7 @@ from mmd_tools.core.morph_authoring import (
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.constants import ATTR_MMD_DISPLAY_FRAMES_JSON
 from mmd_tools.adapters.transaction_runner import TransactionFailure, TransactionRunner
 
 
@@ -117,6 +118,31 @@ class MayaModelAuthoringCoordinator:
     def read_spec(self, model_root: str) -> MmdModelAuthoringSpec:
         """Read the current strict scene specification for UI refreshes."""
         return self._read_current(model_root, "read_spec")
+
+    def write_display_frames(self, model_root: str, payload: str) -> str:
+        """Persist one display-frame JSON payload without reading the full spec."""
+        if not isinstance(payload, str):
+            raise MayaModelAuthoringCoordinatorError("display frame payload must be a string")
+        begin = getattr(self._backend, "begin_display_frames_write", None)
+        apply = getattr(self._backend, "apply_display_frames_write", None)
+        commit = getattr(self._backend, "commit_display_frames_write", None)
+        if not callable(begin) or not callable(apply) or not callable(commit):
+            raise MayaModelAuthoringCoordinatorError(
+                "display frame write requires narrow metadata transaction APIs"
+            )
+
+        def mutate(_targets: tuple[Any, ...]) -> str:
+            apply(model_root, payload)
+            return payload
+
+        return self._run_transaction(
+            model_root,
+            "write_display_frames",
+            (model_root, ATTR_MMD_DISPLAY_FRAMES_JSON),
+            lambda _targets: begin(model_root),
+            mutate,
+            lambda result, _targets: commit(model_root, result),
+        )
 
     def read_material_value(
         self,

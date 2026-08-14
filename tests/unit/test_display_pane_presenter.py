@@ -216,11 +216,26 @@ class _Adapter:
         self.undo_calls.append(kwargs)
 
 
+class _Coordinator:
+    def __init__(self, adapter):
+        self.adapter = adapter
+        self.calls = []
+        self.failure = None
+
+    def write_display_frames(self, root, payload):
+        self.calls.append((root, payload))
+        if self.failure is not None:
+            raise self.failure
+        self.adapter.attrs[f"{root}.mmd_display_frames_json"] = payload
+        return payload
+
+
 class TestDisplayPanePresenter(unittest.TestCase):
     def setUp(self):
         self.view = _View()
         self.app_state = _AppState()
         self.adapter = _Adapter()
+        self.coordinator = _Coordinator(self.adapter)
         self.choices = []
 
         def choice_provider(_title, choices):
@@ -231,6 +246,7 @@ class TestDisplayPanePresenter(unittest.TestCase):
             self.view,
             self.app_state,
             maya_adapter=self.adapter,
+            authoring_coordinator=self.coordinator,
             choice_provider=choice_provider,
         )
         self.presenter.refresh()
@@ -288,19 +304,29 @@ class TestDisplayPanePresenter(unittest.TestCase):
         self.assertIn({"type": 0, "index": 1}, self.presenter.frames[2]["elements"])
         self.assertIn({"type": 0, "index": 1}, self.presenter.frames[3]["elements"])
 
-    def test_apply_writes_one_string_attribute_and_undo_chunk(self):
+    def test_apply_writes_through_coordinator_and_updates_original_copy(self):
         self.view.frame_list.setCurrentRow(2)
         self.view.name_en_edit.setText("Props")
         self.assertTrue(self.presenter.apply())
-        self.assertEqual(len(self.adapter.set_calls), 1)
-        plug, raw, kwargs = self.adapter.set_calls[0]
-        self.assertEqual(plug, "model_root.mmd_display_frames_json")
-        self.assertEqual(kwargs, {"type": "string"})
+        self.assertEqual(len(self.coordinator.calls), 1)
+        root, raw = self.coordinator.calls[0]
+        self.assertEqual(root, "model_root")
         self.assertEqual(json.loads(raw)[2]["name_english"], "Props")
-        self.assertEqual(
-            self.adapter.undo_calls,
-            [{"openChunk": True, "chunkName": "Edit Display Frames"}, {"closeChunk": True}],
-        )
+        self.assertEqual(self.adapter.set_calls, [])
+        self.assertEqual(self.adapter.undo_calls, [])
+        self.assertEqual(self.presenter.frames, self.presenter._original_frames)
+
+    def test_apply_failure_preserves_dirty_work_copy_and_original(self):
+        original = json.loads(json.dumps(self.presenter._original_frames, ensure_ascii=False))
+        self.view.frame_list.setCurrentRow(2)
+        self.view.name_en_edit.setText("Props")
+        self.coordinator.failure = RuntimeError("injected failure")
+
+        self.assertFalse(self.presenter.apply())
+
+        self.assertEqual(self.presenter.frames[2]["name_english"], "Props")
+        self.assertEqual(self.presenter._original_frames, original)
+        self.assertIn("injected failure", self.view.status_label.value)
 
     def test_apply_rejects_missing_special_frames(self):
         for frame in self.presenter.frames:

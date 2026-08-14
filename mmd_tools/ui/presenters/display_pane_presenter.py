@@ -30,11 +30,13 @@ class DisplayPanePresenter:
         view,
         app_state,
         maya_adapter=None,
+        authoring_coordinator=None,
         choice_provider: Optional[Callable[[str, list[dict]], object]] = None,
     ):
         self.view = view
         self.app_state = app_state
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
+        self.authoring_coordinator = authoring_coordinator
         self._choice_provider = choice_provider or self._show_element_dialog
         self.frames: list[dict] = []
         self._original_frames: list[dict] = []
@@ -292,19 +294,16 @@ class DisplayPanePresenter:
             return False
 
         payload = display_frames_to_json(self.frames)
-        self.maya_adapter.undo_info(openChunk=True, chunkName="Edit Display Frames")
         try:
-            if not self.maya_adapter.attribute_exists(ATTR_MMD_DISPLAY_FRAMES_JSON, root):
-                self.maya_adapter.add_attr(root, longName=ATTR_MMD_DISPLAY_FRAMES_JSON, dataType="string")
-            self.maya_adapter.set_attr(
-                f"{root}.{ATTR_MMD_DISPLAY_FRAMES_JSON}", payload, type="string"
-            )
+            if self.authoring_coordinator is None:
+                raise RuntimeError("Display frame authoring services are unavailable")
+            result = self.authoring_coordinator.write_display_frames(root, payload)
+            if result != payload:
+                raise RuntimeError("Display frame write returned an unexpected result")
         except Exception as exc:
             logger.error("Failed to apply display frames", exc_info=True)
             self._set_status(f"Failed to apply display frames: {exc}")
             return False
-        finally:
-            self.maya_adapter.undo_info(closeChunk=True)
 
         self._original_frames = deepcopy(self.frames)
         self._set_status(f"Applied {len(self.frames)} display frames")

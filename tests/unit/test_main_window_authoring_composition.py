@@ -71,6 +71,9 @@ def test_setup_tabs_injects_only_create_model_action_into_file_presenter(monkeyp
     class FilePresenter(Presenter):
         pass
 
+    class DisplayPresenter(Presenter):
+        pass
+
     class Translator:
         def set_language(self, _language):
             pass
@@ -98,10 +101,10 @@ def test_setup_tabs_injects_only_create_model_action_into_file_presenter(monkeyp
         "MaterialPresenter",
         "BonePresenter",
         "MorphPresenter",
-        "DisplayPanePresenter",
         "SettingsPresenter",
     ):
         monkeypatch.setattr(main_window_module, name, Presenter)
+    monkeypatch.setattr(main_window_module, "DisplayPanePresenter", DisplayPresenter)
 
     class Window:
         app_state = object()
@@ -121,3 +124,5 @@ def test_setup_tabs_injects_only_create_model_action_into_file_presenter(monkeyp
 
     file_call = next(call for call in calls if call[0] == "FilePresenter")
     assert file_call[2] == {"create_model_action": create_action}
+    display_call = next(call for call in calls if call[0] == "DisplayPresenter")
+    assert display_call[2] == {"authoring_coordinator": None}

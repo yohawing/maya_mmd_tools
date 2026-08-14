@@ -16,6 +16,7 @@ install_headless_ui_stubs()
 
 from mmd_tools.ui.presenters.display_pane_presenter import DisplayPanePresenter  # noqa: E402
 from mmd_tools.ui.presenters.material_presenter import MaterialPresenter  # noqa: E402
+from mmd_tools.adapters.maya_scene_metadata_backend import MayaSceneMetadataBackend  # noqa: E402
 from tests.unit.test_display_pane_presenter import (  # noqa: E402
     _Adapter as _DisplayAdapter,
     _AppState as _DisplayAppState,
@@ -252,6 +253,8 @@ class _DisplayFailureAdapter(_DisplayAdapter):
         self._cursor = -1
 
     def undo_info(self, **kwargs):
+        if kwargs.get("query") and kwargs.get("state"):
+            return True
         if kwargs.get("openChunk"):
             self._chunk_before = deepcopy(self.attrs)
         if kwargs.get("closeChunk") and self._chunk_before is not None:
@@ -262,6 +265,11 @@ class _DisplayFailureAdapter(_DisplayAdapter):
             self._cursor += 1
             self._chunk_before = None
         super().undo_info(**kwargs)
+
+    def ls(self, node, **kwargs):
+        if kwargs.get("long"):
+            return [node]
+        return [node]
 
     def set_attr(self, plug, _value, **_kwargs):
         self.set_attempts.append(plug)
@@ -282,13 +290,20 @@ class _DisplayFailureAdapter(_DisplayAdapter):
         self.attrs = deepcopy(after)
 
 
-def test_display_add_attr_success_then_set_attr_failure_is_undoable_partial_state():
-    """Current Display Apply leaves an empty newly-added attr after setAttr fails."""
+def test_display_add_attr_success_then_set_attr_failure_rolls_back_atomically():
+    """Display Apply removes a newly-created attr when its value write fails."""
 
     view = _DisplayView()
     app_state = _DisplayAppState()
     adapter = _DisplayFailureAdapter()
-    presenter = DisplayPanePresenter(view, app_state, maya_adapter=adapter)
+    coordinator, _fake_backend, _materials, _bones = _make_coordinator()
+    coordinator._backend = MayaSceneMetadataBackend(adapter)
+    presenter = DisplayPanePresenter(
+        view,
+        app_state,
+        maya_adapter=adapter,
+        authoring_coordinator=coordinator,
+    )
     presenter.refresh()
     adapter.attrs.pop("model_root.mmd_display_frames_json")
     presenter.frames[2]["name_english"] = "Changed"
@@ -301,22 +316,13 @@ def test_display_add_attr_success_then_set_attr_failure_is_undoable_partial_stat
         "attrs": {},
         "dg": {"connections": (), "mutations": ()},
     }
-    assert failure["attrs"] == {"model_root.mmd_display_frames_json": ""}
-    assert failure["dg"] == start["dg"]
+    assert failure == start
     assert adapter.dg_calls == []
     assert adapter.set_attempts == ["model_root.mmd_display_frames_json"]
     assert adapter.undo_calls == [
         {"openChunk": True, "chunkName": "Edit Display Frames"},
         {"closeChunk": True},
     ]
-
-    adapter.undo()
-    after_undo = _display_snapshot(adapter)
-    assert after_undo == start
-
-    adapter.redo()
-    after_redo = _display_snapshot(adapter)
-    assert after_redo == failure
 
 
 class _MorphFailureAdapter(_FakeMayaAdapter):

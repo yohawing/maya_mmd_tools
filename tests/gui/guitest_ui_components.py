@@ -208,7 +208,7 @@ class TestMainWindow(GuiTestBase):
             self.assertTrue(hasattr(tab, attr), f"missing attribute: {attr}")
 
     def test_display_pane_editor_applies_and_undoes_scene_metadata(self):
-        """実Qt操作からroot JSONへ保存し、1回のMaya Undoで復元できる。"""
+        """実Qt操作からroot JSONへ保存し、Maya Undo/Redoで往復できる。"""
         template = self.window.authoring_composition.model_initializer.create(
             "pmx20-basic-v1",
             "Display Pane GUI",
@@ -259,12 +259,15 @@ class TestMainWindow(GuiTestBase):
         presenter.add_item()
         self.assertTrue(presenter.apply())
 
-        applied = json.loads(cmds.getAttr(f"{root}.mmd_display_frames_json"))
+        applied_json = cmds.getAttr(f"{root}.mmd_display_frames_json")
+        applied = json.loads(applied_json)
         self.assertEqual(applied[2]["name"], "アクセサリ")
         self.assertEqual(applied[2]["elements"], [{"type": 1, "index": 1}])
 
         cmds.undo()
         self.assertEqual(cmds.getAttr(f"{root}.mmd_display_frames_json"), original_json)
+        cmds.redo()
+        self.assertEqual(cmds.getAttr(f"{root}.mmd_display_frames_json"), applied_json)
 
     def test_status_bar_setup(self):
         """

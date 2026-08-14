@@ -45,6 +45,7 @@ class FakeBackend:
         self.commit_count = 0
         self.rollback_count = 0
         self.fail_section: str | None = None
+        self.display_payload = "old"
 
     def begin_write(self, _root: str) -> None:
         if self.active:
@@ -54,6 +55,26 @@ class FakeBackend:
         self.payload = self.scene.to_mapping()
         self.begin_count += 1
         self.events.append("begin")
+
+    def begin_display_frames_write(self, _root: str) -> None:
+        if self.active:
+            raise RuntimeError("nested transaction")
+        self.active = True
+        self.snapshot = self.scene
+        self.events.append("begin:display")
+
+    def apply_display_frames_write(self, _root: str, payload: str) -> None:
+        assert self.active
+        self.events.append("apply:display")
+        if self.fail_section == "display":
+            raise RuntimeError("failed display")
+        self.display_payload = payload
+
+    def commit_display_frames_write(self, _root: str, payload: str) -> None:
+        assert self.active
+        assert self.display_payload == payload
+        self.active = False
+        self.events.append("commit:display")
 
     def begin_material_reindex(self, _root: str, _index: int, _new_position: int) -> None:
         if self.active:
@@ -498,6 +519,28 @@ def test_read_spec_rehydrates_a_strict_previous_module_generation() -> None:
 
     assert type(result) is MmdModelAuthoringSpec
     assert result.to_mapping() == current.to_mapping()
+
+
+def test_write_display_frames_uses_only_narrow_transaction() -> None:
+    coordinator, backend, _, _ = _coordinator()
+
+    result = coordinator.write_display_frames("|root", "payload")
+
+    assert result == "payload"
+    assert backend.display_payload == "payload"
+    assert backend.events == ["begin:display", "apply:display", "commit:display"]
+    assert backend.begin_count == 0
+
+
+def test_write_display_frames_rolls_back_apply_failure() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    backend.fail_section = "display"
+
+    with pytest.raises(MayaModelAuthoringCoordinatorError, match="write_display_frames"):
+        coordinator.write_display_frames("|root", "payload")
+
+    assert backend.events == ["begin:display", "apply:display", "rollback"]
+    assert backend.rollback_count == 1
 
 
 def test_read_spec_rejects_reload_generation_with_schema_drift() -> None:

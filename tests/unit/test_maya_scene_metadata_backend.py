@@ -37,6 +37,7 @@ class FakeCmds:
         self.write_history: list[str] = []
         self.fail_set_path: str | None = None
         self.ignore_set_path: str | None = None
+        self.undo_count = 0
 
     def object_exists(self, node: str) -> bool:
         return node in self.nodes
@@ -130,6 +131,7 @@ class FakeCmds:
         raise AssertionError(f"unexpected undo_info call: {kwargs!r}")
 
     def undo(self) -> None:
+        self.undo_count += 1
         if self.undo_chunk_open:
             raise RuntimeError("cannot undo an open chunk")
         if self.undo_snapshot is None:
@@ -233,6 +235,66 @@ def _backend() -> tuple[FakeCmds, MayaSceneMetadataBackend]:
         }
     )
     return cmds, MayaSceneMetadataBackend(cmds)
+
+
+def test_display_frames_write_commits_exact_existing_payload() -> None:
+    cmds, backend = _backend()
+    plug = ("|root", "mmd_display_frames_json")
+    cmds.attrs[plug] = "old"
+
+    backend.begin_display_frames_write("|root")
+    backend.apply_display_frames_write("|root", "new")
+    backend.commit_display_frames_write("|root", "new")
+
+    assert cmds.attrs[plug] == "new"
+    assert cmds.undo_chunk_open is False
+    assert cmds.undo_count == 0
+
+
+def test_display_frames_write_rolls_back_new_attr_after_set_failure() -> None:
+    cmds, backend = _backend()
+    cmds.fail_set_path = "|root.mmd_display_frames_json"
+
+    backend.begin_display_frames_write("|root")
+    with pytest.raises(MayaSceneMetadataError, match="injected set failure"):
+        backend.apply_display_frames_write("|root", "new")
+    backend.rollback_write("|root")
+
+    assert ("|root", "mmd_display_frames_json") not in cmds.attrs
+    assert cmds.undo_chunk_open is False
+    assert cmds.undo_count == 1
+
+
+def test_display_frames_write_empty_failed_chunk_does_not_undo_prior_action() -> None:
+    cmds, backend = _backend()
+    plug = ("|root", "mmd_display_frames_json")
+    cmds.attrs[plug] = "old"
+    cmds.fail_set_path = "|root.mmd_display_frames_json"
+
+    backend.begin_display_frames_write("|root")
+    with pytest.raises(MayaSceneMetadataError, match="injected set failure"):
+        backend.apply_display_frames_write("|root", "new")
+    backend.rollback_write("|root")
+
+    assert cmds.attrs[plug] == "old"
+    assert cmds.undo_chunk_open is False
+    assert cmds.undo_count == 0
+
+
+def test_display_frames_write_readback_failure_restores_existing_preimage() -> None:
+    cmds, backend = _backend()
+    plug = ("|root", "mmd_display_frames_json")
+    cmds.attrs[plug] = "old"
+    cmds.ignore_set_path = "|root.mmd_display_frames_json"
+
+    backend.begin_display_frames_write("|root")
+    backend.apply_display_frames_write("|root", "new")
+    with pytest.raises(MayaSceneMetadataError, match="readback mismatch"):
+        backend.commit_display_frames_write("|root", "new")
+    backend.rollback_write("|root")
+
+    assert cmds.attrs[plug] == "old"
+    assert cmds.undo_count == 1
 
 
 def _material(cmds: FakeCmds, shader: str, index: int = 0, *, shared_toon: int = 0) -> None:

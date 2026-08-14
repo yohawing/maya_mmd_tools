@@ -341,6 +341,79 @@ class MayaSceneMetadataBackend:
         transaction["chunk_open"] = True
         self._write_transaction = transaction
 
+    def begin_display_frames_write(self, model_root: str) -> None:
+        """Capture one display-frame JSON plug and open its undo chunk."""
+        if self._write_transaction is not None:
+            raise MayaSceneMetadataError("a metadata write transaction is already active")
+        self._require_root(model_root)
+        root = self._material_identity(model_root)
+        existed = self._has_attr(root, ATTR_MMD_DISPLAY_FRAMES_JSON)
+        original_value = (
+            self._required_string(root, ATTR_MMD_DISPLAY_FRAMES_JSON) if existed else None
+        )
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError("Maya undo must be enabled for display frame writes")
+        self._call_adapter(
+            "undo_info",
+            openChunk=True,
+            chunkName="Edit Display Frames",
+        )
+        self._write_transaction = {
+            "root": root,
+            "kind": "display_frames",
+            "attr_existed": existed,
+            "original_value": original_value,
+            "target_value": None,
+            "chunk_open": True,
+            "mutated": False,
+        }
+
+    def apply_display_frames_write(self, model_root: str, payload: str) -> None:
+        """Write only ``mmd_display_frames_json`` inside an active chunk."""
+        transaction = self._active_transaction(model_root)
+        if transaction.get("kind") != "display_frames":
+            raise MayaSceneMetadataError("active transaction is not a display frame write")
+        if not isinstance(payload, str):
+            raise MayaSceneMetadataError("display frame payload must be a string")
+        existed = self._has_attr(transaction["root"], ATTR_MMD_DISPLAY_FRAMES_JSON)
+        if existed != transaction["attr_existed"]:
+            raise MayaSceneMetadataError("display frame metadata changed after transaction begin")
+        if existed:
+            current = self._required_string(transaction["root"], ATTR_MMD_DISPLAY_FRAMES_JSON)
+            if current != transaction["original_value"]:
+                raise MayaSceneMetadataError("display frame metadata changed after transaction begin")
+        else:
+            self._call_adapter(
+                "add_attr",
+                transaction["root"],
+                longName=ATTR_MMD_DISPLAY_FRAMES_JSON,
+                dataType="string",
+            )
+            transaction["mutated"] = True
+        self._call_adapter(
+            "set_attr",
+            f"{transaction['root']}.{ATTR_MMD_DISPLAY_FRAMES_JSON}",
+            payload,
+            type="string",
+        )
+        transaction["mutated"] = True
+        transaction["target_value"] = payload
+
+    def commit_display_frames_write(self, model_root: str, payload: str) -> None:
+        """Verify exact display-frame JSON readback and close the undo chunk."""
+        transaction = self._active_transaction(model_root)
+        if transaction.get("kind") != "display_frames":
+            raise MayaSceneMetadataError("active transaction is not a display frame write")
+        if transaction["target_value"] != payload:
+            raise MayaSceneMetadataError("display frame transaction target mismatch")
+        actual = self._required_string(transaction["root"], ATTR_MMD_DISPLAY_FRAMES_JSON)
+        if actual != payload:
+            raise MayaSceneMetadataError(
+                f"display frame metadata readback mismatch: expected {payload!r}, got {actual!r}"
+            )
+        self._call_adapter("undo_info", closeChunk=True)
+        self._write_transaction = None
+
     def begin_material_reindex(
         self,
         model_root: str,
@@ -1830,6 +1903,25 @@ class MayaSceneMetadataBackend:
 
     def rollback_write(self, model_root: str) -> None:
         transaction = self._active_transaction(model_root)
+        if transaction.get("kind") == "display_frames":
+            try:
+                if transaction["chunk_open"]:
+                    self._call_adapter("undo_info", closeChunk=True)
+                    transaction["chunk_open"] = False
+                if transaction["mutated"]:
+                    self._call_adapter("undo")
+            finally:
+                self._write_transaction = None
+            existed = self._has_attr(transaction["root"], ATTR_MMD_DISPLAY_FRAMES_JSON)
+            if existed != transaction["attr_existed"]:
+                raise MayaSceneMetadataError("display frame rollback attribute existence mismatch")
+            if existed:
+                actual = self._required_string(
+                    transaction["root"], ATTR_MMD_DISPLAY_FRAMES_JSON
+                )
+                if actual != transaction["original_value"]:
+                    raise MayaSceneMetadataError("display frame rollback preimage mismatch")
+            return
         try:
             if transaction["chunk_open"]:
                 self._call_adapter("undo_info", closeChunk=True)
