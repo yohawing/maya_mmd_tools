@@ -95,6 +95,31 @@ class MayaMetadataReadSupport:
         except Exception as exc:
             raise self._error(f"failed to inspect {node}.{attr}: {exc}") from exc
 
+    def canonical_identity(self, node: Any) -> str:
+        if not isinstance(node, str) or not node:
+            raise self._error(
+                f"material binding identity must be a non-empty string: {node!r}"
+            )
+        if node.startswith("|"):
+            return node
+        try:
+            long_names = self._cmds.ls(node, long=True) or []
+        except Exception as exc:
+            raise self._error(
+                f"failed to canonicalize material node {node!r}: {exc}"
+            ) from exc
+        if len(long_names) == 1 and isinstance(long_names[0], str):
+            return long_names[0]
+        return node
+
+    def call_adapter(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return getattr(self._cmds, method)(*args, **kwargs)
+        except AttributeError as exc:
+            raise self._error(f"injected adapter is missing {method}()") from exc
+        except Exception as exc:
+            raise self._error(f"adapter {method}() failed: {exc}") from exc
+
     def require_root(self, root: Any) -> None:
         if not isinstance(root, str) or not root.strip():
             raise self._error("root must be a non-empty string")

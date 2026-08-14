@@ -32,6 +32,10 @@ class _Cmds:
         node, attr = path.rsplit(".", 1)
         return self.attrs[(node, attr)]
 
+    def ls(self, node: str, **kwargs: Any) -> list[str]:
+        assert kwargs == {"long": True}
+        return ["|root"] if node == "root" else [node]
+
 
 def _support(cmds: _Cmds | None = None) -> MayaMetadataReadSupport:
     return MayaMetadataReadSupport(cmds or _Cmds(), error_factory=_ReadError)
@@ -76,3 +80,12 @@ def test_preserves_required_and_root_error_messages() -> None:
         support.required("|root", "missing")
     with pytest.raises(_ReadError, match="model root does not exist"):
         support.require_root("|missing")
+
+
+def test_preserves_canonical_identity_and_adapter_error_boundaries() -> None:
+    support = _support()
+
+    assert support.canonical_identity("root") == "|root"
+    assert support.call_adapter("object_exists", "|root") is True
+    with pytest.raises(_ReadError, match=r"missing_method\(\)"):
+        support.call_adapter("missing_method")

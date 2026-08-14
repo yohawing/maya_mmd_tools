@@ -3615,17 +3615,7 @@ class MayaSceneMetadataBackend:
         return value or None
 
     def _material_identity(self, node: Any) -> str:
-        if not isinstance(node, str) or not node:
-            raise MayaSceneMetadataError(f"material binding identity must be a non-empty string: {node!r}")
-        if node.startswith("|"):
-            return node
-        try:
-            long_names = self._cmds.ls(node, long=True) or []
-        except Exception as exc:
-            raise MayaSceneMetadataError(f"failed to canonicalize material node {node!r}: {exc}") from exc
-        if len(long_names) == 1 and isinstance(long_names[0], str):
-            return long_names[0]
-        return node
+        return self._read_support.canonical_identity(node)
 
     def _list_connections(self, query: Any, **kwargs: Any) -> list[str]:
         result = self._call_adapter("list_connections", query, **kwargs) or []
@@ -3641,12 +3631,7 @@ class MayaSceneMetadataBackend:
         return value if isinstance(value, str) else ""
 
     def _call_adapter(self, method: str, *args: Any, **kwargs: Any) -> Any:
-        try:
-            return getattr(self._cmds, method)(*args, **kwargs)
-        except AttributeError as exc:
-            raise MayaSceneMetadataError(f"injected adapter is missing {method}()") from exc
-        except Exception as exc:
-            raise MayaSceneMetadataError(f"adapter {method}() failed: {exc}") from exc
+        return self._read_support.call_adapter(method, *args, **kwargs)
 
     def _read_bone(self, joint: str) -> dict[str, Any]:
         flags = self._required_int(joint, ATTR_MMD_BONE_FLAGS, minimum=0)
