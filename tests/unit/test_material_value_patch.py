@@ -761,6 +761,34 @@ def test_backend_canonicalizes_base_color_to_maya_float3_precision() -> None:
     )
 
 
+def test_backend_value_commit_accepts_maya_float_round_trip_precision() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, edge_size=0.6)
+    cmds.attrs[("mat", "baseColor")] = [tuple(old.diffuse[:3])]
+
+    backend.begin_material_value_patch("|root", "mat", old, new)
+    cmds.set_attr("mat.mmd_edge_size", 0.6000000238418579)
+    backend.commit_material_value_patch("|root", "mat", new)
+
+    assert cmds.undo_chunk_open is False
+
+
+def test_backend_value_commit_rejects_materially_different_float() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, edge_size=0.6)
+    cmds.attrs[("mat", "baseColor")] = [tuple(old.diffuse[:3])]
+
+    backend.begin_material_value_patch("|root", "mat", old, new)
+    cmds.set_attr("mat.mmd_edge_size", 0.61)
+    with pytest.raises(MayaSceneMetadataError, match="fingerprint mismatch"):
+        backend.commit_material_value_patch("|root", "mat", new)
+    backend.rollback_write("|root")
+
+    assert cmds.attrs[("mat", "mmd_edge_size")] == old.edge_size
+
+
 def test_backend_value_commit_mismatch_rolls_back_selected_preimage() -> None:
     class UndoCmds(FakeCmdsAdapter):
         def __init__(self) -> None:

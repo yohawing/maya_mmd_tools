@@ -861,7 +861,7 @@ class MayaSceneMetadataBackend:
                 shader, diffuse_route.diffuse_attribute
             )
             expected_old["viewport_diffuse"] = self._maya_float3(old_material.diffuse[:3])
-        if original != expected_old:
+        if not self._material_value_attrs_equal(original, expected_old):
             raise MayaSceneMetadataError(
                 f"material value patch preimage mismatch for {shader!r}: "
                 f"expected {expected_old!r}, got {original!r}"
@@ -1141,7 +1141,7 @@ class MayaSceneMetadataBackend:
                 shader, diffuse_route.diffuse_attribute
             )
             expected["viewport_diffuse"] = self._maya_float3(material.diffuse[:3])
-        if actual != expected:
+        if not self._material_value_attrs_equal(actual, expected):
             raise MayaSceneMetadataError(
                 f"material value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
             )
@@ -1185,6 +1185,62 @@ class MayaSceneMetadataBackend:
             "edge_size": material.edge_size,
             "memo": material.memo,
         }
+
+    @staticmethod
+    def _material_value_attrs_equal(
+        actual: Mapping[str, Any],
+        expected: Mapping[str, Any],
+    ) -> bool:
+        """Compare a material patch fingerprint across Maya numeric storage types.
+
+        Imported attributes may be stored as Maya ``float`` while newly authored
+        ones use ``double``.  Maya therefore reads a value such as ``0.6`` back as
+        ``0.6000000238418579`` on older/imported shaders.  Keep the fingerprint
+        structure exact, but accept only the normal numeric round-trip error.
+        """
+        if actual.keys() != expected.keys():
+            return False
+        numeric_fields = {
+            "diffuse",
+            "specular",
+            "specular_coefficient",
+            "ambient",
+            "edge_color",
+            "edge_size",
+            "viewport_diffuse",
+        }
+        for field in actual:
+            actual_value = actual[field]
+            expected_value = expected[field]
+            if field not in numeric_fields:
+                if actual_value != expected_value:
+                    return False
+                continue
+            actual_values = (
+                tuple(actual_value)
+                if isinstance(actual_value, (list, tuple))
+                else (actual_value,)
+            )
+            expected_values = (
+                tuple(expected_value)
+                if isinstance(expected_value, (list, tuple))
+                else (expected_value,)
+            )
+            if len(actual_values) != len(expected_values):
+                return False
+            if any(
+                not math.isclose(
+                    float(actual_component),
+                    float(expected_component),
+                    rel_tol=1.0e-6,
+                    abs_tol=1.0e-7,
+                )
+                for actual_component, expected_component in zip(
+                    actual_values, expected_values
+                )
+            ):
+                return False
+        return True
 
     @staticmethod
     def _maya_float3(values: Sequence[float]) -> tuple[float, float, float]:
@@ -1800,7 +1856,9 @@ class MayaSceneMetadataBackend:
                 actual["viewport_diffuse"] = self._required_vector(
                     transaction["binding"], diffuse_route.diffuse_attribute
                 )
-            if actual != transaction["original_values"]:
+            if not self._material_value_attrs_equal(
+                actual, transaction["original_values"]
+            ):
                 raise MayaSceneMetadataError("material value patch rollback fingerprint mismatch")
             return
         if transaction.get("kind") == "material_binding":
