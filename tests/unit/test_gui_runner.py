@@ -24,6 +24,7 @@ def _install_maya_stub() -> None:
 _install_maya_stub()
 
 from tests import run_gui_tests
+from tests.common import gui_test_base
 from tests.common.gui_test_base import GuiTestRunner
 
 
@@ -556,6 +557,326 @@ class GuiTestRunnerTests(unittest.TestCase):
             run_gui_tests.main()
 
         self.assertEqual(2, raised.exception.code)
+
+    def test_batch_manifest_is_strict_versioned_and_ordered(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "tests" / "gui").mkdir(parents=True)
+            manifest = root / "batch.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "cases": [
+                            {"id": "first", "test_path": "tests/gui", "test_filter": "test_first"},
+                            {"id": "second-2", "test_path": "tests/gui", "test_filter": "test_second"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            cases = run_gui_tests.load_batch_manifest(manifest, root)
+
+        self.assertEqual(["first", "second-2"], [case["id"] for case in cases])
+
+    def test_batch_manifest_rejects_empty_duplicate_and_invalid_cases(self):
+        invalid_payloads = (
+            {"schema_version": 1.0, "cases": []},
+            {"schema_version": 2, "cases": []},
+            {"schema_version": 1, "cases": []},
+            {
+                "schema_version": 1,
+                "cases": [
+                    {"id": "same", "test_path": "tests/gui", "test_filter": "one"},
+                    {"id": "same", "test_path": "tests/gui", "test_filter": "two"},
+                ],
+            },
+            {
+                "schema_version": 1,
+                "cases": [{"id": "bad id", "test_path": "tests/gui", "test_filter": "one"}],
+            },
+            {
+                "schema_version": 1,
+                "cases": [{"id": "escape", "test_path": "../outside", "test_filter": "one"}],
+            },
+            {
+                "schema_version": 1,
+                "cases": [{"id": "empty", "test_path": "tests/gui", "test_filter": ""}],
+            },
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "batch.json"
+            for payload in invalid_payloads:
+                manifest.write_text(json.dumps(payload), encoding="utf-8")
+                with self.subTest(payload=payload), self.assertRaises(ValueError):
+                    run_gui_tests.load_batch_manifest(manifest, root)
+
+    def test_batch_runner_continues_after_failure_and_emits_one_final_marker(self):
+        cases = [
+            {"id": "fails", "test_path": "tests/gui", "test_filter": "test_fails"},
+            {"id": "passes", "test_path": "tests/gui", "test_filter": "test_passes"},
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "batch.log"
+            report_path = Path(temp_dir) / "batch.timing.json"
+            run_gui_tests.write_timing_report(
+                report_path,
+                run_gui_tests.new_batch_report("2024", cases),
+            )
+            with mock.patch(
+                "tests.common.gui_test_base._batch_environment_snapshot",
+                return_value={},
+            ), mock.patch(
+                "tests.common.gui_test_base._restore_batch_environment",
+            ) as restore, mock.patch.object(
+                GuiTestRunner,
+                "run_tests_from_command",
+                side_effect=["FAIL", "PASS"],
+            ) as run_case:
+                status = GuiTestRunner.run_batch_from_command(
+                    str(log_path),
+                    cases,
+                    str(report_path),
+                )
+
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            log = log_path.read_text(encoding="utf-8")
+
+        self.assertEqual("FAIL", status)
+        self.assertEqual(["FAIL", "PASS"], [entry["status"] for entry in report["cases"]])
+        self.assertTrue(all(entry["elapsed_seconds"] >= 0.0 for entry in report["cases"]))
+        self.assertEqual(2, run_case.call_count)
+        self.assertEqual(4, restore.call_count)
+        self.assertEqual(1, log.count(run_gui_tests.GUI_TEST_FINISHED_MARKER))
+
+    def test_batch_runner_records_cleanup_failure_and_runs_remaining_case(self):
+        cases = [
+            {"id": "dirty", "test_path": "tests/gui", "test_filter": "test_dirty"},
+            {"id": "next", "test_path": "tests/gui", "test_filter": "test_next"},
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "batch.log"
+            report_path = Path(temp_dir) / "batch.timing.json"
+            run_gui_tests.write_timing_report(
+                report_path,
+                run_gui_tests.new_batch_report("2024", cases),
+            )
+            with mock.patch(
+                "tests.common.gui_test_base._batch_environment_snapshot",
+                return_value={},
+            ), mock.patch(
+                "tests.common.gui_test_base._restore_batch_environment",
+                side_effect=[None, RuntimeError("cleanup failed"), None, None],
+            ), mock.patch.object(
+                GuiTestRunner,
+                "run_tests_from_command",
+                side_effect=["PASS", "PASS"],
+            ):
+                status = GuiTestRunner.run_batch_from_command(
+                    str(log_path),
+                    cases,
+                    str(report_path),
+                )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("ERROR", status)
+        self.assertEqual("ERROR", report["cases"][0]["status"])
+        self.assertIn("cleanup failed", report["cases"][0]["cleanup_error"])
+        self.assertEqual("PASS", report["cases"][1]["status"])
+
+    def test_batch_runner_records_not_run_cases_as_blocked_when_snapshot_fails(self):
+        cases = [
+            {"id": "one", "test_path": "tests/gui", "test_filter": "test_one"},
+            {"id": "two", "test_path": "tests/gui", "test_filter": "test_two"},
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "batch.log"
+            report_path = Path(temp_dir) / "batch.timing.json"
+            run_gui_tests.write_timing_report(
+                report_path,
+                run_gui_tests.new_batch_report("2024", cases),
+            )
+            with mock.patch(
+                "tests.common.gui_test_base._batch_environment_snapshot",
+                side_effect=RuntimeError("snapshot failed"),
+            ), mock.patch.object(GuiTestRunner, "run_tests_from_command") as run_case:
+                status = GuiTestRunner.run_batch_from_command(
+                    str(log_path),
+                    cases,
+                    str(report_path),
+                )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("ERROR", status)
+        self.assertEqual(["BLOCKED", "BLOCKED"], [entry["status"] for entry in report["cases"]])
+        run_case.assert_not_called()
+
+    def test_batch_timeout_freezes_active_and_unstarted_case_states(self):
+        cases = [
+            {"id": "active", "test_path": "tests/gui", "test_filter": "test_active"},
+            {"id": "later", "test_path": "tests/gui", "test_filter": "test_later"},
+            {"id": "unstarted", "test_path": "tests/gui", "test_filter": "test_unstarted"},
+        ]
+        report = run_gui_tests.new_batch_report("2024", cases)
+        report["cases"][0].update(status="PASS", elapsed_seconds=3.0)
+        report["cases"][1]["status"] = "RUNNING"
+
+        run_gui_tests.finalize_batch_timeout(report, 12.5)
+
+        self.assertEqual("TIMEOUT", report["status"])
+        self.assertEqual("PASS", report["cases"][0]["status"])
+        self.assertEqual(3.0, report["cases"][0]["elapsed_seconds"])
+        self.assertEqual("TIMEOUT", report["cases"][1]["status"])
+        self.assertIsNone(report["cases"][1]["elapsed_seconds"])
+        self.assertEqual("BLOCKED", report["cases"][2]["status"])
+        self.assertTrue(report["cases"][2]["not_run"])
+        self.assertEqual(12.5, report["host_timeout_elapsed_seconds"])
+        self.assertEqual({"PASS": 1, "TIMEOUT": 1, "BLOCKED": 1}, report["case_counts"])
+
+    def test_batch_runner_continues_when_case_timing_cleanup_fails(self):
+        cases = [
+            {"id": "one", "test_path": "tests/gui", "test_filter": "test_one"},
+            {"id": "two", "test_path": "tests/gui", "test_filter": "test_two"},
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "batch.log"
+            report_path = Path(temp_dir) / "batch.timing.json"
+            run_gui_tests.write_timing_report(
+                report_path,
+                run_gui_tests.new_batch_report("2024", cases),
+            )
+            with mock.patch(
+                "tests.common.gui_test_base._batch_environment_snapshot",
+                return_value={},
+            ), mock.patch(
+                "tests.common.gui_test_base._restore_batch_environment",
+            ), mock.patch.object(
+                GuiTestRunner,
+                "run_tests_from_command",
+                side_effect=["PASS", "PASS"],
+            ) as run_case, mock.patch.object(
+                Path,
+                "unlink",
+                side_effect=PermissionError("timing file busy"),
+            ):
+                status = GuiTestRunner.run_batch_from_command(
+                    str(log_path),
+                    cases,
+                    str(report_path),
+                )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("ERROR", status)
+        self.assertEqual(2, run_case.call_count)
+        self.assertEqual(["ERROR", "ERROR"], [entry["status"] for entry in report["cases"]])
+        self.assertTrue(all("timing file busy" in entry["cleanup_error"] for entry in report["cases"]))
+
+    def test_batch_cleanup_preserves_preexisting_state_and_removes_case_additions(self):
+        existing_widget = mock.Mock()
+        new_widget = mock.Mock()
+        app = mock.Mock()
+        app.topLevelWidgets.return_value = [existing_widget, new_widget]
+        settings = mock.Mock()
+        settings.allKeys.return_value = ["base", "new"]
+        settings.value.side_effect = lambda key: "changed" if key == "base" else "case"
+        snapshot = {
+            "widgets": {id(existing_widget)},
+            "maya_windows": {"ExistingWindow"},
+            "script_jobs": {10},
+            "settings": [
+                ("yohawing", "maya_mmd_tools", {"base": "old"}),
+            ],
+        }
+        cmds = mock.Mock()
+        cmds.lsUI.return_value = ["ExistingWindow", "CaseWindow"]
+        cmds.scriptJob.side_effect = [
+            ["10: existing", "11: case"],
+            None,
+        ]
+
+        with mock.patch.object(gui_test_base, "cmds", cmds), mock.patch(
+            "mmd_tools.ui.qt_compat.QApplication.instance",
+            return_value=app,
+        ), mock.patch(
+            "mmd_tools.ui.qt_compat.QSettings",
+            return_value=settings,
+        ):
+            gui_test_base._restore_batch_environment(snapshot, new_scene=True)
+
+        existing_widget.close.assert_not_called()
+        new_widget.close.assert_called_once_with()
+        cmds.deleteUI.assert_called_once_with("CaseWindow", window=True)
+        self.assertIn(mock.call(kill=11, force=True), cmds.scriptJob.call_args_list)
+        self.assertNotIn(mock.call(kill=10, force=True), cmds.scriptJob.call_args_list)
+        settings.remove.assert_called_once_with("new")
+        settings.setValue.assert_called_once_with("base", "old")
+        settings.clear.assert_not_called()
+        cmds.file.assert_called_once_with(new=True, force=True)
+
+    def test_host_dispatches_batch_manifest_to_one_attached_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path = root / "batch.json"
+            log_path = root / "batch.log"
+            timing_path = root / "batch.timing.json"
+            cases = [
+                {"id": "one", "test_path": "tests/gui", "test_filter": "test_one"},
+                {"id": "two", "test_path": "tests/gui", "test_filter": "test_two"},
+            ]
+            manifest_path.write_text(
+                json.dumps({"schema_version": 1, "cases": cases}),
+                encoding="utf-8",
+            )
+            maya_report_path = timing_path.with_name(timing_path.name + ".maya-partial")
+
+            def dispatch(_port, _code, label=None):
+                if label != "<gui-test-runner-command>":
+                    return
+                report = json.loads(maya_report_path.read_text(encoding="utf-8"))
+                for entry in report["cases"]:
+                    entry["status"] = "PASS"
+                    entry["elapsed_seconds"] = 0.01
+                report["status"] = "PASS"
+                run_gui_tests.write_timing_report(maya_report_path, report)
+
+            with mock.patch.object(run_gui_tests.maya_commandport, "is_port_open", return_value=True), \
+                 mock.patch.object(run_gui_tests, "verify_attached_maya"), \
+                 mock.patch.object(run_gui_tests.maya_commandport, "send_python", side_effect=dispatch) as send_python, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "quit_maya") as quit_maya, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "close_process_logs"), \
+                 mock.patch.object(run_gui_tests, "monitor_log_file", return_value="PASS"), \
+                 mock.patch.object(
+                     sys,
+                     "argv",
+                     [
+                         "run_gui_tests.py",
+                         "--attach-existing",
+                         "--port",
+                         "7788",
+                         "--batch_manifest",
+                         str(manifest_path),
+                         "--log_path",
+                         str(log_path),
+                         "--timing_report",
+                         str(timing_path),
+                     ],
+                 ):
+                self.assertEqual(0, run_gui_tests.main())
+
+            command = next(
+                call.args[1]
+                for call in send_python.call_args_list
+                if call.kwargs.get("label") == "<gui-test-runner-command>"
+            )
+            report = json.loads(timing_path.read_text(encoding="utf-8"))
+
+        self.assertIn("run_batch_from_command", command)
+        self.assertIn("'id': 'one'", command)
+        self.assertEqual(["PASS", "PASS"], [entry["status"] for entry in report["cases"]])
+        self.assertEqual("skipped", report["phases"]["shutdown"]["status"])
+        quit_maya.assert_not_called()
 
     def test_explorer_cleanup_quits_without_process_handle(self):
         with mock.patch.object(sys, "platform", "win32"), \

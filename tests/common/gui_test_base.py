@@ -6,6 +6,93 @@ import time
 import maya.cmds as cmds
 
 
+_BATCH_QSETTINGS_SCOPES = (
+    ("yohawing", "maya_mmd_tools"),
+    ("maya_mmd_tools", "ImportExportTab"),
+)
+
+
+def _script_job_ids():
+    """Return the IDs of current Maya scriptJobs without touching existing jobs."""
+    result = set()
+    for description in cmds.scriptJob(listJobs=True) or []:
+        prefix = str(description).split(":", 1)[0].strip()
+        try:
+            result.add(int(prefix))
+        except ValueError:
+            continue
+    return result
+
+
+def _batch_environment_snapshot():
+    """Capture only identities/state needed to remove per-case additions."""
+    from mmd_tools.ui.qt_compat import QApplication, QSettings
+
+    app = QApplication.instance()
+    widgets = set(id(widget) for widget in (app.topLevelWidgets() if app is not None else []))
+    settings = []
+    for organization, application in _BATCH_QSETTINGS_SCOPES:
+        store = QSettings(organization, application)
+        settings.append(
+            (organization, application, {key: store.value(key) for key in store.allKeys()})
+        )
+    return {
+        "widgets": widgets,
+        "maya_windows": set(cmds.lsUI(windows=True) or []),
+        "script_jobs": _script_job_ids(),
+        "settings": settings,
+    }
+
+
+def _restore_batch_environment(snapshot, new_scene=True):
+    """Remove only state created after *snapshot* and restore changed settings."""
+    from mmd_tools.ui.qt_compat import QApplication, QSettings
+
+    errors = []
+    app = QApplication.instance()
+    if app is not None:
+        for widget in list(app.topLevelWidgets()):
+            if id(widget) in snapshot["widgets"]:
+                continue
+            try:
+                widget.close()
+                widget.setParent(None)
+                widget.deleteLater()
+            except Exception as exc:
+                errors.append(f"Qt window cleanup: {exc}")
+        app.processEvents()
+
+    for window in set(cmds.lsUI(windows=True) or []) - snapshot["maya_windows"]:
+        try:
+            cmds.deleteUI(window, window=True)
+        except Exception as exc:
+            errors.append(f"Maya window cleanup {window}: {exc}")
+
+    for job_id in _script_job_ids() - snapshot["script_jobs"]:
+        try:
+            cmds.scriptJob(kill=job_id, force=True)
+        except Exception as exc:
+            errors.append(f"scriptJob cleanup {job_id}: {exc}")
+
+    for organization, application, baseline in snapshot["settings"]:
+        store = QSettings(organization, application)
+        current_keys = set(store.allKeys())
+        for key in current_keys - set(baseline):
+            store.remove(key)
+        for key, value in baseline.items():
+            if key not in current_keys or store.value(key) != value:
+                store.setValue(key, value)
+        store.sync()
+
+    if new_scene:
+        try:
+            cmds.file(new=True, force=True)
+        except Exception as exc:
+            errors.append(f"scene reset: {exc}")
+    if errors:
+        raise RuntimeError("; ".join(errors))
+
+
 def skip_if_no_gui(func):
     """GUIが利用できない場合はテストをスキップするデコレーター"""
 
@@ -206,7 +293,13 @@ class GuiTestRunner:
     """
 
     @staticmethod
-    def run_tests_from_command(log_file_path, test_dir_str, test_filter=None, timing_report_path=None):
+    def run_tests_from_command(
+        log_file_path,
+        test_dir_str,
+        test_filter=None,
+        timing_report_path=None,
+        emit_completion_marker=True,
+    ):
         """
         Discovers and runs tests, redirecting output to a log file.
 
@@ -360,7 +453,8 @@ class GuiTestRunner:
                     timing_report["tests"] = timing_recorder.tests
                 timing_report["status"] = status
                 timing_helpers.write_timing_report(timing_report_path, timing_report)
-            print(f"\n//-- GUI TEST FINISHED --// status={status}")
+            if emit_completion_marker:
+                print(f"\n//-- GUI TEST FINISHED --// status={status}")
             log_file.flush()
             log_file.close()
             # Restore original stdout/stderr
@@ -374,6 +468,113 @@ class GuiTestRunner:
             for handler in original_handlers:
                 logging.root.addHandler(handler)
             logging.root.setLevel(original_log_level)
+
+    @staticmethod
+    def run_batch_from_command(log_file_path, cases, timing_report_path):
+        """Run focused manifest cases sequentially in one isolated Maya session."""
+        import os
+        from pathlib import Path
+        from tests import run_gui_tests as report_helpers
+
+        report_path = Path(timing_report_path)
+        fallback = report_helpers.new_batch_report("unknown", cases)
+        report = report_helpers.read_batch_report(report_path, fallback)
+        if [entry.get("id") for entry in report.get("cases", [])] != [case["id"] for case in cases]:
+            report = fallback
+        try:
+            snapshot = _batch_environment_snapshot()
+        except Exception as exc:
+            for entry in report["cases"]:
+                entry["status"] = "BLOCKED"
+                entry["blocked_reason"] = f"batch environment snapshot failed: {exc}"
+            report["status"] = "ERROR"
+            report_helpers.finalize_batch_report(report)
+            report_helpers.write_timing_report(report_path, report)
+            with open(log_file_path, "a", encoding="utf-8") as log_file:
+                log_file.write("\n//-- GUI TEST FINISHED --// status=ERROR\n")
+            return "ERROR"
+
+        for index, case in enumerate(cases):
+            entry = report["cases"][index]
+            entry["status"] = "RUNNING"
+            report_helpers.write_timing_report(report_path, report)
+            started = time.perf_counter()
+            case_report_path = report_path.with_name(
+                f"{report_path.name}.case-{case['id']}-{os.getpid()}"
+            )
+            try:
+                try:
+                    _restore_batch_environment(snapshot, new_scene=True)
+                except Exception as exc:
+                    entry["status"] = "BLOCKED"
+                    entry["blocked_reason"] = str(exc)
+                    continue
+
+                case_report = report_helpers.new_timing_report(
+                    report.get("maya_version", "unknown"),
+                    case["test_path"],
+                    case["test_filter"],
+                )
+                case_report["phases"]["startup"] = {
+                    "status": "passed",
+                    "elapsed_seconds": 0.0,
+                }
+                case_report["phases"]["shutdown"] = {
+                    "status": "skipped",
+                    "elapsed_seconds": 0.0,
+                }
+                report_helpers.write_timing_report(case_report_path, case_report)
+                status = GuiTestRunner.run_tests_from_command(
+                    log_file_path,
+                    case["test_path"],
+                    case["test_filter"],
+                    str(case_report_path),
+                    emit_completion_marker=False,
+                )
+                case_report = report_helpers.read_timing_report(case_report_path, case_report)
+                report_helpers.finalize_timing_report(case_report)
+                entry.update(
+                    status=status,
+                    phases=case_report.get("phases", {}),
+                    tests=case_report.get("tests", []),
+                    test_counts=case_report.get("test_counts", {}),
+                    slowest_tests=case_report.get("slowest_tests", []),
+                )
+            except Exception as exc:
+                entry["status"] = "ERROR"
+                entry["error"] = str(exc)
+            finally:
+                entry["elapsed_seconds"] = max(0.0, time.perf_counter() - started)
+                try:
+                    _restore_batch_environment(snapshot, new_scene=True)
+                except Exception as exc:
+                    entry["status"] = "ERROR"
+                    entry["cleanup_error"] = str(exc)
+                try:
+                    case_report_path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    entry["status"] = "ERROR"
+                    prior_error = entry.get("cleanup_error")
+                    message = f"case timing cleanup: {exc}"
+                    entry["cleanup_error"] = f"{prior_error}; {message}" if prior_error else message
+                report_helpers.write_timing_report(report_path, report)
+
+        statuses = [entry["status"] for entry in report["cases"]]
+        if statuses and all(status == "PASS" for status in statuses):
+            status = "PASS"
+        elif any(status in {"ERROR", "BLOCKED", "NOT_RUN", "RUNNING"} for status in statuses):
+            status = "ERROR"
+        else:
+            status = "FAIL"
+        report["status"] = status
+        report_helpers.finalize_batch_report(report)
+        report_helpers.write_timing_report(report_path, report)
+        with open(log_file_path, "a", encoding="utf-8") as log_file:
+            log_file.write(f"\n//-- GUI TEST FINISHED --// status={status}\n")
+            log_file.flush()
+        return status
 
     @staticmethod
     def _filter_suite(suite, test_filter):

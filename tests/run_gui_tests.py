@@ -38,6 +38,8 @@ ATTACH_HANDSHAKE_PROTOCOL = "maya_mmd_tools_gui_attach_v1"
 GUI_TEST_FINISHED_MARKER = "//-- GUI TEST FINISHED --//"
 GUI_TEST_STATUSES = frozenset(("PASS", "FAIL", "NO_TESTS", "ERROR"))
 TIMING_REPORT_SCHEMA_VERSION = 1
+BATCH_MANIFEST_SCHEMA_VERSION = 1
+BATCH_REPORT_SCHEMA_VERSION = 1
 _COMPLETION_RE = re.compile(
     rf"^{re.escape(GUI_TEST_FINISHED_MARKER)}\s+status=(?P<status>[A-Z_]+)\s*$"
 )
@@ -68,6 +70,107 @@ def new_timing_report(maya_version, test_path, test_filter):
     }
 
 
+def load_batch_manifest(path, project_root):
+    """Load one strict, versioned GUI batch manifest."""
+    manifest_path = Path(path)
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(f"invalid GUI batch manifest: {manifest_path}") from exc
+    if not isinstance(payload, dict) or set(payload) != {"schema_version", "cases"}:
+        raise ValueError("GUI batch manifest must contain only schema_version and cases")
+    version = payload["schema_version"]
+    if type(version) is not int or version != BATCH_MANIFEST_SCHEMA_VERSION:
+        raise ValueError(f"unsupported GUI batch manifest schema_version: {version!r}")
+    raw_cases = payload["cases"]
+    if not isinstance(raw_cases, list) or not raw_cases:
+        raise ValueError("GUI batch manifest cases must be a non-empty list")
+
+    root = Path(project_root).resolve()
+    cases = []
+    case_ids = set()
+    for index, raw_case in enumerate(raw_cases):
+        if not isinstance(raw_case, dict) or set(raw_case) != {"id", "test_path", "test_filter"}:
+            raise ValueError(f"GUI batch case {index} must contain only id, test_path, and test_filter")
+        case_id = raw_case["id"]
+        test_path = raw_case["test_path"]
+        test_filter = raw_case["test_filter"]
+        if not isinstance(case_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", case_id):
+            raise ValueError(f"GUI batch case {index} has an invalid id")
+        if case_id in case_ids:
+            raise ValueError(f"duplicate GUI batch case id: {case_id}")
+        if not isinstance(test_path, str) or not test_path.strip():
+            raise ValueError(f"GUI batch case {case_id} has an invalid test_path")
+        candidate = (root / test_path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"GUI batch case {case_id} test_path escapes project root") from exc
+        if Path(test_path).is_absolute():
+            raise ValueError(f"GUI batch case {case_id} test_path must be relative")
+        if not candidate.is_dir():
+            raise ValueError(f"GUI batch case {case_id} test_path is not a directory")
+        if not isinstance(test_filter, str) or not test_filter.strip():
+            raise ValueError(f"GUI batch case {case_id} has an invalid test_filter")
+        case_ids.add(case_id)
+        cases.append({"id": case_id, "test_path": test_path, "test_filter": test_filter})
+    return cases
+
+
+def new_batch_report(maya_version, cases):
+    """Return the initial host/Maya batch timing report."""
+    return {
+        "schema_version": BATCH_REPORT_SCHEMA_VERSION,
+        "runner": "maya_gui_batch",
+        "maya_version": str(maya_version),
+        "status": "ERROR",
+        "phases": {
+            "startup": {"status": "blocked", "elapsed_seconds": None},
+            "shutdown": {"status": "blocked", "elapsed_seconds": None},
+        },
+        "cases": [
+            {
+                "id": case["id"],
+                "test_path": case["test_path"],
+                "test_filter": case["test_filter"],
+                "status": "NOT_RUN",
+                "elapsed_seconds": None,
+            }
+            for case in cases
+        ],
+        "case_counts": {"NOT_RUN": len(cases)},
+    }
+
+
+def finalize_batch_report(report):
+    """Add deterministic aggregate counts for batch case statuses."""
+    counts = {}
+    for case in report.get("cases", []):
+        status = case.get("status", "NOT_RUN")
+        counts[status] = counts.get(status, 0) + 1
+    report["case_counts"] = counts
+    return report
+
+
+def finalize_batch_timeout(report, host_elapsed_seconds):
+    """Freeze active and unstarted cases after the host owns a batch timeout."""
+    report["host_timeout_elapsed_seconds"] = host_elapsed_seconds
+    for case in report.get("cases", []):
+        if case.get("status") == "RUNNING":
+            case["status"] = "TIMEOUT"
+            # The aggregate partial does not own a per-case start timestamp.
+            # Host elapsed includes earlier completed cases, so leave this
+            # unknown instead of double-counting their time.
+            case["elapsed_seconds"] = None
+            case["timeout_reason"] = "host timed out waiting for this batch case"
+        elif case.get("status") == "NOT_RUN":
+            case["status"] = "BLOCKED"
+            case["not_run"] = True
+            case["blocked_reason"] = "an earlier batch case timed out"
+    report["status"] = "TIMEOUT"
+    return finalize_batch_report(report)
+
+
 def read_timing_report(path, fallback):
     """Read a timing report, returning *fallback* if Maya wrote no valid JSON."""
     try:
@@ -75,6 +178,17 @@ def read_timing_report(path, fallback):
     except (OSError, ValueError):
         return fallback
     if report.get("schema_version") != TIMING_REPORT_SCHEMA_VERSION:
+        return fallback
+    return report
+
+
+def read_batch_report(path, fallback):
+    """Read a batch report, returning *fallback* for invalid JSON/schema."""
+    try:
+        report = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return fallback
+    if report.get("schema_version") != BATCH_REPORT_SCHEMA_VERSION or report.get("runner") != "maya_gui_batch":
         return fallback
     return report
 
@@ -259,6 +373,11 @@ def main():
         help="Path to timing JSON (default: <log stem>.timing.json beside the log)",
     )
     parser.add_argument(
+        "--batch_manifest",
+        default=None,
+        help="Versioned JSON manifest whose focused cases share one Maya session",
+    )
+    parser.add_argument(
         "--attach-existing",
         action="store_true",
         help="Attach to a verified existing Maya commandPort and leave Maya running",
@@ -274,8 +393,16 @@ def main():
         parser.error("--port must be between 1 and 65535")
     if args.attach_existing and args.vp2_device_override:
         parser.error("--vp2_device_override cannot be applied to --attach-existing Maya")
+    if args.batch_manifest and args.test_filter:
+        parser.error("--test_filter cannot be combined with --batch_manifest")
 
     project_root = Path(__file__).resolve().parent.parent
+    batch_cases = None
+    if args.batch_manifest:
+        try:
+            batch_cases = load_batch_manifest(args.batch_manifest, project_root)
+        except ValueError as exc:
+            parser.error(str(exc))
     log_file_path = Path(args.log_path) if args.log_path else Path("logs") / LOG_FILE_NAME
     if not log_file_path.is_absolute():
         log_file_path = project_root / log_file_path
@@ -297,7 +424,11 @@ def main():
     if log_file_path.exists():
         log_file_path.unlink()
 
-    timing_report = new_timing_report(args.maya_version, args.test_path, args.test_filter)
+    timing_report = (
+        new_batch_report(args.maya_version, batch_cases)
+        if batch_cases is not None
+        else new_timing_report(args.maya_version, args.test_path, args.test_filter)
+    )
     write_timing_report(timing_report_path, timing_report)
     write_timing_report(maya_timing_report_path, timing_report)
 
@@ -312,6 +443,7 @@ def main():
     shutdown_started = None
     shutdown_failed = False
     tests_dispatched = False
+    tests_dispatched_started = None
     execution_timed_out = False
     try:
         startup_started = time.perf_counter()
@@ -377,7 +509,23 @@ Path({str(readiness_marker)!r}).write_text("ready", encoding="utf-8")
         write_timing_report(maya_timing_report_path, timing_report)
 
         # 2. Prepare and send the test execution command
-        test_command = f"""
+        if batch_cases is not None:
+            test_command = f"""
+import sys
+from pathlib import Path
+project_root = Path({str(project_root)!r})
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from tests.common.gui_test_base import GuiTestRunner
+GuiTestRunner.run_batch_from_command(
+    {str(log_file_path)!r},
+    {batch_cases!r},
+    {str(maya_timing_report_path)!r},
+)
+"""
+        else:
+            test_command = f"""
 import sys
 from pathlib import Path
 project_root = Path({str(project_root)!r})
@@ -391,6 +539,7 @@ test_filter = {args.test_filter!r}
 timing_report_path = {str(maya_timing_report_path)!r}
 GuiTestRunner.run_tests_from_command(log_path, test_dir, test_filter, timing_report_path)
 """
+        tests_dispatched_started = time.perf_counter()
         maya_commandport.send_python(args.port, test_command, label="<gui-test-runner-command>")
         tests_dispatched = True
 
@@ -482,9 +631,19 @@ GuiTestRunner.run_tests_from_command(log_path, test_dir, test_filter, timing_rep
             logger.warning("Keeping isolated Maya profile for the still-running test process: %s", maya_app_dir)
 
         report_source = maya_timing_report_path if tests_dispatched else timing_report_path
-        timing_report = read_timing_report(report_source, timing_report)
+        if batch_cases is not None:
+            timing_report = read_batch_report(report_source, timing_report)
+        else:
+            timing_report = read_timing_report(report_source, timing_report)
         if execution_timed_out:
-            if timing_report["phases"]["discovery"]["status"] in {"blocked", "running"}:
+            if batch_cases is not None:
+                host_elapsed = (
+                    max(0.0, time.perf_counter() - tests_dispatched_started)
+                    if tests_dispatched_started is not None
+                    else None
+                )
+                finalize_batch_timeout(timing_report, host_elapsed)
+            elif timing_report["phases"]["discovery"]["status"] in {"blocked", "running"}:
                 timing_report["phases"]["discovery"] = {
                     "status": "timed_out",
                     "elapsed_seconds": timing_report["phases"]["discovery"].get("elapsed_seconds"),
@@ -506,7 +665,10 @@ GuiTestRunner.run_tests_from_command(log_path, test_dir, test_filter, timing_rep
                 "status": "failed" if shutdown_failed else "passed",
                 "elapsed_seconds": max(0.0, time.perf_counter() - shutdown_started),
             }
-        finalize_timing_report(timing_report)
+        if batch_cases is None:
+            finalize_timing_report(timing_report)
+        else:
+            finalize_batch_report(timing_report)
         write_timing_report(timing_report_path, timing_report)
         if maya_exited or not maya_launched:
             try:
