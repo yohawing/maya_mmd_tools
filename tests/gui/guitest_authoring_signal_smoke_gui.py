@@ -25,6 +25,7 @@ from mmd_tools.ui.qt_compat import (
     QColor,
     QDialog,
     QFileDialog,
+    QMessageBox,
     QT_BINDING,
     QTimer,
     Qt,
@@ -292,6 +293,120 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(view.texture_path_edit.text(), path_before)
         self.assertEqual(presenter.material_data.get("texture_path"), data_before)
         self.assertEqual(presenter.has_unsaved_changes, dirty_before)
+
+    def _drive_material_delete_confirmation(self, button, confirm):
+        """Drive the production QMessageBox with watchdog and hard timeout."""
+        errors = []
+        unexpected = []
+        captured = {}
+
+        def watch_modals():
+            for widget in QApplication.topLevelWidgets():
+                if not isinstance(widget, QDialog) or not widget.isVisible():
+                    continue
+                if isinstance(widget, QMessageBox):
+                    continue
+                unexpected.append(widget.windowTitle() or type(widget).__name__)
+                widget.reject()
+
+        watchdog = QTimer(self.window)
+        watchdog.setInterval(25)
+        watchdog.timeout.connect(watch_modals)
+        watchdog.start()
+
+        def fail_safe():
+            errors.append(AssertionError("material delete confirmation exceeded 3 seconds"))
+            dialog = QApplication.activeModalWidget()
+            if isinstance(dialog, QDialog):
+                dialog.reject()
+
+        timeout = QTimer(self.window)
+        timeout.setSingleShot(True)
+        timeout.timeout.connect(fail_safe)
+        timeout.start(3000)
+
+        def drive_dialog():
+            dialog = QApplication.activeModalWidget()
+            try:
+                self.assertIsInstance(dialog, QMessageBox)
+                self.assertIs(QApplication.activeModalWidget(), dialog)
+                self.assertIs(dialog.parentWidget(), self.window.material_presenter.view)
+                choice = QMessageBox.Yes if confirm else QMessageBox.No
+                choice_button = dialog.button(choice)
+                self.assertIsNotNone(choice_button)
+                choice_spy = QtSignalInvocationSpy(
+                    "QMessageBox.Yes" if confirm else "QMessageBox.No",
+                    choice_button.clicked,
+                    choice_button,
+                )
+                captured["choice_spy"] = choice_spy
+                QTest.mouseClick(choice_button, Qt.LeftButton)
+            except Exception as exc:
+                errors.append(exc)
+                if isinstance(dialog, QDialog):
+                    dialog.reject()
+
+        QTimer.singleShot(0, drive_dialog)
+        open_spy = QtSignalInvocationSpy(
+            "MaterialPresenter.delete_material",
+            button.clicked,
+            button,
+        )
+        was_non_native = QApplication.testAttribute(Qt.AA_DontUseNativeDialogs)
+        try:
+            QApplication.setAttribute(Qt.AA_DontUseNativeDialogs, True)
+            QTest.mouseClick(button, Qt.LeftButton)
+            QApplication.processEvents()
+        finally:
+            timeout.stop()
+            watchdog.stop()
+            QApplication.setAttribute(Qt.AA_DontUseNativeDialogs, was_non_native)
+        self.assertFalse(unexpected, unexpected)
+        self.assertFalse(errors, errors)
+        self.assertEqual(open_spy.action_count, 1)
+        self.assertEqual(captured["choice_spy"].action_count, 1)
+
+    def _prepare_material_delete_fixture(self):
+        presenter = self.window.material_presenter
+        view = presenter.view
+        coordinator = self.window.authoring_composition.coordinator
+        self.window.tab_widget.setCurrentWidget(view)
+        coordinator.create_material(self.root)
+        presenter.load_materials()
+        view.material_list.setCurrentRow(1)
+        QApplication.processEvents()
+        selected = view.material_list.item(1)
+        identity = selected.data(Qt.UserRole)
+        index = selected.data(Qt.UserRole + 1)
+        self.assertEqual(presenter.current_material, identity)
+        self.assertEqual(presenter.current_material_index, index)
+        return presenter, view, coordinator, identity
+
+    def test_material_delete_confirmation_yes_deletes_only_hidden_identity(self):
+        presenter, view, coordinator, identity = self._prepare_material_delete_fixture()
+        before = coordinator.read_spec(self.root)
+        survivor = before.materials[0].binding_identity
+        with patch.object(coordinator, "delete_material", wraps=coordinator.delete_material) as delete_action:
+            self._drive_material_delete_confirmation(view.delete_btn, confirm=True)
+            self.assertEqual(delete_action.call_count, 1)
+        after = coordinator.read_spec(self.root)
+        self.assertNotIn(identity, tuple(item.binding_identity for item in after.materials))
+        self.assertIn(survivor, tuple(item.binding_identity for item in after.materials))
+        self.assertEqual(view.material_list.count(), 1)
+        cmds.undo()
+        self.assertEqual(coordinator.read_spec(self.root), before)
+        cmds.redo()
+        self.assertEqual(coordinator.read_spec(self.root), after)
+        self.assertIsNotNone(presenter._material_list_projection)
+
+    def test_material_delete_confirmation_no_preserves_hidden_identity(self):
+        _presenter, view, coordinator, identity = self._prepare_material_delete_fixture()
+        before = coordinator.read_spec(self.root)
+        with patch.object(coordinator, "delete_material", wraps=coordinator.delete_material) as delete_action:
+            self._drive_material_delete_confirmation(view.delete_btn, confirm=False)
+            self.assertEqual(delete_action.call_count, 0)
+        self.assertEqual(coordinator.read_spec(self.root), before)
+        self.assertEqual(view.material_list.item(1).data(Qt.UserRole), identity)
 
     def _register_second_bone_fixture(self):
         """Register one deterministic descendant joint through production APIs."""
