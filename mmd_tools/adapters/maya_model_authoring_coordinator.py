@@ -123,6 +123,75 @@ class MayaModelAuthoringCoordinator:
         """Read the current strict scene specification for UI refreshes."""
         return self._read_current(model_root, "read_spec")
 
+    def begin_info_metadata_edit(self, model_root: str, attr: str) -> Any:
+        """Begin one focus-spanning Info edit with a fixed root and target."""
+        try:
+            return self._backend.begin_info_metadata_edit(model_root, attr)
+        except Exception as exc:
+            raise MayaModelAuthoringCoordinatorError(
+                f"begin_info_metadata_edit failed for root {model_root!r}: {exc}"
+            ) from exc
+
+    def update_info_metadata_edit(self, session: Any, value: str) -> bool:
+        """Update the session target without reading unrelated scene data."""
+        try:
+            return self._backend.apply_info_metadata_edit(
+                session.root, session, value
+            )
+        except Exception as exc:
+            try:
+                self._backend.rollback_info_metadata_edit(session.root, session)
+            except Exception as rollback_exc:
+                error = MayaModelAuthoringCoordinatorError(
+                    f"update_info_metadata_edit failed: {exc}; rollback failed: {rollback_exc}"
+                )
+                error.rollback_pending = getattr(
+                    rollback_exc, "rollback_pending", True
+                )
+                error.rollback_verified = False
+                raise error from rollback_exc
+            error = MayaModelAuthoringCoordinatorError(
+                f"update_info_metadata_edit failed: {exc}"
+            )
+            error.rollback_pending = False
+            error.rollback_verified = True
+            raise error from exc
+
+    def commit_info_metadata_edit(self, session: Any) -> bool:
+        """Commit an Info edit after exact final readback."""
+        try:
+            return self._backend.commit_info_metadata_edit(session.root, session)
+        except Exception as exc:
+            try:
+                self._backend.rollback_info_metadata_edit(session.root, session)
+            except Exception as rollback_exc:
+                error = MayaModelAuthoringCoordinatorError(
+                    f"commit_info_metadata_edit failed: {exc}; rollback failed: {rollback_exc}"
+                )
+                error.rollback_pending = getattr(
+                    rollback_exc, "rollback_pending", True
+                )
+                error.rollback_verified = False
+                raise error from rollback_exc
+            error = MayaModelAuthoringCoordinatorError(
+                f"commit_info_metadata_edit failed: {exc}"
+            )
+            error.rollback_pending = False
+            error.rollback_verified = True
+            raise error from exc
+
+    def rollback_info_metadata_edit(self, session: Any) -> None:
+        """Rollback an incomplete Info edit without retargeting it."""
+        try:
+            self._backend.rollback_info_metadata_edit(session.root, session)
+        except Exception as exc:
+            error = MayaModelAuthoringCoordinatorError(
+                f"rollback_info_metadata_edit failed: {exc}"
+            )
+            error.rollback_pending = getattr(exc, "rollback_pending", True)
+            error.rollback_verified = False
+            raise error from exc
+
     def inspect_morph_topology(self, model_root: str) -> MorphTopologyInspection:
         """Return read-only diagnostics for the derived controller cache."""
         inspect = getattr(self._backend, "inspect_morph_topology", None)

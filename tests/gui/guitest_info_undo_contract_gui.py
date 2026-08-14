@@ -70,6 +70,7 @@ class TestInfoUndoContractGUI(GuiTestBase):
         view = self.window.info_presenter.view
         editor = view.model_name_jp_edit
         old_value = cmds.getAttr(f"{self.template.root}.mmd_model_name")
+        old_generation = self.window.app_state.refresh_generation
 
         editor.setFocus()
         editor.setText("Undo Contract JP 1")
@@ -78,11 +79,14 @@ class TestInfoUndoContractGUI(GuiTestBase):
         )
         editor.setText("Undo Contract JP 2")
         QApplication.processEvents()
+        action_spy.stop()
         self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_model_name"), "Undo Contract JP 2")
 
         editor.clearFocus()
         QApplication.processEvents()
-        self.assertFalse(self.window.info_presenter._undo_chunk_open)
+        self.assertIsNone(self.window.info_presenter._edit_session)
+        self.assertEqual(self.window.app_state.refresh_generation, old_generation + 1)
+        self.assertIn("Undo Contract JP 2", self.window.header_widget.model_combo.currentText())
 
         cmds.undo()
         self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_model_name"), old_value)
@@ -109,11 +113,12 @@ class TestInfoUndoContractGUI(GuiTestBase):
         )
         editor.setPlainText("コメント 2")
         QApplication.processEvents()
+        action_spy.stop()
         self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_comment"), "コメント 2")
 
         editor.clearFocus()
         QApplication.processEvents()
-        self.assertFalse(self.window.info_presenter._undo_chunk_open)
+        self.assertIsNone(self.window.info_presenter._edit_session)
         cmds.undo()
         self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_comment"), old_value)
         cmds.redo()
@@ -127,25 +132,26 @@ class TestInfoUndoContractGUI(GuiTestBase):
             editor,
         )
 
-    def test_root_deletion_and_window_teardown_close_info_session(self):
+    def test_explicit_refresh_and_window_teardown_rollback_info_session(self):
         presenter = self.window.info_presenter
         editor = presenter.view.model_name_jp_edit
+        old_value = cmds.getAttr(f"{self.template.root}.mmd_model_name")
         editor.setFocus()
         editor.setText("Teardown Edit")
         QApplication.processEvents()
-        self.assertTrue(presenter._undo_chunk_open)
+        self.assertIsNotNone(presenter._edit_session)
 
-        cmds.delete(self.template.root)
-        self.window.app_state.refresh_model_list()
+        self.window.app_state.refresh_model_list(explicit=True)
         QApplication.processEvents()
-        self.assertFalse(presenter._undo_chunk_open)
+        self.assertIsNone(presenter._edit_session)
+        self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_model_name"), old_value)
 
         # Exercise the production close path while no model remains.  The
         # InfoTab teardown/destroyed seam must not leave an undo chunk open.
         self.window.close()
         self.window.deleteLater()
         QApplication.processEvents()
-        self.assertFalse(presenter._undo_chunk_open)
+        self.assertIsNone(presenter._edit_session)
         self.window = None
 
     def test_model_switch_does_not_write_loading_text_to_new_root(self):
@@ -166,13 +172,8 @@ class TestInfoUndoContractGUI(GuiTestBase):
         self.window.app_state.current_model_root = second.root
         QApplication.processEvents()
         view.model_name_jp_edit.clearFocus()
-        self.assertFalse(self.window.info_presenter._undo_chunk_open)
-        self.assertEqual(cmds.getAttr(f"{second.root}.mmd_model_name"), "Second JP")
-        cmds.undo()
+        self.assertIsNone(self.window.info_presenter._edit_session)
         self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_model_name"), first_before)
-        self.assertEqual(cmds.getAttr(f"{second.root}.mmd_model_name"), "Second JP")
-        cmds.redo()
-        self.assertEqual(cmds.getAttr(f"{self.template.root}.mmd_model_name"), "First Edited")
         self.assertEqual(cmds.getAttr(f"{second.root}.mmd_model_name"), "Second JP")
 
 

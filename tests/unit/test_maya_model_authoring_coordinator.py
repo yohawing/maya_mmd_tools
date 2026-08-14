@@ -52,6 +52,41 @@ class FakeBackend:
         self.display_payload = "old"
         self.topology_source = "{}"
         self.topology_fail_commit = False
+        self.info_session = None
+        self.info_value = "old"
+        self.info_fail_update = False
+        self.info_fail_rollback_pending = None
+
+    def begin_info_metadata_edit(self, root: str, attr: str) -> Any:
+        self.info_session = type(
+            "InfoSession", (), {"root": root, "attr": attr, "token": object()}
+        )()
+        self.events.append("begin:info")
+        return self.info_session
+
+    def apply_info_metadata_edit(self, root: str, session: Any, value: str) -> bool:
+        assert root == session.root and session is self.info_session
+        self.events.append("apply:info")
+        if self.info_fail_update:
+            raise RuntimeError("injected info update failure")
+        self.info_value = value
+        return value != "old"
+
+    def commit_info_metadata_edit(self, root: str, session: Any) -> bool:
+        assert root == session.root and session is self.info_session
+        self.events.append("commit:info")
+        self.info_session = None
+        return self.info_value != "old"
+
+    def rollback_info_metadata_edit(self, root: str, session: Any) -> None:
+        assert root == session.root
+        self.events.append("rollback:info")
+        if self.info_fail_rollback_pending is not None:
+            error = RuntimeError("injected info rollback failure")
+            error.rollback_pending = self.info_fail_rollback_pending
+            raise error
+        self.info_session = None
+        self.info_value = "old"
 
     def inspect_morph_topology(self, _root: str) -> MorphTopologyInspection:
         expected = {"1": ((0, 0.5),)}
@@ -541,6 +576,34 @@ def _assert_one_successful_transaction(backend: FakeBackend) -> None:
     assert backend.rollback_count == 0
     assert backend.events.count("begin") == 1
     assert backend.events[-1] == "commit"
+
+
+def test_info_metadata_session_uses_only_narrow_backend_methods() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    session = coordinator.begin_info_metadata_edit("|root", "mmd_name")
+    assert coordinator.update_info_metadata_edit(session, "new") is True
+    assert coordinator.commit_info_metadata_edit(session) is True
+    assert backend.events == ["begin:info", "apply:info", "commit:info"]
+    assert backend.begin_count == 0
+
+
+def test_info_metadata_update_failure_rolls_back_exactly_once() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    session = coordinator.begin_info_metadata_edit("|root", "mmd_name")
+    backend.info_fail_update = True
+    with pytest.raises(MayaModelAuthoringCoordinatorError, match="update_info_metadata_edit"):
+        coordinator.update_info_metadata_edit(session, "new")
+    assert backend.events == ["begin:info", "apply:info", "rollback:info"]
+
+
+def test_explicit_info_rollback_preserves_terminal_state() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    session = coordinator.begin_info_metadata_edit("|root", "mmd_name")
+    backend.info_fail_rollback_pending = False
+    with pytest.raises(MayaModelAuthoringCoordinatorError) as caught:
+        coordinator.rollback_info_metadata_edit(session)
+    assert caught.value.rollback_pending is False
+    assert caught.value.rollback_verified is False
 
 
 def test_repair_morph_topology_uses_explicit_transaction_and_returns_clean_inspection() -> None:

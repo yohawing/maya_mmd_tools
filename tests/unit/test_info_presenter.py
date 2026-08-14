@@ -1,12 +1,7 @@
-"""InfoPresenterのMaya非依存ロジックを検証するテスト。
+"""Headless contracts for coordinator-owned Info metadata editing."""
 
-import 連鎖で maya.cmds と PySide6 が必要になるため、
-``install_headless_ui_stubs()`` でスタブ化してから presenter を import する。
-これにより本テストは mayapy / Qt なしの ``nox -s ci_unit`` で実行できる。
-"""
-
-import unittest
-from unittest.mock import MagicMock, Mock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock
 
 from tests.common.mock_ui import attach_mocks
 from tests.common.maya_stub import install_headless_ui_stubs
@@ -20,11 +15,9 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_MODEL_NAME_EN,
 )
 from mmd_tools.ui.presenters.info_presenter import InfoPresenter  # noqa: E402
-from mmd_tools.ui.components.header_widget import HeaderWidget  # noqa: E402
 
-_MOD = "mmd_tools.ui.presenters.info_presenter"
+
 TEST_MODEL = "test_mmd_model"
-
 _ATTR_VALUES = {
     f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME}": "テストモデル",
     f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME_EN}": "Test Model",
@@ -41,43 +34,20 @@ class _FakeSignal:
         self._callbacks.append(callback)
 
     def emit(self, *args):
-        for cb in self._callbacks:
-            cb(*args)
-
-    def disconnect(self, callback):
-        if callback in self._callbacks:
-            self._callbacks.remove(callback)
-
-
-class _FakeAppState:
-    def __init__(self, current_model_root=None, scene_model_service=None):
-        self._current_model_root = current_model_root
-        self.scene_model_service = scene_model_service or _FakeSceneModelService()
-        self.current_model_changed = _FakeSignal()
-
-    @property
-    def current_model_root(self):
-        return self._current_model_root
-
-    @current_model_root.setter
-    def current_model_root(self, value):
-        self._current_model_root = value
-
-    def clear_cache(self):
-        pass
+        for callback in self._callbacks:
+            callback(*args)
 
 
 class _FakeSceneModelService:
-    def __init__(self, exists=True, attr_values=None, display_names=None, attr_exists=True):
+    def __init__(self, exists=True, attr_values=None, attr_exists=True):
         self.exists = exists
         self.attr_values = attr_values or {}
-        self.display_names = display_names or {}
         self.attr_exists = attr_exists
 
     def object_exists(self, node):
         return bool(node and self.exists)
 
-    def attribute_exists(self, node, attr):
+    def attribute_exists(self, node, _attr):
         return bool(node and self.attr_exists)
 
     def get_attr_safe(self, node, attr, default=None):
@@ -86,358 +56,337 @@ class _FakeSceneModelService:
         value = self.attr_values.get(f"{node}.{attr}", default)
         return value if value is not None else default
 
-    def get_model_display_name(self, model_root):
-        return self.display_names.get(model_root, model_root)
+
+class _FakeAppState:
+    def __init__(self, current_model_root=None, scene_model_service=None):
+        self.current_model_root = current_model_root
+        self.scene_model_service = scene_model_service or _FakeSceneModelService()
+        self.current_model_changed = _FakeSignal()
+        self.model_refresh_completed = _FakeSignal()
+        self.refresh_generation = 0
+        self.refreshing = False
+        self.refresh_calls = []
+
+    def refresh_model_list(self, explicit=False):
+        self.refresh_calls.append(explicit)
 
 
-def _make_mock_view():
+class _FakeCoordinator:
+    def __init__(self):
+        self.calls = []
+        self.changed = True
+        self.fail_update = False
+        self.fail_rollback_pending = None
+        self.fail_refresh_notification = False
+
+    def begin_info_metadata_edit(self, root, attr):
+        self.calls.append(("begin", root, attr))
+        return SimpleNamespace(root=f"|canonical|{root}", attr=attr, token=object())
+
+    def update_info_metadata_edit(self, session, value):
+        self.calls.append(("update", session.root, session.attr, value))
+        if self.fail_update:
+            raise RuntimeError("update failed after coordinator rollback")
+        return True
+
+    def commit_info_metadata_edit(self, session):
+        self.calls.append(("commit", session.root, session.attr))
+        return self.changed
+
+    def rollback_info_metadata_edit(self, session):
+        self.calls.append(("rollback", session.root, session.attr))
+        if self.fail_rollback_pending is not None:
+            error = RuntimeError("rollback failed")
+            error.rollback_pending = self.fail_rollback_pending
+            raise error
+
+
+def _make_view():
     view = Mock()
     attach_mocks(view, ["set_fields_enabled"])
-
     view.edit_started = _FakeSignal()
     view.edit_finished = _FakeSignal()
     view.teardown = _FakeSignal()
     view.destroyed = _FakeSignal()
-
-    for attr in ("model_name_jp_edit", "model_name_en_edit", "comment_jp_edit", "comment_en_edit"):
+    for name in (
+        "model_name_jp_edit",
+        "model_name_en_edit",
+        "comment_jp_edit",
+        "comment_en_edit",
+    ):
         widget = Mock()
         widget.textChanged = MagicMock()
-        widget.textChanged.disconnect = Mock()
         widget.textChanged.connect = Mock()
-        setattr(view, attr, widget)
-
+        setattr(view, name, widget)
     return view
 
 
-def _make_presenter_with_model(model=TEST_MODEL, attr_values=None):
-    """モデルが選択された状態でプレゼンターを生成するヘルパー。"""
-    values = attr_values if attr_values is not None else {k: "" for k in _ATTR_VALUES}
-    view = _make_mock_view()
-    service = _FakeSceneModelService(attr_values=values)
-    app_state = _FakeAppState(current_model_root=model, scene_model_service=service)
-    presenter = InfoPresenter(view, app_state)
-    return presenter, view, app_state
-
-
-class TestInitialization(unittest.TestCase):
-    def test_enables_fields_when_model_set(self):
-        _, view, _ = _make_presenter_with_model()
-        view.set_fields_enabled.assert_called_with(True)
-
-    def test_no_fields_enabled_when_no_model(self):
-        view = _make_mock_view()
-        app_state = _FakeAppState(current_model_root=None)
-        InfoPresenter(view, app_state)
-        view.set_fields_enabled.assert_not_called()
-
-    def test_signal_connections(self):
-        _, view, _ = _make_presenter_with_model()
-        for attr in ("model_name_jp_edit", "model_name_en_edit", "comment_jp_edit", "comment_en_edit"):
-            getattr(view, attr).textChanged.connect.assert_called()
-
-
-class TestLoadModelInfo(unittest.TestCase):
-    def setUp(self):
-        self.presenter, self.view, self.app_state = _make_presenter_with_model()
-
-    def test_sets_text_fields_from_scene_model_service_attrs(self):
-        self.app_state.scene_model_service.attr_values = _ATTR_VALUES
-        with patch(f"{_MOD}.logger") as mock_logger:
-            self.presenter.load_model_info()
-
-        self.view.model_name_jp_edit.setText.assert_called_with("テストモデル")
-        self.view.model_name_en_edit.setText.assert_called_with("Test Model")
-        self.view.comment_jp_edit.setPlainText.assert_called_with("テストコメント")
-        self.view.comment_en_edit.setPlainText.assert_called_with("Test Comment")
-
-        # モデル info ロード詳細は DEBUG のみ（INFO には出さない）
-        expected = f"Loaded model info for {TEST_MODEL}"
-        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
-        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
-        self.assertIn(expected, debug_messages)
-        self.assertNotIn(expected, info_messages)
-
-    def test_clears_fields_when_no_model(self):
-        self.app_state._current_model_root = None
-
-        self.presenter.load_model_info()
-
-        self.view.model_name_jp_edit.clear.assert_called()
-        self.view.model_name_en_edit.clear.assert_called()
-        self.view.comment_jp_edit.clear.assert_called()
-        self.view.comment_en_edit.clear.assert_called()
-
-    def test_clears_fields_when_model_does_not_exist(self):
-        self.app_state.scene_model_service.exists = False
-        self.presenter.load_model_info()
-
-        self.view.set_fields_enabled.assert_called_with(False)
-        self.view.model_name_jp_edit.clear.assert_called()
-
-    def test_uses_empty_string_when_attrs_are_missing_or_none(self):
-        self.app_state.scene_model_service.attr_values = {
-            f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME}": None,
-            f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME_EN}": None,
-            f"{TEST_MODEL}.{ATTR_MMD_COMMENT}": None,
-            f"{TEST_MODEL}.{ATTR_MMD_COMMENT_EN}": None,
-        }
-        self.presenter.load_model_info()
-
-        self.view.model_name_jp_edit.setText.assert_called_with("")
-        self.view.model_name_en_edit.setText.assert_called_with("")
-        self.view.comment_jp_edit.setPlainText.assert_called_with("")
-        self.view.comment_en_edit.setPlainText.assert_called_with("")
-
-    def test_uses_empty_string_when_attrs_do_not_exist(self):
-        self.app_state.scene_model_service.attr_exists = False
-        self.presenter.load_model_info()
-
-        self.view.model_name_jp_edit.setText.assert_called_with("")
-        self.view.model_name_en_edit.setText.assert_called_with("")
-        self.view.comment_jp_edit.setPlainText.assert_called_with("")
-        self.view.comment_en_edit.setPlainText.assert_called_with("")
-
-
-class TestUpdateModelInfo(unittest.TestCase):
-    def setUp(self):
-        self.presenter, self.view, self.app_state = _make_presenter_with_model()
-
-    def test_calls_undoable_cmds_set_attr_with_view_values(self):
-        self.view.model_name_jp_edit.text.return_value = "新しい名前"
-        self.view.model_name_en_edit.text.return_value = "New Name"
-        self.view.comment_jp_edit.toPlainText.return_value = "新しいコメント"
-        self.view.comment_en_edit.toPlainText.return_value = "New Comment"
-
-        with patch(f"{_MOD}.cmds.setAttr") as mock_set:
-            self.view.edit_started.emit(self.view.model_name_jp_edit)
-            self.presenter.update_model_info()
-            self.view.edit_finished.emit(self.view.model_name_jp_edit)
-
-        self.assertEqual(mock_set.call_count, 4)
-        mock_set.assert_any_call(
-            f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME}", "新しい名前", type="string"
-        )
-        mock_set.assert_any_call(
-            f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME_EN}", "New Name", type="string"
-        )
-        mock_set.assert_any_call(
-            f"{TEST_MODEL}.{ATTR_MMD_COMMENT}", "新しいコメント", type="string"
-        )
-        mock_set.assert_any_call(
-            f"{TEST_MODEL}.{ATTR_MMD_COMMENT_EN}", "New Comment", type="string"
-        )
-
-    def test_skips_when_no_model(self):
-        self.app_state._current_model_root = None
-
-        with patch(f"{_MOD}.cmds.setAttr") as mock_set:
-            self.presenter.update_model_info()
-
-        mock_set.assert_not_called()
-
-    def test_header_namespaced_selection_drives_info_write_target(self):
-        selected = "outer:model:root"
-        header = HeaderWidget.__new__(HeaderWidget)
-        header.app_state = self.app_state
-        header.is_updating = False
-        header.model_combo = Mock()
-        header.model_combo.currentIndex.return_value = 0
-        header.model_combo.itemData.return_value = selected
-        HeaderWidget.on_combo_selection_changed(header, "Selected [outer:model:root]")
-
-        self.view.model_name_jp_edit.text.return_value = "選択中"
-        self.view.model_name_en_edit.text.return_value = "Selected"
-        self.view.comment_jp_edit.toPlainText.return_value = ""
-        self.view.comment_en_edit.toPlainText.return_value = ""
-
-        with patch(f"{_MOD}.cmds.setAttr") as mock_set:
-            self.view.edit_started.emit(self.view.model_name_jp_edit)
-            self.presenter.update_model_info()
-            self.view.edit_finished.emit(self.view.model_name_jp_edit)
-
-        self.assertEqual(mock_set.call_count, 4)
-        self.assertTrue(
-            any(call.args[0] == f"{selected}.{ATTR_MMD_MODEL_NAME}" for call in mock_set.call_args_list)
-        )
-
-
-class TestCurrentModelChanged(unittest.TestCase):
-    def setUp(self):
-        self.presenter, self.view, self.app_state = _make_presenter_with_model()
-
-    def test_enables_fields_and_loads_info_for_new_model(self):
-        new_model = "new_test_model"
-        self.app_state._current_model_root = new_model
-        self.view.set_fields_enabled.reset_mock()
-        self.view.model_name_jp_edit.setText.reset_mock()
-
-        new_values = {
-            f"{new_model}.{ATTR_MMD_MODEL_NAME}": "新モデル",
-            f"{new_model}.{ATTR_MMD_MODEL_NAME_EN}": "",
-            f"{new_model}.{ATTR_MMD_COMMENT}": "",
-            f"{new_model}.{ATTR_MMD_COMMENT_EN}": "",
-        }
-        self.app_state.scene_model_service.attr_values = new_values
-        self.presenter.on_current_model_changed(new_model)
-
-        self.view.set_fields_enabled.assert_called_with(True)
-        all_calls = [c[0][0] for c in self.view.model_name_jp_edit.setText.call_args_list]
-        self.assertIn("新モデル", all_calls)
-
-    def test_disables_fields_and_clears_for_none(self):
-        self.view.set_fields_enabled.reset_mock()
-        self.presenter.on_current_model_changed(None)
-
-        self.view.set_fields_enabled.assert_called_with(False)
-        self.view.model_name_jp_edit.clear.assert_called()
-
-
-class TestInfoUndoLifecycle(unittest.TestCase):
-    def setUp(self):
-        self.presenter, self.view, self.app_state = _make_presenter_with_model()
-
-    def test_focus_session_coalesces_writes_into_one_named_chunk(self):
-        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo, patch(f"{_MOD}.cmds.setAttr") as mock_set:
-            self.view.edit_started.emit(self.view.model_name_jp_edit)
-            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "一")
-            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "二")
-            self.view.edit_finished.emit(self.view.model_name_jp_edit)
-
-        mock_undo.assert_any_call(openChunk=True, chunkName="MMD Info Edit")
-        mock_undo.assert_any_call(closeChunk=True)
-        self.assertEqual(mock_undo.call_count, 2)
-        self.assertEqual(mock_set.call_count, 2)
-
-    def test_direct_update_without_session_is_fail_closed(self):
-        with patch(f"{_MOD}.cmds.setAttr") as mock_set:
-            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "無効")
-
-        mock_set.assert_not_called()
-
-    def test_close_failure_blocks_writes_until_retry_succeeds(self):
-        close_attempts = []
-
-        def _undo_info(**kwargs):
-            if kwargs.get("closeChunk"):
-                close_attempts.append(kwargs)
-                if len(close_attempts) == 1:
-                    raise RuntimeError("close uncertain")
-
-        with patch(f"{_MOD}.cmds.undoInfo", side_effect=_undo_info) as mock_undo, patch(
-            f"{_MOD}.cmds.setAttr"
-        ) as mock_set:
-            self.view.edit_started.emit(self.view.model_name_jp_edit)
-            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "一")
-            self.view.edit_finished.emit(self.view.model_name_jp_edit)
-            self.assertTrue(self.presenter._undo_state_uncertain)
-            self.assertTrue(self.presenter._edit_session_blocked)
-            self.assertTrue(self.presenter._undo_chunk_open)
-
-            self.view.edit_started.emit(self.view.model_name_jp_edit)
-            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "二")
-            self.assertEqual(mock_set.call_count, 1)
-
-            self.presenter.end_edit_session()
-
-        self.assertEqual(len(close_attempts), 2)
-        self.assertFalse(self.presenter._undo_state_uncertain)
-        self.assertFalse(self.presenter._undo_chunk_open)
-        self.assertFalse(self.presenter._edit_session_blocked)
-        self.assertEqual(mock_undo.call_count, 3)
-
-    def test_root_mismatch_close_failure_does_not_open_second_chunk(self):
-        close_attempts = []
-
-        def _undo_info(**kwargs):
-            if kwargs.get("closeChunk"):
-                close_attempts.append(kwargs)
-                raise RuntimeError("close uncertain")
-
-        with patch(f"{_MOD}.cmds.undoInfo", side_effect=_undo_info) as mock_undo:
-            self.view.edit_started.emit(self.view.model_name_jp_edit)
-            self.app_state._current_model_root = "new_test_model"
-            self.presenter.begin_edit_session(self.view.model_name_jp_edit)
-
-        self.assertEqual(mock_undo.call_count, 2)
-        self.assertEqual(len(close_attempts), 1)
-        self.assertTrue(self.presenter._undo_state_uncertain)
-        self.assertTrue(self.presenter._undo_chunk_open)
-
-    def test_text_changed_callback_lazily_opens_focused_session(self):
-        widget = self.view.model_name_jp_edit
-        widget.hasFocus.return_value = True
-        widget.text.return_value = "lazy"
-        callback = self.presenter._text_change_callbacks[ATTR_MMD_MODEL_NAME]
-
-        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo, patch(f"{_MOD}.cmds.setAttr") as mock_set:
-            callback()
-            self.view.edit_finished.emit(widget)
-
-        mock_undo.assert_any_call(openChunk=True, chunkName="MMD Info Edit")
-        mock_set.assert_called_once_with(
-            f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME}", "lazy", type="string"
-        )
-
-    def test_current_model_change_closes_old_session_before_loading(self):
-        old_root = self.app_state.current_model_root
-        new_root = "new_test_model"
-        self.app_state._current_model_root = new_root
-        self.app_state.scene_model_service.attr_values = {
-            f"{new_root}.{ATTR_MMD_MODEL_NAME}": "新モデル",
-            f"{new_root}.{ATTR_MMD_MODEL_NAME_EN}": "",
-            f"{new_root}.{ATTR_MMD_COMMENT}": "",
-            f"{new_root}.{ATTR_MMD_COMMENT_EN}": "",
-        }
-
-        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo, patch(f"{_MOD}.cmds.setAttr") as mock_set:
-            self.view.edit_started.emit(self.view.model_name_jp_edit)
-            self.presenter.on_current_model_changed(new_root)
-
-        self.assertEqual(self.presenter._edit_session_root, None)
-        self.assertFalse(self.presenter._undo_chunk_open)
-        mock_undo.assert_any_call(closeChunk=True)
-        mock_set.assert_not_called()
-        self.assertNotEqual(old_root, new_root)
-
-    def test_stale_old_root_callback_is_fail_closed(self):
-        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo, patch(f"{_MOD}.cmds.setAttr") as mock_set:
-            self.view.edit_started.emit(self.view.model_name_jp_edit)
-            self.app_state._current_model_root = "new_test_model"
-            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "stale")
-
-        mock_undo.assert_any_call(closeChunk=True)
-        mock_set.assert_not_called()
-        self.assertFalse(self.presenter._undo_chunk_open)
-
-    def test_deleted_current_root_closes_session_without_writing(self):
-        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo, patch(f"{_MOD}.cmds.setAttr") as mock_set:
-            self.view.edit_started.emit(self.view.model_name_jp_edit)
-            self.app_state.scene_model_service.exists = False
-            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "deleted")
-
-        mock_undo.assert_any_call(closeChunk=True)
-        mock_set.assert_not_called()
-        self.assertFalse(self.presenter._undo_chunk_open)
-
-    def test_write_error_closes_open_chunk(self):
-        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo, patch(
-            f"{_MOD}.cmds.setAttr", side_effect=RuntimeError("write failed")
-        ):
-            self.view.edit_started.emit(self.view.model_name_jp_edit)
-            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "失敗")
-            self.presenter.update_model_info(ATTR_MMD_MODEL_NAME, "失敗2")
-
-        mock_undo.assert_any_call(closeChunk=True)
-        self.assertFalse(self.presenter._undo_chunk_open)
-
-    def test_destroyed_signal_closes_open_chunk(self):
-        with patch(f"{_MOD}.cmds.undoInfo") as mock_undo:
-            self.view.edit_started.emit(self.view.model_name_jp_edit)
-            self.view.destroyed.emit()
-
-        mock_undo.assert_any_call(closeChunk=True)
-        self.assertFalse(self.presenter._undo_chunk_open)
-
-
-if __name__ == "__main__":
-    unittest.main()
+def _make_presenter(model=TEST_MODEL, values=None, coordinator=True):
+    view = _make_view()
+    service = _FakeSceneModelService(
+        attr_values=values if values is not None else dict(_ATTR_VALUES)
+    )
+    app_state = _FakeAppState(model, service)
+    authoring = _FakeCoordinator() if coordinator is True else coordinator
+    presenter = InfoPresenter(
+        view, app_state, authoring_coordinator=authoring
+    )
+    return presenter, view, app_state, authoring
+
+
+def test_initial_load_uses_read_service_and_enables_fields() -> None:
+    _presenter, view, _app_state, _coordinator = _make_presenter()
+    view.set_fields_enabled.assert_called_with(True)
+    view.model_name_jp_edit.setText.assert_called_with("テストモデル")
+    view.model_name_en_edit.setText.assert_called_with("Test Model")
+    view.comment_jp_edit.setPlainText.assert_called_with("テストコメント")
+    view.comment_en_edit.setPlainText.assert_called_with("Test Comment")
+
+
+def test_missing_composition_preserves_reads_but_writes_fail_closed() -> None:
+    presenter, view, _app_state, coordinator = _make_presenter(coordinator=None)
+    assert coordinator is None
+    view.model_name_jp_edit.setText.assert_called_with("テストモデル")
+    view.edit_started.emit(view.model_name_jp_edit)
+    presenter.update_model_info(ATTR_MMD_MODEL_NAME, "blocked")
+    assert presenter._edit_session is None
+
+
+def test_missing_model_clears_and_disables_fields() -> None:
+    presenter, view, app_state, _coordinator = _make_presenter()
+    app_state.current_model_root = None
+    presenter.load_model_info()
+    view.set_fields_enabled.assert_called_with(False)
+    view.model_name_jp_edit.clear.assert_called()
+    view.comment_jp_edit.clear.assert_called()
+
+
+def test_focus_session_updates_fixed_field_and_refreshes_once() -> None:
+    presenter, view, app_state, coordinator = _make_presenter()
+    widget = view.model_name_jp_edit
+    view.edit_started.emit(widget)
+    presenter.update_model_info(ATTR_MMD_MODEL_NAME, "一")
+    presenter.update_model_info(ATTR_MMD_MODEL_NAME, "二")
+    view.edit_finished.emit(widget)
+    assert coordinator.calls == [
+        ("begin", TEST_MODEL, ATTR_MMD_MODEL_NAME),
+        ("update", f"|canonical|{TEST_MODEL}", ATTR_MMD_MODEL_NAME, "一"),
+        ("update", f"|canonical|{TEST_MODEL}", ATTR_MMD_MODEL_NAME, "二"),
+        ("commit", f"|canonical|{TEST_MODEL}", ATTR_MMD_MODEL_NAME),
+    ]
+    assert app_state.refresh_calls == [True]
+
+
+def test_unchanged_focus_commit_does_not_refresh() -> None:
+    presenter, view, app_state, coordinator = _make_presenter()
+    coordinator.changed = False
+    widget = view.comment_jp_edit
+    view.edit_started.emit(widget)
+    presenter.update_model_info(ATTR_MMD_COMMENT, "same")
+    view.edit_finished.emit(widget)
+    assert app_state.refresh_calls == []
+
+
+def test_text_changed_lazily_begins_session_for_focused_widget() -> None:
+    presenter, view, _app_state, coordinator = _make_presenter()
+    widget = view.model_name_en_edit
+    widget.hasFocus.return_value = True
+    widget.text.return_value = "lazy"
+    presenter._text_change_callbacks[ATTR_MMD_MODEL_NAME_EN]()
+    assert coordinator.calls[:2] == [
+        ("begin", TEST_MODEL, ATTR_MMD_MODEL_NAME_EN),
+        ("update", f"|canonical|{TEST_MODEL}", ATTR_MMD_MODEL_NAME_EN, "lazy"),
+    ]
+
+
+def test_different_field_callback_rolls_back_instead_of_retargeting() -> None:
+    presenter, view, _app_state, coordinator = _make_presenter()
+    view.edit_started.emit(view.model_name_jp_edit)
+    presenter.update_model_info(ATTR_MMD_COMMENT, "stale")
+    assert coordinator.calls[-1] == (
+        "rollback",
+        f"|canonical|{TEST_MODEL}",
+        ATTR_MMD_MODEL_NAME,
+    )
+
+
+def test_model_switch_rolls_back_old_root_before_loading_new_values() -> None:
+    presenter, view, app_state, coordinator = _make_presenter()
+    view.comment_en_edit.toPlainText.return_value = "old comment"
+    view.edit_started.emit(view.comment_en_edit)
+    view.comment_en_edit.setPlainText.reset_mock()
+    app_state.current_model_root = "new_root"
+    app_state.scene_model_service.attr_values = {
+        "new_root.mmd_model_name": "New",
+    }
+    presenter.on_current_model_changed("new_root")
+    assert coordinator.calls[-1] == (
+        "rollback",
+        f"|canonical|{TEST_MODEL}",
+        ATTR_MMD_COMMENT_EN,
+    )
+    view.model_name_jp_edit.setText.assert_called_with("New")
+    assert not any(
+        call.args == ("old comment",)
+        for call in view.comment_en_edit.setPlainText.call_args_list
+    )
+
+
+def test_pending_rollback_blocks_new_root_load_and_keeps_retry_identity() -> None:
+    presenter, view, app_state, coordinator = _make_presenter()
+    view.model_name_jp_edit.text.return_value = "old UI"
+    view.edit_started.emit(view.model_name_jp_edit)
+    coordinator.fail_rollback_pending = True
+    app_state.current_model_root = "new_root"
+    app_state.scene_model_service.attr_values = {
+        "new_root.mmd_model_name": "New authoritative",
+    }
+    view.model_name_jp_edit.setText.reset_mock()
+    presenter.on_current_model_changed("new_root")
+    assert presenter._edit_session is not None
+    view.model_name_jp_edit.setText.assert_not_called()
+
+    # Re-focusing the same field retries rollback; it must not unblock the
+    # unresolved transaction or start sending updates into it.
+    view.edit_started.emit(view.model_name_jp_edit)
+    presenter.update_model_info(ATTR_MMD_MODEL_NAME, "must not write")
+    assert presenter._edit_session_blocked is True
+    assert not any(call[0] == "update" for call in coordinator.calls)
+
+    coordinator.fail_rollback_pending = None
+    view.edit_started.emit(view.model_name_jp_edit)
+    assert presenter._edit_session_blocked is False
+    assert not any(
+        call == ("begin", "new_root", ATTR_MMD_MODEL_NAME)
+        for call in coordinator.calls
+    )
+    view.model_name_jp_edit.setText.assert_called_with("New authoritative")
+
+    # The next genuine FocusIn captures only the authoritative new-root text.
+    view.model_name_jp_edit.text.return_value = "New authoritative"
+    view.edit_started.emit(view.model_name_jp_edit)
+    assert coordinator.calls[-1] == ("begin", "new_root", ATTR_MMD_MODEL_NAME)
+
+
+def test_terminal_rollback_failure_clears_dead_session_and_allows_new_load() -> None:
+    presenter, view, app_state, coordinator = _make_presenter()
+    view.edit_started.emit(view.model_name_jp_edit)
+    coordinator.fail_rollback_pending = False
+    app_state.current_model_root = "new_root"
+    app_state.scene_model_service.attr_values = {
+        "new_root.mmd_model_name": "New",
+    }
+    presenter.on_current_model_changed("new_root")
+    assert presenter._edit_session is None
+    view.model_name_jp_edit.setText.assert_called_with("New")
+
+
+def test_focus_out_never_commits_a_blocked_pending_session() -> None:
+    presenter, view, app_state, coordinator = _make_presenter()
+    view.model_name_jp_edit.text.return_value = "old"
+    view.edit_started.emit(view.model_name_jp_edit)
+    coordinator.fail_rollback_pending = True
+    app_state.current_model_root = "new_root"
+    presenter.on_current_model_changed("new_root")
+
+    view.edit_finished.emit(view.model_name_jp_edit)
+    assert presenter._edit_session is not None
+    assert not any(call[0] == "commit" for call in coordinator.calls)
+    assert app_state.refresh_calls == []
+
+    coordinator.fail_rollback_pending = None
+    view.edit_finished.emit(view.model_name_jp_edit)
+    assert presenter._edit_session is None
+    assert not any(call[0] == "commit" for call in coordinator.calls)
+    assert app_state.refresh_calls == []
+
+
+def test_terminal_rollback_on_field_change_defers_new_begin_to_next_focus() -> None:
+    presenter, view, _app_state, coordinator = _make_presenter()
+    view.edit_started.emit(view.model_name_jp_edit)
+    view.model_name_jp_edit.setText.reset_mock()
+    coordinator.fail_rollback_pending = False
+    view.edit_started.emit(view.comment_jp_edit)
+    assert [call[0] for call in coordinator.calls].count("begin") == 1
+    assert presenter._edit_session is None
+    assert presenter._edit_session_blocked is True
+    view.model_name_jp_edit.setText.assert_called_with("テストモデル")
+
+    coordinator.fail_rollback_pending = None
+    view.edit_started.emit(view.comment_jp_edit)
+    assert [call[0] for call in coordinator.calls].count("begin") == 2
+    assert presenter._edit_session.attr == ATTR_MMD_COMMENT
+
+
+def test_terminal_retry_of_blocked_session_stays_closed_for_current_focus() -> None:
+    presenter, view, _app_state, coordinator = _make_presenter()
+    view.edit_started.emit(view.model_name_jp_edit)
+    presenter._edit_session_blocked = True
+    coordinator.fail_rollback_pending = False
+    view.edit_started.emit(view.model_name_jp_edit)
+    assert presenter._edit_session is None
+    assert presenter._edit_session_blocked is True
+    assert [call[0] for call in coordinator.calls].count("begin") == 1
+
+def test_refresh_and_teardown_rollback_active_session() -> None:
+    presenter, view, _app_state, coordinator = _make_presenter()
+    view.edit_started.emit(view.comment_jp_edit)
+    presenter.on_model_refresh(3)
+    assert coordinator.calls[-1][0] == "rollback"
+    view.edit_started.emit(view.comment_jp_edit)
+    view.destroyed.emit()
+    assert [call[0] for call in coordinator.calls].count("rollback") == 2
+
+
+def test_generation_refresh_does_not_load_or_consume_while_rollback_pending() -> None:
+    presenter, view, _app_state, coordinator = _make_presenter()
+    view.model_name_jp_edit.text.return_value = "visible edit"
+    view.edit_started.emit(view.model_name_jp_edit)
+    coordinator.fail_rollback_pending = True
+    presenter._pending_refresh_generation = 7
+    presenter._last_refresh_generation = 6
+    view.model_name_jp_edit.setText.reset_mock()
+
+    assert presenter.refresh_for_generation(7) is False
+    assert presenter._edit_session is not None
+    assert presenter._last_refresh_generation == 6
+    assert presenter._pending_refresh_generation == 7
+    view.model_name_jp_edit.setText.assert_not_called()
+
+
+def test_update_failure_is_not_rolled_back_twice_by_presenter() -> None:
+    presenter, view, _app_state, coordinator = _make_presenter()
+    coordinator.fail_update = True
+    view.model_name_jp_edit.text.return_value = "preimage"
+    view.edit_started.emit(view.model_name_jp_edit)
+    presenter.update_model_info(ATTR_MMD_MODEL_NAME, "bad")
+    presenter.rollback_edit_session()
+    assert not any(call[0] == "rollback" for call in coordinator.calls)
+    assert presenter._edit_session is None
+    view.model_name_jp_edit.setText.assert_called_with("テストモデル")
+
+
+def test_lazy_first_change_failure_restores_scene_authority_not_post_change_text() -> None:
+    presenter, view, _app_state, coordinator = _make_presenter()
+    coordinator.fail_update = True
+    widget = view.model_name_jp_edit
+    widget.hasFocus.return_value = True
+    widget.text.return_value = "post-change"
+    widget.setText.reset_mock()
+    presenter._text_change_callbacks[ATTR_MMD_MODEL_NAME]()
+    widget.setText.assert_called_with("テストモデル")
+    assert not any(call.args == ("post-change",) for call in widget.setText.call_args_list)
+
+
+def test_post_commit_refresh_failure_does_not_trigger_rollback() -> None:
+    presenter, view, app_state, coordinator = _make_presenter()
+
+    def fail_refresh(explicit=False):
+        raise RuntimeError(f"notification failed: {explicit}")
+
+    app_state.refresh_model_list = fail_refresh
+    view.edit_started.emit(view.model_name_jp_edit)
+    presenter.update_model_info(ATTR_MMD_MODEL_NAME, "committed")
+    view.edit_finished.emit(view.model_name_jp_edit)
+    assert coordinator.calls[-1][0] == "commit"
+    assert not any(call[0] == "rollback" for call in coordinator.calls)

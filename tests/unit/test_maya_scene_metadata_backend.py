@@ -15,6 +15,7 @@ import pytest
 from mmd_tools.adapters.maya_scene_metadata_backend import MayaSceneMetadataBackend, MayaSceneMetadataError
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter, SceneMetadataError
 from mmd_tools.core.model_authoring_spec import MmdMorphSpec
+from mmd_tools.core.constants import ATTR_MMD_COMMENT, ATTR_MMD_MODEL_NAME
 from mmd_tools.core.maya_name_utils import sanitize_text
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
@@ -176,6 +177,62 @@ class FakeCmds:
         if kwargs.get("long"):
             return [self.long_names.get(node, node) for node in values]
         return values
+
+
+def _info_backend(attr: str = ATTR_MMD_MODEL_NAME, value: str = "old"):
+    cmds = FakeCmds()
+    cmds.attrs[("|root", attr)] = value
+    return MayaSceneMetadataBackend(cmds), cmds
+
+
+def test_info_metadata_focus_session_coalesces_updates_into_one_chunk() -> None:
+    backend, cmds = _info_backend()
+    session = backend.begin_info_metadata_edit("|root", ATTR_MMD_MODEL_NAME)
+    assert backend.apply_info_metadata_edit("|root", session, "first") is True
+    assert backend.apply_info_metadata_edit("|root", session, "second") is True
+    assert backend.commit_info_metadata_edit("|root", session) is True
+    assert cmds.attrs[("|root", ATTR_MMD_MODEL_NAME)] == "second"
+    assert cmds.undo_chunk_open is False
+    assert cmds.undo_count == 0
+
+
+def test_info_metadata_rejects_non_whitelisted_attr_before_opening_chunk() -> None:
+    backend, cmds = _info_backend()
+    with pytest.raises(MayaSceneMetadataError, match="unsupported Info"):
+        backend.begin_info_metadata_edit("|root", "translateX")
+    assert cmds.undo_chunk_open is False
+    assert cmds.write_history == []
+
+
+def test_info_metadata_mutation_failure_closes_undoes_once_and_verifies_preimage() -> None:
+    backend, cmds = _info_backend()
+    session = backend.begin_info_metadata_edit("|root", ATTR_MMD_MODEL_NAME)
+    cmds.ignore_set_path = f"|root.{ATTR_MMD_MODEL_NAME}"
+    with pytest.raises(MayaSceneMetadataError, match="readback mismatch"):
+        backend.apply_info_metadata_edit("|root", session, "ignored")
+    backend.rollback_info_metadata_edit("|root", session)
+    assert cmds.undo_chunk_open is False
+    assert cmds.undo_count == 1
+    assert cmds.attrs[("|root", ATTR_MMD_MODEL_NAME)] == "old"
+
+
+def test_info_metadata_empty_rollback_does_not_undo_prior_action() -> None:
+    backend, cmds = _info_backend(ATTR_MMD_COMMENT, "comment")
+    session = backend.begin_info_metadata_edit("|root", ATTR_MMD_COMMENT)
+    backend.rollback_info_metadata_edit("|root", session)
+    assert cmds.undo_count == 0
+    assert cmds.attrs[("|root", ATTR_MMD_COMMENT)] == "comment"
+
+
+def test_info_metadata_rejected_first_set_rolls_back_without_undo() -> None:
+    backend, cmds = _info_backend()
+    session = backend.begin_info_metadata_edit("|root", ATTR_MMD_MODEL_NAME)
+    cmds.fail_set_path = f"|root.{ATTR_MMD_MODEL_NAME}"
+    with pytest.raises(MayaSceneMetadataError, match="set_attr"):
+        backend.apply_info_metadata_edit("|root", session, "rejected")
+    backend.rollback_info_metadata_edit("|root", session)
+    assert cmds.undo_count == 0
+    assert cmds.attrs[("|root", ATTR_MMD_MODEL_NAME)] == "old"
 
 
 def _bone(cmds: FakeCmds, joint: str, index: int, flags: int = 0) -> None:

@@ -1,7 +1,5 @@
 """Presenter for the model metadata (Info) tab."""
 
-from maya import cmds
-
 from mmd_tools.core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
@@ -28,17 +26,16 @@ class InfoPresenter:
         ("comment_jp_edit", ATTR_MMD_COMMENT),
         ("comment_en_edit", ATTR_MMD_COMMENT_EN),
     )
-    _UNDO_CHUNK_NAME = "MMD Info Edit"
-
-    def __init__(self, view, app_state):
+    def __init__(self, view, app_state, authoring_coordinator=None):
         self.view = view
         self.app_state = app_state
+        self.authoring_coordinator = authoring_coordinator
         self.scene_model_service = self.app_state.scene_model_service
         self._text_change_callbacks = {}
-        self._undo_chunk_open = False
-        self._edit_session_root = None
+        self._edit_session = None
+        self._edit_session_selected_root = None
+        self._edit_session_widget = None
         self._edit_session_blocked = False
-        self._undo_state_uncertain = False
         self._loading = False
         self._pending_refresh_generation = None
         self._last_refresh_generation = None
@@ -66,10 +63,10 @@ class InfoPresenter:
             edit_finished.connect(self.end_edit_session)
         teardown = getattr(self.view, "teardown", None)
         if teardown is not None and hasattr(teardown, "connect"):
-            teardown.connect(self.end_edit_session)
+            teardown.connect(self.rollback_edit_session)
         destroyed = getattr(self.view, "destroyed", None)
         if destroyed is not None and hasattr(destroyed, "connect"):
-            destroyed.connect(self.end_edit_session)
+            destroyed.connect(self.rollback_edit_session)
 
         self._connect_text_signals()
 
@@ -85,82 +82,162 @@ class InfoPresenter:
                 # still coalesced through its next FocusOut.
                 has_focus = getattr(_widget, "hasFocus", lambda: False)
                 if (
-                    not self._undo_chunk_open
+                    self._edit_session is None
                     and not self._loading
                     and not self._edit_session_blocked
                     and bool(has_focus())
                 ):
-                    self.begin_edit_session()
+                    self.begin_edit_session(_widget)
                 self.update_model_info(_attr_name)
 
             self._text_change_callbacks[attr_name] = _on_changed
             widget.textChanged.connect(_on_changed)
 
-    def begin_edit_session(self, *_args):
-        """Open one Maya undo chunk for the currently focused Info widget."""
+    def _attr_for_widget(self, widget):
+        for widget_name, attr in self._FIELD_ATTRIBUTES:
+            if getattr(self.view, widget_name) is widget:
+                return attr
+        return None
+
+    def begin_edit_session(self, widget=None, *_args):
+        """Begin one coordinator-owned edit fixed to the focused field."""
         root = self.app_state.current_model_root
-        if not root or not self._model_exists(root):
+        attr = self._attr_for_widget(widget)
+        if (
+            self.authoring_coordinator is None
+            or not root
+            or attr is None
+            or not self._model_exists(root)
+        ):
             return
-
-        # A failed close leaves Maya's undo-stack state unknown.  Do not risk
-        # nesting another chunk or writing outside a known-safe transaction;
-        # a later teardown/retry must close the uncertain chunk first.
-        if self._undo_state_uncertain:
-            return
-
-        # A fresh FocusIn starts a new attempt after a previous write/open
-        # failure.  Until that point, fail closed and never write outside an
-        # undo chunk.
+        if self._edit_session is not None:
+            if self._edit_session_blocked:
+                blocked_root = self._edit_session_selected_root
+                self.rollback_edit_session()
+                if self._edit_session is not None:
+                    return
+                if self._edit_session_blocked:
+                    if blocked_root != self.app_state.current_model_root:
+                        self.load_model_info()
+                    return
+                if blocked_root != self.app_state.current_model_root:
+                    self.load_model_info()
+                    return
+            elif self._edit_session_selected_root == root and self._edit_session.attr == attr:
+                return
+            else:
+                previous_root = self._edit_session_selected_root
+                self.rollback_edit_session()
+                if self._edit_session is not None:
+                    return
+                if self._edit_session_blocked:
+                    if previous_root != self.app_state.current_model_root:
+                        self.load_model_info()
+                    return
         self._edit_session_blocked = False
-
-        if self._undo_chunk_open:
-            if self._edit_session_root == root:
-                return
-            # A focus-in from another root must never extend the old root's
-            # transaction.
-            self.end_edit_session()
-            if self._undo_state_uncertain or self._undo_chunk_open or self._edit_session_blocked:
-                return
-
         try:
-            cmds.undoInfo(openChunk=True, chunkName=self._UNDO_CHUNK_NAME)
+            self._edit_session = self.authoring_coordinator.begin_info_metadata_edit(
+                root, attr
+            )
+            self._edit_session_selected_root = root
+            self._edit_session_widget = widget
         except Exception:
-            logger.error("Failed to open Info undo chunk for '%s'.", root, exc_info=True)
-            self._undo_chunk_open = False
-            self._edit_session_root = None
+            logger.error("Failed to begin Info edit for '%s.%s'.", root, attr, exc_info=True)
+            self._edit_session = None
+            self._edit_session_selected_root = None
+            self._edit_session_widget = None
             self._edit_session_blocked = True
-            return
-
-        self._undo_chunk_open = True
-        self._edit_session_root = root
 
     def end_edit_session(self, *_args):
-        """Close an open Info chunk; safe to call repeatedly or at teardown."""
-        if not self._undo_chunk_open:
-            self._edit_session_root = None
+        """Commit one completed focus edit and notify the model list once."""
+        session = self._edit_session
+        if session is None:
             self._edit_session_blocked = False
             return
-
-        try:
-            cmds.undoInfo(closeChunk=True)
-        except Exception:
-            logger.error("Failed to close Info undo chunk.", exc_info=True)
-            self._undo_state_uncertain = True
-            self._edit_session_blocked = True
-            # Keep the root/open markers so a later teardown can retry the
-            # close operation instead of silently claiming the chunk closed.
+        if self._edit_session_blocked:
+            self.rollback_edit_session()
             return
-
-        self._undo_state_uncertain = False
-        self._undo_chunk_open = False
-        self._edit_session_root = None
+        selected_root = self._edit_session_selected_root
+        widget = self._edit_session_widget
+        self._edit_session = None
+        self._edit_session_selected_root = None
+        self._edit_session_widget = None
+        try:
+            changed = self.authoring_coordinator.commit_info_metadata_edit(session)
+        except Exception as exc:
+            logger.error("Failed to commit Info edit.", exc_info=True)
+            if getattr(exc, "rollback_pending", False):
+                self._edit_session = session
+                self._edit_session_selected_root = selected_root
+                self._edit_session_widget = widget
+            else:
+                self._restore_authoritative_field(widget, session.attr, selected_root)
+            self._edit_session_blocked = True
+            return
         self._edit_session_blocked = False
+        if changed:
+            try:
+                self.app_state.refresh_model_list(explicit=True)
+            except Exception:
+                # Notification is deliberately outside the committed Maya
+                # transaction; it must never turn a valid edit into rollback.
+                logger.error("Failed to refresh model list after Info edit.", exc_info=True)
         pending_generation = self._pending_refresh_generation
         if pending_generation is not None and not self._loading:
             self.refresh_for_generation(pending_generation)
 
+    def rollback_edit_session(self, *_args):
+        """Rollback the old fixed-root session; safe to call repeatedly."""
+        session = self._edit_session
+        if session is None:
+            self._edit_session_blocked = False
+            return
+        selected_root = self._edit_session_selected_root
+        widget = self._edit_session_widget
+        try:
+            self.authoring_coordinator.rollback_info_metadata_edit(session)
+        except Exception as exc:
+            logger.error("Failed to rollback Info edit.", exc_info=True)
+            if not getattr(exc, "rollback_pending", True):
+                self._edit_session = None
+                self._edit_session_selected_root = None
+                self._edit_session_widget = None
+                self._restore_authoritative_field(
+                    widget, session.attr, selected_root
+                )
+            self._edit_session_blocked = True
+            return
+        self._edit_session = None
+        self._edit_session_selected_root = None
+        self._edit_session_widget = None
+        self._restore_authoritative_field(widget, session.attr, selected_root)
+        self._edit_session_blocked = False
+
+    def _restore_authoritative_field(self, widget, attr, selected_root):
+        """Reload one fixed field after an unverified terminal rollback."""
+        if (
+            widget is None
+            or selected_root != self.app_state.current_model_root
+            or not self._model_exists(selected_root)
+        ):
+            return
+        value = self.scene_model_service.get_attr_safe(selected_root, attr, None)
+        if not isinstance(value, str):
+            return
+        previous = widget.blockSignals(True)
+        was_loading = self._loading
+        self._loading = True
+        try:
+            if attr in (ATTR_MMD_COMMENT, ATTR_MMD_COMMENT_EN):
+                widget.setPlainText(value)
+            else:
+                widget.setText(value)
+        finally:
+            self._loading = was_loading
+            widget.blockSignals(previous)
+
     # Explicit lifecycle alias for MainWindow/window teardown callers.
-    shutdown = end_edit_session
+    shutdown = rollback_edit_session
 
     def _model_exists(self, model_root):
         try:
@@ -177,7 +254,9 @@ class InfoPresenter:
         self._pending_refresh_generation = None
         # This order is intentional: loading text must never be interpreted as
         # an edit against the newly selected root.
-        self.end_edit_session()
+        self.rollback_edit_session()
+        if self._edit_session is not None:
+            return
         self._loading = True
         try:
             if model_root:
@@ -190,7 +269,10 @@ class InfoPresenter:
             self._loading = False
 
     def on_model_refresh(self, generation):
-        """Mark metadata stale without touching Maya or an active edit chunk."""
+        """Rollback an old-root edit before accepting a refresh generation."""
+        self.rollback_edit_session()
+        if self._edit_session is not None:
+            return
         self._pending_refresh_generation = generation
 
     def refresh_for_generation(self, generation):
@@ -198,34 +280,36 @@ class InfoPresenter:
         if self._pending_refresh_generation != generation:
             if self._last_refresh_generation == generation:
                 return True
-            self.load_model_info()
+            if self.load_model_info() is False:
+                return False
             self._last_refresh_generation = generation
             return True
-        if self._undo_chunk_open or self._edit_session_root is not None:
-            self._last_refresh_generation = generation
-            return True
-        self.load_model_info()
+        if self.load_model_info() is False:
+            return False
         self._pending_refresh_generation = None
         self._last_refresh_generation = generation
         return True
 
     def load_model_info(self):
-        # Any completed direct load (including constructor/eager loads) has
-        # consumed the current generation, so tab activation cannot duplicate
-        # the same graph read.
-        self._last_refresh_generation = getattr(self.app_state, "refresh_generation", 0)
         current_model_root = self.app_state.current_model_root
         if not current_model_root or not self._model_exists(current_model_root):
             logger.warning("No model selected or model does not exist.")
-            self.end_edit_session()
+            self.rollback_edit_session()
+            if self._edit_session is not None:
+                return False
             self.view.set_fields_enabled(False)
             self.clear_fields()
-            return
+            self._last_refresh_generation = getattr(
+                self.app_state, "refresh_generation", 0
+            )
+            return True
 
         # A direct reload while a field is focused is also a transaction
         # boundary.  on_current_model_changed already performs this call, and
-        # end_edit_session is idempotent.
-        self.end_edit_session()
+        # rollback_edit_session is idempotent.
+        self.rollback_edit_session()
+        if self._edit_session is not None:
+            return False
         was_loading = self._loading
         self._loading = True
         try:
@@ -252,6 +336,12 @@ class InfoPresenter:
             self.clear_fields()
         finally:
             self._loading = was_loading
+        # Only a completed load consumes the generation.  A pending rollback
+        # returns above and leaves the visible fields/generation untouched.
+        self._last_refresh_generation = getattr(
+            self.app_state, "refresh_generation", 0
+        )
+        return True
 
     def clear_fields(self):
         """Clear fields without turning the load into metadata writes."""
@@ -275,64 +365,35 @@ class InfoPresenter:
             return widget.text()
         raise KeyError(attr_name)
 
-    def _set_undoable_string(self, model_root, attr_name, value):
-        """Write one Info string through cmds.setAttr for Maya undo support."""
-        try:
-            if not self.scene_model_service.attribute_exists(model_root, attr_name):
-                logger.error("Cannot write missing Info attribute '%s.%s'.", model_root, attr_name)
-                return False
-            cmds.setAttr("%s.%s" % (model_root, attr_name), "" if value is None else str(value), type="string")
-            return True
-        except Exception as exc:
-            logger.error("Failed to update Info attribute '%s.%s': %s", model_root, attr_name, exc, exc_info=True)
-            return False
-
     def update_model_info(self, attr_name=None, value=None):
-        """Immediately write one changed field (or all fields for direct callers)."""
-        if self._loading or self._edit_session_blocked or self._undo_state_uncertain:
+        """Immediately write the one field fixed by the active focus session."""
+        if self._loading or self._edit_session_blocked:
             return
-
-        current_model_root = self.app_state.current_model_root
-        if self._edit_session_root is not None:
-            # A stale callback after model switching is fail-closed.  Never
-            # retarget old text to the new model root.
-            if self._edit_session_root != current_model_root:
-                self.end_edit_session()
-                return
-            current_model_root = self._edit_session_root
-
-        if not current_model_root or not self._model_exists(current_model_root):
-            self.end_edit_session()
+        session = self._edit_session
+        if session is None:
             return
-
-        # Every production textChanged write must be inside the session opened
-        # for the same model root.  Direct callers must explicitly open a
-        # bounded session first.
-        if not self._undo_chunk_open or self._edit_session_root != current_model_root:
+        if self._edit_session_selected_root != self.app_state.current_model_root:
+            self.rollback_edit_session()
             return
-
-        if attr_name is None:
-            updates = [(field_attr, self._read_field_value(field_attr)) for _, field_attr in self._FIELD_ATTRIBUTES]
-        else:
-            try:
-                updates = [(attr_name, self._read_field_value(attr_name) if value is None else value)]
-            except KeyError:
-                logger.error("Unknown Info field attribute '%s'.", attr_name)
-                self.end_edit_session()
-                return
-
-        for field_attr, field_value in updates:
-            if not self._set_undoable_string(current_model_root, field_attr, field_value):
-                # An error must not leave a chunk open around a partially
-                # applied edit.
-                had_session = self._undo_chunk_open or self._edit_session_root is not None
-                self.end_edit_session()
-                if had_session:
-                    self._edit_session_blocked = True
-                return
-
-        logger.debug(f"Updated model info for {current_model_root}")
+        if attr_name != session.attr:
+            logger.error("Info edit target changed during a focus session.")
+            self.rollback_edit_session()
+            return
         try:
-            self.app_state.clear_cache()
-        except Exception:
-            logger.error("Failed to clear model info cache.", exc_info=True)
+            field_value = self._read_field_value(attr_name) if value is None else value
+            self.authoring_coordinator.update_info_metadata_edit(session, field_value)
+        except Exception as exc:
+            # Coordinator owns rollback on mutation failure.
+            logger.error("Failed to update Info metadata.", exc_info=True)
+            if not getattr(exc, "rollback_pending", False):
+                self._restore_authoritative_field(
+                    self._edit_session_widget,
+                    session.attr,
+                    self._edit_session_selected_root,
+                )
+                self._edit_session = None
+                self._edit_session_selected_root = None
+                self._edit_session_widget = None
+            self._edit_session_blocked = True
+            return
+        logger.debug(f"Updated model info for {session.root}")

@@ -126,3 +126,7 @@ def test_setup_tabs_injects_only_create_model_action_into_file_presenter(monkeyp
     assert file_call[2] == {"create_model_action": create_action}
     display_call = next(call for call in calls if call[0] == "DisplayPresenter")
     assert display_call[2] == {"authoring_coordinator": None}
+    info_calls = [call for call in calls if call[0] == "Presenter" and call[2]]
+    assert any(
+        call[2] == {"authoring_coordinator": None} for call in info_calls
+    )

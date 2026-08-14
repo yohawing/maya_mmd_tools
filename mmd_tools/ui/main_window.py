@@ -271,7 +271,7 @@ class MainWindow(QMainWindow):
             return None
 
     def _authoring_presenter_kwargs(self):
-        """Return shared authoring dependencies for Material/Bone/Morph tabs."""
+        """Return shared authoring dependencies for authoring presenters."""
         composition = getattr(self, "authoring_composition", None)
         if composition is None:
             return {"authoring_coordinator": None}
@@ -315,14 +315,19 @@ class MainWindow(QMainWindow):
         )
         self.tab_widget.addTab(export_tab, translator.translate("export_workflow", "tabs"))
 
+        authoring_kwargs = self._authoring_presenter_kwargs()
+
         # Info Tab
         info_tab = InfoTab()
-        self.info_presenter = InfoPresenter(info_tab, self.app_state)
+        self.info_presenter = InfoPresenter(
+            info_tab,
+            self.app_state,
+            authoring_coordinator=authoring_kwargs["authoring_coordinator"],
+        )
         self.tab_widget.addTab(info_tab, translator.translate("info", "tabs"))
 
         # Material Tab
         material_tab = MaterialTab()
-        authoring_kwargs = self._authoring_presenter_kwargs()
         self.material_presenter = MaterialPresenter(
             material_tab,
             self.app_state,
