@@ -52,7 +52,8 @@ def _batch_environment_snapshot():
     """Capture only identities/state needed to remove per-case additions."""
     from mmd_tools.ui.qt_compat import QApplication, QSettings
 
-    app = QApplication.instance()
+    app_instance = getattr(QApplication, "instance", None)
+    app = app_instance() if callable(app_instance) else None
     widgets = set(id(widget) for widget in (app.topLevelWidgets() if app is not None else []))
     settings = []
     for organization, application in _BATCH_QSETTINGS_SCOPES:
@@ -73,7 +74,8 @@ def _restore_batch_environment(snapshot, new_scene=True):
     from mmd_tools.ui.qt_compat import QApplication, QSettings
 
     errors = []
-    app = QApplication.instance()
+    app_instance = getattr(QApplication, "instance", None)
+    app = app_instance() if callable(app_instance) else None
     if app is not None:
         for widget in list(app.topLevelWidgets()):
             if id(widget) in snapshot["widgets"]:
@@ -131,15 +133,28 @@ class _AttachedSceneGuard:
         self._scene_path = None
         self._modified = None
         self._selection = ()
+        self._scene_fingerprint = None
+        self._undo_enabled = None
         self._chunk_open = False
         self._undo_performed = False
+
+    @staticmethod
+    def _scene_fingerprint_value():
+        """Return independent DAG and DG identities for ownership checking."""
+        dag_nodes = tuple(sorted(str(node) for node in (cmds.ls(long=True, dag=True) or ())))
+        dependency_nodes = tuple(
+            sorted(str(node) for node in (cmds.ls(long=True, dependencyNodes=True) or ()))
+        )
+        return dag_nodes, dependency_nodes
 
     def start(self):
         """Capture the attached scene and install the fail-closed file guard."""
         self._scene_path = str(cmds.file(query=True, sceneName=True) or "")
         self._modified = bool(cmds.file(query=True, modified=True))
         self._selection = tuple(cmds.ls(selection=True, long=True) or ())
-        if not bool(cmds.undoInfo(query=True, state=True)):
+        self._scene_fingerprint = self._scene_fingerprint_value()
+        self._undo_enabled = bool(cmds.undoInfo(query=True, state=True))
+        if not self._undo_enabled:
             raise RuntimeError("attached GUI tests require Maya Undo to be enabled")
 
         self._original_file = cmds.file
@@ -167,7 +182,14 @@ class _AttachedSceneGuard:
         try:
             current_path = str(cmds.file(query=True, sceneName=True) or "")
             current_modified = bool(cmds.file(query=True, modified=True))
-            changed = current_path != self._scene_path or current_modified != self._modified
+            current_fingerprint = self._scene_fingerprint_value()
+            current_undo_enabled = bool(cmds.undoInfo(query=True, state=True))
+            changed = (
+                current_path != self._scene_path
+                or current_modified != self._modified
+                or current_fingerprint != self._scene_fingerprint
+                or current_undo_enabled != self._undo_enabled
+            )
         except Exception as exc:
             errors.append(f"attached scene state probe: {exc}")
             changed = True
@@ -200,6 +222,8 @@ class _AttachedSceneGuard:
             actual_path = str(cmds.file(query=True, sceneName=True) or "")
             actual_modified = bool(cmds.file(query=True, modified=True))
             actual_selection = tuple(cmds.ls(selection=True, long=True) or ())
+            actual_fingerprint = self._scene_fingerprint_value()
+            actual_undo_enabled = bool(cmds.undoInfo(query=True, state=True))
             if actual_path != self._scene_path:
                 errors.append(
                     f"attached scene path changed: expected {self._scene_path!r}, got {actual_path!r}"
@@ -211,6 +235,13 @@ class _AttachedSceneGuard:
             if actual_selection != self._selection:
                 errors.append(
                     f"attached selection changed: expected {self._selection!r}, got {actual_selection!r}"
+                )
+            if actual_fingerprint != self._scene_fingerprint:
+                errors.append("attached DAG/DG fingerprint changed")
+            if actual_undo_enabled != self._undo_enabled:
+                errors.append(
+                    f"attached Undo availability changed: expected {self._undo_enabled!r}, "
+                    f"got {actual_undo_enabled!r}"
                 )
         except Exception as exc:
             errors.append(f"attached scene restore probe: {exc}")
@@ -472,6 +503,7 @@ class GuiTestRunner:
         tests_started = None
         attached_scene_guard = None
         attached_scene_guard_started = False
+        attached_cleanup_acknowledged = False
 
         try:
             if preserve_attached_scene:
@@ -521,32 +553,34 @@ class GuiTestRunner:
                         "status": "no_tests",
                         "elapsed_seconds": 0.0,
                     }
-                return status
+                # Final status is returned only after attached cleanup and
+                # report publication in ``finally``.
 
-            # Run tests
-            print(f"Found {suite.countTestCases()} tests to run.")
-            def result_factory(*args, **kwargs):
-                return _LifecycleTextTestResult(
-                    *args,
-                    timing_recorder=timing_recorder,
-                    **kwargs,
+            else:
+                # Run tests
+                print(f"Found {suite.countTestCases()} tests to run.")
+
+                def result_factory(*args, **kwargs):
+                    return _LifecycleTextTestResult(
+                        *args,
+                        timing_recorder=timing_recorder,
+                        **kwargs,
+                    )
+
+                tests_started = time.perf_counter()
+                runner = unittest.TextTestRunner(
+                    stream=log_file,
+                    verbosity=2,
+                    resultclass=result_factory,
                 )
-
-            tests_started = time.perf_counter()
-            runner = unittest.TextTestRunner(
-                stream=log_file,
-                verbosity=2,
-                resultclass=result_factory,
-            )
-            result = runner.run(suite)
-            tests_elapsed = max(0.0, time.perf_counter() - tests_started)
-            status = "PASS" if result.wasSuccessful() else "FAIL"
-            if timing_report is not None:
-                timing_report["phases"]["tests"] = {
-                    "status": "passed" if status == "PASS" else "failed",
-                    "elapsed_seconds": tests_elapsed,
-                }
-            return status
+                result = runner.run(suite)
+                tests_elapsed = max(0.0, time.perf_counter() - tests_started)
+                status = "PASS" if result.wasSuccessful() else "FAIL"
+                if timing_report is not None:
+                    timing_report["phases"]["tests"] = {
+                        "status": "passed" if status == "PASS" else "failed",
+                        "elapsed_seconds": tests_elapsed,
+                    }
 
         except Exception:
             logging.error("An unexpected error occurred during test execution.", exc_info=True)
@@ -574,11 +608,11 @@ class GuiTestRunner:
                             else None
                         ),
                     }
-            return status
         finally:
             if attached_scene_guard_started:
                 try:
                     attached_scene_guard.finish()
+                    attached_cleanup_acknowledged = True
                 except Exception as exc:
                     logging.error("Attached Maya scene cleanup failed", exc_info=True)
                     print(f"Attached Maya scene cleanup failed: {exc}")
@@ -591,6 +625,8 @@ class GuiTestRunner:
                     timing_report = timing_helpers.read_timing_report(timing_report_path, fallback)
                 if timing_recorder is not None:
                     timing_report["tests"] = timing_recorder.tests
+                if preserve_attached_scene:
+                    timing_report["cleanup_acknowledged"] = attached_cleanup_acknowledged
                 timing_report["status"] = status
                 timing_helpers.write_timing_report(timing_report_path, timing_report)
             if emit_completion_marker:
@@ -608,6 +644,8 @@ class GuiTestRunner:
             for handler in original_handlers:
                 logging.root.addHandler(handler)
             logging.root.setLevel(original_log_level)
+
+        return status
 
     @staticmethod
     def run_batch_from_command(log_file_path, cases, timing_report_path, new_scene=True):
@@ -642,6 +680,7 @@ class GuiTestRunner:
             case_report_path = report_path.with_name(
                 f"{report_path.name}.case-{case['id']}-{os.getpid()}"
             )
+            case_report = None
             try:
                 try:
                     _restore_batch_environment(snapshot, new_scene=new_scene)
@@ -686,11 +725,13 @@ class GuiTestRunner:
                 entry["error"] = str(exc)
             finally:
                 entry["elapsed_seconds"] = max(0.0, time.perf_counter() - started)
+                cleanup_errors = []
                 try:
                     _restore_batch_environment(snapshot, new_scene=new_scene)
                 except Exception as exc:
                     entry["status"] = "ERROR"
                     entry["cleanup_error"] = str(exc)
+                    cleanup_errors.append(str(exc))
                 try:
                     case_report_path.unlink()
                 except FileNotFoundError:
@@ -700,6 +741,16 @@ class GuiTestRunner:
                     prior_error = entry.get("cleanup_error")
                     message = f"case timing cleanup: {exc}"
                     entry["cleanup_error"] = f"{prior_error}; {message}" if prior_error else message
+                    cleanup_errors.append(message)
+                if cleanup_errors and case_report is not None:
+                    # The per-case report is the first durable status emitted
+                    # for a case.  If cleanup fails after the test body passed,
+                    # rewrite it to ERROR before the batch report or marker can
+                    # claim success.
+                    case_report["status"] = "ERROR"
+                    case_report["cleanup_error"] = "; ".join(cleanup_errors)
+                    report_helpers.finalize_timing_report(case_report)
+                    report_helpers.write_timing_report(case_report_path, case_report)
                 report_helpers.write_timing_report(report_path, report)
 
         statuses = [entry["status"] for entry in report["cases"]]

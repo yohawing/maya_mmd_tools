@@ -94,11 +94,18 @@ def load_batch_manifest(path, project_root):
     cases = []
     case_ids = set()
     for index, raw_case in enumerate(raw_cases):
-        if not isinstance(raw_case, dict) or set(raw_case) != {"id", "test_path", "test_filter"}:
-            raise ValueError(f"GUI batch case {index} must contain only id, test_path, and test_filter")
+        if not isinstance(raw_case, dict):
+            raise ValueError(f"GUI batch case {index} must contain id, test_path, and test_filter")
+        base_fields = {"id", "test_path", "test_filter"}
+        fields = set(raw_case)
+        if fields not in (base_fields, base_fields | {"attach_safe"}):
+            raise ValueError(
+                f"GUI batch case {index} must contain only id, test_path, test_filter, and optional attach_safe"
+            )
         case_id = raw_case["id"]
         test_path = raw_case["test_path"]
         test_filter = raw_case["test_filter"]
+        attach_safe = raw_case.get("attach_safe", False)
         if not isinstance(case_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", case_id):
             raise ValueError(f"GUI batch case {index} has an invalid id")
         if case_id in case_ids:
@@ -116,8 +123,24 @@ def load_batch_manifest(path, project_root):
             raise ValueError(f"GUI batch case {case_id} test_path is not a directory")
         if not isinstance(test_filter, str) or not test_filter.strip():
             raise ValueError(f"GUI batch case {case_id} has an invalid test_filter")
+        if type(attach_safe) is not bool:
+            raise ValueError(f"GUI batch case {case_id} has an invalid attach_safe flag")
         case_ids.add(case_id)
-        cases.append({"id": case_id, "test_path": test_path, "test_filter": test_filter})
+        case = {"id": case_id, "test_path": test_path, "test_filter": test_filter}
+        if "attach_safe" in raw_case:
+            case["attach_safe"] = attach_safe
+        cases.append(case)
+    return cases
+
+
+def validate_attach_manifest(cases):
+    """Require an explicit attach-safe declaration for every attached case."""
+    unsafe = [case.get("id", "<unknown>") for case in cases if case.get("attach_safe") is not True]
+    if unsafe:
+        raise ValueError(
+            "--attach-existing requires every manifest case to set attach_safe=true; "
+            f"rejected case(s): {', '.join(unsafe)}"
+        )
     return cases
 
 
@@ -424,9 +447,13 @@ def main():
 
     project_root = Path(__file__).resolve().parent.parent
     batch_cases = None
+    if args.attach_existing and not args.batch_manifest:
+        parser.error("--attach-existing requires --batch_manifest with explicit attach_safe cases")
     if args.batch_manifest:
         try:
             batch_cases = load_batch_manifest(args.batch_manifest, project_root)
+            if args.attach_existing:
+                validate_attach_manifest(batch_cases)
         except ValueError as exc:
             parser.error(str(exc))
     log_file_path = Path(args.log_path) if args.log_path else Path("logs") / LOG_FILE_NAME
@@ -471,6 +498,7 @@ def main():
     tests_dispatched = False
     tests_dispatched_started = None
     execution_timed_out = False
+    cleanup_acknowledged = False
     try:
         startup_started = time.perf_counter()
         # 1. Verify an explicitly attached Maya, or launch an isolated one.
@@ -579,6 +607,10 @@ GuiTestRunner.run_tests_from_command(
         # 3. Monitor the log file for results
         status = monitor_log_file(log_file_path, TEST_EXECUTION_TIMEOUT)
         completion_status = status
+        # A completion marker is the cooperative acknowledgement that the Maya
+        # side finished its cleanup and published its final status.  A host
+        # timeout never implies this acknowledgement.
+        cleanup_acknowledged = True
         if status != "PASS":
             logger.error("GUI tests completed with status %s", status)
             return 1
@@ -668,6 +700,10 @@ GuiTestRunner.run_tests_from_command(
             timing_report = read_batch_report(report_source, timing_report)
         else:
             timing_report = read_timing_report(report_source, timing_report)
+        if args.attach_existing:
+            # Do not trust a partial Maya report after a host timeout: only the
+            # host-side completion marker proves that attached cleanup finished.
+            timing_report["cleanup_acknowledged"] = cleanup_acknowledged
         if execution_timed_out:
             if batch_cases is not None:
                 host_elapsed = (
