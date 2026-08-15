@@ -75,13 +75,19 @@ class TestModelRegistry(unittest.TestCase):
         )
 
     def test_new_registry_has_one_root_connection(self):
+        events = []
+
+        def create_node(*args, **kwargs):
+            events.append(("createNode", args, kwargs))
+            return "Model_root_modelRegistry"
+
         with (
             mock.patch.object(model_registry, "_canonical_root", return_value="|Model_root"),
             mock.patch.object(model_registry, "get_model_registry", return_value=None),
             mock.patch.object(
                 model_registry.cmds,
                 "createNode",
-                return_value="Model_root_modelRegistry",
+                side_effect=create_node,
             ),
             mock.patch.object(model_registry, "_has_attr", return_value=False),
             mock.patch.object(model_registry.cmds, "objExists", return_value=True),
@@ -89,9 +95,13 @@ class TestModelRegistry(unittest.TestCase):
             mock.patch.object(model_registry.cmds, "setAttr"),
             mock.patch.object(model_registry.cmds, "connectAttr") as connect_attr,
         ):
-            registry = model_registry.ensure_model_registry("Model_root")
+            registry = model_registry.ensure_model_registry(
+                "Model_root",
+                mutation_boundary=lambda: events.append(("mutation-boundary",)),
+            )
 
         self.assertEqual(registry, "Model_root_modelRegistry")
+        self.assertEqual([event[0] for event in events], ["createNode", "mutation-boundary"])
         self.assertIn(
             mock.call("|Model_root.message", "Model_root_modelRegistry.modelRoot"),
             connect_attr.call_args_list,
@@ -105,6 +115,41 @@ class TestModelRegistry(unittest.TestCase):
             connect_attr.call_args_list,
         )
 
+    def test_registry_creation_failure_does_not_notify_mutation_boundary(self):
+        boundary = mock.Mock()
+        with (
+            mock.patch.object(model_registry, "_canonical_root", return_value="|Model_root"),
+            mock.patch.object(model_registry, "get_model_registry", return_value=None),
+            mock.patch.object(
+                model_registry.cmds,
+                "createNode",
+                side_effect=RuntimeError("create failed before mutation"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "create failed before mutation"):
+                model_registry.ensure_model_registry(
+                    "Model_root",
+                    mutation_boundary=boundary,
+                )
+
+        boundary.assert_not_called()
+
+    def test_existing_registry_does_not_notify_creation_boundary(self):
+        boundary = mock.Mock()
+        with (
+            mock.patch.object(model_registry, "_canonical_root", return_value="|Model_root"),
+            mock.patch.object(model_registry, "get_model_registry", return_value="ModelRegistry"),
+            mock.patch.object(model_registry.cmds, "createNode") as create_node,
+        ):
+            registry = model_registry.ensure_model_registry(
+                "Model_root",
+                mutation_boundary=boundary,
+            )
+
+        self.assertEqual(registry, "ModelRegistry")
+        boundary.assert_not_called()
+        create_node.assert_not_called()
+
     def test_unknown_schema_is_rejected(self):
         with (
             mock.patch.object(model_registry.cmds, "objExists", return_value=True),
@@ -115,6 +160,7 @@ class TestModelRegistry(unittest.TestCase):
                 model_registry._validate_registry_node("ModelRegistry")
 
     def test_unregister_members_disconnects_only_requested_category_members(self):
+        boundary = mock.Mock()
         with (
             mock.patch.object(model_registry, "_validate_registry_node"),
             mock.patch.object(model_registry.cmds, "listConnections", return_value=["shaderA", "shaderB"]),
@@ -125,6 +171,7 @@ class TestModelRegistry(unittest.TestCase):
                 "ModelRegistry",
                 model_registry.REGISTRY_CATEGORY_MATERIAL,
                 ["shaderB"],
+                mutation_boundary=boundary,
             )
 
         self.assertEqual(remaining, ["shaderA"])
@@ -132,6 +179,7 @@ class TestModelRegistry(unittest.TestCase):
             "shaderB.message",
             "ModelRegistry.materialMembers[1]",
         )
+        boundary.assert_called_once_with()
 
     def test_unregister_members_uses_actual_sparse_destination_plug(self):
         def list_connections(_endpoint, **kwargs):

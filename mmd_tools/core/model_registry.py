@@ -9,7 +9,7 @@ an invalid registry never falls back to a broader scene scan.
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 from maya import cmds
 
@@ -48,12 +48,18 @@ class ModelRegistryError(RuntimeError):
     """Raised when a registry connection is present but not unambiguous."""
 
 
-def ensure_model_registry(model_root: str) -> str:
+def ensure_model_registry(
+    model_root: str,
+    *,
+    mutation_boundary: Optional[Callable[[], None]] = None,
+) -> str:
     """Create or validate the one registry owned by ``model_root``.
 
     The registry is a Maya ``network`` node.  ``model_root.message`` connects
     only to ``registry.modelRoot``; each category stores incoming member
-    messages on the registry itself.
+    messages on the registry itself.  When no registry exists,
+    ``mutation_boundary`` is called after ``createNode`` succeeds and before
+    the registry's attributes or connections are written.
     """
     root = _canonical_root(model_root)
     if root is None or not _is_model_root(root):
@@ -68,6 +74,8 @@ def ensure_model_registry(model_root: str) -> str:
     registry_name = f":{namespace}:{base_name}_modelRegistry" if namespace else f"{base_name}_modelRegistry"
     registry = cmds.createNode("network", name=registry_name)
     try:
+        if callable(mutation_boundary):
+            mutation_boundary()
         _ensure_message_attr(registry, ATTR_MMD_REGISTRY_ROOT)
         _ensure_string_attr(registry, ATTR_MMD_REGISTRY_SCHEMA)
         cmds.setAttr(
@@ -153,13 +161,16 @@ def unregister_model_members(
     registry: str,
     category: str,
     members: Iterable[str],
+    *,
+    mutation_boundary: Optional[Callable[[], None]] = None,
 ) -> List[str]:
     """Disconnect exactly the requested owned members from one category.
 
     The destination plug is resolved from the actual message connection rather
     than inferred from iteration order.  Unknown requested members are
     rejected before any disconnect so callers cannot accidentally report a
-    partially applied ownership update.
+    partially applied ownership update.  When supplied, ``mutation_boundary``
+    is called after the first successful disconnect.
     """
     member_attr = registry_category_attribute(category)
     _validate_registry_node(registry)
@@ -190,11 +201,15 @@ def unregister_model_members(
         )
 
     remaining: List[str] = []
+    mutation_notified = False
     for member in current:
         canonical = _canonical_node(member)
         if canonical in requested:
             source_plug, destination_plug = connections[canonical]
             cmds.disconnectAttr(source_plug, destination_plug)
+            if not mutation_notified and callable(mutation_boundary):
+                mutation_boundary()
+                mutation_notified = True
         else:
             remaining.append(str(member))
     return remaining

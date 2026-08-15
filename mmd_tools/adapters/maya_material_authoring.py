@@ -72,6 +72,17 @@ _MATERIAL_OUTLINE_ATTRS = (
     "mmdDoubleSided",
     "mmdTransparencyMode",
 )
+_MUTATING_ADAPTER_METHODS = frozenset(
+    {
+        "add_attr",
+        "connect_attr",
+        "delete",
+        "disconnect_attr",
+        "set_attr",
+        "shading_node",
+        "sets",
+    }
+)
 
 
 class MayaMaterialAuthoringError(RuntimeError):
@@ -112,6 +123,7 @@ class MayaMaterialAuthoring:
             else NativeAuthoringCommandGateway(cmds_adapter)
         )
         self._mutation_boundary = mutation_boundary
+        self._mutation_observer: Any | None = None
 
     def create_material(
         self,
@@ -693,7 +705,20 @@ class MayaMaterialAuthoring:
             allow_material_edits=allow_material_edits,
         )
 
-        registry = self._registry.ensure_model_registry(root)
+        mutation_started = False
+
+        def mark_mutation() -> None:
+            nonlocal mutation_started
+            if mutation_started:
+                return
+            mutation_started = True
+            if callable(self._mutation_boundary):
+                self._mutation_boundary()
+
+        registry = self._registry.ensure_model_registry(
+            root,
+            mutation_boundary=mark_mutation,
+        )
         registry_members = self._registry.list_model_registry_members(
             root, REGISTRY_CATEGORY_MATERIAL
         ) or []
@@ -718,15 +743,6 @@ class MayaMaterialAuthoring:
             )
 
         morph_updates = self._material_morph_updates(root, old_spec, new_spec)
-        mutation_started = False
-
-        def mark_mutation() -> None:
-            nonlocal mutation_started
-            if mutation_started:
-                return
-            mutation_started = True
-            if callable(self._mutation_boundary):
-                self._mutation_boundary()
         old_shader: str | None = None
         old_shading_group: str | None = None
         replacement_sg: str | None = None
@@ -754,14 +770,14 @@ class MayaMaterialAuthoring:
                 self._validate_target(root, member) for member in members
             ]
 
+        previous_mutation_observer = self._mutation_observer
+        self._mutation_observer = mark_mutation
         try:
             for binding, material in new_by_binding.items():
                 prior = old_by_binding[binding]
                 if allow_material_edits and self._material_fields_changed(prior, material):
-                    mark_mutation()
                     self._write_material_attrs(binding, material)
                 elif material.index != prior.index:
-                    mark_mutation()
                     self._set_attr(
                         binding,
                         ATTR_MMD_MATERIAL_INDEX,
@@ -769,7 +785,6 @@ class MayaMaterialAuthoring:
                         "long",
                     )
             for node, payload in morph_updates:
-                mark_mutation()
                 self._set_attr(
                     node,
                     ATTR_MMD_MATERIAL_MORPH_OFFSETS,
@@ -777,13 +792,13 @@ class MayaMaterialAuthoring:
                     "string",
                 )
             if deleted and old_shader is not None and old_shading_group is not None:
-                mark_mutation()
                 for member in validated_members:
                     self._call("sets", member, e=True, forceElement=replacement_sg)
                 self._registry.unregister_model_members(
                     registry,
                     REGISTRY_CATEGORY_MATERIAL,
                     [old_shader],
+                    mutation_boundary=mark_mutation,
                 )
                 self._call(
                     "disconnect_attr",
@@ -792,12 +807,13 @@ class MayaMaterialAuthoring:
                 )
                 self._call("delete", old_shading_group)
                 self._call("delete", old_shader)
-            mark_mutation()
             self._rebuild_material_morph_graph(root)
         except Exception as exc:
             raise MayaMaterialAuthoringError(
                 f"failed to apply material structural change under root {root!r}: {exc}"
             ) from exc
+        finally:
+            self._mutation_observer = previous_mutation_observer
         return new_spec
 
     def apply_material_reindex(
@@ -839,21 +855,22 @@ class MayaMaterialAuthoring:
             if callable(self._mutation_boundary):
                 self._mutation_boundary()
 
+        previous_mutation_observer = self._mutation_observer
+        self._mutation_observer = mark_mutation
         try:
             for binding, material in self._material_bindings(new_spec).items():
                 prior = old_by_binding[binding]
                 if material.index != prior.index:
-                    mark_mutation()
                     self._set_attr(binding, ATTR_MMD_MATERIAL_INDEX, material.index, "long")
             for node, payload in morph_updates:
-                mark_mutation()
                 self._set_attr(node, ATTR_MMD_MATERIAL_MORPH_OFFSETS, payload, "string")
-            mark_mutation()
             self._update_native_render_queue(root, first_index, second_index)
         except Exception as exc:
             raise MayaMaterialAuthoringError(
                 f"failed to apply adjacent material reindex under root {root!r}: {exc}"
             ) from exc
+        finally:
+            self._mutation_observer = previous_mutation_observer
         return new_spec
 
     def apply_material_reindex_fast(
@@ -1683,7 +1700,14 @@ class MayaMaterialAuthoring:
 
     def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         try:
-            return getattr(self._cmds, method)(*args, **kwargs)
+            result = getattr(self._cmds, method)(*args, **kwargs)
+            if (
+                self._mutation_observer is not None
+                and method in _MUTATING_ADAPTER_METHODS
+                and not (method == "sets" and kwargs.get("query"))
+            ):
+                self._mutation_observer()
+            return result
         except Exception as exc:
             raise MayaMaterialAuthoringError(f"Maya adapter call {method} failed: {exc}") from exc
 

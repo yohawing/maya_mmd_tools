@@ -139,9 +139,14 @@ class FakeRegistry:
     members: list[str] = field(default_factory=list)
     morph_members: list[str] = field(default_factory=list)
     calls: list[tuple[str, Any]] = field(default_factory=list)
+    registry_exists: bool = True
 
-    def ensure_model_registry(self, root: str) -> str:
+    def ensure_model_registry(self, root: str, **kwargs: Any) -> str:
         self.calls.append(("ensure", root))
+        mutation_boundary = kwargs.get("mutation_boundary")
+        if callable(mutation_boundary) and not self.registry_exists:
+            mutation_boundary()
+            self.registry_exists = True
         return "|Model_root|registry"
 
     def list_model_registry_members(self, root: str, category: str) -> list[str]:
@@ -152,7 +157,13 @@ class FakeRegistry:
         self.calls.append(("register", registry, category, list(members)))
         self.members.extend(member for member in members if member not in self.members)
 
-    def unregister_model_members(self, registry: str, category: str, members: list[str]) -> None:
+    def unregister_model_members(
+        self,
+        registry: str,
+        category: str,
+        members: list[str],
+        **kwargs: Any,
+    ) -> None:
         self.calls.append(("unregister", registry, category, list(members)))
         target = self.morph_members if category == "morph" else self.members
         target[:] = [member for member in target if member not in members]
@@ -686,7 +697,7 @@ def test_apply_material_spec_change_delete_preserves_mesh_assignment_and_registr
     assert "shaderA" not in cmds.types
 
 
-def test_apply_material_spec_change_notifies_before_first_maya_mutation() -> None:
+def test_apply_material_spec_change_notifies_after_first_maya_mutation() -> None:
     old_sg = "oldSG"
     replacement_sg = "replacementSG"
     mesh = "|Model_root|Geometry|mesh.f[0]"
@@ -726,12 +737,13 @@ def test_apply_material_spec_change_notifies_before_first_maya_mutation() -> Non
     )
 
     boundary_index = next(index for index, call in enumerate(cmds.calls) if call[0] == "mutation-boundary")
-    assignment_index = next(
+    first_mutation_index = next(
         index
         for index, call in enumerate(cmds.calls)
-        if call[0] == "sets" and call[2].get("forceElement")
+        if call[0] in {"add_attr", "connect_attr", "delete", "disconnect_attr", "set_attr", "shading_node"}
+        or (call[0] == "sets" and not call[2].get("query"))
     )
-    assert boundary_index < assignment_index
+    assert first_mutation_index < boundary_index
 
 
 def test_apply_material_spec_change_does_not_notify_after_preflight_rejection() -> None:
@@ -763,6 +775,43 @@ def test_apply_material_spec_change_does_not_notify_after_preflight_rejection() 
         adapter.apply_material_spec_change(
             "|Model_root", old_spec, new_spec, "missing-replacement"
         )
+
+    assert notifications == []
+
+
+def test_apply_material_reindex_does_not_notify_before_failed_maya_command() -> None:
+    class FailingSetAttrCmds(FakeCmdsAdapter):
+        def set_attr(self, _path: str, *_values: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("set failed before mutation")
+
+    cmds = FailingSetAttrCmds(
+        attrs={
+            ("shaderA", ATTR_MMD_MATERIAL_INDEX): 0,
+            ("shaderB", ATTR_MMD_MATERIAL_INDEX): 1,
+        },
+        types={
+            "|Model_root": "transform",
+            "shaderA": "standardSurface",
+            "shaderB": "standardSurface",
+        },
+    )
+    registry = FakeRegistry(members=["shaderA", "shaderB"])
+    material_a = replace(_material(), index=0, binding_identity="shaderA", name="A")
+    material_b = replace(_material(), index=1, binding_identity="shaderB", name="B")
+    old_spec = _authoring_spec((material_a, material_b))
+    new_spec = _authoring_spec(
+        (replace(material_a, index=1), replace(material_b, index=0))
+    )
+    notifications: list[str] = []
+    adapter = MayaMaterialAuthoring(
+        cmds,
+        registry,
+        runtime_rebuilders={"material": lambda _root: None},
+        mutation_boundary=lambda: notifications.append("mutation"),
+    )
+
+    with pytest.raises(MayaMaterialAuthoringError, match="set failed before mutation"):
+        adapter.apply_material_reindex("|Model_root", old_spec, new_spec)
 
     assert notifications == []
 
