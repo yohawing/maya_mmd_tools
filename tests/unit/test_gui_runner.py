@@ -201,6 +201,28 @@ class GuiTestRunnerTests(unittest.TestCase):
         self.assertEqual(1, log.count(run_gui_tests.GUI_TEST_FINISHED_MARKER))
         self.assertIn("status=ERROR", log)
 
+    def test_attached_failed_tests_do_not_acknowledge_cleanup(self):
+        guard = mock.Mock()
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(_FailingCase)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "attached-fail.log"
+            timing_path = Path(temp_dir) / "attached-fail.timing.json"
+            report = run_gui_tests.new_timing_report("2024", "tests/gui", None)
+            run_gui_tests.write_timing_report(timing_path, report)
+            with mock.patch.object(gui_test_base, "_AttachedSceneGuard", return_value=guard), \
+                 mock.patch.object(unittest.TestLoader, "discover", return_value=suite), \
+                 redirect_stdout(sys.__stdout__), redirect_stderr(sys.__stderr__):
+                status = GuiTestRunner.run_tests_from_command(
+                    str(log_path),
+                    "tests/gui",
+                    timing_report_path=str(timing_path),
+                    preserve_attached_scene=True,
+                )
+            final_report = json.loads(timing_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("FAIL", status)
+        self.assertFalse(final_report["cleanup_acknowledged"])
+
     def run_runner_with_timing(self, discovered_suite=None, discover_error=None):
         with tempfile.TemporaryDirectory() as temp_dir:
             log_path = Path(temp_dir) / "gui.log"
@@ -794,6 +816,41 @@ class GuiTestRunnerTests(unittest.TestCase):
         is_port_open.assert_not_called()
         send_python.assert_not_called()
 
+    def test_attach_existing_rejects_classified_scene_mutation_before_port_probe(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = self._attach_manifest(
+                temp_dir,
+                cases=[
+                    {
+                        "id": "known-unsafe",
+                        "test_path": "tests/gui",
+                        "test_filter": (
+                            "guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI."
+                            "test_authoring_signals_undo_redo_and_save_reopen"
+                        ),
+                        "attach_safe": True,
+                    }
+                ],
+            )
+            with mock.patch.object(run_gui_tests.maya_commandport, "is_port_open") as is_port_open, \
+                 mock.patch.object(run_gui_tests.maya_commandport, "send_python") as send_python, \
+                 mock.patch.object(
+                     sys,
+                     "argv",
+                     [
+                         "run_gui_tests.py",
+                         "--attach-existing",
+                         "--batch_manifest",
+                         str(manifest_path),
+                     ],
+                 ), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    run_gui_tests.main()
+
+        self.assertEqual(2, raised.exception.code)
+        is_port_open.assert_not_called()
+        send_python.assert_not_called()
+
     def test_attach_existing_rejects_closed_port_without_lifecycle_actions(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             log_path = Path(temp_dir) / "closed.log"
@@ -867,6 +924,39 @@ class GuiTestRunnerTests(unittest.TestCase):
             self.assertEqual("TIMEOUT", report["status"])
             self.assertEqual("skipped", report["phases"]["shutdown"]["status"])
             self.assertFalse(report["cleanup_acknowledged"])
+
+    def test_attach_fail_marker_does_not_acknowledge_cleanup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "fail.log"
+            timing_path = Path(temp_dir) / "fail.timing.json"
+            manifest_path = self._attach_manifest(temp_dir)
+            with mock.patch.object(run_gui_tests.maya_commandport, "is_port_open", return_value=True), \
+                 mock.patch.object(run_gui_tests, "verify_attached_maya"), \
+                 mock.patch.object(run_gui_tests.maya_commandport, "send_python"), \
+                 mock.patch.object(run_gui_tests.maya_commandport, "close_process_logs"), \
+                 mock.patch.object(run_gui_tests, "monitor_log_file", return_value="FAIL"), \
+                 mock.patch.object(
+                     sys,
+                     "argv",
+                     [
+                         "run_gui_tests.py",
+                         "--attach-existing",
+                         "--port",
+                         "7788",
+                         "--batch_manifest",
+                         str(manifest_path),
+                         "--log_path",
+                         str(log_path),
+                         "--timing_report",
+                         str(timing_path),
+                     ],
+                 ):
+                self.assertEqual(1, run_gui_tests.main())
+
+            report = json.loads(timing_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("FAIL", report["status"])
+        self.assertFalse(report["cleanup_acknowledged"])
 
     def test_attach_existing_rejects_a_process_environment_override(self):
         with mock.patch.object(

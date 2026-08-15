@@ -626,7 +626,9 @@ class GuiTestRunner:
                 if timing_recorder is not None:
                     timing_report["tests"] = timing_recorder.tests
                 if preserve_attached_scene:
-                    timing_report["cleanup_acknowledged"] = attached_cleanup_acknowledged
+                    timing_report["cleanup_acknowledged"] = (
+                        attached_cleanup_acknowledged and status in {"PASS", "NO_TESTS"}
+                    )
                 timing_report["status"] = status
                 timing_helpers.write_timing_report(timing_report_path, timing_report)
             if emit_completion_marker:

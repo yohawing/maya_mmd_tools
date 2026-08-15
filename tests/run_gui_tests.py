@@ -5,6 +5,7 @@ This script launches a Maya instance, executes GUI tests via a commandPort,
 and streams the results from a log file.
 """
 
+import ast
 import sys
 import time
 import argparse
@@ -133,13 +134,172 @@ def load_batch_manifest(path, project_root):
     return cases
 
 
-def validate_attach_manifest(cases):
-    """Require an explicit attach-safe declaration for every attached case."""
+_ATTACH_UNSAFE_METHODS = frozenset(
+    {
+        "addAttr",
+        "bakeResults",
+        "connectAttr",
+        "createNode",
+        "currentTime",
+        "currentUnit",
+        "delete",
+        "disconnectAttr",
+        "duplicate",
+        "flushUndo",
+        "loadPlugin",
+        "move",
+        "parent",
+        "rename",
+        "redo",
+        "setAttr",
+        "setKeyframe",
+        "undo",
+        "undoInfo",
+        "unloadPlugin",
+    }
+)
+_ATTACH_UNSAFE_FUNCTIONS = frozenset({"import_mmd_file"})
+_ATTACH_FILE_MUTATION_FLAGS = frozenset({"exportAll", "exportSelected", "import", "new", "open", "rename", "save"})
+
+
+def _dotted_name(node):
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+def _ast_true(node):
+    return getattr(node, "value", None) is True
+
+
+def _scene_mutation_call(call):
+    """Return a short reason when an AST call mutates attached Maya state."""
+    name = _dotted_name(call.func)
+    if not name:
+        return None
+    leaf = name.rsplit(".", 1)[-1]
+    maya_command = name.startswith("cmds.") or name.startswith("maya.cmds.")
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords if keyword.arg}
+    if leaf == "file":
+        if not maya_command:
+            return None
+        query = _ast_true(keywords.get("query")) or _ast_true(keywords.get("q"))
+        if query and not _ATTACH_FILE_MUTATION_FLAGS.intersection(keywords):
+            return None
+        return f"{name}()"
+    if leaf == "undoInfo" and not maya_command:
+        return None
+    if leaf == "undoInfo" and (_ast_true(keywords.get("query")) or _ast_true(keywords.get("q"))):
+        return None
+    if leaf in _ATTACH_UNSAFE_METHODS and maya_command:
+        return f"{name}()"
+    if leaf in _ATTACH_UNSAFE_FUNCTIONS:
+        return f"{name}()"
+    return None
+
+
+def _source_attach_unsafe_reasons(case, project_root):
+    """Classify known scene mutations for tests selected by one manifest case.
+
+    Unknown filters remain caller-declared: this helper only rejects a case when
+    a matching checked-in test definition can be parsed and classified.
+    """
+    project_root = Path(project_root).resolve()
+    test_root = (project_root / case["test_path"]).resolve()
+    try:
+        source_files = sorted(test_root.rglob("guitest_*.py"))
+    except OSError:
+        return []
+
+    reasons = set()
+    test_filter = case["test_filter"]
+    for source_path in source_files:
+        try:
+            tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        except (OSError, UnicodeError, SyntaxError):
+            continue
+
+        try:
+            module_name = ".".join(source_path.relative_to(project_root).with_suffix("").parts)
+        except ValueError:
+            module_name = source_path.stem
+
+        module_functions = {
+            node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        for class_node in (node for node in tree.body if isinstance(node, ast.ClassDef)):
+            methods = {
+                node.name: node
+                for node in class_node.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            selected = [
+                node
+                for node in methods.values()
+                if node.name.startswith("test")
+                and test_filter in f"{module_name}.{class_node.name}.{node.name}"
+            ]
+            if not selected:
+                continue
+
+            visited = set()
+
+            def scan(node):
+                if id(node) in visited:
+                    return
+                visited.add(id(node))
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Call):
+                        mutation = _scene_mutation_call(child)
+                        if mutation:
+                            reasons.add(f"{source_path.name}:{child.lineno} {mutation}")
+                        target = None
+                        if isinstance(child.func, ast.Name):
+                            target = module_functions.get(child.func.id) or methods.get(child.func.id)
+                        elif isinstance(child.func, ast.Attribute):
+                            if isinstance(child.func.value, ast.Name) and child.func.value.id == "self":
+                                target = methods.get(child.func.attr)
+                        if target is not None:
+                            scan(target)
+                    elif isinstance(child, ast.Attribute):
+                        if isinstance(child.value, ast.Name) and child.value.id == "self":
+                            target = methods.get(child.attr)
+                            if target is not None:
+                                scan(target)
+
+            for setup_name in ("setUpClass", "setUp", "tearDown", "tearDownClass"):
+                setup = methods.get(setup_name)
+                if setup is not None:
+                    scan(setup)
+            for test_method in selected:
+                scan(test_method)
+    return sorted(reasons)
+
+
+def validate_attach_manifest(cases, project_root=None):
+    """Require explicit attach safety and reject classified scene-mutating cases."""
     unsafe = [case.get("id", "<unknown>") for case in cases if case.get("attach_safe") is not True]
     if unsafe:
         raise ValueError(
             "--attach-existing requires every manifest case to set attach_safe=true; "
             f"rejected case(s): {', '.join(unsafe)}"
+        )
+
+    root = _PROJECT_ROOT if project_root is None else Path(project_root)
+    classified = []
+    for case in cases:
+        reasons = _source_attach_unsafe_reasons(case, root)
+        if reasons:
+            classified.append(f"{case.get('id', '<unknown>')} ({'; '.join(reasons)})")
+    if classified:
+        raise ValueError(
+            "--attach-existing rejects known scene-mutating GUI case(s): "
+            + ", ".join(classified)
         )
     return cases
 
@@ -453,7 +613,7 @@ def main():
         try:
             batch_cases = load_batch_manifest(args.batch_manifest, project_root)
             if args.attach_existing:
-                validate_attach_manifest(batch_cases)
+                validate_attach_manifest(batch_cases, project_root)
         except ValueError as exc:
             parser.error(str(exc))
     log_file_path = Path(args.log_path) if args.log_path else Path("logs") / LOG_FILE_NAME
@@ -610,7 +770,7 @@ GuiTestRunner.run_tests_from_command(
         # A completion marker is the cooperative acknowledgement that the Maya
         # side finished its cleanup and published its final status.  A host
         # timeout never implies this acknowledgement.
-        cleanup_acknowledged = True
+        cleanup_acknowledged = status in {"PASS", "NO_TESTS"}
         if status != "PASS":
             logger.error("GUI tests completed with status %s", status)
             return 1
