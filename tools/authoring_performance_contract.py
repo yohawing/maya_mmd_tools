@@ -1014,7 +1014,8 @@ def _run_scaling_gate(
             )
         with tempfile.TemporaryDirectory(prefix="mmd_authoring_scaling_") as temp_dir:
             base_scene = Path(temp_dir) / "base.ma"
-            cmds.file(saveAs=str(base_scene), force=True, type="mayaAscii")
+            cmds.file(rename=str(base_scene))
+            cmds.file(save=True, force=True, type="mayaAscii")
             for configuration in reversed(SCALING_CASES):
                 cmds.file(str(base_scene), open=True, force=True)
                 current_root = _full_node(cmds, root)
