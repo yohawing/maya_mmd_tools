@@ -48,7 +48,11 @@ def build_maya_authoring_composition(
     cmds_adapter = MayaCmdsAdapter(cmds_module)
     metadata_backend = MayaSceneMetadataBackend(cmds_adapter)
     metadata_adapter = SceneMetadataAdapter(metadata_backend)
-    material_authoring = MayaMaterialAuthoring(cmds_adapter, registry_api=registry_api)
+    material_authoring = MayaMaterialAuthoring(
+        cmds_adapter,
+        registry_api=registry_api,
+        mutation_boundary=metadata_backend.mark_mutation,
+    )
     rebuilders = maya_runtime_rebuilders()
 
     def apply_morph_change(root: str, old_spec: Any, new_spec: Any) -> Any:

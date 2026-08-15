@@ -97,6 +97,7 @@ class MayaMaterialAuthoring:
         runtime_rebuilders: Mapping[str, Any] | None = None,
         native_queue_reindexer: Any | None = None,
         native_authoring_gateway: Any | None = None,
+        mutation_boundary: Any | None = None,
     ) -> None:
         self._cmds = cmds_adapter
         self._registry = registry_api
@@ -110,6 +111,7 @@ class MayaMaterialAuthoring:
             if native_authoring_gateway is not None
             else NativeAuthoringCommandGateway(cmds_adapter)
         )
+        self._mutation_boundary = mutation_boundary
 
     def create_material(
         self,
@@ -716,6 +718,15 @@ class MayaMaterialAuthoring:
             )
 
         morph_updates = self._material_morph_updates(root, old_spec, new_spec)
+        mutation_started = False
+
+        def mark_mutation() -> None:
+            nonlocal mutation_started
+            if mutation_started:
+                return
+            mutation_started = True
+            if callable(self._mutation_boundary):
+                self._mutation_boundary()
         old_shader: str | None = None
         old_shading_group: str | None = None
         replacement_sg: str | None = None
@@ -747,8 +758,10 @@ class MayaMaterialAuthoring:
             for binding, material in new_by_binding.items():
                 prior = old_by_binding[binding]
                 if allow_material_edits and self._material_fields_changed(prior, material):
+                    mark_mutation()
                     self._write_material_attrs(binding, material)
                 elif material.index != prior.index:
+                    mark_mutation()
                     self._set_attr(
                         binding,
                         ATTR_MMD_MATERIAL_INDEX,
@@ -756,6 +769,7 @@ class MayaMaterialAuthoring:
                         "long",
                     )
             for node, payload in morph_updates:
+                mark_mutation()
                 self._set_attr(
                     node,
                     ATTR_MMD_MATERIAL_MORPH_OFFSETS,
@@ -763,6 +777,7 @@ class MayaMaterialAuthoring:
                     "string",
                 )
             if deleted and old_shader is not None and old_shading_group is not None:
+                mark_mutation()
                 for member in validated_members:
                     self._call("sets", member, e=True, forceElement=replacement_sg)
                 self._registry.unregister_model_members(
@@ -777,6 +792,7 @@ class MayaMaterialAuthoring:
                 )
                 self._call("delete", old_shading_group)
                 self._call("delete", old_shader)
+            mark_mutation()
             self._rebuild_material_morph_graph(root)
         except Exception as exc:
             raise MayaMaterialAuthoringError(
@@ -813,14 +829,26 @@ class MayaMaterialAuthoring:
                 f"material registry membership does not exactly match old_spec under root {root!r}"
             )
         morph_updates = self._material_morph_updates(root, old_spec, new_spec)
+        mutation_started = False
+
+        def mark_mutation() -> None:
+            nonlocal mutation_started
+            if mutation_started:
+                return
+            mutation_started = True
+            if callable(self._mutation_boundary):
+                self._mutation_boundary()
 
         try:
             for binding, material in self._material_bindings(new_spec).items():
                 prior = old_by_binding[binding]
                 if material.index != prior.index:
+                    mark_mutation()
                     self._set_attr(binding, ATTR_MMD_MATERIAL_INDEX, material.index, "long")
             for node, payload in morph_updates:
+                mark_mutation()
                 self._set_attr(node, ATTR_MMD_MATERIAL_MORPH_OFFSETS, payload, "string")
+            mark_mutation()
             self._update_native_render_queue(root, first_index, second_index)
         except Exception as exc:
             raise MayaMaterialAuthoringError(

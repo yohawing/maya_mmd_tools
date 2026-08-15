@@ -87,7 +87,13 @@ class MayaFullMetadataTransaction:
         return self._full_transaction(model_root)
 
     def mark_mutation(self) -> None:
-        """Record a successful Maya mutation owned by this full transaction."""
+        """Declare that the next structural write belongs to this transaction.
+
+        Structural writers call this immediately before their first Maya
+        mutation.  The Spec readback remains a commit check, not the only
+        evidence that an Undo item is owned by this transaction: assignments,
+        connections, and other derived scene state may be outside the Spec.
+        """
         transaction = self._context.get_active_transaction()
         if transaction is not None and self._is_full_transaction(transaction):
             transaction["mutated"] = True

@@ -25,6 +25,9 @@ class _Backend:
     def __init__(self, adapter) -> None:
         self.adapter = adapter
 
+    def mark_mutation(self) -> None:
+        pass
+
 
 class _Metadata:
     def __init__(self, backend) -> None:
@@ -32,9 +35,10 @@ class _Metadata:
 
 
 class _Materials:
-    def __init__(self, adapter, registry_api) -> None:
+    def __init__(self, adapter, registry_api, **kwargs) -> None:
         self.adapter = adapter
         self.registry_api = registry_api
+        self.mutation_boundary = kwargs.get("mutation_boundary")
 
 
 class _Coordinator:
@@ -87,6 +91,7 @@ def test_factory_shares_one_graph_and_injects_runtime_rebuilders(monkeypatch) ->
     assert composition.metadata_backend.adapter is composition.cmds_adapter
     assert composition.metadata_adapter.backend is composition.metadata_backend
     assert composition.material_authoring.adapter is composition.cmds_adapter
+    assert composition.material_authoring.mutation_boundary == composition.metadata_backend.mark_mutation
     assert composition.coordinator.adapter is composition.cmds_adapter
     assert composition.coordinator.morph_authoring("|root", "old", "new") == "bound"
     assert observed["registry_api"] is registry

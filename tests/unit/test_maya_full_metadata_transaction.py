@@ -54,6 +54,8 @@ class _FakeContext:
         self.undo_enabled = True
         self.chunk_open = False
         self.snapshot: MmdModelAuthoringSpec | None = None
+        self.external_state = "original"
+        self.external_snapshot: str | None = None
         self.undo_count = 0
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
         self.read_spec_error: Exception | None = None
@@ -79,6 +81,7 @@ class _FakeContext:
         if method == "undo_info" and kwargs.get("openChunk"):
             assert not self.chunk_open
             self.snapshot = self.scene
+            self.external_snapshot = self.external_state
             self.chunk_open = True
             return None
         if method == "undo_info" and kwargs.get("closeChunk"):
@@ -89,7 +92,10 @@ class _FakeContext:
             assert not self.chunk_open
             assert self.snapshot is not None
             self.scene = self.snapshot
+            assert self.external_snapshot is not None
+            self.external_state = self.external_snapshot
             self.snapshot = None
+            self.external_snapshot = None
             self.undo_count += 1
             return None
         raise AssertionError(f"unexpected adapter call: {method!r}, {kwargs!r}")
@@ -233,6 +239,24 @@ def test_partial_structural_mutation_is_reconciled_before_rollback() -> None:
     assert context.scene.fingerprint() == _spec().fingerprint()
     assert context.active is None
     assert context.chunk_open is False
+
+
+def test_explicit_mutation_boundary_rolls_back_spec_external_scene_state() -> None:
+    context = _FakeContext()
+    authority = context.authority()
+    authority.begin_write("|root")
+
+    # A shading assignment or connection can change Maya state without
+    # changing the semantic authoring Spec fingerprint.
+    context.external_state = "assigned-to-replacement"
+    authority.mark_mutation()
+
+    authority.rollback_write("|root")
+
+    assert context.undo_count == 1
+    assert context.external_state == "original"
+    assert context.scene.fingerprint() == _spec().fingerprint()
+    assert context.active is None
 
 
 def test_readback_exception_after_partial_mutation_fails_closed_to_undo() -> None:

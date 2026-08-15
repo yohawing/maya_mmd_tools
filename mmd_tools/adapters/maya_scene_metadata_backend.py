@@ -595,6 +595,10 @@ class MayaSceneMetadataBackend:
         """Capture the current spec and open one Maya undo chunk."""
         self._full_metadata_transaction.begin_write(model_root)
 
+    def mark_mutation(self) -> None:
+        """Mark the first structural Maya write as owned by full metadata."""
+        self._full_metadata_transaction.mark_mutation()
+
     def begin_display_frames_write(self, model_root: str) -> None:
         """Capture one display-frame JSON plug and open its undo chunk."""
         if self._write_transaction is not None:

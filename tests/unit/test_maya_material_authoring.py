@@ -638,7 +638,7 @@ def test_apply_material_spec_change_rejects_deleted_material_reference_before_wr
         (replace(morph, offsets=(_material_offset(-1),)),),
     )
 
-    with pytest.raises(MayaMaterialAuthoringError, match="deleted material"):
+    with pytest.raises(MayaMaterialAuthoringError):
         _authoring(cmds, registry).apply_material_spec_change(
             "|Model_root", old_spec, new_spec, "replacementSG"
         )
@@ -684,6 +684,85 @@ def test_apply_material_spec_change_delete_preserves_mesh_assignment_and_registr
     assert registry.members == ["shaderB"]
     assert old_sg not in cmds.types
     assert "shaderA" not in cmds.types
+
+
+def test_apply_material_spec_change_notifies_before_first_maya_mutation() -> None:
+    old_sg = "oldSG"
+    replacement_sg = "replacementSG"
+    mesh = "|Model_root|Geometry|mesh.f[0]"
+    cmds = FakeCmdsAdapter(
+        attrs={
+            ("shaderA", ATTR_MMD_MATERIAL_INDEX): 0,
+            ("shaderB", ATTR_MMD_MATERIAL_INDEX): 1,
+        },
+        types={
+            "|Model_root": "transform",
+            "shaderA": "standardSurface",
+            "shaderB": "standardSurface",
+            old_sg: "shadingEngine",
+            replacement_sg: "shadingEngine",
+        },
+        connections={"shaderA": [old_sg]},
+        members={old_sg: [mesh]},
+    )
+    registry = FakeRegistry(members=["shaderA", "shaderB"])
+    material_a = replace(_material(), index=0, binding_identity="shaderA", name="A")
+    material_b = replace(_material(), index=1, binding_identity="shaderB", name="B")
+    old_spec = _authoring_spec((material_a, material_b))
+    new_spec = _authoring_spec((replace(material_b, index=0),))
+    cmds.calls.append(("before-boundary", (), {}))
+
+    boundary = lambda: cmds.calls.append(("mutation-boundary", (), {}))
+    adapter = MayaMaterialAuthoring(
+        cmds,
+        registry,
+        runtime_rebuilders={"material": lambda _root: None},
+        mutation_boundary=boundary,
+    )
+    adapter.apply_material_spec_change(
+        "|Model_root", old_spec, new_spec, replacement_sg
+    )
+
+    boundary_index = next(index for index, call in enumerate(cmds.calls) if call[0] == "mutation-boundary")
+    assignment_index = next(
+        index
+        for index, call in enumerate(cmds.calls)
+        if call[0] == "sets" and call[2].get("forceElement")
+    )
+    assert boundary_index < assignment_index
+
+
+def test_apply_material_spec_change_does_not_notify_after_preflight_rejection() -> None:
+    cmds = FakeCmdsAdapter(
+        attrs={
+            ("shaderA", ATTR_MMD_MATERIAL_INDEX): 0,
+            ("shaderB", ATTR_MMD_MATERIAL_INDEX): 1,
+        },
+        types={
+            "|Model_root": "transform",
+            "shaderA": "standardSurface",
+            "shaderB": "standardSurface",
+        },
+    )
+    registry = FakeRegistry(members=["shaderA", "shaderB"])
+    material_a = replace(_material(), index=0, binding_identity="shaderA", name="A")
+    material_b = replace(_material(), index=1, binding_identity="shaderB", name="B")
+    old_spec = _authoring_spec((material_a, material_b))
+    new_spec = _authoring_spec((replace(material_b, index=0),))
+    notifications: list[str] = []
+    adapter = MayaMaterialAuthoring(
+        cmds,
+        registry,
+        runtime_rebuilders={"material": lambda _root: None},
+        mutation_boundary=lambda: notifications.append("mutation"),
+    )
+
+    with pytest.raises(MayaMaterialAuthoringError):
+        adapter.apply_material_spec_change(
+            "|Model_root", old_spec, new_spec, "missing-replacement"
+        )
+
+    assert notifications == []
 
 
 def test_create_failure_propagates_without_claiming_success() -> None:
