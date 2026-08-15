@@ -105,7 +105,7 @@ class GuiTestRunnerTests(unittest.TestCase):
             {
                 "id": "safe-smoke",
                 "test_path": "tests/gui",
-                "test_filter": "test_safe_smoke",
+                "test_filter": "guitest_translator.TestUITranslator.test_supported_languages",
                 "attach_safe": True,
             }
         ]
@@ -816,7 +816,7 @@ class GuiTestRunnerTests(unittest.TestCase):
         is_port_open.assert_not_called()
         send_python.assert_not_called()
 
-    def test_attach_existing_rejects_classified_scene_mutation_before_port_probe(self):
+    def test_attach_existing_rejects_case_outside_fixed_allowlist_before_port_probe(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             manifest_path = self._attach_manifest(
                 temp_dir,
@@ -824,10 +824,7 @@ class GuiTestRunnerTests(unittest.TestCase):
                     {
                         "id": "known-unsafe",
                         "test_path": "tests/gui",
-                        "test_filter": (
-                            "guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI."
-                            "test_authoring_signals_undo_redo_and_save_reopen"
-                        ),
+                        "test_filter": "guitest_authoring_signal_smoke_gui.TestAuthoringSignalSmokeGUI.test_read_only_smoke",
                         "attach_safe": True,
                     }
                 ],
@@ -1339,13 +1336,13 @@ class GuiTestRunnerTests(unittest.TestCase):
                 {
                     "id": "one",
                     "test_path": "tests/gui",
-                    "test_filter": "test_one",
+                    "test_filter": "guitest_translator.TestUITranslator.test_supported_languages",
                     "attach_safe": True,
                 },
                 {
                     "id": "two",
                     "test_path": "tests/gui",
-                    "test_filter": "test_two",
+                    "test_filter": "guitest_translator.TestUITranslator.test_translation_files_loaded",
                     "attach_safe": True,
                 },
             ]
