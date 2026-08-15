@@ -19,6 +19,7 @@ import math
 from pathlib import Path
 import statistics
 import sys
+import tempfile
 import time
 import traceback
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
@@ -51,7 +52,11 @@ SCALING_CASES = (
     },
 )
 SCALING_OPERATIONS = ("snapshot", "refresh")
-SCALING_P95_TOLERANCE_MS = {"snapshot": 250.0, "refresh": 250.0}
+# This is intentionally an absolute, generous wall-time ceiling.  The gate
+# checks structural regressions with call counts; it does not compare one cold
+# case against another cold case.
+SCALING_P95_ABSOLUTE_LIMIT_MS = {"snapshot": 1_000.0, "refresh": 1_000.0}
+SCALING_MEASUREMENT_ORDER = tuple(case["name"] for case in reversed(SCALING_CASES))
 SCALING_MIN_VERTICES = 8_000
 SCALING_MIN_BONES = 100
 
@@ -438,6 +443,20 @@ def scaling_gate_errors(gate: Dict[str, Any]) -> List[str]:
     expected_names = gate.get("expected_case_names")
     if not isinstance(expected_names, list) or not expected_names:
         expected_names = [case["name"] for case in SCALING_CASES]
+    measurement_order = gate.get("measurement_order")
+    if measurement_order != list(SCALING_MEASUREMENT_ORDER):
+        errors.append(
+            "scaling measurement order must be large-to-small: "
+            f"expected {list(SCALING_MEASUREMENT_ORDER)!r}, got {measurement_order!r}"
+        )
+    warmup = gate.get("warmup")
+    if (
+        not isinstance(warmup, dict)
+        or warmup.get("passes") != 1
+        or warmup.get("case") != SCALING_MEASUREMENT_ORDER[0]
+        or warmup.get("operations") != list(SCALING_OPERATIONS)
+    ):
+        errors.append("scaling gate requires one warmup pass before all measured cases")
     cases = gate.get("cases")
     if not isinstance(cases, list) or not cases:
         return errors + ["scaling gate has no measured cases"]
@@ -462,7 +481,6 @@ def scaling_gate_errors(gate: Dict[str, Any]) -> List[str]:
     operation_counts: Dict[str, List[int]] = {name: [] for name in SCALING_OPERATIONS}
     operation_histograms: Dict[str, List[Any]] = {name: [] for name in SCALING_OPERATIONS}
     operation_p95: Dict[str, List[tuple[str, float]]] = {name: [] for name in SCALING_OPERATIONS}
-    previous_counts: Optional[Dict[str, int]] = None
     increased_bones = False
     increased_materials = False
 
@@ -484,10 +502,6 @@ def scaling_gate_errors(gate: Dict[str, Any]) -> List[str]:
                 baseline_morph_count = counts["morphs"]
             if counts["morphs"] != baseline_morph_count:
                 errors.append(f"scaling case {case_name!r} changed Morph count")
-            if previous_counts is not None:
-                increased_bones |= counts["bones"] > previous_counts["bones"]
-                increased_materials |= counts["materials"] > previous_counts["materials"]
-            previous_counts = counts
             multipliers = case.get("target_multipliers")
             if not isinstance(multipliers, dict) or not all(
                 type(multipliers.get(key)) is int and multipliers[key] >= 1
@@ -499,6 +513,8 @@ def scaling_gate_errors(gate: Dict[str, Any]) -> List[str]:
                 expected_materials = baseline_counts["materials"] * multipliers["materials"]
                 if counts["bones"] != expected_bones or counts["materials"] != expected_materials:
                     errors.append(f"scaling case {case_name!r} counts do not match target multipliers")
+                increased_bones |= multipliers["bones"] > 1
+                increased_materials |= multipliers["materials"] > 1
 
         operations = case.get("operations")
         if not isinstance(operations, dict):
@@ -574,24 +590,23 @@ def scaling_gate_errors(gate: Dict[str, Any]) -> List[str]:
     for operation, histograms in operation_histograms.items():
         if histograms and any(histogram != histograms[0] for histogram in histograms[1:]):
             errors.append(f"{operation} adapter method histogram is not constant across scaling cases")
-    tolerance_config = gate.get("p95_tolerance_ms", SCALING_P95_TOLERANCE_MS)
-    if not isinstance(tolerance_config, dict):
-        errors.append("p95 tolerance configuration is missing")
-        tolerance_config = {}
+    limit_config = gate.get("p95_absolute_limit_ms", SCALING_P95_ABSOLUTE_LIMIT_MS)
+    if not isinstance(limit_config, dict):
+        errors.append("absolute p95 limit configuration is missing")
+        limit_config = {}
     for operation, observations in operation_p95.items():
         if not observations:
             errors.append(f"{operation} has no p95 observations")
             continue
-        tolerance = tolerance_config.get(operation)
-        if not isinstance(tolerance, (int, float)) or tolerance < 0:
-            errors.append(f"{operation} p95 tolerance is missing or invalid")
+        limit = limit_config.get(operation)
+        if not isinstance(limit, (int, float)) or limit <= 0:
+            errors.append(f"{operation} absolute p95 limit is missing or invalid")
             continue
-        baseline = observations[0][1]
-        for case_name, observed in observations[1:]:
-            if observed - baseline > float(tolerance):
+        for case_name, observed in observations:
+            if observed > float(limit):
                 errors.append(
-                    f"{case_name}/{operation} p95 {observed:.3f} ms exceeds baseline tolerance "
-                    f"{float(tolerance):.3f} ms"
+                    f"{case_name}/{operation} p95 {observed:.3f} ms exceeds absolute limit "
+                    f"{float(limit):.3f} ms"
                 )
     return errors
 
@@ -896,6 +911,64 @@ def _materialize_scaling_case(
     return {"bones": target_bones, "materials": target_materials}
 
 
+def _scaling_operation_callbacks(
+    coordinator: Any,
+    morph_presenter: Any,
+    root: str,
+    morph_count: int,
+) -> Dict[str, tuple[Callable[[int], None], Callable[[int], None]]]:
+    """Build the two fixed Morph operations for one isolated scene state."""
+
+    snapshot_holder: Dict[str, Any] = {"value": None}
+
+    def snapshot_action(_index: int) -> None:
+        snapshot_holder["value"] = coordinator.read_morph_authoring_snapshot(root)
+
+    def snapshot_oracle(_index: int) -> None:
+        snapshot = snapshot_holder.get("value")
+        if snapshot is None or snapshot.spec is None:
+            raise AssertionError("Morph snapshot oracle was not produced")
+        if len(snapshot.spec.morphs) != morph_count:
+            raise AssertionError("Morph snapshot changed the fixed Morph count")
+        if len(snapshot.projection.morphs) != morph_count:
+            raise AssertionError("Morph projection changed the fixed Morph count")
+
+    def refresh_action(_index: int) -> None:
+        morph_presenter.load_morphs()
+
+    def refresh_oracle(_index: int) -> None:
+        authoring_spec = getattr(morph_presenter, "_authoring_spec", None)
+        if authoring_spec is None or len(authoring_spec.morphs) != morph_count:
+            raise AssertionError("Morph refresh did not publish the fixed Morph count")
+
+    return {
+        "snapshot": (snapshot_action, snapshot_oracle),
+        "refresh": (refresh_action, refresh_oracle),
+    }
+
+
+def _run_scaling_warmup(
+    operations: Dict[str, tuple[Callable[[int], None], Callable[[int], None]]],
+    recorder: _CallRecorder,
+) -> None:
+    """Run one unmeasured warmup pass covering both scaling operations."""
+
+    for name in SCALING_OPERATIONS:
+        callback, oracle = operations[name]
+        recorder.begin()
+        error: Optional[Exception] = None
+        try:
+            callback(0)
+            _safe_process_events()
+            oracle(0)
+        except Exception as exc:
+            error = exc
+        finally:
+            recorder.end()
+        if error is not None:
+            raise RuntimeError(f"{name} warmup failed: {type(error).__name__}: {error}") from error
+
+
 def _run_scaling_gate(
     *,
     cmds: Any,
@@ -908,14 +981,22 @@ def _run_scaling_gate(
     iterations: int,
     warmup: int,
 ) -> Dict[str, Any]:
-    """Run the dedicated expanded-scene Morph snapshot/refresh gate."""
+    """Run the expanded-scene Morph gate with one global warmup pass."""
+
+    del warmup
 
     gate: Dict[str, Any] = {
         "status": "not_run",
         "fixture_role": "expanded_scaling_scene",
         "expected_case_names": [case["name"] for case in SCALING_CASES],
+        "measurement_order": list(SCALING_MEASUREMENT_ORDER),
         "operations": list(SCALING_OPERATIONS),
-        "p95_tolerance_ms": dict(SCALING_P95_TOLERANCE_MS),
+        "p95_absolute_limit_ms": dict(SCALING_P95_ABSOLUTE_LIMIT_MS),
+        "warmup": {
+            "passes": 0,
+            "case": SCALING_MEASUREMENT_ORDER[0],
+            "operations": list(SCALING_OPERATIONS),
+        },
         "baseline_counts": {
             "bones": base_statistics["bones"],
             "materials": base_statistics["materials"],
@@ -931,75 +1012,68 @@ def _run_scaling_gate(
                 "scaling fixture is below the dedicated performance envelope: "
                 f"vertices={base_statistics['vertices']} bones={base_statistics['bones']}"
             )
-        current_bones = base_statistics["bones"]
-        current_materials = base_statistics["materials"]
-        for configuration in SCALING_CASES:
-            targets = _materialize_scaling_case(
-                cmds,
-                root,
-                coordinator,
-                adapter,
-                current_bones=current_bones,
-                current_materials=current_materials,
-                base_bones=base_statistics["bones"],
-                base_bone_index=base_statistics["bone_index_limit"],
-                base_materials=base_statistics["materials"],
-                bone_multiplier=configuration["bone_multiplier"],
-                material_multiplier=configuration["material_multiplier"],
-            )
-            current_bones = targets["bones"]
-            current_materials = targets["materials"]
-            actual_spec = coordinator.read_spec(root)
-            counts = {
-                "bones": len(actual_spec.bones),
-                "materials": len(actual_spec.materials),
-                "morphs": len(actual_spec.morphs),
-            }
-            snapshot_holder: Dict[str, Any] = {"value": None}
-
-            def snapshot_action(_index: int) -> None:
-                snapshot_holder["value"] = coordinator.read_morph_authoring_snapshot(root)
-
-            def snapshot_oracle(_index: int) -> None:
-                snapshot = snapshot_holder.get("value")
-                if snapshot is None or snapshot.spec is None:
-                    raise AssertionError("Morph snapshot oracle was not produced")
-                if len(snapshot.spec.morphs) != base_statistics["morphs"]:
-                    raise AssertionError("Morph snapshot changed the fixed Morph count")
-                if len(snapshot.projection.morphs) != base_statistics["morphs"]:
-                    raise AssertionError("Morph projection changed the fixed Morph count")
-
-            def refresh_action(_index: int) -> None:
+        with tempfile.TemporaryDirectory(prefix="mmd_authoring_scaling_") as temp_dir:
+            base_scene = Path(temp_dir) / "base.ma"
+            cmds.file(saveAs=str(base_scene), force=True, type="mayaAscii")
+            for configuration in reversed(SCALING_CASES):
+                cmds.file(str(base_scene), open=True, force=True)
+                current_root = _full_node(cmds, root)
+                morph_presenter.app_state.current_model_root = current_root
+                _materialize_scaling_case(
+                    cmds,
+                    current_root,
+                    coordinator,
+                    adapter,
+                    current_bones=base_statistics["bones"],
+                    current_materials=base_statistics["materials"],
+                    base_bones=base_statistics["bones"],
+                    base_bone_index=base_statistics["bone_index_limit"],
+                    base_materials=base_statistics["materials"],
+                    bone_multiplier=configuration["bone_multiplier"],
+                    material_multiplier=configuration["material_multiplier"],
+                )
+                actual_spec = coordinator.read_spec(current_root)
+                counts = {
+                    "bones": len(actual_spec.bones),
+                    "materials": len(actual_spec.materials),
+                    "morphs": len(actual_spec.morphs),
+                }
                 morph_presenter.load_morphs()
-
-            def refresh_oracle(_index: int) -> None:
-                authoring_spec = getattr(morph_presenter, "_authoring_spec", None)
-                if authoring_spec is None or len(authoring_spec.morphs) != base_statistics["morphs"]:
-                    raise AssertionError("Morph refresh did not publish the fixed Morph count")
-
-            operations = {
-                "snapshot": _measure_scaling_operation(
-                    "snapshot", snapshot_action, snapshot_oracle, recorder, cmds, iterations, warmup
-                ),
-                "refresh": _measure_scaling_operation(
-                    "refresh", refresh_action, refresh_oracle, recorder, cmds, iterations, warmup
-                ),
-            }
-            case = {
-                "name": configuration["name"],
-                "target_multipliers": {
-                    "bones": configuration["bone_multiplier"],
-                    "materials": configuration["material_multiplier"],
-                },
-                "counts": counts,
-                "operations": operations,
-                "status": "pass",
-            }
-            if counts["morphs"] != base_statistics["morphs"]:
-                case["status"] = "failed"
-            if any(operation["status"] != "pass" for operation in operations.values()):
-                case["status"] = "failed"
-            gate["cases"].append(case)
+                operations = _scaling_operation_callbacks(
+                    coordinator,
+                    morph_presenter,
+                    current_root,
+                    base_statistics["morphs"],
+                )
+                if gate["warmup"]["passes"] == 0:
+                    _run_scaling_warmup(operations, recorder)
+                    gate["warmup"]["passes"] = 1
+                measurements = {
+                    name: _measure_scaling_operation(
+                        name,
+                        *operations[name],
+                        recorder,
+                        cmds,
+                        iterations,
+                        0,
+                    )
+                    for name in SCALING_OPERATIONS
+                }
+                case = {
+                    "name": configuration["name"],
+                    "target_multipliers": {
+                        "bones": configuration["bone_multiplier"],
+                        "materials": configuration["material_multiplier"],
+                    },
+                    "counts": counts,
+                    "operations": measurements,
+                    "status": "pass",
+                }
+                if counts["morphs"] != base_statistics["morphs"]:
+                    case["status"] = "failed"
+                if any(operation["status"] != "pass" for operation in measurements.values()):
+                    case["status"] = "failed"
+                gate["cases"].append(case)
         gate["status"] = "measured"
         return evaluate_scaling_gate(gate)
     except Exception as exc:
@@ -1046,8 +1120,14 @@ def run_probe(
             "status": "not_run",
             "fixture_role": "expanded_scaling_scene",
             "expected_case_names": [case["name"] for case in SCALING_CASES],
+            "measurement_order": list(SCALING_MEASUREMENT_ORDER),
             "operations": list(SCALING_OPERATIONS),
-            "p95_tolerance_ms": dict(SCALING_P95_TOLERANCE_MS),
+            "p95_absolute_limit_ms": dict(SCALING_P95_ABSOLUTE_LIMIT_MS),
+            "warmup": {
+                "passes": 0,
+                "case": SCALING_MEASUREMENT_ORDER[0],
+                "operations": list(SCALING_OPERATIONS),
+            },
             "errors": ["scaling gate has not run yet"],
             "cases": [],
         },
@@ -1385,8 +1465,14 @@ def main() -> int:
                 "status": gate_status,
                 "fixture_role": "expanded_scaling_scene",
                 "expected_case_names": [case["name"] for case in SCALING_CASES],
+                "measurement_order": list(SCALING_MEASUREMENT_ORDER),
                 "operations": list(SCALING_OPERATIONS),
-                "p95_tolerance_ms": dict(SCALING_P95_TOLERANCE_MS),
+                "p95_absolute_limit_ms": dict(SCALING_P95_ABSOLUTE_LIMIT_MS),
+                "warmup": {
+                    "passes": 0,
+                    "case": SCALING_MEASUREMENT_ORDER[0],
+                    "operations": list(SCALING_OPERATIONS),
+                },
                 "cases": [],
                 "errors": [f"real-Maya scaling gate {gate_status}: {type(exc).__name__}: {exc}"],
             },

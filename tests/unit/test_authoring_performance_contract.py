@@ -13,6 +13,8 @@ from tools.authoring_performance_contract import (
     evaluate_scaling_gate,
     narrow_contract_errors,
     summarize_calls,
+    SCALING_MEASUREMENT_ORDER,
+    SCALING_P95_ABSOLUTE_LIMIT_MS,
 )
 
 
@@ -243,9 +245,15 @@ def _valid_scaling_gate():
     return {
         "status": "measured",
         "expected_case_names": [configuration["name"] for configuration in SCALING_CASES],
+        "measurement_order": list(SCALING_MEASUREMENT_ORDER),
         "baseline_counts": {"bones": 118, "materials": 1, "morphs": 1},
         "baseline_morph_count": 1,
-        "p95_tolerance_ms": {"snapshot": 250.0, "refresh": 250.0},
+        "p95_absolute_limit_ms": dict(SCALING_P95_ABSOLUTE_LIMIT_MS),
+        "warmup": {
+            "passes": 1,
+            "case": SCALING_MEASUREMENT_ORDER[0],
+            "operations": list(SCALING_OPERATIONS),
+        },
         "cases": cases,
     }
 
@@ -284,16 +292,16 @@ def test_scaling_gate_rejects_nonconstant_calls_and_aggregate_scans():
     assert any("aggregate Bone/Material scan" in error for error in result["errors"])
 
 
-def test_scaling_gate_rejects_missing_oracle_and_p95_tolerance_breach():
+def test_scaling_gate_rejects_missing_oracle_and_absolute_p95_breach():
     gate = _valid_scaling_gate()
     gate["cases"][0]["operations"]["refresh"]["oracle_status"] = "missing"
-    gate["cases"][-1]["operations"]["snapshot"]["timing_ns"]["p95_ns"] = 400_000_000
+    gate["cases"][-1]["operations"]["snapshot"]["timing_ns"]["p95_ns"] = 1_100_000_000
 
     result = evaluate_scaling_gate(gate)
 
     assert result["status"] == "failed"
     assert any("oracle is missing or failed" in error for error in result["errors"])
-    assert any("p95" in error and "baseline tolerance" in error for error in result["errors"])
+    assert any("p95" in error and "absolute limit" in error for error in result["errors"])
 
 
 def test_scaling_gate_rejects_morph_count_growth():
