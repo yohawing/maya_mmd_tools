@@ -27,7 +27,7 @@ from ...core.morph_read_projection import (
 )
 from ...core.morph_topology import MorphTopologyInspection
 from ...core.model_authoring_spec import MmdMorphSpec
-from ..qt_compat import Qt, QTimer, QListWidgetItem
+from ..qt_compat import QApplication, Qt, QTimer, QListWidgetItem
 from .list_presenter_helpers import (
     apply_list_filter,
     format_indexed_name_label,
@@ -133,8 +133,14 @@ class MorphPresenter:
         self._set_authoring_available()
 
         # 既に選択されているモデルがある場合はロード
-        if self.app_state.current_model_root:
+        if self.app_state.current_model_root and self._has_qt_event_loop():
             QTimer.singleShot(100, self._load_initial_morphs)
+
+    @staticmethod
+    def _has_qt_event_loop():
+        """Return whether Qt can queue the constructor's deferred load."""
+        instance = getattr(QApplication, "instance", None)
+        return callable(instance) and instance() is not None
 
     def connect_signals(self):
         # ApplicationStateのシグナル
@@ -1052,9 +1058,10 @@ class MorphPresenter:
             "morph_node": morph.binding_identity,
             "_pmx_type_raw": True,
         }
-        if self._morph_controller:
+        morph_controller = getattr(self, "_morph_controller", None)
+        if morph_controller:
             data["runtime_targets"] = (
-                f"{self._morph_controller}.inputWeight[{morph.index}]",
+                f"{morph_controller}.inputWeight[{morph.index}]",
             )
         self.morph_data[key] = data
         capability = bool(morph.binding_identity) and project_runtime_capabilities(
@@ -1069,7 +1076,10 @@ class MorphPresenter:
             {},
             (),
         )[0]
-        self._morph_capability_cache[id(data)] = capability
+        morph_capability_cache = getattr(self, "_morph_capability_cache", None)
+        if morph_capability_cache is None:
+            morph_capability_cache = self._morph_capability_cache = {}
+        morph_capability_cache[id(data)] = capability
         self._authoring_morphs_by_index[morph.index] = morph
         if self._authoring_spec is not None:
             self._authoring_spec = replace(
@@ -1186,12 +1196,13 @@ class MorphPresenter:
             new_index,
             old_index,
         )
-        if self._morph_controller:
+        morph_controller = getattr(self, "_morph_controller", None)
+        if morph_controller:
             self.morph_data[first_key]["runtime_targets"] = (
-                f"{self._morph_controller}.inputWeight[{new_index}]",
+                f"{morph_controller}.inputWeight[{new_index}]",
             )
             self.morph_data[second_key]["runtime_targets"] = (
-                f"{self._morph_controller}.inputWeight[{old_index}]",
+                f"{morph_controller}.inputWeight[{old_index}]",
             )
         self._update_morph_row_order(first_key, second_key)
 
