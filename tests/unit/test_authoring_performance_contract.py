@@ -2,10 +2,14 @@
 
 from tools.authoring_performance_contract import (
     MAX_ADAPTER_CALLS,
+    SCALING_CASES,
+    SCALING_OPERATIONS,
     _CallRecorder,
     adapter_call_scope,
     case_limit_errors,
+    count_distribution,
     distribution,
+    evaluate_scaling_gate,
     narrow_contract_errors,
     summarize_calls,
 )
@@ -30,6 +34,35 @@ def test_adapter_scope_distinguishes_targeted_and_broad_queries():
 
     assert targeted == {"tokens": ["|root|shader"], "broad_collection": False}
     assert broad == {"tokens": ["*_root"], "broad_collection": True}
+
+
+def test_summarize_calls_marks_bone_and_material_aggregate_scans():
+    result = summarize_calls(
+        [
+            {
+                "category": "adapter",
+                "method": "list_relatives",
+                "args": ("|root",),
+                "kwargs": {"allDescendents": True, "type": "joint"},
+                "node_tokens": ["|root"],
+            },
+            {
+                "category": "adapter",
+                "method": "list_connections",
+                "args": ("|root_registry.materialMembers",),
+                "kwargs": {"source": True},
+                "node_tokens": ["|root_registry.materialMembers"],
+            },
+        ],
+        allowed_nodes={"|root"},
+        created_nodes=(),
+        known_nodes={"|root"},
+    )
+
+    assert result["aggregate_scan_calls"] == [
+        {"kind": "bone", "method": "list_relatives"},
+        {"kind": "material", "method": "list_connections"},
+    ]
 
 
 def test_summarize_calls_reports_read_spec_and_unexpected_nodes():
@@ -142,3 +175,125 @@ def test_case_limits_fail_closed_on_time_or_call_regression():
         "p95 1600.000 ms exceeds 1500.000 ms budget",
         "adapter calls 276 exceed 275 budget",
     ]
+
+
+def _valid_scaling_gate():
+    cases = []
+    for index, configuration in enumerate(SCALING_CASES):
+        operations = {}
+        for operation in SCALING_OPERATIONS:
+            samples = [
+                {
+                    "warmup": False,
+                    "status": "measured",
+                    "oracle_status": "pass",
+                    "adapter_call_count": 4,
+                    "adapter_calls_by_method": {"get_attr": 2, "list_connections": 2},
+                }
+                for _sample in range(3)
+            ]
+            timing = distribution([100_000_000, 110_000_000, 120_000_000])
+            operations[operation] = {
+                "status": "pass",
+                "oracle_status": "pass",
+                "warnings": [],
+                "timing_ns": timing,
+                "adapter_call_counts": count_distribution([4, 4, 4]),
+                "adapter_method_histogram": {"get_attr": 6, "list_connections": 6},
+                "aggregate_scan_calls": [],
+                "read_spec_calls": 0,
+                "samples": samples,
+            }
+        cases.append(
+            {
+                "name": configuration["name"],
+                "status": "pass",
+                "target_multipliers": {
+                    "bones": configuration["bone_multiplier"],
+                    "materials": configuration["material_multiplier"],
+                },
+                "counts": {
+                    "bones": 118 * configuration["bone_multiplier"],
+                    "materials": configuration["material_multiplier"],
+                    "morphs": 1,
+                },
+                "operations": operations,
+            }
+        )
+    return {
+        "status": "measured",
+        "expected_case_names": [configuration["name"] for configuration in SCALING_CASES],
+        "baseline_counts": {"bones": 118, "materials": 1, "morphs": 1},
+        "baseline_morph_count": 1,
+        "p95_tolerance_ms": {"snapshot": 250.0, "refresh": 250.0},
+        "cases": cases,
+    }
+
+
+def test_count_distribution_reports_call_count_p50_and_p95():
+    result = count_distribution([5, 1, 4, 2, 3])
+
+    assert result == {
+        "count": 5,
+        "min": 1,
+        "p50": 3,
+        "p95": 5,
+        "max": 5,
+        "status": "measured",
+    }
+
+
+def test_scaling_gate_requires_fixed_morphs_and_accepts_controlled_growth():
+    result = evaluate_scaling_gate(_valid_scaling_gate())
+
+    assert result["status"] == "pass"
+    assert result["errors"] == []
+
+
+def test_scaling_gate_rejects_nonconstant_calls_and_aggregate_scans():
+    gate = _valid_scaling_gate()
+    gate["cases"][1]["operations"]["snapshot"]["samples"][2]["adapter_call_count"] = 5
+    gate["cases"][2]["operations"]["refresh"]["aggregate_scan_calls"] = [
+        {"kind": "bone", "method": "list_relatives"}
+    ]
+
+    result = evaluate_scaling_gate(gate)
+
+    assert result["status"] == "failed"
+    assert any("call count is not constant" in error for error in result["errors"])
+    assert any("aggregate Bone/Material scan" in error for error in result["errors"])
+
+
+def test_scaling_gate_rejects_missing_oracle_and_p95_tolerance_breach():
+    gate = _valid_scaling_gate()
+    gate["cases"][0]["operations"]["refresh"]["oracle_status"] = "missing"
+    gate["cases"][-1]["operations"]["snapshot"]["timing_ns"]["p95_ns"] = 400_000_000
+
+    result = evaluate_scaling_gate(gate)
+
+    assert result["status"] == "failed"
+    assert any("oracle is missing or failed" in error for error in result["errors"])
+    assert any("p95" in error and "baseline tolerance" in error for error in result["errors"])
+
+
+def test_scaling_gate_rejects_morph_count_growth():
+    gate = _valid_scaling_gate()
+    gate["cases"][-1]["counts"]["morphs"] = 2
+
+    result = evaluate_scaling_gate(gate)
+
+    assert result["status"] == "failed"
+    assert any("changed Morph count" in error for error in result["errors"])
+
+
+def test_scaling_gate_rejects_not_run_report():
+    result = evaluate_scaling_gate(
+        {
+            "status": "not_run",
+            "expected_case_names": [configuration["name"] for configuration in SCALING_CASES],
+            "cases": [],
+        }
+    )
+
+    assert result["status"] == "failed"
+    assert any("not passable" in error for error in result["errors"])

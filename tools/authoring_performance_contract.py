@@ -5,13 +5,15 @@ Inside Maya, production presenters operate on the largest deterministic
 authoring fixture in ``tests/data`` while this tool temporarily records the
 coordinator and :class:`MayaCmdsAdapter` calls.  Product code is not
 instrumented and the report does not claim a speedup; it is a before-refactor
-baseline plus a fail-closed read/write scope contract.
+baseline plus a fail-closed read/write scope contract.  The dedicated scaling
+gate expands only Bone and Material bindings around the fixed Morph seed.
 """
 
 from __future__ import annotations
 
 import argparse
 from collections import Counter
+from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
@@ -28,7 +30,30 @@ DEFAULT_OUT_DIR = PROJECT_ROOT / "build" / "reports" / "authoring_performance_co
 DEFAULT_TEXTURE = PROJECT_ROOT / "tests" / "data" / "tex" / "diffuse.png"
 COMMAND_PORT = 7765
 COMPLETION_MARKER = "//-- AUTHORING_PERFORMANCE_CONTRACT_DONE --//"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# The scaling gate uses a separate, deliberately expanded scene envelope.  The
+# imported PMX remains the deterministic geometry/morph seed, while the Maya
+# probe adds owned Bone and Material bindings between cases.  This keeps the
+# Morph population fixed and makes growth in unrelated aggregates observable.
+SCALING_CASES = (
+    {"name": "base", "bone_multiplier": 1, "material_multiplier": 1},
+    {"name": "bone_2x", "bone_multiplier": 2, "material_multiplier": 1},
+    {
+        "name": "bone_2x_material_2x",
+        "bone_multiplier": 2,
+        "material_multiplier": 2,
+    },
+    {
+        "name": "bone_4x_material_4x",
+        "bone_multiplier": 4,
+        "material_multiplier": 4,
+    },
+)
+SCALING_OPERATIONS = ("snapshot", "refresh")
+SCALING_P95_TOLERANCE_MS = {"snapshot": 250.0, "refresh": 250.0}
+SCALING_MIN_VERTICES = 8_000
+SCALING_MIN_BONES = 100
 
 NARROW_ACTIONS = frozenset(
     {
@@ -158,6 +183,27 @@ def distribution(samples_ns: Sequence[int]) -> Dict[str, Any]:
     }
 
 
+def count_distribution(samples: Sequence[int]) -> Dict[str, Any]:
+    """Return nearest-rank metadata for integer call-count observations."""
+
+    ordered = sorted(int(value) for value in samples)
+    if not ordered:
+        return {"count": 0, "status": "not_observed"}
+
+    def percentile(percent: float) -> int:
+        index = max(0, min(len(ordered) - 1, math.ceil(percent * len(ordered)) - 1))
+        return ordered[index]
+
+    return {
+        "count": len(ordered),
+        "min": ordered[0],
+        "p50": percentile(0.50),
+        "p95": percentile(0.95),
+        "max": ordered[-1],
+        "status": "measured",
+    }
+
+
 def _iter_strings(value: Any) -> Iterable[str]:
     if isinstance(value, str):
         yield value
@@ -186,6 +232,23 @@ def adapter_call_scope(method: str, args: Sequence[Any], kwargs: Dict[str, Any])
     elif method == "list_relatives":
         broad = bool(kwargs.get("allDescendents"))
     return {"tokens": tokens, "broad_collection": broad}
+
+
+def aggregate_scan_kind(method: str, args: Sequence[Any], kwargs: Dict[str, Any]) -> Optional[str]:
+    """Classify aggregate Bone/Material enumeration calls in a sample."""
+
+    if method == "list_relatives" and kwargs.get("allDescendents"):
+        if kwargs.get("type") in (None, "joint"):
+            return "bone"
+    if method == "ls" and kwargs.get("type") == "joint":
+        return "bone"
+    for token in adapter_call_scope(method, args, kwargs)["tokens"]:
+        leaf = token.rsplit(".", 1)[-1]
+        if leaf == "materialMembers":
+            return "material"
+        if leaf == "boneMembers":
+            return "bone"
+    return None
 
 
 class _CallRecorder:
@@ -283,6 +346,7 @@ def summarize_calls(
     adapter_counts: Counter[str] = Counter()
     collection_counts: Counter[str] = Counter()
     broad_collection_calls: List[str] = []
+    aggregate_scan_calls: List[Dict[str, str]] = []
     touched: Set[str] = set()
     read_spec_calls = 0
     presenter_calls: Counter[str] = Counter()
@@ -300,6 +364,9 @@ def summarize_calls(
                 collection_counts[method] += 1
             if scope["broad_collection"]:
                 broad_collection_calls.append(method)
+            aggregate_kind = aggregate_scan_kind(method, call.get("args", ()), call.get("kwargs", {}))
+            if aggregate_kind is not None:
+                aggregate_scan_calls.append({"kind": aggregate_kind, "method": method})
             for token in call.get("node_tokens", ()):
                 resolved = _canonical_snapshot_node(token, known_nodes)
                 if resolved:
@@ -311,6 +378,7 @@ def summarize_calls(
         "adapter_calls_by_method": dict(sorted(adapter_counts.items())),
         "collection_calls_by_method": dict(sorted(collection_counts.items())),
         "broad_collection_calls": broad_collection_calls,
+        "aggregate_scan_calls": aggregate_scan_calls,
         "presenter_calls_by_method": dict(sorted(presenter_calls.items())),
         "touched_nodes": sorted(touched),
         "created_nodes": sorted(created),
@@ -346,6 +414,196 @@ def case_limit_errors(name: str, timing: Dict[str, Any], max_adapter_calls: int)
     if max_adapter_calls > call_budget:
         errors.append(f"adapter calls {max_adapter_calls} exceed {call_budget} budget")
     return errors
+
+
+def _milliseconds(timing: Dict[str, Any], key: str = "p95_ns") -> Optional[float]:
+    value = timing.get(key)
+    if not isinstance(value, (int, float)):
+        return None
+    return float(value) / 1_000_000.0
+
+
+def scaling_gate_errors(gate: Dict[str, Any]) -> List[str]:
+    """Return mechanical, fail-closed errors for a scaling gate report."""
+
+    if not isinstance(gate, dict):
+        return ["scaling gate report is missing"]
+    errors: List[str] = []
+    status = gate.get("status")
+    if status in {"not_run", "timeout", "warning"}:
+        errors.append(f"scaling gate status {status!r} is not passable")
+    elif status not in {"measured", "pass", "failed", "error"}:
+        errors.append("scaling gate status is missing or invalid")
+
+    expected_names = gate.get("expected_case_names")
+    if not isinstance(expected_names, list) or not expected_names:
+        expected_names = [case["name"] for case in SCALING_CASES]
+    cases = gate.get("cases")
+    if not isinstance(cases, list) or not cases:
+        return errors + ["scaling gate has no measured cases"]
+    by_name = {case.get("name"): case for case in cases if isinstance(case, dict)}
+    for name in expected_names:
+        if name not in by_name:
+            errors.append(f"scaling case {name!r} is missing")
+    unexpected_names = set(by_name) - set(expected_names)
+    if unexpected_names:
+        errors.append(f"unexpected scaling cases: {sorted(unexpected_names)!r}")
+    if len(by_name) != len(cases):
+        errors.append("scaling case names are missing or duplicated")
+
+    baseline_morph_count = gate.get("baseline_morph_count")
+    baseline_counts = gate.get("baseline_counts")
+    if not isinstance(baseline_counts, dict) or not all(
+        type(baseline_counts.get(key)) is int and baseline_counts[key] >= 0
+        for key in ("bones", "materials", "morphs")
+    ):
+        errors.append("scaling baseline counts are missing or invalid")
+        baseline_counts = {}
+    operation_counts: Dict[str, List[int]] = {name: [] for name in SCALING_OPERATIONS}
+    operation_histograms: Dict[str, List[Any]] = {name: [] for name in SCALING_OPERATIONS}
+    operation_p95: Dict[str, List[tuple[str, float]]] = {name: [] for name in SCALING_OPERATIONS}
+    previous_counts: Optional[Dict[str, int]] = None
+    increased_bones = False
+    increased_materials = False
+
+    for case in cases:
+        if not isinstance(case, dict):
+            errors.append("scaling case entry is not an object")
+            continue
+        case_name = case.get("name", "<unnamed>")
+        if case.get("status") != "pass":
+            errors.append(f"scaling case {case_name!r} did not pass")
+        counts = case.get("counts")
+        if not isinstance(counts, dict):
+            errors.append(f"scaling case {case_name!r} counts are missing")
+            counts = {}
+        if not all(type(counts.get(key)) is int and counts[key] >= 0 for key in ("bones", "materials", "morphs")):
+            errors.append(f"scaling case {case_name!r} counts are invalid")
+        else:
+            if baseline_morph_count is None:
+                baseline_morph_count = counts["morphs"]
+            if counts["morphs"] != baseline_morph_count:
+                errors.append(f"scaling case {case_name!r} changed Morph count")
+            if previous_counts is not None:
+                increased_bones |= counts["bones"] > previous_counts["bones"]
+                increased_materials |= counts["materials"] > previous_counts["materials"]
+            previous_counts = counts
+            multipliers = case.get("target_multipliers")
+            if not isinstance(multipliers, dict) or not all(
+                type(multipliers.get(key)) is int and multipliers[key] >= 1
+                for key in ("bones", "materials")
+            ):
+                errors.append(f"scaling case {case_name!r} target multipliers are missing")
+            elif baseline_counts:
+                expected_bones = baseline_counts["bones"] * multipliers["bones"]
+                expected_materials = baseline_counts["materials"] * multipliers["materials"]
+                if counts["bones"] != expected_bones or counts["materials"] != expected_materials:
+                    errors.append(f"scaling case {case_name!r} counts do not match target multipliers")
+
+        operations = case.get("operations")
+        if not isinstance(operations, dict):
+            errors.append(f"scaling case {case_name!r} operations are missing")
+            continue
+        for operation in SCALING_OPERATIONS:
+            result = operations.get(operation)
+            if not isinstance(result, dict):
+                errors.append(f"{case_name}/{operation} measurement is missing")
+                continue
+            if result.get("status") != "pass":
+                errors.append(f"{case_name}/{operation} did not pass")
+            if result.get("oracle_status") != "pass":
+                errors.append(f"{case_name}/{operation} oracle is missing or failed")
+            if result.get("warnings"):
+                errors.append(f"{case_name}/{operation} contains warnings")
+            timing = result.get("timing_ns")
+            if not isinstance(timing, dict) or timing.get("status") != "measured":
+                errors.append(f"{case_name}/{operation} timing measurement is missing")
+            else:
+                p95_ms = _milliseconds(timing)
+                if p95_ms is None or _milliseconds(timing, "p50_ns") is None:
+                    errors.append(f"{case_name}/{operation} p50/p95 measurement is missing")
+                else:
+                    operation_p95[operation].append((case_name, p95_ms))
+            samples = result.get("samples")
+            if not isinstance(samples, list) or not samples:
+                errors.append(f"{case_name}/{operation} samples are missing")
+                continue
+            measured = [sample for sample in samples if isinstance(sample, dict) and not sample.get("warmup")]
+            if not measured or any(sample.get("status") != "measured" for sample in measured):
+                errors.append(f"{case_name}/{operation} has missing or failed measurements")
+            if not measured or any(sample.get("oracle_status") != "pass" for sample in measured):
+                errors.append(f"{case_name}/{operation} sample oracle is missing or failed")
+            call_values = [sample.get("adapter_call_count") for sample in measured]
+            if not call_values or any(type(value) is not int for value in call_values):
+                errors.append(f"{case_name}/{operation} adapter call counts are missing")
+            else:
+                operation_counts[operation].extend(call_values)
+                if len(set(call_values)) != 1:
+                    errors.append(f"{case_name}/{operation} adapter call count is not constant")
+            histograms = [sample.get("adapter_calls_by_method") for sample in measured]
+            if not histograms or any(not isinstance(histogram, dict) for histogram in histograms):
+                errors.append(f"{case_name}/{operation} adapter method histogram is missing")
+            else:
+                operation_histograms[operation].extend(histograms)
+            if not isinstance(result.get("adapter_method_histogram"), dict):
+                errors.append(f"{case_name}/{operation} aggregate adapter method histogram is missing")
+            call_distribution = result.get("adapter_call_counts")
+            if not isinstance(call_distribution, dict) or call_distribution.get("status") != "measured":
+                errors.append(f"{case_name}/{operation} call-count distribution is missing")
+            aggregate_scans = result.get("aggregate_scan_calls")
+            if not isinstance(aggregate_scans, list):
+                errors.append(f"{case_name}/{operation} aggregate scan observation is missing")
+                aggregate_scans = []
+            if aggregate_scans:
+                errors.append(f"{case_name}/{operation} performed an aggregate Bone/Material scan")
+            if type(result.get("read_spec_calls")) is not int:
+                errors.append(f"{case_name}/{operation} read_spec observation is missing")
+            elif result.get("read_spec_calls"):
+                errors.append(f"{case_name}/{operation} called full coordinator.read_spec")
+
+    if not increased_bones:
+        errors.append("scaling cases never increase Bone count")
+    if not increased_materials:
+        errors.append("scaling cases never increase Material count")
+
+    for operation, values in operation_counts.items():
+        if not values:
+            errors.append(f"{operation} has no adapter call measurements")
+        elif len(set(values)) != 1:
+            errors.append(f"{operation} adapter call count is not constant across scaling cases")
+    for operation, histograms in operation_histograms.items():
+        if histograms and any(histogram != histograms[0] for histogram in histograms[1:]):
+            errors.append(f"{operation} adapter method histogram is not constant across scaling cases")
+    tolerance_config = gate.get("p95_tolerance_ms", SCALING_P95_TOLERANCE_MS)
+    if not isinstance(tolerance_config, dict):
+        errors.append("p95 tolerance configuration is missing")
+        tolerance_config = {}
+    for operation, observations in operation_p95.items():
+        if not observations:
+            errors.append(f"{operation} has no p95 observations")
+            continue
+        tolerance = tolerance_config.get(operation)
+        if not isinstance(tolerance, (int, float)) or tolerance < 0:
+            errors.append(f"{operation} p95 tolerance is missing or invalid")
+            continue
+        baseline = observations[0][1]
+        for case_name, observed in observations[1:]:
+            if observed - baseline > float(tolerance):
+                errors.append(
+                    f"{case_name}/{operation} p95 {observed:.3f} ms exceeds baseline tolerance "
+                    f"{float(tolerance):.3f} ms"
+                )
+    return errors
+
+
+def evaluate_scaling_gate(gate: Dict[str, Any]) -> Dict[str, Any]:
+    """Evaluate and return a structured status for one scaling gate report."""
+
+    errors = scaling_gate_errors(gate)
+    result = dict(gate)
+    result["errors"] = list(errors)
+    result["status"] = "pass" if not errors else "failed"
+    return result
 
 
 def _safe_process_events() -> None:
@@ -388,6 +646,7 @@ def _model_statistics(cmds: Any, root: str, spec: Any) -> Dict[str, int]:
         "vertices": sum(int(cmds.polyEvaluate(shape, vertex=True) or 0) for shape in shapes),
         "materials": len(spec.materials),
         "bones": len(spec.bones),
+        "bone_index_limit": max((bone.index for bone in spec.bones), default=-1) + 1,
         "morphs": len(spec.morphs),
         "display_frames": len(display_frames),
     }
@@ -472,9 +731,285 @@ def _measure_action(
     }
 
 
+def _measure_scaling_operation(
+    name: str,
+    callback: Callable[[int], None],
+    oracle: Optional[Callable[[int], None]],
+    recorder: _CallRecorder,
+    cmds: Any,
+    iterations: int,
+    warmup: int,
+) -> Dict[str, Any]:
+    """Measure one Morph snapshot/refresh operation for a scaling case."""
+
+    rows: List[Dict[str, Any]] = []
+    for index in range(warmup + iterations):
+        before_nodes = set(str(item) for item in (cmds.ls(long=True) or []))
+        recorder.begin()
+        started = time.perf_counter_ns()
+        error: Optional[str] = None
+        oracle_status = "missing"
+        try:
+            callback(index)
+            _safe_process_events()
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+        elapsed = time.perf_counter_ns() - started
+        calls = recorder.end()
+        if error is None and oracle is not None:
+            try:
+                oracle(index)
+                oracle_status = "pass"
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                oracle_status = "failed"
+        after_nodes = set(str(item) for item in (cmds.ls(long=True) or []))
+        summary = summarize_calls(
+            calls,
+            allowed_nodes=set(),
+            created_nodes=after_nodes - before_nodes,
+            known_nodes=before_nodes | after_nodes,
+        )
+        contract_errors = []
+        if summary["aggregate_scan_calls"]:
+            contract_errors.append("Morph operation performed an aggregate Bone/Material scan")
+        if summary["read_spec_calls"]:
+            contract_errors.append("Morph operation called coordinator.read_spec")
+        rows.append(
+            {
+                "index": index,
+                "warmup": index < warmup,
+                "elapsed_ns": elapsed,
+                "status": "failed" if error or contract_errors else "measured",
+                "oracle_status": oracle_status,
+                "error": error,
+                "contract_errors": contract_errors,
+                **summary,
+            }
+        )
+
+    measured = [row for row in rows if not row["warmup"]]
+    timing = distribution([row["elapsed_ns"] for row in measured])
+    call_values = [row["adapter_call_count"] for row in measured]
+    method_histogram: Counter[str] = Counter()
+    for row in measured:
+        method_histogram.update(row["adapter_calls_by_method"])
+    failures = [row for row in measured if row["status"] != "measured"]
+    if len(set(call_values)) > 1:
+        failures.append({"error": "adapter call count is not constant"})
+    if not measured:
+        failures.append({"error": "no measured samples"})
+    if oracle is None:
+        failures.append({"error": "oracle is missing"})
+    return {
+        "name": name,
+        "status": "pass" if not failures else "failed",
+        "iterations": iterations,
+        "warmup": warmup,
+        "oracle_status": "pass" if measured and all(row["oracle_status"] == "pass" for row in measured) else "failed",
+        "warnings": [],
+        "timing_ns": timing,
+        "p50_ms": None if timing["status"] != "measured" else round(float(timing["p50_ns"]) / 1_000_000.0, 3),
+        "p95_ms": None if timing["status"] != "measured" else round(float(timing["p95_ns"]) / 1_000_000.0, 3),
+        "adapter_call_counts": count_distribution(call_values),
+        "adapter_method_histogram": dict(sorted(method_histogram.items())),
+        "aggregate_scan_calls": [
+            scan
+            for row in measured
+            for scan in row["aggregate_scan_calls"]
+        ],
+        "read_spec_calls": sum(row["read_spec_calls"] for row in measured),
+        "failures": len(failures),
+        "samples": rows,
+    }
+
+
+def _add_scaling_bones(
+    cmds: Any,
+    root: str,
+    adapter: Any,
+    first_index: int,
+    count: int,
+) -> None:
+    """Add simple owned joints without changing the imported Morph graph."""
+
+    if count <= 0:
+        return
+    from mmd_tools.adapters.maya_bone_authoring import register_existing_joints
+    from mmd_tools.core.model_authoring_spec import MmdBoneSpec
+
+    bones = []
+    for index in range(first_index, first_index + count):
+        joint = cmds.createNode(
+            "joint",
+            name=f"mmdAuthoringPerfBone_{index}",
+            parent=root,
+            skipSelect=True,
+        )
+        identity = _full_node(cmds, str(joint))
+        bones.append(
+            MmdBoneSpec(
+                name=f"Authoring Performance Bone {index}",
+                name_english=f"Authoring Performance Bone {index}",
+                index=index,
+                binding_identity=identity,
+            )
+        )
+    register_existing_joints(root, bones, adapter)
+
+
+def _materialize_scaling_case(
+    cmds: Any,
+    root: str,
+    coordinator: Any,
+    adapter: Any,
+    *,
+    current_bones: int,
+    current_materials: int,
+    base_bones: int,
+    base_bone_index: int,
+    base_materials: int,
+    bone_multiplier: int,
+    material_multiplier: int,
+) -> Dict[str, int]:
+    """Grow only Bone/Material aggregates to one controlled target size."""
+
+    target_bones = base_bones * bone_multiplier
+    target_materials = base_materials * material_multiplier
+    if target_materials < current_materials or target_bones < current_bones:
+        raise ValueError("scaling cases must be monotonically increasing")
+    for _index in range(current_materials, target_materials):
+        coordinator.create_material(root)
+    _add_scaling_bones(
+        cmds,
+        root,
+        adapter,
+        first_index=base_bone_index + (current_bones - base_bones),
+        count=target_bones - current_bones,
+    )
+    return {"bones": target_bones, "materials": target_materials}
+
+
+def _run_scaling_gate(
+    *,
+    cmds: Any,
+    root: str,
+    coordinator: Any,
+    morph_presenter: Any,
+    adapter: Any,
+    base_statistics: Dict[str, int],
+    recorder: _CallRecorder,
+    iterations: int,
+    warmup: int,
+) -> Dict[str, Any]:
+    """Run the dedicated expanded-scene Morph snapshot/refresh gate."""
+
+    gate: Dict[str, Any] = {
+        "status": "not_run",
+        "fixture_role": "expanded_scaling_scene",
+        "expected_case_names": [case["name"] for case in SCALING_CASES],
+        "operations": list(SCALING_OPERATIONS),
+        "p95_tolerance_ms": dict(SCALING_P95_TOLERANCE_MS),
+        "baseline_counts": {
+            "bones": base_statistics["bones"],
+            "materials": base_statistics["materials"],
+            "morphs": base_statistics["morphs"],
+        },
+        "baseline_morph_count": base_statistics["morphs"],
+        "cases": [],
+        "errors": [],
+    }
+    try:
+        if base_statistics["vertices"] < SCALING_MIN_VERTICES or base_statistics["bones"] < SCALING_MIN_BONES:
+            raise RuntimeError(
+                "scaling fixture is below the dedicated performance envelope: "
+                f"vertices={base_statistics['vertices']} bones={base_statistics['bones']}"
+            )
+        current_bones = base_statistics["bones"]
+        current_materials = base_statistics["materials"]
+        for configuration in SCALING_CASES:
+            targets = _materialize_scaling_case(
+                cmds,
+                root,
+                coordinator,
+                adapter,
+                current_bones=current_bones,
+                current_materials=current_materials,
+                base_bones=base_statistics["bones"],
+                base_bone_index=base_statistics["bone_index_limit"],
+                base_materials=base_statistics["materials"],
+                bone_multiplier=configuration["bone_multiplier"],
+                material_multiplier=configuration["material_multiplier"],
+            )
+            current_bones = targets["bones"]
+            current_materials = targets["materials"]
+            actual_spec = coordinator.read_spec(root)
+            counts = {
+                "bones": len(actual_spec.bones),
+                "materials": len(actual_spec.materials),
+                "morphs": len(actual_spec.morphs),
+            }
+            snapshot_holder: Dict[str, Any] = {"value": None}
+
+            def snapshot_action(_index: int) -> None:
+                snapshot_holder["value"] = coordinator.read_morph_authoring_snapshot(root)
+
+            def snapshot_oracle(_index: int) -> None:
+                snapshot = snapshot_holder.get("value")
+                if snapshot is None or snapshot.spec is None:
+                    raise AssertionError("Morph snapshot oracle was not produced")
+                if len(snapshot.spec.morphs) != base_statistics["morphs"]:
+                    raise AssertionError("Morph snapshot changed the fixed Morph count")
+                if len(snapshot.projection.morphs) != base_statistics["morphs"]:
+                    raise AssertionError("Morph projection changed the fixed Morph count")
+
+            def refresh_action(_index: int) -> None:
+                morph_presenter.load_morphs()
+
+            def refresh_oracle(_index: int) -> None:
+                authoring_spec = getattr(morph_presenter, "_authoring_spec", None)
+                if authoring_spec is None or len(authoring_spec.morphs) != base_statistics["morphs"]:
+                    raise AssertionError("Morph refresh did not publish the fixed Morph count")
+
+            operations = {
+                "snapshot": _measure_scaling_operation(
+                    "snapshot", snapshot_action, snapshot_oracle, recorder, cmds, iterations, warmup
+                ),
+                "refresh": _measure_scaling_operation(
+                    "refresh", refresh_action, refresh_oracle, recorder, cmds, iterations, warmup
+                ),
+            }
+            case = {
+                "name": configuration["name"],
+                "target_multipliers": {
+                    "bones": configuration["bone_multiplier"],
+                    "materials": configuration["material_multiplier"],
+                },
+                "counts": counts,
+                "operations": operations,
+                "status": "pass",
+            }
+            if counts["morphs"] != base_statistics["morphs"]:
+                case["status"] = "failed"
+            if any(operation["status"] != "pass" for operation in operations.values()):
+                case["status"] = "failed"
+            gate["cases"].append(case)
+        gate["status"] = "measured"
+        return evaluate_scaling_gate(gate)
+    except Exception as exc:
+        gate["status"] = "error"
+        gate["errors"] = [f"{type(exc).__name__}: {exc}"]
+        gate["unrun_cases"] = [case["name"] for case in SCALING_CASES if case["name"] not in {item.get("name") for item in gate["cases"]}]
+        return gate
+
+
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def run_probe(
@@ -496,9 +1031,20 @@ def run_probe(
     report: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "error",
+        "run_id": str(time.time_ns()),
+        "started_at_utc": _utc_timestamp(),
         "maya_version": str(cmds.about(version=True)),
         "fixture": str(Path(model_path).resolve()),
         "cases": [],
+        "scaling_gate": {
+            "status": "not_run",
+            "fixture_role": "expanded_scaling_scene",
+            "expected_case_names": [case["name"] for case in SCALING_CASES],
+            "operations": list(SCALING_OPERATIONS),
+            "p95_tolerance_ms": dict(SCALING_P95_TOLERANCE_MS),
+            "errors": ["scaling gate has not run yet"],
+            "cases": [],
+        },
         "errors": [],
     }
     recorder = _CallRecorder()
@@ -602,6 +1148,7 @@ def run_probe(
             (window.bone_presenter, "load_bones"),
         ):
             recorder.wrap_object(presenter, method, "presenter")
+        recorder.wrap_object(coordinator, "read_morph_authoring_snapshot", "coordinator")
         recorder.wrap_adapter_class(MayaCmdsAdapter)
 
         material_value = {"expected": ""}
@@ -725,10 +1272,23 @@ def run_probe(
                     expected_created,
                 )
             )
+        report["scaling_gate"] = _run_scaling_gate(
+            cmds=cmds,
+            root=root,
+            coordinator=coordinator,
+            morph_presenter=morph_presenter,
+            adapter=window.authoring_composition.cmds_adapter,
+            base_statistics=statistics_row,
+            recorder=recorder,
+            iterations=iterations,
+            warmup=warmup,
+        )
         failed = [case for case in report["cases"] if case["status"] != "pass"]
+        if report["scaling_gate"].get("status") != "pass":
+            failed.append(report["scaling_gate"])
         report["status"] = "failed" if failed else "pass"
         if failed:
-            report["errors"].append("one or more Authoring performance cases failed")
+            report["errors"].append("one or more Authoring performance or scaling cases failed")
     except Exception as exc:
         report["status"] = "error"
         report["errors"].append(f"{type(exc).__name__}: {exc}")
@@ -742,6 +1302,7 @@ def run_probe(
                 _safe_process_events()
         except Exception:
             pass
+        report["finished_at_utc"] = _utc_timestamp()
         _write_json(report_file, report)
         log_file.parent.mkdir(parents=True, exist_ok=True)
         with log_file.open("a", encoding="utf-8") as handle:
@@ -785,23 +1346,47 @@ def main() -> int:
         f"{str(Path(args.texture).resolve().as_posix())!r}, {str(report_path.as_posix())!r}, "
         f"{int(args.iterations)}, {int(args.warmup)}, {int(args.min_vertices)}, {int(args.min_bones)})\n"
     )
-    report = run_maya_e2e(
-        project_root=PROJECT_ROOT,
-        version=args.maya,
-        out_dir=out_dir,
-        port=args.port,
-        timeout=args.timeout,
-        log_path=log_path,
-        report_path=report_path,
-        command=command,
-        marker=COMPLETION_MARKER,
-        send_label="<authoring-performance-contract>",
-        stale_paths=(report_path, log_path),
-        terminate_process=True,
-        quit_delay=3.0,
-        port_error=f"commandPort :{args.port} is already open",
-        report_error=f"authoring performance report missing: {report_path}",
-    )
+    try:
+        report = run_maya_e2e(
+            project_root=PROJECT_ROOT,
+            version=args.maya,
+            out_dir=out_dir,
+            port=args.port,
+            timeout=args.timeout,
+            log_path=log_path,
+            report_path=report_path,
+            command=command,
+            marker=COMPLETION_MARKER,
+            send_label="<authoring-performance-contract>",
+            stale_paths=(report_path, log_path),
+            terminate_process=True,
+            quit_delay=3.0,
+            port_error=f"commandPort :{args.port} is already open",
+            report_error=f"authoring performance report missing: {report_path}",
+        )
+    except Exception as exc:
+        gate_status = "timeout" if isinstance(exc, TimeoutError) else "not_run"
+        report = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "failed",
+            "run_id": str(time.time_ns()),
+            "started_at_utc": _utc_timestamp(),
+            "finished_at_utc": _utc_timestamp(),
+            "maya_version": str(args.maya),
+            "fixture": str(Path(args.model).resolve()),
+            "cases": [],
+            "scaling_gate": {
+                "status": gate_status,
+                "fixture_role": "expanded_scaling_scene",
+                "expected_case_names": [case["name"] for case in SCALING_CASES],
+                "operations": list(SCALING_OPERATIONS),
+                "p95_tolerance_ms": dict(SCALING_P95_TOLERANCE_MS),
+                "cases": [],
+                "errors": [f"real-Maya scaling gate {gate_status}: {type(exc).__name__}: {exc}"],
+            },
+            "errors": [f"real-Maya performance runner did not complete: {type(exc).__name__}: {exc}"],
+        }
+        _write_json(report_path, report)
     return 0 if report.get("status") == "pass" else 1
 
 
