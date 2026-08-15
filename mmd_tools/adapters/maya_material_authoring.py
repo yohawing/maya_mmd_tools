@@ -390,7 +390,16 @@ class MayaMaterialAuthoring:
                 raise
             return None
         if outline_target_sink is not None:
-            outline_target_sink.update(outline_target)
+            readback_target = {
+                attr: {
+                    "exists": bool(state["exists"]),
+                    "value": state["value"],
+                }
+                for attr, state in outline_preimage.items()
+            }
+            for attr, value in outline_target.items():
+                readback_target[attr]["value"] = value
+            outline_target_sink.update(readback_target)
         return new_material
 
     def native_material_outline_patch_available(self) -> bool:

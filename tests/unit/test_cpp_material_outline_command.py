@@ -146,8 +146,9 @@ def test_python_owns_outline_policy_and_semantic_write_expansion(monkeypatch):
     monkeypatch.setenv("MMD_AUTHORING_MATERIAL_OUTLINE_MODE", "native")
     adapter, gateway, old = _native_adapter()
     new = replace(old, name_english="New", edge_size=1.25)
+    sink = {}
     assert adapter.try_apply_native_material_outline_patch(
-        "|Model_root", old, new, True
+        "|Model_root", old, new, True, outline_target_sink=sink
     ) == new
     root, shader, index, updates, preimage, target = gateway.calls[0]
     assert (root, shader, index) == ("|Model_root", old.binding_identity, old.index)
@@ -158,6 +159,9 @@ def test_python_owns_outline_policy_and_semantic_write_expansion(monkeypatch):
     assert preimage == _outline_preimage()
     assert target["mmd_shader_outline_enabled"] is True
     assert target["EdgeSize"] == 1.25
+    assert sink["mmd_shader_outline_enabled"]["value"] is True
+    assert sink["EdgeSize"]["value"] == 1.25
+    assert sink["mmdTransparencyMode"] == _outline_preimage()["mmdTransparencyMode"]
 
 
 def test_auto_falls_back_only_when_outline_command_is_unavailable(monkeypatch):
