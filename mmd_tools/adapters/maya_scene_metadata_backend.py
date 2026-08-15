@@ -539,7 +539,8 @@ class MayaSceneMetadataBackend:
         """Read semantic Morph data and its runtime projection in one generation."""
         return self._morph_repository.read_morph_authoring_snapshot(
             model_root,
-            spec_reader=lambda root: SceneMetadataAdapter(self).read_spec(root),
+            model_reader=self.read_model_metadata,
+            morph_reader=self.iter_morph_metadata,
         )
 
     def read_bone_value(

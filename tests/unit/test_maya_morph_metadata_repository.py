@@ -8,7 +8,6 @@ from mmd_tools.adapters.maya_metadata_read_support import MayaMetadataReadSuppor
 from mmd_tools.adapters.maya_morph_metadata_repository import (
     MayaMorphMetadataRepository,
 )
-from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter
 from tests.unit.test_maya_scene_metadata_backend import (
     FakeCmds,
     _backend,
@@ -55,18 +54,23 @@ def test_iterates_legacy_morphs_only_with_explicit_root_ownership() -> None:
     assert [morph["binding_identity"] for morph in morphs] == ["owned"]
 
 
-def test_snapshot_delegates_once_to_spec_reader_and_reuses_projection_queries() -> None:
+def test_snapshot_reads_only_model_header_and_morph_repository() -> None:
     cmds, backend = _snapshot_vertex_scene()
     repository = _repository(cmds)
     backend._morph_repository = repository
-    reader = Mock(wraps=lambda root: SceneMetadataAdapter(backend).read_spec(root))
+    model_reader = Mock(wraps=backend.read_model_metadata)
+    morph_reader = Mock(wraps=lambda root: tuple(repository.iter_morph_metadata(root)))
 
     snapshot = repository.read_morph_authoring_snapshot(
         "|root",
-        spec_reader=reader,
+        model_reader=model_reader,
+        morph_reader=morph_reader,
     )
 
-    assert reader.call_count == 1
+    assert model_reader.call_count == 1
+    assert morph_reader.call_count == 1
+    assert snapshot.spec.bones == ()
+    assert snapshot.spec.materials == ()
     assert snapshot.spec.morphs[0].binding_identity == "morph"
     assert snapshot.projection.binding_for_index(0).bindings[0].blend_shape_identity == "bs"
     assert snapshot.topology_inspection.valid is True

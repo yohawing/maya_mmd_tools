@@ -41,7 +41,11 @@ from mmd_tools.core.morph_read_projection import (
     MorphAuthoringReadSnapshot,
     MorphProjectionRequest,
 )
-from mmd_tools.core.model_authoring_spec import MmdModelAuthoringSpec, MmdMorphSpec
+from mmd_tools.core.model_authoring_spec import (
+    MmdModelAuthoringSpec,
+    MmdModelSpec,
+    MmdMorphSpec,
+)
 from mmd_tools.core.morph_topology import (
     MorphTopologyInspection,
     inspect_group_topology,
@@ -50,7 +54,8 @@ from mmd_tools.core.morph_topology import (
 
 logger = get_logger(__name__)
 
-MorphSpecReader = Callable[[str], MmdModelAuthoringSpec]
+ModelMetadataReader = Callable[[str], Mapping[str, Any]]
+MorphMetadataReader = Callable[[str], Iterable[Mapping[str, Any]]]
 
 
 @dataclass
@@ -120,9 +125,15 @@ class MayaMorphMetadataRepository:
         self,
         model_root: str,
         *,
-        spec_reader: MorphSpecReader,
+        model_reader: ModelMetadataReader,
+        morph_reader: MorphMetadataReader,
     ) -> MorphAuthoringReadSnapshot:
-        """Read semantic Morph data and its runtime projection in one generation."""
+        """Read Model header, Morph data, and projection in one generation.
+
+        This refresh deliberately does not construct a full authoring spec
+        from ``SceneMetadataAdapter.read_spec``.  Bone and Material
+        aggregates are unrelated to the Morph tab and must not be scanned.
+        """
 
         if self._snapshot_read_context is not None:
             raise self._error("a morph authoring snapshot read is already active")
@@ -136,7 +147,13 @@ class MayaMorphMetadataRepository:
         )
         self._snapshot_read_context = context
         try:
-            spec = spec_reader(root)
+            spec = MmdModelAuthoringSpec(
+                model=MmdModelSpec.from_mapping(model_reader(root)),
+                morphs=tuple(
+                    MmdMorphSpec.from_mapping(metadata)
+                    for metadata in morph_reader(root)
+                ),
+            )
             controller = self._snapshot_morph_controller(context, required=False)
             if controller:
                 version = context.query.get_attr(f"{controller}.topologyVersion")

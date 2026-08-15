@@ -14,7 +14,7 @@ import pytest
 
 from mmd_tools.adapters.maya_scene_metadata_backend import MayaSceneMetadataBackend, MayaSceneMetadataError
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter, SceneMetadataError
-from mmd_tools.core.model_authoring_spec import MmdMaterialSpec, MmdMorphSpec
+from mmd_tools.core.model_authoring_spec import MmdMaterialSpec, MmdModelSpec, MmdMorphSpec
 from mmd_tools.core.material_read_projection import (
     MaterialAssignmentKind,
     MaterialAssignmentSummary,
@@ -637,17 +637,31 @@ def test_morph_authoring_snapshot_shares_binding_observations_once() -> None:
 
 def test_morph_authoring_snapshot_reentrant_read_fails_and_context_is_released() -> None:
     _cmds, backend = _snapshot_vertex_scene()
-    original_read_spec = SceneMetadataAdapter.read_spec
+    original_read_model_metadata = backend.read_model_metadata
 
-    def reentrant_read_spec(_adapter: SceneMetadataAdapter, root: str):
+    def reentrant_read_model_metadata(root: str):
         return backend.read_morph_authoring_snapshot(root)
 
-    with patch.object(SceneMetadataAdapter, "read_spec", reentrant_read_spec):
-        with pytest.raises(MayaSceneMetadataError, match="already active"):
-            backend.read_morph_authoring_snapshot("|root")
+    backend.read_model_metadata = reentrant_read_model_metadata
+    with pytest.raises(MayaSceneMetadataError, match="already active"):
+        backend.read_morph_authoring_snapshot("|root")
 
+    backend.read_model_metadata = original_read_model_metadata
     snapshot = backend.read_morph_authoring_snapshot("|root")
-    assert snapshot.spec == original_read_spec(SceneMetadataAdapter(backend), "|root")
+    assert snapshot.spec.model == MmdModelSpec.from_mapping(original_read_model_metadata("|root"))
+    assert snapshot.spec.bones == ()
+    assert snapshot.spec.materials == ()
+
+
+def test_morph_authoring_snapshot_does_not_perform_full_spec_read() -> None:
+    _cmds, backend = _snapshot_vertex_scene()
+
+    with patch.object(SceneMetadataAdapter, "read_spec", side_effect=AssertionError("full read")):
+        snapshot = backend.read_morph_authoring_snapshot("|root")
+
+    assert snapshot.spec.bones == ()
+    assert snapshot.spec.materials == ()
+    assert snapshot.spec.morphs
 
 
 def test_morph_authoring_snapshot_allows_empty_model_without_controller() -> None:
