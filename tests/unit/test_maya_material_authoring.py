@@ -712,7 +712,9 @@ def test_apply_material_spec_change_notifies_before_first_maya_mutation() -> Non
     new_spec = _authoring_spec((replace(material_b, index=0),))
     cmds.calls.append(("before-boundary", (), {}))
 
-    boundary = lambda: cmds.calls.append(("mutation-boundary", (), {}))
+    def boundary() -> None:
+        cmds.calls.append(("mutation-boundary", (), {}))
+
     adapter = MayaMaterialAuthoring(
         cmds,
         registry,
