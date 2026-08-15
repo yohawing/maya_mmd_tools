@@ -56,6 +56,7 @@ class _FakeContext:
         self.snapshot: MmdModelAuthoringSpec | None = None
         self.undo_count = 0
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+        self.read_spec_error: Exception | None = None
 
     def require_root(self, root: Any) -> None:
         if root != "|root":
@@ -65,6 +66,10 @@ class _FakeContext:
         return root
 
     def read_spec(self, _root: str) -> MmdModelAuthoringSpec:
+        if self.read_spec_error is not None:
+            error = self.read_spec_error
+            self.read_spec_error = None
+            raise error
         return self.scene
 
     def call_adapter(self, method: str, *args: Any, **kwargs: Any) -> Any:
@@ -222,6 +227,46 @@ def test_partial_structural_mutation_is_reconciled_before_rollback() -> None:
     # Simulate an adjacent structural writer that changed owned scene state
     # and then raised before the coordinator could call rebase.
     context.scene = _spec(suffix="-partial")
+    authority.rollback_write("|root")
+
+    assert context.undo_count == 1
+    assert context.scene.fingerprint() == _spec().fingerprint()
+    assert context.active is None
+    assert context.chunk_open is False
+
+
+def test_readback_exception_after_partial_mutation_fails_closed_to_undo() -> None:
+    context = _FakeContext()
+    authority = context.authority()
+    authority.begin_write("|root")
+
+    # Simulate a writer that changed scene state before its rollback readback
+    # became unavailable.  The unreadable state must still consume this
+    # transaction's Undo item.
+    context.scene = _spec(suffix="-partial")
+    context.read_spec_error = RuntimeError("injected readback failure")
+
+    authority.rollback_write("|root")
+
+    assert context.undo_count == 1
+    assert context.scene.fingerprint() == _spec().fingerprint()
+    assert context.active is None
+    assert context.chunk_open is False
+
+
+def test_commit_readback_exception_marks_partial_mutation_for_rollback() -> None:
+    context = _FakeContext()
+    authority = context.authority()
+    authority.begin_write("|root")
+
+    context.scene = _spec(suffix="-partial")
+    context.read_spec_error = RuntimeError("injected commit readback failure")
+
+    with pytest.raises(ValueError, match="failed to verify metadata transaction"):
+        authority.commit_write("|root")
+
+    assert context.active is not None
+    assert context.active["mutated"] is True
     authority.rollback_write("|root")
 
     assert context.undo_count == 1

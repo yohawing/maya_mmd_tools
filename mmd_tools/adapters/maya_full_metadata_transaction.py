@@ -155,6 +155,10 @@ class MayaFullMetadataTransaction:
             ).fingerprint()
             actual = context.read_spec(model_root).fingerprint()
         except Exception as exc:
+            # A writer may have changed Maya state before its final write or
+            # readback failed.  Do not let an unreadable post-write scene
+            # suppress the Undo needed to restore the captured preimage.
+            transaction["mutated"] = True
             raise context.error_factory(
                 f"failed to verify metadata transaction: {exc}"
             ) from exc
@@ -200,9 +204,9 @@ class MayaFullMetadataTransaction:
         try:
             actual = self._context.read_spec(transaction["root"]).fingerprint()
         except Exception:
-            # Keep the existing mutation marker as the authoritative signal
-            # when a partially-written scene cannot be read back.  The final
-            # rollback verification still reports the unreadable preimage.
+            # A partially-written scene cannot prove that no owned mutation
+            # occurred.  Fail closed so rollback consumes the owned Undo item.
+            transaction["mutated"] = True
             return
         if actual != transaction["original_fingerprint"]:
             transaction["mutated"] = True
