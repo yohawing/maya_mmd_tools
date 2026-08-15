@@ -5,6 +5,7 @@ from tools.authoring_performance_contract import (
     SCALING_CASES,
     SCALING_OPERATIONS,
     _CallRecorder,
+    _begin_info_edit_session,
     adapter_call_scope,
     case_limit_errors,
     count_distribution,
@@ -17,6 +18,25 @@ from tools.authoring_performance_contract import (
 
 def test_display_budget_matches_atomic_transaction_baseline():
     assert MAX_ADAPTER_CALLS["display_apply"] == 16
+
+
+def test_info_probe_begins_edit_on_the_target_widget():
+    target_widget = object()
+
+    class Presenter:
+        def __init__(self):
+            self.view = type("View", (), {})()
+            self.view.model_name_en_edit = target_widget
+            self.widget = None
+
+        def begin_edit_session(self, widget):
+            self.widget = widget
+
+    presenter = Presenter()
+
+    _begin_info_edit_session(presenter)
+
+    assert presenter.widget is target_widget
 
 
 def test_distribution_reports_nearest_rank_p50_and_p95():

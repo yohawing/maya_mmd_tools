@@ -652,6 +652,12 @@ def _model_statistics(cmds: Any, root: str, spec: Any) -> Dict[str, int]:
     }
 
 
+def _begin_info_edit_session(presenter: Any) -> None:
+    """Start the Info probe on the specific model-name field widget."""
+
+    presenter.begin_edit_session(presenter.view.model_name_en_edit)
+
+
 def _measure_action(
     name: str,
     callback: Callable[[int], None],
@@ -1223,7 +1229,7 @@ def run_probe(
         def info_action(index: int) -> None:
             info_state["expected"] = f"Perf Model {index % 2}"
             presenter = window.info_presenter
-            presenter.begin_edit_session()
+            _begin_info_edit_session(presenter)
             presenter.update_model_info(ATTR_MMD_MODEL_NAME_EN, info_state["expected"])
             presenter.end_edit_session()
 
