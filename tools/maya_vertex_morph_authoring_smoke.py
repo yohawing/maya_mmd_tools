@@ -146,7 +146,7 @@ def main() -> int:
             (0.0, 2.0, 0.0, 1.0),
             type="pointArray",
         )
-        offsets = MayaSceneMetadataBackend(adapter)._read_vertex_blendshape_offsets(
+        offsets = MayaSceneMetadataBackend(adapter)._morph_repository._read_vertex_blendshape_offsets(
             cmds.ls(root, long=True)[0],
             "vertexNode",
             "Move Wide",
