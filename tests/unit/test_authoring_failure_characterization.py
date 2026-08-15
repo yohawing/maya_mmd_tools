@@ -23,7 +23,6 @@ from tests.unit.test_display_pane_presenter import (  # noqa: E402
     _View as _DisplayView,
 )
 from tests.unit.test_morph_presenter_headless import (  # noqa: E402
-    _FakeMayaAdapter,
     _make_presenter,
 )
 from tests.unit.test_maya_model_authoring_coordinator import (  # noqa: E402
@@ -196,6 +195,7 @@ def test_material_outline_failure_rolls_back_semantic_and_preview_state_atomical
     presenter.current_material_index = 0
     presenter.material_data = {
         "shader_outline_enabled": False,
+        "shader_type": "dx11Shader",
         "edge_size": old.edge_size,
     }
     presenter.has_unsaved_changes = True
@@ -304,45 +304,82 @@ def test_display_add_attr_success_then_set_attr_failure_rolls_back_atomically():
     ]
 
 
-class _MorphFailureAdapter(_FakeMayaAdapter):
-    """Legacy multi-plug adapter: the second setAttr fails after the first."""
+class _MorphFailureAdapter:
+    """Minimal Maya command surface for a real backend preview transaction."""
 
     def __init__(self, fail_plug):
-        super().__init__()
+        self.fail_plug = fail_plug
+        self.nodes = {"|root"}
+        self.existing = set()
+        self.aliases = {}
+        self.attr_values = {}
         self.dg_calls = []
         self.set_attempts = []
-        self.fail_plug = fail_plug
-        self._history = []
-        self._cursor = -1
+        self.undo_chunk_open = False
+        self._chunk_before = None
+        self.undo_count = 0
+
+    def object_exists(self, node):
+        return node in self.nodes or node in self.attr_values
+
+    def ls(self, node, long=False, **_kwargs):
+        if node in self.nodes:
+            return [node]
+        if node in {plug.rsplit(".", 1)[0] for plug in self.attr_values}:
+            return [node]
+        return []
+
+    def undo_info(self, **kwargs):
+        if kwargs.get("query") and kwargs.get("state"):
+            return True
+        if kwargs.get("openChunk"):
+            self.undo_chunk_open = True
+            self._chunk_before = deepcopy(self.attr_values)
+            return None
+        if kwargs.get("closeChunk"):
+            self.undo_chunk_open = False
+            return None
+        raise AssertionError("unexpected undo_info call")
+
+    def get_attr(self, attr_path, **kwargs):
+        if kwargs.get("lock"):
+            return False
+        return self.attr_values[attr_path]
 
     def set_attr(self, attr_path, value):
         self.set_attempts.append(attr_path)
         if attr_path == self.fail_plug:
-            raise RuntimeError("injected legacy preview setAttr failure")
-        before = deepcopy(self.attr_values)
-        super().set_attr(attr_path, value)
-        after = deepcopy(self.attr_values)
-        self._history = self._history[: self._cursor + 1]
-        self._history.append((before, after))
-        self._cursor += 1
+            raise RuntimeError("injected preview setAttr failure")
+        self.attr_values[attr_path] = value
 
     def undo(self):
-        if self._cursor < 0:
-            return
-        before, _after = self._history[self._cursor]
-        self.attr_values = deepcopy(before)
-        self._cursor -= 1
-
-    def redo(self):
-        if self._cursor + 1 >= len(self._history):
-            return
-        self._cursor += 1
-        _before, after = self._history[self._cursor]
-        self.attr_values = deepcopy(after)
+        assert not self.undo_chunk_open
+        self.attr_values = deepcopy(self._chunk_before)
+        self._chunk_before = None
+        self.undo_count += 1
 
 
-def test_legacy_morph_preview_multi_plug_failure_keeps_partial_weight_after_undo_redo():
-    """Current legacy preview catches each setAttr independently."""
+class _BackendPreviewCoordinator:
+    """Use the production backend lifecycle around one synchronous preview."""
+
+    def __init__(self, backend):
+        self.backend = backend
+
+    def set_morph_preview(self, root, targets, value):
+        session = self.backend.begin_morph_preview(root, targets)
+        try:
+            result = self.backend.apply_morph_preview(
+                root, session, (value,) * len(session.targets)
+            )
+            self.backend.commit_morph_preview(root, session)
+            return result
+        except Exception:
+            self.backend.rollback_morph_preview(root, session)
+            raise
+
+
+def test_morph_preview_multi_plug_failure_rolls_back_partial_weight_once():
+    """Canonical multi-target preview restores its preimage after partial write."""
 
     first = "faceBlendShapeA.weight[0]"
     second = "faceBlendShapeB.weight[0]"
@@ -356,14 +393,13 @@ def test_legacy_morph_preview_multi_plug_failure_keeps_partial_weight_after_undo
     adapter.aliases["faceBlendShapeA"] = ["smile_a", "weight[0]"]
     adapter.aliases["faceBlendShapeB"] = ["smile_b", "weight[0]"]
     adapter.attr_values.update({first: 0.1, second: 0.2})
-    presenter, _view, _app_state, _ = _make_presenter(adapter=adapter)
+    backend = MayaSceneMetadataBackend(adapter)
+    presenter, _view, _app_state, _ = _make_presenter(model="|root", adapter=adapter)
+    presenter._preview_coordinator = _BackendPreviewCoordinator(backend)
     presenter.current_morph = "smile"
     presenter.morph_data = {
         "smile": {
-            "blend_shape_targets": [
-                {"node": "faceBlendShapeA", "target": "smile_a", "weight_attr": "weight[0]"},
-                {"node": "faceBlendShapeB", "target": "smile_b", "weight_attr": "weight[0]"},
-            ]
+            "runtime_targets": [first, second],
         }
     }
     plugs = (first, second)
@@ -373,15 +409,9 @@ def test_legacy_morph_preview_multi_plug_failure_keeps_partial_weight_after_undo
 
     failure = _morph_snapshot(adapter, plugs)
     assert start["attrs"] == {first: 0.1, second: 0.2}
-    assert failure["attrs"] == {first: 0.8, second: 0.2}
+    assert failure["attrs"] == start["attrs"]
     assert failure["dg"] == start["dg"]
-    assert adapter.dg_calls == []
     assert adapter.set_attempts == [first, second]
-
-    adapter.undo()
-    after_undo = _morph_snapshot(adapter, plugs)
-    assert after_undo == start
-
-    adapter.redo()
-    after_redo = _morph_snapshot(adapter, plugs)
-    assert after_redo == failure
+    assert adapter.undo_count == 1
+    assert backend._write_transaction is None
+    assert adapter.undo_chunk_open is False

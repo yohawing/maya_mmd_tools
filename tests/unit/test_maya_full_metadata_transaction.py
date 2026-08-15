@@ -214,6 +214,22 @@ def test_empty_rollback_closes_owned_chunk_without_global_undo() -> None:
     ]
 
 
+def test_partial_structural_mutation_is_reconciled_before_rollback() -> None:
+    context = _FakeContext()
+    authority = context.authority()
+    authority.begin_write("|root")
+
+    # Simulate an adjacent structural writer that changed owned scene state
+    # and then raised before the coordinator could call rebase.
+    context.scene = _spec(suffix="-partial")
+    authority.rollback_write("|root")
+
+    assert context.undo_count == 1
+    assert context.scene.fingerprint() == _spec().fingerprint()
+    assert context.active is None
+    assert context.chunk_open is False
+
+
 def test_commit_success_closes_chunk_and_clears_shared_state() -> None:
     context = _FakeContext()
     authority = context.authority()

@@ -172,6 +172,12 @@ class MayaFullMetadataTransaction:
         """Close, undo, clear active state, then validate the original image."""
         context = self._context
         transaction = self._full_transaction(model_root)
+        # Structural writers run through adjacent adapters and therefore do
+        # not pass through the aggregate writer setters that record a
+        # mutation.  A writer can also perform one Maya write and then raise.
+        # Reconcile the strict scene preimage while the owned chunk is still
+        # open so that only an observed owned change enables global Undo.
+        self._reconcile_scene_mutation(transaction)
         try:
             if transaction["chunk_open"]:
                 context.call_adapter("undo_info", closeChunk=True)
@@ -186,6 +192,20 @@ class MayaFullMetadataTransaction:
         actual = context.read_spec(model_root).fingerprint()
         if actual != transaction["original_fingerprint"]:
             raise context.error_factory("metadata rollback fingerprint mismatch")
+
+    def _reconcile_scene_mutation(self, transaction: Transaction) -> None:
+        """Promote an observed structural preimage change to a mutation."""
+        if transaction["mutated"]:
+            return
+        try:
+            actual = self._context.read_spec(transaction["root"]).fingerprint()
+        except Exception:
+            # Keep the existing mutation marker as the authoritative signal
+            # when a partially-written scene cannot be read back.  The final
+            # rollback verification still reports the unreadable preimage.
+            return
+        if actual != transaction["original_fingerprint"]:
+            transaction["mutated"] = True
 
     def _full_transaction(self, model_root: str) -> Transaction:
         transaction = self._context.active_transaction(model_root)

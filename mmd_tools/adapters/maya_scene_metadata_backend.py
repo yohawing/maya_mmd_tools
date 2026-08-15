@@ -131,6 +131,26 @@ _MATERIAL_OUTLINE_ATTRS = (
     "mmdTransparencyMode",
 )
 
+# Keep the narrow transaction surface explicit.  Aggregate Model/Bone/Material/
+# Morph hooks are valid only for ``full_metadata``; every other kind must fail
+# closed before it can perform a write.  The unit matrix intentionally checks
+# this inventory against the kind literals below.
+NARROW_TRANSACTION_KINDS = (
+    "info_metadata",
+    "morph_topology_repair",
+    "display_frames",
+    "material_reindex",
+    "material_create",
+    "bone_register",
+    "material_value",
+    "material_binding",
+    "bone_value",
+    "morph_value",
+    "morph_preview",
+    "morph_reindex",
+    "morph_create",
+)
+
 
 class MayaSceneMetadataError(SceneMetadataError):
     """Raised when Maya metadata cannot be normalized without loss."""
@@ -2148,11 +2168,24 @@ class MayaSceneMetadataBackend:
                 if actual != transaction["original_value"]:
                     raise MayaSceneMetadataError("display frame rollback preimage mismatch")
             return
+        if transaction.get("kind") == "material_value":
+            # Native Material commands can fail before Maya records any undo
+            # item, or after changing only part of their fixed write set.
+            # Decide from the narrow preimage/read-back pair instead of
+            # unconditionally consuming the user's previous global Undo item.
+            try:
+                transaction["mutated"] = self._material_value_mutated(transaction)
+            except Exception:
+                # An unavailable read-back cannot prove that the command was
+                # harmless.  Preserve the fail-closed rollback behavior; the
+                # subsequent exact preimage check reports any remaining issue.
+                transaction["mutated"] = True
         try:
             if transaction["chunk_open"]:
                 self._call_adapter("undo_info", closeChunk=True)
                 transaction["chunk_open"] = False
-            self._call_adapter("undo")
+            if transaction.get("mutated", True):
+                self._call_adapter("undo")
         finally:
             self._write_transaction = None
         if transaction.get("kind") == "bone_value":
@@ -2242,6 +2275,25 @@ class MayaSceneMetadataBackend:
         actual = SceneMetadataAdapter(self).read_spec(model_root).fingerprint()
         if actual != transaction["original_fingerprint"]:
             raise MayaSceneMetadataError("metadata rollback fingerprint mismatch")
+
+    def _material_value_mutated(self, transaction: Mapping[str, Any]) -> bool:
+        """Return whether a narrow Material command changed owned state."""
+        actual = self._read_material_value_attrs(transaction["binding"])
+        diffuse_route = transaction.get("diffuse_route")
+        expected = transaction["original_values"]
+        if isinstance(diffuse_route, MayaMaterialShaderRoute):
+            actual["viewport_diffuse"] = self._required_vector(
+                transaction["binding"], diffuse_route.diffuse_attribute
+            )
+        if not self._material_value_attrs_equal(actual, expected):
+            return True
+        outline_original = transaction.get("outline_original")
+        if outline_original is not None:
+            return (
+                self._capture_material_outline_attrs(transaction["binding"])
+                != outline_original
+            )
+        return False
 
     def iter_morph_metadata(self, root: str) -> Iterable[Mapping[str, Any]]:
         """Yield strict raw PMX morph mappings owned by one explicit root."""
@@ -2675,4 +2727,8 @@ def _swap_morph_json(raw: str, swap: Mapping[int, int], kind: str) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-__all__ = ["MayaSceneMetadataError", "MayaSceneMetadataBackend"]
+__all__ = [
+    "MayaSceneMetadataError",
+    "MayaSceneMetadataBackend",
+    "NARROW_TRANSACTION_KINDS",
+]

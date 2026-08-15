@@ -7,12 +7,17 @@ import math
 import re
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
 
-from mmd_tools.adapters.maya_scene_metadata_backend import MayaSceneMetadataBackend, MayaSceneMetadataError
+from mmd_tools.adapters.maya_scene_metadata_backend import (
+    NARROW_TRANSACTION_KINDS,
+    MayaSceneMetadataBackend,
+    MayaSceneMetadataError,
+)
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter, SceneMetadataError
 from mmd_tools.core.model_authoring_spec import MmdMaterialSpec, MmdModelSpec, MmdMorphSpec
 from mmd_tools.core.material_read_projection import (
@@ -436,6 +441,68 @@ def test_display_frames_write_empty_failed_chunk_does_not_undo_prior_action() ->
     assert cmds.attrs[plug] == "old"
     assert cmds.undo_chunk_open is False
     assert cmds.undo_count == 0
+
+
+def test_material_value_rollback_skips_global_undo_when_native_failure_precedes_mutation() -> None:
+    cmds, backend, adapter = _writable_scene()
+    original = adapter.read_spec("|root")
+    material = original.materials[0]
+    cmds.attrs[("mat", "baseColor")] = [(0.1, 0.2, 0.3)]
+
+    backend.begin_material_value_patch(
+        "|root", material.binding_identity, material, material
+    )
+    backend.rollback_write("|root")
+
+    assert cmds.undo_count == 0
+    assert cmds.undo_chunk_open is False
+    assert adapter.read_spec("|root").fingerprint() == original.fingerprint()
+
+
+def test_material_value_rollback_reads_back_partial_native_mutation_before_undo() -> None:
+    cmds, backend, adapter = _writable_scene()
+    original = adapter.read_spec("|root")
+    material = original.materials[0]
+    target = replace(material, name_english="partial native")
+    cmds.attrs[("mat", "baseColor")] = [(0.1, 0.2, 0.3)]
+
+    backend.begin_material_value_patch(
+        "|root", material.binding_identity, material, target
+    )
+    # A registered native command may have changed one field before returning
+    # a transport/protocol/domain failure.
+    cmds.set_attr("mat.mmd_material_name_en", "partial native", type="string")
+    backend.rollback_write("|root")
+
+    assert cmds.undo_count == 1
+    assert cmds.undo_chunk_open is False
+    assert adapter.read_spec("|root").fingerprint() == original.fingerprint()
+
+
+def test_material_outline_rollback_reads_back_partial_native_mutation_before_undo() -> None:
+    cmds, backend, adapter = _writable_scene()
+    cmds.node_types["mat"] = "dx11Shader"
+    cmds.attrs.update(
+        {
+            ("mat", "DiffuseColorRGB"): [(0.1, 0.2, 0.3)],
+            ("mat", "technique"): "Main",
+            ("mat", "EdgeSize"): 1.0,
+            ("mat", "mmd_shader_outline_enabled"): False,
+            ("mat", "mmdDoubleSided"): False,
+            ("mat", "mmdTransparencyMode"): "opaque",
+        }
+    )
+    original = adapter.read_spec("|root")
+    material = original.materials[0]
+
+    backend.begin_material_value_patch(
+        "|root", material.binding_identity, material, material, False
+    )
+    cmds.set_attr("mat.mmd_shader_outline_enabled", True)
+    backend.rollback_write("|root")
+
+    assert cmds.undo_count == 1
+    assert cmds.attrs[("mat", "mmd_shader_outline_enabled")] is False
 
 
 def test_display_frames_write_readback_failure_restores_existing_preimage() -> None:
@@ -1774,6 +1841,44 @@ def test_full_rebase_and_commit_hooks_reject_narrow_transaction_before_any_write
         assert backend._write_transaction["kind"] == "display_frames"
     finally:
         backend.rollback_write("|root")
+
+
+def test_narrow_transaction_kind_inventory_matches_all_runtime_kind_literals() -> None:
+    source = Path(__file__).resolve().parents[2] / "mmd_tools" / "adapters" / "maya_scene_metadata_backend.py"
+    literals = set(
+        re.findall(r'"kind": "([^"]+)"', source.read_text(encoding="utf-8"))
+    )
+    assert literals == set(NARROW_TRANSACTION_KINDS)
+
+
+@pytest.mark.parametrize("kind", NARROW_TRANSACTION_KINDS)
+def test_every_narrow_kind_guards_all_full_aggregate_hooks_without_writes(kind: str) -> None:
+    cmds, backend, adapter = _writable_scene()
+    original = adapter.read_spec("|root")
+    transaction = {"root": "|root", "kind": kind, "chunk_open": True}
+    cmds.undo_info(openChunk=True, chunkName="kind guard")
+    backend._write_transaction = transaction
+    writes_before = list(cmds.write_history)
+
+    calls = (
+        lambda: backend.apply_model_metadata("|root", original.to_mapping()["model"]),
+        lambda: backend.apply_bone_metadata("|root", original.to_mapping()["bones"]),
+        lambda: backend.apply_material_metadata("|root", original.to_mapping()["materials"]),
+        lambda: backend.apply_morph_metadata("|root", original.to_mapping()["morphs"]),
+        lambda: backend.rebase_write_bindings("|root", original),
+        lambda: backend.commit_write("|root"),
+    )
+    try:
+        for call in calls:
+            with pytest.raises(MayaSceneMetadataError, match="not a full metadata write"):
+                call()
+            assert backend._write_transaction is transaction
+            assert cmds.write_history == writes_before
+            assert adapter.read_spec("|root").fingerprint() == original.fingerprint()
+    finally:
+        cmds.undo_info(closeChunk=True)
+        backend._write_transaction = None
+    assert cmds.undo_count == 0
 
 
 def test_commit_fingerprint_mismatch_rolls_back_all_prior_sections() -> None:
