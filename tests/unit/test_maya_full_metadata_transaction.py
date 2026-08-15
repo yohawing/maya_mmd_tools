@@ -146,10 +146,28 @@ def test_rebase_is_single_use_read_only_and_updates_all_bindings() -> None:
     assert context.active["bone_bindings"] == {0: "|root|bone-new"}
     assert context.active["material_bindings"] == {0: "|root|material-new"}
     assert context.active["morph_bindings"] == {0: "|root|morph-new"}
+    assert context.active["mutated"] is True
     assert [call[0] for call in context.calls] == ["undo_info", "undo_info"]
 
     with pytest.raises(ValueError, match="already been rebased"):
         authority.rebase_write_bindings("|root", rebased)
+
+
+def test_failed_rebase_rolls_back_completed_structural_mutation() -> None:
+    context = _FakeContext()
+    authority = context.authority()
+    authority.begin_write("|root")
+    context.scene = _spec(suffix="-actual")
+    wrong_target = _spec(suffix="-target")
+
+    with pytest.raises(ValueError, match="binding/index set does not match"):
+        authority.rebase_write_bindings("|root", wrong_target)
+
+    authority.rollback_write("|root")
+
+    assert context.undo_count == 1
+    assert context.scene.fingerprint() == _spec().fingerprint()
+    assert context.active is None
 
 
 def test_commit_mismatch_keeps_chunk_for_runner_rollback() -> None:

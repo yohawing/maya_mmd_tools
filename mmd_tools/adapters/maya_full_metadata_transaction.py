@@ -105,6 +105,11 @@ class MayaFullMetadataTransaction:
         if not isinstance(target_spec, MmdModelAuthoringSpec):
             raise context.error_factory("target_spec must be an MmdModelAuthoringSpec")
 
+        # Coordinators call rebase only after the structural Maya writer has
+        # completed.  Mark this boundary before strict post-structure reads so
+        # a failed rebase still rolls back that owned structural mutation.
+        self.mark_mutation()
+
         try:
             scene_spec = context.read_spec(model_root)
         except Exception as exc:
