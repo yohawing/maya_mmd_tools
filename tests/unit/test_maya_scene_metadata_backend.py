@@ -1848,6 +1848,7 @@ def test_narrow_transaction_kind_inventory_matches_all_runtime_kind_literals() -
     sources = (
         adapters / "maya_scene_metadata_backend.py",
         adapters / "maya_info_metadata_transaction.py",
+        adapters / "maya_morph_preview_transaction.py",
     )
     literals = set(
         re.findall(
