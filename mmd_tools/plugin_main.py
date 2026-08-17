@@ -278,6 +278,8 @@ def install_mmd_menu():
         "MMD Tools",
         "MMD Editor",
         "Repair Texture Paths",
+        "Translate MMD Names",
+        "Tools",
         "Animator Toolset",
         "コントロールリグを管理",
         "Manage Control Rig",
@@ -299,6 +301,18 @@ def install_mmd_menu():
         label="Repair Texture Paths",
         command=lambda *args: repair_current_model_texture_paths(),
         parent="MMD",
+    )
+    cmds.menuItem(
+        "MMDToolsSubMenu",
+        label="Tools",
+        subMenu=True,
+        parent="MMD",
+    )
+    cmds.menuItem(
+        "MMDTranslateNamesMenuItem",
+        label="Translate MMD Names",
+        command=lambda *args: _run_mmd_name_translation(),
+        parent="MMDToolsSubMenu",
     )
 
     cmds.menuItem(
@@ -327,6 +341,14 @@ def uninstall_mmd_menu():
     """Uninstall the MMD menu from Maya."""
     if cmds.menu("MMD", exists=True):
         cmds.deleteUI("MMD", menu=True)
+
+
+def _run_mmd_name_translation():
+    """Dispatch the explicit name-translation tool entry point."""
+
+    from mmd_tools.tools import translate_names
+
+    return translate_names.run()
 
 
 def _node_type_registered(type_name: str) -> bool:
