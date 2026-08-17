@@ -1284,6 +1284,48 @@ class MayaModelAuthoringCoordinator:
             "replace_bone_semantic",
             lambda: replace_bone_semantic_spec(current, bone),
         )
+        previous = self._bone(current, bone.index)
+        replacement = self._bone(target, bone.index)
+        if classify_bone_change(previous, replacement) == "value":
+            structural_patch = getattr(self._bones, "apply_bone_value_patch", None)
+            begin = getattr(self._backend, "begin_bone_value_patch", None)
+            commit = getattr(self._metadata, "commit_bone_value_patch", None)
+            if (
+                isinstance(previous.binding_identity, str)
+                and callable(structural_patch)
+                and callable(begin)
+                and callable(commit)
+            ):
+                def bind() -> MmdBoneSpec:
+                    result = structural_patch(
+                        model_root,
+                        previous,
+                        replacement,
+                        self._cmds,
+                    )
+                    if not isinstance(result, MmdBoneSpec):
+                        raise TypeError(
+                            "bone value patch binding operation returned an invalid bone"
+                        )
+                    return result
+
+                bound = self._execute_bone_value_patch(
+                    model_root,
+                    "replace_bone_semantic",
+                    previous,
+                    replacement,
+                    previous.binding_identity,
+                    begin,
+                    bind,
+                    commit,
+                )
+                return replace(
+                    current,
+                    bones=tuple(
+                        bound if item.index == bound.index else item
+                        for item in current.bones
+                    ),
+                )
         return self._execute(model_root, "replace_bone_semantic", target, lambda: target)
 
     def _resolve_model_scale(self, model_root: str) -> float:
@@ -1373,6 +1415,14 @@ class MayaModelAuthoringCoordinator:
         """Replace one morph's semantic metadata and runtime binding state."""
         current = self._read_current(model_root, "replace_morph")
         target = self._pure("replace_morph", lambda: replace_morph_spec(current, morph))
+        narrow = self._try_replace_morph_value(
+            model_root,
+            "replace_morph",
+            current,
+            target,
+        )
+        if narrow is not None:
+            return narrow
         return self._execute_morph_change(model_root, "replace_morph", current, target)
 
     def replace_morph_offsets(
@@ -1387,6 +1437,14 @@ class MayaModelAuthoringCoordinator:
             "replace_morph_offsets",
             lambda: replace_morph_offsets_spec(current, index, offsets),
         )
+        narrow = self._try_replace_morph_value(
+            model_root,
+            "replace_morph_offsets",
+            current,
+            target,
+        )
+        if narrow is not None:
+            return narrow
         return self._execute_morph_change(model_root, "replace_morph_offsets", current, target)
 
     def delete_morph(self, model_root: str, index: int) -> MmdModelAuthoringSpec:
@@ -1471,6 +1529,73 @@ class MayaModelAuthoringCoordinator:
             operation,
             target,
             lambda: self._morphs(model_root, current, target),
+        )
+
+    def _try_replace_morph_value(
+        self,
+        model_root: str,
+        operation: str,
+        current: MmdModelAuthoringSpec,
+        target: MmdModelAuthoringSpec,
+    ) -> MmdModelAuthoringSpec | None:
+        """Use the selected-morph transaction only for patch-safe changes.
+
+        Offset identity, morph type, and controller topology changes remain on
+        the established full transaction.  A missing narrow capability also
+        keeps compatibility with test doubles and older injected adapters.
+        """
+        changed = [
+            (old, new)
+            for old, new in zip(current.morphs, target.morphs)
+            if old.index == new.index and old.to_mapping() != new.to_mapping()
+        ]
+        if len(changed) != 1:
+            return None
+        previous, replacement = changed[0]
+        if classify_morph_change(previous, replacement) != "value":
+            return None
+        begin = getattr(self._backend, "begin_morph_value_patch", None)
+        commit = getattr(self._metadata, "commit_morph_value_patch", None)
+        if (
+            not isinstance(previous.binding_identity, str)
+            or not callable(begin)
+            or not callable(commit)
+        ):
+            return None
+
+        patch = getattr(self._morphs, "apply_morph_value_patch", None)
+
+        def bind() -> MmdMorphSpec:
+            if callable(patch):
+                result = patch(model_root, previous, replacement, self._cmds)
+            else:
+                from mmd_tools.adapters import maya_morph_authoring
+
+                result = maya_morph_authoring.apply_morph_value_patch(
+                    model_root,
+                    previous,
+                    replacement,
+                    self._cmds,
+                )
+            if not isinstance(result, MmdMorphSpec):
+                raise TypeError("morph value patch binding operation returned an invalid morph")
+            return result
+
+        bound = self._execute_morph_value_patch(
+            model_root,
+            operation,
+            previous,
+            replacement,
+            previous.binding_identity,
+            begin,
+            bind,
+            commit,
+        )
+        return replace(
+            current,
+            morphs=tuple(
+                bound if item.index == bound.index else item for item in current.morphs
+            ),
         )
 
     def reindex_bones(

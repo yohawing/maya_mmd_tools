@@ -215,6 +215,19 @@ class FakeBackend:
         self.snapshot = self.scene
         self.events.append("begin:bone_value")
 
+    def begin_morph_value_patch(
+        self,
+        _root: str,
+        _binding: str,
+        _old: MmdMorphSpec,
+        _new: MmdMorphSpec,
+    ) -> None:
+        if self.active:
+            raise RuntimeError("nested transaction")
+        self.active = True
+        self.snapshot = self.scene
+        self.events.append("begin:morph_value")
+
     def begin_bone_register(self, _root: str, _bone: MmdBoneSpec) -> None:
         if self.active:
             raise RuntimeError("nested transaction")
@@ -313,6 +326,31 @@ class FakeMetadataAdapter:
         self.backend.active = False
         self.backend.commit_count += 1
         self.backend.events.append("commit:bone_value")
+
+    def read_morph_value(self, _root: str, binding: str, index: int) -> MmdMorphSpec:
+        return next(
+            morph
+            for morph in self.backend.scene.morphs
+            if morph.binding_identity == binding and morph.index == index
+        )
+
+    def commit_morph_value_patch(
+        self,
+        _root: str,
+        _binding: str,
+        morph: MmdMorphSpec,
+    ) -> None:
+        assert self.backend.active
+        self.backend.scene = replace(
+            self.backend.scene,
+            morphs=tuple(
+                morph if item.index == morph.index else item
+                for item in self.backend.scene.morphs
+            ),
+        )
+        self.backend.active = False
+        self.backend.commit_count += 1
+        self.backend.events.append("commit:morph_value")
 
     def commit_bone_register(self, _root: str, bone: MmdBoneSpec) -> None:
         assert self.backend.active
@@ -610,6 +648,22 @@ class FakeMorphAuthoring:
 
     def apply_morph_create(self, _root: str, morph: MmdMorphSpec, _cmds: Any) -> MmdMorphSpec:
         return replace(morph, binding_identity=f"morph{morph.index}")
+
+    def apply_morph_value_patch(
+        self,
+        _root: str,
+        _old: MmdMorphSpec,
+        new: MmdMorphSpec,
+        _cmds: Any,
+    ) -> MmdMorphSpec:
+        self.backend.scene = replace(
+            self.backend.scene,
+            morphs=tuple(
+                new if item.index == new.index else item
+                for item in self.backend.scene.morphs
+            ),
+        )
+        return new
 
 
 def _coordinator() -> tuple[
@@ -1254,7 +1308,9 @@ def test_replace_bone_semantic_preserves_rest_tail_and_does_not_xform() -> None:
     assert edited.connect_bone_index == 0
     assert edited.flags & PmxBoneFlag.CONNECT_BONE
     assert coordinator._cmds.positions == {}
-    _assert_one_successful_transaction(backend)
+    assert backend.rebase_count == 0
+    assert backend.events == ["begin:bone_value", "commit:bone_value"]
+    assert backend.rollback_count == 0
 
 
 @pytest.mark.parametrize("invalid_scale", [True, 0.0, float("nan"), float("inf")])
@@ -1282,11 +1338,49 @@ def test_morph_crud_uses_injected_structural_writer_and_canonical_binding() -> N
         replace(created, name="Smile Wide"),
     )
     assert replaced.morphs[0].name == "Smile Wide"
+    assert backend.rebase_count == 0
     backend.rebase_count = 0
     deleted = coordinator.delete_morph("|root", 0)
     assert deleted.morphs == ()
-    assert backend.begin_count == 3
+    assert backend.begin_count == 2
     assert backend.commit_count == 3
+
+
+def test_replace_morph_numeric_offsets_uses_selected_narrow_transaction() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    original = MmdMorphSpec(
+        "Weighted",
+        index=0,
+        morph_type="bone",
+        binding_identity="morph0",
+        offsets=(
+            {
+                "bone_index": 0,
+                "translation": (0.0, 0.0, 0.0),
+                "rotation": (0.0, 0.0, 0.0, 1.0),
+            },
+        ),
+    )
+    backend.scene = replace(backend.scene, morphs=(original,))
+    backend.events.clear()
+    backend.rebase_count = 0
+
+    result = coordinator.replace_morph_offsets(
+        "|root",
+        0,
+        (
+            {
+                "bone_index": 0,
+                "translation": (1.0, 2.0, 3.0),
+                "rotation": (0.0, 0.0, 0.0, 1.0),
+            },
+        ),
+    )
+
+    assert result.morphs[0].offsets[0]["translation"] == (1.0, 2.0, 3.0)
+    assert backend.rebase_count == 0
+    assert backend.events == ["begin:morph_value", "commit:morph_value"]
+    assert backend.rollback_count == 0
 
 
 def test_morph_change_without_structural_writer_fails_before_transaction() -> None:
