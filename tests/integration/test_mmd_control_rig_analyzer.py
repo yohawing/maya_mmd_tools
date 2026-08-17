@@ -2790,13 +2790,25 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         route_target = (
             row["layerRoute"]["blend"] if row.get("layerRoute") else row["target"]
         )
-        control_to_target = cmds.isConnected(row["control"], route_target)
+        if row.get("translateBaselineOutput"):
+            control_to_target = (
+                cmds.isConnected(row["controlSource"], row["control"])
+                and cmds.isConnected(row["translateBaselineOutput"], route_target)
+            )
+        else:
+            control_to_target = cmds.isConnected(row["control"], route_target)
 
         with self.assertRaisesRegex(MmdControlRigBuildError, "journal source node is missing"):
             restore_mmd_control_rig_attached(root)
 
         self.assertTrue(control_to_target)
-        self.assertTrue(cmds.isConnected(row["control"], route_target))
+        if row.get("translateBaselineOutput"):
+            self.assertTrue(cmds.isConnected(row["controlSource"], row["control"]))
+            self.assertTrue(
+                cmds.isConnected(row["translateBaselineOutput"], route_target)
+            )
+        else:
+            self.assertTrue(cmds.isConnected(row["control"], route_target))
         self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"), metadata_before)
         self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "EDIT")
 
