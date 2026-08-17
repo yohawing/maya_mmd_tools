@@ -33,6 +33,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_CONNECTION_BONE,
     ATTR_MMD_CONNECT_BONE_INDEX,
     ATTR_MMD_CONNECT_INDEX,
+    ATTR_MMD_COMMENT,
+    ATTR_MMD_COMMENT_EN,
     ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_AMBIENT_COLOR,
     ATTR_MMD_DIFFUSE_COLOR,
@@ -47,6 +49,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_EXTERNAL_PARENT_KEY,
     ATTR_MMD_FIXED_AXIS,
+    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_GRANT_PARENT,
     ATTR_MMD_GRANT_PARENT_INDEX,
     ATTR_MMD_GRANT_RATE,
@@ -58,6 +61,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MATERIAL_NAME_EN,
     ATTR_MMD_MEMO,
     ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_SHARED_TOON_FLAG,
     ATTR_MMD_SHININESS,
     ATTR_MMD_SPHERE_MODE,
@@ -217,6 +221,37 @@ class TestPmxExporter(MayaTestBase):
         root = cmds.group(empty=True, name=root_name)
         cmds.addAttr(root, longName=ATTR_MMD_MODEL_NAME, dataType="string")
         cmds.setAttr(f"{root}.{ATTR_MMD_MODEL_NAME}", "MergedExport", type="string")
+        cmds.addAttr(root, longName=ATTR_MMD_MODEL_NAME_EN, dataType="string")
+        cmds.setAttr(f"{root}.{ATTR_MMD_MODEL_NAME_EN}", "MergedExport", type="string")
+        cmds.addAttr(root, longName=ATTR_MMD_COMMENT, dataType="string")
+        cmds.setAttr(f"{root}.{ATTR_MMD_COMMENT}", "", type="string")
+        cmds.addAttr(root, longName=ATTR_MMD_COMMENT_EN, dataType="string")
+        cmds.setAttr(f"{root}.{ATTR_MMD_COMMENT_EN}", "", type="string")
+        cmds.addAttr(root, longName=ATTR_MMD_IMPORT_SCALE, attributeType="double")
+        cmds.setAttr(f"{root}.{ATTR_MMD_IMPORT_SCALE}", 1.0)
+
+        bone = cmds.createNode("joint", name=f"{root_name}_bone", parent=root)
+        for attr, attr_type, value in (
+            (ATTR_MMD_BONE_INDEX, "long", 0),
+            (ATTR_MMD_BONE_PARENT_INDEX, "long", -1),
+        ):
+            cmds.addAttr(bone, longName=attr, attributeType=attr_type)
+            cmds.setAttr(f"{bone}.{attr}", value)
+        for attr, value in (
+            (ATTR_MMD_BONE_NAME, "センター"),
+            (ATTR_MMD_BONE_NAME_EN, "Center"),
+        ):
+            cmds.addAttr(bone, longName=attr, dataType="string")
+            cmds.setAttr(f"{bone}.{attr}", value, type="string")
+        maya_attribute_utils.set_custom_attributes(
+            bone,
+            {
+                ATTR_MMD_BONE_FLAGS: 0,
+                ATTR_MMD_BONE_OFFSET: [0.0, -1.0, 0.0],
+                ATTR_MMD_PMX_REST_POSITION: [0.0, 0.0, 0.0],
+                ATTR_MMD_DEFORM_LAYER: 0,
+            },
+        )
 
         mesh_a, _ = self._make_triangle(name=f"{root_name}_mesh_a")
         mesh_b, _ = self._make_triangle(name=f"{root_name}_mesh_b")
@@ -225,6 +260,8 @@ class TestPmxExporter(MayaTestBase):
         cmds.parent(mesh_b, root)
         shader_a = self._assign_shader(mesh_a, shader_name=f"{root_name}_MatA")
         shader_b = self._assign_shader(mesh_b, shader_name=f"{root_name}_MatB")
+        self._set_tagged_shader_with_textures(shader_a, 0, shader_a)
+        self._set_tagged_shader_with_textures(shader_b, 1, shader_b)
         return root, (mesh_a, mesh_b), (shader_a, shader_b)
 
     def _make_skinned_triangle(self, name: str = "skinned_tri"):
@@ -325,7 +362,7 @@ class TestPmxExporter(MayaTestBase):
         class FakeMaterialMorph:
             name = "材質点滅"
             name_english = "material_flash"
-            panel = 5
+            panel = 4
             morph_type = PmxMorphType.MaterialMorph
             offsets = [
                 {
@@ -352,12 +389,15 @@ class TestPmxExporter(MayaTestBase):
                 ],
             },
         )()
-        result = MorphConverter().convert_pmx_morphs(fake_data, mesh_name)
+        morph_converter = MorphConverter()
+        result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
         self.assertTrue(result.get("success", False))
         self.assertEqual(len(result["group_morph_nodes"]), 1)
         if root_group is not None:
-            # Match PMX import ownership: vertex metadata stays on blendShape,
-            # while group/bone/material network leaves are registered to the model root.
+            morph_converter.build_morph_controller(fake_data, root_group, result)
+            # Match PMX import ownership: all semantic morph metadata leaves
+            # are registered to the model root; vertex offsets remain on the
+            # blendShape as their runtime authority.
             pipeline = ModelImportPipeline(
                 logger=get_logger(__name__),
                 filepath="<test fixture>",
@@ -378,6 +418,7 @@ class TestPmxExporter(MayaTestBase):
                     result["group_morph_nodes"]
                     + result["bone_morph_nodes"]
                     + result["material_morph_nodes"]
+                    + result["vertex_morph_nodes"]
                 ),
             )
         return result
@@ -1228,8 +1269,40 @@ class TestPmxExporter(MayaTestBase):
         """model exportは0-weight jointもSkeleton metadataからPMX boneへ戻す。"""
         transform, joints, skin_cluster = self._make_skinned_triangle("pmx_zero_weight_bone")
         root = cmds.group(empty=True, name="pmx_zero_weight_root")
+        maya_attribute_utils.set_custom_attributes(
+            root,
+            {
+                ATTR_MMD_MODEL_NAME: "ZeroWeight",
+                ATTR_MMD_MODEL_NAME_EN: "ZeroWeight",
+                ATTR_MMD_COMMENT: "",
+                ATTR_MMD_COMMENT_EN: "",
+                ATTR_MMD_IMPORT_SCALE: 1.0,
+            },
+        )
         cmds.parent(transform, root)
         cmds.parent(joints[0], root)
+        for joint, rest_position in zip(joints, ([0.0, 0.0, 0.0], [0.0, 2.0, 0.0])):
+            maya_attribute_utils.set_custom_attributes(
+                joint,
+                {
+                    ATTR_MMD_BONE_FLAGS: 0,
+                    ATTR_MMD_BONE_OFFSET: [0.0, -1.0, 0.0],
+                    ATTR_MMD_PMX_REST_POSITION: rest_position,
+                    ATTR_MMD_DEFORM_LAYER: 0,
+                },
+            )
+        mesh_shape = (cmds.listRelatives(transform, shapes=True, type="mesh") or [None])[0]
+        shader_groups = (
+            cmds.listConnections(mesh_shape, type="shadingEngine") if mesh_shape else []
+        ) or []
+        for shading_group in shader_groups:
+            shaders = cmds.listConnections(
+                f"{shading_group}.surfaceShader",
+                source=True,
+                destination=False,
+            ) or []
+            for shader in shaders:
+                self._set_tagged_shader_with_textures(shader, 0, shader)
         cmds.select(joints[1], replace=True)
         unused_joint = cmds.joint(name="pmx_unused_ik_target", position=[0.0, 3.0, 0.0])
         for attr, value in [
@@ -1244,6 +1317,15 @@ class TestPmxExporter(MayaTestBase):
         ]:
             cmds.addAttr(unused_joint, longName=attr, dataType="string")
             cmds.setAttr(f"{unused_joint}.{attr}", value, type="string")
+        maya_attribute_utils.set_custom_attributes(
+            unused_joint,
+            {
+                ATTR_MMD_BONE_FLAGS: 0,
+                ATTR_MMD_BONE_OFFSET: [0.0, -1.0, 0.0],
+                ATTR_MMD_PMX_REST_POSITION: [0.0, 3.0, 0.0],
+                ATTR_MMD_DEFORM_LAYER: 0,
+            },
+        )
 
         output_path = self.get_temp_filename("zero_weight_bone.pmx")
         result = ExportModelAction().execute(
