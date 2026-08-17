@@ -324,24 +324,28 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError("morph topology is not repairable")
         source = serialize_group_topology(inspection.expected)
 
-        def error_factory(failure: TransactionFailure) -> Exception:
-            return MayaModelAuthoringCoordinatorError(str(failure))
+        def mutate(_targets: tuple[Any, ...]) -> str:
+            result = self._backend.apply_morph_topology_repair(model_root, source)
+            if not isinstance(result, str):
+                raise TypeError("morph topology repair returned an invalid result")
+            return result
 
-        TransactionRunner[str](
+        def verify_and_commit(result: str, _targets: tuple[Any, ...]) -> None:
+            try:
+                self._backend.commit_morph_topology_repair(model_root, result)
+            except Exception as exc:
+                raise RuntimeError(f"verify/commit failed: {exc}") from exc
+
+        self._run_transaction(
+            model_root,
             "repair_morph_topology",
             (model_root,),
-            begin=lambda _targets: self._backend.begin_morph_topology_repair(
+            lambda _targets: self._backend.begin_morph_topology_repair(
                 model_root, source
             ),
-            mutate=lambda _targets: self._backend.apply_morph_topology_repair(
-                model_root, source
-            ),
-            verify_and_commit=lambda result, _targets: self._backend.commit_morph_topology_repair(
-                model_root, result
-            ),
-            rollback=lambda _targets: self._backend.rollback_write(model_root),
-            error_factory=error_factory,
-        ).run()
+            mutate,
+            verify_and_commit,
+        )
         return self.inspect_morph_topology(model_root)
 
     def begin_morph_preview(
