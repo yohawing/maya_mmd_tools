@@ -40,6 +40,8 @@ from mmd_tools.core.material_read_projection import (
     MaterialAssignmentSummary,
     MaterialDetailProjection,
     MaterialListProjection,
+    normalize_material_detail_projection,
+    normalize_material_list_projection,
 )
 from mmd_tools.core.morph_authoring import (
     classify_morph_change,
@@ -62,6 +64,7 @@ from mmd_tools.adapters.transaction_runner import TransactionFailure, Transactio
 
 logger = get_logger(__name__)
 _REHYDRATED_SPEC_TYPE_IDS: set[int] = set()
+_REHYDRATED_PROJECTION_TYPE_IDS: set[tuple[str, int]] = set()
 
 
 class MayaModelAuthoringCoordinatorError(RuntimeError):
@@ -143,10 +146,20 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 f"read_material_list_projection failed for root {model_root!r}: {exc}"
             ) from exc
-        if not isinstance(result, MaterialListProjection):
+        observed_result = result
+        try:
+            result, rehydrated = normalize_material_list_projection(result)
+        except Exception as exc:
             raise MayaModelAuthoringCoordinatorError(
-                "material list projection reader returned an invalid result"
+                "material list projection reader returned an invalid result: "
+                f"{exc}"
+            ) from exc
+        if result.root_identity != model_root:
+            raise MayaModelAuthoringCoordinatorError(
+                "material list projection returned the wrong root"
             )
+        if rehydrated:
+            self._log_projection_rehydration("list", observed_result, result)
         return result
 
     def read_material_detail_projection(
@@ -169,10 +182,14 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 f"read_material_detail_projection failed for root {model_root!r}: {exc}"
             ) from exc
-        if not isinstance(result, MaterialDetailProjection):
+        observed_result = result
+        try:
+            result, rehydrated = normalize_material_detail_projection(result)
+        except Exception as exc:
             raise MayaModelAuthoringCoordinatorError(
-                "material detail projection reader returned an invalid result"
-            )
+                "material detail projection reader returned an invalid result: "
+                f"{exc}"
+            ) from exc
         if (
             result.root_identity != model_root
             or result.material.index != index
@@ -181,6 +198,8 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 "material detail projection returned the wrong binding"
             )
+        if rehydrated:
+            self._log_projection_rehydration("detail", observed_result, result)
         return result
 
     def read_morph_authoring_snapshot(self, model_root: str) -> MorphAuthoringReadSnapshot:
@@ -1834,6 +1853,43 @@ class MayaModelAuthoringCoordinator:
             begin_transaction,
             mutate,
             lambda _result, _targets: commit(model_root, binding, new_morph),
+        )
+
+    @staticmethod
+    def _log_projection_rehydration(
+        kind: str,
+        observed: Any,
+        canonical: Any,
+    ) -> None:
+        """Log one compact identity diagnostic for a reload-generation read."""
+
+        observed_type = type(observed)
+        key = (kind, id(observed_type))
+        if key in _REHYDRATED_PROJECTION_TYPE_IDS:
+            return
+        _REHYDRATED_PROJECTION_TYPE_IDS.add(key)
+        nested = (
+            observed.items[0]
+            if kind == "list" and getattr(observed, "items", ())
+            else getattr(observed, "material", None)
+        )
+        nested_type = type(nested) if nested is not None else None
+        logger.warning(
+            "Rehydrated material %s projection after module reload: "
+            "actual=%s.%s actual_class_id=%s current_class_id=%s "
+            "root=%s nested=%s nested_class_id=%s",
+            kind,
+            observed_type.__module__,
+            observed_type.__qualname__,
+            id(observed_type),
+            id(type(canonical)),
+            canonical.root_identity,
+            (
+                "{}.{}".format(nested_type.__module__, nested_type.__qualname__)
+                if nested_type is not None
+                else "none"
+            ),
+            id(nested_type) if nested_type is not None else None,
         )
 
     def _read_current(self, model_root: str, operation: str) -> MmdModelAuthoringSpec:

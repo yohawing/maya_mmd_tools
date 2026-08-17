@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, make_dataclass, replace
+from enum import Enum
 from typing import Any
 
 import pytest
@@ -32,7 +33,9 @@ from mmd_tools.core.material_read_projection import (
     MaterialAssignmentKind,
     MaterialAssignmentSummary,
     MaterialDetailProjection,
+    MaterialListItemProjection,
     MaterialListProjection,
+    MaterialListSemantic,
     MaterialPreviewState,
 )
 
@@ -377,6 +380,24 @@ _ReloadGenerationSpec.__module__ = MmdModelAuthoringSpec.__module__
 _ReloadGenerationSpec.__qualname__ = MmdModelAuthoringSpec.__qualname__
 
 
+def _old_projection_dataclass(current_type):
+    """Build a strict previous-generation shape for reload boundary tests."""
+
+    old_type = make_dataclass(
+        current_type.__name__,
+        [(field.name, field.type) for field in fields(current_type)],
+        frozen=True,
+    )
+    old_type.__module__ = current_type.__module__
+    old_type.__qualname__ = current_type.__qualname__
+    old_type.projection_schema_version = getattr(
+        current_type,
+        "projection_schema_version",
+        None,
+    )
+    return old_type
+
+
 class FakeMaterialAuthoring:
     def __init__(self, backend: FakeBackend) -> None:
         self.backend = backend
@@ -705,6 +726,109 @@ def test_read_material_list_projection_delegates_one_typed_generation() -> None:
 
     assert result is backend.material_list_projection
     assert backend.events == ["read:material_list_projection"]
+
+
+def test_read_material_list_projection_rehydrates_strict_previous_generation() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    old_kind = Enum(
+        "MaterialAssignmentKind",
+        {member.name: member.value for member in MaterialAssignmentKind},
+        module=MaterialAssignmentKind.__module__,
+    )
+    old_kind.__qualname__ = MaterialAssignmentKind.__qualname__
+    old_assignment = _old_projection_dataclass(MaterialAssignmentSummary)
+    old_semantic = _old_projection_dataclass(MaterialListSemantic)
+    old_item = _old_projection_dataclass(MaterialListItemProjection)
+    old_projection = _old_projection_dataclass(MaterialListProjection)
+
+    backend.material_list_projection = old_projection(
+        "|root",
+        (
+            old_item(
+                old_semantic(0, "material0", "Material", "Material EN"),
+                old_assignment(old_kind.EXPLICIT_FACES, 1, 2),
+            ),
+        ),
+    )
+
+    result = coordinator.read_material_list_projection("|root")
+
+    assert type(result) is MaterialListProjection
+    assert type(result.items[0]) is MaterialListItemProjection
+    assert type(result.items[0].semantic) is MaterialListSemantic
+    assert type(result.items[0].assignment) is MaterialAssignmentSummary
+    assert result.root_identity == "|root"
+    assert result.items[0].binding_identity == "material0"
+    assert result.items[0].assignment == MaterialAssignmentSummary(
+        MaterialAssignmentKind.EXPLICIT_FACES,
+        1,
+        2,
+    )
+
+
+def test_read_material_list_projection_rejects_schema_drift_and_wrong_root() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    old_projection = _old_projection_dataclass(MaterialListProjection)
+    old_projection.projection_schema_version = 999
+    backend.material_list_projection = old_projection("|root", ())
+
+    with pytest.raises(
+        MayaModelAuthoringCoordinatorError,
+        match="material list projection reader returned an invalid result",
+    ):
+        coordinator.read_material_list_projection("|root")
+
+    backend.material_list_projection = MaterialListProjection("|other", ())
+    with pytest.raises(
+        MayaModelAuthoringCoordinatorError,
+        match="material list projection returned the wrong root",
+    ):
+        coordinator.read_material_list_projection("|root")
+
+
+def test_read_material_detail_projection_rehydrates_strict_previous_generation() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    current_material = backend.scene.materials[0]
+    old_kind = Enum(
+        "MaterialAssignmentKind",
+        {member.name: member.value for member in MaterialAssignmentKind},
+        module=MaterialAssignmentKind.__module__,
+    )
+    old_kind.__qualname__ = MaterialAssignmentKind.__qualname__
+    old_assignment = _old_projection_dataclass(MaterialAssignmentSummary)
+    old_preview = _old_projection_dataclass(MaterialPreviewState)
+    old_material = _old_projection_dataclass(MmdMaterialSpec)
+
+    def to_mapping(value):
+        return {field.name: getattr(value, field.name) for field in fields(MmdMaterialSpec)}
+
+    old_material.to_mapping = to_mapping
+    old_detail = _old_projection_dataclass(MaterialDetailProjection)
+    backend.material_detail_projection = old_detail(
+        "|root",
+        old_material(
+            **{
+                field.name: getattr(current_material, field.name)
+                for field in fields(MmdMaterialSpec)
+            }
+        ),
+        old_assignment(old_kind.EMPTY, 0, 0),
+        (),
+        old_preview("lambert", False),
+    )
+
+    result = coordinator.read_material_detail_projection(
+        "|root",
+        0,
+        "material0",
+        MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+    )
+
+    assert type(result) is MaterialDetailProjection
+    assert type(result.material) is MmdMaterialSpec
+    assert type(result.assignment) is MaterialAssignmentSummary
+    assert type(result.preview) is MaterialPreviewState
+    assert result.material.binding_identity == "material0"
 
 
 def test_read_material_detail_projection_delegates_and_checks_identity() -> None:
