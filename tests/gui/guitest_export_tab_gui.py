@@ -146,8 +146,8 @@ class TestExportTabGUI(GuiTestBase):
             _emit_witness(
                 "export.pane_selector",
                 "selector",
-                "objectName=exportPaneTabs",
-                "QTest.setCurrentIndex(objectName=exportPaneTabs, motion)",
+                "objectName=exportCategoryStack",
+                "QTest.setCurrentIndex(objectName=exportCategoryStack, motion)",
                 "model and motion panes expose fixed PMX/VMD formats",
                 pane_spy,
                 tab.pane_tabs,
@@ -445,6 +445,7 @@ class TestExportTabGUI(GuiTestBase):
         """Switching panes restores each report/ack/path without mixing them."""
         tab = self._create_visible_tab()
         try:
+            model_output_edit = tab.output_path_edit
             output_spy = QtSignalInvocationSpy(
                 "ExportTab.output_path_changed",
                 tab.output_path_edit.textChanged,
@@ -460,6 +461,15 @@ class TestExportTabGUI(GuiTestBase):
             tab.validation_console.set_report(model_report)
             tab.validation_console.acknowledge_check.setChecked(True)
             self.assertTrue(tab.build_request("model_ROOT").file_path.endswith("model.pmx"))
+            _emit_witness(
+                "export.output_path",
+                "selector",
+                "objectName=exportOutputPath",
+                "QTest.setText(objectName=exportOutputPath, model.vmd)",
+                "per-pane output paths normalize to model.pmx and motion.vmd",
+                output_spy,
+                model_output_edit,
+            )
 
             tab.pane_tabs.setCurrentIndex(1)
             self.assertIsNone(tab.validation_console.report)
@@ -484,15 +494,6 @@ class TestExportTabGUI(GuiTestBase):
             self.assertIs(tab.validation_console.report, motion_report)
             self.assertTrue(tab.validation_console.warnings_acknowledged)
             self.assertEqual(tab.output_path_edit.text(), "motion.vmd")
-            _emit_witness(
-                "export.output_path",
-                "selector",
-                "objectName=exportOutputPath",
-                "QTest.setText(objectName=exportOutputPath, model.vmd)",
-                "per-pane output paths normalize to model.pmx and motion.vmd",
-                output_spy,
-                tab.output_path_edit,
-            )
         finally:
             self._delete_tab(tab)
 

@@ -31,9 +31,15 @@ class ExportPresenter(QObject):
         self.view.presenter = self
         self.view.validate_requested.connect(self.validate)
         self.view.export_requested.connect(self.export)
-        self.view.validation_console.acknowledgement_changed.connect(
-            self._on_acknowledgement_changed
-        )
+        consoles = getattr(self.view, "validation_consoles", None)
+        if consoles is None:
+            consoles = (self.view.validation_console,)
+        seen = set()
+        for console in consoles:
+            if id(console) in seen:
+                continue
+            seen.add(id(console))
+            console.acknowledgement_changed.connect(self._on_acknowledgement_changed)
         current_model_changed = getattr(app_state, "current_model_changed", None)
         if current_model_changed is not None:
             current_model_changed.connect(self._on_current_model_changed)

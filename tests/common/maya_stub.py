@@ -256,7 +256,7 @@ _QTWIDGETS_NAMES = [
     "QFileDialog", "QGroupBox", "QFormLayout", "QCheckBox", "QComboBox",
     "QListWidget", "QSlider", "QTreeView", "QTreeWidget", "QTreeWidgetItem",
     "QColorDialog", "QDoubleSpinBox", "QAbstractSpinBox", "QSpinBox", "QGridLayout", "QScrollArea",
-    "QListWidgetItem", "QStatusBar", "QProgressBar", "QSplitter", "QTableWidget",
+    "QListWidgetItem", "QStatusBar", "QProgressBar", "QSplitter", "QStackedWidget", "QTableWidget",
     "QTableWidgetItem", "QHeaderView", "QMessageBox", "QInputDialog", "QToolBar",
     "QMenuBar", "QMenu", "QSizePolicy", "QToolTip",
 ]
@@ -276,6 +276,7 @@ class _StubQt:
     AlignCenter = 4
     Horizontal = 1
     Vertical = 2
+    StrongFocus = 0x8
     ItemIsEditable = 2
 
 
