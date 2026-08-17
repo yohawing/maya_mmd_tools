@@ -718,11 +718,15 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             target_x, source=True, destination=False, plugs=True
         ) or []
         self.assertEqual(len(control_source), 1)
-        self.assertEqual(
-            cmds.ls(control_source[0].split(".", 1)[0], long=True),
-            cmds.ls(control, long=True),
+        baseline_node = control_source[0].split(".", 1)[0]
+        self.assertEqual(cmds.nodeType(baseline_node), "plusMinusAverage")
+        self.assertTrue(control_source[0].endswith(".output1D"))
+        self.assertTrue(
+            cmds.isConnected(
+                f"{control}.translateX",
+                f"{baseline_node}.input1D[0]",
+            )
         )
-        self.assertTrue(control_source[0].endswith(".translateX"))
         self.assertEqual(
             cmds.listConnections(f"{left_ik}.translate", source=True, destination=False, plugs=True),
             [target.rsplit(".", 1)[0] + ".outputTranslate"],
