@@ -36,6 +36,11 @@ from mmd_tools.core.mmd_control_rig_motion import (
     restore_and_remove_mmd_control_rig,
     restore_mmd_control_rig_attached,
 )
+from mmd_tools.core.model_registry import (
+    REGISTRY_CATEGORY_MORPH,
+    get_model_registry,
+    register_model_members,
+)
 from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_APPEND_BASE,
     INPUT_DIRECT_CHANNEL,
@@ -250,6 +255,9 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             type="string",
         )
         cmds.connectAttr(f"{root}.message", f"{node}.mmd_model_root")
+        registry = get_model_registry(root)
+        if registry:
+            register_model_members(registry, REGISTRY_CATEGORY_MORPH, [node])
         return node
 
     def test_mmt_rig_fixture_classifies_mvp_without_mutating_scene(self):
