@@ -27,8 +27,10 @@ from mmd_tools.core.morph_topology import (
 )
 from mmd_tools.core.morph_read_projection import (
     MorphAuthoringReadSnapshot,
+    MorphBindingProjection,
     MorphBlendShapeReadProjection,
 )
+from mmd_tools.core.morph_binding_resolver import MorphBinding, MorphBindingWarning
 from mmd_tools.core.material_read_projection import (
     MaterialAssignmentKind,
     MaterialAssignmentSummary,
@@ -717,6 +719,102 @@ def test_read_morph_authoring_snapshot_delegates_one_combined_generation() -> No
 
     assert result is backend.morph_snapshot
     assert backend.events == ["read:morph_snapshot"]
+
+
+def test_read_morph_authoring_snapshot_rehydrates_strict_previous_generation() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    current = backend.scene
+    morph = MmdMorphSpec(
+        "Morph",
+        index=0,
+        morph_type="vertex",
+        binding_identity="morph0",
+    )
+    old_spec = _ReloadGenerationSpec(
+        model=current.model,
+        bones=current.bones,
+        materials=current.materials,
+        morphs=(morph,),
+    )
+    old_binding = _old_projection_dataclass(MorphBinding)(
+        "Morph",
+        0,
+        "blendShape",
+        "Morph",
+        0,
+        "blendShape.weight[0]",
+        "controller",
+        0,
+    )
+    old_warning = _old_projection_dataclass(MorphBindingWarning)(
+        "legacy",
+        "legacy alias",
+    )
+    old_morph = _old_projection_dataclass(MorphBindingProjection)(
+        "Morph",
+        0,
+        "morph0",
+        (old_binding,),
+        (old_warning,),
+        ("controller.inputWeight[0]",),
+        True,
+        "",
+        True,
+    )
+    old_projection = _old_projection_dataclass(MorphBlendShapeReadProjection)(
+        "|root",
+        "controller",
+        (),
+        ("blendShape",),
+        (old_morph,),
+        (),
+    )
+    old_topology = _old_projection_dataclass(MorphTopologyInspection)({}, {}, ())
+    backend.morph_snapshot = _old_projection_dataclass(MorphAuthoringReadSnapshot)(
+        old_spec,
+        old_projection,
+        old_topology,
+    )
+
+    result = coordinator.read_morph_authoring_snapshot("|root")
+
+    assert type(result) is MorphAuthoringReadSnapshot
+    assert type(result.spec) is MmdModelAuthoringSpec
+    assert type(result.projection) is MorphBlendShapeReadProjection
+    assert type(result.projection.morphs[0]) is MorphBindingProjection
+    assert type(result.projection.morphs[0].bindings[0]) is MorphBinding
+    assert type(result.projection.morphs[0].warnings[0]) is MorphBindingWarning
+    assert type(result.topology_inspection) is MorphTopologyInspection
+    assert result.projection.morphs[0].binding_identity == "morph0"
+    assert result.spec.morphs[0].binding_identity == "morph0"
+
+
+def test_read_morph_authoring_snapshot_rejects_schema_drift_and_wrong_root() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    old_snapshot = _old_projection_dataclass(MorphAuthoringReadSnapshot)
+    old_snapshot.projection_schema_version = 999
+    backend.morph_snapshot = old_snapshot(
+        backend.morph_snapshot.spec,
+        backend.morph_snapshot.projection,
+        backend.morph_snapshot.topology_inspection,
+    )
+
+    with pytest.raises(
+        MayaModelAuthoringCoordinatorError,
+        match="morph authoring snapshot reader returned an invalid result",
+    ):
+        coordinator.read_morph_authoring_snapshot("|root")
+
+    backend.morph_snapshot = MorphAuthoringReadSnapshot(
+        backend.morph_snapshot.spec,
+        replace(backend.morph_snapshot.projection, root_identity="|other"),
+        backend.morph_snapshot.topology_inspection,
+    )
+    with pytest.raises(
+        MayaModelAuthoringCoordinatorError,
+        match="morph authoring snapshot returned the wrong root",
+    ):
+        coordinator.read_morph_authoring_snapshot("|root")
 
 
 def test_read_material_list_projection_delegates_one_typed_generation() -> None:

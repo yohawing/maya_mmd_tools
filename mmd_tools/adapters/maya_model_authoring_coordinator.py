@@ -51,7 +51,10 @@ from mmd_tools.core.morph_authoring import (
     replace_morph as replace_morph_spec,
     replace_morph_offsets as replace_morph_offsets_spec,
 )
-from mmd_tools.core.morph_read_projection import MorphAuthoringReadSnapshot
+from mmd_tools.core.morph_read_projection import (
+    MorphAuthoringReadSnapshot,
+    normalize_morph_authoring_snapshot,
+)
 from mmd_tools.core.morph_topology import (
     MorphTopologyInspection,
     serialize_group_topology,
@@ -215,10 +218,20 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 f"read_morph_authoring_snapshot failed for root {model_root!r}: {exc}"
             ) from exc
-        if not isinstance(result, MorphAuthoringReadSnapshot):
+        observed_result = result
+        try:
+            result, rehydrated = normalize_morph_authoring_snapshot(result)
+        except Exception as exc:
             raise MayaModelAuthoringCoordinatorError(
-                "morph authoring snapshot reader returned an invalid result"
+                "morph authoring snapshot reader returned an invalid result: "
+                f"{exc}"
+            ) from exc
+        if result.projection.root_identity != model_root:
+            raise MayaModelAuthoringCoordinatorError(
+                "morph authoring snapshot returned the wrong root"
             )
+        if rehydrated:
+            self._log_morph_snapshot_rehydration(observed_result, result)
         return result
 
     def begin_info_metadata_edit(self, model_root: str, attr: str) -> Any:
@@ -1890,6 +1903,44 @@ class MayaModelAuthoringCoordinator:
                 else "none"
             ),
             id(nested_type) if nested_type is not None else None,
+        )
+
+    @staticmethod
+    def _log_morph_snapshot_rehydration(
+        observed: Any,
+        canonical: MorphAuthoringReadSnapshot,
+    ) -> None:
+        """Log one compact identity diagnostic for a Morph reload read."""
+
+        observed_type = type(observed)
+        key = ("morph", id(observed_type))
+        if key in _REHYDRATED_PROJECTION_TYPE_IDS:
+            return
+        _REHYDRATED_PROJECTION_TYPE_IDS.add(key)
+        projection_type = type(getattr(observed, "projection", None))
+        topology_type = type(getattr(observed, "topology_inspection", None))
+        logger.warning(
+            "Rehydrated morph authoring snapshot after module reload: "
+            "actual=%s.%s actual_class_id=%s current_class_id=%s "
+            "root=%s projection=%s projection_class_id=%s "
+            "topology=%s topology_class_id=%s",
+            observed_type.__module__,
+            observed_type.__qualname__,
+            id(observed_type),
+            id(type(canonical)),
+            canonical.projection.root_identity,
+            (
+                "{}.{}".format(projection_type.__module__, projection_type.__qualname__)
+                if projection_type is not None
+                else "none"
+            ),
+            id(projection_type) if projection_type is not None else None,
+            (
+                "{}.{}".format(topology_type.__module__, topology_type.__qualname__)
+                if topology_type is not None
+                else "none"
+            ),
+            id(topology_type) if topology_type is not None else None,
         )
 
     def _read_current(self, model_root: str, operation: str) -> MmdModelAuthoringSpec:
