@@ -3,9 +3,15 @@
 from ..qt_compat import QObject
 from ...core.logger import get_logger
 from ...services.export_workflow_service import (
+    ExportWorkflowResult,
     ExportWorkflowService,
     STATE_EXPORTING,
+    STATE_FAILED,
     STATE_VALIDATING,
+)
+from ...validation.export_validator import (
+    ExportValidationIssue,
+    ExportValidationReport,
 )
 
 
@@ -28,27 +34,14 @@ class ExportPresenter(QObject):
         self.view.validation_console.acknowledgement_changed.connect(
             self._on_acknowledgement_changed
         )
-        model_list_updated = getattr(app_state, "model_list_updated", None)
-        if model_list_updated is not None:
-            model_list_updated.connect(self.refresh_targets)
         current_model_changed = getattr(app_state, "current_model_changed", None)
         if current_model_changed is not None:
             current_model_changed.connect(self._on_current_model_changed)
-        self.refresh_targets()
-
-    def refresh_targets(self, *_args):
-        """Refresh target choices from the live ApplicationState model list."""
-        self.view.set_targets(
-            getattr(self.app_state, "available_models", []) or [],
-            getattr(self.app_state, "current_model_root", None),
-        )
 
     def _on_current_model_changed(self, model_root):
-        """Prefer the current model when Maya reports a model switch."""
-        self.view.set_targets(
-            getattr(self.app_state, "available_models", []) or [],
-            model_root or None,
-        )
+        """Invalidate both panes when the shared Current Model changes."""
+        del model_root
+        self.view.invalidate_all_panes()
 
     def _on_acknowledgement_changed(self, _acknowledged):
         """Acknowledgement changes affect only the next service execution."""
@@ -57,12 +50,15 @@ class ExportPresenter(QObject):
     def validate(self):
         """Run preflight and payload validation without writing an output."""
         self.view.set_state(STATE_VALIDATING)
+        request = None
         try:
-            result = self.workflow_service.validate(self.view.build_request())
+            request = self.view.build_request(
+                getattr(self.app_state, "current_model_root", None)
+            )
+            result = self.workflow_service.validate(request)
         except Exception as exc:
             logger.error("Export validation failed before result creation: %s", exc, exc_info=True)
-            self.app_state.emit_status(f"Export validation failed: {exc}")
-            return None
+            return self._publish_failure("Export validation failed", exc, request)
         self.view.set_result(result)
         self._emit_status(result)
         return result
@@ -70,17 +66,50 @@ class ExportPresenter(QObject):
     def export(self):
         """Revalidate and execute the validated export action."""
         self.view.set_state(STATE_EXPORTING)
+        request = None
         try:
+            request = self.view.build_request(
+                getattr(self.app_state, "current_model_root", None)
+            )
             result = self.workflow_service.execute(
-                self.view.build_request(),
+                request,
                 acknowledge_warnings=self.view.validation_console.warnings_acknowledged,
             )
         except Exception as exc:
             logger.error("Export workflow failed before result creation: %s", exc, exc_info=True)
-            self.app_state.emit_status(f"Export failed: {exc}")
-            return None
+            return self._publish_failure("Export failed", exc, request)
         self.view.set_result(result)
         self._emit_status(result)
+        return result
+
+    def _publish_failure(self, status_prefix, error, request=None):
+        """Replace stale validation UI with one terminal workflow failure."""
+        options = dict(getattr(request, "options", None) or {})
+        export_format = options.get("export_format") or getattr(
+            self.view, "current_export_format", None
+        )
+        export_format = str(export_format or "").lower() or None
+        is_motion = export_format == "vmd"
+        mode = str(options.get("vmd_mode") or "C") if is_motion else "model"
+        issue = ExportValidationIssue(
+            "EXPORT_WORKFLOW_EXCEPTION",
+            "fatal",
+            True,
+            "export.motion" if is_motion else "export.model",
+            f"{type(error).__name__}: {error}",
+        )
+        result = ExportWorkflowResult(
+            STATE_FAILED,
+            ExportValidationReport(
+                export_format,
+                (issue,),
+                mode=mode,
+            ),
+            {"output_path": getattr(request, "file_path", None)},
+            error=error,
+        )
+        self.view.set_result(result)
+        self.app_state.emit_status(f"{status_prefix}: {error}")
         return result
 
     def _emit_status(self, result):

@@ -159,11 +159,6 @@ def export_pmx_model_json(payload: Any) -> Optional[bytes]:
     return _runtime_export.export_pmx_model_json(payload, get_mmd_runtime_library)
 
 
-def export_pmd_model_json(payload: Any) -> Optional[bytes]:
-    """PmdParsedModel JSON から PMD バイト列を native writer で生成する。"""
-    return _runtime_export.export_pmd_model_json(payload, get_mmd_runtime_library)
-
-
 def export_pmx_from_parts(
     metadata: Any,
     positions_xyz: Any,

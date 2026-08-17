@@ -1,0 +1,91 @@
+{
+  "template_schema_version": 2,
+  "template_id": "pmx20-basic-v1",
+  "label": "1ボーン1Cube",
+  "revision": "1",
+  "provenance": {
+    "source": "maya_mmd_tools project-authored product template",
+    "source_revision": "pmx20-basic-v1",
+    "derivation": "Authored in this repository as the minimal one-bone, one-cube model template."
+  },
+  "license": {
+    "identifier": "MIT",
+    "evidence": "Repository LICENSE",
+    "redistribution": "Permitted under the repository MIT License; retain the required copyright and permission notice."
+  },
+  "authoring_spec": {
+    "schema_version": 1,
+    "model": {
+      "name": "新規MMDモデル",
+      "name_english": "New MMD Model",
+      "comment": "",
+      "comment_english": ""
+    },
+    "bones": [
+      {
+        "name": "Root",
+        "name_english": "Root",
+        "index": 0,
+        "parent_index": -1,
+        "rest_position": [0.0, 0.0, 0.0],
+        "transform_layer": 0,
+        "flags": 30,
+        "connect_bone_index": null,
+        "tail_offset": [0.0, 1.0, 0.0],
+        "grant_parent_index": null,
+        "grant_ratio": 0.0,
+        "grant_local": false,
+        "fixed_axis": null,
+        "local_axis_x": null,
+        "local_axis_z": null,
+        "external_parent_key": null,
+        "ik_target_index": null,
+        "ik_loop_count": 0,
+        "ik_limit_radian": null,
+        "ik_links": [],
+        "binding_identity": null
+      }
+    ],
+    "materials": [
+      {
+        "name": "Default Material",
+        "name_english": "Default Material",
+        "index": 0,
+        "diffuse": [1.0, 1.0, 1.0, 1.0],
+        "specular": [0.0, 0.0, 0.0],
+        "specular_coefficient": 0.0,
+        "ambient": [0.0, 0.0, 0.0],
+        "draw_flags": 0,
+        "edge_color": [0.0, 0.0, 0.0, 1.0],
+        "edge_size": 1.0,
+        "texture_path": null,
+        "resolved_texture_path": null,
+        "sphere_texture_path": null,
+        "resolved_sphere_texture_path": null,
+        "sphere_mode": 0,
+        "shared_toon": false,
+        "toon_texture_index": null,
+        "toon_texture_path": null,
+        "resolved_toon_texture_path": null,
+        "memo": ""
+      }
+    ],
+    "morphs": []
+  },
+  "display_frames": [
+    {
+      "name": "Root",
+      "name_english": "Root",
+      "special": true,
+      "elements": [
+        {"type": "bone", "index": 0}
+      ]
+    },
+    {
+      "name": "Expressions",
+      "name_english": "Expressions",
+      "special": true,
+      "elements": []
+    }
+  ]
+}

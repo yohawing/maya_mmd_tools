@@ -107,6 +107,9 @@ from tools.nox.native_sessions import (  # noqa: E402
     run_native_smoke as _run_native_smoke,
     run_reduction_abi_probe as _run_reduction_abi_probe,
 )
+from tools.nox.authoring_sessions import (  # noqa: E402
+    run_authoring_cross_maya_matrix as _run_authoring_cross_maya_matrix,
+)
 from tools.nox.maya_sessions import (  # noqa: E402
     run_cpp_plugin_smoke as _run_cpp_plugin_smoke,
     run_control_rig_gui_e2e as _run_control_rig_gui_e2e,
@@ -956,6 +959,35 @@ def gui_tests(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def authoring_cross_maya_matrix(session: nox.Session) -> None:
+    """Run the compact fail-closed Model Authoring Maya matrix."""
+    _run_authoring_cross_maya_matrix(
+        session,
+        posargs=session.posargs,
+        root=ROOT,
+        python_executable=sys.executable,
+        configure=_cmake_configure,
+        build=_cmake_build,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_script=_mayapy_script,
+        run_logged=_run_logged_subprocess,
+    )
+
+
+@nox.session(venv_backend="none")
+def authoring_performance_contract(session: nox.Session) -> None:
+    """Capture narrow Authoring action timings and Maya adapter scope."""
+    _run_python_module(
+        session,
+        module="tools.authoring_performance_contract",
+        posargs=session.posargs,
+        python_executable=sys.executable,
+        environment=dict(os.environ),
+    )
+
+
+@nox.session(venv_backend="none")
 def ffi_build(session: nox.Session) -> None:
     """Build the mmd-anim FFI library used by Python and C++ integrations.
 
@@ -1027,7 +1059,7 @@ def bundled_native_smoke(session: nox.Session) -> None:
 def native_export_smoke(session: nox.Session) -> None:
     """Verify native export writer symbols when the DLL is current.
 
-    PMX parts export is required. VMD/PMD JSON writer symbols are optional in
+    PMX parts export is required. VMD JSON writer symbols are optional in
     newer mmd-anim builds and are exercised only when present.
 
     Examples:
@@ -1094,16 +1126,52 @@ def export_validation_gate(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def model_authoring_gate(session: nox.Session) -> None:
+    """Run the v0.7 model-authoring Maya E2E gate.
+
+    This is a development evidence gate and is intentionally independent from
+    ``export_release_gate``.  The tool reports missing Maya/composition APIs as
+    blocked; no compatibility fallback is added here.
+
+    Examples:
+        uvx nox -s model_authoring_gate
+        uvx nox -s model_authoring_gate -- --manifest build/reports/authoring.json
+    """
+    gate_args = list(session.posargs)
+    if "--strict" not in gate_args:
+        gate_args.append("--strict")
+    session.run(
+        sys.executable,
+        "tools/model_authoring_gate.py",
+        *gate_args,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def ui_coverage_gate(session: nox.Session) -> None:
+    """Validate the checked-in nine-tab UI inventory and optional report."""
+    args = list(session.posargs) or ["--from-evidence"]
+    session.run(
+        sys.executable,
+        "tools/ui_coverage_gate.py",
+        *args,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def export_release_gate(session: nox.Session) -> None:
-    """Run the reproducible v0.7 PMX/PMD/VMD export release summary.
+    """Run the reproducible v0.7 PMX/VMD export release summary.
 
     The session resolves the pinned external MMD-Anim CLI when the caller does
     not provide one. Maya probes and GUI tests are enabled by default; use
     ``--skip-gui`` only for a deliberately partial local investigation.
 
     Examples:
-        uvx nox -s export_release_gate
+        uvx nox -s export_release_gate  # full Maya 2024/2026 GUI + UI coverage by default
         uvx nox -s export_release_gate -- --skip-gui
+        uvx nox -s export_release_gate -- --targeted-gui  # diagnostic only; gate fails incomplete
         uvx nox -s export_release_gate -- --out-dir build/release-gate/v070-local
     """
     gate_args = list(session.posargs)
@@ -1318,6 +1386,35 @@ def maya_viewport_capture(session: nox.Session) -> None:
         mayapy_arg_path=_mayapy_arg_path,
         mayapy_script=_mayapy_script,
     )
+
+
+@nox.session(venv_backend="none")
+def maya_bone_reset_smoke(session: nox.Session) -> None:
+    """Run the production Bone Tab reset/reconcile smoke under mayapy.
+
+    The smoke creates a fresh ``pmx20-basic-v1`` template, adds an
+    unregistered descendant, verifies the animated current-frame warning and
+    strict rest/index metadata after one atomic reset, then checks Maya undo.
+    Pass ``--maya 2024`` or ``--maya 2026``; invoke the session once per
+    supported Maya version for the durable matrix.
+    """
+    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_version)
+    report = _require_build_path(
+        session,
+        f"build/maya-bone-reset-smoke/maya-{maya_version}.json",
+        "--out",
+    )
+    _clear_probe_report(session, report, "Maya bone reset smoke")
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tools/maya_bone_reset_smoke.py",
+        ["--out", str(report)],
+        {"--out"},
+        utf8=True,
+    )
+    _read_probe_report(session, report, "Maya bone reset smoke")
 
 
 @nox.session(venv_backend="none")
@@ -2213,3 +2310,74 @@ def runtime_bake_bench(session: nox.Session) -> None:
         mayapy_script=_mayapy_script,
         convert_mayapy_path_options=_convert_mayapy_path_options,
     )
+
+
+@nox.session(venv_backend="none")
+def maya_vertex_morph_authoring_smoke(session: nox.Session) -> None:
+    """Run the split-mesh Vertex Morph target writer in Maya standalone.
+
+    Examples:
+        uvx nox -s maya_vertex_morph_authoring_smoke -- --maya 2024
+        uvx nox -s maya_vertex_morph_authoring_smoke -- --maya 2026
+    """
+    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_version)
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tools/maya_vertex_morph_authoring_smoke.py"),
+        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def maya_morph_topology_repair_smoke(session: nox.Session) -> None:
+    """Verify explicit topology repair and Undo in Maya standalone."""
+    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_version)
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tools/maya_morph_topology_repair_smoke.py"),
+        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def maya_model_template_smoke(session: nox.Session) -> None:
+    """Create both packaged model templates in Maya standalone and verify them.
+
+    Examples:
+        uvx nox -s maya_model_template_smoke -- --maya 2024
+        uvx nox -s maya_model_template_smoke -- --maya 2026 --out build/reports/model-template-smoke.json
+    """
+    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_version)
+    out_path = _option(session.posargs, "--out", None)
+    args = []
+    if out_path:
+        args.extend(("--out", _mayapy_arg_path(mayapy, out_path)))
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tools/maya_model_template_smoke.py"),
+        *args,
+        env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def tda_semistandard_reference(session: nox.Session) -> None:
+    """Compare the local Tda V4X PMX with the checked-in structure fixture.
+
+    Example:
+        uvx nox -s tda_semistandard_reference -- --reference <Tda-V4X.pmx> --out build/reports/tda-template-reference.json
+    """
+    reference = _option(session.posargs, "--reference", None)
+    if not reference:
+        session.error("--reference is required")
+    out_path = _option(session.posargs, "--out", None)
+    args = ["tools/tda_semistandard_reference_probe.py", "--reference", reference]
+    if out_path:
+        args.extend(("--out", out_path))
+    session.run(sys.executable, *args, external=True)

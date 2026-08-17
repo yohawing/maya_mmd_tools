@@ -1,4 +1,4 @@
-"""Headless tests for PMX/PMD temporary-output verification."""
+"""Headless tests for PMX temporary-output verification."""
 
 from pathlib import Path
 import tempfile
@@ -8,13 +8,12 @@ from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
 
-from mmd_tools.io.pmd_exporter import PmdExporter
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.validation.output_verifier import verify_model_output
 
 
 def _valid_model_data():
-    """Return a small payload accepted by both model writers."""
+    """Return a small payload accepted by the PMX writer."""
     return {
         "model_name": "OutputVerifierFixture",
         "vertices": [
@@ -31,19 +30,15 @@ def _valid_model_data():
 class OutputVerifierTests(unittest.TestCase):
     """Verify output headers, parser acceptance, and section counts."""
 
-    def test_real_python_pmx_and_pmd_outputs_pass(self):
+    def test_real_python_pmx_output_passes(self):
         model_data = _valid_model_data()
         with tempfile.TemporaryDirectory() as directory:
             pmx_path = Path(directory) / "fixture.pmx"
-            pmd_path = Path(directory) / "fixture.pmd"
             PmxExporter(native_parts_exporter=None).export_pmx_model(str(pmx_path), model_data)
-            PmdExporter(native_exporter=None).export_pmd_model(str(pmd_path), model_data)
 
-            for export_format, output_path in (("pmx", pmx_path), ("pmd", pmd_path)):
-                with self.subTest(export_format=export_format):
-                    report = verify_model_output(str(output_path), export_format, model_data)
-                    self.assertTrue(report.valid)
-                    self.assertEqual(report.issues, ())
+            report = verify_model_output(str(pmx_path), "pmx", model_data)
+            self.assertTrue(report.valid)
+            self.assertEqual(report.issues, ())
 
     def test_missing_empty_and_invalid_headers_are_blocking(self):
         with tempfile.TemporaryDirectory() as directory:

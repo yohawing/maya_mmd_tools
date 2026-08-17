@@ -74,6 +74,11 @@ set(SOURCES
     MmdAppendNode.cpp
     MmdCcdIkNode.cpp
     MmdPhysicsBoneDriverNode.cpp
+    MmdAuthoringCommandSupport.cpp
+    MmdAuthoringMorphBindingQuery.cpp
+    MmdAuthoringMorphWeightCommand.cpp
+    MmdAuthoringMaterialValueCommand.cpp
+    MmdAuthoringMaterialOutlineCommand.cpp
 )
 
 set(HEADERS
@@ -90,6 +95,11 @@ set(HEADERS
     MmdCcdIkNode.h
     MmdCoordinateUtils.h
     MmdPhysicsBoneDriverNode.h
+    MmdAuthoringCommandSupport.h
+    MmdAuthoringMorphBindingQuery.h
+    MmdAuthoringMorphWeightCommand.h
+    MmdAuthoringMaterialValueCommand.h
+    MmdAuthoringMaterialOutlineCommand.h
 )
 
 add_library(mmd_tools_cpp SHARED ${SOURCES} ${HEADERS})

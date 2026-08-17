@@ -10,7 +10,6 @@ from ..qt_compat import (
     QCheckBox,
     QSpinBox,
     QDoubleSpinBox,
-    QComboBox,
     QGridLayout,
     QSplitter,
     Qt,
@@ -20,7 +19,7 @@ from ..qt_compat import (
 )
 from ..base_tab import BaseTab
 from .translation_registry import apply_translation_registry
-from ..components.symbol_tool_button import MaterialSymbolToolButton
+from ..components.authoring_toolbar import AuthoringToolbar
 
 
 class BoneTab(BaseTab):
@@ -39,6 +38,7 @@ class BoneTab(BaseTab):
         ("fixed_axis_group", "setTitle", "fixed_axis", "groups"),
         ("local_axis_group", "setTitle", "local_axis", "groups"),
         ("refresh_btn", "setText", "refresh", "buttons"),
+        ("reset_authoring_btn", "setText", "reset_authoring", "buttons"),
         ("apply_btn", "setText", "apply", "buttons"),
         ("reset_btn", "setText", "reset", "buttons"),
         ("select_ik_target_btn", "setText", "select", "buttons"),
@@ -49,10 +49,7 @@ class BoneTab(BaseTab):
         ("bone_name_jp_label", "setText", "bone_name_jp", "fields"),
         ("bone_name_en_label", "setText", "bone_name_en", "fields"),
         ("parent_bone_label", "setText", "parent_bone", "fields"),
-        ("position_label", "setText", "position", "fields"),
         ("deform_layer_label", "setText", "deform_layer", "fields"),
-        ("connection_label", "setText", "connection", "fields"),
-        ("offset_label", "setText", "offset", "fields"),
         ("external_parent_key_label", "setText", "external_parent_key", "fields"),
         ("ik_target_label", "setText", "ik_target", "fields"),
         ("ik_loop_label", "setText", "ik_loop_count", "fields"),
@@ -111,17 +108,44 @@ class BoneTab(BaseTab):
 
         # ツールバー
         toolbar_layout = QHBoxLayout()
-        self.refresh_btn = MaterialSymbolToolButton("refresh", self.tr("refresh", "buttons"))
-        self.bind_pose_btn = QPushButton(self.tr("reset_pose", "buttons"))
-
-        toolbar_layout.addWidget(self.refresh_btn)
-        toolbar_layout.addWidget(self.bind_pose_btn)
-        toolbar_layout.addStretch()
-
+        self.bone_authoring_toolbar = AuthoringToolbar(
+            actions=("refresh", "move_up", "move_down", "reset"),
+            labels={
+                "refresh": self.tr("refresh", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+                "reset": self.tr("reset_authoring", "buttons"),
+            },
+            parent=self,
+        )
+        self.bone_authoring_toolbar.setObjectName("boneAuthoringToolbar")
+        self.refresh_btn = self.bone_authoring_toolbar.button("refresh")
+        self.reindex_up_btn = self.bone_authoring_toolbar.button("move_up")
+        self.reindex_down_btn = self.bone_authoring_toolbar.button("move_down")
+        self.reset_authoring_btn = self.bone_authoring_toolbar.button("reset")
+        self.refresh_btn.setObjectName("boneRefreshButton")
+        self.reindex_up_btn.setObjectName("boneMoveUpButton")
+        self.reindex_down_btn.setObjectName("boneMoveDownButton")
+        self.reset_authoring_btn.setObjectName("boneResetAuthoringButton")
+        toolbar_layout.addWidget(self.bone_authoring_toolbar)
         bone_tree_layout.addLayout(toolbar_layout)
+        for action in ("move_up", "move_down"):
+            self.bone_authoring_toolbar.set_action_enabled(
+                action,
+                False,
+                self.tr("authoring_selection_required", "tooltips"),
+                "authoring_selection_required",
+            )
+        self.reset_authoring_btn.setEnabled(False)
+
+        self.animation_warning_label = QLabel()
+        self.animation_warning_label.setWordWrap(True)
+        self.animation_warning_label.setVisible(False)
+        bone_tree_layout.addWidget(self.animation_warning_label)
 
         # ボーンリスト（単純なリスト表示）
         self.bone_list = QListWidget()
+        self.bone_list.setObjectName("boneList")
         self.bone_list.setAlternatingRowColors(True)
         # 複数選択を有効化
         self.bone_list.setSelectionMode(QListWidget.ExtendedSelection)
@@ -132,6 +156,7 @@ class BoneTab(BaseTab):
         self.search_label = QLabel(self.tr("search", "fields"))
         search_layout.addWidget(self.search_label)
         self.search_edit = QLineEdit()
+        self.search_edit.setObjectName("boneSearchEdit")
         self.search_edit.setPlaceholderText(self.tr("search_bone_name", "placeholders"))
         search_layout.addWidget(self.search_edit)
         bone_tree_layout.addLayout(search_layout)
@@ -192,6 +217,8 @@ class BoneTab(BaseTab):
         button_layout = QHBoxLayout()
         self.apply_btn = QPushButton(self.tr("apply", "buttons"))
         self.reset_btn = QPushButton(self.tr("reset", "buttons"))
+        self.apply_btn.setObjectName("boneApplyButton")
+        self.reset_btn.setObjectName("boneResetButton")
         button_layout.addStretch()
         button_layout.addWidget(self.apply_btn)
         button_layout.addWidget(self.reset_btn)
@@ -206,7 +233,9 @@ class BoneTab(BaseTab):
 
         # ボーン名
         self.bone_name_jp_edit = QLineEdit()
+        self.bone_name_jp_edit.setObjectName("boneNameJpEdit")
         self.bone_name_en_edit = QLineEdit()
+        self.bone_name_en_edit.setObjectName("boneNameEnEdit")
         self.bone_name_jp_label = QLabel(self.tr("bone_name_jp", "fields"))
         self.bone_name_en_label = QLabel(self.tr("bone_name_en", "fields"))
         layout.addRow(self.bone_name_jp_label, self.bone_name_jp_edit)
@@ -214,67 +243,17 @@ class BoneTab(BaseTab):
 
         # 親ボーン
         self.parent_bone_edit = QLineEdit()
+        self.parent_bone_edit.setObjectName("boneParentEdit")
         self.parent_bone_edit.setReadOnly(True)
         self.parent_bone_label = QLabel(self.tr("parent_bone", "fields"))
         layout.addRow(self.parent_bone_label, self.parent_bone_edit)
 
-        # 位置
-        position_layout = QGridLayout()
-        self.pos_x_spin = QDoubleSpinBox()
-        self.pos_y_spin = QDoubleSpinBox()
-        self.pos_z_spin = QDoubleSpinBox()
-        for spin in [self.pos_x_spin, self.pos_y_spin, self.pos_z_spin]:
-            spin.setRange(-9999.0, 9999.0)
-            spin.setDecimals(4)
-            spin.setSingleStep(0.1)
-
-        position_layout.addWidget(QLabel("X:"), 0, 0)
-        position_layout.addWidget(self.pos_x_spin, 0, 1)
-        position_layout.addWidget(QLabel("Y:"), 0, 2)
-        position_layout.addWidget(self.pos_y_spin, 0, 3)
-        position_layout.addWidget(QLabel("Z:"), 0, 4)
-        position_layout.addWidget(self.pos_z_spin, 0, 5)
-        self.position_label = QLabel(self.tr("position", "fields"))
-        layout.addRow(self.position_label, position_layout)
-
         # 変形階層
         self.deform_layer_spin = QSpinBox()
+        self.deform_layer_spin.setObjectName("boneDeformLayerSpin")
         self.deform_layer_spin.setRange(0, 9999)
         self.deform_layer_label = QLabel(self.tr("deform_layer", "fields"))
         layout.addRow(self.deform_layer_label, self.deform_layer_spin)
-
-        # 接続先
-        connection_layout = QHBoxLayout()
-        self.connection_type_combo = QComboBox()
-        self.connection_type_combo.addItems(
-            [self.tr("coordinate_offset", "bone_connection_types"), self.tr("bone", "bone_connection_types")]
-        )
-        self.connection_bone_edit = QLineEdit()
-        self.connection_bone_edit.setReadOnly(True)
-
-        connection_layout.addWidget(self.connection_type_combo)
-        connection_layout.addWidget(self.connection_bone_edit)
-        self.connection_label = QLabel(self.tr("connection", "fields"))
-        layout.addRow(self.connection_label, connection_layout)
-
-        # 接続先オフセット
-        offset_layout = QGridLayout()
-        self.offset_x_spin = QDoubleSpinBox()
-        self.offset_y_spin = QDoubleSpinBox()
-        self.offset_z_spin = QDoubleSpinBox()
-        for spin in [self.offset_x_spin, self.offset_y_spin, self.offset_z_spin]:
-            spin.setRange(-9999.0, 9999.0)
-            spin.setDecimals(4)
-            spin.setSingleStep(0.1)
-
-        offset_layout.addWidget(QLabel("X:"), 0, 0)
-        offset_layout.addWidget(self.offset_x_spin, 0, 1)
-        offset_layout.addWidget(QLabel("Y:"), 0, 2)
-        offset_layout.addWidget(self.offset_y_spin, 0, 3)
-        offset_layout.addWidget(QLabel("Z:"), 0, 4)
-        offset_layout.addWidget(self.offset_z_spin, 0, 5)
-        self.offset_label = QLabel(self.tr("offset", "fields"))
-        layout.addRow(self.offset_label, offset_layout)
 
         return layout
 
@@ -287,9 +266,13 @@ class BoneTab(BaseTab):
         flags_layout = QGridLayout()
 
         self.rotatable_check = QCheckBox(self.tr("rotatable", "bone_flags"))
+        self.rotatable_check.setObjectName("boneRotatableCheck")
         self.movable_check = QCheckBox(self.tr("movable", "bone_flags"))
+        self.movable_check.setObjectName("boneMovableCheck")
         self.visible_check = QCheckBox(self.tr("visible", "bone_flags"))
+        self.visible_check.setObjectName("boneVisibleCheck")
         self.enabled_check = QCheckBox(self.tr("enabled", "bone_flags"))
+        self.enabled_check.setObjectName("boneEnabledCheck")
 
         flags_layout.addWidget(self.rotatable_check, 0, 0)
         flags_layout.addWidget(self.movable_check, 0, 1)
@@ -304,7 +287,9 @@ class BoneTab(BaseTab):
         special_layout = QGridLayout()
 
         self.after_physics_check = QCheckBox(self.tr("after_physics", "bone_flags"))
+        self.after_physics_check.setObjectName("boneAfterPhysicsCheck")
         self.external_parent_check = QCheckBox(self.tr("external_parent", "bone_flags"))
+        self.external_parent_check.setObjectName("boneExternalParentCheck")
 
         special_layout.addWidget(self.after_physics_check, 0, 0)
         special_layout.addWidget(self.external_parent_check, 0, 1)
@@ -312,6 +297,7 @@ class BoneTab(BaseTab):
         # 外部親キー
         self.external_parent_key_label = QLabel(self.tr("external_parent_key", "fields"))
         self.external_parent_key_spin = QSpinBox()
+        self.external_parent_key_spin.setObjectName("boneExternalParentKeySpin")
         self.external_parent_key_spin.setRange(-1, 9999)
         special_layout.addWidget(self.external_parent_key_label, 1, 0)
         special_layout.addWidget(self.external_parent_key_spin, 1, 1)
@@ -333,6 +319,7 @@ class BoneTab(BaseTab):
 
         # IK有効化
         self.ik_enabled_check = QCheckBox(self.tr("enable_ik", "checkboxes"))
+        self.ik_enabled_check.setObjectName("boneIkEnabledCheck")
         layout.addWidget(self.ik_enabled_check)
 
         # IK設定グループ
@@ -342,8 +329,10 @@ class BoneTab(BaseTab):
         # IKターゲット
         target_layout = QHBoxLayout()
         self.ik_target_edit = QLineEdit()
+        self.ik_target_edit.setObjectName("boneIkTargetEdit")
         self.ik_target_edit.setReadOnly(True)
         self.select_ik_target_btn = QPushButton(self.tr("select", "buttons"))
+        self.select_ik_target_btn.setObjectName("boneSelectIkTargetButton")
         self.select_ik_target_btn.setMaximumWidth(60)
         target_layout.addWidget(self.ik_target_edit)
         target_layout.addWidget(self.select_ik_target_btn)
@@ -352,6 +341,7 @@ class BoneTab(BaseTab):
 
         # IKループ回数
         self.ik_loop_spin = QSpinBox()
+        self.ik_loop_spin.setObjectName("boneIkLoopSpin")
         self.ik_loop_spin.setRange(1, 255)
         self.ik_loop_spin.setValue(10)
         self.ik_loop_label = QLabel(self.tr("ik_loop_count", "fields"))
@@ -359,6 +349,7 @@ class BoneTab(BaseTab):
 
         # 制限角度
         self.ik_limit_angle_spin = QDoubleSpinBox()
+        self.ik_limit_angle_spin.setObjectName("boneIkLimitAngleSpin")
         self.ik_limit_angle_spin.setRange(0.0, 180.0)
         self.ik_limit_angle_spin.setValue(114.5916)  # PMDデフォルト値を4で割った値
         self.ik_limit_angle_spin.setSingleStep(1.0)
@@ -378,21 +369,32 @@ class BoneTab(BaseTab):
 
         # ツールバー
         links_toolbar = QHBoxLayout()
-        self.add_ik_link_btn = QPushButton(self.tr("add", "buttons"))
-        self.remove_ik_link_btn = QPushButton(self.tr("delete", "buttons"))
-        self.move_up_btn = QPushButton("↑")
-        self.move_down_btn = QPushButton("↓")
-
-        links_toolbar.addWidget(self.add_ik_link_btn)
-        links_toolbar.addWidget(self.remove_ik_link_btn)
-        links_toolbar.addWidget(self.move_up_btn)
-        links_toolbar.addWidget(self.move_down_btn)
-        links_toolbar.addStretch()
+        self.ik_authoring_toolbar = AuthoringToolbar(
+            actions=("create", "delete", "move_up", "move_down"),
+            labels={
+                "create": self.tr("add", "buttons"),
+                "delete": self.tr("delete", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            parent=self,
+        )
+        self.ik_authoring_toolbar.setObjectName("boneIkAuthoringToolbar")
+        self.add_ik_link_btn = self.ik_authoring_toolbar.button("create")
+        self.remove_ik_link_btn = self.ik_authoring_toolbar.button("delete")
+        self.move_up_btn = self.ik_authoring_toolbar.button("move_up")
+        self.move_down_btn = self.ik_authoring_toolbar.button("move_down")
+        self.add_ik_link_btn.setObjectName("boneAddIkLinkButton")
+        self.remove_ik_link_btn.setObjectName("boneRemoveIkLinkButton")
+        self.move_up_btn.setObjectName("boneMoveIkLinkUpButton")
+        self.move_down_btn.setObjectName("boneMoveIkLinkDownButton")
+        links_toolbar.addWidget(self.ik_authoring_toolbar)
 
         links_layout.addLayout(links_toolbar)
 
         # IKリンクテーブル
         self.ik_links_table = QTableWidget()
+        self.ik_links_table.setObjectName("boneIkLinksTable")
         self.ik_links_table.setColumnCount(8)
         self.ik_links_table.setHorizontalHeaderLabels(
             [
@@ -423,10 +425,12 @@ class BoneTab(BaseTab):
 
         # 回転付与
         self.rotation_grant_check = QCheckBox(self.tr("rotation_grant", "bone_flags"))
+        self.rotation_grant_check.setObjectName("boneRotationGrantCheck")
         layout.addWidget(self.rotation_grant_check)
 
         # 移動付与
         self.move_grant_check = QCheckBox(self.tr("move_grant", "bone_flags"))
+        self.move_grant_check.setObjectName("boneMoveGrantCheck")
         layout.addWidget(self.move_grant_check)
 
         # 付与設定グループ
@@ -436,8 +440,10 @@ class BoneTab(BaseTab):
         # 付与親
         parent_layout = QHBoxLayout()
         self.grant_parent_edit = QLineEdit()
+        self.grant_parent_edit.setObjectName("boneGrantParentEdit")
         self.grant_parent_edit.setReadOnly(True)
         self.select_grant_parent_btn = QPushButton(self.tr("select", "buttons"))
+        self.select_grant_parent_btn.setObjectName("boneSelectGrantParentButton")
         self.select_grant_parent_btn.setMaximumWidth(60)
         parent_layout.addWidget(self.grant_parent_edit)
         parent_layout.addWidget(self.select_grant_parent_btn)
@@ -446,6 +452,7 @@ class BoneTab(BaseTab):
 
         # 付与率
         self.grant_rate_spin = QDoubleSpinBox()
+        self.grant_rate_spin.setObjectName("boneGrantRateSpin")
         self.grant_rate_spin.setRange(-999.0, 999.0)
         self.grant_rate_spin.setDecimals(2)
         self.grant_rate_spin.setSingleStep(0.1)
@@ -455,6 +462,7 @@ class BoneTab(BaseTab):
 
         # ローカル付与
         self.local_grant_check = QCheckBox(self.tr("local_grant", "bone_flags"))
+        self.local_grant_check.setObjectName("boneLocalGrantCheck")
         grant_layout.addRow("", self.local_grant_check)
 
         self.grant_settings_group.setLayout(grant_layout)
@@ -473,6 +481,7 @@ class BoneTab(BaseTab):
 
         # 軸固定
         self.fixed_axis_check = QCheckBox(self.tr("fixed_axis", "bone_flags"))
+        self.fixed_axis_check.setObjectName("boneFixedAxisCheck")
         layout.addWidget(self.fixed_axis_check)
 
         # 軸固定設定
@@ -482,6 +491,9 @@ class BoneTab(BaseTab):
         self.fixed_axis_x_spin = QDoubleSpinBox()
         self.fixed_axis_y_spin = QDoubleSpinBox()
         self.fixed_axis_z_spin = QDoubleSpinBox()
+        self.fixed_axis_x_spin.setObjectName("boneFixedAxisXSpin")
+        self.fixed_axis_y_spin.setObjectName("boneFixedAxisYSpin")
+        self.fixed_axis_z_spin.setObjectName("boneFixedAxisZSpin")
 
         for spin in [
             self.fixed_axis_x_spin,
@@ -507,6 +519,7 @@ class BoneTab(BaseTab):
 
         # ローカル軸
         self.local_axis_check = QCheckBox(self.tr("local_axis", "bone_flags"))
+        self.local_axis_check.setObjectName("boneLocalAxisCheck")
         layout.addWidget(self.local_axis_check)
 
         # ローカル軸設定
@@ -518,6 +531,9 @@ class BoneTab(BaseTab):
         self.local_x_axis_x_spin = QDoubleSpinBox()
         self.local_x_axis_y_spin = QDoubleSpinBox()
         self.local_x_axis_z_spin = QDoubleSpinBox()
+        self.local_x_axis_x_spin.setObjectName("boneLocalXAxisXSpin")
+        self.local_x_axis_y_spin.setObjectName("boneLocalXAxisYSpin")
+        self.local_x_axis_z_spin.setObjectName("boneLocalXAxisZSpin")
 
         for spin in [
             self.local_x_axis_x_spin,
@@ -542,6 +558,9 @@ class BoneTab(BaseTab):
         self.local_z_axis_x_spin = QDoubleSpinBox()
         self.local_z_axis_y_spin = QDoubleSpinBox()
         self.local_z_axis_z_spin = QDoubleSpinBox()
+        self.local_z_axis_x_spin.setObjectName("boneLocalZAxisXSpin")
+        self.local_z_axis_y_spin.setObjectName("boneLocalZAxisYSpin")
+        self.local_z_axis_z_spin.setObjectName("boneLocalZAxisZSpin")
 
         for spin in [
             self.local_z_axis_x_spin,
@@ -583,12 +602,25 @@ class BoneTab(BaseTab):
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
-        self.bind_pose_btn.setText(self.tr("reset_pose", "buttons"))
-
-        # ComboBox items - Connection type
-        self.connection_type_combo.clear()
-        self.connection_type_combo.addItems(
-            [self.tr("coordinate_offset", "bone_connection_types"), self.tr("bone", "bone_connection_types")]
+        self.animation_warning_label.setText("")
+        self.reset_authoring_btn.setText(self.tr("reset_authoring", "buttons"))
+        self.bone_authoring_toolbar.retranslate(
+            {
+                "refresh": self.tr("refresh", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+                "reset": self.tr("reset_authoring", "buttons"),
+            },
+            reason_resolver=lambda key: self.tr(key, "tooltips"),
+        )
+        self.ik_authoring_toolbar.retranslate(
+            {
+                "create": self.tr("add", "buttons"),
+                "delete": self.tr("delete", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            reason_resolver=lambda key: self.tr(key, "tooltips"),
         )
 
         # Table headers - IK Links

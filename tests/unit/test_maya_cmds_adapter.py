@@ -41,6 +41,24 @@ class TestMayaCmdsAdapter(unittest.TestCase):
         self.cmds.objExists.assert_called_once_with("pCube1")
         self.assertIs(result, True)
 
+    def test_reference_query_delegates_read_only_probe(self):
+        self.cmds.referenceQuery.return_value = True
+
+        result = self.adapter.reference_query("|model|joint", isNodeReferenced=True)
+
+        self.cmds.referenceQuery.assert_called_once_with(
+            "|model|joint", isNodeReferenced=True
+        )
+        self.assertTrue(result)
+
+    def test_current_time_delegates_query_without_kwargs_on_adapter(self):
+        self.cmds.currentTime.return_value = 24
+
+        result = self.adapter.current_time()
+
+        self.cmds.currentTime.assert_called_once_with(query=True)
+        self.assertEqual(result, 24)
+
     def test_ls_delegates_args_and_kwargs(self):
         expected = ["root"]
         self.cmds.ls.return_value = expected
@@ -80,6 +98,17 @@ class TestMayaCmdsAdapter(unittest.TestCase):
 
         self.cmds.getAttr.assert_called_once_with("pCube1.translateX")
         self.assertEqual(result, 3.0)
+
+    def test_get_attr_forwards_multi_indices_query(self):
+        self.cmds.getAttr.return_value = [5500, 6000]
+
+        result = self.adapter.get_attr("blendShape1.inputTargetItem", multiIndices=True)
+
+        self.cmds.getAttr.assert_called_once_with(
+            "blendShape1.inputTargetItem",
+            multiIndices=True,
+        )
+        self.assertEqual(result, [5500, 6000])
 
     def test_is_attr_settable_queries_get_attr(self):
         self.cmds.getAttr.return_value = True
@@ -259,6 +288,26 @@ class TestMayaCmdsAdapter(unittest.TestCase):
 
         self.assertIs(self.adapter.undo(), expected)
         self.cmds.undo.assert_called_once_with()
+
+    def test_command_exists_delegates_exact_name(self):
+        self.cmds.mmdAuthoringSetAttrs = Mock()
+
+        self.assertTrue(self.adapter.command_exists("mmdAuthoringSetAttrs"))
+
+    def test_command_exists_rejects_missing_name(self):
+        class _Commands:
+            pass
+
+        self.assertFalse(MayaCmdsAdapter(_Commands()).command_exists("missingCommand"))
+
+    def test_invoke_native_command_delegates_payload(self):
+        expected = '{"version":1}'
+        self.cmds.mmdAuthoringSetAttrs.return_value = expected
+
+        result = self.adapter.invoke_native_command("mmdAuthoringSetAttrs", payload="{}")
+
+        self.assertEqual(result, expected)
+        self.cmds.mmdAuthoringSetAttrs.assert_called_once_with(payload="{}")
 
 
 if __name__ == "__main__":

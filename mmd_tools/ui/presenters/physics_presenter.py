@@ -142,6 +142,10 @@ class PhysicsPresenter:
         self._current_shape = None
         self._bone_candidates = []
         self._rigid_body_candidates = []
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = None
+        self._form_dirty = False
+        self._loading_form = False
         self._connect_signals()
 
         if self.app_state.current_model_root:
@@ -151,6 +155,9 @@ class PhysicsPresenter:
         current_model_changed = getattr(self.app_state, "current_model_changed", None)
         if current_model_changed is not None and hasattr(current_model_changed, "connect"):
             current_model_changed.connect(self.on_current_model_changed)
+        refresh_signal = getattr(self.app_state, "model_refresh_completed", None)
+        if refresh_signal is not None and hasattr(refresh_signal, "connect"):
+            refresh_signal.connect(self.on_model_refresh)
 
         refresh_btn = getattr(self.view, "refresh_btn", None)
         if refresh_btn is not None:
@@ -208,11 +215,59 @@ class PhysicsPresenter:
         if reset_btn is not None:
             reset_btn.clicked.connect(self.reset_changes)
 
+        # PhysicsTab blocks these signals while populating a form.  Tracking
+        # them here gives Refresh a Maya-free pending-work predicate.
+        for editor in getattr(self.view, "_physics_editors", {}).values():
+            editor = editor[1] if isinstance(editor, tuple) else editor
+            # Connect only the editor's highest-level semantic signal.  A
+            # QSpinBox emits both textChanged and valueChanged for one
+            # committed edit, which would otherwise dispatch this Action
+            # twice.
+            for signal_name in ("currentIndexChanged", "valueChanged", "textChanged"):
+                signal = getattr(editor, signal_name, None)
+                if signal is not None and hasattr(signal, "connect"):
+                    signal.connect(self._mark_form_dirty)
+                    break
+
+    def _mark_form_dirty(self, *_args):
+        if not self._loading_form:
+            self._form_dirty = True
+
 
     def on_current_model_changed(self, model_root):
+        if getattr(self.app_state, "refreshing", False) is True:
+            self.on_model_refresh(getattr(self.app_state, "refresh_generation", 0))
+            return
+        self._pending_refresh_generation = None
+        self._form_dirty = False
         reload_for_current_model_change(logger, "PhysicsPresenter", model_root, lambda: self.refresh_physics(force=True))
 
+    def on_model_refresh(self, generation):
+        """Mark physics data stale without touching hidden Maya graphs."""
+        self._pending_refresh_generation = generation
+
+    def refresh_for_generation(self, generation):
+        """Reload a visible tab once per generation when its form is clean."""
+        if self._pending_refresh_generation != generation:
+            if self._last_refresh_generation == generation:
+                return True
+            self.refresh_physics(force=True)
+            self._last_refresh_generation = generation
+            return True
+        if self._form_dirty:
+            self._last_refresh_generation = generation
+            return True
+        self.refresh_physics(force=True)
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = generation
+        return True
+
     def refresh_physics(self, force=False):
+        if self._pending_refresh_generation is not None and self._form_dirty:
+            return
+        self._last_refresh_generation = getattr(self.app_state, "refresh_generation", 0)
+        self._pending_refresh_generation = None
+        self._form_dirty = False
         self._clear_view()
         self._sync_physics_enable_checkbox()
         root = self.app_state.current_model_root
@@ -599,7 +654,12 @@ class PhysicsPresenter:
         self._current_kind = "rigid"
         self._current_shape = shape
         values = self._read_rigid_body_values(shape)
-        self.view.set_physics_form("rigid", values)
+        self._loading_form = True
+        try:
+            self.view.set_physics_form("rigid", values)
+        finally:
+            self._loading_form = False
+        self._form_dirty = False
         self._set_apply_reset_enabled(True)
 
     def _on_joint_selected(self, current, _previous):
@@ -614,7 +674,12 @@ class PhysicsPresenter:
         self._current_kind = "joint"
         self._current_shape = shape
         values = self._read_joint_values(shape)
-        self.view.set_physics_form("joint", values)
+        self._loading_form = True
+        try:
+            self.view.set_physics_form("joint", values)
+        finally:
+            self._loading_form = False
+        self._form_dirty = False
         self._set_apply_reset_enabled(True)
 
     def _set_apply_reset_enabled(self, enabled):
@@ -728,6 +793,7 @@ class PhysicsPresenter:
             elif self._current_kind == "joint":
                 self._apply_validated_joint(shape, parsed, bindings)
             self.invalidate_physics_cache()
+            self._form_dirty = False
             logger.info("Applied physics changes to '%s'", shape)
         except Exception:
             logger.error("Failed to apply physics changes to '%s'", shape, exc_info=True)
@@ -750,6 +816,7 @@ class PhysicsPresenter:
         elif self._current_kind == "joint":
             values = self._read_joint_values(shape)
             self.view.set_physics_form("joint", values)
+        self._form_dirty = False
 
     def _collect_rigid_body_form_values(self, shape):
         """Collect form values for rigid body validation."""

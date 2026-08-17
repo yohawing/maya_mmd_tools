@@ -23,6 +23,7 @@ ATTR_MMD_FILE_TYPE = "mmd_file_type"
 ATTR_MMD_FILE_VERSION = "mmd_file_version"
 ATTR_MMD_MODEL_NAME = "mmd_model_name"
 ATTR_MMD_MODEL_NAME_EN = "mmd_model_name_en"
+ATTR_MMD_IMPORT_SCALE = "mmd_import_scale"
 ATTR_MMD_COMMENT = "mmd_comment"
 ATTR_MMD_COMMENT_EN = "mmd_comment_en"
 ATTR_MMD_DISPLAY_FRAMES_JSON = "mmd_display_frames_json"
@@ -40,6 +41,11 @@ ATTR_MMD_REGISTRY_ROOT = "modelRoot"
 ATTR_MMD_REGISTRY_MORPH_MEMBERS = "morphMembers"
 ATTR_MMD_REGISTRY_TEXTURE_MEMBERS = "textureMembers"
 ATTR_MMD_REGISTRY_PHYSICS_MEMBERS = "physicsMembers"
+# Generated MMD material shader nodes owned by the model registry.  Shading
+# groups and texture file nodes remain discoverable through their existing
+# mesh/SG and texture ownership paths; this array contains shader nodes only.
+ATTR_MMD_REGISTRY_MATERIAL_MEMBERS = "materialMembers"
+ATTR_MMD_REGISTRY_MATERIAL_MORPH_WORK_MEMBERS = "materialMorphWorkMembers"
 
 # Animator Toolset viewport visibility state on the imported model root.
 ATTR_MMD_SHOW_MESH = "mmd_show_mesh"
@@ -83,6 +89,9 @@ ATTR_MMD_SOURCE_MODEL_PATH = "mmd_source_model_path"
 # 頂点モーフは alias を sanitize_text で生成するため lossy だが、これは VMD/PMX が
 # 参照する生のモーフ名 (PmxMorph.name) を権威キーとして保持し、正確なマッピングを保証する。
 ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON = "mmd_blendshape_morph_names_json"
+# Legacy import attribute. Vertex offsets are authoritative in blendShape
+# inputTarget data; old scenes may still carry this value, which is ignored.
+ATTR_MMD_VERTEX_MORPH_OFFSETS_RAW_JSON = "mmd_vertex_morph_offsets_raw_json"
 ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON = "mmd_bone_morph_offsets_raw_json"
 ATTR_MMD_UV_MORPH_OFFSETS_JSON = "mmd_uv_morph_offsets_json"
 ATTR_MMD_FLIP_MORPH_OFFSETS_JSON = "mmd_flip_morph_offsets_json"

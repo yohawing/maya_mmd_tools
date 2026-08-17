@@ -1,12 +1,15 @@
 import math
 
 from ..qt_compat import QObject, QFileDialog
-from ...actions.export_model_action import ExportModelAction, ExportModelRequest
-from ...actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
+from ...actions.create_model_action import (
+    CreateModelActionError,
+    CreateModelRequest,
+    normalize_create_model_request,
+)
 from ...actions.import_model_action import ImportModelAction, ImportModelRequest
 from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
-from ...core import maya_attribute_utils, maya_material_utils, settings_keys as setting_keys
+from ...core import maya_attribute_utils, maya_material_utils
 from ...core.constants import (
     ATTR_MMD_ORIGINAL_TEXTURE_PATH,
     ATTR_MMD_TEXTURE_CACHE_PATH,
@@ -16,7 +19,9 @@ from ...core.model_registry import (
     REGISTRY_CATEGORY_TEXTURE,
     list_model_registry_members_from_adapter,
 )
+from ...core.model_template import list_model_templates
 from ...services.settings_service import SettingsService
+from ..create_model_dialog import CreateModelDialog
 from ..model_readme_dialog import ModelReadmeDialogAdapter, read_model_readme
 from .list_presenter_helpers import tr_message, tr_message_format
 from ..translations.translator import UITranslator
@@ -31,35 +36,148 @@ class ImportExportPresenter(QObject):
         app_state,
         import_model_action=None,
         import_vmd_action=None,
-        export_model_action=None,
-        export_vmd_action=None,
         settings_service=None,
         maya_adapter=None,
         model_readme_adapter=None,
+        create_model_action=None,
+        model_template_loader=None,
+        create_model_dialog_factory=None,
     ):
         super().__init__()
         self.view = view
         self.app_state = app_state
         self.import_model_action = import_model_action or ImportModelAction()
         self.import_vmd_action = import_vmd_action or ImportVmdAction()
-        self.export_model_action = export_model_action or ExportModelAction()
-        self.export_vmd_action = export_vmd_action or ExportVmdAction()
         self.settings_service = settings_service or SettingsService()
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
         self.model_readme_adapter = model_readme_adapter or ModelReadmeDialogAdapter(
             development_mode_getter=self.settings_service.is_development_mode,
         )
+        self.create_model_action = create_model_action
+        self.model_template_loader = model_template_loader or list_model_templates
+        self.create_model_dialog_factory = create_model_dialog_factory or CreateModelDialog
+        self._create_model_templates = ()
         self.view.presenter = self
         self.connect_signals()
+        self._populate_create_model_templates()
 
     def connect_signals(self):
         self.view.import_path_button.clicked.connect(self.select_import_file)
-        self.view.export_path_button.clicked.connect(self.select_export_file)
         self.view.import_button.clicked.connect(self.import_file)
-        self.view.export_button.clicked.connect(self.export_file)
         # VMD import signals
         self.view.vmd_path_button.clicked.connect(self.select_vmd_file)
         self.view.import_vmd_button.clicked.connect(self.import_vmd_file)
+        self.view.new_model_button.clicked.connect(self.open_create_model_dialog)
+
+    def _populate_create_model_templates(self):
+        """Load curated options and gate the New MMD Model button."""
+        try:
+            templates = []
+            for template in tuple(self.model_template_loader() or ()):
+                template_id = getattr(template, "template_id", None)
+                label = getattr(template, "label", None)
+                if isinstance(template_id, str) and template_id and isinstance(label, str):
+                    templates.append(template)
+        except Exception:
+            logger.error("Failed to load packaged model templates", exc_info=True)
+            templates = []
+        self._create_model_templates = tuple(templates)
+        action_available = callable(getattr(self.create_model_action, "execute", None))
+        self.view.new_model_button.setEnabled(action_available and bool(self._create_model_templates))
+
+    def _make_create_model_dialog(self):
+        """Construct the injected dialog factory without loading scene data."""
+        return self.create_model_dialog_factory(self._create_model_templates, self.view)
+
+    def open_create_model_dialog(self):
+        """Open the modal form and create only after the user accepts it."""
+        if not callable(getattr(self.create_model_action, "execute", None)):
+            return self._present_create_model_failure("create_model_unavailable")
+        if not self._create_model_templates:
+            return self._present_create_model_failure("create_model_templates_unavailable")
+        dialog = self._make_create_model_dialog()
+        if not dialog.exec_modal():
+            return False
+        request = dialog.get_request()
+        if request is None:
+            return self._present_create_model_failure("create_model_template_required")
+        return self._execute_create_model_request(request)
+
+    def _present_create_model_failure(self, message_key, **format_values):
+        """Publish one localized blocking outcome to status and a modal warning."""
+        message = (
+            tr_message_format(message_key, **format_values)
+            if format_values
+            else tr_message(message_key)
+        )
+        self.app_state.emit_status(message)
+        try:
+            from ..qt_compat import QMessageBox
+
+            QMessageBox.warning(
+                self.view,
+                tr_message("create_model_warning_title"),
+                message,
+            )
+        except Exception as exc:
+            logger.debug("Create Model warning dialog unavailable: %s", exc, exc_info=True)
+        return False
+
+    def _execute_create_model_request(self, request):
+        """Execute one validated Create Model request and publish its new root."""
+        action = self.create_model_action
+        if not callable(getattr(action, "execute", None)):
+            return self._present_create_model_failure("create_model_unavailable")
+        observed_type = type(request)
+        try:
+            request = normalize_create_model_request(request)
+        except CreateModelActionError as exc:
+            return self._present_create_model_failure(
+                "create_model_request_invalid",
+                error=str(exc),
+            )
+        if observed_type is not CreateModelRequest:
+            logger.warning(
+                "Rehydrated CreateModelRequest after module reload: actual=%s.%s "
+                "actual_class_id=%s current_class_id=%s template_id=%r",
+                observed_type.__module__,
+                observed_type.__qualname__,
+                id(observed_type),
+                id(CreateModelRequest),
+                request.template_id,
+            )
+        template_id = request.template_id
+        if not isinstance(template_id, str) or not template_id:
+            return self._present_create_model_failure("create_model_template_required")
+        valid_template_ids = {
+            template.template_id
+            for template in self._create_model_templates
+            if isinstance(getattr(template, "template_id", None), str)
+        }
+        if template_id not in valid_template_ids:
+            return self._present_create_model_failure(
+                "create_model_template_unknown",
+                template_id=template_id,
+            )
+        try:
+            result = action.execute(request)
+            root = getattr(result, "root", None)
+            if not isinstance(root, str) or not root:
+                raise RuntimeError("Create Model returned no model root")
+            refresh_models = getattr(self.app_state, "refresh_model_list", None)
+            if callable(refresh_models):
+                refresh_models()
+            self.app_state.current_model_root = root
+            self.app_state.emit_status(
+                tr_message_format("create_model_succeeded", root=root)
+            )
+            return True
+        except Exception as exc:
+            logger.error("Create Model failed", exc_info=True)
+            return self._present_create_model_failure(
+                "create_model_failed",
+                error=str(exc),
+            )
 
     def select_import_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -70,18 +188,6 @@ class ImportExportPresenter(QObject):
         )
         if file_path:
             self.view.import_path_edit.setText(file_path)
-
-    def select_export_file(self):
-        export_format = self.settings_service.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx")
-        if export_format == "vmd":
-            title = "Save VMD File"
-            filter_text = "VMD Files (*.vmd);;All Files (*)"
-        else:
-            title = "Save PMX File"
-            filter_text = "PMX Files (*.pmx);;All Files (*)"
-        file_path, _ = QFileDialog.getSaveFileName(self.view, title, "", filter_text)
-        if file_path:
-            self.view.export_path_edit.setText(file_path)
 
     def select_vmd_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self.view, "Select VMD File", "", "VMD Files (*.vmd);;All Files (*)")
@@ -111,7 +217,15 @@ class ImportExportPresenter(QObject):
         else:
             available_models = getattr(self.app_state, "available_models", None)
         if available_models is not None and target_model not in available_models:
-            return None
+            target_leaf = str(target_model).rsplit("|", 1)[-1]
+            canonical_matches = [
+                model
+                for model in available_models
+                if str(model).rsplit("|", 1)[-1] == target_leaf
+            ]
+            if len(canonical_matches) != 1:
+                return None
+            target_model = canonical_matches[0]
 
         object_exists = getattr(scene_service, "object_exists", None)
         if callable(object_exists):
@@ -316,10 +430,6 @@ class ImportExportPresenter(QObject):
             )
         self.app_state.emit_status(message)
         return {"resolved": resolved, "unresolved": unresolved}
-
-    def _build_export_options(self):
-        """PMX/PMD export用の基本オプションを設定から組み立てる。"""
-        return self.settings_service.build_export_options(self.view.export_path_edit.text().strip())
 
     def _resolve_import_outcome(self, result):
         """Resolve success / partial / fatal from an import action result.
@@ -547,38 +657,6 @@ class ImportExportPresenter(QObject):
             logger.error(f"Import failed: {e}", exc_info=True)
             self.app_state.emit_status(tr_message_format("import_error", error=str(e)))
             self.app_state.emit_progress(0)
-
-    def export_file(self):
-        if not self.settings_service.is_development_mode():
-            # Export is intentionally develop-mode only; UI is also hidden in normal mode.
-            self.app_state.emit_status(tr_message("export_dev_mode_required"))
-            return
-
-        file_path = self.view.export_path_edit.text().strip()
-        if not file_path:
-            self.app_state.emit_status(tr_message("enter_file_path"))
-            return
-
-        export_options = self._build_export_options()
-        logger.debug(f"Export options: {export_options}")
-
-        if export_options.get("export_format") == "vmd":
-            request = ExportVmdRequest(file_path=file_path, options=export_options)
-            result = self.export_vmd_action.execute(request)
-        else:
-            request = ExportModelRequest(file_path=file_path, options=export_options)
-            result = self.export_model_action.execute(request)
-        if result.error:
-            logger.error(f"Export failed: {result.error}")
-            self.app_state.emit_status(tr_message_format("export_error", error=str(result.error)))
-            return
-        if getattr(result, "succeeded", False):
-            if hasattr(self.view, "add_export_path_to_history"):
-                self.view.add_export_path_to_history(file_path)
-            self.app_state.emit_status(tr_message_format("export_complete_file", file_path=file_path))
-            return
-        if result.status_message:
-            self.app_state.emit_status(result.status_message)
 
     def import_vmd_file(self):
         """VMDファイルのインポート"""

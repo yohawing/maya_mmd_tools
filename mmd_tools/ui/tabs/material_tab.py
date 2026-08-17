@@ -19,7 +19,7 @@ from ..qt_compat import (
     QSlider,
 )
 from ..base_tab import BaseTab
-from ..components.symbol_tool_button import MaterialSymbolToolButton
+from ..components.authoring_toolbar import AuthoringToolbar
 
 
 class MaterialTab(BaseTab):
@@ -62,15 +62,48 @@ class MaterialTab(BaseTab):
 
         # ツールバー
         toolbar_layout = QHBoxLayout()
-        self.refresh_btn = MaterialSymbolToolButton("refresh", self.tr("refresh", "buttons"))
+        self.authoring_toolbar = AuthoringToolbar(
+            actions=("refresh", "create", "duplicate", "delete", "move_up", "move_down"),
+            labels={
+                "refresh": self.tr("refresh", "buttons"),
+                "create": self.tr("create", "buttons"),
+                "duplicate": self.tr("duplicate", "buttons"),
+                "delete": self.tr("delete", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            parent=self,
+        )
+        self.authoring_toolbar.setObjectName("materialAuthoringToolbar")
+        self.refresh_btn = self.authoring_toolbar.button("refresh")
+        self.create_btn = self.authoring_toolbar.button("create")
+        self.duplicate_btn = self.authoring_toolbar.button("duplicate")
+        self.delete_btn = self.authoring_toolbar.button("delete")
+        self.reindex_up_btn = self.authoring_toolbar.button("move_up")
+        self.reindex_down_btn = self.authoring_toolbar.button("move_down")
+        self.refresh_btn.setObjectName("materialRefreshButton")
+        self.create_btn.setObjectName("materialCreateButton")
+        self.duplicate_btn.setObjectName("materialDuplicateButton")
+        self.delete_btn.setObjectName("materialDeleteButton")
+        self.reindex_up_btn.setObjectName("materialMoveUpButton")
+        self.reindex_down_btn.setObjectName("materialMoveDownButton")
+        toolbar_layout.addWidget(self.authoring_toolbar)
 
-        toolbar_layout.addWidget(self.refresh_btn)
-        toolbar_layout.addStretch()
+        # MaterialPresenter enables writes only after a semantic coordinator
+        # has been injected for a valid model root.
+        for action in ("create", "duplicate", "delete", "move_up", "move_down"):
+            self.authoring_toolbar.set_action_enabled(
+                action,
+                False,
+                self.tr("authoring_unavailable", "tooltips"),
+                "authoring_unavailable",
+            )
 
         material_list_layout.addLayout(toolbar_layout)
 
         # マテリアルリスト
         self.material_list = QListWidget()
+        self.material_list.setObjectName("materialList")
         self.material_list.setAlternatingRowColors(True)
         # 複数選択を有効化
         self.material_list.setSelectionMode(QListWidget.ExtendedSelection)
@@ -80,6 +113,7 @@ class MaterialTab(BaseTab):
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel(self.tr("search", "fields")))
         self.search_edit = QLineEdit()
+        self.search_edit.setObjectName("materialSearchEdit")
         self.search_edit.setPlaceholderText(self.tr("search_material_name", "placeholders"))
         search_layout.addWidget(self.search_edit)
         material_list_layout.addLayout(search_layout)
@@ -112,18 +146,21 @@ class MaterialTab(BaseTab):
         self.material_name_jp_label = QLabel(self.tr("material_name_jp", "fields"))
         basic_layout.addWidget(self.material_name_jp_label, 0, 0)
         self.material_jp_name_edit = QLineEdit()
+        self.material_jp_name_edit.setObjectName("materialNameJpEdit")
         basic_layout.addWidget(self.material_jp_name_edit, 0, 1, 1, 2)
 
         # English Name
         self.material_name_en_label = QLabel(self.tr("material_name_en", "fields"))
         basic_layout.addWidget(self.material_name_en_label, 1, 0)
         self.material_en_name_edit = QLineEdit()
+        self.material_en_name_edit.setObjectName("materialNameEnEdit")
         basic_layout.addWidget(self.material_en_name_edit, 1, 1, 1, 2)
 
         # Diffuse Color
         self.diffuse_color_label = QLabel(self.tr("diffuse_color", "fields"))
         basic_layout.addWidget(self.diffuse_color_label, 2, 0)
         self.diffuse_color_widget = self._create_color_widget()
+        self.diffuse_color_widget.setObjectName("diffuseColorSwatch")
         basic_layout.addWidget(self.diffuse_color_widget, 2, 1, 1, 2)
 
         # Transparency (Alpha)
@@ -131,6 +168,7 @@ class MaterialTab(BaseTab):
         basic_layout.addWidget(self.transparency_label, 3, 0)
         transparency_layout = QHBoxLayout()
         self.transparency_spin = QDoubleSpinBox()
+        self.transparency_spin.setObjectName("materialTransparencySpin")
         self.transparency_spin.setRange(0.0, 1.0)
         self.transparency_spin.setSingleStep(0.01)
         self.transparency_spin.setDecimals(2)
@@ -145,6 +183,7 @@ class MaterialTab(BaseTab):
         self.specular_color_label = QLabel(self.tr("specular_color", "fields"))
         basic_layout.addWidget(self.specular_color_label, 4, 0)
         self.specular_color_widget = self._create_color_widget()
+        self.specular_color_widget.setObjectName("specularColorSwatch")
         basic_layout.addWidget(self.specular_color_widget, 4, 1, 1, 2)
 
         # Specular Coefficient
@@ -152,6 +191,7 @@ class MaterialTab(BaseTab):
         basic_layout.addWidget(self.specular_coefficient_label, 5, 0)
         specular_layout = QHBoxLayout()
         self.specular_coefficient_spin = QDoubleSpinBox()
+        self.specular_coefficient_spin.setObjectName("materialSpecularCoefficientSpin")
         self.specular_coefficient_spin.setRange(0.0, 1.0)
         self.specular_coefficient_spin.setSingleStep(0.01)
         self.specular_coefficient_spin.setDecimals(2)
@@ -166,6 +206,7 @@ class MaterialTab(BaseTab):
         self.ambient_label = QLabel(self.tr("ambient_color", "fields"))
         basic_layout.addWidget(self.ambient_label, 6, 0)
         self.ambient_color_widget = self._create_color_widget()
+        self.ambient_color_widget.setObjectName("ambientColorSwatch")
         basic_layout.addWidget(self.ambient_color_widget, 6, 1, 1, 2)
 
         self.basic_group.setLayout(basic_layout)
@@ -179,22 +220,27 @@ class MaterialTab(BaseTab):
         self.texture_label = QLabel(self.tr("texture_path", "fields"))
         texture_layout.addWidget(self.texture_label, 0, 0)
         self.texture_path_edit = QLineEdit()
+        self.texture_path_edit.setObjectName("materialTexturePathEdit")
         texture_layout.addWidget(self.texture_path_edit, 0, 1)
         self.texture_browse_btn = QPushButton(self.tr("browse", "buttons"))
+        self.texture_browse_btn.setObjectName("materialTextureBrowseButton")
         texture_layout.addWidget(self.texture_browse_btn, 0, 2)
 
         # Sphere Map
         self.sphere_map_label = QLabel(self.tr("sphere_texture_path", "fields"))
         texture_layout.addWidget(self.sphere_map_label, 1, 0)
         self.sphere_map_path_edit = QLineEdit()
+        self.sphere_map_path_edit.setObjectName("materialSphereMapPathEdit")
         texture_layout.addWidget(self.sphere_map_path_edit, 1, 1)
         self.sphere_map_browse_btn = QPushButton(self.tr("browse", "buttons"))
+        self.sphere_map_browse_btn.setObjectName("materialSphereMapBrowseButton")
         texture_layout.addWidget(self.sphere_map_browse_btn, 1, 2)
 
         # Sphere Mode
         self.sphere_mode_label = QLabel(self.tr("sphere_mode", "fields"))
         texture_layout.addWidget(self.sphere_mode_label, 2, 0)
         self.sphere_mode_combo = QComboBox()
+        self.sphere_mode_combo.setObjectName("materialSphereModeCombo")
         self.sphere_mode_combo.addItems(
             [
                 self.tr("disabled", "sphere_modes"),
@@ -207,23 +253,27 @@ class MaterialTab(BaseTab):
 
         # Toon Texture
         self.toon_sharing_check = QCheckBox(self.tr("toon_sharing", "fields"))
+        self.toon_sharing_check.setObjectName("materialToonSharingCheck")
         self.toon_sharing_check.setChecked(True)
         texture_layout.addWidget(self.toon_sharing_check, 3, 0, 1, 3)
 
         self.toon_texture_label = QLabel(self.tr("toon_texture", "fields"))
         texture_layout.addWidget(self.toon_texture_label, 4, 0)
         self.toon_texture_combo = QComboBox()
+        self.toon_texture_combo.setObjectName("materialToonTextureCombo")
         self.toon_texture_combo.addItems([f"toon{i:02d}.bmp" for i in range(1, 11)])
         texture_layout.addWidget(self.toon_texture_combo, 4, 1, 1, 2)
 
         self.toon_texture_path_label = QLabel(self.tr("toon_texture_path", "fields"))
         texture_layout.addWidget(self.toon_texture_path_label, 5, 0)
         self.toon_texture_path_edit = QLineEdit()
+        self.toon_texture_path_edit.setObjectName("materialToonTexturePathEdit")
         texture_layout.addWidget(self.toon_texture_path_edit, 5, 1, 1, 2)
 
         self.toon_texture_index_label = QLabel(self.tr("toon_texture_index", "fields"))
         texture_layout.addWidget(self.toon_texture_index_label, 6, 0)
         self.toon_texture_index_spin = QSpinBox()
+        self.toon_texture_index_spin.setObjectName("materialToonTextureIndexSpin")
         self.toon_texture_index_spin.setRange(-1, 2147483647)
         self.toon_texture_index_spin.setValue(-1)
         texture_layout.addWidget(self.toon_texture_index_spin, 6, 1, 1, 2)
@@ -231,6 +281,7 @@ class MaterialTab(BaseTab):
         self.original_pmx_path_label = QLabel(self.tr("original_texture_path", "fields"))
         texture_layout.addWidget(self.original_pmx_path_label, 7, 0)
         self.original_pmx_path_edit = QLineEdit()
+        self.original_pmx_path_edit.setObjectName("materialOriginalPmxPathEdit")
         self.original_pmx_path_edit.setReadOnly(True)
         texture_layout.addWidget(self.original_pmx_path_edit, 7, 1, 1, 2)
 
@@ -242,13 +293,21 @@ class MaterialTab(BaseTab):
         flags_layout = QVBoxLayout()
 
         self.both_face_check = QCheckBox(self.tr("double_sided", "rendering_checkboxes"))
+        self.both_face_check.setObjectName("materialDoubleSidedCheck")
         self.ground_shadow_check = QCheckBox(self.tr("ground_shadow", "rendering_checkboxes"))
+        self.ground_shadow_check.setObjectName("materialGroundShadowCheck")
         self.self_shadow_map_check = QCheckBox(self.tr("self_shadow_map", "rendering_checkboxes"))
+        self.self_shadow_map_check.setObjectName("materialSelfShadowMapCheck")
         self.self_shadow_check = QCheckBox(self.tr("self_shadow", "rendering_checkboxes"))
+        self.self_shadow_check.setObjectName("materialSelfShadowCheck")
         self.edge_draw_check = QCheckBox(self.tr("edge_drawing", "rendering_checkboxes"))
+        self.edge_draw_check.setObjectName("materialEdgeDrawCheck")
         self.vertex_color_check = QCheckBox(self.tr("vertex_color", "rendering_checkboxes"))
+        self.vertex_color_check.setObjectName("materialVertexColorCheck")
         self.point_draw_check = QCheckBox(self.tr("point_drawing", "rendering_checkboxes"))
+        self.point_draw_check.setObjectName("materialPointDrawCheck")
         self.line_draw_check = QCheckBox(self.tr("line_drawing", "rendering_checkboxes"))
+        self.line_draw_check.setObjectName("materialLineDrawCheck")
 
         flags_layout.addWidget(self.both_face_check)
         flags_layout.addWidget(self.ground_shadow_check)
@@ -270,16 +329,26 @@ class MaterialTab(BaseTab):
         self.edge_color_label = QLabel(self.tr("edge_color", "fields"))
         edge_layout.addWidget(self.edge_color_label, 0, 0)
         self.edge_color_widget = self._create_color_widget()
+        self.edge_color_widget.setObjectName("edgeColorSwatch")
         edge_layout.addWidget(self.edge_color_widget, 0, 1, 1, 2)
 
         # Edge Size
         self.edge_size_label = QLabel(self.tr("edge_size", "fields"))
         edge_layout.addWidget(self.edge_size_label, 1, 0)
         self.edge_size_spin = QDoubleSpinBox()
+        self.edge_size_spin.setObjectName("materialEdgeSizeSpin")
         self.edge_size_spin.setRange(0.0, 2.0)
         self.edge_size_spin.setSingleStep(0.05)
         self.edge_size_spin.setDecimals(2)
         edge_layout.addWidget(self.edge_size_spin, 1, 1, 1, 2)
+
+        # Maya viewport outline. This is intentionally separate from the PMX
+        # Edge Drawing flag so imported semantics can be preserved while the
+        # potentially visible outline pass remains opt-in.
+        self.shader_outline_check = QCheckBox(self.tr("shader_outline", "rendering_checkboxes"))
+        self.shader_outline_check.setObjectName("materialShaderOutlineCheck")
+        self.shader_outline_check.setChecked(False)
+        edge_layout.addWidget(self.shader_outline_check, 2, 0, 1, 3)
 
         self.edge_group.setLayout(edge_layout)
         layout.addWidget(self.edge_group)
@@ -295,6 +364,8 @@ class MaterialTab(BaseTab):
         button_layout = QHBoxLayout()
         self.apply_btn = QPushButton(self.tr("apply", "buttons"))
         self.reset_btn = QPushButton(self.tr("reset", "buttons"))
+        self.apply_btn.setObjectName("materialApplyButton")
+        self.reset_btn.setObjectName("materialResetButton")
         button_layout.addStretch()
         button_layout.addWidget(self.apply_btn)
         button_layout.addWidget(self.reset_btn)
@@ -343,6 +414,7 @@ class MaterialTab(BaseTab):
             self.line_draw_check,
             self.edge_color_widget,
             self.edge_size_spin,
+            self.shader_outline_check,
             self.apply_btn,
             self.reset_btn,
         ]
@@ -371,8 +443,18 @@ class MaterialTab(BaseTab):
             self.edge_group.setTitle(self.tr("edge_properties", "groups"))
 
         # Buttons
-        if hasattr(self, "refresh_btn"):
-            self.refresh_btn.setText(self.tr("refresh", "buttons"))
+        if hasattr(self, "authoring_toolbar"):
+            self.authoring_toolbar.retranslate(
+                {
+                    "refresh": self.tr("refresh", "buttons"),
+                    "create": self.tr("create", "buttons"),
+                    "duplicate": self.tr("duplicate", "buttons"),
+                    "delete": self.tr("delete", "buttons"),
+                    "move_up": self.tr("up", "buttons"),
+                    "move_down": self.tr("down", "buttons"),
+                },
+                reason_resolver=lambda key: self.tr(key, "tooltips"),
+            )
         if hasattr(self, "import_path_button"):
             self.import_path_button.setText(self.tr("browse", "buttons"))
         if hasattr(self, "texture_browse_btn"):
@@ -419,6 +501,8 @@ class MaterialTab(BaseTab):
             self.edge_color_label.setText(self.tr("edge_color", "fields"))
         if hasattr(self, "edge_size_label"):
             self.edge_size_label.setText(self.tr("edge_size", "fields"))
+        if hasattr(self, "shader_outline_check"):
+            self.shader_outline_check.setText(self.tr("shader_outline", "rendering_checkboxes"))
         # CheckBoxes
         if hasattr(self, "both_face_check"):
             self.both_face_check.setText(self.tr("double_sided", "rendering_checkboxes"))

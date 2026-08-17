@@ -83,6 +83,13 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
         joints_by_index,
         result["skipped"],
     )
+    existing_by_joint = {
+        joint: node
+        for joint, node in _collect_existing_accumulators().items()
+        if joint in set(joints_by_index.values())
+    }
+    for joint in sorted(set(existing_by_joint) - set(contributions_by_joint)):
+        _remove_accumulator(joint, existing_by_joint[joint])
     if not contributions_by_joint:
         result["skipped"].append("no_bone_morph_contributions")
         return result
@@ -109,7 +116,6 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
             )
         )
 
-    existing_by_joint = _collect_existing_accumulators()
     for joint, contributions in contributions_by_joint.items():
         node = existing_by_joint.get(joint)
         if node and _is_valid_accumulator(node):
@@ -382,6 +388,22 @@ def _pmx_quat_to_maya(values) -> Tuple[float, float, float, float]:
     return (-float(values[0]), -float(values[1]), float(values[2]), float(values[3]))
 
 
+def pmx_bone_offset_to_runtime_values(
+    translation: Tuple[float, float, float],
+    rotation: Tuple[float, float, float, float],
+    joint: str,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float, float]]:
+    """Convert one PMX bone offset to the accumulator's runtime basis.
+
+    This small public helper is shared by the selected-morph patch path so a
+    direct contribution update uses exactly the same handedness reflection and
+    bind-orientation conjugation as the full runtime graph builder.
+    """
+    translate = (float(translation[0]), float(translation[1]), -float(translation[2]))
+    rotate = _pmx_quat_to_joint_rotate(_pmx_quat_to_maya(rotation), joint, {})
+    return translate, rotate
+
+
 def _pmx_quat_to_joint_rotate(
     maya_quat: Tuple[float, float, float, float],
     joint: str,
@@ -446,13 +468,43 @@ def _collect_existing_accumulators() -> Dict[str, str]:
             continue
         if not cmds.attributeQuery("mmd_target_joint", node=node, exists=True):
             continue
+        if not cmds.attributeQuery("mmd_bone_morph_accum", node=node, exists=True):
+            continue
         try:
+            if not cmds.getAttr(f"{node}.mmd_bone_morph_accum"):
+                continue
             joint = cmds.getAttr(f"{node}.mmd_target_joint") or ""
         except Exception:
             continue
         if joint and cmds.objExists(joint):
             accumulators[joint] = node
     return accumulators
+
+
+def _remove_accumulator(joint: str, node: str) -> None:
+    """Restore pre-morph inputs and delete one owned accumulator."""
+    for attr_kind, base_name, output_name in (
+        ("rotate", "baseRotate", "outputRotate"),
+        ("translate", "baseTranslate", "outputTranslate"),
+    ):
+        destination = _destination_upstream_of_append(joint, attr_kind)
+        base_attr = f"{node}.{base_name}"
+        output_attr = f"{node}.{output_name}"
+        if _is_connected(output_attr, destination):
+            cmds.disconnectAttr(output_attr, destination)
+            _copy_current_compound_value(base_attr, destination)
+        for axis in ("X", "Y", "Z"):
+            base_axis = _compound_axis_plug(base_attr, axis)
+            destination_axis = _compound_axis_plug(destination, axis)
+            if not base_axis or not destination_axis:
+                continue
+            for source in cmds.listConnections(base_axis, s=True, d=False, p=True) or []:
+                cmds.disconnectAttr(source, base_axis)
+                _connect_if_needed(source, destination_axis, force=True)
+        for source in cmds.listConnections(base_attr, s=True, d=False, p=True) or []:
+            cmds.disconnectAttr(source, base_attr)
+            _connect_if_needed(source, destination, force=True)
+    cmds.delete(node)
 
 
 def _create_accumulator(joint: str) -> Optional[str]:

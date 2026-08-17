@@ -27,6 +27,9 @@ from mmd_tools.actions.import_vmd_action import (  # noqa: E402
     ImportVmdRequest,
 )
 from mmd_tools.core.vmd_data import VmdData  # noqa: E402
+from mmd_tools.converters.authoring_export_bridge import (  # noqa: E402
+    AuthoringExportIntegrationError,
+)
 from mmd_tools.validation.export_validator import ExportValidationError  # noqa: E402
 
 
@@ -343,7 +346,7 @@ class TestImportVmdAction(_ImportActionContract, unittest.TestCase):
 
 
 class TestExportModelAction(unittest.TestCase):
-    """PMX/PMD model export action の最小依存境界を検証する。"""
+    """PMX model export action の最小依存境界を検証する。"""
 
     def test_execute_exports_pmx_from_model_data(self):
         model_data = {
@@ -376,85 +379,188 @@ class TestExportModelAction(unittest.TestCase):
             self.assertNotEqual(writer_path, output_path)
             self.assertFalse(writer_path.exists())
 
-    def test_execute_rejects_pmd_before_collecting_or_writing(self):
+    def test_blocking_model_data_skips_injected_writer_without_maya_defaults(self):
+        """Injected plain-Python writers remain usable on a blocking payload."""
+        model_data = {
+            "vertices": [{"position": [0.0, 0.0, 0.0], "bone_indices": [0]}],
+            "faces": [[0, 0, 0]],
+            "materials": [{"name": "mat", "face_count": 3}],
+            "bones": None,
+            "morphs": [{"type": "flip", "offsets": []}],
+        }
         with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = Path(temp_dir) / "out.pmd"
-            exporter = _FakePmdExporter()
-            collector_calls = []
-
-            def collector(options):
-                collector_calls.append(options)
-                raise AssertionError("PMD policy must reject before collection")
-
+            output_path = Path(temp_dir) / "blocked.pmx"
+            exporter = _FakePmxExporter()
             action = ExportModelAction(
-                pmd_exporter=exporter,
-                collector=collector,
+                pmx_exporter=exporter,
+                collector=None,
                 output_verifier=None,
             )
 
             result = action.execute(
                 ExportModelRequest(
                     file_path=str(output_path),
-                    options={"export_format": "pmd"},
+                    options={"export_format": "pmx", "model_data": model_data},
                 )
             )
 
             self.assertFalse(result.succeeded)
             self.assertIsInstance(result.error, ExportValidationError)
-            self.assertEqual(
-                [issue.code for issue in result.validation_report.issues],
-                ["PMD_EXPORT_POLICY_REJECT"],
-            )
-            self.assertEqual(collector_calls, [])
+            self.assertTrue(result.validation_report.is_blocking)
             self.assertEqual(exporter.calls, [])
             self.assertFalse(output_path.exists())
 
-    def test_execute_rejects_inferred_pmd_before_collecting(self):
-        received_options = []
-
-        def collector(options):
-            received_options.append(options)
-            raise AssertionError("PMD policy must reject before collection")
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = Path(temp_dir) / "out.pmd"
-            action = ExportModelAction(
-                pmd_exporter=_FakePmdExporter(),
-                collector=collector,
-                output_verifier=None,
-            )
-
-            result = action.execute(ExportModelRequest(file_path=str(output_path), options={}))
-
-        self.assertFalse(result.succeeded)
-        self.assertIsInstance(result.error, ExportValidationError)
-        self.assertEqual(received_options, [])
-        self.assertEqual(
-            [issue.code for issue in result.validation_report.issues],
-            ["PMD_EXPORT_POLICY_REJECT"],
-        )
-
-    def test_default_selection_collection_keeps_export_format(self):
-        received_options = []
+    def test_default_collector_projects_authoring_spec_for_registry_root(self):
+        oracle = {"vertices": [{"position": [0, 0, 0]}], "faces": [[0, 0, 0]], "marker": "oracle"}
+        calls = []
 
         class FakeCollector:
             def collect(self, options):
-                received_options.append(options)
-                return {}
+                calls.append(("collect", options))
+                return oracle
+
+        class FakeAdapter:
+            def attribute_exists(self, attr, node):
+                return attr == "mmd_model_registry" and node == "|root"
+
+            def list_relatives(self, node, **kwargs):
+                return []
+
+        class FakeBackend:
+            def __init__(self, adapter):
+                calls.append(("backend", adapter))
+
+        class FakeSceneAdapter:
+            def __init__(self, backend):
+                calls.append(("reader", backend))
+
+            def read_spec(self, root):
+                calls.append(("read", root))
+                return "spec"
+
+        def bridge(spec, payload):
+            calls.append(("bridge", spec, payload))
+            return {"projected": True}
 
         with (
-            mock.patch("maya.cmds.ls", return_value=["selectedMesh"]),
+            mock.patch("mmd_tools.converters.export_scene_collector.ExportSceneCollector", FakeCollector),
+            mock.patch("mmd_tools.adapters.maya_cmds_adapter.MayaCmdsAdapter", FakeAdapter),
+            mock.patch("mmd_tools.adapters.maya_scene_metadata_backend.MayaSceneMetadataBackend", FakeBackend),
+            mock.patch("mmd_tools.adapters.scene_metadata_adapter.SceneMetadataAdapter", FakeSceneAdapter),
+            mock.patch("mmd_tools.converters.authoring_export_bridge.project_authoring_spec", bridge),
+        ):
+            projected = _default_collect_model_data(
+                {"target_model": "|root", "export_format": "pmx"}
+            )
+
+        self.assertEqual(projected, {"projected": True})
+        self.assertEqual([entry[0] for entry in calls], ["collect", "backend", "reader", "read", "bridge"])
+        self.assertIs(calls[-1][2], oracle)
+
+    def test_default_collector_explicit_legacy_skips_authoring_route(self):
+        oracle = {"vertices": [], "faces": [], "marker": "oracle"}
+
+        class FakeCollector:
+            def collect(self, options):
+                return oracle
+
+        with (
+            mock.patch("mmd_tools.converters.export_scene_collector.ExportSceneCollector", FakeCollector),
             mock.patch(
-                "mmd_tools.converters.export_scene_collector.ExportSceneCollector",
-                FakeCollector,
+                "mmd_tools.adapters.maya_cmds_adapter.MayaCmdsAdapter",
+                side_effect=AssertionError("legacy must not construct authoring adapter"),
             ),
         ):
-            _default_collect_model_data({"export_format": "pmd"})
+            result = _default_collect_model_data(
+                {"target_model": "|root", "export_format": "pmx", "authoring_semantics": "legacy"}
+            )
 
-        self.assertEqual(
-            received_options,
-            [{"target_mesh": "selectedMesh", "export_format": "pmd"}],
-        )
+        self.assertIs(result, oracle)
+
+    def test_default_collector_registry_failure_does_not_fallback_to_oracle(self):
+        oracle = {"vertices": [], "faces": []}
+
+        class FakeCollector:
+            def collect(self, options):
+                return oracle
+
+        class FakeAdapter:
+            def attribute_exists(self, attr, node):
+                return attr == "mmd_model_registry"
+
+            def list_relatives(self, node, **kwargs):
+                return []
+
+        class FailingBackend:
+            def __init__(self, adapter):
+                pass
+
+        class FailingSceneAdapter:
+            def __init__(self, backend):
+                pass
+
+            def read_spec(self, root):
+                raise ValueError("broken registry metadata")
+
+        with (
+            mock.patch("mmd_tools.converters.export_scene_collector.ExportSceneCollector", FakeCollector),
+            mock.patch("mmd_tools.adapters.maya_cmds_adapter.MayaCmdsAdapter", FakeAdapter),
+            mock.patch("mmd_tools.adapters.maya_scene_metadata_backend.MayaSceneMetadataBackend", FailingBackend),
+            mock.patch("mmd_tools.adapters.scene_metadata_adapter.SceneMetadataAdapter", FailingSceneAdapter),
+        ):
+            with self.assertRaises(ValueError):
+                _default_collect_model_data({"target_model": "|root", "export_format": "pmx"})
+
+    def test_default_collector_mesh_only_root_keeps_oracle_payload(self):
+        oracle = {"vertices": [], "faces": [], "marker": "oracle"}
+
+        class FakeCollector:
+            def collect(self, options):
+                return oracle
+
+        class MeshOnlyAdapter:
+            def attribute_exists(self, attr, node):
+                return False
+
+            def list_relatives(self, node, **kwargs):
+                return []
+
+        with (
+            mock.patch("mmd_tools.converters.export_scene_collector.ExportSceneCollector", FakeCollector),
+            mock.patch("mmd_tools.adapters.maya_cmds_adapter.MayaCmdsAdapter", MeshOnlyAdapter),
+        ):
+            result = _default_collect_model_data({"target_model": "|root", "export_format": "pmx"})
+
+        self.assertIs(result, oracle)
+
+    def test_default_collector_uses_current_model_root_as_authority(self):
+        oracle = {"vertices": [], "faces": []}
+        collect_options = []
+
+        class FakeCollector:
+            def collect(self, options):
+                collect_options.append(options)
+                return oracle
+
+        with (
+            mock.patch("maya.cmds.ls", side_effect=AssertionError("selection fallback called")),
+            mock.patch("mmd_tools.converters.export_scene_collector.ExportSceneCollector", FakeCollector),
+        ):
+            result = _default_collect_model_data(
+                {
+                    "current_model_root": "|root",
+                    "export_format": "pmx",
+                    "authoring_semantics": "legacy",
+                }
+            )
+
+        self.assertIs(result, oracle)
+        self.assertEqual(collect_options[0]["target_model"], "|root")
+
+    def test_default_collector_rejects_missing_target_without_selection_fallback(self):
+        with mock.patch("maya.cmds.ls", side_effect=AssertionError("selection fallback called")):
+            with self.assertRaisesRegex(ValueError, "current_model_root"):
+                _default_collect_model_data({"export_format": "pmx"})
 
     def test_execute_reports_missing_collector_or_data(self):
         options = {"file_path": "out.pmx", "export_format": "pmx"}
@@ -467,6 +573,28 @@ class TestExportModelAction(unittest.TestCase):
         self.assertIsInstance(result.error, ValueError)
         self.assertIn("Model export requires model_data or a collector", result.status_message)
 
+    def test_execute_preserves_authoring_integration_report(self):
+        def failing_collector(_options):
+            raise AuthoringExportIntegrationError(
+                "semantic data differs from the scene oracle",
+                code="AUTHORING_ORACLE_MISMATCH",
+                path="morphs[0].offsets",
+            )
+
+        action = ExportModelAction(
+            pmx_exporter=_FakePmxExporter(),
+            collector=failing_collector,
+            output_verifier=None,
+        )
+        result = action.execute(
+            ExportModelRequest(file_path="out.pmx", options={"export_format": "pmx"})
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIsInstance(result.error, AuthoringExportIntegrationError)
+        self.assertIsNotNone(result.validation_report)
+        self.assertEqual(result.validation_report.issues[0].code, "AUTHORING_ORACLE_MISMATCH")
+
     def test_execute_reports_unsupported_format(self):
         options = {"file_path": "out.obj", "export_format": "obj", "model_data": {"vertices": [1]}}
         action = ExportModelAction(collector=None)
@@ -475,7 +603,7 @@ class TestExportModelAction(unittest.TestCase):
 
         self.assertFalse(result.succeeded)
         self.assertIsInstance(result.error, ValueError)
-        self.assertIn("Unsupported model export format: obj", result.status_message)
+        self.assertIn("model export format obj is not supported", result.status_message)
 
     def test_request_preserves_options_for_future_exporter_boundary(self):
         options = {"file_path": "out.pmx", "export_format": "pmx", "apply_scale": False}
@@ -492,15 +620,6 @@ class _FakePmxExporter:
     def export_pmx_model(self, file_path, model_data):
         self.calls.append((file_path, model_data))
         Path(file_path).write_bytes(b"fake pmx bytes")
-
-
-class _FakePmdExporter:
-    def __init__(self):
-        self.calls = []
-
-    def export_pmd_model(self, file_path, model_data):
-        self.calls.append((file_path, model_data))
-        Path(file_path).write_bytes(b"fake pmd bytes")
 
 
 class TestExportVmdAction(unittest.TestCase):

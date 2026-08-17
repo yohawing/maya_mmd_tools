@@ -327,6 +327,7 @@ def _set_bone_keyframes_impl(
         vmd_bone_name,
         context.bone_bind_poses.get(joint, (0.0, 0.0, 0.0)),
     )
+    control_owned_channels = set(key_route.get("control_owned_channels", ()))
     needs_rotation_samples = not skip_rotate or bool(key_route.get("ik_solver_rotate"))
     rotation_samples = (
         _sparse_rotation_samples(context, joint, frames, key_route)
@@ -413,6 +414,14 @@ def _set_bone_keyframes_impl(
                 "translateY": ty,
                 "translateZ": tz,
             }
+            # Control Rig EDIT owns an additive translate baseline between
+            # each controller and the joint.  Controller keys are therefore
+            # motion deltas; writing the ordinary joint-space ``bind + VMD``
+            # value here would apply the bind translation twice.  Append and
+            # other legacy routes are intentionally left absolute.
+            for index, attr in enumerate(("translateX", "translateY", "translateZ")):
+                if attr in control_owned_channels:
+                    values[attr] -= float(bind_pos[index])
             if not skip_rotate:
                 rx, ry, rz = rotation_by_time[maya_time]
                 rotation_values = {

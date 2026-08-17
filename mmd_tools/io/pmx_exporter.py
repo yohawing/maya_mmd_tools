@@ -131,7 +131,7 @@ class PmxExporter:
             raise ValueError("vertices must not be empty")
         if not faces_raw:
             raise ValueError("faces must not be empty")
-        ensure_writer_safe_materials(maya_data, "pmx")
+        ensure_writer_safe_materials(maya_data)
 
         # --- ensure parent dir exists ---
         parent_dir = os.path.dirname(file_path)

@@ -52,6 +52,10 @@ class SettingsTab(BaseTab):
         self.reset_settings_btn = QPushButton(self.tr("reset_to_default", "actions"))
         self.export_settings_btn = QPushButton(self.tr("export_settings", "actions"))
         self.import_settings_btn = QPushButton(self.tr("import_settings", "actions"))
+        self.save_settings_btn.setObjectName("settingsSaveButton")
+        self.reset_settings_btn.setObjectName("settingsResetButton")
+        self.export_settings_btn.setObjectName("settingsExportButton")
+        self.import_settings_btn.setObjectName("settingsImportButton")
 
         button_layout.addStretch()
         button_layout.addWidget(self.save_settings_btn)
@@ -78,10 +82,12 @@ class SettingsTab(BaseTab):
         ui_layout = QFormLayout()
 
         self.development_mode_check = QCheckBox(self.tr("development_mode", "checkboxes"))
+        self.development_mode_check.setObjectName("settingsDevelopmentModeCheck")
         ui_layout.addRow("", self.development_mode_check)
 
         # 言語選択
         self.language_combo = QComboBox()
+        self.language_combo.setObjectName("settingsLanguageCombo")
         # UITranslatorから言語リストを取得
         from ...ui.translations import UITranslator
 
@@ -93,6 +99,7 @@ class SettingsTab(BaseTab):
         ui_layout.addRow(self.language_label, self.language_combo)
 
         self.file_history_limit_spin = QSpinBox()
+        self.file_history_limit_spin.setObjectName("settingsFileHistoryLimitSpin")
         self.file_history_limit_spin.setRange(1, 100)
         self.file_history_limit_spin.setValue(20)
         self.file_history_limit_label = QLabel(self.tr("file_history_limit", "fields"))
@@ -107,9 +114,11 @@ class SettingsTab(BaseTab):
 
         command_port_layout = QHBoxLayout()
         self.command_port_spin = QSpinBox()
+        self.command_port_spin.setObjectName("settingsCommandPortSpin")
         self.command_port_spin.setRange(1, 65535)
         self.command_port_spin.setValue(3939)
         self.open_command_port_btn = QPushButton(self.tr("open_command_port", "buttons"))
+        self.open_command_port_btn.setObjectName("settingsOpenCommandPortButton")
         command_port_layout.addWidget(self.command_port_spin)
         command_port_layout.addWidget(self.open_command_port_btn)
         self.command_port_label = QLabel(self.tr("command_port", "fields"))
@@ -123,16 +132,20 @@ class SettingsTab(BaseTab):
         log_layout = QFormLayout()
 
         self.logging_enabled_check = QCheckBox(self.tr("enable_logging", "checkboxes"))
+        self.logging_enabled_check.setObjectName("settingsLoggingEnabledCheck")
         log_layout.addRow("", self.logging_enabled_check)
 
         self.log_level_combo = QComboBox()
+        self.log_level_combo.setObjectName("settingsLogLevelCombo")
         self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
         self.log_level_label = QLabel(self.tr("log_level", "fields"))
         log_layout.addRow(self.log_level_label, self.log_level_combo)
 
         log_file_layout = QHBoxLayout()
         self.log_file_path_edit = QLineEdit()
+        self.log_file_path_edit.setObjectName("settingsLogFilePathEdit")
         self.log_file_browse_btn = QPushButton(self.tr("browse", "buttons"))
+        self.log_file_browse_btn.setObjectName("settingsLogFileBrowseButton")
         self.log_file_browse_btn.setMaximumWidth(60)
         log_file_layout.addWidget(self.log_file_path_edit)
         log_file_layout.addWidget(self.log_file_browse_btn)

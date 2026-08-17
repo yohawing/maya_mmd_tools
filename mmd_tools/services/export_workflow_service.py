@@ -9,7 +9,6 @@ from ..actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
 from ..validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
-    pmd_export_policy_report,
 )
 from ..validation.scene_preflight import ScenePreflight
 from ..validation.snapshot import ExportValidationSnapshot
@@ -132,8 +131,13 @@ class ExportWorkflowService:
 
     @staticmethod
     def _target_options(options: Mapping[str, Any], metadata: Mapping[str, Any]) -> Dict[str, Any]:
-        """Add scene provenance used by model snapshots and report artifacts."""
+        """Add provenance and project Current Model into collector target options."""
         enriched = dict(options)
+        if metadata.get("format") == "pmx" and enriched.get("current_model_root"):
+            # ExportTab intentionally has no target selector.  Keep the
+            # Current Model authoritative for PMX geometry collection.  VMD
+            # camera/light tracks are scene-level and must remain unscoped.
+            enriched["target_model"] = str(enriched["current_model_root"])
         if metadata.get("target_identity") is not None:
             enriched.setdefault("target_identity", metadata["target_identity"])
         if metadata.get("scene_revision") is not None:
@@ -185,16 +189,6 @@ class ExportWorkflowService:
         mode = metadata.get("mode") or "model"
         if report.is_blocking:
             return ExportWorkflowResult(STATE_BLOCKED, report, metadata)
-        if export_format == "pmd":
-            policy_report = pmd_export_policy_report()
-            report = _combine_reports(
-                report,
-                policy_report,
-                export_format=export_format,
-                mode=mode,
-            )
-            return ExportWorkflowResult(STATE_BLOCKED, report, metadata)
-
         try:
             if export_format == "pmx":
                 payload = self._collect_model(request, self._target_options(options, metadata))
@@ -269,7 +263,7 @@ class ExportWorkflowService:
             options["ack_warnings"] = True
         export_format = validation.metadata.get("format")
         try:
-            if export_format in {"pmx", "pmd"}:
+            if export_format == "pmx":
                 options["model_data"] = validation.payload
                 options["validation_snapshot"] = validation.snapshot
                 action_result = self.model_action.execute(

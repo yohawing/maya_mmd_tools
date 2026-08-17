@@ -16,6 +16,7 @@ from tools.export_release_gate import (
     _require_build_path,
     _run_fail_fixture_matrix,
     _maya_path,
+    _gui_test_args,
     _capture_release_provenance,
     _validate_binding_gate_artifact,
     _validate_ffi_build_step,
@@ -49,6 +50,31 @@ class ExportReleaseGateTests(unittest.TestCase):
         ) as resolver:
             self.assertEqual(_maya_path("2024"), Path("custom-maya/mayapy"))
         resolver.assert_called_once_with("2024")
+
+    def test_full_gui_args_use_windows_dx11_virtual_device_only_on_windows(self):
+        """Full Windows GUI evidence fixes the VP2 backend deterministically."""
+        log_path = Path("build/gui-2024.log")
+        base = ["--maya_version", "2024", "--log_path", str(log_path)]
+        with mock.patch.object(RELEASE_GATE.platform, "system", return_value="Windows"):
+            self.assertEqual(
+                _gui_test_args(version="2024", log_path=log_path, full_gui=True),
+                [*base, "--vp2_device_override", "VirtualDeviceDx11"],
+            )
+            self.assertEqual(
+                _gui_test_args(version="2024", log_path=log_path, full_gui=False),
+                [
+                    *base,
+                    "--test_path",
+                    "tests/gui",
+                    "--test_filter",
+                    "tests.gui.guitest_export_tab_gui",
+                ],
+            )
+        with mock.patch.object(RELEASE_GATE.platform, "system", return_value="Linux"):
+            self.assertEqual(
+                _gui_test_args(version="2024", log_path=log_path, full_gui=True),
+                base,
+            )
 
     def test_maya_vmd_probe_explicitly_acknowledges_mode_c_warning(self):
         """The Maya probe accepts the explicit Mode C raw-provenance warning."""
@@ -228,7 +254,6 @@ class ExportReleaseGateTests(unittest.TestCase):
             {fixture["name"] for fixture in result["fixtures"]},
             {
                 "invalid_pmx",
-                "invalid_pmd",
                 "invalid_vmd_quaternion",
                 "warning_ack_boundary",
             },
@@ -239,7 +264,7 @@ class ExportReleaseGateTests(unittest.TestCase):
             fixture for fixture in result["fixtures"] if fixture["name"] == "warning_ack_boundary"
         )
         self.assertEqual(warning_fixture["first_issue_codes"], ["VMD_MODE_C_RAW_LOSS"])
-        self.assertEqual(len(result["report_paths"]), 5)
+        self.assertEqual(len(result["report_paths"]), 4)
 
     def test_maya_probe_report_is_required_and_validated(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -258,6 +283,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                     }
                     for export_format in (
                         "pmx",
+                        "pmd_import",
                         "pmx_morph",
                         "pmx_bone_semantics",
                         "pmx_physics",
@@ -265,7 +291,6 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "pmx_sdef",
                         "pmx_impulse",
                         "pmx_flip",
-                        "pmd",
                         "vmd",
                         "vmd_mode_a",
                         "vmd_model_tracks",
@@ -273,10 +298,26 @@ class ExportReleaseGateTests(unittest.TestCase):
                     )
                 ],
             }
-            pmd_case = next(case for case in report["cases"] if case["format"] == "pmd")
-            pmd_case.update(
-                status="policy-reject",
-                policy_code="PMD_EXPORT_POLICY_REJECT",
+            pmd_import_case = next(case for case in report["cases"] if case["format"] == "pmd_import")
+            pmd_import_case.update(
+                output=None,
+                import_oracles={
+                    "mesh_count": 1,
+                    "vertex_count": 8,
+                    "face_count": 12,
+                    "material_count": 1,
+                    "morph_count": 0,
+                    "pose_joint_count": 3,
+                    "pose_frame_count": 1,
+                    "rigid_body_count": 0,
+                    "joint_count": 0,
+                    "metadata_field_count": 3,
+                },
+                collection={
+                    "collector": "Maya PMD import pipeline",
+                    "source_fresh_import": True,
+                    "export_writer_called": False,
+                },
             )
             physics_case = next(case for case in report["cases"] if case["format"] == "pmx_physics")
             physics_case.update(
@@ -807,6 +848,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                 {path.parent.name for path in report_paths},
                 {
                     "pmx",
+                    "pmd_import",
                     "pmx_morph",
                     "pmx_bone_semantics",
                     "pmx_physics",
@@ -814,7 +856,6 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "pmx_sdef",
                     "pmx_impulse",
                     "pmx_flip",
-                    "pmd",
                     "vmd",
                     "vmd_mode_a",
                     "vmd_model_tracks",
@@ -1413,6 +1454,28 @@ class ExportReleaseGateTests(unittest.TestCase):
         self.assertTrue(any("material[0].memo" in failure for failure in failures))
         self.assertFalse(any("material[0].sphere_texture_path" in failure for failure in failures))
 
+    def test_scene_oracle_derives_optional_edge_flag_from_pmx_draw_flags(self):
+        """A redundant Maya edge flag may be absent after a PMX fresh import."""
+        material = {
+            "index": 0,
+            "draw_flags": 0x10,
+            "edge_flag": 1,
+            "diffuse": [],
+            "specular": [],
+            "ambient": [],
+            "edge_color": [],
+            "edge_size": None,
+            "shininess": None,
+        }
+        source = {"materials": [material], "metadata": {}, "pose": {}}
+        actual = {
+            "materials": [{**material, "edge_flag": None}],
+            "metadata": {},
+            "pose": {},
+        }
+
+        assert _compare_scene_oracles(source, actual, pose=False, mesh=False) == []
+
     def test_scene_oracle_detects_physics_semantic_drift(self):
         source = {
             "metadata": {"mmd_file_type": "pmx", "mmd_model_name": "fixture"},
@@ -1500,6 +1563,43 @@ class ExportReleaseGateTests(unittest.TestCase):
         failures = _compare_scene_oracles(source, actual, pose=False, mesh=False, materials=False, morphs=True)
 
         self.assertTrue(any("morphs[0] mesh[0] vertices max error" in failure for failure in failures))
+
+
+    def test_main_defaults_to_release_complete_full_gui(self):
+        summary = {"status": "pass", "unexecuted": []}
+        with mock.patch.object(
+            RELEASE_GATE, "build_release_summary", return_value=summary
+        ) as build_summary, mock.patch.object(
+            RELEASE_GATE, "_require_build_path", return_value=Path("build/release")
+        ):
+            self.assertEqual(
+                RELEASE_GATE.main(["--out-dir", "build/release", "--mmd-anim-cli", "runtime"]),
+                0,
+            )
+
+        self.assertTrue(build_summary.call_args.kwargs["full_gui"])
+
+    def test_main_targeted_gui_is_explicitly_incomplete_scope(self):
+        summary = {"status": "fail", "unexecuted": ["ui_coverage_gate"]}
+        with mock.patch.object(
+            RELEASE_GATE, "build_release_summary", return_value=summary
+        ) as build_summary, mock.patch.object(
+            RELEASE_GATE, "_require_build_path", return_value=Path("build/release")
+        ):
+            self.assertEqual(
+                RELEASE_GATE.main(
+                    [
+                        "--out-dir",
+                        "build/release",
+                        "--mmd-anim-cli",
+                        "runtime",
+                        "--targeted-gui",
+                    ]
+                ),
+                1,
+            )
+
+        self.assertFalse(build_summary.call_args.kwargs["full_gui"])
 
 
 if __name__ == "__main__":

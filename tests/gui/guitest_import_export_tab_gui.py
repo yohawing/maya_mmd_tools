@@ -53,10 +53,7 @@ class TestImportExportTabGUI(GuiTestBase):
 
         # パスを設定
         test_import_path = "/test/import/model.pmx"
-        test_export_path = "/test/export/model.pmx"
-
         tab1.import_path_edit.setText(test_import_path)
-        tab1.export_path_edit.setText(test_export_path)
 
         # タブを削除
         tab1.deleteLater()
@@ -66,7 +63,6 @@ class TestImportExportTabGUI(GuiTestBase):
 
         # 保存されたパスが読み込まれていることを確認
         self.assertEqual(tab2.import_path_edit.text(), test_import_path)
-        self.assertEqual(tab2.export_path_edit.text(), test_export_path)
 
         # クリーンアップ
         tab2.deleteLater()
@@ -144,20 +140,59 @@ class TestImportExportTabGUI(GuiTestBase):
         finally:
             tab.deleteLater()
 
-    def test_export_format_combo_excludes_pmd(self):
-        """エクスポート形式に未実装の 'pmd' が含まれないことを確認する（B-3）。"""
+    def test_import_tab_contains_only_import_controls(self):
+        """Export workflow controls are owned by the dedicated Export tab."""
         tab = self._create_tab()
-        items = [tab.export_format_combo.itemText(i) for i in range(tab.export_format_combo.count())]
-        self.assertIn("pmx", items)
-        self.assertNotIn("pmd", items)
-        tab.deleteLater()
+        try:
+            for attr in (
+                "export_group",
+                "export_path_edit",
+                "export_path_button",
+                "export_button",
+                "export_format_combo",
+                "apply_scale_check",
+            ):
+                self.assertFalse(hasattr(tab, attr), attr)
+        finally:
+            tab.deleteLater()
 
     def test_vpd_ui_is_not_in_import_export_tab(self):
-        """VPD は pose apply / D&D 導線で扱い、Import/Export タブには置かない（B-3）。"""
+        """VPD は pose apply / D&D 導線で扱い、Import タブには置かない（B-3）。"""
         tab = self._create_tab()
         self.assertFalse(hasattr(tab, "vpd_group"))
         self.assertFalse(hasattr(tab, "vpd_not_implemented"))
         tab.deleteLater()
+
+    def test_new_model_entrypoint_is_one_button_next_to_import(self):
+        """The inline template fields are gone; one modal entrypoint shares the import row."""
+        tab = self._create_tab()
+        try:
+            self.assertFalse(hasattr(tab, "create_model_group"))
+            self.assertFalse(hasattr(tab, "create_model_template_combo"))
+            self.assertTrue(hasattr(tab, "new_model_button"))
+            self.assertEqual(tab.import_button.parentWidget(), tab.new_model_button.parentWidget())
+            # The buttons live in a QHBoxLayout nested inside the group's
+            # QFormLayout, so the parent widget's top-level layout does not
+            # contain them directly.
+            def find_layout_containing(layout, widget):
+                for index in range(layout.count()):
+                    item = layout.itemAt(index)
+                    if item is None:
+                        continue
+                    if item.widget() is widget:
+                        return layout
+                    child_layout = item.layout()
+                    if child_layout is not None:
+                        found = find_layout_containing(child_layout, widget)
+                        if found is not None:
+                            return found
+                return None
+
+            button_layout = find_layout_containing(tab.model_import_group.layout(), tab.import_button)
+            self.assertIsNotNone(button_layout)
+            self.assertEqual(button_layout.indexOf(tab.import_button) + 1, button_layout.indexOf(tab.new_model_button))
+        finally:
+            tab.deleteLater()
 
 
 if __name__ == "__main__":

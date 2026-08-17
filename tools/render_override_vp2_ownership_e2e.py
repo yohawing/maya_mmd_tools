@@ -306,6 +306,7 @@ def run_probe(
     frame: int = 1,
     capture_only: bool = False,
     ui_import: bool = False,
+    material_reindex: bool = False,
 ) -> None:
     """Run the Maya-side native ownership probe and always write its report.
 
@@ -343,6 +344,7 @@ def run_probe(
         "visualParity": "not-run",
         "parityMode": bool(parity_mode),
         "captureOnly": bool(capture_only),
+        "materialReindex": bool(material_reindex),
         "frame": int(frame),
         "errors": [],
     }
@@ -671,6 +673,45 @@ def run_probe(
         report["captures"]["ownership"] = str(capture)
 
         if capture_only:
+            reindex_checks: dict[str, bool] = {}
+            if material_reindex:
+                command_result = str(
+                    cmds.mmdRenderQueueReindex(
+                        node=shape_name,
+                        firstMaterialIndex=0,
+                        secondMaterialIndex=1,
+                    )
+                )
+                reindexed_witness = _wait_for_witness(cmds, shape_name, log)
+                cmds.undo()
+                undo_witness = _wait_for_witness(cmds, shape_name, log)
+                cmds.redo()
+                redo_witness = _wait_for_witness(cmds, shape_name, log)
+                reindexed_capture = _capture_view(
+                    cmds,
+                    output_dir / "native_vp2_ownership_reindexed.png",
+                    panel,
+                    width,
+                    height,
+                    frame,
+                )
+                report["captures"]["materialReindexed"] = str(reindexed_capture)
+                report["materialReindexProbe"] = {
+                    "commandResult": command_result,
+                    "initialWitness": witness,
+                    "reindexedWitness": reindexed_witness,
+                    "undoWitness": undo_witness,
+                    "redoWitness": redo_witness,
+                }
+                reindex_checks = {
+                    "materialReindexChangedOrder": reindexed_witness != witness,
+                    "materialReindexUndoRestored": undo_witness == witness,
+                    "materialReindexRedoRestored": redo_witness == reindexed_witness,
+                    "materialReindexCaptureCreated": (
+                        reindexed_capture.is_file()
+                        and reindexed_capture.stat().st_size > 0
+                    ),
+                }
             report["checks"] = {
                 "customShapeCreated": True,
                 "drawPreparationReady": witness.startswith("ready"),
@@ -684,14 +725,18 @@ def run_probe(
                     report["headsUpDisplay"]["before"]
                     == report["headsUpDisplay"]["afterSetup"]
                 ),
+                **reindex_checks,
             }
-            for check_name in (
+            required_checks = [
                 "drawPreparationReady",
                 "geometryBuffersPrepared",
                 "captureCreated",
                 "noCustomMfnMeshDuplicate",
                 "hudPreserved",
-            ):
+            ]
+            if material_reindex:
+                required_checks.extend(reindex_checks)
+            for check_name in required_checks:
                 if not report["checks"][check_name]:
                     raise RuntimeError(
                         f"native VP2 capture-only check failed: {check_name}"
@@ -919,6 +964,11 @@ def main() -> int:
         action="store_true",
         help="Use the settings-backed import route exercised by the MMD Tools UI.",
     )
+    parser.add_argument(
+        "--material-reindex",
+        action="store_true",
+        help="Exercise adjacent native queue reindex plus Maya Undo/Redo in capture-only mode.",
+    )
     args = parser.parse_args()
 
     model_path = args.model
@@ -938,6 +988,8 @@ def main() -> int:
         parser.error("--parity requires --camera-json")
     if args.camera_json is not None and not args.parity:
         parser.error("--camera-json requires --parity")
+    if args.material_reindex and not args.capture_only:
+        parser.error("--material-reindex requires --capture-only")
     camera_config = None
     if args.camera_json is not None:
         try:
@@ -963,7 +1015,8 @@ def main() -> int:
         f"width={args.width}, height={args.height}, "
         f"camera_config={camera_config!r}, parity_mode={bool(args.parity)!r}, "
         f"frame={args.frame}, capture_only={bool(args.capture_only)!r}, "
-        f"ui_import={bool(args.ui_import)!r})\n"
+        f"ui_import={bool(args.ui_import)!r}, "
+        f"material_reindex={bool(args.material_reindex)!r})\n"
     )
     env_overrides = {
         "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",
@@ -1007,6 +1060,9 @@ def main() -> int:
             out_dir / "native_vp2_ownership_queue_restored.png",
             out_dir / "native_vp2_ownership_queue_restored.0000.png",
             out_dir / "native_vp2_ownership_queue_restored.0001.png",
+            out_dir / "native_vp2_ownership_reindexed.png",
+            out_dir / "native_vp2_ownership_reindexed.0000.png",
+            out_dir / "native_vp2_ownership_reindexed.0001.png",
         ),
         port_error=f"commandPort :{args.port} is already open; choose another --port",
         report_error=f"VP2 ownership report missing: {report_path}",

@@ -157,6 +157,7 @@ class ValidationConsole(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("validationConsole")
         self._translator = UITranslator.instance()
         self._report: Optional[ExportValidationReport] = None
         self._metadata: Dict[str, Any] = {}
@@ -168,16 +169,19 @@ class ValidationConsole(QWidget):
         header.addWidget(self.summary_label)
         header.addStretch()
         self.filter_combo = QComboBox()
+        self.filter_combo.setObjectName("validationFilterCombo")
         self.filter_combo.addItem(self._tr("all", "All"), "all")
         self.filter_combo.currentIndexChanged.connect(self._refresh_issue_list)
         header.addWidget(self.filter_combo)
         layout.addLayout(header)
 
         self.issue_list = QListWidget()
+        self.issue_list.setObjectName("validationIssueList")
         self.issue_list.currentRowChanged.connect(self._show_selected_issue)
         layout.addWidget(self.issue_list)
 
         self.detail_text = QTextEdit()
+        self.detail_text.setObjectName("validationDetailEdit")
         self.detail_text.setReadOnly(True)
         layout.addWidget(self.detail_text)
 
@@ -185,16 +189,20 @@ class ValidationConsole(QWidget):
         self.acknowledge_check = QCheckBox(
             self._tr("acknowledge_warnings", "Acknowledge warnings")
         )
+        self.acknowledge_check.setObjectName("validationAcknowledgeCheck")
         self.acknowledge_check.setEnabled(False)
         self.acknowledge_check.toggled.connect(self.acknowledgement_changed.emit)
         actions.addWidget(self.acknowledge_check)
         self.revalidate_button = QPushButton(self._tr("revalidate", "Revalidate"))
+        self.revalidate_button.setObjectName("validationRevalidateButton")
         self.revalidate_button.clicked.connect(self.revalidate_requested.emit)
         actions.addWidget(self.revalidate_button)
         self.copy_button = QPushButton(self._tr("copy", "Copy"))
+        self.copy_button.setObjectName("validationCopyButton")
         self.copy_button.clicked.connect(self.copy_report)
         actions.addWidget(self.copy_button)
         self.save_button = QPushButton(self._tr("save_report", "Save report"))
+        self.save_button.setObjectName("validationSaveButton")
         self.save_button.clicked.connect(self.save_report)
         actions.addWidget(self.save_button)
         actions.addStretch()
@@ -222,6 +230,30 @@ class ValidationConsole(QWidget):
     def warnings_acknowledged(self) -> bool:
         """Return the explicit warning acknowledgement state."""
         return self.acknowledge_check.isChecked()
+
+    def snapshot_state(self) -> Dict[str, Any]:
+        """Capture report metadata and acknowledgement for pane switching."""
+        return {
+            "report": self._report,
+            "metadata": dict(self._metadata),
+            "acknowledged": self.warnings_acknowledged,
+        }
+
+    def restore_acknowledgement(self, acknowledged: bool) -> None:
+        """Restore an acknowledgement after set_report resets it."""
+        self.acknowledge_check.blockSignals(True)
+        self.acknowledge_check.setChecked(
+            bool(acknowledged and self._report and self._report.requires_warning_ack)
+        )
+        self.acknowledge_check.blockSignals(False)
+
+    def restore_state(self, snapshot: Optional[Mapping[str, Any]]) -> None:
+        """Restore a pane snapshot without creating a second Console."""
+        if not snapshot:
+            self.set_report(None, {})
+            return
+        self.set_report(snapshot.get("report"), snapshot.get("metadata") or {})
+        self.restore_acknowledgement(bool(snapshot.get("acknowledged", False)))
 
     def set_report(
         self,

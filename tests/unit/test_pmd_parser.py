@@ -54,7 +54,7 @@ class TestPmdParser(TestBase):
         self.assertIsInstance(self.parsed_data.header.comment, str)
 
     def test_legacy_pmd_data_parse_file_still_parses_pmd_header(self):
-        """PMD writer/export 検証用の legacy PmdData reader は PMD のまま使える。"""
+        """PMD import diagnostics can still use the legacy PmdData reader."""
         self.assertEqual(self.legacy_pmd_data.header.magic, b"Pmd")
         self.assertAlmostEqual(self.legacy_pmd_data.header.version, 1.0)
 

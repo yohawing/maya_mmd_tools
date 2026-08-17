@@ -1,10 +1,13 @@
 import unittest
 from unittest.mock import MagicMock, patch
-import json
 from maya import cmds
 from mmd_tools.ui.presenters import morph_presenter as morph_presenter_module
 from mmd_tools.ui.presenters.morph_presenter import MorphPresenter
 from mmd_tools.ui.translations import UITranslator
+from mmd_tools.core.morph_topology import (
+    MorphTopologyDiagnostic,
+    MorphTopologyInspection,
+)
 from tests.common.mock_ui import attach_mocks
 from tests.common.maya_test_base import MayaTestBase
 
@@ -89,6 +92,40 @@ class TestMorphPresenter(MayaTestBase):
         self.assertEqual(self.presenter.morph_data, {})
         self.assertEqual(self.presenter.group_morphs, {})
         self.mock_view.set_morph_details_enabled.assert_called_with(False)
+
+    def test_topology_diagnostic_enables_explicit_repair_without_mutating_load(self):
+        inspection = MorphTopologyInspection(
+            {"1": ((0, 0.5),)},
+            {},
+            (MorphTopologyDiagnostic("stale", "cache differs"),),
+        )
+        coordinator = MagicMock()
+        coordinator.inspect_morph_topology.return_value = inspection
+        self.presenter.authoring_coordinator = coordinator
+
+        self.presenter._inspect_morph_topology("|root")
+
+        coordinator.inspect_morph_topology.assert_called_once_with("|root")
+        coordinator.repair_morph_topology.assert_not_called()
+        self.mock_view.set_topology_repair_state.assert_called_once_with(
+            "stale: cache differs", True
+        )
+        self.assertEqual(self.presenter._controller_topology, {})
+
+    def test_explicit_topology_repair_reloads_only_after_valid_readback(self):
+        inspection = MorphTopologyInspection(
+            {"1": ((0, 0.5),)}, {"1": ((0, 0.5),)}, ()
+        )
+        coordinator = MagicMock()
+        coordinator.repair_morph_topology.return_value = inspection
+        self.presenter.authoring_coordinator = coordinator
+        self.mock_app_state.current_model_root = "|root"
+        self.presenter.load_morphs = MagicMock()
+
+        self.presenter.repair_morph_topology()
+
+        coordinator.repair_morph_topology.assert_called_once_with("|root")
+        self.presenter.load_morphs.assert_called_once_with()
 
     def test_load_morphs_with_model(self):
         """モデルがある場合のモーフロードのテスト"""
@@ -277,12 +314,9 @@ class TestMorphPresenter(MayaTestBase):
         self.assertIn("custom_morph", self.presenter.group_morphs["その他"])
 
     def test_apply_changes(self):
-        """変更適用のテスト"""
-        # モデルを作成
+        """Coordinator がない Apply はデータも Maya 属性も変更しない。"""
         test_model = cmds.group(empty=True, name="test_model_root")
         self.mock_app_state.current_model_root = test_model
-
-        # モーフデータを設定
         self.presenter.current_morph = "test_morph"
         self.presenter.morph_data = {
             "test_morph": {
@@ -293,29 +327,21 @@ class TestMorphPresenter(MayaTestBase):
                 "group": "その他",
             }
         }
-
-        # UIの値を設定
         self.mock_view.morph_name_jp_edit.text.return_value = "新名前"
         self.mock_view.morph_name_en_edit.text.return_value = "new_name"
         self.mock_view.panel_combo.currentIndex.return_value = 1
         self.mock_view.morph_type_combo.currentIndex.return_value = 2
 
-        # 変更を適用
         self.presenter.apply_changes()
 
-        # 結果を確認
         data = self.presenter.morph_data["test_morph"]
-        self.assertEqual(data["name_jp"], "新名前")
-        self.assertEqual(data["name_en"], "new_name")
-        self.assertEqual(data["panel"], 1)
-        self.assertEqual(data["type"], 2)
-        self.assertNotIn("group", data)
-
-        # MMDアトリビュートに保存されたことを確認
-        self.assertTrue(cmds.attributeQuery("mmdMorphData", node=test_model, exists=True))
-        saved_data = json.loads(cmds.getAttr(f"{test_model}.mmdMorphData"))
-        self.assertEqual(saved_data["test_morph"]["name_jp"], "新名前")
-        self.assertNotIn("group", saved_data["test_morph"])
+        self.assertEqual(data["name_jp"], "旧名前")
+        self.assertEqual(data["name_en"], "old_name")
+        self.assertEqual(data["panel"], 0)
+        self.assertEqual(data["type"], 0)
+        self.assertIn("group", data)
+        self.assertFalse(cmds.attributeQuery("mmdMorphData", node=test_model, exists=True))
+        self.assertTrue(self.mock_app_state.emit_status.called)
 
 
 if __name__ == "__main__":

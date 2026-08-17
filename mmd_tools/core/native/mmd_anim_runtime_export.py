@@ -16,7 +16,6 @@ logger = get_logger(__name__)
 _JSON_EXPORT_SYMBOLS = {
     "vmd": "mmd_runtime_export_vmd_animation_json",
     "pmx": "mmd_runtime_export_pmx_model_json",
-    "pmd": "mmd_runtime_export_pmd_model_json",
 }
 
 
@@ -103,7 +102,7 @@ def is_native_json_export_available(
     指定 MMD format の JSON writer FFI が利用可能かどうかを返す。
 
     Args:
-        format_kind: ``"vmd"`` / ``"pmx"`` / ``"pmd"``。
+        format_kind: ``"vmd"`` / ``"pmx"``。
 
     Returns:
         対応する native JSON writer と byte buffer free ABI があれば True。
@@ -155,14 +154,6 @@ def export_pmx_model_json(
 ) -> Optional[bytes]:
     """PmxParsedModel JSON から PMX バイト列を native writer で生成する。"""
     return _export_json_with_symbol(_JSON_EXPORT_SYMBOLS["pmx"], payload, get_library)
-
-
-def export_pmd_model_json(
-    payload: Any,
-    get_library: Optional[Callable[[], Optional[CDLL]]] = None,
-) -> Optional[bytes]:
-    """PmdParsedModel JSON から PMD バイト列を native writer で生成する。"""
-    return _export_json_with_symbol(_JSON_EXPORT_SYMBOLS["pmd"], payload, get_library)
 
 
 def export_pmx_from_parts(

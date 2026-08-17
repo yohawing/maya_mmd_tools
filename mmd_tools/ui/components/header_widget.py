@@ -3,6 +3,8 @@
 モデル選択、モデル情報表示、クイックアクションを提供
 """
 
+import inspect
+
 from ...core.logger import get_logger
 from ..combo_box_utils import add_combo_item_with_tooltip, configure_model_combo_width
 from ..qt_compat import (
@@ -12,7 +14,7 @@ from ..qt_compat import (
     QComboBox,
 )
 from ..translations import UITranslator
-from .symbol_tool_button import MaterialSymbolToolButton
+from .symbol_tool_button import SymbolToolButton
 
 logger = get_logger(__name__)
 
@@ -47,7 +49,8 @@ class HeaderWidget(QWidget):
         main_layout.addWidget(self.model_combo)
 
         # リフレッシュボタン
-        self.refresh_btn = MaterialSymbolToolButton("refresh", "Refresh")
+        self.refresh_btn = SymbolToolButton("refresh", "Refresh")
+        self.refresh_btn.setObjectName("headerRefreshButton")
         main_layout.addWidget(self.refresh_btn)
 
         # 右側のスペース
@@ -81,8 +84,25 @@ class HeaderWidget(QWidget):
 
     def refresh_model_list(self):
         """モデルリストを更新"""
-        self.app_state.refresh_model_list()
-        self.app_state.select_model_from_maya_selection()
+        refresh = self.app_state.refresh_model_list
+        # ApplicationState's explicit path owns selection revalidation.  Keep
+        # a narrow fallback for legacy/headless app-state doubles that still
+        # expose the pre-generation zero-argument method.
+        try:
+            parameters = inspect.signature(refresh).parameters.values()
+            supports_explicit = any(
+                parameter.name == "explicit"
+                or parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            supports_explicit = False
+        if supports_explicit:
+            refresh(explicit=True)
+        else:
+            refresh()
+            if not hasattr(self.app_state, "refresh_generation"):
+                self.app_state.select_model_from_maya_selection()
 
     def on_model_list_updated(self, models):
         """モデルリストが更新されたときの処理"""
@@ -116,6 +136,20 @@ class HeaderWidget(QWidget):
             if current_model in models:
                 index = models.index(current_model)
                 self.model_combo.setCurrentIndex(index)
+            else:
+                # Some legacy services return short roots while Application
+                # State retains the canonical long identity.
+                service = getattr(self.app_state, "scene_model_service", None)
+                canonicalize = getattr(service, "canonical_node", None)
+                if callable(canonicalize):
+                    try:
+                        current_identity = canonicalize(current_model)
+                        for index, model in enumerate(models):
+                            if canonicalize(model) == current_identity:
+                                self.model_combo.setCurrentIndex(index)
+                                break
+                    except Exception:
+                        logger.debug("Could not match canonical current model in Header", exc_info=True)
 
         self.is_updating = False
 

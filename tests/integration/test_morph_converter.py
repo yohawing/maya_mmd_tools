@@ -885,6 +885,20 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(result.get("morphs_converted"), 2)
         self.assertEqual(result.get("vertex_morphs_skipped_by_material"), 2)
         self.assertEqual(len(result.get("blend_shape_nodes", [])), 2)
+        vertex_nodes = result.get("vertex_morph_nodes", [])
+        self.assertEqual(len(vertex_nodes), 2)
+        self.assertEqual(len(set(vertex_nodes)), 2)
+        self.assertEqual(
+            [cmds.getAttr(f"{node}.mmd_morph_index") for node in vertex_nodes],
+            [0, 1],
+        )
+        self.assertFalse(
+            cmds.attributeQuery(
+                "mmd_vertex_morph_offsets_raw_json",
+                node=vertex_nodes[0],
+                exists=True,
+            )
+        )
 
         mesh_a_aliases = cmds.aliasAttr(result["blend_shape_nodes"][0], query=True) or []
         mesh_b_aliases = cmds.aliasAttr(result["blend_shape_nodes"][1], query=True) or []
@@ -892,6 +906,58 @@ class TestMorphConverter(MayaTestBase):
         self.assertNotIn("mat1_only", mesh_a_aliases)
         self.assertIn("mat1_only", mesh_b_aliases)
         self.assertNotIn("mat0_only", mesh_b_aliases)
+
+    def test_vertex_morph_metadata_rejects_malformed_offsets(self):
+        """Malformed source offsets fail before the per-mesh preview path can skip them."""
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = "malformed_vertex"
+            name_english = ""
+            panel = 1
+            morph_type = PmxMorphType.VertexMorph
+            offsets = [{"vertex_index": True, "position_offset": (0.1, 0.0, 0.0)}]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {"faces": [], "materials": [], "morphs": [FakeVertexMorph()]},
+        )()
+
+        with self.assertRaises(ValueError):
+            MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+    def test_vertex_morph_metadata_rejects_unknown_offset_fields(self):
+        """Unknown fields are not silently discarded from the semantic record."""
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = "unknown_field_vertex"
+            name_english = ""
+            panel = 1
+            morph_type = PmxMorphType.VertexMorph
+            offsets = [
+                {
+                    "vertex_index": 0,
+                    "position_offset": (0.0, 0.0, 0.0),
+                    "unexpected": 1,
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {"faces": [], "materials": [], "morphs": [FakeVertexMorph()]},
+        )()
+
+        with self.assertRaises(ValueError):
+            MorphConverter().convert_pmx_morphs(fake_data, mesh)
 
     def test_compact_material_split_mesh_maps_vertex_morph_source_indices(self):
         """compact split mesh では PMX source vertex index を local vertex index に写して morph を適用する。"""
@@ -1300,6 +1366,39 @@ class TestMorphConverter(MayaTestBase):
             *(result.get("group_morph_nodes", [])),
             *(result.get("material_morph_nodes", [])),
         )
+
+    def test_export_collection_rejects_malformed_group_authority(self):
+        mesh_name = self._create_test_mesh()
+
+        class FakeGroupMorph:
+            name = "broken_group"
+            name_english = ""
+            panel = 4
+            morph_type = PmxMorphType.GroupMorph
+            offsets = [{"morph_index": 0, "morph_rate": 0.5}]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type("FakePmxData", (), {"morphs": [FakeGroupMorph()]})()
+        converter = MorphConverter()
+        result = converter.convert_pmx_morphs(fake_data, mesh_name)
+        group_node = result["group_morph_nodes"][0]
+        cmds.setAttr(
+            f"{group_node}.mmd_group_morph_offsets_json",
+            "{broken",
+            type="string",
+        )
+
+        with self.assertRaisesRegex(ValueError, "morph_topology:malformed"):
+            converter.collect_morphs_from_scene_for_export()
+        cmds.setAttr(
+            f"{group_node}.mmd_group_morph_offsets_json",
+            '[{"morph_index":0,"morph_index":1,"morph_rate":0.5}]',
+            type="string",
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate raw offset field"):
+            converter.collect_morphs_from_scene_for_export()
 
     def test_simple_blendshape_creation(self):
         """シンプルなblendShape作成のテスト（Mayaの基本機能確認）"""

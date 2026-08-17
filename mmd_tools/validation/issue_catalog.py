@@ -63,6 +63,7 @@ _KNOWN_ISSUE_CODES = (
     "DISPLAY_FRAME_FIELD_TYPE",
     "DISPLAY_FRAME_NOT_MAPPING",
     "DISPLAY_FRAMES_NOT_SEQUENCE",
+    "EXPORT_WORKFLOW_EXCEPTION",
     "FACE_INDEX_OUT_OF_RANGE",
     "FACE_INDEX_TYPE",
     "FACE_NOT_SEQUENCE",
@@ -136,24 +137,6 @@ _KNOWN_ISSUE_CODES = (
     "OUTPUT_MATERIAL_COUNT_MISMATCH",
     "OUTPUT_PARSE_FAILED",
     "OUTPUT_VERTEX_COUNT_MISMATCH",
-    "PMD_ADDITIONAL_UV_UNSUPPORTED",
-    "PMD_BONE_LIMIT",
-    "PMD_BONE_REFERENCE_OUT_OF_RANGE",
-    "PMD_BONE_REFERENCE_TYPE",
-    "PMD_BONE_TYPE",
-    "PMD_BONE_WEIGHT_RANGE",
-    "PMD_BONE_WEIGHT_TYPE",
-    "PMD_DISPLAY_FRAMES_UNSUPPORTED",
-    "PMD_EDGE_FLAG_RANGE",
-    "PMD_EDGE_FLAG_TYPE",
-    "PMD_EXPORT_POLICY_REJECT",
-    "PMD_IK_DATA_UNSUPPORTED",
-    "PMD_JOINTS_UNSUPPORTED",
-    "PMD_MORPHS_UNSUPPORTED",
-    "PMD_RIGID_BODIES_UNSUPPORTED",
-    "PMD_SOFT_BODIES_UNSUPPORTED",
-    "PMD_TEXTURES_UNSUPPORTED",
-    "PMD_VERTEX_LIMIT",
     "PMX_ADDITIONAL_UV_UNSUPPORTED",
     "PMX_BONE_IK_LINKS_NOT_SEQUENCE",
     "PMX_BONE_SEMANTIC_MISSING",
@@ -268,37 +251,36 @@ _WARNING_LOSS_POLICIES = frozenset({"VMD_MODE_C_RAW_LOSS"})
 
 def _category_for_code(code: str) -> str:
     """Return the fixed report category for a registered issue code."""
-    if code.startswith("OUTPUT_") or code.startswith("MMD_ANIM_"):
+    if (
+        code.startswith("OUTPUT_")
+        or code.startswith("MMD_ANIM_")
+        or code.startswith("EXPORT_WORKFLOW_")
+    ):
         return "output"
     if code.startswith("VMD_"):
         return "animation"
     if code.startswith("SCENE_"):
         return "references"
-    if code.startswith("BONE") or code.startswith("PMD_BONE") or code.startswith("PMX_BONE"):
+    if code.startswith("BONE") or code.startswith("PMX_BONE"):
         return "bones"
-    if code.startswith("DISPLAY") or code.startswith("PMD_DISPLAY"):
+    if code.startswith("DISPLAY"):
         return "display"
     if code.startswith("FACE") or code.startswith("VERTEX") or code.startswith("VERTICES"):
         return "geometry"
     if (
         code.startswith("MATERIAL")
         or code.startswith("TEXTURE")
-        or code.startswith("PMD_TEXTURE")
-        or code.startswith("PMD_EDGE")
     ):
         return "materials"
-    if code.startswith("MORPH") or code.startswith("PMD_MORPH"):
+    if code.startswith("MORPH"):
         return "morphs"
     if (
         code.startswith("JOINT")
         or code.startswith("RIGID")
-        or code.startswith("PMD_JOINT")
-        or code.startswith("PMD_RIGID")
     ):
         return "physics"
     if (
-        code.startswith("PMD_VERTEX")
-        or code.startswith("PMX_VERTEX")
+        code.startswith("PMX_VERTEX")
         or code.endswith("_ADDITIONAL_UV_UNSUPPORTED")
     ):
         return "geometry"

@@ -37,6 +37,59 @@ class TestVmdMorphMapping(MayaTestBase):
 
         cmds.delete(cube)
 
+    def test_invalid_controller_topology_is_reported_instead_of_silently_empty(self):
+        root = cmds.group(empty=True, name="invalid_topology_root")
+        controller = cmds.createNode("network", name="invalid_topology_controller")
+        cmds.addAttr(controller, longName="topologyVersion", attributeType="long")
+        cmds.addAttr(controller, longName="groupTopology", dataType="string")
+        cmds.setAttr(f"{controller}.topologyVersion", 2)
+        cmds.setAttr(f"{controller}.groupTopology", "{}", type="string")
+        cmds.addAttr(root, longName="mmd_morph_controller", attributeType="message")
+        cmds.connectAttr(f"{controller}.message", f"{root}.mmd_morph_controller")
+
+        with self.assertRaisesRegex(RuntimeError, "morph_topology:version"):
+            self.converter._build_morph_mappings(root)
+
+        self.assertTrue(
+            any(value.startswith("morph_topology:version:") for value in self.converter.morph_binding_diagnostics)
+        )
+        cmds.delete(root)
+
+    def test_ambiguous_controller_ownership_is_reported(self):
+        root = cmds.group(empty=True, name="ambiguous_topology_root")
+        controllers = [
+            cmds.createNode("network", name=f"ambiguous_topology_controller_{index}")
+            for index in range(2)
+        ]
+        cmds.addAttr(root, longName="mmd_morph_controller", attributeType="message")
+        for index, controller in enumerate(controllers):
+            attr = f"controller{index}"
+            cmds.addAttr(root, longName=attr, attributeType="message")
+            cmds.connectAttr(f"{controller}.message", f"{root}.{attr}")
+        # Connect both sources through a multi message boundary matching a
+        # corrupted legacy scene.
+        cmds.deleteAttr(f"{root}.mmd_morph_controller")
+        cmds.addAttr(
+            root, longName="mmd_morph_controller", attributeType="message", multi=True
+        )
+        for index, controller in enumerate(controllers):
+            cmds.connectAttr(
+                f"{controller}.message", f"{root}.mmd_morph_controller[{index}]"
+            )
+
+        with self.assertRaisesRegex(
+            RuntimeError, "morph_topology:malformed:controller ownership"
+        ):
+            self.converter._build_morph_mappings(root)
+
+        self.assertTrue(
+            any(
+                value.startswith("morph_topology:malformed:controller ownership")
+                for value in self.converter.morph_binding_diagnostics
+            )
+        )
+        cmds.delete(root)
+
     def test_build_morph_mappings_adds_original_japanese_names(self):
         """Dictionary-converted aliases are also reachable by original VMD names."""
         cube = cmds.polyCube(name="test_mesh_jp_morph")[0]
@@ -84,6 +137,8 @@ class TestVmdMorphMapping(MayaTestBase):
         )
         controller = cmds.createNode("network", name="target_morphController")
         cmds.addAttr(controller, longName="inputWeight", attributeType="double", multi=True, keyable=True)
+        cmds.addAttr(controller, longName="topologyVersion", attributeType="long")
+        cmds.setAttr(f"{controller}.topologyVersion", 1)
         cmds.addAttr(controller, longName="groupTopology", dataType="string")
         cmds.setAttr(f"{controller}.groupTopology", "{}", type="string")
         cmds.addAttr(root, longName="mmd_morph_controller", attributeType="message")

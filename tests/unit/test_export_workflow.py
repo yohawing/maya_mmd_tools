@@ -86,6 +86,38 @@ class TestScenePreflight(unittest.TestCase):
             [issue.code for issue in extension_result.report.issues],
         )
 
+    def test_current_model_does_not_fallback_to_maya_selection(self):
+        class SelectionService(_SceneService):
+            def get_selected_nodes(self):
+                return ["selected_ROOT"]
+
+        result = ScenePreflight(scene_service=SelectionService()).run(
+            {
+                "file_path": "model.pmx",
+                "export_format": "pmx",
+                "require_target": True,
+                "require_current_model": True,
+                "current_model_root": None,
+            }
+        )
+
+        self.assertEqual([issue.code for issue in result.report.issues], ["SCENE_TARGET_MISSING"])
+        self.assertIsNone(result.metadata["target_identity"])
+
+    def test_current_model_stale_is_blocking_before_collection(self):
+        result = ScenePreflight(
+            scene_service=_SceneService(exists=False),
+        ).run(
+            {
+                "file_path": "model.pmx",
+                "export_format": "pmx",
+                "require_current_model": True,
+                "current_model_root": "stale_ROOT",
+            }
+        )
+
+        self.assertEqual([issue.code for issue in result.report.issues], ["SCENE_TARGET_STALE"])
+
     def test_stale_target_and_owner_state_are_fail_closed(self):
         def ownership(_target):
             return {
@@ -173,6 +205,51 @@ class _FakeModelAction:
 
 class TestExportWorkflowService(unittest.TestCase):
     """UI and headless callers share one validation/action boundary."""
+
+    def test_current_model_is_forwarded_as_explicit_collector_target(self):
+        payload = _valid_model_data()
+        action = _FakeModelAction(payload)
+        observed = []
+
+        def collector(options):
+            observed.append(dict(options))
+            return payload
+
+        action._collector = collector
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            model_action=action,
+            vmd_action=object(),
+        )
+
+        result = service.validate(
+            ExportWorkflowRequest(
+                "model.pmx",
+                {
+                    "export_format": "pmx",
+                    "require_target": True,
+                    "require_current_model": True,
+                    "current_model_root": "model_ROOT",
+                },
+            )
+        )
+
+        self.assertEqual(result.state, STATE_READY)
+        self.assertEqual(observed[0]["target_model"], "model_ROOT")
+
+    def test_current_model_does_not_scope_vmd_scene_tracks(self):
+        options = ExportWorkflowService._target_options(
+            {
+                "export_format": "vmd",
+                "current_model_root": "model_ROOT",
+            },
+            {"format": "vmd"},
+        )
+
+        self.assertNotIn("target_model", options)
 
     def test_validate_does_not_call_writer_and_execute_reuses_snapshot(self):
         payload = _valid_model_data()
@@ -338,35 +415,6 @@ class TestExportWorkflowService(unittest.TestCase):
 
         self.assertEqual(result.state, STATE_BLOCKED)
         self.assertEqual(result.report.issues[0].code, "SCENE_TARGET_MISSING")
-
-    def test_pmd_policy_rejects_before_collector(self):
-        payload = _valid_model_data()
-        action = _FakeModelAction(payload)
-        action._collector = lambda _options: (_ for _ in ()).throw(
-            AssertionError("PMD policy must reject before collection")
-        )
-        service = ExportWorkflowService(
-            scene_preflight=ScenePreflight(
-                scene_service=_SceneService(),
-                ownership_checker=lambda _target: {},
-            ),
-            model_action=action,
-            vmd_action=object(),
-        )
-
-        result = service.validate(
-            ExportWorkflowRequest(
-                "model.pmd",
-                {"export_format": "pmd", "target_model": "model_ROOT"},
-            )
-        )
-
-        self.assertEqual(result.state, STATE_BLOCKED)
-        self.assertEqual(
-            [issue.code for issue in result.report.issues],
-            ["PMD_EXPORT_POLICY_REJECT"],
-        )
-        self.assertEqual(action.calls, [])
 
     def test_collector_validation_error_preserves_report_and_wrapper(self):
         payload = _valid_model_data()

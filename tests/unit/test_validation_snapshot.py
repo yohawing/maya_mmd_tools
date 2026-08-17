@@ -50,7 +50,7 @@ class ValidationSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot.target_identity, "modelRoot")
 
     def test_writer_copy_cannot_mutate_snapshot(self):
-        snapshot = ExportValidationSnapshot.capture({"items": [1]}, "pmd")
+        snapshot = ExportValidationSnapshot.capture({"items": [1]}, "pmx")
         writer_copy = snapshot.copy_for_export()
         writer_copy["items"].append(2)
 

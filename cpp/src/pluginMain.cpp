@@ -30,6 +30,11 @@
 #include "MmdRenderGeometryOverride.h"
 #include "MmdRenderOverride.h"
 #include "MmdRenderShape.h"
+#include "MmdAuthoringCommandSupport.h"
+#include "MmdAuthoringMorphBindingQuery.h"
+#include "MmdAuthoringMorphWeightCommand.h"
+#include "MmdAuthoringMaterialValueCommand.h"
+#include "MmdAuthoringMaterialOutlineCommand.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -43,8 +48,14 @@ static bool sCppRegisteredMmdRenderShape = false;
 static bool sCppRegisteredMmdRenderOverride = false;
 static bool sCppRegisteredMmdRenderWitnessCommand = false;
 static bool sCppRegisteredMmdRenderQueueUpdateCommand = false;
+static bool sCppRegisteredMmdRenderQueueReindexCommand = false;
 static bool sCppRegisteredMmdNativeCasterOverride = false;
 static bool sCppRegisteredMmdNativeCasterWitnessCommand = false;
+static bool sCppRegisteredMmdAuthoringSetAttrsCommand = false;
+static bool sCppRegisteredMmdAuthoringMorphBindingQueryCommand = false;
+static bool sCppRegisteredMmdAuthoringMorphWeightCommand = false;
+static bool sCppRegisteredMmdAuthoringMaterialValueCommand = false;
+static bool sCppRegisteredMmdAuthoringMaterialOutlineCommand = false;
 static MmdNativeCasterRenderOverride* sMmdNativeCasterOverride = nullptr;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
@@ -101,21 +112,36 @@ MStatus initializePlugin(MObject obj)
 
     auto cleanupMmdRenderWitness = [&plugin]() {
         MStatus cleanupStatus;
-        if (sCppRegisteredMmdRenderWitnessCommand) {
-            cleanupStatus = plugin.deregisterCommand("mmdRenderWitness");
+        bool cleanupSucceeded = true;
+        if (sCppRegisteredMmdRenderQueueReindexCommand) {
+            cleanupStatus = plugin.deregisterCommand("mmdRenderQueueReindex");
             if (!cleanupStatus) {
                 MGlobal::displayWarning(
-                    "Failed to roll back mmdRenderWitness command.");
+                    "Failed to roll back mmdRenderQueueReindex command.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdRenderQueueReindexCommand = false;
             }
-            sCppRegisteredMmdRenderWitnessCommand = false;
         }
         if (sCppRegisteredMmdRenderQueueUpdateCommand) {
             cleanupStatus = plugin.deregisterCommand("mmdRenderQueueUpdate");
             if (!cleanupStatus) {
                 MGlobal::displayWarning(
                     "Failed to roll back mmdRenderQueueUpdate command.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdRenderQueueUpdateCommand = false;
             }
-            sCppRegisteredMmdRenderQueueUpdateCommand = false;
+        }
+        if (sCppRegisteredMmdRenderWitnessCommand) {
+            cleanupStatus = plugin.deregisterCommand("mmdRenderWitness");
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdRenderWitness command.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdRenderWitnessCommand = false;
+            }
         }
         if (sCppRegisteredMmdRenderOverride) {
             cleanupStatus = MHWRender::MDrawRegistry::deregisterGeometryOverrideCreator(
@@ -124,17 +150,22 @@ MStatus initializePlugin(MObject obj)
             if (!cleanupStatus) {
                 MGlobal::displayWarning(
                     "Failed to roll back mmdRenderShape geometry override.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdRenderOverride = false;
             }
-            sCppRegisteredMmdRenderOverride = false;
         }
         if (sCppRegisteredMmdRenderShape) {
             cleanupStatus = plugin.deregisterNode(MmdRenderShape::id);
             if (!cleanupStatus) {
                 MGlobal::displayWarning(
                     "Failed to roll back mmdRenderShape node.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdRenderShape = false;
             }
-            sCppRegisteredMmdRenderShape = false;
         }
+        return cleanupSucceeded;
     };
 
     // Opt-in VP2 ownership witness.  This is a custom surface shape
@@ -176,6 +207,15 @@ MStatus initializePlugin(MObject obj)
         return status;
     }
     sCppRegisteredMmdRenderQueueUpdateCommand = true;
+
+    status = plugin.registerCommand("mmdRenderQueueReindex",
+                                    MmdRenderQueueReindexCommand::creator,
+                                    MmdRenderQueueReindexCommand::newSyntax);
+    if (!status) {
+        cleanupMmdRenderWitness();
+        return status;
+    }
+    sCppRegisteredMmdRenderQueueReindexCommand = true;
 
     // mmdAppend 登録 (Python 版と統一した typeName)
     // Python 版が同じ typeId で登録済みの場合はスキップ
@@ -263,6 +303,135 @@ MStatus initializePlugin(MObject obj)
             "MHWRender::MRenderer unavailable; native caster override skipped.");
     }
 
+    status = plugin.registerCommand("mmdAuthoringSetAttrs",
+                                    MmdAuthoringSetAttrsCommand::creator,
+                                    MmdAuthoringSetAttrsCommand::newSyntax);
+    if (!status) {
+        // This is the final registration step.  Roll back every capability
+        // installed above so a command-name collision cannot leave a partial
+        // plug-in surface in Maya.
+        bool cleanupSucceeded = true;
+        MStatus cleanupStatus;
+        if (sCppRegisteredMmdNativeCasterOverride && renderer) {
+            cleanupStatus = renderer->deregisterOverride(sMmdNativeCasterOverride);
+            if (!cleanupStatus) {
+                MGlobal::displayError(
+                    "Failed to roll back mmdNativeCaster override; keeping its pointer and registration state.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdNativeCasterOverride = false;
+                MmdNativeCasterRenderOverride::markRegistered(false);
+                delete sMmdNativeCasterOverride;
+                sMmdNativeCasterOverride = nullptr;
+            }
+        }
+        if (sCppRegisteredMmdNativeCasterWitnessCommand) {
+            cleanupStatus = plugin.deregisterCommand("mmdNativeCasterWitness");
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdNativeCasterWitness command; registration remains tracked.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdNativeCasterWitnessCommand = false;
+            }
+        }
+        if (sCppRegisteredPhysicsBoneDriver) {
+            cleanupStatus = plugin.deregisterNode(MmdPhysicsBoneDriverNode::id);
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdPhysicsBoneDriver node; registration remains tracked.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredPhysicsBoneDriver = false;
+            }
+        }
+        if (sCppRegisteredCcdIk) {
+            cleanupStatus = plugin.deregisterNode(MmdCcdIkNode::id);
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdCcdIk node; registration remains tracked.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredCcdIk = false;
+            }
+        }
+        if (sCppRegisteredAppend) {
+            cleanupStatus = plugin.deregisterNode(MmdAppendNode::id);
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdAppend node; registration remains tracked.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredAppend = false;
+            }
+        }
+        if (!cleanupMmdRenderWitness()) {
+            cleanupSucceeded = false;
+        }
+        cleanupStatus = plugin.deregisterCommand("mmdWeldUvSeamVertices");
+        if (!cleanupStatus) {
+            MGlobal::displayWarning("Failed to roll back mmdWeldUvSeamVertices command.");
+            cleanupSucceeded = false;
+        }
+        cleanupStatus = plugin.deregisterCommand("mmdFastLoad");
+        if (!cleanupStatus) {
+            MGlobal::displayWarning("Failed to roll back mmdFastLoad command.");
+            cleanupSucceeded = false;
+        }
+        cleanupStatus = plugin.deregisterNode(MmdRuntimeNode::id);
+        if (!cleanupStatus) {
+            MGlobal::displayWarning("Failed to roll back mmdRuntimeInstance node.");
+            cleanupSucceeded = false;
+        }
+        if (!cleanupSucceeded) {
+            MGlobal::displayError(
+                "mmdAuthoringSetAttrs registration failed and rollback was incomplete; "
+                "remaining registrations were kept alive and tracked.");
+        }
+        return status;
+    }
+    sCppRegisteredMmdAuthoringSetAttrsCommand = true;
+
+    status = plugin.registerCommand("mmdAuthoringQueryMorphBindings",
+                                    MmdAuthoringMorphBindingQueryCommand::creator,
+                                    MmdAuthoringMorphBindingQueryCommand::newSyntax);
+    if (!status) {
+        MGlobal::displayWarning(
+            "mmdAuthoringQueryMorphBindings registration failed; native morph query is unavailable.");
+    } else {
+        sCppRegisteredMmdAuthoringMorphBindingQueryCommand = true;
+    }
+
+    status = plugin.registerCommand("mmdAuthoringSetMorphWeights",
+                                    MmdAuthoringSetMorphWeightsCommand::creator,
+                                    MmdAuthoringSetMorphWeightsCommand::newSyntax);
+    if (!status) {
+        MGlobal::displayWarning(
+            "mmdAuthoringSetMorphWeights registration failed; native morph writes are unavailable.");
+    } else {
+        sCppRegisteredMmdAuthoringMorphWeightCommand = true;
+    }
+
+    status = plugin.registerCommand("mmdAuthoringSetMaterialValues",
+                                    MmdAuthoringSetMaterialValuesCommand::creator,
+                                    MmdAuthoringSetMaterialValuesCommand::newSyntax);
+    if (!status) {
+        MGlobal::displayWarning(
+            "mmdAuthoringSetMaterialValues registration failed; native material value writes are unavailable.");
+    } else {
+        sCppRegisteredMmdAuthoringMaterialValueCommand = true;
+    }
+
+    status = plugin.registerCommand("mmdAuthoringSetMaterialOutline",
+                                    MmdAuthoringSetMaterialOutlineCommand::creator,
+                                    MmdAuthoringSetMaterialOutlineCommand::newSyntax);
+    if (!status) {
+        MGlobal::displayWarning(
+            "mmdAuthoringSetMaterialOutline registration failed; native material outline writes are unavailable.");
+    } else {
+        sCppRegisteredMmdAuthoringMaterialOutlineCommand = true;
+    }
+
     return MS::kSuccess;
 }
 
@@ -283,6 +452,36 @@ MStatus uninitializePlugin(MObject obj)
         return MS::kFailure;
     }
 
+    if (sCppRegisteredMmdAuthoringMaterialOutlineCommand) {
+        status = plugin.deregisterCommand("mmdAuthoringSetMaterialOutline");
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredMmdAuthoringMaterialOutlineCommand = false;
+    }
+
+    if (sCppRegisteredMmdAuthoringMaterialValueCommand) {
+        status = plugin.deregisterCommand("mmdAuthoringSetMaterialValues");
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredMmdAuthoringMaterialValueCommand = false;
+    }
+
+    if (sCppRegisteredMmdAuthoringMorphWeightCommand) {
+        status = plugin.deregisterCommand("mmdAuthoringSetMorphWeights");
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredMmdAuthoringMorphWeightCommand = false;
+    }
+
+    if (sCppRegisteredMmdAuthoringMorphBindingQueryCommand) {
+        status = plugin.deregisterCommand("mmdAuthoringQueryMorphBindings");
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredMmdAuthoringMorphBindingQueryCommand = false;
+    }
+
+    if (sCppRegisteredMmdAuthoringSetAttrsCommand) {
+        status = plugin.deregisterCommand("mmdAuthoringSetAttrs");
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredMmdAuthoringSetAttrsCommand = false;
+    }
+
     if (sCppRegisteredMmdRenderWitnessCommand) {
         status = plugin.deregisterCommand("mmdRenderWitness");
         if (!status) {
@@ -299,6 +498,15 @@ MStatus uninitializePlugin(MObject obj)
                 "Failed to deregister mmdRenderQueueUpdate command.");
         }
         sCppRegisteredMmdRenderQueueUpdateCommand = false;
+    }
+
+    if (sCppRegisteredMmdRenderQueueReindexCommand) {
+        status = plugin.deregisterCommand("mmdRenderQueueReindex");
+        if (!status) {
+            MGlobal::displayWarning(
+                "Failed to deregister mmdRenderQueueReindex command.");
+        }
+        sCppRegisteredMmdRenderQueueReindexCommand = false;
     }
 
     if (sCppRegisteredMmdNativeCasterWitnessCommand) {

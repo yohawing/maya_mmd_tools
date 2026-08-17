@@ -348,6 +348,18 @@ class _StubQApplication:
         return []
 
 
+class _StubQMessageBox:
+    """Minimal confirmation-dialog stand-in for headless presenter tests."""
+
+    Yes = 0x00004000
+    No = 0x00010000
+
+    @staticmethod
+    def question(*_args, **_kwargs):
+        """Return the safe default when no test overrides the confirmation."""
+        return _StubQMessageBox.No
+
+
 def _qt_already_available() -> bool:
     """本物の PySide6/PySide2 が import 可能かを判定する。"""
     for mod in ("PySide6", "PySide2"):
@@ -396,6 +408,7 @@ def install_qt_stub() -> bool:
     qtwidgets.QListWidgetItem = _StubQListWidgetItem  # override with data-aware version
     qtwidgets.QTableWidgetItem = _StubQTableWidgetItem
     qtwidgets.QApplication = _StubQApplication
+    qtwidgets.QMessageBox = _StubQMessageBox
 
     qtsvg = ModuleType("PySide6.QtSvg")
     qtsvg.QSvgRenderer = _make_stub_qclass("QSvgRenderer")

@@ -1,22 +1,21 @@
-"""Action boundary for PMX/PMD model export execution."""
+"""Action boundary for PMX model export execution."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from collections.abc import Mapping
 import os
 from pathlib import Path
 import tempfile
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from ..core.logger import get_logger
-from ..io.pmd_exporter import PmdExporter
-from ..io.pmx_exporter import PmxExporter
 from ..validation.export_validator import (
     ExportValidationAcknowledgementRequired,
     ExportValidationError,
     ExportValidationIssue,
     ExportValidationReport,
     validate_model_data,
-    pmd_export_policy_report,
 )
 from ..validation.output_verifier import verify_model_output
 from ..validation.mmd_anim_verifier import verify_mmd_anim_asset
@@ -27,6 +26,9 @@ from ..validation.report_artifacts import (
 )
 from ..validation.snapshot import ExportValidationSnapshot
 
+if TYPE_CHECKING:
+    from ..io.pmx_exporter import PmxExporter
+
 logger = get_logger(__name__)
 
 _DEFAULT_COLLECTOR = object()
@@ -34,9 +36,94 @@ _DEFAULT_OUTPUT_VERIFIER = object()
 _DEFAULT_VALIDATOR = object()
 
 
+def _find_authoring_model_root(options: Mapping[str, Any], adapter: Any) -> tuple[str | None, bool]:
+    """Resolve an explicit or selected MMD model root for authoring export.
+
+    The boolean marks an explicit ``target_model``/``model_root`` request;
+    explicit roots are never silently redirected to another DAG ancestor.
+    """
+    explicit_root = options.get("target_model") or options.get("model_root")
+    if explicit_root:
+        return str(explicit_root), True
+
+    selected = options.get("target_mesh") or options.get("export_mesh") or options.get("mesh")
+    if selected and not options.get("_selected_target"):
+        # An explicitly supplied mesh is intentionally the legacy single-mesh
+        # route.  Only a Maya selection may be promoted to an ancestor root.
+        return None, False
+    if not selected:
+        return None, False
+    current = str(selected)
+    for _ in range(64):
+        try:
+            if adapter.attribute_exists("mmd_model_name", current) or adapter.attribute_exists(
+                "mmd_model_name_en", current
+            ):
+                return current, False
+            parents = adapter.list_relatives(current, parent=True, fullPath=True) or []
+        except Exception:
+            return None, False
+        if not parents:
+            return None, False
+        current = str(parents[0])
+    return None, False
+
+
+def _has_authoring_markers(root: str, adapter: Any) -> bool:
+    """Return whether a legacy root contains semantic metadata worth reading."""
+    model_fields = (
+        "mmd_model_name",
+        "mmd_model_name_en",
+        "mmd_comment",
+        "mmd_comment_en",
+    )
+    try:
+        if any(adapter.attribute_exists(field, root) for field in model_fields):
+            return True
+        joints = adapter.list_relatives(root, allDescendents=True, fullPath=True, type="joint") or []
+        for joint in joints:
+            if adapter.attribute_exists("mmd_bone_index", joint):
+                return True
+        # Registry presence is itself a strict authoring marker.  A malformed
+        # connection must reach the backend and fail closed, never downgrade.
+        return bool(adapter.attribute_exists("mmd_model_registry", root))
+    except Exception:
+        # A failed marker probe is not evidence of an ordinary mesh-only root;
+        # let strict authoring read surface the backend error when applicable.
+        return True
+
+
+def _project_authoring_payload(
+    options: Mapping[str, Any],
+    oracle_payload: dict,
+    *,
+    adapter: Any,
+) -> dict:
+    """Read and project semantic Spec when a model-root route is applicable."""
+    semantics = options.get("authoring_semantics", "auto")
+    if semantics not in {"auto", "legacy"}:
+        raise ValueError("authoring_semantics must be 'auto' or 'legacy'")
+    if semantics == "legacy":
+        return oracle_payload
+    root, _ = _find_authoring_model_root(options, adapter)
+    if root is None:
+        return oracle_payload
+
+    from ..adapters.maya_scene_metadata_backend import MayaSceneMetadataBackend
+    from ..adapters.scene_metadata_adapter import SceneMetadataAdapter
+    from ..converters.authoring_export_bridge import project_authoring_spec
+
+    registry_present = bool(adapter.attribute_exists("mmd_model_registry", root))
+    if not registry_present and not _has_authoring_markers(root, adapter):
+        return oracle_payload
+    backend = MayaSceneMetadataBackend(adapter)
+    spec = SceneMetadataAdapter(backend).read_spec(root)
+    return project_authoring_spec(spec, oracle_payload)
+
+
 @dataclass
 class ExportModelRequest:
-    """Request data for exporting a PMX/PMD model."""
+    """Request data for exporting a PMX model."""
 
     file_path: str
     options: Dict[str, Any]
@@ -44,7 +131,7 @@ class ExportModelRequest:
 
 @dataclass
 class ExportModelResult:
-    """Result data returned by PMX/PMD model export."""
+    """Result data returned by PMX model export."""
 
     exported_path: Optional[str] = None
     succeeded: bool = False
@@ -57,10 +144,24 @@ class ExportModelResult:
 
 
 def _default_collect_model_data(options: Dict[str, Any]) -> dict:
-    """Collect minimum PMX/PMD-compatible model data from the requested mesh."""
-    from maya import cmds
-
+    """Collect minimum PMX-compatible model data from the requested model."""
     from ..converters.export_scene_collector import ExportSceneCollector
+
+    options = dict(options or {})
+    export_format = str(options.get("export_format") or Path(str(options.get("file_path") or "")).suffix)
+    export_format = export_format.lower().lstrip(".")
+    if export_format != "pmx":
+        raise ValueError(f"model export format {export_format or 'empty'} is not supported")
+
+    # The Export UI's Current Model is the only implicit scene authority.  Do
+    # not derive an export target from Maya's selection: connection nodes such
+    # as the MMD light vectorProduct can be selected without being exportable
+    # geometry, and selection is not part of the validation snapshot.
+    if "current_model_root" in options:
+        current_model_root = options.get("current_model_root")
+        if not current_model_root:
+            raise ValueError("Model export requires a Current Model")
+        options["target_model"] = str(current_model_root)
 
     collector = ExportSceneCollector()
     if (
@@ -70,35 +171,32 @@ def _default_collect_model_data(options: Dict[str, Any]) -> dict:
         or options.get("export_mesh")
         or options.get("mesh")
     ):
-        return collector.collect(options)
+        oracle_payload = collector.collect(options)
+        semantics = options.get("authoring_semantics", "auto")
+        if semantics not in {"auto", "legacy"}:
+            raise ValueError("authoring_semantics must be 'auto' or 'legacy'")
+        if semantics == "legacy":
+            return oracle_payload
+        from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
 
-    target = None
-    if target is None:
-        selection = cmds.ls(selection=True, long=True) or []
-        target = selection[0] if selection else None
-    if target is None:
-        raise ValueError("Model export requires model_data, target_model, target_mesh, or a selected mesh")
-    return collector.collect(
-        {
-            "target_mesh": target,
-            "export_format": options.get("export_format"),
-        }
+        return _project_authoring_payload(options, oracle_payload, adapter=MayaCmdsAdapter())
+
+    raise ValueError(
+        "Model export requires current_model_root, target_model, model_root, or a target mesh"
     )
 
 
 class ExportModelAction:
-    """Execute PMX/PMD model export from collected or scene-collected data."""
+    """Execute PMX model export from collected or scene-collected data."""
 
     def __init__(
         self,
         pmx_exporter: Optional[PmxExporter] = None,
-        pmd_exporter: Optional[PmdExporter] = None,
         collector: Optional[Callable[[Dict[str, Any]], dict]] = _DEFAULT_COLLECTOR,
         output_verifier: Any = _DEFAULT_OUTPUT_VERIFIER,
         validator: Any = _DEFAULT_VALIDATOR,
     ):
-        self._pmx_exporter = pmx_exporter or PmxExporter()
-        self._pmd_exporter = pmd_exporter or PmdExporter()
+        self._pmx_exporter = pmx_exporter
         if collector is _DEFAULT_COLLECTOR:
             self._collector = _default_collect_model_data
         else:
@@ -134,7 +232,7 @@ class ExportModelAction:
         )
 
     def execute(self, request: ExportModelRequest) -> ExportModelResult:
-        """Export a PMX/PMD model and return a small result object."""
+        """Export a PMX model and return a small result object."""
         validation_report: Optional[ExportValidationReport] = None
         payload_fingerprint: Optional[str] = None
         validation_report_artifacts: Optional[ValidationReportArtifactPaths] = None
@@ -171,10 +269,19 @@ class ExportModelAction:
             if not export_format:
                 export_format = Path(request.file_path).suffix.lower().lstrip(".") or "pmx"
 
-            if export_format not in ("pmx", "pmd"):
-                raise ValueError(f"Unsupported model export format: {export_format}")
-            if export_format == "pmd":
-                validation_report = pmd_export_policy_report()
+            if export_format != "pmx":
+                validation_report = ExportValidationReport(
+                    export_format or None,
+                    (
+                        ExportValidationIssue(
+                            "EXPORT_FORMAT_UNSUPPORTED",
+                            "fatal",
+                            True,
+                            "export_format",
+                            f"model export format {export_format or 'empty'} is not supported",
+                        ),
+                    ),
+                )
                 validation_error = ExportValidationError(validation_report)
                 logger.error("Model export preflight failed: %s", validation_error)
                 return build_result(
@@ -324,9 +431,15 @@ class ExportModelAction:
             os.close(temporary_fd)
 
             if export_format == "pmx":
+                if self._pmx_exporter is None:
+                    # Import the Maya-aware writer only after validation has
+                    # succeeded and a PMX dispatch is genuinely required.
+                    from ..io.pmx_exporter import PmxExporter
+
+                    self._pmx_exporter = PmxExporter()
                 self._pmx_exporter.export_pmx_model(temporary_path, writer_model_data)
-            else:
-                self._pmd_exporter.export_pmd_model(temporary_path, writer_model_data)
+            else:  # pragma: no cover - guarded by the format preflight above
+                raise ValueError(f"Unsupported model export format: {export_format}")
 
             if self._output_verifier is not None:
                 output_report = self._output_verifier(temporary_path, export_format, writer_model_data)
@@ -409,6 +522,10 @@ class ExportModelAction:
                 validation_report_artifacts=validation_report_artifacts,
             )
         except Exception as exc:
+            if validation_report is None:
+                exception_report = getattr(exc, "report", None)
+                if isinstance(exception_report, ExportValidationReport):
+                    validation_report = exception_report
             logger.error("Model export failed: %s", exc, exc_info=True)
             if validation_report is not None and validation_report_artifacts is None:
                 try:

@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 from .export_validator import ExportValidationIssue, ExportValidationReport
 
 
-MODEL_FORMATS = frozenset({"pmx", "pmd"})
+MODEL_FORMATS = frozenset({"pmx"})
 VMD_FORMATS = frozenset({"vmd"})
 SUPPORTED_FORMATS = MODEL_FORMATS | VMD_FORMATS
 
@@ -53,7 +53,18 @@ def _normalize_mode(export_format: str, options: Mapping[str, Any]) -> str:
 
 
 def _resolve_target(options: Mapping[str, Any], scene_service: Any) -> Optional[str]:
-    """Resolve an explicit target, then a live scene selection when available."""
+    """Resolve an explicit target, then a live scene selection when available.
+
+    The legacy fallback is retained for headless/import callers that still use
+    ``target_model``.  The Export presenter always supplies an explicit
+    ``current_model_root`` and sets ``require_current_model`` so selection can
+    never become the export authority.
+    """
+    if "current_model_root" in options:
+        value = options.get("current_model_root")
+        return str(value) if value else None
+    if options.get("require_current_model"):
+        return None
     for key in ("target_model", "model_root", "target_mesh", "mesh", "target"):
         value = options.get(key)
         if value:
@@ -131,7 +142,8 @@ class ScenePreflight:
         mode = _normalize_mode(export_format, options)
         issues = []
         target = _resolve_target(options, self._scene_service)
-        require_target = bool(options.get("require_target", True))
+        require_current_model = bool(options.get("require_current_model", False))
+        require_target = bool(options.get("require_target", True)) or require_current_model
 
         if export_format not in SUPPORTED_FORMATS:
             issues.append(
@@ -147,7 +159,11 @@ class ScenePreflight:
                 _issue(
                     "SCENE_TARGET_MISSING",
                     "target",
-                    "export requires a live Maya model, mesh, or animation target",
+                    (
+                        "export requires a live Current Model"
+                        if require_current_model
+                        else "export requires a live Maya model, mesh, or animation target"
+                    ),
                 )
             )
         elif target and self._scene_service is not None:

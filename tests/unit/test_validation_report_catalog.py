@@ -8,7 +8,6 @@ import unittest
 from mmd_tools.validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
-    pmd_export_policy_report,
     validate_model_data,
 )
 from mmd_tools.validation.issue_catalog import (
@@ -109,7 +108,7 @@ class ValidationReportCatalogTests(unittest.TestCase):
         self.assertIn('"fixture": "face-too-short"', markdown)
 
     def test_report_artifacts_are_utf8_and_have_final_newline(self):
-        report = validate_model_data(_valid_model_data(), "pmd")
+        report = validate_model_data(_valid_model_data(), "pmx")
 
         with tempfile.TemporaryDirectory() as directory:
             json_path = Path(directory) / "report.json"
@@ -168,15 +167,6 @@ class ValidationReportCatalogTests(unittest.TestCase):
         self.assertEqual(entry.loss_policy, "warn")
         self.assertTrue(payload["requires_warning_ack"])
         self.assertEqual(payload["issues"][0]["loss_policy"], "warn")
-
-    def test_pmd_policy_reject_is_canonical(self):
-        payload = pmd_export_policy_report().to_canonical_dict(target_identity="modelRoot")
-        issue = payload["issues"][0]
-
-        self.assertEqual(payload["status"], "blocked")
-        self.assertEqual(issue["code"], "PMD_EXPORT_POLICY_REJECT")
-        self.assertEqual(issue["path"], "export_format")
-        self.assertEqual(issue["category"], "model")
 
 
 if __name__ == "__main__":

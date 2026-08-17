@@ -52,7 +52,6 @@ from mmd_tools.core.constants import (
 from mmd_tools.converters.mesh_material_properties import (
     PMX_DOUBLE_SIDED_DRAW_FLAG as _PMX_DOUBLE_SIDED_DRAW_FLAG,
     PMX_EDGE_DRAWING_DRAW_FLAG as _PMX_EDGE_DRAWING_DRAW_FLAG,
-    material_has_outline as _material_has_outline,
     material_is_double_sided as _material_is_double_sided,
 )
 from mmd_tools.converters.material_shader_parameters import (
@@ -219,6 +218,20 @@ _MIGRATED_MMD_ATTRS = (
     "mmdTransparencyMode",
     _ATTR_MMD_DOUBLE_SIDED,
 )
+
+
+def _source_texture_path(all_textures, texture_index, resolved_path):
+    """Return the PMX source path when its authoritative table index is valid."""
+    if (
+        all_textures
+        and isinstance(texture_index, int)
+        and not isinstance(texture_index, bool)
+        and 0 <= texture_index < len(all_textures)
+        and isinstance(all_textures[texture_index], str)
+        and all_textures[texture_index]
+    ):
+        return all_textures[texture_index]
+    return resolved_path
 
 
 def _copy_shader_attr_value(source, target, attr_name) -> None:
@@ -496,40 +509,75 @@ def _dx11_rendering_from_technique(technique: str) -> Tuple[str, bool, bool]:
     return mode, edge_enabled, double_sided
 
 
-def _shader_technique(shader: str) -> str:
+def _outline_attribute_exists(cmds_module, attr: str, node: str) -> bool:
+    method = getattr(type(cmds_module), "attribute_exists", None)
+    if callable(method):
+        return bool(method(cmds_module, attr, node))
+    return bool(cmds_module.attributeQuery(attr, node=node, exists=True))
+
+
+def _outline_get_attr(cmds_module, plug: str):
+    method = getattr(type(cmds_module), "get_attr", None)
+    return method(cmds_module, plug) if callable(method) else cmds_module.getAttr(plug)
+
+
+def _outline_set_attr(cmds_module, plug: str, value, **kwargs) -> None:
+    method = getattr(type(cmds_module), "set_attr", None)
+    if callable(method):
+        method(cmds_module, plug, value, **kwargs)
+    else:
+        cmds_module.setAttr(plug, value, **kwargs)
+
+
+def _outline_add_bool_attr(cmds_module, node: str, attr: str) -> None:
+    method = getattr(type(cmds_module), "add_attr", None)
+    if callable(method):
+        method(cmds_module, node, longName=attr, attributeType="bool")
+    else:
+        cmds_module.addAttr(node, longName=attr, attributeType="bool")
+
+
+def _shader_technique(shader: str, cmds_module=None) -> str:
     """Return a dx11Shader technique string if the attribute is present."""
-    if cmds.attributeQuery("technique", node=shader, exists=True):
-        return cmds.getAttr(f"{shader}.technique") or ""
+    cmds_api = cmds if cmds_module is None else cmds_module
+    if _outline_attribute_exists(cmds_api, "technique", shader):
+        return _outline_get_attr(cmds_api, f"{shader}.technique") or ""
     return ""
 
 
-def _draw_flags_double_sided_from_node(node: str) -> Optional[bool]:
+def _draw_flags_double_sided_from_node(node: str, cmds_module=None) -> Optional[bool]:
     """Read MMD draw flags from a node if present and parseable."""
-    if not cmds.attributeQuery(ATTR_MMD_DRAW_FLAGS, node=node, exists=True):
+    cmds_api = cmds if cmds_module is None else cmds_module
+    if not _outline_attribute_exists(cmds_api, ATTR_MMD_DRAW_FLAGS, node):
         return None
     try:
-        draw_flags = cmds.getAttr(f"{node}.{ATTR_MMD_DRAW_FLAGS}")
+        draw_flags = _outline_get_attr(cmds_api, f"{node}.{ATTR_MMD_DRAW_FLAGS}")
         return bool(int(draw_flags) & _PMX_DOUBLE_SIDED_DRAW_FLAG)
     except (TypeError, ValueError):
         return None
 
 
-def _store_shader_double_sided_attr(shader: str, enabled: bool) -> None:
-    """Persist dx11Shader double-sided state for UI re-application."""
-    if not cmds.attributeQuery(_ATTR_MMD_DOUBLE_SIDED, node=shader, exists=True):
-        maya_attribute_utils.set_custom_attributes(shader, {_ATTR_MMD_DOUBLE_SIDED: bool(enabled)})
-    else:
-        maya_attribute_utils.set_attribute(shader, _ATTR_MMD_DOUBLE_SIDED, bool(enabled), "bool")
+def _store_shader_double_sided_attr(shader: str, enabled: bool, cmds_module=None) -> None:
+    """Persist undoable dx11Shader double-sided state for UI re-application."""
+    cmds_api = cmds if cmds_module is None else cmds_module
+    if not _outline_attribute_exists(cmds_api, _ATTR_MMD_DOUBLE_SIDED, shader):
+        _outline_add_bool_attr(cmds_api, shader, _ATTR_MMD_DOUBLE_SIDED)
+    _outline_set_attr(cmds_api, f"{shader}.{_ATTR_MMD_DOUBLE_SIDED}", bool(enabled))
 
 
-def _shader_is_double_sided(shader: str, technique: Optional[str] = None) -> bool:
+def _shader_is_double_sided(
+    shader: str,
+    technique: Optional[str] = None,
+    cmds_module=None,
+) -> bool:
     """Return a dx11Shader's double-sided state, preferring authored draw flags."""
-    draw_flags_state = _draw_flags_double_sided_from_node(shader)
+    cmds_api = cmds if cmds_module is None else cmds_module
+    draw_flags_state = _draw_flags_double_sided_from_node(shader, cmds_api)
     if draw_flags_state is not None:
         return draw_flags_state
-    if cmds.attributeQuery(_ATTR_MMD_DOUBLE_SIDED, node=shader, exists=True):
-        return bool(cmds.getAttr(f"{shader}.{_ATTR_MMD_DOUBLE_SIDED}"))
-    technique = technique if technique is not None else _shader_technique(shader)
+    if _outline_attribute_exists(cmds_api, _ATTR_MMD_DOUBLE_SIDED, shader):
+        return bool(_outline_get_attr(cmds_api, f"{shader}.{_ATTR_MMD_DOUBLE_SIDED}"))
+    technique = technique if technique is not None else _shader_technique(shader, cmds_api)
     _, _, double_sided = _dx11_rendering_from_technique(technique)
     return double_sided
 
@@ -546,14 +594,15 @@ def _store_transparency_mode_attr(shader: str, mode: str) -> None:
     cmds.setAttr(f"{shader}.mmdTransparencyMode", mode, type="string")
 
 
-def get_transparency_mode(shader: str) -> str:
+def get_transparency_mode(shader: str, cmds_module=None) -> str:
     """Return the shader's stored transparency mode (defaults to opaque)."""
-    if cmds.attributeQuery("mmdTransparencyMode", node=shader, exists=True):
-        value = cmds.getAttr(f"{shader}.mmdTransparencyMode")
+    cmds_api = cmds if cmds_module is None else cmds_module
+    if _outline_attribute_exists(cmds_api, "mmdTransparencyMode", shader):
+        value = _outline_get_attr(cmds_api, f"{shader}.mmdTransparencyMode")
         if value in TRANSPARENCY_MODES:
             return value
     # Fall back to inferring from the currently assigned technique.
-    mode, _, _ = _dx11_rendering_from_technique(_shader_technique(shader))
+    mode, _, _ = _dx11_rendering_from_technique(_shader_technique(shader, cmds_api))
     return mode
 
 
@@ -584,22 +633,60 @@ def get_shader_outline_enabled(shader: str) -> bool:
     return bool(technique) and edge_enabled
 
 
-def apply_shader_outline(shader: str, enabled: bool, edge_size: Optional[float] = None) -> str:
+def expected_shader_outline_preview(
+    technique: str,
+    transparency_mode: Optional[str],
+    draw_flags: int,
+    enabled: bool,
+    edge_size: float,
+    *,
+    edge_size_exists: bool,
+) -> dict:
+    """Return the deterministic DX11 attrs produced by outline authoring."""
+    mode = (
+        transparency_mode
+        if transparency_mode in TRANSPARENCY_MODES
+        else _dx11_rendering_from_technique(technique)[0]
+    )
+    double_sided = bool(int(draw_flags) & _PMX_DOUBLE_SIDED_DRAW_FLAG)
+    result = {
+        "technique": _technique_for_transparency(mode, True, double_sided),
+        _ATTR_MMD_DOUBLE_SIDED: double_sided,
+        ATTR_MMD_SHADER_OUTLINE_ENABLED: bool(enabled),
+    }
+    if edge_size_exists:
+        result["EdgeSize"] = (
+            max(0.0, min(2.0, float(edge_size))) if enabled else 0.0
+        )
+    return result
+
+
+def apply_shader_outline(
+    shader: str,
+    enabled: bool,
+    edge_size: Optional[float] = None,
+    *,
+    cmds_module=None,
+) -> str:
     """Keep the mandatory outline pass while applying its authored size."""
-    mode = get_transparency_mode(shader)
-    double_sided = _shader_is_double_sided(shader)
+    cmds_api = cmds if cmds_module is None else cmds_module
+    mode = get_transparency_mode(shader, cmds_api)
+    double_sided = _shader_is_double_sided(shader, cmds_module=cmds_api)
     new_technique = _technique_for_transparency(mode, True, double_sided)
-    cmds.setAttr(f"{shader}.technique", new_technique, type="string")
-    _store_shader_double_sided_attr(shader, double_sided)
-    if cmds.attributeQuery("EdgeSize", node=shader, exists=True):
+    _outline_set_attr(cmds_api, f"{shader}.technique", new_technique, type="string")
+    _store_shader_double_sided_attr(shader, double_sided, cmds_api)
+    if _outline_attribute_exists(cmds_api, "EdgeSize", shader):
         if not enabled:
-            cmds.setAttr(f"{shader}.EdgeSize", 0.0)
+            _outline_set_attr(cmds_api, f"{shader}.EdgeSize", 0.0)
         elif edge_size is not None:
-            cmds.setAttr(f"{shader}.EdgeSize", max(0.0, min(2.0, float(edge_size))))
-    if not cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=shader, exists=True):
-        maya_attribute_utils.set_custom_attributes(shader, {ATTR_MMD_SHADER_OUTLINE_ENABLED: bool(enabled)})
-    else:
-        maya_attribute_utils.set_attribute(shader, ATTR_MMD_SHADER_OUTLINE_ENABLED, bool(enabled), "bool")
+            _outline_set_attr(
+                cmds_api,
+                f"{shader}.EdgeSize",
+                max(0.0, min(2.0, float(edge_size))),
+            )
+    if not _outline_attribute_exists(cmds_api, ATTR_MMD_SHADER_OUTLINE_ENABLED, shader):
+        _outline_add_bool_attr(cmds_api, shader, ATTR_MMD_SHADER_OUTLINE_ENABLED)
+    _outline_set_attr(cmds_api, f"{shader}.{ATTR_MMD_SHADER_OUTLINE_ENABLED}", bool(enabled))
     return new_technique
 
 
@@ -2331,11 +2418,23 @@ class MeshConverter:
             ATTR_MMD_TOON_TEXTURE_INDEX: material.toon_texture_index,
         }
 
-        # テクスチャパスを保存
-        if texture_path:
-            custom_attrs["mmd_texture_path"] = texture_path
-        if sphere_texture_path:
-            custom_attrs["mmd_sphere_path"] = sphere_texture_path
+        # Persist PMX source-relative paths in canonical metadata.  The file
+        # nodes retain resolved paths separately, so export can match the
+        # authoritative texture table without appending a duplicate entry.
+        source_texture_path = _source_texture_path(
+            all_textures,
+            getattr(material, "texture_index", -1),
+            texture_path,
+        )
+        source_sphere_texture_path = _source_texture_path(
+            all_textures,
+            getattr(material, "sphere_texture_index", -1),
+            sphere_texture_path,
+        )
+        if source_texture_path:
+            custom_attrs["mmd_texture_path"] = source_texture_path
+        if source_sphere_texture_path:
+            custom_attrs["mmd_sphere_path"] = source_sphere_texture_path
 
         # スペキュラー関連の属性
         if hasattr(material, "specular"):
@@ -2359,7 +2458,10 @@ class MeshConverter:
             # EDGE_DRAWING flag rather than relying on a transient attribute.
             edge_enabled = bool(int(material.draw_flag) & _PMX_EDGE_DRAWING_DRAW_FLAG)
             custom_attrs[ATTR_MMD_EDGE_FLAG] = int(edge_enabled)
-            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = edge_enabled
+            # Keep Maya's display outline opt-in. Hidden alpha-zero materials
+            # frequently retain their PMD edge flag and otherwise leave a
+            # visible silhouette after the surface itself disappears.
+            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
         else:
             custom_attrs[ATTR_MMD_SPHERE_MODE] = int(material.sphere_mode)
             custom_attrs[ATTR_MMD_SPHERE_TEXTURE_INDEX] = material.sphere_texture_index
@@ -2370,7 +2472,10 @@ class MeshConverter:
                 float(material.edge_color[3]) if len(material.edge_color) > 3 else 1.0
             )
             custom_attrs[ATTR_MMD_EDGE_SIZE] = material.edge_size
-            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = _material_has_outline(material)
+            # PMX draw flags remain authoritative for export. This shader-only
+            # switch defaults off so transparent materials do not leave their
+            # backface outline visible in Maya.
+            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
             custom_attrs[_ATTR_MMD_DOUBLE_SIDED] = _material_is_double_sided(material)
             custom_attrs[ATTR_MMD_MEMO] = material.memo
             custom_attrs[ATTR_MMD_SHARED_TOON_FLAG] = int(material.shared_toon_flag)
@@ -2820,10 +2925,9 @@ class MeshConverter:
         if not is_pmd:
             # エッジ色
             _set_dx11_color_uniform(shader, "EdgeColor", material.edge_color)
-        outline_enabled = _material_has_outline(material, is_pmd=is_pmd)
-        authored_edge_size = float(getattr(material, "edge_size", 1.0))
-        edge_size = authored_edge_size if outline_enabled else 0.0
-        maya_attribute_utils.set_attribute(shader, "EdgeSize", edge_size, "float")
+        # Outlines are an explicit Maya display opt-in. The authored edge size
+        # remains in metadata so the Material tab can restore it when enabled.
+        maya_attribute_utils.set_attribute(shader, "EdgeSize", 0.0, "float")
 
         # スフィアモード設定
         sphere_mode = getattr(material, "sphere_mode", 0)

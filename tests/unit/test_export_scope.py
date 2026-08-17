@@ -30,7 +30,6 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_DRAW_FLAGS,
-    ATTR_MMD_EDGE_FLAG,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_IK_LIMIT_ANGLE,
@@ -120,7 +119,7 @@ class TestExportScope(unittest.TestCase):
         self.assertIsNone(values)
         self.assertEqual(error, "additional_uvs_storage")
 
-    def _collect_single_material(self, attrs, is_pmd=False):
+    def _collect_single_material(self, attrs):
         """Collect one fake shading-group material through the Maya stubs."""
         attrs = dict(attrs)
 
@@ -159,7 +158,6 @@ class TestExportScope(unittest.TestCase):
             materials, faces = export_scene_collector_module._collect_materials_per_face(
                 "meshShape",
                 FakeMesh(),
-                is_pmd=is_pmd,
             )
 
         self.assertEqual(faces, [[2, 1, 0]])
@@ -451,6 +449,48 @@ class TestExportScope(unittest.TestCase):
         self.assertEqual(exported["key_value"], 42)
         self.assertNotIn("semantic_missing", exported)
 
+    def test_collect_bones_preserves_connect_bone_missing_target_sentinel(self):
+        """A PMX -1 terminal connection remains exportable, not unresolved."""
+        joint = "|model|terminal"
+        attrs = {
+            (joint, ATTR_MMD_BONE_INDEX): 117,
+            (joint, ATTR_MMD_BONE_PARENT_INDEX): -1,
+            (joint, ATTR_MMD_BONE_NAME): "Terminal",
+            (joint, ATTR_MMD_BONE_NAME_EN): "Terminal",
+            (joint, ATTR_MMD_BONE_FLAGS): 0x0001,
+            (joint, ATTR_MMD_CONNECT_INDEX): -1,
+            (joint, ATTR_MMD_CONNECT_BONE_INDEX): -1,
+        }
+
+        def attribute_query(attr, node, exists):
+            return exists and (node, attr) in attrs
+
+        def get_attr(path):
+            node, attr = path.rsplit(".", 1)
+            return attrs[(node, attr)]
+
+        with (
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "attributeQuery",
+                side_effect=attribute_query,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "getAttr",
+                side_effect=get_attr,
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "xform",
+                return_value=[0.0, 0.0, 0.0],
+            ),
+        ):
+            bones, _ = export_scene_collector_module._collect_bones_from_joints([joint])
+
+        self.assertEqual(bones[0]["connect_bone_index"], -1)
+        self.assertNotIn("semantic_missing", bones[0])
+
     def test_collect_bones_keeps_malformed_rest_and_unresolved_refs_visible(self):
         """Malformed canonical data is retained for fail-closed validation."""
         root = "|model|root"
@@ -739,6 +779,96 @@ class TestExportScope(unittest.TestCase):
         self.assertEqual(material["texture_path"], "textures/body.png")
         self.assertIn("texture_table", material["semantic_missing"])
 
+    def test_connected_authored_texture_allocates_new_table_entry(self):
+        path = "C:/textures/authored.png"
+        with mock.patch.object(
+            export_scene_collector_module,
+            "_shader_texture_provenance",
+            return_value=(True, path),
+        ):
+            material = self._collect_single_material(
+                {
+                    ATTR_MMD_MATERIAL: 1,
+                    "mmd_texture_path": path,
+                    ATTR_MMD_TEXTURE_INDEX: -1,
+                }
+            )
+        self.assertEqual(material["texture_path"], path)
+        self.assertNotIn("texture_index", material)
+
+        model_data = {"materials": [material]}
+        material.update(
+            {
+                "sphere_texture_index": -1,
+                "toon_texture_index": -1,
+                "shared_toon_flag": 0,
+            }
+        )
+        with mock.patch.object(
+            export_scene_collector_module,
+            "_get_attr",
+            return_value=None,
+        ):
+            export_scene_collector_module._apply_texture_table(
+                model_data,
+                "|model_ROOT",
+            )
+
+        self.assertEqual(model_data["textures"], [path])
+        self.assertEqual(material["texture_index"], 0)
+        self.assertNotIn("texture_table", material["semantic_missing"])
+
+    def test_existing_texture_table_appends_and_deduplicates_unindexed_paths(self):
+        model_data = {
+            "materials": [
+                {
+                    "texture_path": "textures/imported.png",
+                    "source_texture_index": 0,
+                    "semantic_missing": ["texture_table"],
+                },
+                {
+                    "texture_path": "textures/authored.png",
+                    "semantic_missing": ["texture_table"],
+                },
+                {
+                    "texture_path": "textures/authored.png",
+                    "semantic_missing": ["texture_table"],
+                },
+            ]
+        }
+
+        with mock.patch.object(
+            export_scene_collector_module,
+            "_get_attr",
+            return_value='["textures/imported.png"]',
+        ):
+            export_scene_collector_module._apply_texture_table(model_data, "|model_ROOT")
+
+        self.assertEqual(
+            model_data["textures"],
+            ["textures/imported.png", "textures/authored.png"],
+        )
+        self.assertEqual(
+            [material["texture_index"] for material in model_data["materials"]],
+            [0, 1, 1],
+        )
+
+    def test_negative_sentinel_with_malformed_falsy_path_is_fail_closed(self):
+        model_data = {
+            "materials": [
+                {
+                    "texture_path": [],
+                    "texture_index": -1,
+                    "semantic_missing": ["texture_table"],
+                }
+            ]
+        }
+
+        export_scene_collector_module._apply_texture_table(model_data, None)
+
+        self.assertNotIn("textures", model_data)
+        self.assertEqual(model_data["materials"][0]["semantic_missing"], ["texture_table"])
+
     def test_model_texture_table_restores_writer_indices_without_reconstructing_paths(self):
         model_data = {
             "materials": [
@@ -999,6 +1129,57 @@ class TestExportScope(unittest.TestCase):
         )
         self.assertEqual(payload["faces"], [[3, 4, 5], [0, 1, 2]])
 
+    def test_model_root_coalesces_same_material_binding_across_mesh_shapes(self):
+        """One Maya SG used by two shapes remains one PMX material group."""
+        shared_material = {
+            "name": "Shared Material",
+            "source_material_index": 0,
+            "face_count": 3,
+            "semantic_missing": [],
+            "_source_shading_engine": "sharedSG",
+        }
+        payload = self._collect_mock_model_root(
+            {
+                "mesh_a": self._mock_root_mesh(dict(shared_material)),
+                "mesh_b": self._mock_root_mesh(dict(shared_material)),
+            }
+        )
+
+        self.assertEqual(len(payload["materials"]), 1)
+        self.assertEqual(payload["materials"][0]["source_material_index"], 0)
+        self.assertEqual(payload["materials"][0]["face_count"], 6)
+        self.assertNotIn("_source_shading_engine", payload["materials"][0])
+        self.assertEqual(payload["faces"], [[0, 1, 2], [3, 4, 5]])
+
+    def test_model_root_rejects_duplicate_index_from_different_material_bindings(self):
+        """Different Maya SGs cannot claim one semantic PMX material index."""
+        base_material = {
+            "name": "Same Semantic Payload",
+            "source_material_index": 0,
+            "face_count": 3,
+            "semantic_missing": [],
+        }
+        material_a = {**base_material, "_source_shading_engine": "materialASG"}
+        material_b = {**base_material, "_source_shading_engine": "materialBSG"}
+        payload = self._collect_mock_model_root(
+            {
+                "mesh_a": self._mock_root_mesh(material_a),
+                "mesh_b": self._mock_root_mesh(material_b),
+            }
+        )
+
+        self.assertEqual(len(payload["materials"]), 2)
+        self.assertTrue(
+            all(
+                "source_material_index" in material["semantic_missing"]
+                for material in payload["materials"]
+            )
+        )
+        self.assertTrue(
+            all("_source_shading_engine" not in material for material in payload["materials"])
+        )
+        self.assertEqual(payload["faces"], [[0, 1, 2], [3, 4, 5]])
+
     def test_model_root_source_index_order_is_fail_closed_for_duplicate_or_malformed(self):
         """Root merge retains DAG order when source provenance is ambiguous."""
         duplicate_payload = self._collect_mock_model_root(
@@ -1137,81 +1318,18 @@ class TestExportScope(unittest.TestCase):
         self.assertEqual(
             collect_from_mesh.call_args_list,
             [
-                mock.call("mesh_a", is_pmd=False, _resolve_texture_table=False),
-                mock.call("mesh_b", is_pmd=False, _resolve_texture_table=False),
+                mock.call(
+                    "mesh_a",
+                    _resolve_texture_table=False,
+                    _preserve_material_bindings=True,
+                ),
+                mock.call(
+                    "mesh_b",
+                    _resolve_texture_table=False,
+                    _preserve_material_bindings=True,
+                ),
             ],
         )
-
-    def test_pmd_toon_index_stays_embedded_and_pmd_fields_are_collected(self):
-        material = self._collect_single_material(
-            {
-                ATTR_MMD_MATERIAL: 1,
-                ATTR_MMD_MATERIAL_NAME: "PMD material",
-                ATTR_MMD_MATERIAL_NAME_EN: "PMD material",
-                ATTR_MMD_DIFFUSE_COLOR: (0.1, 0.2, 0.3),
-                ATTR_MMD_DIFFUSE_ALPHA: 1.0,
-                ATTR_MMD_SPECULAR_COLOR: (0.4, 0.5, 0.6),
-                ATTR_MMD_SHININESS: 4.0,
-                ATTR_MMD_AMBIENT_COLOR: (0.2, 0.3, 0.4),
-                ATTR_MMD_DRAW_FLAGS: 0x10,
-                ATTR_MMD_TOON_TEXTURE_INDEX: 3,
-                ATTR_MMD_SPHERE_TEXTURE_INDEX: 1,
-                ATTR_MMD_SPHERE_PATH: "textures/body.spa",
-                "mmd_texture_path": "textures/body.bmp",
-            },
-            is_pmd=True,
-        )
-
-        self.assertEqual(material["specular_power"], 4.0)
-        self.assertEqual(material["edge_flag"], 1)
-        self.assertEqual(material["toon_texture_index"], 3)
-        self.assertEqual(material["texture_file_name"], "textures/body.bmp*textures/body.spa")
-        self.assertNotIn("texture_table", material["semantic_missing"])
-        self.assertEqual(material["semantic_missing"], [])
-
-    def test_pmd_direct_edge_flag_is_used_when_present(self):
-        material = self._collect_single_material(
-            {
-                ATTR_MMD_MATERIAL: 1,
-                ATTR_MMD_EDGE_FLAG: 1,
-            },
-            is_pmd=True,
-        )
-
-        self.assertEqual(material["edge_flag"], 1)
-        self.assertNotIn("edge_flag", material["semantic_missing"])
-
-    def test_pmd_does_not_require_unused_english_material_name(self):
-        material = self._collect_single_material(
-            {
-                ATTR_MMD_MATERIAL: 1,
-                ATTR_MMD_MATERIAL_NAME: "PMD material",
-            },
-            is_pmd=True,
-        )
-
-        self.assertNotIn("name_english", material["semantic_missing"])
-
-    def test_pmd_missing_shader_path_uses_file_node_provenance(self):
-        with (
-            mock.patch.object(
-                maya_material_utils,
-                "find_material_texture_file_node",
-                return_value="file1",
-            ),
-            mock.patch.object(
-                maya_material_utils,
-                "get_mmd_original_texture_path",
-                return_value="textures/missing.bmp",
-            ),
-        ):
-            material = self._collect_single_material(
-                {ATTR_MMD_MATERIAL: 1},
-                is_pmd=True,
-            )
-
-        self.assertEqual(material["texture_file_name"], "textures/missing.bmp")
-        self.assertNotIn("texture_path", material["semantic_missing"])
 
     def test_connected_texture_without_provenance_is_fail_closed(self):
         with (
@@ -1228,7 +1346,6 @@ class TestExportScope(unittest.TestCase):
         ):
             material = self._collect_single_material(
                 {ATTR_MMD_MATERIAL: 1},
-                is_pmd=True,
             )
 
         self.assertIn("texture_path", material["semantic_missing"])
@@ -1241,22 +1358,8 @@ class TestExportScope(unittest.TestCase):
         ):
             material = self._collect_single_material(
                 {ATTR_MMD_MATERIAL: 1},
-                is_pmd=True,
             )
 
-        self.assertIn("texture_path", material["semantic_missing"])
-
-    def test_pmd_empty_texture_path_with_index_is_fail_closed(self):
-        material = self._collect_single_material(
-            {
-                ATTR_MMD_MATERIAL: 1,
-                ATTR_MMD_TEXTURE_INDEX: 2,
-                "mmd_texture_path": "",
-            },
-            is_pmd=True,
-        )
-
-        self.assertNotIn("texture_file_name", material)
         self.assertIn("texture_path", material["semantic_missing"])
 
     def test_absolute_texture_path_uses_file_node_provenance(self):
@@ -1372,15 +1475,15 @@ class TestExportScope(unittest.TestCase):
             ),
         ):
             payload = ExportSceneCollector().collect(
-                {"target_model": "|hero:model_ROOT", "export_format": "pmd"}
+                {"target_model": "|hero:model_ROOT", "export_format": "pmx"}
             )
 
         self.assertEqual(calls, [("|hero:model_ROOT", False)])
         self.assertEqual(payload["model_name"], "Hero")
         collect_from_mesh.assert_called_once_with(
             "mesh",
-            is_pmd=True,
             _resolve_texture_table=False,
+            _preserve_material_bindings=True,
         )
 
     def test_network_morph_collection_passes_selected_root(self):

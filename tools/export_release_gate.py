@@ -501,11 +501,6 @@ class _SpyModelExporter:
         self.calls.append((path, data))
         Path(path).write_bytes(b"writer-output")
 
-    def export_pmd_model(self, path: str, data: Any) -> None:
-        self.calls.append((path, data))
-        Path(path).write_bytes(b"writer-output")
-
-
 class _SpyVmdExporter:
     """Writer spy for VMD fail-closed and warning-ack cases."""
 
@@ -546,7 +541,7 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
     report_paths: list[str] = []
     invalid_model = _valid_model_data()
     invalid_model["faces"] = [[0, 0]]
-    for export_format in ("pmx", "pmd"):
+    for export_format in ("pmx",):
         case_dir = out_dir / f"invalid-{export_format}"
         case_dir.mkdir(parents=True, exist_ok=True)
         target = case_dir / f"existing.{export_format}"
@@ -555,7 +550,6 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
         writer = _SpyModelExporter()
         result = ExportModelAction(
             pmx_exporter=writer,
-            pmd_exporter=writer,
             output_verifier=None,
         ).execute(
             ExportModelRequest(
@@ -1795,6 +1789,7 @@ def _validate_maya_probe_report(
     )
     required_formats = {
         "pmx",
+        "pmd_import",
         "pmx_morph",
         "pmx_bone_semantics",
         "pmx_physics",
@@ -1802,7 +1797,6 @@ def _validate_maya_probe_report(
         "pmx_sdef",
         "pmx_impulse",
         "pmx_flip",
-        "pmd",
         "vmd",
         "vmd_mode_a",
         "vmd_model_tracks",
@@ -1820,13 +1814,38 @@ def _validate_maya_probe_report(
     for export_format in sorted(required_formats):
         case = by_format.get(export_format)
         allowed_statuses = {"pass"}
-        if export_format in {"pmd", "pmx_soft_body", "pmx_sdef", "pmx_impulse", "pmx_flip"}:
+        if export_format in {"pmx_soft_body", "pmx_sdef", "pmx_impulse", "pmx_flip"}:
             allowed_statuses.add("policy-reject")
         if not isinstance(case, dict) or case.get("status") not in allowed_statuses:
             failures.append(f"{export_format}.status={case.get('status') if isinstance(case, dict) else None!r}")
             continue
-        if export_format == "pmd" and case.get("policy_code") != "PMD_EXPORT_POLICY_REJECT":
-            failures.append("pmd.policy_code='PMD_EXPORT_POLICY_REJECT' expected")
+        if export_format == "pmd_import":
+            import_oracles = case.get("import_oracles")
+            if not isinstance(import_oracles, dict):
+                failures.append("pmd_import.import_oracles_missing")
+            else:
+                for field in ("mesh_count", "vertex_count", "face_count", "material_count", "pose_joint_count"):
+                    value = import_oracles.get(field)
+                    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                        failures.append(f"pmd_import.import_oracles.{field} must be positive")
+                for field in ("morph_count", "rigid_body_count", "joint_count"):
+                    value = import_oracles.get(field)
+                    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                        failures.append(f"pmd_import.import_oracles.{field} must be non-negative")
+                if not isinstance(import_oracles.get("metadata_field_count"), int) or import_oracles.get(
+                    "metadata_field_count", 0
+                ) <= 0:
+                    failures.append("pmd_import.import_oracles.metadata_field_count must be positive")
+            collection = case.get("collection")
+            if not isinstance(collection, dict):
+                failures.append("pmd_import.collection_missing")
+            else:
+                if collection.get("source_fresh_import") is not True:
+                    failures.append("pmd_import.collection.source_fresh_import must be true")
+                if collection.get("export_writer_called") is not False:
+                    failures.append("pmd_import.collection.export_writer_called must be false")
+            if case.get("output") is not None:
+                failures.append("pmd_import.output must be null")
         if export_format == "pmx_soft_body" and case.get("policy_code") != "PMX_SOFT_BODIES_UNSUPPORTED":
             failures.append("pmx_soft_body.policy_code='PMX_SOFT_BODIES_UNSUPPORTED' expected")
         if export_format == "pmx_soft_body":
@@ -1985,6 +2004,28 @@ def _maya_path(version: str) -> Path:
     return Path(resolve_mayapy(version))
 
 
+def _gui_test_args(*, version: str, log_path: Path, full_gui: bool) -> list[str]:
+    """Build the GUI runner arguments for one Maya release-gate process."""
+    args = [
+        "--maya_version",
+        version,
+        "--log_path",
+        str(log_path),
+    ]
+    if full_gui and platform.system() == "Windows":
+        args.extend(["--vp2_device_override", "VirtualDeviceDx11"])
+    if not full_gui:
+        args.extend(
+            [
+                "--test_path",
+                "tests/gui",
+                "--test_filter",
+                "tests.gui.guitest_export_tab_gui",
+            ]
+        )
+    return args
+
+
 def _mmd_anim_provenance(report_path: Path | None) -> dict[str, Any]:
     """Keep executable and checkout provenance distinct in the release summary."""
     provenance: dict[str, Any] = {
@@ -2050,7 +2091,6 @@ def build_release_summary(
             "tests/unit/test_export_workflow.py",
             "tests/unit/test_export_model_validation.py",
             "tests/unit/test_pmd_parser.py",
-            "tests/unit/test_pmd_export.py",
             "tests/unit/test_vmd_validation.py",
             "tests/unit/test_validation_report_catalog.py",
             "tests/unit/test_validation_report_artifacts.py",
@@ -2058,6 +2098,8 @@ def build_release_summary(
             "tests/unit/test_export_release_gate.py",
             "tests/unit/test_export_scope.py",
             "tests/unit/test_gui_runner.py",
+            "tests/unit/test_ui_coverage_gate.py",
+            "tests/unit/test_ui_selector_contract.py",
             "tests/unit/test_vmd_scene_collector.py",
         ]
         consistency_tests = ROOT / "tests" / "unit" / "test_export_report_consistency.py"
@@ -2075,6 +2117,7 @@ def build_release_summary(
     steps.append({"name": "fail_fixture_matrix", **fail_matrix})
 
     report_paths: list[Path] = [Path(path) for path in fail_matrix.get("report_paths", [])]
+    gui_log_paths: dict[str, Path] = {}
     for version in maya_versions:
         mayapy = _maya_path(version)
         probe_dir = out_dir / f"maya-{version}"
@@ -2101,21 +2144,13 @@ def build_release_summary(
         if skip_gui:
             steps.append(_not_run(f"gui_tests_{version}", "--skip-gui was supplied"))
         else:
-            gui_args = [
-                "--maya_version",
-                version,
-                "--log_path",
-                str(out_dir / f"gui-{version}.log"),
-            ]
-            if not full_gui:
-                gui_args.extend(
-                    [
-                        "--test_path",
-                        "tests/gui",
-                        "--test_filter",
-                        "tests.gui.guitest_export_tab_gui",
-                    ]
-                )
+            gui_log_path = out_dir / f"gui-{version}.log"
+            gui_log_paths[version] = gui_log_path
+            gui_args = _gui_test_args(
+                version=version,
+                log_path=gui_log_path,
+                full_gui=full_gui,
+            )
             steps.append(
                 _run_command(
                     f"gui_export_workflow_{version}" if not full_gui else f"gui_tests_{version}",
@@ -2123,6 +2158,35 @@ def build_release_summary(
                     timeout=1200.0,
                 )
             )
+
+    if skip_gui:
+        steps.append(_not_run("ui_coverage_gate", "--skip-gui was supplied"))
+    elif not full_gui:
+        steps.append(
+            _not_run(
+                "ui_coverage_gate",
+                "targeted GUI scope does not provide the required nine-tab evidence",
+            )
+        )
+    else:
+        ui_coverage_report = out_dir / "ui-coverage.json"
+        coverage_args = [
+            sys.executable,
+            str(ROOT / "tools" / "ui_coverage_gate.py"),
+            "--write-report",
+            str(ui_coverage_report),
+        ]
+        for version in maya_versions:
+            coverage_args.extend(
+                ("--batch-log", f"{version}={gui_log_paths.get(version, out_dir / f'gui-{version}.log')}")
+            )
+        steps.append(
+            _run_command(
+                "ui_coverage_gate",
+                coverage_args,
+                timeout=120.0,
+            )
+        )
 
     mmd_report: Path | None = None
     if mmd_anim_cli:
@@ -2250,8 +2314,21 @@ def build_release_summary(
     gui_passed = bool(gui_steps) and len(gui_steps) == len(maya_versions) and all(
         step["status"] == "pass" for step in gui_steps
     )
+    ui_coverage = {}
+    ui_coverage_path = out_dir / "ui-coverage.json"
+    if ui_coverage_path.is_file():
+        try:
+            payload = json.loads(ui_coverage_path.read_text(encoding="utf-8"))
+            counts = payload.get("coverage")
+            if isinstance(counts, dict):
+                ui_coverage = {
+                    key: int(counts.get(key, 0))
+                    for key in ("qt_case", "not_run", "excluded", "blocked")
+                }
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            ui_coverage = {}
     coverage_proven = [
-        "13-case PMX/PMD/VMD probe with fresh-import or policy-reject output-safety evidence",
+        "13-case PMX/VMD export plus PMD import probe with fresh-import or policy-reject evidence",
         "PMX 2.0 additional UV channels 1-4 and UV/additional-UV morph field oracle",
         "PMX IK and non-IK bone semantic fields across Maya import/export boundaries",
         "PMX 2.1 soft-body, SDEF, Flip, and Impulse provenance with stable policy-reject",
@@ -2262,16 +2339,25 @@ def build_release_summary(
         "canonical JSON/Markdown validation-report consistency",
     ]
     coverage_outside = [
-        "full PMX/PMD material/morph field parity beyond representative oracle fields",
+        "full PMX material/morph field parity beyond representative oracle fields",
         "visual/runtime parity claims for UV morphs and VMD camera/light tracks",
         "VMD self-shadow support (explicitly excluded by the camera/light case)",
     ]
     if gui_passed:
-        coverage_proven.append(f"{gui_scope} ExportTab GUI workflow for each requested Maya version")
+        coverage_proven.append(f"{gui_scope} GUI workflow for each requested Maya version")
     else:
         coverage_outside.append(
             f"{gui_scope} GUI workflow was not fully executed and passing for every requested Maya version"
         )
+    if ui_coverage:
+        total_ui_surfaces = sum(ui_coverage.values())
+        coverage_proven.append(
+            f"GUI interaction evidence for {ui_coverage['qt_case']} of {total_ui_surfaces} inventoried surfaces"
+        )
+        if ui_coverage["not_run"]:
+            coverage_outside.append(
+                f"{ui_coverage['not_run']} inventoried GUI surfaces remain not_run"
+            )
     summary = {
         "schema_version": 1,
         "gate": "V070-EXPORT-RELEASE-GATE-1",
@@ -2290,6 +2376,7 @@ def build_release_summary(
         "gui_steps": [
             {"name": step["name"], "status": step["status"]} for step in gui_steps
         ],
+        "ui_coverage": ui_coverage,
         "coverage": {
             "proven": coverage_proven,
             "outside_this_gate": coverage_outside,
@@ -2355,6 +2442,15 @@ def build_release_summary(
     else:
         lines.append("None.")
     lines.extend(["", "## Coverage", ""])
+    if ui_coverage:
+        lines.append(
+            "UI surfaces: "
+            f"`{ui_coverage['qt_case']}` evidenced / "
+            f"`{ui_coverage['not_run']}` not run / "
+            f"`{ui_coverage['excluded']}` excluded / "
+            f"`{ui_coverage['blocked']}` blocked."
+        )
+        lines.append("")
     lines.append("Proven by this gate:")
     lines.extend(f"- {item}" for item in summary["coverage"]["proven"])
     lines.append("")
@@ -2371,7 +2467,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--maya", dest="maya_versions", action="append", choices=MAYA_VERSIONS)
     parser.add_argument("--mmd-anim-cli")
     parser.add_argument("--skip-gui", action="store_true")
-    parser.add_argument("--full-gui", action="store_true")
+    gui_scope = parser.add_mutually_exclusive_group()
+    gui_scope.add_argument("--full-gui", dest="full_gui", action="store_true")
+    gui_scope.add_argument(
+        "--targeted-gui",
+        dest="full_gui",
+        action="store_false",
+        help="run only ExportTab GUI checks; this is not release-complete",
+    )
+    parser.set_defaults(full_gui=True)
     parser.add_argument("--skip-focused-tests", action="store_true")
     args = parser.parse_args(argv)
     try:

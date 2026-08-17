@@ -72,6 +72,16 @@ class _FakeAppState:
         self.selection_sync_calls += 1
 
 
+class _ExplicitAppState(_FakeAppState):
+    def __init__(self):
+        super().__init__()
+        self.explicit_calls = []
+        self.refresh_generation = 0
+
+    def refresh_model_list(self, explicit=False):
+        self.explicit_calls.append(explicit)
+
+
 class TestHeaderWidgetTranslation(unittest.TestCase):
     def setUp(self):
         self.translator = UITranslator.instance()
@@ -110,6 +120,14 @@ class TestHeaderWidgetTranslation(unittest.TestCase):
 
         self.assertEqual(self.widget.app_state.refresh_calls, 1)
         self.assertEqual(self.widget.app_state.selection_sync_calls, 1)
+
+    def test_explicit_refresh_does_not_resync_maya_selection(self):
+        self.widget.app_state = _ExplicitAppState()
+
+        HeaderWidget.refresh_model_list(self.widget)
+
+        self.assertEqual(self.widget.app_state.explicit_calls, [True])
+        self.assertEqual(self.widget.app_state.selection_sync_calls, 0)
 
 
 class TestHeaderWidgetModelSelectionLogging(unittest.TestCase):

@@ -19,6 +19,10 @@ class MayaCmdsAdapter:
         """Return whether a Maya node exists."""
         return self._cmds.objExists(node)
 
+    def reference_query(self, node, **kwargs):
+        """Return Maya reference state for a node (read-only probe)."""
+        return self._cmds.referenceQuery(node, **kwargs)
+
     def ls(self, *args, **kwargs):
         """Pass through to maya.cmds.ls."""
         return self._cmds.ls(*args, **kwargs)
@@ -41,9 +45,9 @@ class MayaCmdsAdapter:
                 maximum = float(values[0])
         return minimum, maximum
 
-    def get_attr(self, attr_path):
+    def get_attr(self, attr_path, **kwargs):
         """Pass through to maya.cmds.getAttr."""
-        return self._cmds.getAttr(attr_path)
+        return self._cmds.getAttr(attr_path, **kwargs)
 
     def is_attr_settable(self, attr_path):
         """Return whether a Maya plug is unlocked and has no blocking input."""
@@ -181,6 +185,22 @@ class MayaCmdsAdapter:
         """Pass through to maya.cmds.connectAttr."""
         return self._cmds.connectAttr(*args, **kwargs)
 
+    def disconnect_attr(self, *args, **kwargs):
+        """Pass through to maya.cmds.disconnectAttr."""
+        return self._cmds.disconnectAttr(*args, **kwargs)
+
+    def sets(self, *args, **kwargs):
+        """Pass through to maya.cmds.sets."""
+        return self._cmds.sets(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        """Pass through to maya.cmds.delete."""
+        return self._cmds.delete(*args, **kwargs)
+
+    def remove_multi_instance(self, *args, **kwargs):
+        """Pass through to maya.cmds.removeMultiInstance."""
+        return self._cmds.removeMultiInstance(*args, **kwargs)
+
     def hyper_shade(self, *args, **kwargs):
         """Pass through to maya.cmds.hyperShade."""
         return self._cmds.hyperShade(*args, **kwargs)
@@ -226,3 +246,23 @@ class MayaCmdsAdapter:
     def undo(self):
         """Undo the most recent Maya operation or closed chunk."""
         return self._cmds.undo()
+
+    def redo(self):
+        """Redo the most recently undone Maya operation or closed chunk."""
+        return self._cmds.redo()
+
+    def mmd_render_queue_reindex(self, node, first_index, second_index):
+        """Swap two material indices in one native ``mmdRenderShape`` queue."""
+        return self._cmds.mmdRenderQueueReindex(
+            node=node,
+            firstMaterialIndex=int(first_index),
+            secondMaterialIndex=int(second_index),
+        )
+
+    def command_exists(self, command):
+        """Return whether Maya has a registered command with this exact name."""
+        return callable(getattr(self._cmds, command, None))
+
+    def invoke_native_command(self, command, **kwargs):
+        """Invoke a previously allowlisted native command by exact name."""
+        return getattr(self._cmds, command)(**kwargs)

@@ -15,6 +15,7 @@ from ..core.constants import DEFAULT_IMPORT_PHYSICS, SCENE_ROOT_SUFFIX
 from ..core.namespace_utils import NamespaceUtils
 from ..core.model_registry import (
     REGISTRY_CATEGORY_MORPH,
+    REGISTRY_CATEGORY_MATERIAL,
     REGISTRY_CATEGORY_PHYSICS,
     REGISTRY_CATEGORY_TEXTURE,
     ensure_model_registry,
@@ -102,6 +103,7 @@ class ModelImportPipeline:
             + morph_result.get("material_morph_nodes", [])
             + morph_result.get("uv_morph_nodes", [])
             + morph_result.get("flip_impulse_morph_nodes", [])
+            + morph_result.get("vertex_morph_nodes", [])
         )
         if model_registry:
             register_model_members(model_registry, REGISTRY_CATEGORY_MORPH, morph_nodes)
@@ -142,6 +144,33 @@ class ModelImportPipeline:
             if not cmds.attributeQuery("mmd_model_root", node=texture_node, exists=True):
                 cmds.addAttr(texture_node, longName="mmd_model_root", attributeType="message")
             cmds.connectAttr(f"{root_group}.message", f"{texture_node}.mmd_model_root", force=True)
+
+    def connect_shader_nodes_to_root(
+        self,
+        root_group: str,
+        shader_nodes,
+        *,
+        model_registry: Optional[str] = None,
+    ) -> None:
+        """Register generated material shaders without legacy root fan-out.
+
+        ``created_shaders`` contains material shader nodes, not shading groups
+        or file nodes.  New imports persist that ownership on the model
+        registry's ``materialMembers`` message array.  A legacy import without
+        a registry deliberately does nothing: shader ownership remains
+        discoverable through the existing mesh/shading-group fallback.
+        """
+        if not model_registry:
+            if shader_nodes:
+                self.logger.debug(
+                    "Skipping material shader registry: model registry unavailable"
+                )
+            return
+        register_model_members(
+            model_registry,
+            REGISTRY_CATEGORY_MATERIAL,
+            shader_nodes or [],
+        )
 
     def convert_physics(
         self,

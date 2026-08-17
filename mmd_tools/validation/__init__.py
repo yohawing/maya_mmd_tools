@@ -11,8 +11,6 @@ from .export_validator import (
     ExportValidationError,
     ExportValidationIssue,
     ExportValidationReport,
-    PMD_MAX_VERTEX_COUNT,
-    pmd_export_policy_report,
     validate_export_model,
     validate_model_data,
 )
@@ -42,8 +40,6 @@ __all__ = [
     "ScenePreflight",
     "ScenePreflightResult",
     "IssueCatalogEntry",
-    "PMD_MAX_VERTEX_COUNT",
-    "pmd_export_policy_report",
     "UnknownValidationIssueError",
     "ValidationReportArtifactPaths",
     "VMD_MODE_A",

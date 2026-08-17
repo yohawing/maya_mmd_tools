@@ -819,28 +819,6 @@ class TestPmxExporter(MayaTestBase):
         self.assertEqual(len(pmx.faces), 1)
         self.assertEqual(pmx.materials[0].name, shader)
 
-    def test_export_model_action_rejects_pmd_before_writing(self):
-        """公開 ExportModelAction は PMD writer を呼ばず policy-reject する。"""
-        transform, _ = self._make_triangle(name="action_pmd_tri_mesh")
-        cmds.addAttr(transform, longName=ATTR_MMD_MODEL_NAME, dataType="string")
-        cmds.setAttr(f"{transform}.{ATTR_MMD_MODEL_NAME}", "PmdTri", type="string")
-        self._assign_shader(transform, shader_name="ActionPmdTriMat")
-        output_path = self.get_temp_filename("action_triangle.pmd")
-
-        result = ExportModelAction().execute(
-            ExportModelRequest(
-                file_path=output_path,
-                options={"export_format": "pmd", "target_mesh": transform},
-            )
-        )
-
-        self.assertFalse(result.succeeded)
-        self.assertEqual(
-            result.validation_report.issues[0].code,
-            "PMD_EXPORT_POLICY_REJECT",
-        )
-        self.assertFalse(os.path.exists(output_path))
-
     def test_export_model_action_collects_model_root_meshes_to_pmx(self):
         """target_model 配下の複数 mesh を PMX の単一 model data にまとめる。"""
         root, _meshes, shaders = self._make_two_mesh_model_root("pmx_multi_root")

@@ -83,3 +83,29 @@ class NoxMayaTest(unittest.TestCase):
             with mock.patch.object(noxfile, "_common_convert_mayapy_path_options", return_value=args) as convert:
                 self.assertIs(noxfile._convert_mayapy_path_options(mayapy, args, {"--model"}), args)
             convert.assert_called_once_with(mayapy, root, args, {"--model"})
+
+    def test_vertex_morph_authoring_smoke_selects_requested_mayapy(self):
+        session = types.SimpleNamespace(posargs=["--maya", "2026"], run=mock.Mock())
+        mayapy = Path("F:/Maya2026/bin/mayapy.exe")
+        with mock.patch.object(noxfile, "_mayapy", return_value=mayapy) as resolve:
+            with mock.patch.object(noxfile, "_mayapy_script", return_value="vertex_smoke.py"):
+                with mock.patch.object(noxfile, "_mayapy_env", return_value={"PYTHONPATH": "repo"}):
+                    noxfile.maya_vertex_morph_authoring_smoke(session)
+
+        resolve.assert_called_once_with("2026")
+        session.run.assert_called_once_with(
+            str(mayapy),
+            "vertex_smoke.py",
+            env={"PYTHONPATH": "repo"},
+            external=True,
+        )
+
+    def test_vertex_morph_authoring_smoke_defaults_to_supported_maya(self):
+        session = types.SimpleNamespace(posargs=[], run=mock.Mock())
+        mayapy = Path("F:/Maya2024/bin/mayapy.exe")
+        with mock.patch.object(noxfile, "_mayapy", return_value=mayapy) as resolve:
+            with mock.patch.object(noxfile, "_mayapy_script", return_value="vertex_smoke.py"):
+                with mock.patch.object(noxfile, "_mayapy_env", return_value={}):
+                    noxfile.maya_vertex_morph_authoring_smoke(session)
+
+        resolve.assert_called_once_with(noxfile.DEFAULT_MAYA_VERSION)

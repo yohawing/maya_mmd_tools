@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         # アプリケーション状態管理
         self.app_state = ApplicationState()
         self.settings_service = SettingsService()
+        self.authoring_composition = self._create_authoring_composition()
 
         # 中央ウィジェットの設定
         central_widget = QWidget()
@@ -88,6 +89,10 @@ class MainWindow(QMainWindow):
         self.app_state.status_message.connect(self.show_status_message)
         self.app_state.progress_updated.connect(self.update_progress)
         self.app_state.current_model_changed.connect(self.update_window_title)
+        self.app_state.model_list_updated.connect(self._on_model_list_updated)
+        refresh_signal = getattr(self.app_state, "model_refresh_completed", None)
+        if refresh_signal is not None and hasattr(refresh_signal, "connect"):
+            refresh_signal.connect(self._on_model_refresh_completed)
 
         # 最小サイズを設定
         self.setMinimumWidth(800)
@@ -211,9 +216,74 @@ class MainWindow(QMainWindow):
         else:
             self.setWindowTitle(base_title)
 
+    def _on_model_list_updated(self, _models):
+        """Refresh the title after Header Refresh invalidates model metadata."""
+        self.update_window_title(self.app_state.current_model_root)
+
+    @staticmethod
+    def _generation_refresh(presenter, generation):
+        """Invoke a presenter generation refresh when it implements the seam.
+
+        Checking the class keeps old Mock-based/headless callers on their
+        legacy activation methods while real presenters opt into lazy reload.
+        """
+        method = getattr(type(presenter), "refresh_for_generation", None)
+        if callable(method):
+            result = method(presenter, generation)
+            return result is not False
+        return False
+
+    def _on_model_refresh_completed(self, generation):
+        """Reload only the currently visible authoring tab."""
+        active_tab = self.tab_widget.currentWidget()
+        tab_presenter_pairs = (
+            (getattr(self, "info_presenter", None), getattr(self, "info_presenter", None)),
+            (getattr(self, "material_presenter", None), getattr(self, "material_presenter", None)),
+            (getattr(self, "bone_presenter", None), getattr(self, "bone_presenter", None)),
+            (getattr(self, "morph_tab", None), getattr(self, "morph_presenter", None)),
+            (getattr(self, "display_pane_tab", None), getattr(self, "display_pane_presenter", None)),
+            (getattr(self, "physics_tab", None), getattr(self, "physics_presenter", None)),
+        )
+        for tab_or_presenter, presenter in tab_presenter_pairs:
+            if presenter is None:
+                continue
+            tab = getattr(presenter, "view", None) if tab_or_presenter is presenter else tab_or_presenter
+            if tab is active_tab:
+                MainWindow._generation_refresh(presenter, generation)
+                break
+
     def setup_logging(self):
         install_maya_script_editor_handler()
         get_logger(__name__).info("MMD Tools UI initialized.")
+
+    @staticmethod
+    def _create_authoring_composition():
+        """Build authoring services without making UI startup depend on them."""
+        try:
+            from ..adapters.maya_authoring_factory import build_maya_authoring_composition
+
+            return build_maya_authoring_composition(cmds)
+        except Exception:
+            logger.error(
+                "Maya model authoring services are unavailable; authoring controls are disabled.",
+                exc_info=True,
+            )
+            return None
+
+    def _authoring_presenter_kwargs(self):
+        """Return shared authoring dependencies for authoring presenters."""
+        composition = getattr(self, "authoring_composition", None)
+        if composition is None:
+            return {"authoring_coordinator": None}
+        return {
+            "maya_adapter": composition.cmds_adapter,
+            "authoring_coordinator": composition.coordinator,
+        }
+
+    def _create_model_action(self):
+        """Return only the Create Model action from the optional composition."""
+        composition = getattr(self, "authoring_composition", None)
+        return composition.create_model_action if composition is not None else None
 
     def setup_tabs(self):
         # UITranslatorを取得
@@ -225,14 +295,17 @@ class MainWindow(QMainWindow):
         current_language = self.settings_service.get(setting_keys.UI_GENERAL_LANGUAGE, "ja")
         translator.set_language(current_language)
 
-        # File I/O Tab
+        # Import Tab
         import_export_tab = ImportExportTab()
         self.import_export_tab = import_export_tab
-        self.import_export_presenter = ImportExportPresenter(import_export_tab, self.app_state)
+        self.import_export_presenter = ImportExportPresenter(
+            import_export_tab,
+            self.app_state,
+            create_model_action=self._create_model_action(),
+        )
         self.tab_widget.addTab(import_export_tab, translator.translate("file_io", "tabs"))
 
-        # Export workflow tab: import settings remain in File I/O while all
-        # public export decisions and the Validation Console live here.
+        # Export workflow tab: all public export decisions and the Validation Console live here.
         export_tab = ExportTab(settings_service=self.settings_service)
         self.export_tab = export_tab
         self.export_presenter = ExportPresenter(
@@ -242,30 +315,58 @@ class MainWindow(QMainWindow):
         )
         self.tab_widget.addTab(export_tab, translator.translate("export_workflow", "tabs"))
 
+        authoring_kwargs = self._authoring_presenter_kwargs()
+
         # Info Tab
         info_tab = InfoTab()
-        self.info_presenter = InfoPresenter(info_tab, self.app_state)
+        self.info_presenter = InfoPresenter(
+            info_tab,
+            self.app_state,
+            authoring_coordinator=authoring_kwargs["authoring_coordinator"],
+        )
         self.tab_widget.addTab(info_tab, translator.translate("info", "tabs"))
 
         # Material Tab
         material_tab = MaterialTab()
-        self.material_presenter = MaterialPresenter(material_tab, self.app_state)
+        self.material_presenter = MaterialPresenter(
+            material_tab,
+            self.app_state,
+            **authoring_kwargs,
+        )
         self.tab_widget.addTab(material_tab, translator.translate("material", "tabs"))
 
         # Bone Tab
         bone_tab = BoneTab()
-        self.bone_presenter = BonePresenter(bone_tab, self.app_state)
+        self.bone_presenter = BonePresenter(
+            bone_tab,
+            self.app_state,
+            **authoring_kwargs,
+        )
         self.tab_widget.addTab(bone_tab, translator.translate("bone", "tabs"))
 
         # Morph Tab
         morph_tab = MorphTab()
-        self.morph_presenter = MorphPresenter(morph_tab, self.app_state)
+        composition = getattr(self, "authoring_composition", None)
+        self.morph_presenter = MorphPresenter(
+            morph_tab,
+            self.app_state,
+            material_morph_work=(
+                getattr(composition, "material_morph_work", None)
+                if composition is not None
+                else None
+            ),
+            **authoring_kwargs,
+        )
         self.tab_widget.addTab(morph_tab, translator.translate("morph", "tabs"))
         self.morph_tab = morph_tab
 
         # Display Pane Tab (PMX display-frame editor; independent of Animator Toolset)
         display_pane_tab = DisplayPaneTab()
-        self.display_pane_presenter = DisplayPanePresenter(display_pane_tab, self.app_state)
+        self.display_pane_presenter = DisplayPanePresenter(
+            display_pane_tab,
+            self.app_state,
+            **authoring_kwargs,
+        )
         self.tab_widget.addTab(display_pane_tab, translator.translate("display_pane", "tabs"))
         self.display_pane_tab = display_pane_tab
 
@@ -304,10 +405,28 @@ class MainWindow(QMainWindow):
     def _on_main_tab_changed(self, index):
         """Refresh data-backed tabs when they become active."""
         active_tab = self.tab_widget.widget(index)
+        generation = getattr(getattr(self, "app_state", None), "refresh_generation", 0)
+
+        info_presenter = getattr(self, "info_presenter", None)
+        if info_presenter is not None and getattr(info_presenter, "view", None) is active_tab:
+            if not MainWindow._generation_refresh(info_presenter, generation):
+                info_presenter.load_model_info()
+
+        material_presenter = getattr(self, "material_presenter", None)
+        if material_presenter is not None and getattr(material_presenter, "view", None) is active_tab:
+            if not MainWindow._generation_refresh(material_presenter, generation):
+                material_presenter.load_materials()
+
+        bone_presenter = getattr(self, "bone_presenter", None)
+        if bone_presenter is not None and getattr(bone_presenter, "view", None) is active_tab:
+            if not MainWindow._generation_refresh(bone_presenter, generation):
+                bone_presenter.load_bones()
+
         morph_tab = getattr(self, "morph_tab", None)
         morph_presenter = getattr(self, "morph_presenter", None)
         if morph_tab is not None and morph_presenter is not None and active_tab is morph_tab:
-            morph_presenter.ensure_morphs_loaded()
+            if not MainWindow._generation_refresh(morph_presenter, generation):
+                morph_presenter.ensure_morphs_loaded()
 
         display_pane_tab = getattr(self, "display_pane_tab", None)
         display_pane_presenter = getattr(self, "display_pane_presenter", None)
@@ -316,12 +435,14 @@ class MainWindow(QMainWindow):
             and display_pane_presenter is not None
             and active_tab is display_pane_tab
         ):
-            display_pane_presenter.refresh()
+            if not MainWindow._generation_refresh(display_pane_presenter, generation):
+                display_pane_presenter.refresh()
 
         physics_tab = getattr(self, "physics_tab", None)
         presenter = getattr(self, "physics_presenter", None)
         if physics_tab is not None and presenter is not None and active_tab is physics_tab:
-            presenter.refresh_physics()
+            if not MainWindow._generation_refresh(presenter, generation):
+                presenter.refresh_physics()
 
     def refresh_development_mode_visibility(self):
         """Development Mode 依存の UI 表示を現在のウィンドウへ再適用する。"""
@@ -346,6 +467,7 @@ class MainWindow(QMainWindow):
             (self.material_presenter.view, "material"),
             (self.bone_presenter.view, "bone"),
             (self.morph_tab, "morph"),
+            (self.display_pane_tab, "display_pane"),
             (self.physics_tab, "physics"),
             (self.settings_presenter.view, "settings"),
         ]

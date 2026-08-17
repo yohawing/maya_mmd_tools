@@ -95,15 +95,25 @@ class TestMainWindow(GuiTestBase):
         self.assertIsNotNone(self.window.tab_widget)
 
         # Physics is available in normal mode as well as Development Mode.
-        self.assertEqual(self.window.tab_widget.count(), 8)
-        self.assertEqual(self.window.tab_widget.indexOf(self.window.display_pane_tab), 5)
-        self.assertEqual(self.window.tab_widget.indexOf(self.window.physics_tab), 6)
+        self.assertEqual(self.window.tab_widget.count(), 9)
+        self.assertEqual(self.window.tab_widget.indexOf(self.window.display_pane_tab), 6)
+        self.assertEqual(self.window.tab_widget.indexOf(self.window.physics_tab), 7)
 
         # 各タブのタイトルを確認（翻訳辞書から期待値を導出し、UI 言語に依存しない）
         from mmd_tools.ui.translations import UITranslator
 
         translator = UITranslator.instance()
-        tab_keys = ["file_io", "info", "material", "bone", "morph", "display_pane", "physics", "settings"]
+        tab_keys = [
+            "file_io",
+            "export_workflow",
+            "info",
+            "material",
+            "bone",
+            "morph",
+            "display_pane",
+            "physics",
+            "settings",
+        ]
         expected_titles = [translator.translate(key, "tabs") for key in tab_keys]
 
         for i, title in enumerate(expected_titles):
@@ -135,7 +145,7 @@ class TestMainWindow(GuiTestBase):
         dev_window = None
         try:
             dev_window = MainWindow()
-            self.assertEqual(dev_window.tab_widget.count(), 8)
+            self.assertEqual(dev_window.tab_widget.count(), 9)
             self.assertIsNotNone(dev_window.physics_tab)
             self.assertIsNotNone(dev_window.physics_presenter)
 
@@ -191,18 +201,22 @@ class TestMainWindow(GuiTestBase):
             "special_frame_check",
             "item_table",
             "add_frame_btn",
-            "add_bone_btn",
-            "add_morph_btn",
+            "add_element_btn",
             "apply_btn",
             "reset_btn",
         ):
             self.assertTrue(hasattr(tab, attr), f"missing attribute: {attr}")
 
     def test_display_pane_editor_applies_and_undoes_scene_metadata(self):
-        """実Qt操作からroot JSONへ保存し、1回のMaya Undoで復元できる。"""
-        root = cmds.createNode("transform", name="displayPaneGuiModel")
-        cmds.addAttr(root, longName="mmd_display_frames_json", dataType="string")
-        cmds.addAttr(root, longName="mmdMorphData", dataType="string")
+        """実Qt操作からroot JSONへ保存し、Maya Undo/Redoで往復できる。"""
+        template = self.window.authoring_composition.model_initializer.create(
+            "pmx20-basic-v1",
+            "Display Pane GUI",
+            "Display Pane GUI",
+        )
+        root = template.root
+        if not cmds.attributeQuery("mmdMorphData", node=root, exists=True):
+            cmds.addAttr(root, longName="mmdMorphData", dataType="string")
         original_frames = [
             {
                 "name": "Root",
@@ -236,27 +250,24 @@ class TestMainWindow(GuiTestBase):
             ),
             type="string",
         )
-        bone = cmds.createNode("joint", name="displayPaneGuiRootBone", parent=root)
-        cmds.addAttr(bone, longName="mmd_bone_index", attributeType="long")
-        cmds.addAttr(bone, longName="mmd_bone_name", dataType="string")
-        cmds.setAttr(f"{bone}.mmd_bone_index", 0)
-        cmds.setAttr(f"{bone}.mmd_bone_name", "全ての親", type="string")
-
         self.window.app_state.current_model_root = root
         tab = self.window.display_pane_tab
         presenter = self.window.display_pane_presenter
         tab.frame_list.setCurrentRow(2)
         tab.name_jp_edit.setText("アクセサリ")
         presenter._choice_provider = lambda _title, choices: choices[-1]
-        presenter.add_item(1)
+        presenter.add_item()
         self.assertTrue(presenter.apply())
 
-        applied = json.loads(cmds.getAttr(f"{root}.mmd_display_frames_json"))
+        applied_json = cmds.getAttr(f"{root}.mmd_display_frames_json")
+        applied = json.loads(applied_json)
         self.assertEqual(applied[2]["name"], "アクセサリ")
         self.assertEqual(applied[2]["elements"], [{"type": 1, "index": 1}])
 
         cmds.undo()
         self.assertEqual(cmds.getAttr(f"{root}.mmd_display_frames_json"), original_json)
+        cmds.redo()
+        self.assertEqual(cmds.getAttr(f"{root}.mmd_display_frames_json"), applied_json)
 
     def test_status_bar_setup(self):
         """
@@ -360,8 +371,36 @@ class TestMainWindow(GuiTestBase):
 
         self.assertEqual(
             self.window.tab_widget.tabText(1),
-            UITranslator.instance().translate("info", "tabs"),
+            UITranslator.instance().translate("export_workflow", "tabs"),
         )
+
+    def test_retranslate_updates_display_pane_tab_title(self):
+        """Live language changes include the Display Pane tab title."""
+        from mmd_tools.ui.translations import UITranslator
+
+        translator = UITranslator.instance()
+        previous_language = translator.get_language()
+        try:
+            translator.set_language("en")
+            self.window.retranslate_all_tabs()
+            english = self.window.tab_widget.tabText(
+                self.window.tab_widget.indexOf(self.window.display_pane_tab)
+            )
+            english_name_label = self.window.display_pane_tab.name_jp_label.text()
+            self.assertEqual(english, translator.translate("display_pane", "tabs"))
+
+            translator.set_language("ja")
+            self.window.retranslate_all_tabs()
+            japanese = self.window.tab_widget.tabText(
+                self.window.tab_widget.indexOf(self.window.display_pane_tab)
+            )
+            japanese_name_label = self.window.display_pane_tab.name_jp_label.text()
+            self.assertEqual(japanese, translator.translate("display_pane", "tabs"))
+            self.assertNotEqual(japanese, english)
+            self.assertNotEqual(japanese_name_label, english_name_label)
+        finally:
+            translator.set_language(previous_language)
+            self.window.retranslate_all_tabs()
 
     def test_window_resize(self):
         """
