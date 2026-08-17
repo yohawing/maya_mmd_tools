@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "gate_id": "V070-UI-COVERAGE-1",
-  "minimum_qt_case_surfaces": 230,
+  "minimum_qt_case_surfaces": 229,
   "inventory_scope": "MainWindow nine tabs; logical mutable/actionable surfaces only, with explicit exclusions for containers and read-only displays.",
   "tabs": [
     {
@@ -505,9 +505,9 @@
       "tab": "import_export",
       "kind": "button",
       "attribute": "clear_history_button",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.import_export_presenter.ImportExportPresenter.import_file"
+      "disposition": "excluded",
+      "reason_code": "destructive_user_state",
+      "reason": "Automated activation clears the user's persisted PMX and VMD file history."
     },
     {
       "id": "export.pane_selector",
