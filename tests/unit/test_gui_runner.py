@@ -105,7 +105,7 @@ class GuiTestRunnerTests(unittest.TestCase):
             {
                 "id": "safe-smoke",
                 "test_path": "tests/gui",
-                "test_filter": "guitest_translator.TestUITranslator.test_supported_languages",
+                "test_filter": "tests.gui.guitest_translator.TestUITranslator.test_supported_languages",
                 "attach_safe": True,
             }
         ]
@@ -146,6 +146,29 @@ class GuiTestRunnerTests(unittest.TestCase):
         self.assertEqual(0, fake_cmds.undo_calls)
         self.assertFalse(fake_cmds.modified)
         self.assertEqual([], fake_cmds.selection)
+
+    def test_attached_filter_matches_one_complete_test_id(self):
+        class IdentifiedTest(unittest.TestCase):
+            def __init__(self, test_id):
+                super().__init__("runTest")
+                self._test_id = test_id
+
+            def id(self):
+                return self._test_id
+
+        allowed_id = "tests.gui.guitest_translator.TestUITranslator.test_supported_languages"
+        suite = unittest.TestSuite(
+            [
+                IdentifiedTest(allowed_id),
+                IdentifiedTest(f"{allowed_id}_mutates_scene"),
+            ]
+        )
+
+        exact = GuiTestRunner._filter_suite(suite, allowed_id, exact=True)
+        legacy = GuiTestRunner._filter_suite(suite, allowed_id)
+
+        self.assertEqual(1, exact.countTestCases())
+        self.assertEqual(2, legacy.countTestCases())
 
     def test_attached_scene_guard_rolls_back_owned_edits_and_selection(self):
         fake_cmds = _AttachedCmds()
@@ -1336,13 +1359,13 @@ class GuiTestRunnerTests(unittest.TestCase):
                 {
                     "id": "one",
                     "test_path": "tests/gui",
-                    "test_filter": "guitest_translator.TestUITranslator.test_supported_languages",
+                    "test_filter": "tests.gui.guitest_translator.TestUITranslator.test_supported_languages",
                     "attach_safe": True,
                 },
                 {
                     "id": "two",
                     "test_path": "tests/gui",
-                    "test_filter": "guitest_translator.TestUITranslator.test_translation_files_loaded",
+                    "test_filter": "tests.gui.guitest_translator.TestUITranslator.test_translation_files_loaded",
                     "attach_safe": True,
                 },
             ]

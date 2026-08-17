@@ -137,15 +137,15 @@ ATTACH_SAFE_CASES = frozenset(
     {
         (
             "tests/gui",
-            "guitest_translator.TestUITranslator.test_translator_singleton",
+            "tests.gui.guitest_translator.TestUITranslator.test_translator_singleton",
         ),
         (
             "tests/gui",
-            "guitest_translator.TestUITranslator.test_supported_languages",
+            "tests.gui.guitest_translator.TestUITranslator.test_supported_languages",
         ),
         (
             "tests/gui",
-            "guitest_translator.TestUITranslator.test_translation_files_loaded",
+            "tests.gui.guitest_translator.TestUITranslator.test_translation_files_loaded",
         ),
     }
 )

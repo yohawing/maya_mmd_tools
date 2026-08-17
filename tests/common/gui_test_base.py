@@ -524,7 +524,15 @@ class GuiTestRunner:
             discovery_started = time.perf_counter()
             discovered_suite = loader.discover(str(test_dir), pattern="guitest_*.py", top_level_dir=str(project_root))
             if test_filter:
-                discovered_suite = GuiTestRunner._filter_suite(discovered_suite, test_filter)
+                discovered_suite = GuiTestRunner._filter_suite(
+                    discovered_suite,
+                    test_filter,
+                    exact=preserve_attached_scene,
+                )
+            if preserve_attached_scene and discovered_suite.countTestCases() != 1:
+                raise RuntimeError(
+                    "attached GUI test filter must resolve to exactly one complete test ID"
+                )
             suite.addTest(discovered_suite)
             discovery_elapsed = max(0.0, time.perf_counter() - discovery_started)
             timing_recorder = _TestTimingRecorder(test.id() for test in _iter_tests(suite))
@@ -771,14 +779,16 @@ class GuiTestRunner:
         return status
 
     @staticmethod
-    def _filter_suite(suite, test_filter):
-        """Return the discovered tests whose IDs contain ``test_filter``."""
+    def _filter_suite(suite, test_filter, exact=False):
+        """Return tests matching one complete ID or the legacy substring filter."""
         filtered_suite = unittest.TestSuite()
         for test in suite:
             if isinstance(test, unittest.TestSuite):
-                nested_suite = GuiTestRunner._filter_suite(test, test_filter)
+                nested_suite = GuiTestRunner._filter_suite(test, test_filter, exact=exact)
                 if nested_suite.countTestCases():
                     filtered_suite.addTest(nested_suite)
-            elif test_filter in test.id():
-                filtered_suite.addTest(test)
+            else:
+                matches = test.id() == test_filter if exact else test_filter in test.id()
+                if matches:
+                    filtered_suite.addTest(test)
         return filtered_suite
