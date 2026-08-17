@@ -44,7 +44,7 @@ class TestDragDropImporter(MayaTestBase):
             },
         )
         self.assertTrue(root)
-        return str(root)
+        return (cmds.ls(str(root), long=True) or [str(root)])[0]
 
     def test_vmd_only_drop_targets_the_sole_loaded_model(self):
         root = self._import_model("sole")
