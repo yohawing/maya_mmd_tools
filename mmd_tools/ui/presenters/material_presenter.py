@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 import math
 import os
+from pathlib import Path, PureWindowsPath
 from typing import Protocol
 
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
@@ -28,6 +29,11 @@ logger = get_logger(__name__)
 
 MATERIAL_INDEX_ROLE = Qt.UserRole + 1
 MATERIAL_ASSIGNMENT_ROLE = Qt.UserRole + 2
+
+
+def _is_absolute_texture_path(value: str) -> bool:
+    """Recognize native and Windows absolute paths on every host OS."""
+    return Path(value).is_absolute() or PureWindowsPath(value).is_absolute()
 
 
 class MaterialAuthoringCoordinator(Protocol):
@@ -1072,7 +1078,7 @@ class MaterialPresenter:
             return source, prior.resolved_texture_path
         if prior.resolved_texture_path and value == prior.resolved_texture_path:
             return source, prior.resolved_texture_path
-        if os.path.isabs(value):
+        if _is_absolute_texture_path(value):
             return source or value, value
         # The editable field is the resolved Maya path when a file graph is
         # present.  Preserve source-relative PMX provenance separately.
@@ -1116,7 +1122,7 @@ class MaterialPresenter:
             return source, resolved
         if resolved and value == resolved:
             return source, resolved
-        if os.path.isabs(value):
+        if _is_absolute_texture_path(value):
             return value, value
         return value, None
 
