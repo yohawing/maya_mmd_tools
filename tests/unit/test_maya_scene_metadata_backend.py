@@ -1844,9 +1844,16 @@ def test_full_rebase_and_commit_hooks_reject_narrow_transaction_before_any_write
 
 
 def test_narrow_transaction_kind_inventory_matches_all_runtime_kind_literals() -> None:
-    source = Path(__file__).resolve().parents[2] / "mmd_tools" / "adapters" / "maya_scene_metadata_backend.py"
+    adapters = Path(__file__).resolve().parents[2] / "mmd_tools" / "adapters"
+    sources = (
+        adapters / "maya_scene_metadata_backend.py",
+        adapters / "maya_info_metadata_transaction.py",
+    )
     literals = set(
-        re.findall(r'"kind": "([^"]+)"', source.read_text(encoding="utf-8"))
+        re.findall(
+            r'"kind": "([^"]+)"',
+            "\n".join(path.read_text(encoding="utf-8") for path in sources),
+        )
     )
     assert literals == set(NARROW_TRANSACTION_KINDS)
 

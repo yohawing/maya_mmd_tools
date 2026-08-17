@@ -40,6 +40,11 @@ from mmd_tools.adapters.maya_full_metadata_transaction import (
     MayaFullMetadataTransaction,
     MayaFullMetadataTransactionContext,
 )
+from mmd_tools.adapters.maya_info_metadata_transaction import (
+    InfoMetadataSession,
+    MayaInfoMetadataTransaction,
+    MayaInfoMetadataTransactionContext,
+)
 from mmd_tools.adapters.maya_metadata_read_support import MayaMetadataReadSupport
 from mmd_tools.adapters.maya_model_metadata_repository import (
     MayaModelMetadataRepository,
@@ -165,15 +170,6 @@ class MorphPreviewSession:
     token: object
 
 
-@dataclass(frozen=True)
-class InfoMetadataSession:
-    """Opaque Info-field edit identity fixed at focus-in."""
-
-    root: str
-    attr: str
-    token: object
-
-
 class MayaSceneMetadataBackend:
     """Read model, material, PMX bone, and morph metadata from an adapter."""
 
@@ -186,145 +182,6 @@ class MayaSceneMetadataBackend:
             ATTR_MMD_COMMENT_EN,
         )
     )
-
-    def begin_info_metadata_edit(
-        self, model_root: str, attr: str
-    ) -> InfoMetadataSession:
-        """Capture one Info string and open its focus-spanning undo chunk."""
-        if self._write_transaction is not None:
-            raise MayaSceneMetadataError("a metadata write transaction is already active")
-        if attr not in self._INFO_STRING_ATTRS:
-            raise MayaSceneMetadataError(f"unsupported Info metadata attribute: {attr!r}")
-        names = self._call_adapter("ls", model_root, long=True) or ()
-        if isinstance(names, (str, bytes, bytearray)) or len(names) != 1:
-            raise MayaSceneMetadataError(
-                f"Info model root has no unique canonical identity: {model_root!r}"
-            )
-        root = names[0]
-        self._require_root(root)
-        if not self._has_attr(root, attr):
-            raise MayaSceneMetadataError(f"missing Info metadata attribute: {root}.{attr}")
-        if bool(self._call_adapter("get_attr", f"{root}.{attr}", lock=True)):
-            raise MayaSceneMetadataError(f"locked Info metadata attribute: {root}.{attr}")
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for Info metadata edits")
-        original = self._info_string_value(
-            self._call_adapter("get_attr", f"{root}.{attr}"), root, attr
-        )
-        token = object()
-        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Info Edit")
-        self._write_transaction = {
-            "root": root,
-            "kind": "info_metadata",
-            "attr": attr,
-            "token": token,
-            "original_value": original,
-            "target_value": original,
-            "chunk_open": True,
-            "mutated": False,
-        }
-        return InfoMetadataSession(root=root, attr=attr, token=token)
-
-    def apply_info_metadata_edit(
-        self, model_root: str, session: InfoMetadataSession, value: str
-    ) -> bool:
-        """Write and exactly read back one fixed Info string target."""
-        transaction = self._active_info_metadata_edit(model_root, session)
-        expected = self._info_string_value(value, session.root, session.attr)
-        try:
-            self._call_adapter(
-                "set_attr", f"{session.root}.{session.attr}", expected, type="string"
-            )
-        except Exception:
-            # A rejected first setAttr leaves an empty chunk.  Probe only the
-            # fixed plug so rollback never undoes an unrelated prior action.
-            actual = self._info_string_value(
-                self._call_adapter("get_attr", f"{session.root}.{session.attr}"),
-                session.root,
-                session.attr,
-            )
-            transaction["mutated"] = bool(transaction["mutated"]) or (
-                actual != transaction["original_value"]
-            )
-            raise
-        transaction["mutated"] = True
-        actual = self._info_string_value(
-            self._call_adapter("get_attr", f"{session.root}.{session.attr}"),
-            session.root,
-            session.attr,
-        )
-        if actual != expected:
-            raise MayaSceneMetadataError(
-                f"Info metadata readback mismatch for {session.root}.{session.attr}"
-            )
-        transaction["target_value"] = expected
-        return expected != transaction["original_value"]
-
-    def commit_info_metadata_edit(
-        self, model_root: str, session: InfoMetadataSession
-    ) -> bool:
-        """Verify the final string and close the session's undo chunk."""
-        transaction = self._active_info_metadata_edit(model_root, session)
-        actual = self._info_string_value(
-            self._call_adapter("get_attr", f"{session.root}.{session.attr}"),
-            session.root,
-            session.attr,
-        )
-        if actual != transaction["target_value"]:
-            raise MayaSceneMetadataError(
-                f"Info metadata commit readback mismatch for {session.root}.{session.attr}"
-            )
-        self._call_adapter("undo_info", closeChunk=True)
-        transaction["chunk_open"] = False
-        self._write_transaction = None
-        return transaction["target_value"] != transaction["original_value"]
-
-    def rollback_info_metadata_edit(
-        self, model_root: str, session: InfoMetadataSession
-    ) -> None:
-        """Close then undo one mutated edit and verify its exact preimage."""
-        transaction = self._active_info_metadata_edit(model_root, session)
-        if transaction["chunk_open"]:
-            self._call_adapter("undo_info", closeChunk=True)
-            transaction["chunk_open"] = False
-        if transaction["mutated"]:
-            self._call_adapter("undo")
-            transaction["mutated"] = False
-        self._write_transaction = None
-        actual = self._info_string_value(
-            self._call_adapter("get_attr", f"{session.root}.{session.attr}"),
-            session.root,
-            session.attr,
-        )
-        if actual != transaction["original_value"]:
-            error = MayaSceneMetadataError(
-                f"Info metadata rollback preimage mismatch for {session.root}.{session.attr}"
-            )
-            error.rollback_pending = False
-            raise error
-
-    def _active_info_metadata_edit(
-        self, model_root: str, session: InfoMetadataSession
-    ) -> dict[str, Any]:
-        if not isinstance(session, InfoMetadataSession):
-            raise MayaSceneMetadataError("invalid Info metadata session")
-        transaction = self._active_transaction(model_root)
-        if (
-            transaction.get("kind") != "info_metadata"
-            or transaction.get("token") is not session.token
-            or transaction.get("root") != session.root
-            or transaction.get("attr") != session.attr
-        ):
-            raise MayaSceneMetadataError("Info metadata session identity mismatch")
-        return transaction
-
-    @staticmethod
-    def _info_string_value(value: Any, root: str, attr: str) -> str:
-        if not isinstance(value, str):
-            raise MayaSceneMetadataError(
-                f"Info metadata must be a string for {root}.{attr}"
-            )
-        return value
 
     def inspect_morph_topology(self, model_root: str) -> MorphTopologyInspection:
         """Inspect derived controller topology without changing the scene."""
@@ -498,6 +355,19 @@ class MayaSceneMetadataBackend:
             == "native"
         )
         self._write_transaction: dict[str, Any] | None = None
+        self._info_metadata_transaction = MayaInfoMetadataTransaction(
+            MayaInfoMetadataTransactionContext(
+                error_factory=MayaSceneMetadataError,
+                string_attributes=self._INFO_STRING_ATTRS,
+                canonical_identity=self._material_identity,
+                require_root=self._require_root,
+                call_adapter=self._call_adapter,
+                has_attribute=self._has_attr,
+                get_active_transaction=self._get_write_transaction,
+                set_active_transaction=self._set_write_transaction,
+                active_transaction=self._active_transaction,
+            )
+        )
         self._full_metadata_transaction = MayaFullMetadataTransaction(
             MayaFullMetadataTransactionContext(
                 error_factory=MayaSceneMetadataError,
@@ -590,6 +460,27 @@ class MayaSceneMetadataBackend:
             legacy_member_reader=self._legacy_material_members,
             material_reader=self._read_material,
         )
+
+    def begin_info_metadata_edit(
+        self, model_root: str, attr: str
+    ) -> InfoMetadataSession:
+        """Delegate the focus-spanning Info edit to its narrow authority."""
+        return self._info_metadata_transaction.begin(model_root, attr)
+
+    def apply_info_metadata_edit(
+        self, model_root: str, session: InfoMetadataSession, value: str
+    ) -> bool:
+        return self._info_metadata_transaction.apply(model_root, session, value)
+
+    def commit_info_metadata_edit(
+        self, model_root: str, session: InfoMetadataSession
+    ) -> bool:
+        return self._info_metadata_transaction.commit(model_root, session)
+
+    def rollback_info_metadata_edit(
+        self, model_root: str, session: InfoMetadataSession
+    ) -> None:
+        self._info_metadata_transaction.rollback(model_root, session)
 
     def begin_write(self, model_root: str) -> None:
         """Capture the current spec and open one Maya undo chunk."""
