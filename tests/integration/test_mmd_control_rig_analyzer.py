@@ -1918,10 +1918,19 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             target, source=True, destination=False, plugs=True
         ) or []
         self.assertEqual(len(restored_source), 1)
-        self.assertEqual(
-            cmds.ls(restored_source[0].split(".", 1)[0], long=True)[0],
-            row["control"].split(".", 1)[0],
-        )
+        if row.get("translateBaselineOutput"):
+            self.assertEqual(restored_source[0], row["translateBaselineOutput"])
+            self.assertTrue(
+                cmds.isConnected(
+                    row["control"],
+                    f"{row['translateBaselineOutput'].split('.', 1)[0]}.input1D[0]",
+                )
+            )
+        else:
+            self.assertEqual(
+                cmds.ls(restored_source[0].split(".", 1)[0], long=True)[0],
+                row["control"].split(".", 1)[0],
+            )
         self.assertEqual(set(cmds.ls(type="animCurve") or []), curves_before)
 
     def test_native_animcurve_has_independent_owner_representations(self):
