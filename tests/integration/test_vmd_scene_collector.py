@@ -431,6 +431,9 @@ class TestVmdSceneCollector(MayaTestBase):
                     "export_format": "vmd",
                     "vmd_mode": "C",
                     "frame_range": frame_range,
+                    # Mode C deliberately discards imported raw bone keys;
+                    # this integration fixture explicitly accepts that loss.
+                    "ack_warnings": True,
                 },
             )
         )
