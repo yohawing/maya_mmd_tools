@@ -122,15 +122,27 @@ class BonePresenter:
         # リストビューのシグナル
         self.view.bone_list.currentItemChanged.connect(self.on_bone_selected)
         self.view.bone_list.itemSelectionChanged.connect(self.on_selection_changed_maya)
-        self.view.refresh_btn.clicked.connect(self.load_bones)
+        sync_button = getattr(self.view, "sync_btn", None)
+        if sync_button is None:
+            # Keep injected pre-sync test/integration views usable while the
+            # production BoneTab exposes only the unified sync entrypoint.
+            sync_button = getattr(self.view, "refresh_btn", None)
+        if sync_button is not None:
+            sync_button.clicked.connect(self.sync_bones)
         for button_name, handler in (
             ("reindex_up_btn", lambda: self.move_reindex(-1)),
             ("reindex_down_btn", lambda: self.move_reindex(1)),
-            ("reset_authoring_btn", self.reset_authoring),
         ):
             button = getattr(self.view, button_name, None)
             if button is not None:
                 button.clicked.connect(handler)
+        # Older injected views may still expose a separate reset button.  Do
+        # not connect it when it aliases the unified sync button, otherwise a
+        # single click would run two authoring entrypoints.
+        if getattr(self.view, "sync_btn", None) is None:
+            legacy_reset = getattr(self.view, "reset_authoring_btn", None)
+            if legacy_reset is not None:
+                legacy_reset.clicked.connect(self.reset_authoring)
         self.view.search_edit.textChanged.connect(self.filter_bones)
 
         # ボーン選択ボタン
@@ -180,6 +192,10 @@ class BonePresenter:
     def _has_pending_refresh_work(self):
         if self._reindex_dirty or self._reset_plan is not None:
             return True
+        return self._has_pending_detail_edit()
+
+    def _has_pending_detail_edit(self):
+        """Return whether the selected detail form contains unapplied edits."""
         if not self.current_bone or not self.bone_data:
             return False
         # The controls are a local work copy; comparing them is Maya-free.
@@ -415,7 +431,7 @@ class BonePresenter:
         for button_name, enabled, reason, reason_key in (
             ("reindex_up_btn", registered, "" if registered else (reason_selection if available else reason_unavailable), "" if registered else ("authoring_selection_required" if available else "authoring_unavailable")),
             ("reindex_down_btn", registered, "" if registered else (reason_selection if available else reason_unavailable), "" if registered else ("authoring_selection_required" if available else "authoring_unavailable")),
-            ("reset_authoring_btn", available, "" if available else reason_unavailable, "" if available else "authoring_unavailable"),
+            ("sync_btn", available, "" if available else reason_unavailable, "" if available else "authoring_unavailable"),
             # Compatibility for injected legacy views; BoneTab no longer
             # creates these individual-operation buttons.
             ("register_joint_btn", False, reason_unavailable, "authoring_unavailable"),
@@ -429,6 +445,12 @@ class BonePresenter:
                 if callable(set_reason):
                     set_reason(reason, reason_key)
                 button.setEnabled(bool(enabled))
+        sync_button = getattr(self.view, "sync_btn", None)
+        for legacy_name in ("refresh_btn", "reset_authoring_btn"):
+            button = getattr(self.view, legacy_name, None)
+            if button is None or button is sync_button:
+                continue
+            button.setEnabled(bool(available))
 
     def _authoring_available(self):
         if self.authoring_coordinator is None:
@@ -572,25 +594,44 @@ class BonePresenter:
         self.app_state.emit_status(tr_message("bone_reindex_pending"))
         return True
 
-    def reset_authoring(self):
-        """Preview then atomically reconcile all descendant joints and PMX data."""
+    def sync_bones(self):
+        """Refresh or apply a scene-authoritative bone synchronization plan."""
         root = self._authoring_root()
         if root is None:
+            return False
+        if self._has_pending_detail_edit():
+            self.app_state.emit_status(tr_message("bone_sync_pending_edits"))
             return False
         requested = tuple(self._pending_order or [item for item in self.all_bones if item in self._registered_indices])
         try:
             if not callable(getattr(self.authoring_coordinator, "plan_bone_reset", None)):
                 # Legacy injected presenters are kept operational for external
-                # integrations; the production BoneTab always takes the atomic
-                # planner path above.
+                # integrations. Production BoneTab always takes the planner
+                # path above and therefore has a no-write refresh branch.
                 ordered_indices = tuple(self._registered_indices[item] for item in requested)
                 return bool(self.authoring_coordinator.reindex_bones(root, ordered_indices))
-            plan = self._plan_reset()
+            self._reset_plan = None
+            plan = self._plan_reset(root)
+            if plan is None:
+                return False
             if plan.blockers:
                 self.app_state.emit_status(
                     tr_message_format("bone_reset_blocked", blockers="; ".join(plan.blockers))
                 )
                 return False
+            diff = plan.diff
+            if not any(diff.values()):
+                selected = self.current_bone
+                self._reset_plan = None
+                self.load_bones()
+                self._restore_bone_selection(selected)
+                self.app_state.emit_status(tr_message("bone_sync_no_changes"))
+                return True
+            if not self._confirm_bone_sync(plan):
+                self._reset_plan = None
+                self.app_state.emit_status(tr_message("bone_sync_cancelled"))
+                return False
+            selected = self.current_bone
             result = self.authoring_coordinator.reset_bones(root, plan)
         except Exception as exc:
             logger.error("Bone authoring reset failed", exc_info=True)
@@ -599,7 +640,9 @@ class BonePresenter:
             )
             return False
         self._reindex_dirty = False
+        self._reset_plan = None
         self.load_bones()
+        self._restore_bone_selection(selected)
         diff = plan.diff
         self.app_state.emit_status(
             tr_message_format(
@@ -609,9 +652,14 @@ class BonePresenter:
         )
         return result
 
-    def _plan_reset(self):
+    def reset_authoring(self):
+        """Compatibility alias for the unified Bone Tab synchronization action."""
+
+        return self.sync_bones()
+
+    def _plan_reset(self, root=None):
         """Build and display the immutable reset diff without applying it."""
-        root = self._authoring_root()
+        root = root or self._authoring_root()
         if root is None:
             return None
         requested = tuple(self._pending_order or [item for item in self.all_bones if item in self._registered_indices])
@@ -623,6 +671,49 @@ class BonePresenter:
             label.setText(warning_text)
             label.setVisible(bool(warning_text))
         return plan
+
+    def _confirm_bone_sync(self, plan):
+        """Ask for explicit confirmation only when the plan mutates the scene."""
+        from ..qt_compat import QMessageBox
+
+        diff = plan.diff
+        details = (
+            f"added={diff['added']}, removed={diff['removed']}, "
+            f"rest={diff['rest_updated']}, reindexed={diff['reindexed']}"
+        )
+        if plan.added_bindings:
+            details += "\nadded bindings: " + ", ".join(plan.added_bindings)
+        if plan.removed_bindings:
+            details += "\nremoved bindings: " + ", ".join(plan.removed_bindings)
+        if plan.rest_updated_indices:
+            details += "\nrest indices: " + ", ".join(
+                str(index) for index in plan.rest_updated_indices
+            )
+        if plan.warnings:
+            details += "\nwarnings: " + "; ".join(plan.warnings)
+        reply = QMessageBox.question(
+            self.view,
+            tr_message("bone_sync_confirm_title"),
+            tr_message_format("bone_sync_confirm", details=details),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return reply == QMessageBox.Yes
+
+    def _restore_bone_selection(self, binding):
+        """Restore a still-existing canonical binding, or clear it safely."""
+        if not binding:
+            return
+        item = self.bone_list_items.get(binding)
+        if item is not None:
+            self.view.bone_list.setCurrentItem(item)
+            return
+        clear = getattr(self.view.bone_list, "clearSelection", None)
+        if callable(clear):
+            clear()
+        self.current_bone = None
+        self.current_bone_index = None
+        self.view.set_bone_details_enabled(False)
 
 
     def unregister_bone(self):

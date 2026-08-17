@@ -37,8 +37,7 @@ class BoneTab(BaseTab):
         ("grant_settings_group", "setTitle", "grant_settings", "groups"),
         ("fixed_axis_group", "setTitle", "fixed_axis", "groups"),
         ("local_axis_group", "setTitle", "local_axis", "groups"),
-        ("refresh_btn", "setText", "refresh", "buttons"),
-        ("reset_authoring_btn", "setText", "reset_authoring", "buttons"),
+        ("sync_btn", "setText", "sync", "buttons"),
         ("apply_btn", "setText", "apply", "buttons"),
         ("reset_btn", "setText", "reset", "buttons"),
         ("select_ik_target_btn", "setText", "select", "buttons"),
@@ -109,24 +108,25 @@ class BoneTab(BaseTab):
         # ツールバー
         toolbar_layout = QHBoxLayout()
         self.bone_authoring_toolbar = AuthoringToolbar(
-            actions=("refresh", "move_up", "move_down", "reset"),
+            actions=("sync", "move_up", "move_down"),
             labels={
-                "refresh": self.tr("refresh", "buttons"),
+                "sync": self.tr("sync", "buttons"),
                 "move_up": self.tr("up", "buttons"),
                 "move_down": self.tr("down", "buttons"),
-                "reset": self.tr("reset_authoring", "buttons"),
             },
             parent=self,
         )
         self.bone_authoring_toolbar.setObjectName("boneAuthoringToolbar")
-        self.refresh_btn = self.bone_authoring_toolbar.button("refresh")
+        self.sync_btn = self.bone_authoring_toolbar.button("sync")
         self.reindex_up_btn = self.bone_authoring_toolbar.button("move_up")
         self.reindex_down_btn = self.bone_authoring_toolbar.button("move_down")
-        self.reset_authoring_btn = self.bone_authoring_toolbar.button("reset")
-        self.refresh_btn.setObjectName("boneRefreshButton")
+        self.sync_btn.setObjectName("boneSyncButton")
         self.reindex_up_btn.setObjectName("boneMoveUpButton")
         self.reindex_down_btn.setObjectName("boneMoveDownButton")
-        self.reset_authoring_btn.setObjectName("boneResetAuthoringButton")
+        # Compatibility aliases keep integrations that only read the old
+        # attributes working; both names point to the one visible action.
+        self.refresh_btn = self.sync_btn
+        self.reset_authoring_btn = self.sync_btn
         toolbar_layout.addWidget(self.bone_authoring_toolbar)
         bone_tree_layout.addLayout(toolbar_layout)
         for action in ("move_up", "move_down"):
@@ -136,7 +136,7 @@ class BoneTab(BaseTab):
                 self.tr("authoring_selection_required", "tooltips"),
                 "authoring_selection_required",
             )
-        self.reset_authoring_btn.setEnabled(False)
+        self.sync_btn.setEnabled(False)
 
         self.animation_warning_label = QLabel()
         self.animation_warning_label.setWordWrap(True)
@@ -603,13 +603,11 @@ class BoneTab(BaseTab):
         """言語切り替え時にUIを再翻訳"""
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
         self.animation_warning_label.setText("")
-        self.reset_authoring_btn.setText(self.tr("reset_authoring", "buttons"))
         self.bone_authoring_toolbar.retranslate(
             {
-                "refresh": self.tr("refresh", "buttons"),
+                "sync": self.tr("sync", "buttons"),
                 "move_up": self.tr("up", "buttons"),
                 "move_down": self.tr("down", "buttons"),
-                "reset": self.tr("reset_authoring", "buttons"),
             },
             reason_resolver=lambda key: self.tr(key, "tooltips"),
         )

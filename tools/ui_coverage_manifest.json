@@ -1077,13 +1077,28 @@
       "reason": "Toolbar container; actions are inventoried separately."
     },
     {
-      "id": "bone.refresh",
+      "id": "bone.sync",
       "tab": "bone",
       "kind": "button",
-      "selector": "objectName=boneRefreshButton",
+      "selector": "objectName=boneSyncButton",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.bone_presenter.BonePresenter.load_bones"
+      "expected_handler": "mmd_tools.ui.presenters.bone_presenter.BonePresenter.sync_bones",
+      "action_count": 1,
+      "expected_oracle": "bone sync branch status and scene fingerprint",
+      "expected_status": "bone_sync_*"
+    },
+    {
+      "id": "bone.sync_preflight",
+      "tab": "bone",
+      "kind": "button",
+      "attribute": "sync_btn",
+      "disposition": "qt_case",
+      "case_id": "headless.authoring_ui_surface_matrix",
+      "expected_handler": "mmd_tools.ui.presenters.bone_presenter.BonePresenter.sync_bones",
+      "action_count": 1,
+      "expected_oracle": "bone sync preflight branch status and scene fingerprint",
+      "expected_status": "bone_sync_*"
     },
     {
       "id": "bone.move_up",
@@ -1102,15 +1117,6 @@
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
       "expected_handler": "mmd_tools.ui.presenters.bone_presenter.BonePresenter.move_reindex"
-    },
-    {
-      "id": "bone.reset_authoring",
-      "tab": "bone",
-      "kind": "button",
-      "selector": "objectName=boneResetAuthoringButton",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.bone_presenter.BonePresenter.reset_authoring"
     },
     {
       "id": "bone.list",
