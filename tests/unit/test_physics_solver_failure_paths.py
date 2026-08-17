@@ -60,6 +60,7 @@ class _World:
         self.reset_result, self.step_result = reset, step
     def reset(self, _instance): return self.reset_result
     def step_runtime(self, _instance, _dt): return self.step_result
+    def set_gravity(self, _gravity): return True
     def free(self): pass
 
 
@@ -293,6 +294,7 @@ def _prepare_node(*, world, instance, time=0.0, last_time=None):
     node = solver.MmdPhysicsSolverNode()
     node._initialized, node._world, node._instance = True, world, instance
     node._read_world_settings = lambda: (True, -1)
+    node._read_world_gravity = lambda: (0.0, -9.8, 0.0)
     node._update_rigid_body_visual_cache = lambda: None
     node._last_time, node._cached_flat = last_time, [42.0]
     return node, _Data(time=time)

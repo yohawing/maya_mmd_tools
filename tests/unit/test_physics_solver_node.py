@@ -115,6 +115,13 @@ class TestSolverNodeStructure(unittest.TestCase):
             r"if not world_enable:\s+self\._last_time = None\s+self\._write_outputs",
         )
 
+    def test_world_gravity_is_read_and_applied_to_native_world(self):
+        self.assertIn("def _read_world_gravity", self.source)
+        self.assertIn('"gravityX", "gravityY", "gravityZ"', self.source)
+        self.assertIn("math.isfinite", self.source)
+        self.assertIn("self._world.set_gravity(world_gravity)", self.source)
+        self.assertIn('status="physics gravity update failed"', self.source)
+
 
 class TestDriverNodeStructure(unittest.TestCase):
 
