@@ -673,11 +673,11 @@ def test_apply_material_spec_change_delete_preserves_mesh_assignment_and_registr
         types={
             "|Model_root": "transform",
             "shaderA": "standardSurface",
-            "shaderB": "standardSurface",
+            "shaderB": "dx11Shader",
             old_sg: "shadingEngine",
             replacement_sg: "shadingEngine",
         },
-        connections={"shaderA": [old_sg]},
+        connections={"shaderA": [old_sg], "shaderB": [replacement_sg]},
         members={old_sg: [mesh]},
     )
     registry = FakeRegistry(members=["shaderA", "shaderB"])
@@ -687,7 +687,7 @@ def test_apply_material_spec_change_delete_preserves_mesh_assignment_and_registr
     new_spec = _authoring_spec((replace(material_b, index=0),))
 
     _authoring(cmds, registry).apply_material_spec_change(
-        "|Model_root", old_spec, new_spec, replacement_sg
+        "|Model_root", old_spec, new_spec, "shaderB"
     )
 
     assert cmds.attrs[("shaderB", ATTR_MMD_MATERIAL_INDEX)] == 0
@@ -713,7 +713,7 @@ def test_apply_material_spec_change_notifies_after_first_maya_mutation() -> None
             old_sg: "shadingEngine",
             replacement_sg: "shadingEngine",
         },
-        connections={"shaderA": [old_sg]},
+        connections={"shaderA": [old_sg], "shaderB": [replacement_sg]},
         members={old_sg: [mesh]},
     )
     registry = FakeRegistry(members=["shaderA", "shaderB"])
@@ -733,7 +733,7 @@ def test_apply_material_spec_change_notifies_after_first_maya_mutation() -> None
         mutation_boundary=boundary,
     )
     adapter.apply_material_spec_change(
-        "|Model_root", old_spec, new_spec, replacement_sg
+        "|Model_root", old_spec, new_spec, "shaderB"
     )
 
     boundary_index = next(index for index, call in enumerate(cmds.calls) if call[0] == "mutation-boundary")

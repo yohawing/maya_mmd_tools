@@ -880,6 +880,16 @@ class MayaMaterialAuthoring:
                     f"deleted material {old_material.index} is not resolvable"
                 )
             old_shader, old_shading_group = binding
+            replacement_binding = self._canonical_node(replacement_shader)
+            if (
+                replacement_binding not in old_by_binding
+                or replacement_binding not in new_by_binding
+            ):
+                raise MayaMaterialAuthoringError(
+                    "replacement_shader must be a registry-owned survivor under "
+                    f"root {root!r}"
+                )
+            replacement_shader = replacement_binding
             replacement_sg = self._resolve_replacement_sg(replacement_shader)
             if replacement_sg == old_shading_group:
                 raise MayaMaterialAuthoringError(
@@ -1458,7 +1468,7 @@ class MayaMaterialAuthoring:
         node_type = self._call("node_type", replacement)
         if node_type == "shadingEngine":
             return replacement
-        if node_type in {"standardSurface", "lambert", "blinn", "phong"}:
+        if material_shader_route(str(node_type)) is not None:
             groups = list(self._call("list_connections", replacement, type="shadingEngine") or [])
             if len(groups) == 1:
                 return str(groups[0])
