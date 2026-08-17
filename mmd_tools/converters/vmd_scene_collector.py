@@ -464,8 +464,19 @@ class VmdSceneCollector:
                 start_frame,
                 end_frame,
             )
+            raw_provenance_frames = {
+                frame_number
+                for source_name, frame_number in raw_bone_transforms
+                if source_name == bone_name
+            }
+            has_new_authored_key = bool(
+                raw_provenance_frames
+                and set(sparse_frames).difference(raw_provenance_frames)
+            )
             preserve_sparse_rotation = (
-                not force_dense_sample and bone_name in rotation_interpolation
+                not force_dense_sample
+                and bone_name in rotation_interpolation
+                and not has_new_authored_key
             )
             keyed_frames = (
                 dense_frames
