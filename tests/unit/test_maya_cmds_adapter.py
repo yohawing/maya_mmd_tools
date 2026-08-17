@@ -68,6 +68,17 @@ class TestMayaCmdsAdapter(unittest.TestCase):
         self.cmds.ls.assert_called_once_with("*", type="transform")
         self.assertIs(result, expected)
 
+    def test_deselect_delegates_remove_mode(self):
+        expected = object()
+        self.cmds.select.return_value = expected
+
+        result = self.adapter.deselect(["joint1", "joint2"])
+
+        self.cmds.select.assert_called_once_with(
+            ["joint1", "joint2"], deselect=True
+        )
+        self.assertIs(result, expected)
+
     def test_attribute_exists_delegates_attr_and_node(self):
         self.cmds.attributeQuery.return_value = True
 

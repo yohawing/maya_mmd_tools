@@ -211,11 +211,13 @@ class _FakeBodyPicker:
         self.reset_pose_clicked = _FakeSignal()
         self.select_all_clicked = _FakeSignal()
         self.clear_selection_clicked = _FakeSignal()
+        self.background_clicked = _FakeSignal()
         self.ik_toggled = _FakeSignal()
         self.ik_enable_toggle_clicked = _FakeSignal()
         self.selected_regions = []
         self.tooltip = ""
         self.additive_selection = False
+        self.subtractive_selection = False
         self.region_labels = {}
         self.region_tooltips = {}
         self.hidden_regions = set()
@@ -243,8 +245,10 @@ class _FakeFingerPicker:
         self.region_clicked = _FakeSignal()
         self.regions_selected = _FakeSignal()
         self.goto_body_clicked = _FakeSignal()
+        self.background_clicked = _FakeSignal()
         self.selected_regions = []
         self.additive_selection = False
+        self.subtractive_selection = False
         self.region_tooltips = {}
 
     def set_selected_regions(self, region_ids):
@@ -574,6 +578,10 @@ class _FakeAdapter:
             self.selected = list(nodes)
         else:
             self.selected = list(dict.fromkeys([*self.selected, *nodes]))
+
+    def deselect(self, nodes):
+        removed = set(nodes)
+        self.selected = [node for node in self.selected if node not in removed]
 
     def xform(self, node, **kwargs):
         if kwargs.get("query"):
@@ -1572,6 +1580,38 @@ class TestBodyPickerPresenter(unittest.TestCase):
 
         self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt", "arm_jnt"])
 
+    def test_ctrl_rectangle_removes_regions_and_preserves_other_selection(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首", "arm_jnt": "左腕"},
+        )
+        adapter.selected = ["head_jnt", "neck_jnt", "arm_jnt", "external"]
+        adapter._long_paths["external"] = "|other|external"
+        view.body_picker.subtractive_selection = True
+
+        view.body_picker.regions_selected.emit(["neck", "left_upper_arm"])
+
+        self.assertEqual(adapter.selected, ["head_jnt", "external"])
+        self.assertEqual(view.body_picker.selected_regions, ["head"])
+
+    def test_ctrl_click_removes_owned_control_by_resolved_identity(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首"},
+        )
+        adapter.selected = ["head_jnt", "neck_control"]
+        adapter._long_paths["neck_control"] = "|test_model|ControlRig|neck_control"
+        view.body_picker.subtractive_selection = True
+
+        def preferred_control(node):
+            return "neck_control" if node == "neck_jnt" else node
+
+        with patch.object(
+            presenter, "_preferred_rig_control", side_effect=preferred_control
+        ):
+            view.body_picker.region_clicked.emit("neck")
+
+        self.assertEqual(adapter.selected, ["head_jnt"])
+        self.assertEqual(view.body_picker.selected_regions, ["head"])
+
     def test_body_picker_all_button_selects_every_model_joint(self):
         presenter, view, _, adapter = self._make_with_bones(
             bone_names={"head_jnt": "頭", "neck_jnt": "首"},
@@ -1590,6 +1630,16 @@ class TestBodyPickerPresenter(unittest.TestCase):
         view.body_picker.clear_selection_clicked.emit()
 
         self.assertEqual(adapter.selected, [])
+
+    def test_picker_background_click_clears_selection(self):
+        _presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+
+        for picker in (view.body_picker, view.finger_picker):
+            adapter.selected = ["head_jnt"]
+            picker.background_clicked.emit()
+            self.assertEqual(adapter.selected, [])
 
     def test_bone_name_map_cleared_on_model_clear(self):
         presenter, _, app_state, _ = self._make_with_bones(

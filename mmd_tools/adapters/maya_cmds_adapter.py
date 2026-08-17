@@ -221,6 +221,10 @@ class MayaCmdsAdapter:
         """Pass through to maya.cmds.select."""
         return self._cmds.select(nodes, replace=replace)
 
+    def deselect(self, nodes):
+        """Remove nodes from Maya's active selection."""
+        return self._cmds.select(nodes, deselect=True)
+
     def select_fast(self, nodes, replace=True):
         """Update Maya's active selection directly through API 2.0.
 
@@ -237,6 +241,18 @@ class MayaCmdsAdapter:
             selection.add(node)
         mode = om.MGlobal.kReplaceList if replace else om.MGlobal.kAddToList
         om.MGlobal.setActiveSelectionList(selection, mode)
+        return node_list
+
+    def deselect_fast(self, nodes):
+        """Remove nodes from Maya's active selection through API 2.0."""
+
+        from maya.api import OpenMaya as om
+
+        node_list = [nodes] if isinstance(nodes, str) else list(nodes or [])
+        selection = om.MSelectionList()
+        for node in node_list:
+            selection.add(node)
+        om.MGlobal.setActiveSelectionList(selection, om.MGlobal.kRemoveFromList)
         return node_list
 
     def undo_info(self, **kwargs):

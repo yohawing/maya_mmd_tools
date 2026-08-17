@@ -363,6 +363,11 @@ class TestAnimationPresenterE2E(MayaTestBase):
         self.assertTrue(len(sel) > 0, "Should select a joint for head region")
         self.assertEqual(view.body_picker.selected_regions, ["head"])
 
+        presenter._select_picker_regions(["head"], picker="body", subtractive=True)
+
+        self.assertEqual(cmds.ls(selection=True) or [], [])
+        self.assertEqual(view.body_picker.selected_regions, [])
+
     def test_morph_picker_uses_japanese_metadata_and_drives_weight(self):
         root = self._import_model("test_morph_model")
         presenter, _, _ = self._make_presenter(root)

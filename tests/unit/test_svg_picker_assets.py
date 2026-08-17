@@ -13,6 +13,7 @@ from mmd_tools.ui.widgets.finger_picker_widget import (  # noqa: E402
     _FINGER_REGIONS,
     _FINGER_SHAPE_REGION_IDS,
 )
+from mmd_tools.ui.widgets import svg_picker_widget  # noqa: E402
 from mmd_tools.ui.widgets.svg_picker_widget import _renderer_bytes  # noqa: E402
 
 ASSET_DIR = Path(__file__).resolve().parents[2] / "mmd_tools" / "ui" / "assets" / "animator_toolset"
@@ -24,6 +25,25 @@ def _svg_root(name: str):
 
 def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
+
+
+def test_ctrl_modifier_selects_subtractive_mode_and_overrides_shift(monkeypatch):
+    monkeypatch.setattr(svg_picker_widget.Qt, "ShiftModifier", 1, raising=False)
+    monkeypatch.setattr(svg_picker_widget.Qt, "ControlModifier", 2, raising=False)
+    picker = svg_picker_widget.SvgPickerWidget.__new__(
+        svg_picker_widget.SvgPickerWidget
+    )
+    picker._additive_selection = False
+    picker._subtractive_selection = False
+
+    picker._set_selection_modifiers(3)
+
+    assert picker.subtractive_selection is True
+    assert picker.additive_selection is False
+
+    picker._clear_selection_modifiers()
+    assert picker.subtractive_selection is False
+    assert picker.additive_selection is False
 
 
 def test_body_svg_contains_every_mapped_source_once():
