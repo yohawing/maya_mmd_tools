@@ -2557,12 +2557,26 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             ("baseTranslate", "translate"),
         ):
             for axis in "XYZ":
-                self.assertTrue(
-                    cmds.isConnected(
-                        f"{control}.{control_name}{axis}",
-                        f"{append_node}.{source_name}{axis}",
+                control_plug = f"{control}.{control_name}{axis}"
+                target_plug = f"{append_node}.{source_name}{axis}"
+                if control_name == "translate":
+                    incoming = cmds.listConnections(
+                        target_plug,
+                        source=True,
+                        destination=False,
+                        plugs=True,
+                    ) or []
+                    self.assertEqual(len(incoming), 1)
+                    baseline_node = incoming[0].split(".", 1)[0]
+                    self.assertEqual(cmds.nodeType(baseline_node), "plusMinusAverage")
+                    self.assertTrue(
+                        cmds.isConnected(
+                            control_plug,
+                            f"{baseline_node}.input1D[0]",
+                        )
                     )
-                )
+                else:
+                    self.assertTrue(cmds.isConnected(control_plug, target_plug))
         source = (
             cmds.listConnections(
                 f"{append_node}.baseRotateX",
