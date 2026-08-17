@@ -17,6 +17,7 @@ from typing import Any
 
 from mmd_tools.core import model_registry
 from mmd_tools.adapters.maya_material_shader_route import (
+    MayaMaterialShaderRoute,
     MayaMaterialTextureSlotRoute,
     material_diffuse_route,
     material_shader_route,
@@ -469,6 +470,8 @@ class MayaMaterialAuthoring:
             )
             if route is not None:
                 add("viewport_diffuse", list(new.diffuse[:3]))
+                if route.diffuse_alpha_attribute is not None:
+                    add("viewport_diffuse_alpha", new.diffuse[3])
         if "specular" in changed:
             add("specular", list(new.specular))
         if "specular_coefficient" in changed:
@@ -591,12 +594,23 @@ class MayaMaterialAuthoring:
                 has_main_texture=bool(old.resolved_texture_path or old.texture_path),
             )
             if route is not None:
-                self._set_attr(
-                    shader,
-                    route.diffuse_attribute,
-                    new.diffuse[:3],
-                    route.diffuse_attribute_type,
-                )
+                runtime_target = self._resolve_runtime_diffuse_target(shader, route)
+                if runtime_target is None:
+                    self._set_attr(
+                        shader,
+                        route.diffuse_attribute,
+                        new.diffuse[:3],
+                        route.diffuse_attribute_type,
+                    )
+                    if route.diffuse_alpha_attribute is not None:
+                        self._set_attr(
+                            shader,
+                            route.diffuse_alpha_attribute,
+                            new.diffuse[3],
+                            route.diffuse_alpha_attribute_type,
+                        )
+                else:
+                    self._set_runtime_diffuse_base(runtime_target, new.diffuse)
         if "specular" in changed:
             self._set_attr(shader, ATTR_MMD_SPECULAR_COLOR, new.specular, "double3")
         if "specular_coefficient" in changed:
@@ -613,6 +627,112 @@ class MayaMaterialAuthoring:
             self._set_attr(shader, ATTR_MMD_EDGE_SIZE, new.edge_size, "double")
         if "memo" in changed:
             self._set_attr(shader, ATTR_MMD_MEMO, new.memo, "string")
+
+    def _resolve_runtime_diffuse_target(
+        self,
+        shader: str,
+        route: MayaMaterialShaderRoute,
+    ) -> str | None:
+        """Return an owned material-morph evaluator for a driven diffuse plug."""
+
+        destination = f"{shader}.{route.diffuse_attribute}"
+        sources = list(
+            self._call(
+                "list_connections",
+                destination,
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+            or []
+        )
+        if not sources:
+            return None
+        if len(sources) != 1 or not isinstance(sources[0], str) or "." not in sources[0]:
+            raise MayaMaterialAuthoringError(
+                f"material diffuse target has an ambiguous source: {destination!r}"
+            )
+        source_node, source_attr = sources[0].rsplit(".", 1)
+        if (
+            self._call("node_type", source_node) != "mmdMaterialMorphEval"
+            or source_attr != "outputDiffuse"
+        ):
+            raise MayaMaterialAuthoringError(
+                f"material diffuse target is driven by an unsupported source: {sources[0]!r}"
+            )
+        if not self._has_attr(source_node, "baseDiffuse"):
+            raise MayaMaterialAuthoringError(
+                f"material morph evaluator is missing baseDiffuse: {source_node!r}"
+            )
+        if self._call(
+            "list_connections",
+            f"{source_node}.baseDiffuse",
+            source=True,
+            destination=False,
+            plugs=True,
+        ):
+            raise MayaMaterialAuthoringError(
+                f"material morph evaluator baseDiffuse is externally driven: {source_node!r}"
+            )
+        if bool(self._call("get_attr", f"{source_node}.baseDiffuse", lock=True)):
+            raise MayaMaterialAuthoringError(
+                f"material morph evaluator baseDiffuse is locked: {source_node!r}"
+            )
+        if route.diffuse_alpha_attribute is not None:
+            alpha_destination = f"{shader}.{route.diffuse_alpha_attribute}"
+            alpha_sources = list(
+                self._call(
+                    "list_connections",
+                    alpha_destination,
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or []
+            )
+            if alpha_sources != [f"{source_node}.outputDiffuseAlpha"]:
+                raise MayaMaterialAuthoringError(
+                    f"material diffuse alpha target does not match RGB evaluator: {alpha_destination!r}"
+                )
+            if not self._has_attr(source_node, "baseDiffuseA"):
+                raise MayaMaterialAuthoringError(
+                    f"material morph evaluator is missing baseDiffuseA: {source_node!r}"
+                )
+            if self._call(
+                "list_connections",
+                f"{source_node}.baseDiffuseA",
+                source=True,
+                destination=False,
+                plugs=True,
+            ):
+                raise MayaMaterialAuthoringError(
+                    f"material morph evaluator baseDiffuseA is externally driven: {source_node!r}"
+                )
+            if bool(self._call("get_attr", f"{source_node}.baseDiffuseA", lock=True)):
+                raise MayaMaterialAuthoringError(
+                    f"material morph evaluator baseDiffuseA is locked: {source_node!r}"
+                )
+        return source_node
+
+    def _set_runtime_diffuse_base(
+        self,
+        evaluator: str,
+        diffuse: tuple[float, float, float, float],
+    ) -> None:
+        """Update the evaluator's RGB and alpha inputs without touching output."""
+
+        for axis, value in zip("RGB", diffuse[:3]):
+            attr = f"baseDiffuse{axis}"
+            if not self._has_attr(evaluator, attr):
+                raise MayaMaterialAuthoringError(
+                    f"material morph evaluator is missing {attr}: {evaluator!r}"
+                )
+            self._set_attr(evaluator, attr, value, "double")
+        if not self._has_attr(evaluator, "baseDiffuseA"):
+            raise MayaMaterialAuthoringError(
+                f"material morph evaluator is missing baseDiffuseA: {evaluator!r}"
+            )
+        self._set_attr(evaluator, "baseDiffuseA", diffuse[3], "double")
 
     def assign_material(
         self,
@@ -1701,12 +1821,13 @@ class MayaMaterialAuthoring:
     def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         try:
             result = getattr(self._cmds, method)(*args, **kwargs)
+            observer = getattr(self, "_mutation_observer", None)
             if (
-                self._mutation_observer is not None
+                observer is not None
                 and method in _MUTATING_ADAPTER_METHODS
                 and not (method == "sets" and kwargs.get("query"))
             ):
-                self._mutation_observer()
+                observer()
             return result
         except Exception as exc:
             raise MayaMaterialAuthoringError(f"Maya adapter call {method} failed: {exc}") from exc

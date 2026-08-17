@@ -28,6 +28,8 @@ class MayaMaterialShaderRoute:
     diffuse_attribute: str
     diffuse_attribute_type: str = "float3"
     texture_slots: tuple[MayaMaterialTextureSlotRoute, ...] = ()
+    diffuse_alpha_attribute: str | None = None
+    diffuse_alpha_attribute_type: str = "double"
 
     def texture_slot(self, semantic: str) -> MayaMaterialTextureSlotRoute | None:
         """Return the named texture slot when this backend supports it."""
@@ -51,6 +53,7 @@ def material_shader_route(shader_type: str) -> MayaMaterialShaderRoute | None:
         return MayaMaterialShaderRoute(
             "DiffuseColorRGB",
             texture_slots=_HARDWARE_TEXTURE_SLOTS,
+            diffuse_alpha_attribute="DiffuseColorA",
         )
     if shader_type == "standardSurface":
         return MayaMaterialShaderRoute("baseColor", texture_slots=(_STOCK_MAIN_TEXTURE,))

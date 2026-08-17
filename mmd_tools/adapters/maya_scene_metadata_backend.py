@@ -970,11 +970,20 @@ class MayaSceneMetadataBackend:
             self._node_type(shader),
             has_main_texture=bool(old_material.resolved_texture_path or old_material.texture_path),
         )
+        diffuse_target = self._resolve_material_diffuse_target(shader, diffuse_route)
+        diffuse_alpha_target = self._resolve_material_diffuse_alpha_target(
+            shader,
+            diffuse_route,
+            diffuse_target,
+        )
         if diffuse_route is not None:
-            original["viewport_diffuse"] = self._required_vector(
-                shader, diffuse_route.diffuse_attribute
-            )
+            original["viewport_diffuse"] = self._read_material_diffuse_target(diffuse_target)
             expected_old["viewport_diffuse"] = self._maya_float3(old_material.diffuse[:3])
+            if diffuse_alpha_target is not None:
+                original["viewport_diffuse_alpha"] = self._read_material_scalar_target(
+                    diffuse_alpha_target
+                )
+                expected_old["viewport_diffuse_alpha"] = old_material.diffuse[3]
         if not self._material_value_attrs_equal(original, expected_old):
             raise MayaSceneMetadataError(
                 f"material value patch preimage mismatch for {shader!r}: "
@@ -993,6 +1002,8 @@ class MayaSceneMetadataBackend:
             "original_values": original,
             "target_values": self._material_value_attrs(new_material),
             "diffuse_route": diffuse_route,
+            "diffuse_target": diffuse_target,
+            "diffuse_alpha_target": diffuse_alpha_target,
             "target": None,
             "chunk_open": True,
             "outline_original": outline_original,
@@ -1438,10 +1449,16 @@ class MayaSceneMetadataBackend:
         expected = dict(transaction["target_values"])
         diffuse_route = transaction.get("diffuse_route")
         if isinstance(diffuse_route, MayaMaterialShaderRoute):
-            actual["viewport_diffuse"] = self._required_vector(
-                shader, diffuse_route.diffuse_attribute
+            actual["viewport_diffuse"] = self._read_material_diffuse_target(
+                transaction["diffuse_target"]
             )
             expected["viewport_diffuse"] = self._maya_float3(material.diffuse[:3])
+            diffuse_alpha_target = transaction.get("diffuse_alpha_target")
+            if diffuse_alpha_target is not None:
+                actual["viewport_diffuse_alpha"] = self._read_material_scalar_target(
+                    diffuse_alpha_target
+                )
+                expected["viewport_diffuse_alpha"] = material.diffuse[3]
         if not self._material_value_attrs_equal(actual, expected):
             raise MayaSceneMetadataError(
                 f"material value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
@@ -1512,6 +1529,7 @@ class MayaSceneMetadataBackend:
             "edge_color",
             "edge_size",
             "viewport_diffuse",
+            "viewport_diffuse_alpha",
         }
         for field in actual:
             actual_value = actual[field]
@@ -2219,9 +2237,14 @@ class MayaSceneMetadataBackend:
             actual = self._read_material_value_attrs(transaction["binding"])
             diffuse_route = transaction.get("diffuse_route")
             if isinstance(diffuse_route, MayaMaterialShaderRoute):
-                actual["viewport_diffuse"] = self._required_vector(
-                    transaction["binding"], diffuse_route.diffuse_attribute
+                actual["viewport_diffuse"] = self._read_material_diffuse_target(
+                    transaction["diffuse_target"]
                 )
+                diffuse_alpha_target = transaction.get("diffuse_alpha_target")
+                if diffuse_alpha_target is not None:
+                    actual["viewport_diffuse_alpha"] = self._read_material_scalar_target(
+                        diffuse_alpha_target
+                    )
             if not self._material_value_attrs_equal(
                 actual, transaction["original_values"]
             ):
@@ -2286,9 +2309,14 @@ class MayaSceneMetadataBackend:
         diffuse_route = transaction.get("diffuse_route")
         expected = transaction["original_values"]
         if isinstance(diffuse_route, MayaMaterialShaderRoute):
-            actual["viewport_diffuse"] = self._required_vector(
-                transaction["binding"], diffuse_route.diffuse_attribute
+            actual["viewport_diffuse"] = self._read_material_diffuse_target(
+                transaction["diffuse_target"]
             )
+            diffuse_alpha_target = transaction.get("diffuse_alpha_target")
+            if diffuse_alpha_target is not None:
+                actual["viewport_diffuse_alpha"] = self._read_material_scalar_target(
+                    diffuse_alpha_target
+                )
         if not self._material_value_attrs_equal(actual, expected):
             return True
         outline_original = transaction.get("outline_original")
@@ -2574,6 +2602,133 @@ class MayaSceneMetadataBackend:
 
     def _material_identity(self, node: Any) -> str:
         return self._read_support.canonical_identity(node)
+
+    def _resolve_material_diffuse_target(
+        self,
+        shader: str,
+        route: MayaMaterialShaderRoute | None,
+    ) -> str | None:
+        """Resolve the writable diffuse authority for a selected shader.
+
+        A material-morph evaluator owns the final hardware shader output. In
+        that topology the narrow Material transaction must fingerprint and
+        update the evaluator's ``baseDiffuse`` input instead of the connected
+        ``DiffuseColorRGB`` output. Unsupported or ambiguous connections fail
+        closed before the undo chunk opens.
+        """
+
+        if route is None:
+            return None
+        destination = f"{shader}.{route.diffuse_attribute}"
+        sources = self._list_connections(
+            destination,
+            source=True,
+            destination=False,
+            plugs=True,
+        )
+        if not sources:
+            return destination
+        if len(sources) != 1 or not isinstance(sources[0], str) or "." not in sources[0]:
+            raise MayaSceneMetadataError(
+                f"material diffuse target has an ambiguous source: {destination!r}"
+            )
+        source_node, source_attr = sources[0].rsplit(".", 1)
+        if (
+            self._node_type(source_node) != "mmdMaterialMorphEval"
+            or source_attr != "outputDiffuse"
+        ):
+            raise MayaSceneMetadataError(
+                f"material diffuse target is driven by an unsupported source: {sources[0]!r}"
+            )
+        base = f"{source_node}.baseDiffuse"
+        if not self._has_attr(source_node, "baseDiffuse"):
+            raise MayaSceneMetadataError(
+                f"material morph evaluator is missing writable baseDiffuse: {source_node!r}"
+            )
+        if self._list_connections(
+            base,
+            source=True,
+            destination=False,
+            plugs=True,
+        ):
+            raise MayaSceneMetadataError(
+                f"material morph evaluator baseDiffuse is externally driven: {base!r}"
+            )
+        if bool(self._call_adapter("get_attr", base, lock=True)):
+            raise MayaSceneMetadataError(
+                f"material morph evaluator baseDiffuse is locked: {base!r}"
+            )
+        return base
+
+    def _resolve_material_diffuse_alpha_target(
+        self,
+        shader: str,
+        route: MayaMaterialShaderRoute | None,
+        diffuse_target: str | None,
+    ) -> str | None:
+        """Resolve the split hardware diffuse-alpha authority, if present."""
+
+        if route is None or route.diffuse_alpha_attribute is None:
+            return None
+        if not self._has_attr(shader, route.diffuse_alpha_attribute):
+            return None
+        destination = f"{shader}.{route.diffuse_alpha_attribute}"
+        sources = self._list_connections(
+            destination,
+            source=True,
+            destination=False,
+            plugs=True,
+        )
+        if not sources:
+            return destination
+        if len(sources) != 1 or not isinstance(sources[0], str) or "." not in sources[0]:
+            raise MayaSceneMetadataError(
+                f"material diffuse alpha target has an ambiguous source: {destination!r}"
+            )
+        source_node, source_attr = sources[0].rsplit(".", 1)
+        if (
+            self._node_type(source_node) != "mmdMaterialMorphEval"
+            or source_attr != "outputDiffuseAlpha"
+        ):
+            raise MayaSceneMetadataError(
+                f"material diffuse alpha target is driven by an unsupported source: {sources[0]!r}"
+            )
+        expected_rgb_target = f"{source_node}.baseDiffuse"
+        if diffuse_target != expected_rgb_target:
+            raise MayaSceneMetadataError(
+                f"material diffuse alpha evaluator does not match RGB target: {sources[0]!r}"
+            )
+        base = f"{source_node}.baseDiffuseA"
+        if not self._has_attr(source_node, "baseDiffuseA"):
+            raise MayaSceneMetadataError(
+                f"material morph evaluator is missing writable baseDiffuseA: {source_node!r}"
+            )
+        if self._list_connections(
+            base,
+            source=True,
+            destination=False,
+            plugs=True,
+        ):
+            raise MayaSceneMetadataError(
+                f"material morph evaluator baseDiffuseA is externally driven: {base!r}"
+            )
+        if bool(self._call_adapter("get_attr", base, lock=True)):
+            raise MayaSceneMetadataError(
+                f"material morph evaluator baseDiffuseA is locked: {base!r}"
+            )
+        return base
+
+    def _read_material_diffuse_target(self, target: str | None) -> tuple[float, float, float]:
+        if not isinstance(target, str) or "." not in target:
+            raise MayaSceneMetadataError("material diffuse target is unavailable")
+        node, attr = target.rsplit(".", 1)
+        return self._required_vector(node, attr)
+
+    def _read_material_scalar_target(self, target: str) -> float:
+        if not isinstance(target, str) or "." not in target:
+            raise MayaSceneMetadataError("material diffuse alpha target is unavailable")
+        node, attr = target.rsplit(".", 1)
+        return self._required_number(node, attr)
 
     def _list_connections(self, query: Any, **kwargs: Any) -> list[str]:
         result = self._call_adapter("list_connections", query, **kwargs) or []

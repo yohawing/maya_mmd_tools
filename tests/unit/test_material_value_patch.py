@@ -18,7 +18,10 @@ from mmd_tools.adapters.maya_material_shader_route import (  # noqa: E402
     material_diffuse_route,
     material_shader_route,
 )
-from mmd_tools.adapters.maya_material_authoring import MayaMaterialAuthoring  # noqa: E402
+from mmd_tools.adapters.maya_material_authoring import (  # noqa: E402
+    MayaMaterialAuthoring,
+    MayaMaterialAuthoringError,
+)
 from mmd_tools.core.material_authoring import classify_material_change  # noqa: E402
 from mmd_tools.core.model_authoring_spec import (  # noqa: E402
     MmdMaterialSpec,
@@ -163,6 +166,77 @@ def test_adapter_dx11_diffuse_patch_updates_hardware_parameter_without_base_colo
     assert "baseColor" not in written
 
 
+class _RuntimeDrivenCmds(FakeCmdsAdapter):
+    def get_attr(self, path: str, **kwargs: object) -> object:
+        if kwargs.get("lock"):
+            return False
+        return super().get_attr(path)
+
+    def list_connections(self, node: str, **kwargs: object) -> list[str]:
+        if kwargs.get("source") is True and kwargs.get("destination") is False:
+            return list(self.connections.get(node, []))
+        return super().list_connections(node, **kwargs)
+
+
+def _runtime_dx11_fixture() -> tuple[_RuntimeDrivenCmds, MayaMaterialAuthoring, MmdMaterialSpec, str]:
+    cmds = _RuntimeDrivenCmds()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    source = replace(_material(), texture_path=None, resolved_texture_path=None)
+    bound, shader, _ = adapter.create_material("|Model_root", source)
+    cmds.types[shader] = "dx11Shader"
+    cmds.attrs.pop((shader, "baseColor"), None)
+    cmds.attrs[(shader, "DiffuseColorRGB")] = tuple(bound.diffuse[:3])
+    cmds.attrs[(shader, "DiffuseColorA")] = bound.diffuse[3]
+    evaluator = "materialMorphEval"
+    cmds.types[evaluator] = "mmdMaterialMorphEval"
+    cmds.attrs.update(
+        {
+            (evaluator, "baseDiffuse"): [tuple(bound.diffuse[:3])],
+            (evaluator, "baseDiffuseR"): bound.diffuse[0],
+            (evaluator, "baseDiffuseG"): bound.diffuse[1],
+            (evaluator, "baseDiffuseB"): bound.diffuse[2],
+            (evaluator, "baseDiffuseA"): bound.diffuse[3],
+        }
+    )
+    cmds.connections[f"{shader}.DiffuseColorRGB"] = [f"{evaluator}.outputDiffuse"]
+    cmds.connections[f"{shader}.DiffuseColorA"] = [f"{evaluator}.outputDiffuseAlpha"]
+    cmds.connections[f"{evaluator}.baseDiffuse"] = []
+    cmds.connections[f"{evaluator}.baseDiffuseA"] = []
+    return cmds, adapter, bound, shader
+
+
+def test_adapter_runtime_driven_dx11_patch_updates_evaluator_base_not_shader_output() -> None:
+    cmds, adapter, old, shader = _runtime_dx11_fixture()
+    updated = replace(old, diffuse=(0.2, 0.3, 0.4, 0.65))
+    cmds.calls.clear()
+
+    adapter.apply_material_value_patch("|Model_root", old, updated)
+
+    assert cmds.attrs[("materialMorphEval", "baseDiffuseR")] == 0.2
+    assert cmds.attrs[("materialMorphEval", "baseDiffuseG")] == 0.3
+    assert cmds.attrs[("materialMorphEval", "baseDiffuseB")] == 0.4
+    assert cmds.attrs[("materialMorphEval", "baseDiffuseA")] == 0.65
+    assert cmds.attrs[(shader, "diffuse_color")] == (0.2, 0.3, 0.4)
+    assert cmds.attrs[(shader, "mmd_diffuse_alpha")] == 0.65
+    written_paths = {call[1][0] for call in cmds.calls if call[0] == "set_attr"}
+    assert f"{shader}.DiffuseColorRGB" not in written_paths
+    assert f"{shader}.DiffuseColorA" not in written_paths
+
+
+def test_adapter_runtime_driven_dx11_patch_rejects_external_diffuse_source() -> None:
+    cmds, adapter, old, shader = _runtime_dx11_fixture()
+    cmds.types["external"] = "network"
+    cmds.connections[f"{shader}.DiffuseColorRGB"] = ["external.output"]
+
+    with pytest.raises(MayaMaterialAuthoringError, match="unsupported source"):
+        adapter.apply_material_value_patch(
+            "|Model_root",
+            old,
+            replace(old, diffuse=(0.2, 0.3, 0.4, 0.65)),
+        )
+
+
 def test_adapter_outline_seam_reports_the_same_injected_scene_state() -> None:
     cmds = FakeCmdsAdapter()
     registry = FakeRegistry()
@@ -202,6 +276,41 @@ def test_backend_dx11_value_patch_uses_hardware_diffuse_route() -> None:
     assert backend._write_transaction is not None
     assert backend._write_transaction["diffuse_route"].diffuse_attribute == "DiffuseColorRGB"
     backend.rollback_write("|root")
+
+
+def test_backend_runtime_driven_patch_fingerprints_evaluator_base_not_evaluated_output() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, diffuse=(0.2, 0.3, 0.4, 0.65))
+    cmds.node_types["mat"] = "dx11Shader"
+    cmds.attrs[("mat", "DiffuseColorRGB")] = [backend._maya_float3(old.diffuse[:3])]
+    cmds.attrs[("mat", "DiffuseColorA")] = old.diffuse[3]
+    cmds.nodes.add("materialMorphEval")
+    cmds.node_types["materialMorphEval"] = "mmdMaterialMorphEval"
+    cmds.attrs[("materialMorphEval", "baseDiffuse")] = [backend._maya_float3(old.diffuse[:3])]
+    cmds.attrs[("materialMorphEval", "baseDiffuseA")] = old.diffuse[3]
+    cmds.connections[("mat.DiffuseColorRGB", None)] = ["materialMorphEval.outputDiffuse"]
+    cmds.connections[("mat.DiffuseColorA", None)] = ["materialMorphEval.outputDiffuseAlpha"]
+    cmds.connections[("materialMorphEval.baseDiffuse", None)] = []
+    cmds.connections[("materialMorphEval.baseDiffuseA", None)] = []
+
+    backend.begin_material_value_patch("|root", "mat", old, new)
+    # A nonzero Material Morph weight changes the final shader output, but not
+    # the evaluator's authored base input that this transaction owns.
+    cmds.attrs[("mat", "DiffuseColorRGB")] = [(0.91, 0.82, 0.73)]
+    cmds.attrs[("mat", "DiffuseColorA")] = 0.42
+    cmds.set_attr("mat.diffuse_color", *new.diffuse[:3], type="double3")
+    cmds.set_attr("mat.mmd_diffuse_alpha", new.diffuse[3])
+    cmds.set_attr("materialMorphEval.baseDiffuse", *new.diffuse[:3], type="double3")
+    cmds.set_attr("materialMorphEval.baseDiffuseA", new.diffuse[3])
+    backend.commit_material_value_patch("|root", "mat", new)
+
+    assert cmds.connections[("mat.DiffuseColorRGB", None)] == [
+        "materialMorphEval.outputDiffuse"
+    ]
+    assert cmds.connections[("mat.DiffuseColorA", None)] == [
+        "materialMorphEval.outputDiffuseAlpha"
+    ]
 
 
 def test_backend_value_patch_without_outline_skips_preview_capture() -> None:

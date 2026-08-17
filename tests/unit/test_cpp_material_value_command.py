@@ -74,7 +74,7 @@ def test_python_expands_n1_n4_n8_to_only_intended_write_fields():
 
     assert [row["field"] for row in _updates(old, n1)] == ["name_english"]
     assert len(_updates(old, n4)) == 4
-    assert len(_updates(old, n8)) == 12
+    assert len(_updates(old, n8)) == 13
     assert {row["field"] for row in _updates(old, n8)} == {
         "name_english",
         "memo",
@@ -83,6 +83,7 @@ def test_python_expands_n1_n4_n8_to_only_intended_write_fields():
         "diffuse_color",
         "diffuse_alpha",
         "viewport_diffuse",
+        "viewport_diffuse_alpha",
         "ambient",
         "edge_color",
         "edge_alpha",
@@ -302,3 +303,7 @@ def test_cpp_registry_preflight_checks_schema_backlink_and_unique_membership():
     assert "element.connectedTo(sources, true, false, &status)" in source
     assert "if (!status) return false;" in source
     assert "matches == 1U" in source
+    assert '"mmdMaterialMorphEval"' in source
+    assert '"outputDiffuseAlpha"' in source
+    assert '"baseDiffuseA"' in source
+    assert '"viewport_diffuse_alpha"' in source
