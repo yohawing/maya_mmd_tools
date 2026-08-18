@@ -547,7 +547,7 @@ class TestApplicationState(MayaTestBase):
         cmds.addAttr(root, ln=ATTR_MMD_MODEL_NAME_EN, dt="string")
         # find_all_mmd_modelsが検出できるようにダミー値を設定
         cmds.setAttr(f"{root}.{ATTR_MMD_MODEL_NAME}", "test", type="string")
-        return root
+        return (cmds.ls(root, long=True) or [root])[0]
 
 
 if __name__ == "__main__":
