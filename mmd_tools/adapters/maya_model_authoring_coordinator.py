@@ -704,7 +704,16 @@ class MayaModelAuthoringCoordinator:
             name_english=f"{source.name_english} Copy",
             binding_identity=None,
         )
-        return self._execute_material_create(model_root, "duplicate_material", duplicated)
+        if not isinstance(source.binding_identity, str) or not source.binding_identity.strip():
+            raise MayaModelAuthoringCoordinatorError(
+                "duplicate_material source has no canonical shader binding"
+            )
+        return self._execute_material_create(
+            model_root,
+            "duplicate_material",
+            duplicated,
+            source_shader=source.binding_identity,
+        )
 
     def replace_material(
         self,
@@ -1748,6 +1757,8 @@ class MayaModelAuthoringCoordinator:
         model_root: str,
         operation: str,
         material: MmdMaterialSpec,
+        *,
+        source_shader: str | None = None,
     ) -> MmdMaterialSpec:
         """Run create/duplicate without full spec reads or metadata hooks."""
         if not isinstance(material, MmdMaterialSpec):
@@ -1767,7 +1778,10 @@ class MayaModelAuthoringCoordinator:
             begin(model_root, material.index)
 
         def mutate(_targets: tuple[Any, ...]) -> MmdMaterialSpec:
-            result = structural(model_root, material, narrow=True)
+            kwargs: dict[str, Any] = {"narrow": True}
+            if source_shader is not None:
+                kwargs["source_shader"] = source_shader
+            result = structural(model_root, material, **kwargs)
             if isinstance(result, tuple):
                 bound = result[0]
             else:

@@ -443,6 +443,7 @@ class FakeMaterialAuthoring:
         self.backend = backend
         self.assignments: list[tuple[int, tuple[str, ...]]] = []
         self.fail_create = False
+        self.source_shader: str | None = None
 
     def create_material(
         self,
@@ -450,9 +451,12 @@ class FakeMaterialAuthoring:
         material: MmdMaterialSpec,
         *,
         narrow: bool = False,
+        source_shader: str | None = None,
     ) -> tuple[MmdMaterialSpec, str, str]:
         if self.fail_create:
             raise RuntimeError("create failed")
+        if source_shader is not None:
+            self.source_shader = source_shader
         binding = f"material{material.index}"
         bound = replace(material, binding_identity=binding)
         if not narrow:
@@ -1066,6 +1070,7 @@ def test_create_and_duplicate_material_generate_fresh_binding_identities() -> No
     duplicated = coordinator.duplicate_material("|root", 0)
     assert duplicated.binding_identity == "material2"
     assert duplicated.binding_identity != backend.scene.materials[0].binding_identity
+    assert materials.source_shader == backend.scene.materials[0].binding_identity
     assert materials.assignments == []
     assert backend.begin_count == 2
     assert backend.commit_count == 2
