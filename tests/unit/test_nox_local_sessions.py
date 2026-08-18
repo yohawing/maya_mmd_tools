@@ -9,6 +9,7 @@ from unittest import mock
 
 from tools.nox.common import _has_flag, _option
 from tools.nox.local_sessions import (
+    run_local_asset_roundtrip,
     run_local_assets_check,
     run_local_camera_motion_oracle,
     run_local_parity,
@@ -33,6 +34,24 @@ class _FakeSession:
 
 
 class LocalSessionsTest(unittest.TestCase):
+    def test_local_asset_roundtrip_forwards_manifest_and_repo_pythonpath(self):
+        session = _FakeSession(["--manifest", "build/representative.json", "--case", "sparse"])
+        root = Path("F:/repo")
+
+        run_local_asset_roundtrip(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            root=root,
+            python_executable="python.exe",
+        )
+
+        args, kwargs = session.runs[0]
+        self.assertEqual(args[:2], ("python.exe", str(root / "tools" / "local_asset_roundtrip.py")))
+        self.assertIn("--manifest", args)
+        self.assertIn("--case", args)
+        self.assertIn(str(root), kwargs["env"]["PYTHONPATH"])
+
     def test_missing_local_assets_manifest_is_skipped_with_report(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
