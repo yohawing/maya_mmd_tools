@@ -505,6 +505,7 @@ class ImportExportTab(BaseTab):
             },
             "importCategoryStack",
             self,
+            navigation="tabs",
         )
         self.import_category_stack.category_changed.connect(self._on_category_changed)
         self._active_import_category = "model"
@@ -679,10 +680,7 @@ class ImportExportTab(BaseTab):
         stack = getattr(self, "import_category_stack", None)
         if stack is None:
             return
-        button = stack.button("other")
-        button.setVisible(bool(is_dev))
-        if not is_dev and stack.current_category == "other":
-            stack.set_current_category("model")
+        stack.set_category_visible("other", bool(is_dev))
 
     def _sync_import_scale_control(self, is_dev):
         """Sync scale spin display for the current mode without clobbering settings.

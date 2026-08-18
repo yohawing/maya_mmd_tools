@@ -94,6 +94,14 @@ class _FakeSlider(_FakeSpinBox):
         self.visible = visible
 
 
+class TestImportExportTabNavigation(unittest.TestCase):
+    def test_import_uses_tab_navigation_for_the_category_stack(self):
+        source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
+
+        self.assertIn('navigation="tabs"', source)
+        self.assertNotIn('import_category_stack.button("other")', source)
+
+
 class TestImportExportTabDevModeVisibility(unittest.TestCase):
     def test_mmd_control_rig_option_is_not_development_mode_gated(self):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
