@@ -650,6 +650,18 @@
     "source_not_readable": "無法讀取來源檔案",
     "cache_copy_failed": "無法將貼圖複製到快取"
   },
+  "export_progress": {
+    "model_scene_preflight": "模型：正在檢查場景",
+    "model_payload_collection": "模型：正在收集匯出資料",
+    "model_payload_validation": "模型：正在驗證匯出資料",
+    "model_report_ready": "模型：驗證報告已準備就緒",
+    "model_writer": "正在匯出 PMX",
+    "animation_scene_preflight": "動畫：正在檢查場景",
+    "animation_payload_collection": "動畫：正在收集匯出資料",
+    "animation_payload_validation": "動畫：正在驗證匯出資料",
+    "animation_report_ready": "動畫：驗證報告已準備就緒",
+    "animation_writer": "正在匯出 VMD"
+  },
   "validation": {
     "export_workflow_exception": {
       "title": "匯出流程意外失敗",

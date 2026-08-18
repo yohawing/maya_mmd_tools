@@ -282,6 +282,37 @@ class TestExportWorkflowService(unittest.TestCase):
             result.snapshot.payload_fingerprint,
         )
 
+    def test_progress_callback_reports_validation_boundaries_and_writer_transition(self):
+        payload = _valid_model_data()
+        action = _FakeModelAction(payload)
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            model_action=action,
+            vmd_action=object(),
+        )
+        request = ExportWorkflowRequest(
+            "model.pmx",
+            {"export_format": "pmx", "target_model": "model_ROOT"},
+        )
+        stages = []
+
+        result = service.execute(request, progress_callback=stages.append)
+
+        self.assertEqual(result.state, STATE_SUCCEEDED)
+        self.assertEqual(
+            stages,
+            [
+                "scene_preflight",
+                "payload_collection",
+                "payload_validation",
+                "report_ready",
+                "writer",
+            ],
+        )
+
     def test_vmd_raw_provenance_survives_workflow_validate_and_execute(self):
         raw_provenance = {
             "raw_bone_interpolation_complete": True,

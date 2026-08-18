@@ -57,9 +57,18 @@ class _WarningWorkflow:
         self.acknowledgements = []
         self.requests = []
 
-    def execute(self, request, *, acknowledge_warnings=False):
+    def execute(self, request, *, acknowledge_warnings=False, progress_callback=None):
         self.requests.append(request)
         self.acknowledgements.append(acknowledge_warnings)
+        if progress_callback is not None:
+            for stage in (
+                "scene_preflight",
+                "payload_collection",
+                "payload_validation",
+                "report_ready",
+                "writer",
+            ):
+                progress_callback(stage)
         return ExportWorkflowResult(
             STATE_SUCCEEDED,
             self.report,
@@ -74,9 +83,24 @@ class _GuiAppState:
 
     def __init__(self):
         self.statuses = []
+        self._progress_token = 0
+        self.progress = []
 
     def emit_status(self, message):
         self.statuses.append(message)
+
+    def begin_progress(self, label=""):
+        self._progress_token += 1
+        self.progress.append(("begin", self._progress_token, label, None))
+        return self._progress_token
+
+    def update_progress_state(self, token, label="", percentage=None):
+        self.progress.append(("update", token, label, percentage))
+        return True
+
+    def end_progress(self, token):
+        self.progress.append(("end", token, "", None))
+        return True
 
 
 @requires_gui
@@ -193,6 +217,29 @@ class TestExportTabGUI(GuiTestBase):
                 end_spy,
                 tab.frame_end_spin,
             )
+        finally:
+            self._delete_tab(tab)
+
+    def test_operation_cleanup_restores_the_original_page_after_tab_switch(self):
+        """A model operation must not re-enable or disable the switched page."""
+        tab = self._create_visible_tab()
+        try:
+            animation_page = tab._pages[tab.MOTION_PANE]
+            animation_page.validate_button.setEnabled(False)
+            animation_page.export_button.setEnabled(False)
+
+            tab.pane_tabs.setCurrentIndex(0)
+            tab.set_operation_active(True)
+            self.assertFalse(tab._pages[tab.MODEL_PANE].validate_button.isEnabled())
+            self.assertFalse(tab._pages[tab.MODEL_PANE].export_button.isEnabled())
+
+            tab.pane_tabs.setCurrentIndex(1)
+            tab.set_operation_active(False)
+
+            self.assertTrue(tab._pages[tab.MODEL_PANE].validate_button.isEnabled())
+            self.assertTrue(tab._pages[tab.MODEL_PANE].export_button.isEnabled())
+            self.assertFalse(animation_page.validate_button.isEnabled())
+            self.assertFalse(animation_page.export_button.isEnabled())
         finally:
             self._delete_tab(tab)
 

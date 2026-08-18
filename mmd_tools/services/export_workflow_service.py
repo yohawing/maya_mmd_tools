@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from ..actions.export_model_action import ExportModelAction, ExportModelRequest
 from ..actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
@@ -123,6 +123,18 @@ class ExportWorkflowService:
         self.scene_preflight = scene_preflight or ScenePreflight(scene_service=scene_service)
 
     @staticmethod
+    def _emit_progress(progress_callback: Optional[Callable[[str], None]], stage: str) -> None:
+        """Report a workflow boundary without allowing UI observers to alter results."""
+        if not callable(progress_callback):
+            return
+        try:
+            progress_callback(stage)
+        except Exception:
+            # Progress is observational; validation and writing must keep their
+            # existing failure semantics if a UI observer is unavailable.
+            return
+
+    @staticmethod
     def _options(request: ExportWorkflowRequest) -> Dict[str, Any]:
         """Copy options and make the request path explicit."""
         options = dict(request.options or {})
@@ -179,22 +191,31 @@ class ExportWorkflowService:
             return converter(animation_data)
         return animation_data
 
-    def validate(self, request: ExportWorkflowRequest) -> ExportWorkflowResult:
+    def validate(
+        self,
+        request: ExportWorkflowRequest,
+        *,
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ) -> ExportWorkflowResult:
         """Run scene preflight and payload validation without invoking a writer."""
         options = self._options(request)
+        self._emit_progress(progress_callback, "scene_preflight")
         scene_result = self.scene_preflight.run(options)
         report = scene_result.report
         metadata = dict(scene_result.metadata)
         export_format = metadata.get("format")
         mode = metadata.get("mode") or "model"
         if report.is_blocking:
+            self._emit_progress(progress_callback, "report_ready")
             return ExportWorkflowResult(STATE_BLOCKED, report, metadata)
         try:
             if export_format == "pmx":
+                self._emit_progress(progress_callback, "payload_collection")
                 payload = self._collect_model(request, self._target_options(options, metadata))
                 validator = getattr(self.model_action, "_validator", None)
                 if validator is None:
                     raise ValueError("model action does not expose a validator")
+                self._emit_progress(progress_callback, "payload_validation")
                 payload_report = validator(payload, export_format)
                 snapshot = None
                 if not payload_report.is_blocking:
@@ -205,6 +226,7 @@ class ExportWorkflowService:
                         target_identity=metadata.get("target_identity"),
                     )
             elif export_format == "vmd":
+                self._emit_progress(progress_callback, "payload_collection")
                 payload = self._collect_vmd(
                     request,
                     self._target_options(options, metadata),
@@ -216,9 +238,11 @@ class ExportWorkflowService:
                 validator = getattr(self.vmd_action, "_validator", None)
                 if validator is None:
                     raise ValueError("VMD action does not expose a validator")
+                self._emit_progress(progress_callback, "payload_validation")
                 payload_report = self.vmd_action._validate(payload, mode, options)
                 snapshot = None
             else:
+                self._emit_progress(progress_callback, "report_ready")
                 return ExportWorkflowResult(STATE_BLOCKED, report, metadata)
         except Exception as exc:
             failure_report = _collect_failure_report(export_format, mode, exc)
@@ -228,6 +252,7 @@ class ExportWorkflowService:
                 export_format=export_format,
                 mode=mode,
             )
+            self._emit_progress(progress_callback, "report_ready")
             return ExportWorkflowResult(STATE_BLOCKED, report, metadata, error=exc)
 
         report = _combine_reports(
@@ -237,6 +262,7 @@ class ExportWorkflowService:
             mode=mode,
         )
         state = STATE_BLOCKED if report.is_blocking else STATE_READY
+        self._emit_progress(progress_callback, "report_ready")
         return ExportWorkflowResult(
             state,
             report,
@@ -250,9 +276,10 @@ class ExportWorkflowService:
         request: ExportWorkflowRequest,
         *,
         acknowledge_warnings: bool = False,
+        progress_callback: Optional[Callable[[str], None]] = None,
     ) -> ExportWorkflowResult:
         """Revalidate and execute the appropriate validated export action."""
-        validation = self.validate(request)
+        validation = self.validate(request, progress_callback=progress_callback)
         if validation.error is not None or validation.report.is_blocking:
             return validation
         if validation.report.requires_warning_ack and not acknowledge_warnings:
@@ -262,6 +289,7 @@ class ExportWorkflowService:
         if acknowledge_warnings:
             options["ack_warnings"] = True
         export_format = validation.metadata.get("format")
+        self._emit_progress(progress_callback, "writer")
         try:
             if export_format == "pmx":
                 options["model_data"] = validation.payload

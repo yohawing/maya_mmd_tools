@@ -46,6 +46,21 @@ class _FakeSceneModelService:
 
 
 class TestApplicationStateWithInjectedService(unittest.TestCase):
+    def test_structured_progress_ignores_stale_operation_owners(self):
+        app_state = ApplicationState(scene_model_service=_FakeSceneModelService())
+        observed = []
+        app_state.progress_state_changed.connect(observed.append)
+
+        first = app_state.begin_progress("first")
+        second = app_state.begin_progress("second")
+
+        self.assertFalse(app_state.update_progress_state(first, "stale"))
+        self.assertFalse(app_state.end_progress(first))
+        self.assertTrue(app_state.update_progress_state(second, "busy"))
+        self.assertTrue(app_state.end_progress(second))
+        self.assertEqual(observed[-1].active, False)
+        self.assertEqual(observed[-2].label, "busy")
+
     def test_constructor_accepts_scene_model_service(self):
         service = _FakeSceneModelService()
         app_state = ApplicationState(scene_model_service=service)

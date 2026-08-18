@@ -851,6 +851,18 @@
       "remediation": "Select a live MMD target, bake or restore scene ownership, and repair the export options."
     }
   },
+  "export_progress": {
+    "model_scene_preflight": "Model: checking scene",
+    "model_payload_collection": "Model: collecting export data",
+    "model_payload_validation": "Model: validating export data",
+    "model_report_ready": "Model: validation report ready",
+    "model_writer": "Writing PMX",
+    "animation_scene_preflight": "Animation: checking scene",
+    "animation_payload_collection": "Animation: collecting export data",
+    "animation_payload_validation": "Animation: validating export data",
+    "animation_report_ready": "Animation: validation report ready",
+    "animation_writer": "Writing VMD"
+  },
   "validation": {
     "export_workflow_exception": {
       "title": "Unexpected export workflow failure",

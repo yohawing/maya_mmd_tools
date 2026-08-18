@@ -650,6 +650,18 @@
     "source_not_readable": "无法读取源文件",
     "cache_copy_failed": "无法将贴图复制到缓存"
   },
+  "export_progress": {
+    "model_scene_preflight": "模型：正在检查场景",
+    "model_payload_collection": "模型：正在收集导出数据",
+    "model_payload_validation": "模型：正在验证导出数据",
+    "model_report_ready": "模型：验证报告已准备就绪",
+    "model_writer": "正在导出 PMX",
+    "animation_scene_preflight": "动画：正在检查场景",
+    "animation_payload_collection": "动画：正在收集导出数据",
+    "animation_payload_validation": "动画：正在验证导出数据",
+    "animation_report_ready": "动画：验证报告已准备就绪",
+    "animation_writer": "正在导出 VMD"
+  },
   "validation": {
     "export_workflow_exception": {
       "title": "导出流程意外失败",

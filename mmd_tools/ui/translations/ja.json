@@ -851,6 +851,18 @@
       "remediation": "有効なMMD対象を選択し、シーン所有権をベイクまたは復元して、エクスポート設定を修正してください。"
     }
   },
+  "export_progress": {
+    "model_scene_preflight": "モデル: シーンを確認中",
+    "model_payload_collection": "モデル: エクスポートデータを収集中",
+    "model_payload_validation": "モデル: エクスポートデータを検証中",
+    "model_report_ready": "モデル: 検証レポート準備完了",
+    "model_writer": "PMXを書き出し中",
+    "animation_scene_preflight": "アニメーション: シーンを確認中",
+    "animation_payload_collection": "アニメーション: エクスポートデータを収集中",
+    "animation_payload_validation": "アニメーション: エクスポートデータを検証中",
+    "animation_report_ready": "アニメーション: 検証レポート準備完了",
+    "animation_writer": "VMDを書き出し中"
+  },
   "validation": {
     "export_workflow_exception": {
       "title": "エクスポート処理の予期しない失敗",

@@ -13,6 +13,7 @@ from ...validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
 )
+from ..translations import UITranslator
 
 
 logger = get_logger(__name__)
@@ -20,6 +21,14 @@ logger = get_logger(__name__)
 
 class ExportPresenter(QObject):
     """Keep ExportTab presentation thin and route all decisions to the service."""
+
+    _PROGRESS_STAGES = {
+        "scene_preflight",
+        "payload_collection",
+        "payload_validation",
+        "report_ready",
+        "writer",
+    }
 
     def __init__(self, view, app_state, workflow_service=None):
         super().__init__()
@@ -57,14 +66,33 @@ class ExportPresenter(QObject):
         """Run preflight and payload validation without writing an output."""
         self.view.set_state(STATE_VALIDATING)
         request = None
+        export_format = self._view_export_format()
+        token = None
+        operation_enabled = False
         try:
+            operation_enabled = True
+            self.view.set_operation_active(True)
+            token = self.app_state.begin_progress(self._progress_label(export_format, "scene_preflight"))
             request = self.view.build_request(
                 getattr(self.app_state, "current_model_root", None)
             )
-            result = self.workflow_service.validate(request)
+            export_format = self._request_export_format(request, export_format)
+            result = self.workflow_service.validate(
+                request,
+                progress_callback=lambda stage: self._update_progress(
+                    token, export_format, stage
+                ),
+            )
         except Exception as exc:
             logger.error("Export validation failed before result creation: %s", exc, exc_info=True)
             return self._publish_failure("Export validation failed", exc, request)
+        finally:
+            try:
+                if operation_enabled:
+                    self.view.set_operation_active(False)
+            finally:
+                if token is not None:
+                    self.app_state.end_progress(token)
         self.view.set_result(result)
         self._emit_status(result)
         return result
@@ -73,20 +101,71 @@ class ExportPresenter(QObject):
         """Revalidate and execute the validated export action."""
         self.view.set_state(STATE_EXPORTING)
         request = None
+        export_format = self._view_export_format()
+        token = None
+        operation_enabled = False
         try:
+            operation_enabled = True
+            self.view.set_operation_active(True)
+            token = self.app_state.begin_progress(self._progress_label(export_format, "scene_preflight"))
             request = self.view.build_request(
                 getattr(self.app_state, "current_model_root", None)
             )
+            export_format = self._request_export_format(request, export_format)
             result = self.workflow_service.execute(
                 request,
                 acknowledge_warnings=self.view.validation_console.warnings_acknowledged,
+                progress_callback=lambda stage: self._update_progress(
+                    token, export_format, stage
+                ),
             )
         except Exception as exc:
             logger.error("Export workflow failed before result creation: %s", exc, exc_info=True)
             return self._publish_failure("Export failed", exc, request)
+        finally:
+            try:
+                if operation_enabled:
+                    self.view.set_operation_active(False)
+            finally:
+                if token is not None:
+                    self.app_state.end_progress(token)
         self.view.set_result(result)
         self._emit_status(result)
         return result
+
+    def _view_export_format(self):
+        """Read the active page format before a request is built."""
+        return str(getattr(self.view, "current_export_format", None) or "pmx").lower()
+
+    @staticmethod
+    def _request_export_format(request, fallback):
+        options = getattr(request, "options", None) or {}
+        return str(options.get("export_format") or fallback or "pmx").lower()
+
+    @staticmethod
+    def _format_key(export_format):
+        return "animation" if str(export_format or "").lower() == "vmd" else "model"
+
+    def _progress_label(self, export_format, stage):
+        if stage not in self._PROGRESS_STAGES:
+            return stage
+        key = f"{self._format_key(export_format)}_{stage}"
+        fallback = {
+            "scene_preflight": "Checking scene",
+            "payload_collection": "Collecting export data",
+            "payload_validation": "Validating export data",
+            "report_ready": "Validation report ready",
+            "writer": "Writing export",
+        }[stage]
+        return UITranslator.instance().translate(key, "export_progress", default=fallback)
+
+    def _update_progress(self, token, export_format, stage):
+        percentage = 100 if stage == "report_ready" else None
+        self.app_state.update_progress_state(
+            token,
+            self._progress_label(export_format, stage),
+            percentage,
+        )
 
     def _publish_failure(self, status_prefix, error, request=None):
         """Replace stale validation UI with one terminal workflow failure."""

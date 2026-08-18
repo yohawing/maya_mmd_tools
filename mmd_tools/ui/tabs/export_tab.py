@@ -266,6 +266,13 @@ class _ExportPage(QWidget):
         self._state = state
         self.state_label.setText(state)
 
+    def set_operation_active(self, active: bool) -> None:
+        """Disable every workflow entry point owned by this page."""
+        enabled = not bool(active)
+        self.validate_button.setEnabled(enabled)
+        self.export_button.setEnabled(enabled)
+        self.validation_console.revalidate_button.setEnabled(enabled)
+
     def invalidate(self) -> None:
         self._state = STATE_EDITING
         self.state_label.setText(STATE_EDITING)
@@ -332,6 +339,7 @@ class ExportTab(BaseTab):
         super().__init__(parent)
         self.settings_service = settings_service
         self._active_pane = self.MODEL_PANE
+        self._operation_owner_page = None
         self._build_ui()
         self._load_semantic_preferences()
 
@@ -446,6 +454,17 @@ class ExportTab(BaseTab):
 
     def set_state(self, state: str) -> None:
         self._active_page().set_state(state)
+
+    def set_operation_active(self, active: bool) -> None:
+        """Toggle controls only for the page that owns the active operation."""
+        if active:
+            self._operation_owner_page = self._active_page()
+            self._operation_owner_page.set_operation_active(True)
+            return
+        owner_page = self._operation_owner_page
+        self._operation_owner_page = None
+        if owner_page is not None:
+            owner_page.set_operation_active(False)
 
     def invalidate_all_panes(self) -> None:
         """Invalidate each page's report and acknowledgement independently."""

@@ -84,6 +84,7 @@ class _View:
         self.states = []
         self.results = []
         self.invalidations = 0
+        self.operation_states = []
 
     def build_request(self, current_model_root=None):
         self.roots.append(current_model_root)
@@ -110,6 +111,9 @@ class _View:
     def invalidate_all_panes(self):
         self.invalidations += 1
 
+    def set_operation_active(self, active):
+        self.operation_states.append(bool(active))
+
 
 class _ConsoleView(_View):
     """View double that routes results through the real ValidationConsole."""
@@ -129,9 +133,24 @@ class _AppState:
     def __init__(self):
         self.current_model_changed = _Signal()
         self.statuses = []
+        self.progress = []
+        self._progress_token = 0
 
     def emit_status(self, message):
         self.statuses.append(message)
+
+    def begin_progress(self, label=""):
+        self._progress_token += 1
+        self.progress.append(("begin", self._progress_token, label, None))
+        return self._progress_token
+
+    def update_progress_state(self, token, label="", percentage=None):
+        self.progress.append(("update", token, label, percentage))
+        return True
+
+    def end_progress(self, token):
+        self.progress.append(("end", token, "", None))
+        return True
 
 
 class _Workflow:
@@ -143,22 +162,34 @@ class _Workflow:
     def _result():
         return ExportWorkflowResult(STATE_READY, ExportValidationReport("pmx", ()), {})
 
-    def validate(self, request):
+    def validate(self, request, *, progress_callback=None):
         self.validated.append(request)
+        if progress_callback is not None:
+            progress_callback("scene_preflight")
+            progress_callback("payload_collection")
+            progress_callback("payload_validation")
+            progress_callback("report_ready")
         return self._result()
 
-    def execute(self, request, *, acknowledge_warnings=False):
+    def execute(self, request, *, acknowledge_warnings=False, progress_callback=None):
         self.executed.append((request, acknowledge_warnings))
+        if progress_callback is not None:
+            progress_callback("scene_preflight")
+            progress_callback("payload_collection")
+            progress_callback("payload_validation")
+            progress_callback("report_ready")
+            progress_callback("writer")
         return self._result()
 
 
 class _FailingWorkflow:
-    def validate(self, request):
+    def validate(self, request, *, progress_callback=None):
         del request
+        del progress_callback
         raise RuntimeError("validation exploded")
 
-    def execute(self, request, *, acknowledge_warnings=False):
-        del request, acknowledge_warnings
+    def execute(self, request, *, acknowledge_warnings=False, progress_callback=None):
+        del request, acknowledge_warnings, progress_callback
         raise RuntimeError("execution exploded")
 
 
@@ -189,6 +220,22 @@ class TestExportPresenter(unittest.TestCase):
         self.assertEqual(view.roots, ["CurrentModel_ROOT", "CurrentModel_ROOT"])
         self.assertEqual(len(workflow.validated), 1)
         self.assertEqual(len(workflow.executed), 1)
+        self.assertEqual(view.operation_states, [True, False, True, False])
+        self.assertEqual(app_state.progress[0][0], "begin")
+        self.assertEqual(app_state.progress[-1][0], "end")
+
+    def test_progress_labels_include_animation_format_and_writer_transition(self):
+        view = _View("vmd")
+        app_state = _AppState()
+        presenter = ExportPresenter(view, app_state, workflow_service=_Workflow())
+
+        presenter.export()
+
+        labels = [entry[2] for entry in app_state.progress if entry[0] in ("begin", "update")]
+        self.assertIn("アニメーション: シーンを確認中", labels)
+        self.assertIn("VMDを書き出し中", labels)
+        report_ready = [entry for entry in app_state.progress if entry[2].endswith("検証レポート準備完了")]
+        self.assertEqual(report_ready[-1][3], 100)
 
     def test_current_model_changed_invalidates_all_panes(self):
         view = _View()
@@ -210,6 +257,8 @@ class TestExportPresenter(unittest.TestCase):
         self.assertIs(result, view.results[-1])
         self.assertEqual(view.states[-1], STATE_FAILED)
         self.assertIn("validation exploded", app_state.statuses[-1])
+        self.assertEqual(view.operation_states, [True, False])
+        self.assertEqual(app_state.progress[-1][0], "end")
         self.assertEqual(result.report.export_format, "pmx")
         self.assertEqual(result.report.mode, "model")
         self.assertTrue(result.report.issues[0].blocking)
@@ -229,6 +278,8 @@ class TestExportPresenter(unittest.TestCase):
         self.assertIs(result, view.results[-1])
         self.assertEqual(view.states[-1], STATE_FAILED)
         self.assertIn("execution exploded", app_state.statuses[-1])
+        self.assertEqual(view.operation_states, [True, False])
+        self.assertEqual(app_state.progress[-1][0], "end")
         self.assertEqual(result.report.export_format, "vmd")
         self.assertEqual(result.report.mode, "C")
         self.assertTrue(result.report.issues[0].blocking)
