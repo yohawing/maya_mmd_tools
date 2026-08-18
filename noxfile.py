@@ -80,7 +80,6 @@ from tools.nox.release_sessions import (  # noqa: E402
 )
 from tools.nox.local_sessions import (  # noqa: E402
     run_local_assets_check as _run_local_assets_check,
-    run_local_asset_roundtrip as _run_local_asset_roundtrip,
     run_local_camera_motion_oracle as _run_local_camera_motion_oracle,
     run_local_parity as _run_local_parity,
     run_semistandard_name_audit as _run_semistandard_name_audit,
@@ -2107,27 +2106,6 @@ def local_assets_check(session: nox.Session) -> None:
         mayapy_arg_path=_mayapy_arg_path,
         mayapy_script=_mayapy_script,
         normalize_local_gate_report=_normalize_local_gate_report,
-    )
-
-
-@nox.session(venv_backend="none")
-def local_asset_roundtrip(session: nox.Session) -> None:
-    """Run bounded PMX/VMD roundtrip cases from the local representative manifest.
-
-    The host runner starts one mayapy worker per selected case and writes
-    summary.json, summary.md, phase timing, timeout checkpoints, and stack
-    samples below build/reports/local_asset_roundtrip/.
-
-    Examples:
-        uvx nox -s local_asset_roundtrip -- --manifest build/reports/local_asset_roundtrip/representative.json --maya 2024
-        uvx nox -s local_asset_roundtrip -- --manifest build/reports/local_asset_roundtrip/representative.json --maya 2026 --profile dense-hang-and-sparse-interpolation
-    """
-    _run_local_asset_roundtrip(
-        session,
-        posargs=session.posargs,
-        option=_option,
-        root=ROOT,
-        python_executable=sys.executable,
     )
 
 

@@ -53,6 +53,10 @@ docs-dev/
 /TODO.md
 /ROADMAP.md
 /PLAN.md
+/tools/local_asset_manifest.py
+/tools/local_asset_roundtrip.py
+/tests/unit/test_local_asset_manifest.py
+/tests/unit/test_local_asset_roundtrip.py
 docs/*
 !docs/README_ja.md
 !docs/humanik_ja.md

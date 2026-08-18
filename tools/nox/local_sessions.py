@@ -322,27 +322,3 @@ def run_local_parity(
         external=True,
     )
 
-
-def run_local_asset_roundtrip(
-    session,
-    *,
-    posargs: list[str],
-    root: Path,
-    option,
-    python_executable: str = sys.executable,
-) -> None:
-    """Run the bounded local PMX/VMD roundtrip host orchestrator."""
-
-    args = list(posargs)
-    option(args, "--maya", "2024")
-    env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join(
-        entry for entry in (str(root), env.get("PYTHONPATH", "")) if entry
-    )
-    session.run(
-        python_executable,
-        str(root / "tools" / "local_asset_roundtrip.py"),
-        *args,
-        env=env,
-        external=True,
-    )
