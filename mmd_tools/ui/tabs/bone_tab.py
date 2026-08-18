@@ -37,7 +37,7 @@ class BoneTab(BaseTab):
         ("grant_settings_group", "setTitle", "grant_settings", "groups"),
         ("fixed_axis_group", "setTitle", "fixed_axis", "groups"),
         ("local_axis_group", "setTitle", "local_axis", "groups"),
-        ("sync_btn", "setText", "sync", "buttons"),
+        ("refresh_btn", "setText", "refresh", "buttons"),
         ("apply_btn", "setText", "apply", "buttons"),
         ("reset_btn", "setText", "reset", "buttons"),
         ("select_ik_target_btn", "setText", "select", "buttons"),
@@ -108,25 +108,27 @@ class BoneTab(BaseTab):
         # ツールバー
         toolbar_layout = QHBoxLayout()
         self.bone_authoring_toolbar = AuthoringToolbar(
-            actions=("sync", "move_up", "move_down"),
+            actions=("refresh", "move_up", "move_down"),
             labels={
-                "sync": self.tr("sync", "buttons"),
+                "refresh": self.tr("refresh", "buttons"),
                 "move_up": self.tr("up", "buttons"),
                 "move_down": self.tr("down", "buttons"),
             },
             parent=self,
         )
         self.bone_authoring_toolbar.setObjectName("boneAuthoringToolbar")
-        self.sync_btn = self.bone_authoring_toolbar.button("sync")
+        self.refresh_btn = self.bone_authoring_toolbar.button("refresh")
         self.reindex_up_btn = self.bone_authoring_toolbar.button("move_up")
         self.reindex_down_btn = self.bone_authoring_toolbar.button("move_down")
-        self.sync_btn.setObjectName("boneSyncButton")
+        # Keep the established selector stable while the visible action uses
+        # the canonical refresh presentation.
+        self.refresh_btn.setObjectName("boneSyncButton")
         self.reindex_up_btn.setObjectName("boneMoveUpButton")
         self.reindex_down_btn.setObjectName("boneMoveDownButton")
         # Compatibility aliases keep integrations that only read the old
         # attributes working; both names point to the one visible action.
-        self.refresh_btn = self.sync_btn
-        self.reset_authoring_btn = self.sync_btn
+        self.sync_btn = self.refresh_btn
+        self.reset_authoring_btn = self.refresh_btn
         toolbar_layout.addWidget(self.bone_authoring_toolbar)
         bone_tree_layout.addLayout(toolbar_layout)
         for action in ("move_up", "move_down"):
@@ -136,7 +138,7 @@ class BoneTab(BaseTab):
                 self.tr("authoring_selection_required", "tooltips"),
                 "authoring_selection_required",
             )
-        self.sync_btn.setEnabled(False)
+        self.refresh_btn.setEnabled(False)
 
         self.animation_warning_label = QLabel()
         self.animation_warning_label.setWordWrap(True)
@@ -605,7 +607,7 @@ class BoneTab(BaseTab):
         self.animation_warning_label.setText("")
         self.bone_authoring_toolbar.retranslate(
             {
-                "sync": self.tr("sync", "buttons"),
+                "refresh": self.tr("refresh", "buttons"),
                 "move_up": self.tr("up", "buttons"),
                 "move_down": self.tr("down", "buttons"),
             },

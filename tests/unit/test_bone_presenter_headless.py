@@ -364,6 +364,23 @@ def _attr_getter(values):
 
 
 class TestBonePresenterHeadless(unittest.TestCase):
+    def test_sync_handler_prefers_canonical_refresh_button_once(self):
+        view = _FakeView()
+        view.refresh_btn = _FakeButton()
+        view.sync_btn = _FakeButton()
+        view.reset_authoring_btn = _FakeButton()
+        presenter = BonePresenter(
+            view,
+            _FakeAppState(),
+            maya_adapter=_FakeMayaAdapter(),
+        )
+
+        self.assertEqual(len(view.refresh_btn.clicked.callbacks), 1)
+        self.assertIs(view.refresh_btn.clicked.callbacks[0].__self__, presenter)
+        self.assertEqual(view.refresh_btn.clicked.callbacks[0].__func__, presenter.sync_bones.__func__)
+        self.assertEqual(view.sync_btn.clicked.callbacks, [])
+        self.assertEqual(view.reset_authoring_btn.clicked.callbacks, [])
+
     def test_authoring_actions_fail_closed_without_injected_coordinator(self):
         presenter, view, app_state, _ = _make_presenter()
         app_state.current_model_root = TEST_MODEL

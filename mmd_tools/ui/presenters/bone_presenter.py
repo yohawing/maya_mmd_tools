@@ -122,11 +122,11 @@ class BonePresenter:
         # リストビューのシグナル
         self.view.bone_list.currentItemChanged.connect(self.on_bone_selected)
         self.view.bone_list.itemSelectionChanged.connect(self.on_selection_changed_maya)
-        sync_button = getattr(self.view, "sync_btn", None)
+        sync_button = getattr(self.view, "refresh_btn", None)
         if sync_button is None:
-            # Keep injected pre-sync test/integration views usable while the
-            # production BoneTab exposes only the unified sync entrypoint.
-            sync_button = getattr(self.view, "refresh_btn", None)
+            # Keep injected pre-refresh test/integration views usable while
+            # the production BoneTab exposes the canonical refresh entrypoint.
+            sync_button = getattr(self.view, "sync_btn", None)
         if sync_button is not None:
             sync_button.clicked.connect(self.sync_bones)
         for button_name, handler in (
@@ -139,7 +139,7 @@ class BonePresenter:
         # Older injected views may still expose a separate reset button.  Do
         # not connect it when it aliases the unified sync button, otherwise a
         # single click would run two authoring entrypoints.
-        if getattr(self.view, "sync_btn", None) is None:
+        if sync_button is None:
             legacy_reset = getattr(self.view, "reset_authoring_btn", None)
             if legacy_reset is not None:
                 legacy_reset.clicked.connect(self.reset_authoring)
@@ -431,7 +431,6 @@ class BonePresenter:
         for button_name, enabled, reason, reason_key in (
             ("reindex_up_btn", registered, "" if registered else (reason_selection if available else reason_unavailable), "" if registered else ("authoring_selection_required" if available else "authoring_unavailable")),
             ("reindex_down_btn", registered, "" if registered else (reason_selection if available else reason_unavailable), "" if registered else ("authoring_selection_required" if available else "authoring_unavailable")),
-            ("sync_btn", available, "" if available else reason_unavailable, "" if available else "authoring_unavailable"),
             # Compatibility for injected legacy views; BoneTab no longer
             # creates these individual-operation buttons.
             ("register_joint_btn", False, reason_unavailable, "authoring_unavailable"),
@@ -445,8 +444,18 @@ class BonePresenter:
                 if callable(set_reason):
                     set_reason(reason, reason_key)
                 button.setEnabled(bool(enabled))
-        sync_button = getattr(self.view, "sync_btn", None)
-        for legacy_name in ("refresh_btn", "reset_authoring_btn"):
+        sync_button = getattr(self.view, "refresh_btn", None)
+        if sync_button is None:
+            sync_button = getattr(self.view, "sync_btn", None)
+        if sync_button is not None:
+            set_reason = getattr(sync_button, "set_disabled_reason", None)
+            if callable(set_reason):
+                set_reason(
+                    "" if available else reason_unavailable,
+                    "" if available else "authoring_unavailable",
+                )
+            sync_button.setEnabled(bool(available))
+        for legacy_name in ("sync_btn", "reset_authoring_btn"):
             button = getattr(self.view, legacy_name, None)
             if button is None or button is sync_button:
                 continue
