@@ -376,14 +376,17 @@ def _oracle_frames(metrics: Mapping[str, Any]) -> list[int]:
 
 
 def _best_pair(vmd: Mapping[str, Any], pmx_descriptors: Iterable[Mapping[str, Any]]) -> tuple[Mapping[str, Any], dict[str, float]]:
+    """Return one deterministic best PMX pairing for a VMD descriptor."""
+
     pairs = [(pmx, _pair_score(vmd, pmx)) for pmx in pmx_descriptors]
-    return max(
+    return min(
         pairs,
         key=lambda pair: (
-            pair[1]["combined_match_ratio"],
-            pair[1]["bone_match_ratio"],
-            pair[1]["morph_match_ratio"],
-            pair[1]["ik_match_ratio"],
+            -pair[1]["combined_match_ratio"],
+            -pair[1]["bone_match_ratio"],
+            -pair[1]["morph_match_ratio"],
+            -pair[1]["ik_match_ratio"],
+            str(pair[0]["path"]),
         ),
     )
 
