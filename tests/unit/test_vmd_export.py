@@ -110,6 +110,21 @@ class TestVmdExport(TestBase):
             [("左足IK", 1), ("右足IK", 0)],
         )
 
+    def test_exporter_preserves_cp932_name_that_fits_vmd_field_exactly(self):
+        """15-byte CP932 morph names remain valid instead of losing a lead byte."""
+        vmd_data = VmdData()
+        frame = VmdMorphFrame()
+        frame.morph_name = "ウィンク右/帽子"
+        frame.frame_number = 0
+        frame.value = 1.0
+        vmd_data.morph_frames.append(frame)
+
+        tmp_path = os.path.join(self.temp_dir, "cp932_exact_name.vmd")
+        VmdExporter(native_exporter=None).export_vmd_animation(tmp_path, vmd_data)
+
+        parsed = VmdData().parse_file(tmp_path)
+        self.assertEqual(parsed.morph_frames[0].morph_name, frame.morph_name)
+
     def test_exporter_uses_native_writer_when_available(self):
         """native writer が bytes を返す場合は従来 writer ではなくその bytes を書く。"""
         calls = []

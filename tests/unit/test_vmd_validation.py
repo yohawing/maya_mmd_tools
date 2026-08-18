@@ -63,6 +63,29 @@ class TestVmdValidator(unittest.TestCase):
         self.assertEqual(report.issues[0].code, "VMD_MODE_C_RAW_LOSS")
         self.assertFalse(report.issues[0].blocking)
 
+    def test_mode_c_does_not_warn_when_raw_transforms_are_complete(self):
+        report = validate_vmd_data(
+            VmdData(),
+            VMD_MODE_C,
+            raw_provenance={
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_transform_complete": True,
+                "raw_bone_interpolation": [
+                    {
+                        "bone_name": "センター",
+                        "frame_number": 0,
+                        "position": [0.0, 0.0, 0.0],
+                        "rotation": [0.0, 0.0, 0.0, 1.0],
+                        "interpolation": [20] * 64,
+                    }
+                ],
+            },
+        )
+
+        self.assertTrue(report.valid)
+        self.assertFalse(report.requires_warning_ack)
+        self.assertEqual(report.issues, ())
+
     def test_mode_a_requires_raw_provenance(self):
         report = validate_vmd_data(VmdData(), VMD_MODE_A)
 

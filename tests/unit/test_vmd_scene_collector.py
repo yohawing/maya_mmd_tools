@@ -271,6 +271,83 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertIsNotNone(result["raw_provenance"])
         self.assertEqual(result["bone_frames"][0]["interpolation"], bytes([7]) * 64)
 
+    def test_mode_c_preserves_sparse_keys_with_complete_raw_transform_provenance(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        raw_records = [
+            {
+                "bone_name": "センター",
+                "frame_number": frame,
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+                "interpolation": [7] * 64,
+            }
+            for frame in (0, 2)
+        ]
+        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
+            {
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_transform_complete": True,
+                "raw_bone_key_count": len(raw_records),
+                "raw_bone_interpolation": raw_records,
+            }
+        )
+        for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0, 2.0: 0.0}
+
+        result = VmdSceneCollector().collect(
+            {
+                "target_model": "model_root",
+                "vmd_mode": "C",
+                "frame_range": (0, 2),
+            }
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in result["bone_frames"]], [0, 2])
+        self.assertEqual(result["bone_frames"][0]["interpolation"], bytes([7]) * 64)
+
+    def test_explicit_raw_roundtrip_preserves_transform_values(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        raw_record = {
+            "bone_name": "センター",
+            "frame_number": 0,
+            "position": [1.0, 2.0, 3.0],
+            "rotation": [0.0, 0.0, 0.3826834324, 0.9238795325],
+            "interpolation": [7] * 64,
+        }
+        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
+            {
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_transform_complete": True,
+                "raw_bone_key_count": 1,
+                "raw_bone_interpolation": [raw_record],
+            }
+        )
+        for attribute in (
+            "translateX",
+            "translateY",
+            "translateZ",
+            "rotateX",
+            "rotateY",
+            "rotateZ",
+        ):
+            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0}
+
+        result = VmdSceneCollector().collect(
+            {
+                "target_model": "model_root",
+                "vmd_mode": "C",
+                "preserve_raw_bone_transforms": True,
+            }
+        )
+
+        frame = result["bone_frames"][0]
+        self.assertEqual(frame["position"], (1.0, 2.0, 3.0))
+        self.assertEqual(frame["rotation"], (0.0, 0.0, 0.3826834324, 0.9238795325))
+
     def test_rejects_raw_provenance_with_inconsistent_key_count(self):
         self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
             {
@@ -746,6 +823,33 @@ class TestVmdSceneCollector(unittest.TestCase):
             [
                 {"morph_name": "bone_morph", "frame_number": 0, "weight": 0.0},
                 {"morph_name": "bone_morph", "frame_number": 10, "weight": 0.75},
+            ],
+        )
+
+    def test_collects_vertex_morph_frames_from_model_controller_keys(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "morph_controller": "mmdMorphController",
+            }
+        )
+        self.cmds.attrs[("model_root", "mmd_morph_controller")] = True
+        self.cmds.connections[("model_root", "mmd_morph_controller", True, False)] = [
+            "morph_controller"
+        ]
+        self.cmds.keys[("morph_controller", "inputWeight[3]")] = {
+            0.0: 0.0,
+            10.0: 0.75,
+        }
+        metadata = [SimpleNamespace(morph_type="vertex", name="vertex_morph", index=3)]
+        with mock.patch.object(collector_module, "iter_morph_network_metadata", return_value=metadata):
+            result = VmdSceneCollector().collect({"target_model": "model_root"})
+
+        self.assertEqual(
+            result["morph_frames"],
+            [
+                {"morph_name": "vertex_morph", "frame_number": 0, "weight": 0.0},
+                {"morph_name": "vertex_morph", "frame_number": 10, "weight": 0.75},
             ],
         )
 

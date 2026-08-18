@@ -5,8 +5,10 @@ model-scoped PMX network morph controller weights into the dict contract
 consumed by ``VmdExporter``. Bone translation can be converted back to VMD
 offsets when a bind-pose map is supplied, and XYZ joint rotations are
 converted back to VMD quaternions with jointOrient compensation. Explicit
-Mode C requests sample the selected Maya frame range at one-frame intervals;
-Mode A and low-level collector callers retain sparse collection semantics.
+Mode C requests sample the selected Maya frame range at one-frame intervals
+unless complete imported raw key/interpolation/transform provenance proves that
+the scene is an unedited sparse roundtrip; Mode A and low-level collector
+callers retain sparse collection semantics.
 """
 
 import json
@@ -270,6 +272,19 @@ class VmdSceneCollector:
         dense_control_rig_export = self._control_rig_dense_export(target_model)
         dense_mode_c_export = mode == "C"
         authored_routes = self._scene_authored_input_routes(joints, target_model)
+        rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
+        raw_provenance = _read_vmd_import_provenance(target_model)
+        for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
+            rotation_interpolation.setdefault(bone_name, {}).update(values)
+        raw_bone_transforms = _raw_vmd_bone_transforms(raw_provenance)
+        preserve_sparse_mode_c = bool(
+            dense_mode_c_export
+            and raw_provenance
+            and raw_bone_transforms
+            and raw_provenance.get("raw_bone_interpolation_complete")
+            and raw_provenance.get("raw_bone_transform_complete")
+        )
+        dense_mode_c_export = dense_mode_c_export and not preserve_sparse_mode_c
         mode_c_dense_frames = (
             self._mode_c_dense_frame_samples(
                 joints,
@@ -284,11 +299,6 @@ class VmdSceneCollector:
             if dense_mode_c_export
             else None
         )
-        rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
-        raw_provenance = _read_vmd_import_provenance(target_model)
-        for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
-            rotation_interpolation.setdefault(bone_name, {}).update(values)
-        raw_bone_transforms = _raw_vmd_bone_transforms(raw_provenance)
 
         return {
             "model_name": str(options.get("model_name") or self._model_name(target_model)),
@@ -305,6 +315,9 @@ class VmdSceneCollector:
                 time_converter=maya_time_to_vmd,
                 rotation_interpolation=rotation_interpolation,
                 dense_frame_samples=mode_c_dense_frames,
+                preserve_raw_bone_transforms=bool(
+                    options.get("preserve_raw_bone_transforms", False)
+                ),
                 raw_bone_transforms=raw_bone_transforms,
             ),
             "morph_frames": self.collect_morph_frames(
@@ -376,7 +389,6 @@ class VmdSceneCollector:
                     f"inputWeight[{int(entry.index)}]"
                     for entry in entries
                     if entry.index is not None
-                    and str(entry.morph_type or "") != "vertex"
                 }
                 keyed_times.extend(_key_times(controller, attrs))
         for camera in cameras:
@@ -407,6 +419,7 @@ class VmdSceneCollector:
         rotation_interpolation: Optional[Mapping[str, Mapping[int, bytes]]] = None,
         force_dense_sample: bool = False,
         dense_frame_samples: Optional[Sequence[float]] = None,
+        preserve_raw_bone_transforms: bool = False,
         raw_bone_transforms: Optional[
             Mapping[tuple[str, int], tuple[tuple[float, ...], tuple[float, ...]]]
         ] = None,
@@ -417,7 +430,10 @@ class VmdSceneCollector:
         rotation-time curve may intentionally keep sparse VMD keys.  Mode C
         uses ``force_dense_sample`` so its numeric pose export is not
         accidentally changed back to sparse collection by raw interpolation
-        metadata.
+        metadata.  ``preserve_raw_bone_transforms`` is an explicit import
+        roundtrip route for callers that have established that raw VMD
+        provenance is authoritative; it does not change the default edited
+        scene behavior.
         """
         bone_bind_poses = bone_bind_poses or {}
         input_routes = input_routes or {}
@@ -516,10 +532,13 @@ class VmdSceneCollector:
                     if force_dense_sample
                     else raw_bone_transforms.get((bone_name, vmd_frame))
                 )
-                if raw_transform is not None and _raw_bone_transform_matches(
-                    payload["position"],
-                    payload["rotation"],
-                    raw_transform,
+                if raw_transform is not None and (
+                    preserve_raw_bone_transforms
+                    or _raw_bone_transform_matches(
+                        payload["position"],
+                        payload["rotation"],
+                        raw_transform,
+                    )
                 ):
                     payload["position"], payload["rotation"] = raw_transform
                 frames.append(payload)
@@ -735,7 +754,9 @@ class VmdSceneCollector:
                         }
                     )
 
-        # Non-vertex morphs are driven by the model-scoped mmdMorphController.
+        # Model-scoped mmdMorphController keys cover vertex and non-vertex
+        # morphs. Vertex rows are normally also represented by blendShape
+        # targets, so the final deduplication keeps those explicit rows first.
         # Keep the existing blendShape rows first so a malformed scene that
         # reuses a morph name remains deterministic and does not duplicate a
         # VMD name/frame pair.
@@ -748,8 +769,7 @@ class VmdSceneCollector:
                 metadata_by_index = {}
                 metadata_by_name = {}
                 for entry in metadata:
-                    morph_type = str(entry.morph_type or "")
-                    if morph_type == "vertex" or not entry.name or entry.index is None:
+                    if not entry.name or entry.index is None:
                         continue
                     index = int(entry.index)
                     name = str(entry.name)
