@@ -13,6 +13,7 @@ from tests.viewport.visual_regression_capture import (
     _camera_plan_for_case,
     _device_matches_backend,
     _load_cases,
+    _prepare_maya_profile,
     _preflight_command_port,
     _validate_camera_motion_data,
     _vp2_override,
@@ -29,6 +30,18 @@ def test_default_vp2_device_matches_shader_backend():
 def test_explicit_vp2_device_is_preserved():
     assert _vp2_override("glsl", "gl") == "VirtualDeviceGL"
     assert _vp2_override("dx11", "glcore") == "VirtualDeviceGLCore"
+
+
+def test_visual_regression_seeds_maya_security_allowlist(tmp_path):
+    project_root = tmp_path / "repo"
+    (project_root / "mmd_tools").mkdir(parents=True)
+
+    maya_app_dir = _prepare_maya_profile(tmp_path / "out", "2026", 7826, project_root)
+
+    assert maya_app_dir == (tmp_path / "out" / "maya-app-2026-7826").resolve()
+    prefs = (maya_app_dir / "2026" / "ja_JP" / "prefs" / "userPrefs.mel").read_text(encoding="utf-8")
+    expected_plugin_dir = (project_root / "mmd_tools").resolve().as_posix()
+    assert f'SafeModeAllowedlistPaths" "{expected_plugin_dir}"' in prefs
 
 
 def test_device_validation_is_backend_specific():
@@ -376,6 +389,7 @@ def test_maya_payload_carries_shader_plugin_lifecycle_diagnostics(tmp_path):
     assert source.count("cmds.loadPlugin(_shader_plugin_name, quiet=True)") == 1
     assert 'mmd_tools_plugin.py' in source
     assert "def _ensure_mmd_tools_plugin():" in source
+    assert source.count("_ensure_mmd_tools_plugin()") >= 2
     assert 'mmdMorphController is already registered by a non-canonical MMD plugin path' in source
     assert 'report["mmd_tools_plugin"] = _ensure_mmd_tools_plugin()' in source
 
