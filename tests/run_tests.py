@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.absolute()
@@ -103,6 +104,42 @@ def _maya_version_from_executable(executable: str | Path, fallback: int) -> int:
     return int(match.group(1)) if match else fallback
 
 
+def _read_log_tail(log_path: Path, limit: int = 20) -> list[str]:
+    """Return a bounded tail of the child transcript for failure reports."""
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+            return [line.rstrip("\r\n") for line in deque(handle, maxlen=limit)]
+    except OSError as exc:
+        return [f"Unable to read failure log: {type(exc).__name__}: {exc}"]
+
+
+def _write_failure_report(
+    *,
+    test_type: str,
+    report_path: Path,
+    log_path: Path,
+    returncode: int,
+    duration_sec: float,
+    report_error: str,
+) -> dict[str, object]:
+    """Persist a diagnostic report when the child result is missing or invalid."""
+    payload: dict[str, object] = {
+        "gate": test_type,
+        "status": "fail",
+        "summary": {"tests": 1, "pass": 0, "skip": 0, "fail": 1},
+        "duration_sec": round(duration_sec, 3),
+        "first_failure": "test runner did not produce a valid result report",
+        "failed_tests": [],
+        "returncode": returncode,
+        "error": report_error,
+        "log": str(log_path.resolve()),
+        "log_tail": _read_log_tail(log_path),
+    }
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
 def _finish_run(
     *,
     test_type: str,
@@ -114,16 +151,22 @@ def _finish_run(
     verbose: bool = False,
 ) -> None:
     """Persist a full transcript and emit the shared compact result contract."""
+    report_error = None
     try:
         payload = json.loads(report_path.read_text(encoding="utf-8"))
         summary = dict(payload["summary"])
-    except (OSError, ValueError, KeyError, TypeError):
-        payload = {
-            "first_failure": "test runner did not produce a valid result report",
-            "failed_tests": [],
-        }
-        summary = {"tests": 1, "pass": 0, "skip": 0, "fail": 1}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        report_error = f"{type(exc).__name__}: {exc}"
         duration_sec = time.perf_counter() - started
+        payload = _write_failure_report(
+            test_type=test_type,
+            report_path=report_path,
+            log_path=log_path,
+            returncode=returncode,
+            duration_sec=duration_sec,
+            report_error=report_error,
+        )
+        summary = dict(payload["summary"])
     else:
         duration_sec = float(payload.get("duration_sec", time.perf_counter() - started))
 
@@ -132,6 +175,14 @@ def _finish_run(
         summary["fail"] = 1
         summary["pass"] = max(0, int(summary["tests"]) - int(summary["skip"]) - 1)
         payload["first_failure"] = f"test runner exited with code {returncode}"
+
+    if report_error is None and (returncode != 0 or int(summary["fail"])):
+        payload["status"] = "fail"
+        payload["summary"] = summary
+        payload["returncode"] = returncode
+        payload["log"] = str(log_path.resolve())
+        payload["log_tail"] = _read_log_tail(log_path)
+        report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     print(
         format_summary(
