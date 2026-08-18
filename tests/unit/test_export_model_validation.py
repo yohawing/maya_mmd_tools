@@ -268,10 +268,7 @@ class TestExportModelValidation(unittest.TestCase):
             }
         )
         report = validate_model_data(sdef_model, "pmx")
-        self.assertEqual(
-            [(issue.code, issue.path) for issue in report.issues],
-            [("PMX_VERTEX_SDEF_UNSUPPORTED", "vertices[0].weight_transform_type")],
-        )
+        self.assertTrue(report.valid)
 
     def test_pmx_vertex_payloads_not_retained_by_writer_are_blocking(self):
         cases = (
@@ -342,7 +339,7 @@ class TestExportModelValidation(unittest.TestCase):
             "PMX_VERTEX_SEMANTIC_MISSING",
         )
 
-    def test_pmx_vertex_unsupported_payload_does_not_call_writer(self):
+    def test_pmx_vertex_incomplete_sdef_payload_does_not_call_writer(self):
         exporter = _FakeExporter()
         model_data = _valid_model_data()
         model_data["vertices"][0].update(
@@ -352,7 +349,6 @@ class TestExportModelValidation(unittest.TestCase):
                 "bone_weights": [0.75],
                 "sdef_c": [0.0, 0.0, 0.0],
                 "sdef_r0": [0.0, 0.0, 0.0],
-                "sdef_r1": [0.0, 0.0, 0.0],
             }
         )
 

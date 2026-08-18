@@ -1182,6 +1182,45 @@ def _normalize_export_skin_pairs(pairs: list[tuple[int, float]]) -> dict:
     }
 
 
+def _source_bone_index_map(bones: list[dict]) -> dict[int, int]:
+    """Return unique imported PMX bone indices mapped to merged export indices."""
+    source_to_export: dict[int, int | None] = {}
+    for export_index, bone in enumerate(bones):
+        source_joint = bone.get("source_joint")
+        if not source_joint:
+            continue
+        source_index = _get_attr(source_joint, ATTR_MMD_BONE_INDEX)
+        if isinstance(source_index, bool) or not isinstance(source_index, int):
+            continue
+        if source_index in source_to_export and source_to_export[source_index] != export_index:
+            source_to_export[source_index] = None
+        else:
+            source_to_export[source_index] = export_index
+    return {
+        source_index: export_index
+        for source_index, export_index in source_to_export.items()
+        if export_index is not None
+    }
+
+
+def _remap_merged_vertex_bone_indices(
+    vertex: dict,
+    local_to_merged: dict[int, int],
+    source_to_merged: dict[int, int],
+) -> list[int]:
+    """Resolve mesh-local skin indices or canonical PMX SDEF source indices."""
+    indices = vertex.get("bone_indices", [0])
+    is_sdef = vertex.get("weight_transform_type") == 3
+    index_map = source_to_merged if is_sdef else local_to_merged
+    try:
+        return [index_map[index] for index in indices]
+    except KeyError as exc:
+        index_kind = "source PMX" if is_sdef else "mesh-local"
+        raise ValueError(
+            f"vertex references unresolved {index_kind} bone index {exc.args[0]}"
+        ) from exc
+
+
 def _collect_vertex_skin_weights_api(
     skin_cluster: str,
     shape: str,
@@ -2151,6 +2190,7 @@ class ExportSceneCollector:
             for index, bone in enumerate(merged_bones)
             if bone.get("source_joint")
         }
+        source_bone_to_global = _source_bone_index_map(merged_bones)
         vertex_offset = 0
         expected_additional_uv_count = _get_attr(
             root,
@@ -2184,6 +2224,18 @@ class ExportSceneCollector:
                     global_bone_by_key[key] = len(merged_bones)
                     merged_bones.append(dict(bone))
                     added_global_indices.add(global_bone_by_key[key])
+                    source_joint = bone.get("source_joint")
+                    source_index = (
+                        _get_attr(source_joint, ATTR_MMD_BONE_INDEX)
+                        if source_joint
+                        else None
+                    )
+                    if (
+                        isinstance(source_index, int)
+                        and not isinstance(source_index, bool)
+                        and source_index not in source_bone_to_global
+                    ):
+                        source_bone_to_global[source_index] = global_bone_by_key[key]
                 bone_index_map[local_index] = global_bone_by_key[key]
             for local_index, bone in enumerate(local_bones):
                 if bone_index_map[local_index] not in added_global_indices:
@@ -2195,9 +2247,11 @@ class ExportSceneCollector:
             for vertex in mesh_data["vertices"]:
                 merged_vertex = dict(vertex)
                 if local_bones:
-                    merged_vertex["bone_indices"] = [
-                        bone_index_map[index] for index in vertex.get("bone_indices", [0])
-                    ]
+                    merged_vertex["bone_indices"] = _remap_merged_vertex_bone_indices(
+                        vertex,
+                        bone_index_map,
+                        source_bone_to_global,
+                    )
                 mesh_vertices.append(merged_vertex)
 
             merged_vertices.extend(mesh_vertices)

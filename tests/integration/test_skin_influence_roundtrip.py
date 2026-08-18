@@ -3,15 +3,14 @@
 The fixture is intentionally generated as a small real PMX binary.  Import
 readback runs through the production importer in both unified and
 material-split modes for BDEF1/BDEF2/BDEF4/SDEF/QDEF, including numeric SDEF
-weights.  Public export rejects SDEF because Maya cannot evaluate its
-auxiliary data; a derived fixture that changes only SDEF tags to BDEF2 keeps
-the positive BDEF/QDEF export round-trip coverage.
+weights.  Public export preserves canonical imported SDEF payloads; a derived
+fixture that changes only SDEF tags to BDEF2 keeps separate BDEF/QDEF
+round-trip coverage.
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
-import os
 
 from maya import cmds
 
@@ -205,7 +204,7 @@ class TestSkinInfluenceRoundtrip(MayaTestBase):
         settings.set("import.model.create_mmd_shaders", False)
 
     def test_all_pmx_weight_modes_import_readback_and_export_policy(self):
-        """Read back all modes, reject SDEF export, and preserve positive export coverage."""
+        """Read back all modes and preserve SDEF plus BDEF/QDEF export coverage."""
         source_path = self.get_temp_filename("skin_influence_modes.pmx")
         source_data = _make_fixture()
         source_data.write_file(source_path)
@@ -284,13 +283,26 @@ class TestSkinInfluenceRoundtrip(MayaTestBase):
                             options={"export_format": "pmx", "target_model": root},
                         )
                     )
-                    self.assertFalse(export_result.succeeded, export_result.status_message)
-                    self.assertIsNotNone(export_result.validation_report)
-                    self.assertIn(
-                        "PMX_VERTEX_SDEF_UNSUPPORTED",
-                        [issue.code for issue in export_result.validation_report.issues],
+                    self.assertTrue(export_result.succeeded, export_result.status_message)
+                    exported_vertices = parse_pmx_file(
+                        output_path,
+                        use_native_pmx_parse=False,
+                    ).vertices
+                    exported_sdef = [
+                        vertex
+                        for vertex in exported_vertices
+                        if vertex.weight_transform_type == 3
+                    ]
+                    expected_sdef = [
+                        vertex
+                        for vertex in expected_vertices.vertices
+                        if vertex.weight_transform_type == 3
+                    ]
+                    self.assertEqual(len(exported_sdef), len(expected_sdef))
+                    self.assertEqual(
+                        [vertex.bone_indices for vertex in exported_sdef],
+                        [vertex.bone_indices for vertex in expected_sdef],
                     )
-                    self.assertFalse(os.path.exists(output_path))
 
                     cmds.file(new=True, force=True)
                     settings.set("import.model.separate_meshes_by_material", separate)
