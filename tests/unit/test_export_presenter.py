@@ -1,7 +1,7 @@
 """ExportPresenter Current Model ownership and pane invalidation contracts."""
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
@@ -18,7 +18,6 @@ from mmd_tools.ui.validation_console import (  # noqa: E402
     ValidationConsole,
     render_validation_console_text,
 )
-from mmd_tools.ui.translations import UITranslator  # noqa: E402
 from mmd_tools.validation.export_validator import ExportValidationReport  # noqa: E402
 
 
@@ -38,25 +37,40 @@ class _Console:
     acknowledgement_changed = _Signal()
     warnings_acknowledged = False
 
+    def __init__(self):
+        self.report = None
+        self.metadata = {}
+
+    def set_report(self, report, metadata=None):
+        self.report = report
+        self.metadata = dict(metadata or {})
+
 
 def _create_validation_console():
-    """Create the real Console, filling only unavailable CI widget surfaces."""
-    if callable(getattr(QApplication, "instance", None)):
+    """Create the real Console only when a widget-capable app already exists.
+
+    Maya standalone owns a ``QGuiApplication``.  ``QApplication.instance()``
+    therefore returns a truthy object even though constructing a ``QWidget``
+    is invalid and creating a second ``QApplication`` can crash Maya.
+    """
+    if _qapplication_instance() is not None:
         return ValidationConsole()
-    console = ValidationConsole.__new__(ValidationConsole)
-    console._translator = UITranslator.instance()
-    console._report = None
-    console._metadata = {}
-    console._visible_issue_indices = []
-    console.acknowledge_check = MagicMock()
-    console.acknowledge_check.isChecked.return_value = False
-    console.filter_combo = MagicMock()
-    console.filter_combo.currentData.return_value = "all"
-    console.filter_combo.findData.return_value = 0
-    console.summary_label = MagicMock()
-    console.issue_list = MagicMock()
-    console.detail_text = MagicMock()
-    return console
+    return _Console()
+
+
+def _qapplication_instance():
+    """Return an existing widget-capable QApplication, if one is owned by the host."""
+    instance_factory = getattr(QApplication, "instance", None)
+    if not callable(instance_factory):
+        return None
+    app = instance_factory()
+    if app is None:
+        return None
+    try:
+        return app if isinstance(app, QApplication) else None
+    except TypeError:
+        # The pure-Python Qt stub is intentionally not a QApplication type.
+        return None
 
 
 class _View:
@@ -151,6 +165,18 @@ class _FailingWorkflow:
 class TestExportPresenter(unittest.TestCase):
     """Presenter must use Current Model and invalidate both panes on change."""
 
+    def test_qapplication_instance_rejects_host_qgui_application(self):
+        class _HostGuiApplication:
+            pass
+
+        class _FakeQApplication:
+            @staticmethod
+            def instance():
+                return _HostGuiApplication()
+
+        with patch(__name__ + ".QApplication", _FakeQApplication):
+            self.assertIsNone(_qapplication_instance())
+
     def test_validate_and_export_pass_shared_current_model_root(self):
         view = _View()
         app_state = _AppState()
@@ -192,8 +218,7 @@ class TestExportPresenter(unittest.TestCase):
         self.assertIn("validation exploded", result.report.issues[0].message)
 
     def test_execute_exception_publishes_terminal_failed_result(self):
-        instance = getattr(QApplication, "instance", None)
-        app = (instance() or QApplication([])) if callable(instance) else None
+        app = _qapplication_instance()
         view = _ConsoleView("vmd")
         app_state = _AppState()
         presenter = ExportPresenter(view, app_state, workflow_service=_FailingWorkflow())
