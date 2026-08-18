@@ -11,6 +11,7 @@ install_headless_ui_stubs()
 
 from mmd_tools.ui.import_export_view_state import ImportExportViewState  # noqa: E402
 from mmd_tools.ui.tabs import import_export_tab  # noqa: E402
+from mmd_tools.ui.tabs import export_tab  # noqa: E402
 
 
 class _FakeSettingsService:
@@ -100,6 +101,45 @@ class TestImportExportTabNavigation(unittest.TestCase):
 
         self.assertIn('navigation="tabs"', source)
         self.assertNotIn('import_category_stack.button("other")', source)
+
+
+class TestExportTabNavigationAndActions(unittest.TestCase):
+    """Keep Export's navigation and format-specific action contract explicit."""
+
+    def setUp(self):
+        self.source = Path(export_tab.__file__).read_text(encoding="utf-8")
+
+    def test_export_uses_tab_navigation_without_legacy_button_selector(self):
+        self.assertIn('navigation="tabs"', self.source)
+        self.assertNotIn("button selector over QStackedWidget", self.source)
+
+    def test_export_pages_use_format_specific_primary_actions(self):
+        for key in (
+            '"validate_model"',
+            '"export_pmx"',
+            '"validate_animation"',
+            '"export_vmd"',
+        ):
+            self.assertIn(key, self.source)
+
+    def test_supported_languages_define_model_animation_and_format_actions(self):
+        translation_dir = Path(export_tab.__file__).resolve().parents[1] / "translations"
+        expected = {
+            "ja": ("モデル", "アニメーション", "モデルを検証", "PMXを書き出す", "アニメーションを検証", "VMDを書き出す"),
+            "en": ("Model", "Animation", "Validate Model", "Export PMX", "Validate Animation", "Export VMD"),
+            "zh_cn": ("模型", "动画", "验证模型", "导出 PMX", "验证动画", "导出 VMD"),
+            "zh_tw": ("模型", "動畫", "驗證模型", "匯出 PMX", "驗證動畫", "匯出 VMD"),
+        }
+        for language, values in expected.items():
+            translations = json.loads(
+                (translation_dir / f"{language}.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(translations["tabs"]["export_model"], values[0])
+            self.assertEqual(translations["tabs"]["export_motion"], values[1])
+            self.assertEqual(translations["buttons"]["validate_model"], values[2])
+            self.assertEqual(translations["buttons"]["export_pmx"], values[3])
+            self.assertEqual(translations["buttons"]["validate_animation"], values[4])
+            self.assertEqual(translations["buttons"]["export_vmd"], values[5])
 
 
 class TestImportExportTabDevModeVisibility(unittest.TestCase):

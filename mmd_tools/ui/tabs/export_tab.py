@@ -50,6 +50,14 @@ class _ExportPage(QWidget):
         self._restoring = False
         self._build(title)
 
+    def _button_text(self, action: str) -> str:
+        """Return the format-specific primary action label."""
+        if self.pane == self.owner.MODEL_PANE:
+            key = "validate_model" if action == "validate" else "export_pmx"
+        else:
+            key = "validate_animation" if action == "validate" else "export_vmd"
+        return self.owner.tr(key, "buttons")
+
     def _build(self, title: str) -> None:
         page_layout = QVBoxLayout(self)
         header = QLabel(title, self)
@@ -157,10 +165,10 @@ class _ExportPage(QWidget):
         export_form.addRow(self.owner.tr("file_path", "labels"), output_row)
 
         buttons = QHBoxLayout()
-        self.validate_button = QPushButton(self.owner.tr("validate", "buttons"))
+        self.validate_button = QPushButton(self._button_text("validate"))
         self.validate_button.clicked.connect(self.validate_requested.emit)
         buttons.addWidget(self.validate_button)
-        self.export_button = QPushButton(self.owner.tr("export", "buttons"))
+        self.export_button = QPushButton(self._button_text("export"))
         self.export_button.clicked.connect(self.export_requested.emit)
         buttons.addWidget(self.export_button)
         self.state_label = QLabel(STATE_EDITING)
@@ -267,8 +275,8 @@ class _ExportPage(QWidget):
         self.settings_group.setTitle(self.owner.tr("export", "settings"))
         self.export_group.setTitle(self.owner.tr("export", "groups"))
         self.output_browse_button.setText(self.owner.tr("browse", "buttons"))
-        self.validate_button.setText(self.owner.tr("validate", "buttons"))
-        self.export_button.setText(self.owner.tr("export", "buttons"))
+        self.validate_button.setText(self._button_text("validate"))
+        self.export_button.setText(self._button_text("export"))
         self._set_form_label(
             self._export_form,
             self.output_path_edit,
@@ -338,10 +346,11 @@ class ExportTab(BaseTab):
             },
             "exportCategoryStack",
             self,
+            navigation="tabs",
         )
         self.category_stack.setObjectName("exportCategoryStack")
-        # Compatibility name retained as an API alias; the object is now a
-        # button selector over QStackedWidget, never a QTabWidget.
+        # Compatibility name retained as an API alias for existing presenters
+        # and GUI probes; navigation is now the shared tab presentation.
         self.pane_tabs = self.category_stack
         self._pages = {
             self.MODEL_PANE: _ExportPage(

@@ -107,21 +107,26 @@ class TestExportTabGUI(GuiTestBase):
         app.sendPostedEvents(tab, QtCore.QEvent.DeferredDelete)
         app.processEvents()
 
-    def test_model_motion_tabs_have_fixed_formats_and_no_target_or_format_widgets(self):
-        """Model/Motion tabs own PMX/VMD and expose no legacy selectors."""
+    def test_model_animation_tabs_have_fixed_formats_and_no_target_or_format_widgets(self):
+        """Model/Animation tabs own PMX/VMD and expose no legacy selectors."""
         tab = self._create_visible_tab()
         try:
             self.assertFalse(hasattr(tab, "target_combo"))
             self.assertFalse(hasattr(tab, "format_combo"))
             self.assertEqual(tab.pane_tabs.count(), 2)
+            self.assertEqual(tab.category_stack._navigation, "tabs")
             self.assertEqual(tab.pane_tabs.tabText(0), "モデル")
-            self.assertEqual(tab.pane_tabs.tabText(1), "モーション")
+            self.assertEqual(tab.pane_tabs.tabText(1), "アニメーション")
+            self.assertEqual(tab.validate_button.text(), "モデルを検証")
+            self.assertEqual(tab.export_button.text(), "PMXを書き出す")
             self.assertEqual(tab.build_request("model_ROOT").options["export_format"], "pmx")
             pane_spy = QtSignalInvocationSpy(
                 "ExportTab.pane_changed", tab.pane_tabs.currentChanged, tab.pane_tabs
             )
             tab.pane_tabs.setCurrentIndex(1)
             self.assertEqual(tab.mode_combo.currentText(), "C")
+            self.assertEqual(tab.validate_button.text(), "アニメーションを検証")
+            self.assertEqual(tab.export_button.text(), "VMDを書き出す")
             mode_spy = QtSignalInvocationSpy(
                 "ExportTab.motion_mode_changed", tab.mode_combo.currentTextChanged, tab.mode_combo
             )
@@ -147,8 +152,8 @@ class TestExportTabGUI(GuiTestBase):
                 "export.pane_selector",
                 "selector",
                 "objectName=exportCategoryStack",
-                "QTest.setCurrentIndex(objectName=exportCategoryStack, motion)",
-                "model and motion panes expose fixed PMX/VMD formats",
+                "QTest.setCurrentIndex(objectName=exportCategoryStack, animation)",
+                "model and animation panes expose fixed PMX/VMD formats",
                 pane_spy,
                 tab.pane_tabs,
             )
@@ -291,7 +296,8 @@ class TestExportTabGUI(GuiTestBase):
         translator.set_language("ja")
         tab = self._create_visible_tab()
         try:
-            self.assertEqual(tab.validate_button.text(), "検証")
+            self.assertEqual(tab.validate_button.text(), "モデルを検証")
+            self.assertEqual(tab.export_button.text(), "PMXを書き出す")
             self.assertEqual(tab.apply_scale_check.text(), "スケールを適用")
             self.assertEqual(
                 tab._model_form.labelForField(tab.apply_scale_check).text(),
@@ -338,7 +344,8 @@ class TestExportTabGUI(GuiTestBase):
                 "ExportTab.retranslateUi", tab.retranslateUi, tab.apply_scale_check
             )
             translate_spy()
-            self.assertEqual(tab.validate_button.text(), "Validate")
+            self.assertEqual(tab.validate_button.text(), "Validate Model")
+            self.assertEqual(tab.export_button.text(), "Export PMX")
             self.assertEqual(tab.apply_scale_check.text(), "Apply Scale")
             self.assertEqual(
                 tab._model_form.labelForField(tab.apply_scale_check).text(),
@@ -366,6 +373,10 @@ class TestExportTabGUI(GuiTestBase):
                 translate_spy,
                 tab.apply_scale_check,
             )
+            tab.pane_tabs.setCurrentIndex(1)
+            self.assertEqual(tab.pane_tabs.tabText(1), "Animation")
+            self.assertEqual(tab.validate_button.text(), "Validate Animation")
+            self.assertEqual(tab.export_button.text(), "Export VMD")
         finally:
             self._delete_tab(tab)
             translator.set_language(previous_language)
