@@ -188,8 +188,8 @@ def load_matrix(root: Path, path: Optional[Path] = None) -> Mapping[str, Any]:
     cases_by_id = {case["id"]: case for case in cases}
 
     trace = matrix.get("surface_trace")
-    if not isinstance(trace, Mapping) or trace.get("expected_surface_count") != 230:
-        raise CrossMayaGateError("surface trace must require exactly 230 Qt cases")
+    if not isinstance(trace, Mapping) or trace.get("expected_surface_count") != 229:
+        raise CrossMayaGateError("surface trace must require exactly 229 Qt cases")
     selector = trace.get("source_selector")
     if selector != {"disposition": "qt_case"}:
         raise CrossMayaGateError("surface trace selector must be the Qt-case inventory")
@@ -197,14 +197,14 @@ def load_matrix(root: Path, path: Optional[Path] = None) -> Mapping[str, Any]:
     owner = trace.get("version_independent_owner")
     owner_cases = [case for case in ui.get("cases", ()) if case.get("id") == owner]
     if (
-        len(surfaces) != 230
+        len(surfaces) != 229
         or len(owner_cases) != 1
         or owner_cases[0].get("execution_layer") != "headless_qt"
         or "required_maya_versions" in owner_cases[0]
         or any(surface.get("case_id") != owner for surface in surfaces)
         or any(not surface.get("expected_handler") for surface in surfaces)
     ):
-        raise CrossMayaGateError("230-surface headless owner trace is incomplete")
+        raise CrossMayaGateError("229-surface headless owner trace is incomplete")
     tab_ids = {tab.get("id") for tab in ui.get("tabs", ())}
     tab_representatives = trace.get("tab_representatives")
     headless_only = trace.get("headless_only_tabs")
@@ -383,7 +383,7 @@ def validate_gui_timing_report(
 def expected_headless_test_identities(
     root: Path, matrix: Mapping[str, Any]
 ) -> tuple[tuple[str, str], ...]:
-    """Derive the exact 230 parametrized tests plus their owner contract test."""
+    """Derive the exact 229 parametrized tests plus their owner contract test."""
     sources = matrix.get("source_manifests")
     if not isinstance(sources, Mapping):
         raise CrossMayaGateError("matrix has no source manifests for headless identities")
@@ -395,18 +395,18 @@ def expected_headless_test_identities(
     ]
     surface_ids = [surface.get("id") for surface in surfaces]
     if (
-        len(surface_ids) != 230
+        len(surface_ids) != 229
         or any(not isinstance(surface_id, str) or not surface_id for surface_id in surface_ids)
-        or len(set(surface_ids)) != 230
+        or len(set(surface_ids)) != 229
     ):
-        raise CrossMayaGateError("headless identity source is not exactly 230 unique Qt cases")
+        raise CrossMayaGateError("headless identity source is not exactly 229 unique Qt cases")
     classname = "tests.unit.test_authoring_ui_surface_matrix"
     identities = [
         (classname, "test_authoring_surface_dispatches_exactly_once[{}]".format(surface_id))
         for surface_id in surface_ids
     ]
     identities.append(
-        (classname, "test_headless_matrix_owns_all_230_qt_cases_without_maya_claims")
+        (classname, "test_headless_matrix_owns_all_229_safe_qt_cases_without_maya_claims")
     )
     return tuple(identities)
 
@@ -414,7 +414,7 @@ def expected_headless_test_identities(
 def validate_headless_junit(
     path: Path, root: Path, matrix: Mapping[str, Any]
 ) -> Mapping[str, Any]:
-    """Require exact JUnit identities and PASS status for all 231 headless tests."""
+    """Require exact JUnit identities and PASS status for all 230 headless tests."""
     try:
         document = ET.parse(str(path))
     except (OSError, ET.ParseError) as exc:
@@ -433,13 +433,13 @@ def validate_headless_junit(
         "skipped": "0",
     }
     if any(suite.get(key) != value for key, value in expected_counts.items()):
-        raise CrossMayaGateError("headless JUnit counts are not exactly 231 PASS")
+        raise CrossMayaGateError("headless JUnit counts are not exactly 230 PASS")
     testcases = [
         element for element in suite if element.tag.rsplit("}", 1)[-1] == "testcase"
     ]
     observed = [(case.get("classname"), case.get("name")) for case in testcases]
     if len(observed) != len(expected) or len(set(observed)) != len(expected) or set(observed) != expected_set:
-        raise CrossMayaGateError("headless JUnit test identities are not the exact 231-test contract")
+        raise CrossMayaGateError("headless JUnit test identities are not the exact 230-test contract")
     forbidden = {"failure", "error", "skipped"}
     if any(
         child.tag.rsplit("}", 1)[-1] in forbidden

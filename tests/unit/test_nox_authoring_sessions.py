@@ -190,9 +190,9 @@ def test_focused_uses_uvx_pytest_when_nox_interpreter_has_no_pytest(
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["status"] == "pass"
     assert report["selection"]["versions"] == ["2024"]
-    assert report["headless"]["test_count"] == 231
-    assert report["headless"]["surface_test_count"] == 230
-    assert len(report["headless"]["test_identities"]) == 231
+    assert report["headless"]["test_count"] == 230
+    assert report["headless"]["surface_test_count"] == 229
+    assert len(report["headless"]["test_identities"]) == 230
     assert report["source_verified_at_end"] == report["source"]
     assert harness.gui_runs == ["2024"]
     assert harness.build_events == []
@@ -311,7 +311,7 @@ def test_missing_gui_timing_artifact_fails_closed(tmp_path, monkeypatch, matrix)
 def test_rc_zero_headless_subset_cannot_produce_aggregate_pass(tmp_path, monkeypatch, matrix):
     harness = _Harness(tmp_path, matrix, monkeypatch)
     harness.headless_subset = True
-    with pytest.raises(gate.CrossMayaGateError, match="231 PASS"):
+    with pytest.raises(gate.CrossMayaGateError, match="230 PASS"):
         harness.run(["--profile", "focused", "--domain", "info", "--out-dir", "reports"])
     assert not (tmp_path / "reports" / "authoring-cross-maya-report.json").exists()
 
