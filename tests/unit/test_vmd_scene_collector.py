@@ -3,6 +3,7 @@
 import json
 import math
 import unittest
+from io import BytesIO
 from types import SimpleNamespace
 from unittest import mock
 
@@ -251,6 +252,381 @@ class TestVmdSceneCollector(unittest.TestCase):
                 return Samples()
 
         return Sampler()
+
+    def test_mode_c_collect_to_sink_keeps_canonical_sections_and_never_finishes(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        for attr in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+            self.cmds.keys[("center_joint", attr)] = {0.0: 0.0, 2.0: 1.0 if attr == "translateX" else 0.0}
+
+        class Sink:
+            def __init__(self):
+                self.sections = []
+                self.frames = []
+                self.finished = False
+
+            def begin_section(self, section):
+                self.sections.append(section)
+
+            def write_frame(self, section, frame):
+                self.frames.append((section, frame))
+
+            def finish(self):
+                self.finished = True
+
+        sink = Sink()
+        result = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler()).collect_to_sink(
+            {
+                "target_model": "model_root",
+                "vmd_mode": "C",
+                "frame_range": (0, 2),
+            },
+            sink,
+        )
+
+        self.assertEqual(
+            sink.sections,
+            ["bones", "morphs", "cameras", "lights", "shadows", "ik"],
+        )
+        self.assertFalse(sink.finished)
+        self.assertEqual(result["section_counts"]["bones"], 3)
+        self.assertEqual({section for section, _frame in sink.frames}, {"bones"})
+        self.assertTrue(result["diagnostics"]["streaming"]["enabled"])
+
+    def test_mode_c_collect_to_sink_rejects_raw_preservation(self):
+        with self.assertRaisesRegex(ValueError, "cannot preserve raw"):
+            VmdSceneCollector().collect_to_sink(
+                {"vmd_mode": "C", "preserve_raw_bone_transforms": True},
+                object(),
+            )
+
+    def test_mode_c_collect_to_sink_matches_morph_dense_semantics(self):
+        self.cmds.node_types.update({"model_root": "transform", "face_bs": "blendShape"})
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.aliases["face_bs.weight[0]"] = "笑い"
+        self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.2, 2.0: 0.2}
+
+        class Sink:
+            def __init__(self):
+                self.frames = []
+
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, section, frame):
+                self.frames.append((section, frame))
+
+        options = {
+            "target_model": "model_root",
+            "blend_shapes": ["face_bs"],
+            "vmd_mode": "C",
+            "frame_range": (0, 2),
+        }
+        legacy = VmdSceneCollector().collect(options)["morph_frames"]
+        sink = Sink()
+        VmdSceneCollector().collect_to_sink(options, sink)
+        streamed = [frame for section, frame in sink.frames if section == "morphs"]
+        self.assertEqual(streamed, legacy)
+
+    def test_mode_c_stream_morph_post_conversion_first_win_matches_legacy(self):
+        self.cmds.node_types.update(
+            {"model_root": "transform", "face_bs": "blendShape", "driver": "network"}
+        )
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.aliases["face_bs.weight[0]"] = "笑い"
+        self.cmds.keys[("face_bs", "weight[0]")] = {
+            0.0: 0.1,
+            1.0: 0.2,
+            2.0: 0.3,
+        }
+        # The incoming non-animCurve provider keeps this from being classified
+        # as a direct-multi candidate; fixed 60fps maps frames 0 and 1 to VMD
+        # frame 0, so the first value must win after conversion.
+        self.cmds.current_unit = "ntscf"
+        self.cmds.connections[("face_bs", "weight[0]", True, False)] = [
+            "driver.output"
+        ]
+
+        class Sink:
+            def __init__(self):
+                self.frames = []
+
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, section, frame):
+                self.frames.append((section, frame))
+
+        options = {
+            "target_model": "model_root",
+            "blend_shapes": ["face_bs"],
+            "joints": [],
+            "vmd_mode": "C",
+            "frame_range": (0, 2),
+        }
+        legacy_collector = VmdSceneCollector()
+        legacy = legacy_collector.collect(options)
+        sink = Sink()
+        streamed_collector = VmdSceneCollector()
+        streamed_collector.collect_to_sink(options, sink)
+        streamed_frames = [frame for section, frame in sink.frames if section == "morphs"]
+
+        self.assertEqual(streamed_frames, legacy["morph_frames"])
+        self.assertEqual(
+            streamed_collector.diagnostics["track_selection"],
+            legacy_collector.diagnostics["track_selection"],
+        )
+        self.assertEqual([frame["frame_number"] for frame in streamed_frames], [0, 1])
+        self.assertEqual([frame["weight"] for frame in streamed_frames], [0.1, 0.3])
+
+    def test_mode_c_stream_morph_dedups_before_exact_constant_classification(self):
+        self.cmds.node_types.update({"model_root": "transform", "face_bs": "blendShape"})
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.aliases["face_bs.weight[0]"] = "笑い"
+        self.cmds.keys[("face_bs", "weight[0]")] = {
+            0.0: 0.0,
+            1.0: 1.0,
+            2.0: 0.0,
+        }
+        self.cmds.current_unit = "ntscf"
+
+        class Sink:
+            def __init__(self):
+                self.frames = []
+
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, section, frame):
+                self.frames.append((section, frame))
+
+        options = {
+            "target_model": "model_root",
+            "blend_shapes": ["face_bs"],
+            "joints": [],
+            "vmd_mode": "C",
+            "frame_range": (0, 2),
+        }
+        legacy_collector = VmdSceneCollector()
+        legacy = legacy_collector.collect(options)
+        sink = Sink()
+        streamed_collector = VmdSceneCollector()
+        streamed = streamed_collector.collect_to_sink(options, sink)
+
+        self.assertEqual(
+            [frame for section, frame in sink.frames if section == "morphs"],
+            legacy["morph_frames"],
+        )
+        self.assertEqual(legacy["morph_frames"], [])
+        streamed_selection = streamed["diagnostics"]["track_selection"]
+        legacy_selection = legacy_collector.diagnostics["track_selection"]
+        for key in (
+            "counts",
+            "counts_by_section",
+            "key_counts",
+            "evidence_omitted_count",
+            "source_omission_identity",
+        ):
+            self.assertEqual(streamed_selection[key], legacy_selection[key])
+        self.assertEqual(
+            sorted(streamed_selection["evidence"], key=lambda row: row["name"]),
+            sorted(legacy_selection["evidence"], key=lambda row: row["name"]),
+        )
+
+    def test_mode_c_stream_native_samples_close_once_on_sink_failures(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        for attr in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+            self.cmds.keys[("center_joint", attr)] = {
+                0.0: 0.0,
+                2.0: 1.0 if attr == "translateX" else 0.0,
+            }
+
+        class Samples:
+            def __init__(self):
+                self.close_count = 0
+
+            def value(self, joint, attr, frame):
+                return float(self.cmds.getAttr(f"{joint}.{attr}", time=frame))
+
+            def close(self):
+                self.close_count += 1
+
+        # Bind the fake's cmds through the instance after construction so the
+        # sample object remains small and has an observable close contract.
+        class Sampler:
+            available = True
+
+            def __init__(self):
+                self.samples = None
+
+            def sample_dense_bone_channels(self, _frames, _joints, _routes):
+                self.samples = Samples()
+                self.samples.cmds = self_cmds
+                return self.samples
+
+        class Sink:
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, _section, _frame):
+                raise failure("sink cancellation")
+
+        self_cmds = self.cmds
+        for failure in (RuntimeError, KeyboardInterrupt):
+            sampler = Sampler()
+            with self.assertRaises(failure):
+                VmdSceneCollector(bone_channel_sampler=sampler).collect_to_sink(
+                    {
+                        "target_model": "model_root",
+                        "vmd_mode": "C",
+                        "frame_range": (0, 2),
+                    },
+                    Sink(),
+                )
+            self.assertEqual(sampler.samples.close_count, 1)
+
+    def test_mode_c_stream_morph_spool_closes_on_sink_failure_and_restores_timeline(self):
+        self.cmds.node_types.update({"model_root": "transform", "face_bs": "blendShape"})
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.aliases["face_bs.weight[0]"] = "笑い"
+        self.cmds.keys[("face_bs", "weight[0]")] = {
+            0.0: 0.0,
+            1.0: 1.0,
+            2.0: 0.0,
+        }
+        self.cmds.current_time = 17.5
+        spool = BytesIO()
+
+        class Sink:
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, section, _frame):
+                if section == "morphs":
+                    raise RuntimeError("sink failed")
+
+        options = {
+            "target_model": "model_root",
+            "blend_shapes": ["face_bs"],
+            "joints": [],
+            "vmd_mode": "C",
+            "frame_range": (0, 2),
+        }
+        with mock.patch.object(
+            collector_module.tempfile, "TemporaryFile", return_value=spool
+        ):
+            with self.assertRaisesRegex(RuntimeError, "sink failed"):
+                VmdSceneCollector().collect_to_sink(options, Sink())
+        self.assertTrue(spool.closed)
+        self.assertEqual(self.cmds.current_time, 17.5)
+
+    def test_mode_c_stream_morph_spool_replays_multiple_candidates_in_one_pass(self):
+        self.cmds.node_types.update({"model_root": "transform", "face_bs": "blendShape"})
+        self.cmds.blendshape_weights["face_bs"] = 2
+        self.cmds.aliases["face_bs.weight[0]"] = "笑い"
+        self.cmds.aliases["face_bs.weight[1]"] = "怒り"
+        self.cmds.keys[("face_bs", "weight[0]")] = {
+            0.0: 0.0,
+            1.0: 1.0,
+            2.0: 0.0,
+        }
+        self.cmds.keys[("face_bs", "weight[1]")] = {
+            0.0: 0.2,
+            1.0: 0.4,
+            2.0: 0.6,
+        }
+        record_count = 6
+
+        class CountingSpool:
+            def __init__(self):
+                self.buffer = BytesIO()
+                self.read_attempts = 0
+
+            @property
+            def closed(self):
+                return self.buffer.closed
+
+            def write(self, value):
+                return self.buffer.write(value)
+
+            def flush(self):
+                return self.buffer.flush()
+
+            def seek(self, *args):
+                return self.buffer.seek(*args)
+
+            def read(self, size=-1):
+                if size == 20:
+                    self.read_attempts += 1
+                return self.buffer.read(size)
+
+            def close(self):
+                return self.buffer.close()
+
+        class Sink:
+            def __init__(self):
+                self.frames = []
+
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, section, frame):
+                self.frames.append((section, frame))
+
+        options = {
+            "target_model": "model_root",
+            "blend_shapes": ["face_bs"],
+            "joints": [],
+            "vmd_mode": "C",
+            "frame_range": (0, 2),
+        }
+        legacy_collector = VmdSceneCollector()
+        legacy = legacy_collector.collect(options)
+        spool = CountingSpool()
+        sink = Sink()
+        streamed_collector = VmdSceneCollector()
+        with mock.patch.object(
+            collector_module.tempfile, "TemporaryFile", return_value=spool
+        ):
+            streamed = streamed_collector.collect_to_sink(options, sink)
+
+        legacy_frames = sorted(
+            (
+                frame["morph_name"],
+                frame["frame_number"],
+                frame["weight"],
+            )
+            for frame in legacy["morph_frames"]
+        )
+        streamed_frames = sorted(
+            (
+                frame["morph_name"],
+                frame["frame_number"],
+                frame["weight"],
+            )
+            for section, frame in sink.frames
+            if section == "morphs"
+        )
+        self.assertEqual(streamed_frames, legacy_frames)
+        streamed_selection = streamed["diagnostics"]["track_selection"]
+        legacy_selection = legacy_collector.diagnostics["track_selection"]
+        for key in (
+            "counts",
+            "counts_by_section",
+            "key_counts",
+            "evidence_omitted_count",
+            "source_omission_identity",
+        ):
+            self.assertEqual(streamed_selection[key], legacy_selection[key])
+        self.assertEqual(
+            sorted(streamed_selection["evidence"], key=lambda row: row["name"]),
+            sorted(legacy_selection["evidence"], key=lambda row: row["name"]),
+        )
+        self.assertTrue(spool.closed)
+        self.assertLessEqual(spool.read_attempts, 2 * (record_count + 1))
 
     def test_mode_c_requires_timeline_native_sampler(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
