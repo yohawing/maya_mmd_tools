@@ -270,7 +270,7 @@ class TestVmdValidator(unittest.TestCase):
         self.assertTrue(streaming.valid, streaming.issues)
         self.assertEqual(streaming.issues, legacy.issues)
 
-    def test_streaming_verifier_accepts_global_frame_bounds(self):
+    def test_streaming_verifier_rejects_noncanonical_global_frame_bounds(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stream.vmd"
             writer = VmdStreamWriter(path)
@@ -283,7 +283,35 @@ class TestVmdValidator(unittest.TestCase):
                 expected_bounds=(8, 8),
             )
 
-        self.assertTrue(report.valid, report.issues)
+        self.assertFalse(report.valid)
+        self.assertIn("VMD_FRAME_RANGE", [issue.code for issue in report.issues])
+
+    def test_streaming_verifier_rejects_malformed_canonical_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stream.vmd"
+            writer = VmdStreamWriter(path)
+            summary = writer.finish()
+            incomplete_counts = dict(summary.counts)
+            incomplete_counts.pop("ik")
+            boolean_counts = dict(summary.counts)
+            boolean_counts["bones"] = True
+            mapping_bounds = dict(summary.frame_bounds)
+            mapping_bounds["bones"] = {"minimum": None, "maximum": None}
+
+            malformed = (
+                {"expected_counts": incomplete_counts},
+                {"expected_counts": boolean_counts},
+                {"expected_counts": {"bone_frames": 0}},
+                {"expected_bounds": mapping_bounds},
+            )
+            for metadata in malformed:
+                with self.subTest(metadata=metadata):
+                    report = verify_vmd_output_streaming(
+                        str(path),
+                        VMD_MODE_C,
+                        **metadata,
+                    )
+                    self.assertFalse(report.valid)
 
     def test_streaming_verifier_enforces_inclusive_frame_range_for_all_sections(self):
         section_payloads = {
@@ -423,13 +451,15 @@ class TestVmdValidator(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stream.vmd"
             writer = VmdStreamWriter(path)
-            writer.finish()
+            summary = writer.finish()
             path.write_bytes(path.read_bytes() + b"trailing")
+            expected_counts = dict(summary.counts)
+            expected_counts["bones"] = 1
 
             report = verify_vmd_output_streaming(
                 str(path),
                 VMD_MODE_C,
-                expected_counts={"bones": 1},
+                expected_counts=expected_counts,
                 expected_sha256="0" * 64,
                 expected_size=0,
             )

@@ -27,6 +27,14 @@ _STREAM_SECTIONS = (
     ("shadow_frames", 9),
     ("ik_show_hide_frames", 9),
 )
+_STREAM_METADATA_NAMES = {
+    "bone_frames": "bones",
+    "morph_frames": "morphs",
+    "camera_frames": "cameras",
+    "light_frames": "lights",
+    "shadow_frames": "shadows",
+    "ik_show_hide_frames": "ik",
+}
 _VMD_SIGNATURE = b"Vocaloid Motion Data"
 _VMD_SIGNATURE_V2 = b"Vocaloid Motion Data 0002"
 
@@ -676,155 +684,6 @@ def _stream_finite(
         )
 
 
-def _stream_bounds_value(value: Any) -> Optional[Tuple[Optional[int], Optional[int]]]:
-    """Normalize the small bounds shapes emitted by stream receipts."""
-    if isinstance(value, Mapping):
-        minimum = value.get(
-            "minimum",
-            value.get("min_frame", value.get("frame_min", value.get("min"))),
-        )
-        maximum = value.get(
-            "maximum",
-            value.get("max_frame", value.get("frame_max", value.get("max"))),
-        )
-    elif isinstance(value, (tuple, list)) and len(value) == 2:
-        minimum, maximum = value
-    else:
-        minimum = getattr(value, "minimum", getattr(value, "min_frame", None))
-        maximum = getattr(value, "maximum", getattr(value, "max_frame", None))
-    try:
-        minimum = None if minimum is None else int(minimum)
-        maximum = None if maximum is None else int(maximum)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return minimum, maximum
-
-
-def _stream_compare_bounds(
-    issues: List[ExportValidationIssue],
-    actual: Mapping[str, Tuple[Optional[int], Optional[int]]],
-    expected: Optional[Mapping[str, Any]],
-) -> None:
-    """Compare frame bounds while accepting both legacy and stream names."""
-    if expected is None:
-        return
-    if isinstance(expected, Mapping) and any(
-        key in expected for key in ("minimum", "min_frame", "frame_min", "min", "maximum", "max_frame", "frame_max", "max")
-    ):
-        expected_value = _stream_bounds_value(expected)
-        if expected_value is None:
-            return
-        frame_values = [
-            frame_number
-            for minimum, maximum in actual.values()
-            for frame_number in (minimum, maximum)
-            if frame_number is not None
-        ]
-        actual_value = (min(frame_values), max(frame_values)) if frame_values else (None, None)
-        if actual_value != expected_value:
-            _stream_issue(
-                issues,
-                "VMD_FRAME_RANGE",
-                "output.frame_bounds",
-                "VMD output bounds {} do not match expected bounds {}".format(actual_value, expected_value),
-            )
-        return
-    if not isinstance(expected, Mapping):
-        expected_value = _stream_bounds_value(expected)
-        if expected_value is None:
-            return
-        frame_values = [
-            frame_number
-            for minimum, maximum in actual.values()
-            for frame_number in (minimum, maximum)
-            if frame_number is not None
-        ]
-        actual_value = (
-            (min(frame_values), max(frame_values))
-            if frame_values
-            else (None, None)
-        )
-        if actual_value != expected_value:
-            _stream_issue(
-                issues,
-                "VMD_FRAME_RANGE",
-                "output.frame_bounds",
-                "VMD output bounds {} do not match expected bounds {}".format(
-                    actual_value,
-                    expected_value,
-                ),
-            )
-        return
-    aliases = {
-        "bones": "bone_frames",
-        "morphs": "morph_frames",
-        "cameras": "camera_frames",
-        "lights": "light_frames",
-        "shadows": "shadow_frames",
-        "ik": "ik_show_hide_frames",
-    }
-    for section, value in expected.items():
-        normalized_section = aliases.get(section, section)
-        if normalized_section not in actual:
-            continue
-        expected_value = _stream_bounds_value(value)
-        if expected_value is None:
-            continue
-        if actual[normalized_section] != expected_value:
-            _stream_issue(
-                issues,
-                "VMD_FRAME_RANGE",
-                "output.{}.frame_bounds".format(normalized_section),
-                "VMD {} bounds {} do not match expected bounds {}".format(
-                    normalized_section,
-                    actual[normalized_section],
-                    expected_value,
-                ),
-            )
-
-
-def _stream_expected_count(
-    expected_counts: Optional[Mapping[str, int]],
-    section_name: str,
-) -> Optional[int]:
-    """Read one expected count using either VMD naming convention."""
-    if not isinstance(expected_counts, Mapping):
-        return None
-    aliases = {
-        "bone_frames": "bones",
-        "morph_frames": "morphs",
-        "camera_frames": "cameras",
-        "light_frames": "lights",
-        "shadow_frames": "shadows",
-        "ik_show_hide_frames": "ik",
-    }
-    value = expected_counts.get(section_name, expected_counts.get(aliases[section_name]))
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-
-
-def _stream_expected_count_declared(
-    expected_counts: Optional[Mapping[str, int]],
-    section_name: str,
-) -> bool:
-    """Return whether metadata explicitly declares one section count."""
-    if not isinstance(expected_counts, Mapping):
-        return False
-    aliases = {
-        "bone_frames": "bones",
-        "morph_frames": "morphs",
-        "camera_frames": "cameras",
-        "light_frames": "lights",
-        "shadow_frames": "shadows",
-        "ik_show_hide_frames": "ik",
-    }
-    return section_name in expected_counts or aliases[section_name] in expected_counts
-
-
 def verify_vmd_output_streaming(
     file_path: str,
     mode: str = VMD_MODE_C,
@@ -847,6 +706,58 @@ def verify_vmd_output_streaming(
     """
     normalized_mode = str(mode or "").upper()
     issues: List[ExportValidationIssue] = []
+    metadata_names = frozenset(_STREAM_METADATA_NAMES.values())
+    canonical_counts: Optional[Dict[str, int]] = None
+    if expected_counts is not None:
+        counts_are_canonical = isinstance(expected_counts, Mapping) and set(expected_counts) == metadata_names
+        if counts_are_canonical:
+            canonical_counts = {
+                section: expected_counts[name]
+                for section, name in _STREAM_METADATA_NAMES.items()
+            }
+            counts_are_canonical = all(
+                type(value) is int and 0 <= value <= 0xFFFFFFFF
+                for value in canonical_counts.values()
+            )
+        if not counts_are_canonical:
+            canonical_counts = None
+            _stream_issue(
+                issues,
+                "VMD_FRAME_COUNT_MISMATCH",
+                "expected_counts",
+                "VMD stream counts must declare exactly six canonical unsigned 32-bit counts",
+            )
+
+    canonical_bounds: Optional[Dict[str, Tuple[Optional[int], Optional[int]]]] = None
+    if expected_bounds is not None:
+        bounds_are_canonical = isinstance(expected_bounds, Mapping) and set(expected_bounds) == metadata_names
+        if bounds_are_canonical:
+            try:
+                canonical_bounds = {
+                    section: (expected_bounds[name].minimum, expected_bounds[name].maximum)
+                    for section, name in _STREAM_METADATA_NAMES.items()
+                }
+            except AttributeError:
+                bounds_are_canonical = False
+            else:
+                bounds_are_canonical = all(
+                    (minimum is None and maximum is None)
+                    or (
+                        type(minimum) is int
+                        and type(maximum) is int
+                        and 0 <= minimum <= maximum <= 0xFFFFFFFF
+                    )
+                    for minimum, maximum in canonical_bounds.values()
+                )
+        if not bounds_are_canonical:
+            canonical_bounds = None
+            _stream_issue(
+                issues,
+                "VMD_FRAME_RANGE",
+                "expected_bounds",
+                "VMD stream bounds must declare six canonical minimum/maximum pairs",
+            )
+
     normalized_frame_range, frame_range_issue = _normalize_frame_range(expected_frame_range)
     if frame_range_issue is not None:
         _stream_issue(
@@ -974,10 +885,7 @@ def verify_vmd_output_streaming(
                             # Camera and later sections were historically
                             # optional.  End-of-file here is valid only for
                             # that optional tail.
-                            if section_index < 2 or _stream_expected_count_declared(
-                                expected_counts,
-                                section,
-                            ):
+                            if section_index < 2 or canonical_counts is not None:
                                 _stream_issue(
                                     issues,
                                     "OUTPUT_PARSE_FAILED",
@@ -1114,7 +1022,7 @@ def verify_vmd_output_streaming(
         )
 
     for section, _ in _STREAM_SECTIONS:
-        expected = _stream_expected_count(expected_counts, section)
+        expected = canonical_counts.get(section) if canonical_counts is not None else None
         if expected is not None and expected != counts[section]:
             _stream_issue(
                 issues,
@@ -1126,14 +1034,20 @@ def verify_vmd_output_streaming(
                     expected,
                 ),
             )
-    _stream_compare_bounds(
-        issues,
-        {
-            section: (minimums[section], maximums[section])
-            for section, _ in _STREAM_SECTIONS
-        },
-        expected_bounds,
-    )
+    if canonical_bounds is not None:
+        for section, expected in canonical_bounds.items():
+            actual = (minimums[section], maximums[section])
+            if actual != expected:
+                _stream_issue(
+                    issues,
+                    "VMD_FRAME_RANGE",
+                    "output.{}.frame_bounds".format(section),
+                    "VMD {} bounds {} do not match expected bounds {}".format(
+                        section,
+                        actual,
+                        expected,
+                    ),
+                )
 
     actual_sha256 = digest.hexdigest()
     if expected_sha256 is not None:
