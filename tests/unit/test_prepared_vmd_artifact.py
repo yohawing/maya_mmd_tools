@@ -44,7 +44,8 @@ class PreparedVmdArtifactTests(unittest.TestCase):
                 }
             )
             session.write_frame("morphs", {"morph_name": "笑い", "frame": 8, "value": 0.25})
-            receipt = session.finish()
+            session.finish_collection()
+            receipt = session.promote()
 
         self.assertTrue(receipt.validate_identity())
         self.assertEqual(receipt.section_counts["bone_frames"], 1)
@@ -68,7 +69,8 @@ class PreparedVmdArtifactTests(unittest.TestCase):
         session.write_frame("morphs", {"morph_name": "笑い", "frame": 2, "value": 0.25})
 
         with self.assertRaisesRegex(PreparedVmdArtifactError, "verification blocked"):
-            session.finish()
+            session.finish_collection()
+            session.promote()
 
         self.assertFalse(stage_directory.exists())
         self.assertFalse(session.cleanup())
@@ -80,7 +82,8 @@ class PreparedVmdArtifactTests(unittest.TestCase):
             expected_frame_range=(4, 8),
         ) as session:
             session.write_frame("morphs", {"morph_name": "笑い", "frame": 4, "value": 0.25})
-            receipt = session.finish()
+            session.finish_collection()
+            receipt = session.promote()
 
         self.assertEqual(verifier.calls[0][2]["expected_frame_range"], (4, 8))
         self.assertFalse(verifier.calls[0][2]["ack_warnings"])
@@ -101,7 +104,8 @@ class PreparedVmdArtifactTests(unittest.TestCase):
         session.write_frame("morphs", {"morph_name": "笑い", "frame": 2, "value": 0.25})
 
         with self.assertRaisesRegex(PreparedVmdArtifactError, "verification blocked"):
-            session.finish()
+            session.finish_collection()
+            session.promote()
 
         self.assertFalse(stage_directory.exists())
 
@@ -116,7 +120,8 @@ class PreparedVmdArtifactTests(unittest.TestCase):
                     "rotation": (0.0, 0.0, 0.0, 1.0),
                 }
             )
-            receipt = session.finish()
+            session.finish_collection()
+            receipt = session.promote()
 
         self.assertTrue(receipt.output_validation_report.valid)
         self.assertTrue(receipt.validate_identity())
@@ -152,7 +157,7 @@ class PreparedVmdArtifactTests(unittest.TestCase):
         writer.finish = cancel
         try:
             with self.assertRaises(KeyboardInterrupt):
-                session.finish()
+                session.finish_collection()
         finally:
             writer.finish = original
         self.assertFalse(stage_directory.exists())

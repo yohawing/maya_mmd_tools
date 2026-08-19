@@ -356,20 +356,6 @@ class PreparedVmdStageSession:
             self._handle_failure()
             raise
 
-    def finish(
-        self,
-        *,
-        raw_loss_warning_required: Any = _UNSET,
-    ) -> PreparedVmdArtifactReceipt:
-        """Finish, bounded-verify, and promote this stage in one operation."""
-
-        if self._receipt is not None:
-            return self._receipt
-        self.finish_collection()
-        return self.promote(
-            raw_loss_warning_required=raw_loss_warning_required,
-        )
-
 __all__ = [
     "PREPARED_VMD_ARTIFACT_SCHEMA_VERSION",
     "PreparedVmdArtifactError",

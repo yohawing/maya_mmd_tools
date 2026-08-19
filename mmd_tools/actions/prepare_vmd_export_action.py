@@ -564,41 +564,6 @@ class PrepareVmdExportAction:
                     "streaming VMD section count mismatch for {}".format(section)
                 )
 
-    @staticmethod
-    def _new_stream_session(model_name: str) -> PreparedVmdStageSession:
-        """Create the repository-owned incremental stage session."""
-
-        return PreparedVmdStageSession(
-            model_name,
-            mode=VMD_MODE_C,
-            output_verifier=verify_vmd_output_streaming,
-        )
-
-    @staticmethod
-    def _finish_stream_session(
-        session: PreparedVmdStageSession,
-        metadata: Any,
-    ) -> Any:
-        """Apply collector range metadata before finishing the bounded writer."""
-
-        expected = PrepareVmdExportAction._stream_expected_range(metadata)
-        session.set_expected_frame_range(expected)
-        summary = session.finish_collection()
-        PrepareVmdExportAction._validate_stream_counts(metadata, summary)
-        return summary
-
-    @staticmethod
-    def _promote_stream_session(
-        session: PreparedVmdStageSession,
-        raw_loss_warning_required: bool,
-    ) -> PreparedVmdArtifactReceipt:
-        receipt = session.promote(
-            raw_loss_warning_required=raw_loss_warning_required
-        )
-        if not isinstance(receipt, PreparedVmdArtifactReceipt):
-            raise PrepareVmdExportError("VMD stream session returned an invalid receipt")
-        return receipt
-
     def execute(self, request: Any) -> PrepareVmdExportResult:
         """Collect once and publish only when the scene stayed unchanged."""
 
@@ -646,7 +611,11 @@ class PrepareVmdExportAction:
 
             collect_begin = time.perf_counter()
             model_name = first.model_name or str(_read_field(request, "model_name") or "")
-            stream_session = self._new_stream_session(model_name)
+            stream_session = PreparedVmdStageSession(
+                model_name,
+                mode=VMD_MODE_C,
+                output_verifier=verify_vmd_output_streaming,
+            )
             self._pending_stage_session = stream_session
             stream_metadata_value = self._backend.collect_to_sink(request, stream_session)
             if stream_metadata_value is not None and not isinstance(
@@ -656,7 +625,10 @@ class PrepareVmdExportAction:
                     "streaming VMD backend returned invalid bounded metadata"
                 )
             stream_metadata = stream_metadata_value or {}
-            self._finish_stream_session(stream_session, stream_metadata)
+            expected_range = self._stream_expected_range(stream_metadata)
+            stream_session.set_expected_frame_range(expected_range)
+            stream_summary = stream_session.finish_collection()
+            self._validate_stream_counts(stream_metadata, stream_summary)
             timed("backend_collect", collect_begin)
 
             discovery_begin = time.perf_counter()
@@ -682,9 +654,11 @@ class PrepareVmdExportAction:
 
             stage_begin = time.perf_counter()
             raw_loss_warning_required = bool(stream_metadata.get("raw_provenance"))
-            staged_artifact = self._promote_stream_session(
-                stream_session, raw_loss_warning_required
+            staged_artifact = stream_session.promote(
+                raw_loss_warning_required=raw_loss_warning_required
             )
+            if not isinstance(staged_artifact, PreparedVmdArtifactReceipt):
+                raise PrepareVmdExportError("VMD stream session returned an invalid receipt")
             staged_artifact.validate_identity()
             self._pending_stage_session = None
             combined_validation_report = staged_artifact.output_validation_report
