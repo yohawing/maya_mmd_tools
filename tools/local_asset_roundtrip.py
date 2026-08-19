@@ -85,6 +85,18 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     )
 
 
+def _write_atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
+    """Publish a live diagnostics snapshot without exposing partial JSON."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     """Read a possibly in-progress JSON checkpoint."""
 
@@ -1906,6 +1918,25 @@ def _skip_warm_vmd_export_samples(
     return samples
 
 
+def _prepare_diagnostics_sink(path: Path, case_name: str) -> Callable[[Any], None]:
+    """Create a bounded atomic live snapshot sink for one prepare attempt."""
+
+    def publish(snapshot: Any) -> None:
+        _write_atomic_json(
+            path,
+            {
+                "schema_version": 1,
+                "case": str(case_name),
+                "phase": "prepare_mode_c",
+                "updated_at": time.time(),
+                "snapshot": snapshot,
+            },
+        )
+
+    publish({"status": "started"})
+    return publish
+
+
 def _prepare_vmd_mode_c(
     workflow: Any,
     request: Any,
@@ -2200,10 +2231,15 @@ def _run_vmd_case(
         model_name=str(getattr(source_data.header, "model_name", "") or ""),
         case=case,
     )
+    diagnostics_path = out_dir / "prepare-diagnostics.live.json"
+    diagnostics_sink = _prepare_diagnostics_sink(diagnostics_path, str(case["name"]))
     workflow = ExportWorkflowService(
-        prepare_vmd_action=create_maya_vmd_prepare_action(),
+        prepare_vmd_action=create_maya_vmd_prepare_action(
+            diagnostics_sink=diagnostics_sink,
+        ),
     )
     prepared_token, preparation_evidence = _prepare_vmd_mode_c(workflow, request, context)
+    preparation_evidence["diagnostics_path"] = str(diagnostics_path)
     # Every public Validate/Execute request, including the cold export below,
     # must carry the same edited-scene preparation token.
     request.prepared_vmd_token = prepared_token

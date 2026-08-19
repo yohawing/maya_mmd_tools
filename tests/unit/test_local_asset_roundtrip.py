@@ -20,6 +20,7 @@ from tools.local_asset_roundtrip import (
     _load_manifest,
     _motion_evaluation_frames,
     _motion_phase_evidence,
+    _prepare_diagnostics_sink,
     _prepare_vmd_mode_c,
     _run_prepared_vmd_exports,
     _import_options,
@@ -348,6 +349,21 @@ def test_motion_phase_evidence_reports_boundaries_and_edit_to_first_file():
     assert evidence["cold_export"]["wall_sec"] == 6.0
     assert evidence["edit_to_first_file"]["wall_sec"] == 20.0
     assert evidence["edit_to_first_file"]["method"].startswith("sum recorded phase wall_sec")
+
+
+def test_prepare_diagnostics_sink_publishes_atomic_live_snapshot(tmp_path):
+    path = tmp_path / "prepare-diagnostics.live.json"
+    sink = _prepare_diagnostics_sink(path, "dense")
+
+    started = json.loads(path.read_text(encoding="utf-8"))
+    assert started["phase"] == "prepare_mode_c"
+    assert started["snapshot"]["status"] == "started"
+
+    sink({"native_sampler": {"status": "sampling_chunk", "chunk_index": 2}})
+    current = json.loads(path.read_text(encoding="utf-8"))
+    assert current["case"] == "dense"
+    assert current["snapshot"]["native_sampler"]["chunk_index"] == 2
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_motion_morph_witness_uses_tolerance_without_relaxing_frame_keys():

@@ -8,7 +8,10 @@ from mmd_tools.actions.prepare_vmd_export_action import (
     PrepareVmdExportAction,
     PrepareVmdExportError,
 )
-from mmd_tools.adapters.maya_vmd_prepare_backend import MayaVmdPrepareBackend
+from mmd_tools.adapters.maya_vmd_prepare_backend import (
+    MayaVmdPrepareBackend,
+    create_maya_vmd_prepare_action,
+)
 from mmd_tools.core.vmd_data import VmdData
 
 
@@ -200,6 +203,25 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         self.assertIn("dict_to_vmd_data", diagnostics)
         self.assertEqual(diagnostics["vmd_data_sections"]["bone_frames"], 0)
         self.assertGreaterEqual(diagnostics["collect_total"], 0.0)
+
+    def test_optional_diagnostics_sink_is_wired_through_factory_and_backend(self):
+        events = []
+        sink = events.append
+        action = create_maya_vmd_prepare_action(diagnostics_sink=sink)
+        self.assertIs(action._backend._diagnostics_sink, sink)
+
+        backend = MayaVmdPrepareBackend(
+            self.cmds,
+            collector=self.collector,
+            revision_service=self.service,
+            mobject_resolver=lambda node: self.mobjects.setdefault(node, object()),
+            diagnostics_sink=sink,
+        )
+        discovery = backend.discover(_request())
+        backend.arm(_request(), discovery)
+        backend.collect(_request())
+        self.assertTrue(events)
+        self.assertIn("dependency_discovery", events[0])
 
     def test_disabled_or_stale_watch_fails_closed(self):
         discovery = self.backend.discover(_request())

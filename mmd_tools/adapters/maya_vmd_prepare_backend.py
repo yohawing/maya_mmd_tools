@@ -136,6 +136,7 @@ class MayaVmdPrepareBackend:
         revision_service: Any = None,
         mobject_resolver: Any = None,
         bone_channel_sampler: Any = None,
+        diagnostics_sink: Any = None,
     ) -> None:
         self._cmds = cmds_module
         self._collector = collector
@@ -143,6 +144,7 @@ class MayaVmdPrepareBackend:
         self._revision_service = revision_service
         self._mobject_resolver = mobject_resolver
         self._bone_channel_sampler = bone_channel_sampler
+        self._diagnostics_sink = diagnostics_sink
         self._active_watch: Any = None
         self._active_route: Optional[MayaVmdExportRoute] = None
         self._watch_generation = 0
@@ -171,6 +173,17 @@ class MayaVmdPrepareBackend:
         """Alias used by preparation reports."""
 
         return self.diagnostics
+
+    def _emit_diagnostics(self) -> None:
+        """Publish a detached bounded snapshot without affecting export."""
+
+        sink = self._diagnostics_sink
+        if not callable(sink):
+            return
+        try:
+            sink(self.diagnostics)
+        except Exception as exc:  # diagnostics must never alter export semantics
+            self._diagnostics["sink_error"] = f"{type(exc).__name__}: {exc}"
 
     def discover(self, request: Any) -> VmdExportDiscovery:
         """Resolve the Current Model and fingerprint its dependency closure."""
@@ -206,6 +219,7 @@ class MayaVmdPrepareBackend:
             "target_uuid": target_uuid,
             "target_identity": target_model,
         }
+        self._emit_diagnostics()
         return VmdExportDiscovery(
             scene_session_id=session_id,
             target_uuid=target_uuid,
@@ -295,7 +309,10 @@ class MayaVmdPrepareBackend:
             if sampler is None:
                 sampler = NativeVmdBatchSampler(self._cmds_api())
                 self._bone_channel_sampler = sampler
-            collector = VmdSceneCollector(bone_channel_sampler=sampler)
+            collector = VmdSceneCollector(
+                diagnostics_sink=self._diagnostics_sink,
+                bone_channel_sampler=sampler,
+            )
         collect = getattr(collector, "collect", None)
         if not callable(collect):
             if not callable(collector):
@@ -321,6 +338,7 @@ class MayaVmdPrepareBackend:
                 "status": "failed",
                 "error": f"{type(exc).__name__}: {exc}",
             }
+            self._emit_diagnostics()
             raise
         self._diagnostics["raw_collector"] = {
             "wall_sec": round(time.perf_counter() - collect_started, 6),
@@ -356,6 +374,7 @@ class MayaVmdPrepareBackend:
                 "status": "failed",
                 "error": f"{type(exc).__name__}: {exc}",
             }
+            self._emit_diagnostics()
             raise
         self._diagnostics["dict_to_vmd_data"] = {
             "wall_sec": round(time.perf_counter() - convert_started, 6),
@@ -378,6 +397,7 @@ class MayaVmdPrepareBackend:
                     section_counts[name] = None
         self._diagnostics["vmd_data_sections"] = section_counts
         self._diagnostics["collect_total"] = round(time.perf_counter() - collect_started, 6)
+        self._emit_diagnostics()
         return result
 
     def close(self) -> None:
@@ -659,7 +679,11 @@ class MayaVmdPrepareBackend:
 MayaVmdPrepareRevisionProvider = MayaVmdPrepareBackend
 
 
-def create_maya_vmd_prepare_action() -> Any:
+def create_maya_vmd_prepare_action(
+    *,
+    diagnostics_sink: Any = None,
+    bone_channel_sampler: Any = None,
+) -> Any:
     """Create the production backend/action pair without importing Maya.
 
     The backend resolves ``maya.cmds`` only when a prepare operation reaches
@@ -671,7 +695,10 @@ def create_maya_vmd_prepare_action() -> Any:
 
     from ..actions.prepare_vmd_export_action import PrepareVmdExportAction
 
-    backend = MayaVmdPrepareBackend()
+    backend = MayaVmdPrepareBackend(
+        diagnostics_sink=diagnostics_sink,
+        bone_channel_sampler=bone_channel_sampler,
+    )
     return PrepareVmdExportAction(backend, backend.revision_provider)
 
 
