@@ -737,6 +737,9 @@ class VmdSceneCollector:
         single_key_joints = set()
         static_keyless_joints = set()
         keyless_dependency_joints: dict[str, str] = {}
+        direct_multi_key_candidates: dict[str, list[tuple[str, int]]] = {}
+        bone_output_providers: dict[str, set[str]] = {}
+        bone_dense_diagnostic_rows: dict[str, tuple[str, str, int, int]] = {}
         if dense_sample:
             all_keyed = []
             for joint in joints:
@@ -772,6 +775,9 @@ class VmdSceneCollector:
                         # joint when its authored/pre-physics route is
                         # incomplete.
                         continue
+                    bone_output_providers.setdefault(
+                        self._mmd_bone_name(joint), set()
+                    ).add(long_name)
                     if not route and not all_source_frames:
                         incoming_state = _incoming_connection_state(
                             long_name,
@@ -805,6 +811,14 @@ class VmdSceneCollector:
                         keyless_dependency_joints[joint] = (
                             "keyless_routed_dependency"
                         )
+                    if (
+                        not route
+                        and len(source_frames) > 1
+                        and _is_direct_authored_track(long_name, _BONE_EXPORT_ATTRS)
+                    ):
+                        direct_multi_key_candidates.setdefault(
+                            self._mmd_bone_name(joint), []
+                        ).append((long_name, len(source_frames)))
                     if (
                         not route
                         and len(all_source_frames) == 1
@@ -1049,6 +1063,11 @@ class VmdSceneCollector:
             )
             single_key = joint in single_key_joints
             static_keyless = joint in static_keyless_joints
+            direct_multi_key = (
+                len(direct_multi_key_candidates.get(bone_name, ())) == 1
+                and len(bone_output_providers.get(bone_name, ())) == 1
+                and direct_multi_key_candidates[bone_name][0][0] == long_name
+            )
             raw_provenance_frames = raw_bone_frames_by_name.get(bone_name, set())
             has_new_authored_key = bool(
                 raw_provenance_frames
@@ -1134,6 +1153,8 @@ class VmdSceneCollector:
                         continue
                 frames.append(payload)
             if force_dense_sample and not single_key:
+                if direct_multi_key:
+                    continue
                 keyless_reason = keyless_dependency_joints.get(joint)
                 if keyless_reason:
                     decision = "dependency_baked"
@@ -1153,15 +1174,65 @@ class VmdSceneCollector:
                     source_key_count = 0
                 if decision is None:
                     continue
-                self._record_track_selection(
-                    "bone",
-                    bone_name,
-                    decision,
-                    reason,
-                    source_key_count,
-                    len(dense_frames or ()) if dense_sample else len(sparse_frames),
+                planned_key_count = (
+                    len(dense_frames or ()) if dense_sample else len(sparse_frames)
                 )
-        return _deduplicate_frames(frames, ("bone_name", "frame_number"))
+                current = bone_dense_diagnostic_rows.get(bone_name)
+                if current is None or (
+                    decision == "dependency_baked" and current[0] != "dependency_baked"
+                ):
+                    bone_dense_diagnostic_rows[bone_name] = (
+                        decision,
+                        reason,
+                        source_key_count,
+                        planned_key_count,
+                    )
+        for name, (decision, reason, source_key_count, planned_key_count) in (
+            bone_dense_diagnostic_rows.items()
+        ):
+            self._record_track_selection(
+                "bone",
+                name,
+                decision,
+                reason,
+                source_key_count,
+                planned_key_count,
+            )
+        bone_collapse_candidates = {
+            name: [
+                (
+                    provider,
+                    next(
+                        (
+                            count
+                            for candidate_provider, count in provider_rows
+                            if candidate_provider == provider
+                        ),
+                        0,
+                    ),
+                )
+                for provider in sorted(bone_output_providers.get(name, ()))
+            ]
+            for name, provider_rows in direct_multi_key_candidates.items()
+        }
+        bone_frames, selection_evidence = _collapse_exact_constant_direct_tracks(
+            frames,
+            "bone_name",
+            ("position", "rotation"),
+            bone_collapse_candidates,
+            ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+            len(dense_frames or ()) if dense_sample else 0,
+        )
+        for name, decision, reason, source_key_count, planned_key_count in selection_evidence:
+            self._record_track_selection(
+                "bone",
+                name,
+                decision,
+                reason,
+                source_key_count,
+                planned_key_count,
+            )
+        return bone_frames
 
     def collect_ik_show_hide_frames(
         self,
@@ -1866,6 +1937,19 @@ class VmdSceneCollector:
                     not in dropped_providers
                 ]
 
+        direct_multi_key_candidates: dict[str, list[tuple[str, int]]] = {}
+        if standard_dense_mode:
+            for node, attr, morph_name, ranged_source_frames, direct_single in channels:
+                if direct_single or node in controller_nodes:
+                    continue
+                if (
+                    len(ranged_source_frames) > 1
+                    and _is_direct_authored_track(node, (attr,))
+                ):
+                    direct_multi_key_candidates.setdefault(
+                        str(morph_name), []
+                    ).append((f"{node}.{attr}", len(ranged_source_frames)))
+
         def append_frame(
             node,
             attr,
@@ -1968,6 +2052,13 @@ class VmdSceneCollector:
             for node, _attr, morph_name, ranged_source_frames, direct_single in channels:
                 if direct_single:
                     continue
+                direct_multi_key = (
+                    len(direct_multi_key_candidates.get(str(morph_name), ())) == 1
+                    and direct_multi_key_candidates[str(morph_name)][0][0]
+                    == f"{node}.{_attr}"
+                )
+                if direct_multi_key:
+                    continue
                 keyless_dependency = (node, _attr) in keyless_dependency_channels
                 dependency = node in controller_nodes or keyless_dependency
                 reason = (
@@ -2001,7 +2092,24 @@ class VmdSceneCollector:
                     source_key_count,
                     planned_key_count,
                 )
-        return _deduplicate_frames(frames, ("morph_name", "frame_number"))
+        morph_frames, selection_evidence = _collapse_exact_constant_direct_tracks(
+            frames,
+            "morph_name",
+            ("weight",),
+            direct_multi_key_candidates,
+            (0.0,),
+            len(dense_frame_samples or ()) if dense_sample else 0,
+        )
+        for name, decision, reason, source_key_count, planned_key_count in selection_evidence:
+            self._record_track_selection(
+                "morph",
+                name,
+                decision,
+                reason,
+                source_key_count,
+                planned_key_count,
+            )
+        return morph_frames
 
     def collect_camera_frames(
         self,
@@ -2656,6 +2764,73 @@ def _deduplicate_frames(frames: Iterable[dict], key_fields: Sequence[str]) -> li
         key = tuple(frame[field] for field in key_fields)
         unique.setdefault(key, frame)
     return sorted(unique.values(), key=lambda item: tuple(item[field] for field in key_fields))
+
+
+def _collapse_exact_constant_direct_tracks(
+    frames: Iterable[dict],
+    key_field: str,
+    signature_fields: Sequence[str],
+    candidates: Mapping[str, Sequence[tuple[str, int]]],
+    default_signature: tuple,
+    planned_key_count: int,
+) -> tuple[list[dict], list[tuple[str, str, str, int, int]]]:
+    """Collapse exact-constant direct tracks after VMD output deduplication.
+
+    ``candidates`` is populated only for direct-authored multi-key channels.
+    A name with multiple providers remains dense and is intentionally excluded
+    from this optimization.  Values are compared exactly as emitted; no source
+    curve or floating-point tolerance is involved.
+    """
+
+    unique = _deduplicate_frames(frames, (key_field, "frame_number"))
+    grouped_frames: dict[Any, list[dict]] = {}
+    for frame in unique:
+        grouped_frames.setdefault(frame[key_field], []).append(frame)
+    evidence = []
+    for name, provider_rows in candidates.items():
+        providers = {provider for provider, _count in provider_rows}
+        if len(providers) != 1:
+            continue
+        track = grouped_frames.get(name, [])
+        if not track:
+            continue
+        signatures = {
+            tuple(frame[field] for field in signature_fields) for frame in track
+        }
+        source_key_count = max(count for _provider, count in provider_rows)
+        if len(signatures) != 1:
+            evidence.append(
+                (
+                    name,
+                    "authored_sampled",
+                    "multiple_source_keys",
+                    source_key_count,
+                    planned_key_count,
+                )
+            )
+            continue
+
+        first = track[0]
+        is_default = tuple(first[field] for field in signature_fields) == default_signature
+        if not is_default:
+            grouped_frames[name] = [first]
+        else:
+            grouped_frames.pop(name, None)
+        evidence.append(
+            (
+                name,
+                "omitted_default" if is_default else "constant_one_key",
+                "dense_exact_constant",
+                source_key_count,
+                0 if is_default else 1,
+            )
+        )
+    flattened = [
+        frame
+        for track in grouped_frames.values()
+        for frame in track
+    ]
+    return _deduplicate_frames(flattened, (key_field, "frame_number")), evidence
 
 
 def _ik_baseline_time(

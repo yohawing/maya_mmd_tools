@@ -627,6 +627,109 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(selection["counts"]["constant_one_key"], 0)
         self.assertEqual(selection["counts"]["omitted_default"], 0)
 
+    def test_mode_c_direct_constant_multi_key_bone_collapses_after_dense_sampling(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
+        self.cmds.keys[("center_joint", "translateX")] = {0.0: 0.5, 2.0: 0.5}
+        self.cmds.attrs[("center_joint", "translateX")] = 0.5
+
+        collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
+        result = collector.collect(
+            {"target_model": "model_root", "vmd_mode": "C", "frame_range": (0, 2)}
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in result["bone_frames"]], [0])
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        self.assertEqual(evidence[0]["decision"], "constant_one_key")
+        self.assertEqual(evidence[0]["reason"], "dense_exact_constant")
+        self.assertEqual(evidence[0]["source_key_count"], 2)
+        self.assertEqual(evidence[0]["planned_key_count"], 1)
+
+    def test_mode_c_direct_nonconstant_multi_key_bone_stays_dense(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
+        self.cmds.keys[("center_joint", "translateX")] = {
+            0.0: 0.0,
+            1.0: 1.0,
+            2.0: 1.0000000001,
+        }
+
+        collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
+        result = collector.collect(
+            {"target_model": "model_root", "vmd_mode": "C", "frame_range": (0, 2)}
+        )
+
+        self.assertEqual(
+            [frame["frame_number"] for frame in result["bone_frames"]], [0, 1, 2]
+        )
+        self.assertEqual(
+            collector.diagnostics["track_selection"]["counts"]["authored_sampled"], 1
+        )
+
+    def test_mode_c_routed_constant_multi_key_bone_remains_dependency_dense(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "center_joint": "joint",
+                "driver": "transform",
+            }
+        )
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
+        self.cmds.keys[("driver", "output")] = {0.0: 0.5, 2.0: 0.5}
+
+        collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
+        frames = collector.collect_bone_frames(
+            ["center_joint"],
+            0,
+            2,
+            input_routes={"center_joint": {"translateX": ("driver", "output")}},
+            dense_sample=True,
+            force_dense_sample=True,
+            dense_frame_samples=[0, 1, 2],
+            time_converter=lambda value: value,
+            bone_channel_sampler=self._timeline_sampler(),
+        )
+
+        self.assertEqual(
+            [frame["frame_number"] for frame in frames], [0, 1, 2]
+        )
+        self.assertEqual(
+            collector.diagnostics["track_selection"]["counts"]["dependency_baked"], 1
+        )
+
+    def test_mode_c_bone_constant_multi_key_duplicate_providers_stay_dense(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "left_joint": "joint",
+                "right_joint": "joint",
+            }
+        )
+        self.cmds.children["model_root"] = ["left_joint", "right_joint"]
+        self.cmds.attrs[("left_joint", ATTR_MMD_BONE_NAME)] = "shared"
+        self.cmds.attrs[("right_joint", ATTR_MMD_BONE_NAME)] = "shared"
+        for joint in ("left_joint", "right_joint"):
+            self.cmds.keys[(joint, "translateX")] = {0.0: 0.5, 2.0: 0.5}
+            self.cmds.attrs[(joint, "translateX")] = 0.5
+
+        collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
+        result = collector.collect(
+            {"target_model": "model_root", "vmd_mode": "C", "frame_range": (0, 2)}
+        )
+
+        self.assertEqual(
+            [frame["frame_number"] for frame in result["bone_frames"]], [0, 1, 2]
+        )
+        self.assertEqual(
+            collector.diagnostics["track_selection"]["counts"]["constant_one_key"], 0
+        )
+        selection = collector.diagnostics["track_selection"]
+        self.assertEqual(selection["counts"]["authored_sampled"], 1)
+        self.assertEqual(len(selection["evidence"]), 1)
+
     def test_mode_c_direct_single_key_bone_excludes_only_that_native_track(self):
         self.cmds.node_types.update(
             {"model_root": "transform", "single_joint": "joint", "dense_joint": "joint"}
@@ -678,6 +781,131 @@ class TestVmdSceneCollector(unittest.TestCase):
         selection = collector.diagnostics["track_selection"]
         self.assertEqual(selection["counts"]["omitted_default"], 1)
         self.assertEqual(selection["counts"]["constant_one_key"], 1)
+
+    def test_mode_c_direct_constant_multi_key_morph_collapses_after_timeline_sampling(self):
+        self.cmds.node_types["face_bs"] = "blendShape"
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.aliases["face_bs.weight[0]"] = "smile"
+        self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.5, 2.0: 0.5}
+        self.cmds.attrs[("face_bs", "weight[0]")] = 0.5
+
+        collector = VmdSceneCollector()
+        frames = collector.collect_morph_frames(
+            ["face_bs"],
+            time_converter=lambda value: value,
+            dense_sample=True,
+            dense_frame_samples=[0, 1, 2],
+            timeline_evaluation=True,
+        )
+
+        self.assertEqual(frames, [{"morph_name": "smile", "frame_number": 0, "weight": 0.5}])
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        self.assertEqual(evidence[0]["decision"], "constant_one_key")
+        self.assertEqual(evidence[0]["reason"], "dense_exact_constant")
+        self.assertEqual(evidence[0]["source_key_count"], 2)
+        self.assertEqual(evidence[0]["planned_key_count"], 1)
+
+    def test_mode_c_direct_nonconstant_multi_key_morph_stays_dense(self):
+        self.cmds.node_types["face_bs"] = "blendShape"
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.aliases["face_bs.weight[0]"] = "smile"
+        self.cmds.keys[("face_bs", "weight[0]")] = {
+            0.0: 0.5,
+            1.0: 0.6,
+            2.0: 0.5000000001,
+        }
+
+        collector = VmdSceneCollector()
+        frames = collector.collect_morph_frames(
+            ["face_bs"],
+            time_converter=lambda value: value,
+            dense_sample=True,
+            dense_frame_samples=[0, 1, 2],
+            timeline_evaluation=True,
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+        self.assertEqual(
+            collector.diagnostics["track_selection"]["counts"]["authored_sampled"], 1
+        )
+
+    def test_mode_c_controller_constant_multi_key_morph_remains_dependency_dense(self):
+        self.cmds.node_types.update(
+            {"model_root": "transform", "morph_controller": "mmdMorphController"}
+        )
+        self.cmds.attrs[("model_root", "mmd_morph_controller")] = True
+        self.cmds.connections[("model_root", "mmd_morph_controller", True, False)] = [
+            "morph_controller"
+        ]
+        self.cmds.keys[("morph_controller", "inputWeight[3]")] = {
+            0.0: 0.5,
+            2.0: 0.5,
+        }
+        self.cmds.attrs[("morph_controller", "inputWeight[3]")] = 0.5
+        metadata = [SimpleNamespace(morph_type="bone", name="bone_morph", index=3)]
+
+        with mock.patch.object(
+            collector_module, "iter_morph_network_metadata", return_value=metadata
+        ):
+            collector = VmdSceneCollector()
+            frames = collector.collect_morph_frames(
+                [],
+                target_model="model_root",
+                time_converter=lambda value: value,
+                dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+                timeline_evaluation=True,
+            )
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+        self.assertEqual(
+            collector.diagnostics["track_selection"]["counts"]["dependency_baked"], 1
+        )
+        self.assertEqual(
+            collector.diagnostics["track_selection"]["evidence"][0]["reason"],
+            "morph_controller_route",
+        )
+
+    def test_mode_c_exact_default_multi_key_bone_and_morph_are_omitted(self):
+        self.cmds.node_types.update(
+            {"model_root": "transform", "center_joint": "joint", "face_bs": "blendShape"}
+        )
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
+        self.cmds.keys[("center_joint", "translateX")] = {0.0: 0.0, 2.0: 0.0}
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.aliases["face_bs.weight[0]"] = "zero"
+        self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.0, 2.0: 0.0}
+        self.cmds.attrs[("face_bs", "weight[0]")] = 0.0
+
+        collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
+        self.assertEqual(
+            collector.collect_bone_frames(
+                ["center_joint"],
+                dense_sample=True,
+                force_dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+                time_converter=lambda value: value,
+                bone_channel_sampler=self._timeline_sampler(),
+            ),
+            [],
+        )
+        self.assertEqual(
+            collector.collect_morph_frames(
+                ["face_bs"],
+                dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+                time_converter=lambda value: value,
+                timeline_evaluation=True,
+            ),
+            [],
+        )
+        selection = collector.diagnostics["track_selection"]
+        self.assertEqual(selection["counts"]["omitted_default"], 2)
+        self.assertEqual(
+            [entry["reason"] for entry in selection["evidence"]],
+            ["dense_exact_constant", "dense_exact_constant"],
+        )
 
     def _configure_static_morph(self, weight=None):
         self.cmds.node_types["face_bs"] = "blendShape"
@@ -1379,7 +1607,7 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         self.assertEqual(
             [frame["frame_number"] for frame in result["bone_frames"]],
-            [0, 1, 2],
+            [],
         )
 
     def test_explicit_raw_roundtrip_preserves_transform_values(self):
