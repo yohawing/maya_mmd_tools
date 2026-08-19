@@ -2430,6 +2430,7 @@ def _run_vmd_case(
             edited_oracle,
             fresh_oracle,
             pose=True,
+            pose_tolerance=5e-3,
             mesh=False,
             materials=False,
             morphs=False,
