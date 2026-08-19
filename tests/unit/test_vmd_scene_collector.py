@@ -76,6 +76,11 @@ class FakeCmds:
         self.aliases = {}
         self.current_unit = "ntsc"
         self.relative_calls = []
+        self.current_time_calls = []
+        self.get_attr_calls = []
+        self.playing = False
+        self.fail_current_time_at = None
+        self.fail_restore_time = None
 
     def ls(self, pattern=None, type=None, objectsOnly=False, long=False, uuid=False):  # noqa: A002,N803
         if pattern and not type and not objectsOnly:
@@ -121,6 +126,7 @@ class FakeCmds:
         return exists and (node, attr) in self.attrs
 
     def getAttr(self, plug, time=None):  # noqa: N802
+        self.get_attr_calls.append((plug, time, self.current_time))
         node, attr = plug.split(".", 1)
         if attr == "worldMatrix[0]":
             return self.world_matrices.get(
@@ -146,6 +152,10 @@ class FakeCmds:
             )
         if time is not None:
             return self.keys.get((node, attr), {}).get(float(time), self.attrs.get((node, attr), 0.0))
+        if (node, attr) in self.keys:
+            return self.keys[(node, attr)].get(
+                self.current_time, self.attrs.get((node, attr), 0.0)
+            )
         return self.attrs.get((node, attr), 0.0)
 
     def listConnections(self, plug, source=False, destination=False, **_kwargs):  # noqa: N802,N803
@@ -156,8 +166,22 @@ class FakeCmds:
         if query:
             return self.current_time
         if edit:
+            if self.fail_current_time_at is not None and float(time) == float(
+                self.fail_current_time_at
+            ):
+                raise RuntimeError("timeline evaluation failed")
+            if self.fail_restore_time is not None and float(time) == float(
+                self.fail_restore_time
+            ):
+                raise RuntimeError("timeline restoration failed")
             self.current_time = float(time)
+            self.current_time_calls.append(float(time))
         return self.current_time
+
+    def play(self, query=False, state=False):
+        if query and state:
+            return self.playing
+        return None
 
     def currentUnit(self, time=None, query=False):  # noqa: N802
         if query:
@@ -287,6 +311,177 @@ class TestVmdSceneCollector(unittest.TestCase):
             [0, 1, 2],
         )
         self.assertNotIn("interpolation", result["bone_frames"][0])
+
+    def test_mode_c_morph_sampling_is_frame_major_current_time_and_restores(self):
+        self.cmds.node_types["face_bs"] = "blendShape"
+        self.cmds.blendshape_weights["face_bs"] = 2
+        self.cmds.aliases.update(
+            {
+                "face_bs.weight[0]": "smile",
+                "face_bs.weight[1]": "blink",
+            }
+        )
+        self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.0, 2.0: 0.8}
+        self.cmds.keys[("face_bs", "weight[1]")] = {0.0: 0.1, 2.0: 0.9}
+        self.cmds.current_time = 9.0
+
+        frames = VmdSceneCollector().collect_morph_frames(
+            ["face_bs"],
+            time_converter=lambda value: value,
+            dense_sample=True,
+            dense_frame_samples=[2, 0, 1],
+            timeline_evaluation=True,
+        )
+
+        self.assertEqual(len(frames), 6)
+        self.assertEqual(self.cmds.current_time_calls, [0.0, 1.0, 2.0, 9.0])
+        sampled_reads = [
+            call for call in self.cmds.get_attr_calls if call[0].startswith("face_bs.weight")
+        ]
+        self.assertTrue(sampled_reads)
+        self.assertTrue(all(time is None for _plug, time, _current in sampled_reads))
+        self.assertEqual(self.cmds.current_time, 9.0)
+
+    def test_sparse_morph_sampling_keeps_alternate_time_reads(self):
+        self.cmds.node_types["face_bs"] = "blendShape"
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.0, 2.0: 0.8}
+
+        VmdSceneCollector().collect_morph_frames(["face_bs"])
+
+        sampled_reads = [
+            call
+            for call in self.cmds.get_attr_calls
+            if call[0] == "face_bs.weight[0]"
+        ]
+        self.assertEqual([time for _plug, time, _current in sampled_reads], [0.0, 2.0])
+        self.assertEqual(self.cmds.current_time_calls, [])
+
+    def test_mode_c_camera_and_light_use_current_frame_without_double_scrub(self):
+        self.cmds.node_types.update(
+            {"mmd_camera": "transform", "mmd_light": "transform"}
+        )
+        for attr in (
+            "translateX",
+            "translateY",
+            "translateZ",
+            "rotateX",
+            "rotateY",
+            "rotateZ",
+            "mmd_camera_distance",
+            "mmd_camera_viewing_angle",
+            "mmd_camera_perspective",
+        ):
+            self.cmds.keys[("mmd_camera", attr)] = {0.0: 0.0, 2.0: 2.0}
+        for attr in (
+            "mmd_light_colorR",
+            "mmd_light_colorG",
+            "mmd_light_colorB",
+            "rotateX",
+            "rotateY",
+        ):
+            self.cmds.keys[("mmd_light", attr)] = {0.0: 0.0, 2.0: 1.0}
+        self.cmds.current_time = 7.0
+
+        VmdSceneCollector().collect_camera_frames(
+            ["mmd_camera"],
+            time_converter=lambda value: value,
+            dense_sample=True,
+            dense_frame_samples=[2, 0, 1],
+            timeline_evaluation=True,
+        )
+        self.assertEqual(self.cmds.current_time_calls, [0.0, 1.0, 2.0, 7.0])
+        camera_reads = [
+            call for call in self.cmds.get_attr_calls if call[0].startswith("mmd_camera.")
+        ]
+        self.assertTrue(all(time is None for _plug, time, _current in camera_reads))
+
+        self.cmds.current_time_calls.clear()
+        self.cmds.get_attr_calls.clear()
+        VmdSceneCollector().collect_light_frames(
+            ["mmd_light"],
+            time_converter=lambda value: value,
+            dense_sample=True,
+            dense_frame_samples=[2, 0, 1],
+            timeline_evaluation=True,
+        )
+        self.assertEqual(self.cmds.current_time_calls, [0.0, 1.0, 2.0, 7.0])
+        light_reads = [
+            call for call in self.cmds.get_attr_calls if call[0].startswith("mmd_light.")
+        ]
+        self.assertTrue(all(time is None for _plug, time, _current in light_reads))
+
+    def test_mode_c_ik_uses_ascending_current_time_and_restores(self):
+        self.cmds.attrs[("ik_solver", "enabled")] = False
+        self.cmds.keys[("ik_solver", "enabled")] = {2.0: True}
+        self.cmds.current_time = 8.0
+        with mock.patch.object(
+            collector_module,
+            "collect_ik_nodes_by_bone_name",
+            return_value={"左足ＩＫ": "ik_solver"},
+        ):
+            frames = VmdSceneCollector().collect_ik_show_hide_frames(
+                "model_root",
+                time_converter=lambda value: value,
+                timeline_evaluation=True,
+            )
+
+        self.assertEqual([row["frame_number"] for row in frames], [0, 2])
+        self.assertEqual(self.cmds.current_time_calls, [0.0, 2.0, 8.0])
+        ik_reads = [
+            call for call in self.cmds.get_attr_calls if call[0] == "ik_solver.enabled"
+        ]
+        self.assertTrue(all(time is None for _plug, time, _current in ik_reads))
+
+    def test_mode_c_timeline_blocks_playback_and_restores_after_sample_error(self):
+        self.cmds.node_types["face_bs"] = "blendShape"
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.0, 1.0: 1.0}
+        self.cmds.playing = True
+        with self.assertRaisesRegex(RuntimeError, "during playback"):
+            VmdSceneCollector().collect_morph_frames(
+                ["face_bs"],
+                dense_sample=True,
+                dense_frame_samples=[0, 1],
+                timeline_evaluation=True,
+            )
+
+        self.cmds.playing = False
+        self.cmds.current_time = 7.0
+        self.cmds.fail_current_time_at = 1.0
+        with self.assertRaisesRegex(RuntimeError, "at frame 1"):
+            VmdSceneCollector().collect_morph_frames(
+                ["face_bs"],
+                dense_sample=True,
+                dense_frame_samples=[0, 1],
+                timeline_evaluation=True,
+            )
+        self.assertEqual(self.cmds.current_time, 7.0)
+
+    def test_mode_c_timeline_restore_failure_blocks_export(self):
+        self.cmds.node_types["face_bs"] = "blendShape"
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.5}
+        self.cmds.current_time = 7.0
+        self.cmds.fail_restore_time = 7.0
+
+        with self.assertRaisesRegex(RuntimeError, "restoration failed"):
+            VmdSceneCollector().collect_morph_frames(
+                ["face_bs"],
+                dense_sample=True,
+                dense_frame_samples=[0],
+                timeline_evaluation=True,
+            )
+
+    def test_mode_c_timeline_reader_rejects_backward_sampling(self):
+        self.cmds.current_time = 9.0
+
+        with self.assertRaisesRegex(RuntimeError, "ascending order"):
+            with collector_module._MayaTimelineReader() as reader:
+                reader.set_frame(2)
+                reader.set_frame(1)
+
+        self.assertEqual(self.cmds.current_time, 9.0)
 
     def test_diagnostics_sink_preserves_collection_values_and_reports_counts(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})

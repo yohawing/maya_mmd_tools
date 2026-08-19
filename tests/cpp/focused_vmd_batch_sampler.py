@@ -109,6 +109,85 @@ def _assert_bone_frame_matches(actual_frames: List[dict], expected_frames: List[
                 _assert_close(value, source, f"collector frame {index} {key}[{component}]")
 
 
+def _light_direction(rotate_x: float, rotate_y: float) -> tuple[float, float, float]:
+    """Convert the Maya light rotation independently of the collector."""
+    rx = math.radians(rotate_x)
+    ry = math.radians(rotate_y)
+    cos_rx = math.cos(rx)
+    return (
+        -math.sin(ry) * cos_rx,
+        math.sin(rx),
+        math.cos(ry) * cos_rx,
+    )
+
+
+def _assert_sorted_frames(rows: List[dict], label: str) -> None:
+    frame_numbers = [int(row["frame_number"]) for row in rows]
+    if frame_numbers != sorted(frame_numbers):
+        raise RuntimeError(f"{label} frames are not ascending: {frame_numbers!r}")
+
+
+def _collect_nonbone_timeline_oracle(
+    cmds: Any,
+    blend_shape: str,
+    camera: str,
+    light: str,
+    ik_solver: str,
+    frames: Iterable[float],
+) -> dict[str, dict[int, Any]]:
+    """Evaluate the non-bone fixture through normal Maya Timeline reads."""
+    entry_time = float(cmds.currentTime(query=True))
+    oracle: dict[str, dict[int, Any]] = {
+        "morph": {},
+        "camera": {},
+        "light": {},
+        "ik": {},
+    }
+    try:
+        for frame in frames:
+            cmds.currentTime(frame, edit=True)
+            frame_number = int(frame)
+            oracle["morph"][frame_number] = float(
+                cmds.getAttr(f"{blend_shape}.weight[0]")
+            )
+            oracle["camera"][frame_number] = {
+                "position": (
+                    float(cmds.getAttr(f"{camera}.translateX")),
+                    float(cmds.getAttr(f"{camera}.translateY")),
+                    -float(cmds.getAttr(f"{camera}.translateZ")),
+                ),
+                "rotation": (
+                    math.radians(float(cmds.getAttr(f"{camera}.rotateX"))),
+                    math.radians(float(cmds.getAttr(f"{camera}.rotateY"))),
+                    -math.radians(float(cmds.getAttr(f"{camera}.rotateZ"))),
+                ),
+                "distance": float(
+                    cmds.getAttr(f"{camera}.mmd_camera_distance")
+                ),
+                "viewing_angle": int(
+                    round(cmds.getAttr(f"{camera}.mmd_camera_viewing_angle"))
+                ),
+                "perspective": int(
+                    round(cmds.getAttr(f"{camera}.mmd_camera_perspective"))
+                ),
+            }
+            light_rx = float(cmds.getAttr(f"{light}.rotateX"))
+            light_ry = float(cmds.getAttr(f"{light}.rotateY"))
+            oracle["light"][frame_number] = {
+                "color": tuple(
+                    float(cmds.getAttr(f"{light}.mmd_light_color{axis}"))
+                    for axis in "RGB"
+                ),
+                "position": _light_direction(light_rx, light_ry),
+            }
+            oracle["ik"][frame_number] = bool(
+                cmds.getAttr(f"{ik_solver}.enabled")
+            )
+    finally:
+        cmds.currentTime(entry_time, edit=True)
+    return oracle
+
+
 def main() -> int:
     """Run direct, static, timed, Timeline-policy, and registration checks."""
     import maya.cmds as cmds
@@ -339,6 +418,180 @@ def main() -> int:
             before_time,
             "collector current time preservation",
         )
+
+        # Exercise all non-bone Mode C tracks without Prepare/ExportWorkflow.
+        # The independent oracle uses only currentTime + current-frame getAttr.
+        cmds.currentUnit(time="ntsc")
+        model_root = cmds.group(empty=True, name="focused_vmd_mode_c_root")
+        cmds.parent(joint, model_root)
+
+        base_mesh, _base_shape = cmds.polyCube(name="focused_vmd_morph_base")
+        target_mesh, _target_shape = cmds.polyCube(name="focused_vmd_morph_target")
+        cmds.parent(base_mesh, model_root)
+        cmds.parent(target_mesh, model_root)
+        blend_shape = cmds.blendShape(
+            target_mesh,
+            base_mesh,
+            name="focused_vmd_mode_c_blendShape",
+        )[0]
+        cmds.addAttr(
+            blend_shape,
+            longName="mmd_blendshape_morph_names_json",
+            dataType="string",
+        )
+        cmds.setAttr(
+            f"{blend_shape}.mmd_blendshape_morph_names_json",
+            '{"0":"smile"}',
+            type="string",
+        )
+        cmds.setKeyframe(blend_shape, attribute="weight[0]", time=0.0, value=0.0)
+        cmds.setKeyframe(blend_shape, attribute="weight[0]", time=2.0, value=1.0)
+
+        camera, _camera_shape = cmds.camera(name="focused_vmd_mode_c_camera")
+        for attr, attr_type in (
+            ("mmd_camera_distance", "double"),
+            ("mmd_camera_viewing_angle", "double"),
+            ("mmd_camera_perspective", "long"),
+        ):
+            cmds.addAttr(camera, longName=attr, attributeType=attr_type, keyable=True)
+        camera_keys = {
+            "translateX": (0.0, 2.0),
+            "translateY": (1.0, 3.0),
+            "translateZ": (-2.0, -4.0),
+            "rotateX": (0.0, 10.0),
+            "rotateY": (0.0, 20.0),
+            "rotateZ": (0.0, -30.0),
+            "mmd_camera_distance": (-10.0, -20.0),
+            "mmd_camera_viewing_angle": (40.0, 50.0),
+            "mmd_camera_perspective": (0.0, 1.0),
+        }
+        for attr, (start_value, end_value) in camera_keys.items():
+            cmds.setKeyframe(camera, attribute=attr, time=0.0, value=start_value)
+            cmds.setKeyframe(camera, attribute=attr, time=2.0, value=end_value)
+
+        light = cmds.group(empty=True, name="focused_vmd_mode_c_light")
+        cmds.addAttr(
+            light,
+            longName="mmd_light_color",
+            usedAsColor=True,
+            attributeType="float3",
+        )
+        for axis, values in zip("RGB", ((0.1, 0.3), (0.2, 0.4), (0.3, 0.5))):
+            attr = f"mmd_light_color{axis}"
+            cmds.addAttr(
+                light,
+                longName=attr,
+                attributeType="float",
+                parent="mmd_light_color",
+                keyable=True,
+            )
+            cmds.setKeyframe(light, attribute=attr, time=0.0, value=values[0])
+            cmds.setKeyframe(light, attribute=attr, time=2.0, value=values[1])
+        for attr, values in (("rotateX", (0.0, 20.0)), ("rotateY", (0.0, 40.0))):
+            cmds.setKeyframe(light, attribute=attr, time=0.0, value=values[0])
+            cmds.setKeyframe(light, attribute=attr, time=2.0, value=values[1])
+
+        ik_solver = cmds.createNode("mmdCcdIk", name="focused_vmd_mode_c_ik")
+        cmds.addAttr(ik_solver, longName="mmd_ik_bone_name", dataType="string")
+        cmds.setAttr(
+            f"{ik_solver}.mmd_ik_bone_name", "left leg IK", type="string"
+        )
+        cmds.addAttr(ik_solver, longName="owner_joint", attributeType="message")
+        cmds.connectAttr(f"{joint}.message", f"{ik_solver}.owner_joint")
+        cmds.setKeyframe(ik_solver, attribute="enabled", time=0.0, value=1.0)
+        cmds.setKeyframe(ik_solver, attribute="enabled", time=2.0, value=0.0)
+
+        entry_time = 7.0
+        cmds.currentTime(entry_time, edit=True)
+        nonbone_oracle = _collect_nonbone_timeline_oracle(
+            cmds,
+            blend_shape,
+            camera,
+            light,
+            ik_solver,
+            collector_frames,
+        )
+        mode_c_collector = VmdSceneCollector(
+            bone_channel_sampler=NativeVmdBatchSampler(cmds)
+        )
+        collected = mode_c_collector.collect(
+            {
+                "target_model": model_root,
+                "joints": [joint],
+                "blend_shapes": [blend_shape],
+                "cameras": [camera],
+                "lights": [light],
+                "vmd_mode": "C",
+                "frame_range": (0.0, 2.0),
+            }
+        )
+        _assert_close(
+            float(cmds.currentTime(query=True)),
+            entry_time,
+            "Mode C non-bone current time preservation",
+        )
+        expected_counts = {
+            "morph_frames": 3,
+            "camera_frames": 3,
+            "light_frames": 3,
+            "ik_show_hide_frames": 2,
+        }
+        for section in (
+            "morph_frames",
+            "camera_frames",
+            "light_frames",
+            "ik_show_hide_frames",
+        ):
+            if len(collected[section]) != expected_counts[section]:
+                raise RuntimeError(
+                    f"Mode C {section} count mismatch: {len(collected[section])}"
+                )
+            _assert_sorted_frames(collected[section], section)
+
+        for row in collected["morph_frames"]:
+            _assert_close(
+                float(row["weight"]),
+                nonbone_oracle["morph"][int(row["frame_number"])],
+                f"Mode C morph frame {row['frame_number']}",
+            )
+        for row in collected["camera_frames"]:
+            expected = nonbone_oracle["camera"][int(row["frame_number"])]
+            for field in ("position", "rotation"):
+                for component, (actual, source) in enumerate(
+                    zip(row[field], expected[field])
+                ):
+                    _assert_close(
+                        float(actual),
+                        float(source),
+                        f"Mode C camera {field}[{component}]",
+                    )
+            _assert_close(
+                float(row["distance"]),
+                float(expected["distance"]),
+                "Mode C camera distance",
+            )
+            for field in ("viewing_angle", "perspective"):
+                if int(row[field]) != int(expected[field]):
+                    raise RuntimeError(f"Mode C camera {field} mismatch")
+        for row in collected["light_frames"]:
+            expected = nonbone_oracle["light"][int(row["frame_number"])]
+            for field in ("color", "position"):
+                for component, (actual, source) in enumerate(
+                    zip(row[field], expected[field])
+                ):
+                    _assert_close(
+                        float(actual),
+                        float(source),
+                        f"Mode C light {field}[{component}]",
+                    )
+        for row in collected["ik_show_hide_frames"]:
+            frame_number = int(row["frame_number"])
+            expected_state = nonbone_oracle["ik"][frame_number]
+            if row["ik_states"] != [("left leg IK", expected_state)]:
+                raise RuntimeError(
+                    f"Mode C IK frame {frame_number} mismatch: {row!r}"
+                )
+        print("OK: Mode C morph/IK/camera/light normal Timeline parity")
 
         _must_fail(
             cmds,
