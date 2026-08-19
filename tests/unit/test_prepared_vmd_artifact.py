@@ -173,6 +173,29 @@ class PreparedVmdArtifactTests(unittest.TestCase):
         self.assertFalse(stage_directory.exists())
         self.assertFalse(session.cleanup())
 
+    def test_incremental_session_forwards_expected_frame_range(self):
+        verifier = _StreamingVerifier()
+        with PreparedVmdStageSession(
+            output_verifier=verifier,
+            expected_frame_range=(4, 8),
+        ) as session:
+            session.write_frame("morphs", {"morph_name": "笑い", "frame": 4, "value": 0.25})
+            receipt = session.finish()
+
+        self.assertEqual(verifier.calls[0][2]["expected_frame_range"], (4, 8))
+        self.assertFalse(verifier.calls[0][2]["ack_warnings"])
+        receipt.cleanup()
+
+    def test_incremental_session_frame_range_failure_removes_stage(self):
+        session = PreparedVmdStageSession(expected_frame_range=(3, 3))
+        stage_directory = Path(session.stage_directory)
+        session.write_frame("morphs", {"morph_name": "笑い", "frame": 2, "value": 0.25})
+
+        with self.assertRaisesRegex(PreparedVmdArtifactError, "verification blocked"):
+            session.finish()
+
+        self.assertFalse(stage_directory.exists())
+
     def test_incremental_session_default_verifier_parses_semantics_and_identity(self):
         with PreparedVmdStageSession("モデル") as session:
             session.write_frame(

@@ -178,10 +178,12 @@ class PreparedVmdStageSession:
         mode: str = "C",
         output_verifier: Any = verify_vmd_output_streaming,
         raw_loss_warning_required: bool = False,
+        expected_frame_range: Optional[Tuple[int, int]] = None,
     ) -> None:
         self._mode = mode
         self._output_verifier = output_verifier
         self._raw_loss_warning_required = bool(raw_loss_warning_required)
+        self._expected_frame_range = expected_frame_range
         self._stage_directory = Path(tempfile.mkdtemp(prefix="mmd-vmd-stage-"))
         self._file_path = self._stage_directory / "prepared.vmd"
         self._writer: Optional[Any] = None
@@ -303,7 +305,7 @@ class PreparedVmdStageSession:
         *,
         raw_loss_warning_required: Any = _UNSET,
     ) -> dict[str, Any]:
-        return {
+        result = {
             "expected_counts": summary.counts,
             "expected_bounds": summary.frame_bounds,
             "expected_sha256": summary.sha256,
@@ -317,6 +319,9 @@ class PreparedVmdStageSession:
             # publish workflow may acknowledge them.
             "ack_warnings": False,
         }
+        if self._expected_frame_range is not None:
+            result["expected_frame_range"] = self._expected_frame_range
+        return result
 
     def _verify(
         self,

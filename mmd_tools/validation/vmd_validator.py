@@ -36,6 +36,40 @@ def _issue(code: str, path: str, message: str) -> ExportValidationIssue:
     return ExportValidationIssue(code, "fatal", True, path, message)
 
 
+def _normalize_frame_range(
+    frame_range: Optional[Tuple[int, int]],
+) -> Tuple[Optional[Tuple[int, int]], Optional[ExportValidationIssue]]:
+    """Normalize a requested frame range using the VMD validation contract."""
+
+    if frame_range is None:
+        return None, None
+    if not isinstance(frame_range, (tuple, list)) or len(frame_range) != 2:
+        return None, _issue(
+            "VMD_FRAME_RANGE",
+            "frame_range",
+            "VMD frame range must contain two integers",
+        )
+    start, end = frame_range
+    if (
+        isinstance(start, bool)
+        or isinstance(end, bool)
+        or not isinstance(start, int)
+        or not isinstance(end, int)
+    ):
+        return None, _issue(
+            "VMD_FRAME_RANGE",
+            "frame_range",
+            "VMD frame range must contain two integers",
+        )
+    if start < 0 or end < start or end > 0xFFFFFFFF:
+        return None, _issue(
+            "VMD_FRAME_RANGE",
+            "frame_range",
+            "VMD frame range must be ordered unsigned 32-bit integers",
+        )
+    return (start, end), None
+
+
 def _warning(code: str, path: str, message: str) -> ExportValidationIssue:
     """Create a non-blocking VMD issue that requires explicit acknowledgement."""
     return ExportValidationIssue(code, "warning", False, path, message)
@@ -799,6 +833,7 @@ def verify_vmd_output_streaming(
     expected_bounds: Optional[Mapping[str, Any]] = None,
     expected_sha256: Optional[str] = None,
     expected_size: Optional[int] = None,
+    expected_frame_range: Optional[Tuple[int, int]] = None,
     raw_loss_warning_required: bool = False,
     ack_warnings: bool = False,
 ) -> ExportValidationReport:
@@ -812,6 +847,14 @@ def verify_vmd_output_streaming(
     """
     normalized_mode = str(mode or "").upper()
     issues: List[ExportValidationIssue] = []
+    normalized_frame_range, frame_range_issue = _normalize_frame_range(expected_frame_range)
+    if frame_range_issue is not None:
+        _stream_issue(
+            issues,
+            frame_range_issue.code,
+            frame_range_issue.path,
+            frame_range_issue.message,
+        )
     if normalized_mode not in VMD_MODES:
         _stream_issue(
             issues,
@@ -858,12 +901,25 @@ def verify_vmd_output_streaming(
             return None
         return data
 
-    def record_frame(section: str, frame_number: int) -> None:
+    def record_frame(section: str, frame_number: int, path: str) -> None:
         counts[section] += 1
         minimum = minimums[section]
         maximum = maximums[section]
         minimums[section] = frame_number if minimum is None else min(minimum, frame_number)
         maximums[section] = frame_number if maximum is None else max(maximum, frame_number)
+        if normalized_frame_range is not None:
+            start, end = normalized_frame_range
+            if not start <= frame_number <= end:
+                _stream_issue(
+                    issues,
+                    "VMD_FRAME_RANGE",
+                    path + ".frame_number",
+                    "VMD frame {} is outside requested range {}..{}".format(
+                        frame_number,
+                        start,
+                        end,
+                    ),
+                )
 
     def consume_remaining(handle: Any) -> None:
         """Finish hashing bytes after a structural failure without retaining them."""
@@ -948,7 +1004,7 @@ def verify_vmd_output_streaming(
                                     stopped = True
                                     break
                                 frame_number, visible, ik_count = struct.unpack("<IBI", fixed)
-                                record_frame(section, frame_number)
+                                record_frame(section, frame_number, path)
                                 if visible not in (0, 1):
                                     _stream_issue(
                                         issues,
@@ -1027,7 +1083,7 @@ def verify_vmd_output_streaming(
                                         "VMD shadow mode must be 0, 1, or 2",
                                     )
                                 _stream_finite((struct.unpack_from("<f", raw, 5)[0],), path + ".distance", issues)
-                            record_frame(section, frame_number)
+                            record_frame(section, frame_number, path)
                         if stopped:
                             consume_remaining(handle)
                             break

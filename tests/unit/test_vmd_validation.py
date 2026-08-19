@@ -285,6 +285,85 @@ class TestVmdValidator(unittest.TestCase):
 
         self.assertTrue(report.valid, report.issues)
 
+    def test_streaming_verifier_enforces_inclusive_frame_range_for_all_sections(self):
+        section_payloads = {
+            "bones": {
+                "bone_name": "センター",
+                "frame": 10,
+                "position": (0.0, 0.0, 0.0),
+                "rotation": (0.0, 0.0, 0.0, 1.0),
+            },
+            "morphs": {"morph_name": "笑い", "frame": 10, "value": 0.25},
+            "cameras": {"frame": 10},
+            "lights": {"frame": 10},
+            "shadows": {"frame": 10},
+            "ik": {"frame": 10, "visible": True, "ik_states": [("足IK", True)]},
+        }
+        for section in section_payloads:
+            for frame in (9, 11):
+                with self.subTest(section=section, frame=frame), tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "stream.vmd"
+                    writer = VmdStreamWriter(path)
+                    for current_section, payload in section_payloads.items():
+                        current = dict(payload)
+                        if current_section == section:
+                            current["frame"] = frame
+                        writer.write_frame(current_section, current)
+                    writer.finish()
+
+                    report = verify_vmd_output_streaming(
+                        str(path),
+                        VMD_MODE_C,
+                        expected_frame_range=(10, 10),
+                    )
+
+                self.assertFalse(report.valid)
+                range_issues = [issue for issue in report.issues if issue.code == "VMD_FRAME_RANGE"]
+                self.assertEqual(len(range_issues), 1)
+                self.assertIn("frame_number", range_issues[0].path)
+
+    def test_streaming_verifier_accepts_inclusive_frame_range_endpoints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stream.vmd"
+            writer = VmdStreamWriter(path)
+            writer.write_morph({"morph_name": "笑い", "frame": 10, "value": 0.25})
+            writer.finish()
+
+            report = verify_vmd_output_streaming(
+                str(path),
+                VMD_MODE_C,
+                expected_frame_range=(10, 10),
+            )
+
+        self.assertTrue(report.valid, report.issues)
+
+    def test_streaming_verifier_rejects_malformed_expected_frame_range(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stream.vmd"
+            writer = VmdStreamWriter(path)
+            writer.finish()
+            for frame_range in (
+                (),
+                (1,),
+                (1, 2, 3),
+                (2, 1),
+                (-1, 1),
+                (True, 1),
+                (1.5, 2),
+                ("1", 2),
+                ("bad", 1),
+                {0: 1, 1: 2},
+                (0, 0x1_0000_0000),
+            ):
+                with self.subTest(frame_range=frame_range):
+                    report = verify_vmd_output_streaming(
+                        str(path),
+                        VMD_MODE_C,
+                        expected_frame_range=frame_range,
+                    )
+                    self.assertFalse(report.valid)
+                    self.assertIn("VMD_FRAME_RANGE", [issue.code for issue in report.issues])
+
     def test_streaming_verifier_rejects_truncation_in_each_section(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stream.vmd"
