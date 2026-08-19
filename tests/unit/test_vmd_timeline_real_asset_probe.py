@@ -13,6 +13,7 @@ from tools.vmd_timeline_real_asset_probe import (
     ProbeConfigurationError,
     _console_summary,
     _compare_third_oracle_values,
+    _logical_route_values,
     _run_controller,
     _third_oracle_frames,
     _witness_category_status,
@@ -188,3 +189,25 @@ def test_ccdik_world_witness_may_pass_without_skin_but_append_requires_skin():
     assert _witness_category_status("mmdAppend", 4, 4, False) == "fail"
     assert _witness_category_status("finger", 4, 4, False) == "fail"
     assert _witness_category_status("mmdCcdIk", 3, 4, False) == "fail"
+
+
+def test_logical_route_values_include_validated_proxy_destinations(monkeypatch):
+    proxy_route = {
+        "rotateX": ("|proxy", "rotateX"),
+        "rotateY": ("|proxy", "rotateY"),
+        "rotateZ": ("|proxy", "rotateZ"),
+    }
+    authority = {
+        "rotateX": ("appendNode", "baseRotateX"),
+        "rotateY": ("appendNode", "baseRotateY"),
+        "rotateZ": ("appendNode", "baseRotateZ"),
+    }
+    monkeypatch.setattr(
+        "mmd_tools.converters.vmd_redirected_authoring_proxy."
+        "resolve_redirected_authoring_proxy_authority",
+        lambda _joint: (proxy_route, authority, True),
+    )
+
+    values = _logical_route_values("|model|bone", proxy_route)
+
+    assert set(values) == set(proxy_route.values()) | set(authority.values())

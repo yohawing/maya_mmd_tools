@@ -407,7 +407,7 @@ def _matrix_witness_candidates(
         route = routes.get(joint) or {}
         route_nodes: dict[str, str] = {}
         route_node_types = set()
-        for routed in route.values():
+        for routed in _logical_route_values(joint, route):
             try:
                 candidate = _canonical_node_path(routed[0], cmds_module)
             except (IndexError, TypeError):
@@ -454,6 +454,27 @@ def _matrix_witness_candidates(
                 "route_node_type": None,
             }
     return categories
+
+
+def _logical_route_values(
+    joint: str,
+    route: Mapping[str, Sequence[str]],
+) -> tuple[Sequence[str], ...]:
+    """Expose the logical owners hidden behind a validated authoring proxy."""
+    values = tuple(route.values())
+    try:
+        from mmd_tools.converters.vmd_redirected_authoring_proxy import (
+            resolve_redirected_authoring_proxy_authority,
+        )
+
+        proxy_route, authority, claimed = resolve_redirected_authoring_proxy_authority(
+            joint
+        )
+    except Exception:
+        return values
+    if not claimed or not proxy_route or set(proxy_route.values()) != set(values):
+        return values
+    return values + tuple(authority.values())
 
 
 def _witness_category_status(
