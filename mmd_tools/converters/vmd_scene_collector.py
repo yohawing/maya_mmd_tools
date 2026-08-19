@@ -235,7 +235,6 @@ class _RoutedPlugValueEvaluator:
         self._plugs: dict[tuple[str, str], Any] = {}
         self._unsupported: set[tuple[str, str]] = set()
         self._contexts: dict[float, Any] = {}
-        self._compound_eligible: dict[tuple[str, int], bool] = {}
         self._context_failed = False
 
     def value(
@@ -268,52 +267,6 @@ class _RoutedPlugValueEvaluator:
         except (AttributeError, TypeError, ValueError, RuntimeError, OverflowError):
             self._unsupported.add(key)
             return _plug_float(node, target_attr, frame_number)
-
-    def compound_values(
-        self,
-        joint: str,
-        frame_number: float,
-        route: Mapping[str, tuple[str, str]],
-    ) -> Optional[tuple[tuple[float, ...], tuple[float, ...]]]:
-        """Read standard joint translation/rotation in two compound calls."""
-        cache_key = (joint, id(route))
-        if cache_key not in self._compound_eligible:
-            self._compound_eligible[cache_key] = self._uses_standard_compounds(joint, route)
-        if not self._compound_eligible[cache_key]:
-            return None
-        try:
-            translate = self._read_compound(joint, "translate", frame_number)
-            rotate = self._read_compound(joint, "rotate", frame_number)
-        except (AttributeError, TypeError, ValueError, RuntimeError, OverflowError):
-            return None
-        return translate, rotate
-
-    @staticmethod
-    def _uses_standard_compounds(
-        joint: str,
-        route: Mapping[str, tuple[str, str]],
-    ) -> bool:
-        if not route:
-            return True
-        try:
-            return all(
-                tuple(route.get(attr, (joint, attr))) == (joint, attr)
-                for attr in _BONE_EXPORT_ATTRS
-            )
-        except (TypeError, ValueError):
-            return False
-
-    @staticmethod
-    def _read_compound(node: str, attr: str, frame_number: float) -> tuple[float, ...]:
-        value = cmds.getAttr(f"{node}.{attr}", time=frame_number)
-        if isinstance(value, (list, tuple)) and len(value) == 1:
-            value = value[0]
-        if not isinstance(value, (list, tuple)) or len(value) != 3:
-            raise TypeError(f"Maya compound value for {node}.{attr} is not a 3-vector")
-        result = tuple(float(item) for item in value)
-        if not all(math.isfinite(item) for item in result):
-            raise ValueError(f"Maya compound value for {node}.{attr} is not finite")
-        return result
 
     @staticmethod
     def _resolve_plug(node: str, attr: str) -> Optional[Any]:
@@ -664,27 +617,11 @@ class VmdSceneCollector:
                 else sparse_frames
             )
             for frame_number in keyed_frames:
-                compound_values = value_evaluator.compound_values(
-                    joint,
-                    frame_number,
-                    route,
-                )
-                if compound_values is None:
-                    rotate_values = tuple(
-                        value_evaluator.value(joint, attr, frame_number, route)
-                        for attr in ("rotateX", "rotateY", "rotateZ")
-                    )
-                    translate_values = tuple(
-                        value_evaluator.value(joint, attr, frame_number, route)
-                        for attr in ("translateX", "translateY", "translateZ")
-                    )
-                else:
-                    translate_values, rotate_values = compound_values
                 rotation = _maya_joint_rotate_to_vmd_quaternion(
                     joint,
-                    rotate_values[0],
-                    rotate_values[1],
-                    rotate_values[2],
+                    value_evaluator.value(joint, "rotateX", frame_number, route),
+                    value_evaluator.value(joint, "rotateY", frame_number, route),
+                    value_evaluator.value(joint, "rotateZ", frame_number, route),
                     rotation_context.get(str(long_names[0])),
                 )
                 vmd_frame = _vmd_frame_number(frame_number, time_converter)
@@ -692,7 +629,11 @@ class VmdSceneCollector:
                         "bone_name": bone_name,
                         "frame_number": vmd_frame,
                         "position": _maya_translate_to_vmd_position(
-                            translate_values,
+                            (
+                                value_evaluator.value(joint, "translateX", frame_number, route),
+                                value_evaluator.value(joint, "translateY", frame_number, route),
+                                value_evaluator.value(joint, "translateZ", frame_number, route),
+                            ),
                             bind_pose,
                             motion_scale,
                         ),
