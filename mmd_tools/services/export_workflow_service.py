@@ -156,6 +156,27 @@ class ExportWorkflowService:
         )
         return execute(prepared_request)
 
+    def invalidate_prepared_vmd(self, token: Any = None) -> bool:
+        """Discard a prepared Mode C approval through its owning action.
+
+        The workflow deliberately does not keep a second token/cache.  The
+        action owns the active token and Maya revision watch; this seam merely
+        forwards the ownership-checked invalidation used by presenters and
+        other UI-shaped callers.
+        """
+
+        action = self.prepare_vmd_action
+        if action is None:
+            return False
+        invalidate = getattr(action, "invalidate", None)
+        if not callable(invalidate):
+            close = getattr(action, "close", None)
+            if token is not None or not callable(close):
+                return False
+            close()
+            return True
+        return bool(invalidate(token)) if token is not None else bool(invalidate())
+
     def _prepared_vmd_request(
         self,
         request: ExportWorkflowRequest,

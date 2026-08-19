@@ -211,7 +211,7 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         self.assertEqual(len(self.service.watches), 1)
         action.prepare(request)
         self.assertTrue(self.service.watches[0].closed)
-        with self.assertRaisesRegex(ValueError, "scene revision does not match"):
+        with self.assertRaisesRegex(ValueError, "token is not active"):
             action.validate_token(request, token)
 
     def test_prepare_action_rejects_caller_uuid_assertion_mismatch(self):

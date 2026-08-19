@@ -475,10 +475,55 @@ class PrepareVmdExportAction:
             raise TypeError("revision_provider is required")
         self._backend = backend
         self._revision_provider = revision_provider
+        # The action owns exactly one prepared approval.  Keeping this as an
+        # identity (rather than a cache id or revision string) prevents a
+        # discarded token from becoming valid again when Maya happens to
+        # report the same scene revision later.
+        self._active_token: Optional[PreparedVmdExportToken] = None
+        self._boundary_open = False
+
+    @property
+    def active_token(self) -> Optional[PreparedVmdExportToken]:
+        """Return the one token currently owned by this action, if any."""
+
+        return self._active_token
+
+    def invalidate(self, token: Optional[PreparedVmdExportToken] = None) -> bool:
+        """Discard a token and close its host-side revision watch.
+
+        Passing a token is an ownership check: a stale token from an earlier
+        preparation must not be able to close or replace the current token.
+        With no argument this closes the current boundary, making the method
+        useful for presenter teardown and idempotent re-prepare cleanup.
+        """
+
+        if token is not None and self._active_token is not token:
+            return False
+        owned = self._active_token is not None
+        if not owned and not self._boundary_open:
+            return False
+        self._active_token = None
+        closed: set[int] = set()
+        for owner in (self._backend, self._revision_provider):
+            close = getattr(owner, "close", None)
+            if not callable(close) or id(owner) in closed:
+                continue
+            closed.add(id(owner))
+            close()
+        self._boundary_open = False
+        return owned or bool(closed)
+
+    def close(self) -> bool:
+        """Close the action boundary; repeated calls are safe."""
+
+        return self.invalidate()
 
     def execute(self, request: Any) -> PrepareVmdExportResult:
         """Collect once and publish only when the scene stayed unchanged."""
 
+        # A new preparation always supersedes the previous one.  This also
+        # closes the old Maya revision watch before discovery/arm starts.
+        self.invalidate()
         try:
             frame_range, frame_step, scale, mode = _normalize_frame_options(request)
             first = _normalize_discovery(self._backend.discover(request), request)
@@ -489,6 +534,7 @@ class PrepareVmdExportAction:
             if requested_identity is not None and str(requested_identity) != first.target_identity:
                 raise PrepareVmdExportError("requested target_identity does not match discovered target")
             _arm_revision_provider(self._revision_provider, request, first)
+            self._boundary_open = True
             revision_before = _revision_method(self._revision_provider, request, first)
             revision_before = _require_identity(revision_before, "revision_before")
             payload = self._backend.collect(request)
@@ -530,10 +576,13 @@ class PrepareVmdExportAction:
                 payload_fingerprint=payload_fingerprint,
                 dependency_closure_fingerprint=first.dependency_closure_fingerprint,
             )
+            self._active_token = token
             return PrepareVmdExportResult(status="published", token=token)
         except PrepareVmdExportRaceError as exc:
+            self.invalidate()
             return PrepareVmdExportResult(status="partial", error=exc)
         except Exception as exc:
+            self.invalidate()
             return PrepareVmdExportResult(status="failed", error=exc)
 
     def prepare(self, request: Any) -> PreparedVmdExportToken:
@@ -549,18 +598,27 @@ class PrepareVmdExportAction:
     def validate_token(self, request: Any, token: PreparedVmdExportToken) -> None:
         """Assert that a prepared payload still belongs to the live scene.
 
-        Validation deliberately performs discovery and a revision read, but
-        never collects.  ``current_revision`` is the Maya adapter's flush/read
-        boundary, so a key edit queued by Maya cannot be mistaken for a fresh
-        token.  A token is an approval for one semantic request only; output
-        and report paths remain excluded by :func:`request_fingerprint`.
+        An active token deliberately performs discovery and a revision read,
+        but never collects.  ``current_revision`` is the Maya adapter's
+        flush/read boundary, so a key edit queued by Maya cannot be mistaken
+        for a fresh token.  A token is an approval for one semantic request
+        only; output and report paths remain excluded by
+        :func:`request_fingerprint`.
         """
 
         def stale(reason: str) -> None:
+            # A token that reached the scene boundary but no longer matches
+            # must not become valid again if the scene later returns to the
+            # same revision.  Preserve a copied/tampered token for diagnostics
+            # while closing only this action's currently owned token.
+            if self._active_token is token:
+                self.invalidate(token)
             raise PrepareVmdExportError(f"prepared VMD export token is stale: {reason}")
 
         if not isinstance(token, PreparedVmdExportToken):
             stale("token type is invalid")
+        if self._active_token is not token:
+            stale("token is not active")
 
         try:
             frame_range, frame_step, _scale, mode = _normalize_frame_options(request)

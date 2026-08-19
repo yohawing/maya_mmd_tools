@@ -18,6 +18,7 @@ class _Backend:
         self.discoveries = list(discoveries)
         self.discover_calls = 0
         self.collect_calls = 0
+        self.close_calls = 0
 
     def discover(self, request):
         del request
@@ -36,11 +37,15 @@ class _Backend:
         data.bone_frames.append(frame)
         return data
 
+    def close(self):
+        self.close_calls += 1
+
 
 class _Revisions:
     def __init__(self, revisions):
         self.revisions = iter(revisions)
         self.arm_calls = 0
+        self.current_revision_calls = 0
 
     def arm(self, request, discovery):
         del request, discovery
@@ -48,6 +53,7 @@ class _Revisions:
 
     def current_revision(self, request, discovery):
         del request, discovery
+        self.current_revision_calls += 1
         return next(self.revisions)
 
 
@@ -183,8 +189,9 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         ):
             action.validate_token(_request(), token)
         self.assertEqual(backend.collect_calls, 1)
+        self.assertIsNone(action.active_token)
 
-    def test_validate_token_rejects_payload_fingerprint_tampering(self):
+    def test_validate_token_rejects_copied_payload_fingerprint_tampering(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r1"])
         action = PrepareVmdExportAction(backend, revisions)
@@ -192,9 +199,38 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            r"^prepared VMD export token is stale: payload fingerprint does not match$",
+            r"^prepared VMD export token is stale: token is not active$",
         ):
             action.validate_token(_request(), replace(token, payload_fingerprint="sha256:stale"))
+
+    def test_invalidate_closes_boundary_and_is_idempotent(self):
+        backend = _Backend([_discovery(), _discovery(), _discovery()])
+        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1", "r1"]))
+        token = action.prepare(_request())
+
+        self.assertTrue(action.invalidate(token))
+        self.assertIsNone(action.active_token)
+        close_calls = backend.close_calls
+        self.assertFalse(action.invalidate(token))
+        self.assertFalse(action.invalidate())
+        self.assertEqual(backend.close_calls, close_calls)
+
+    def test_discarded_token_cannot_be_reused_at_same_revision(self):
+        backend = _Backend([_discovery(), _discovery(), _discovery()])
+        revisions = _Revisions(["r1", "r1", "r1"])
+        action = PrepareVmdExportAction(backend, revisions)
+        token = action.prepare(_request())
+        action.invalidate(token)
+        discover_calls = backend.discover_calls
+        revision_calls = revisions.current_revision_calls
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"^prepared VMD export token is stale: token is not active$",
+        ):
+            action.validate_token(_request(), token)
+        self.assertEqual(backend.discover_calls, discover_calls)
+        self.assertEqual(revisions.current_revision_calls, revision_calls)
 
 
 if __name__ == "__main__":

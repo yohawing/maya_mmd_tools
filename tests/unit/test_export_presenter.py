@@ -17,6 +17,7 @@ from mmd_tools.services.export_workflow_service import (  # noqa: E402
 from mmd_tools.actions.prepare_vmd_export_action import PrepareVmdExportResult  # noqa: E402
 from mmd_tools.ui.qt_compat import QApplication  # noqa: E402
 from mmd_tools.ui.presenters.export_presenter import ExportPresenter  # noqa: E402
+from mmd_tools.ui.translations import UITranslator  # noqa: E402
 from mmd_tools.ui.validation_console import (  # noqa: E402
     ValidationConsole,
     render_validation_console_text,
@@ -168,6 +169,7 @@ class _Workflow:
         self.validated = []
         self.executed = []
         self.prepared = []
+        self.invalidated = []
 
     @staticmethod
     def _result():
@@ -207,6 +209,10 @@ class _Workflow:
     def prepare_vmd(self, request):
         self.prepared.append(request)
         return PrepareVmdExportResult(status="published", token=object())
+
+    def invalidate_prepared_vmd(self, token=None):
+        self.invalidated.append(token)
+        return token is not None
 
 
 class _PrepareFailingWorkflow(_Workflow):
@@ -282,6 +288,7 @@ class TestExportPresenter(unittest.TestCase):
         presenter.export()
         self.assertIs(workflow.executed[-1][0].prepared_vmd_token, preparation.token)
         self.assertIsNone(presenter.prepared_vmd_token)
+        self.assertEqual(workflow.invalidated, [preparation.token])
 
     def test_prepare_failure_publishes_blocking_result_and_keeps_no_token(self):
         view = _View("vmd")
@@ -303,10 +310,11 @@ class TestExportPresenter(unittest.TestCase):
     def test_failed_reprepare_discards_the_previous_token(self):
         view = _View("vmd")
         app_state = _AppState()
+        workflow = _PrepareThenFailWorkflow()
         presenter = ExportPresenter(
             view,
             app_state,
-            workflow_service=_PrepareThenFailWorkflow(),
+            workflow_service=workflow,
         )
 
         first = presenter.prepare()
@@ -317,6 +325,9 @@ class TestExportPresenter(unittest.TestCase):
 
         self.assertEqual(second.state, STATE_FAILED)
         self.assertIsNone(presenter.prepared_vmd_token)
+        self.assertEqual(len(workflow.prepared), 2)
+        self.assertEqual(len(workflow.invalidated), 1)
+        self.assertIs(workflow.invalidated[0], first.token)
 
     def test_semantic_change_invalidates_prepared_token_but_output_change_does_not(self):
         view = _View("vmd")
@@ -343,9 +354,13 @@ class TestExportPresenter(unittest.TestCase):
         presenter.export()
 
         labels = [entry[2] for entry in app_state.progress if entry[0] in ("begin", "update")]
-        self.assertIn("アニメーション: シーンを確認中", labels)
-        self.assertIn("VMDを書き出し中", labels)
-        report_ready = [entry for entry in app_state.progress if entry[2].endswith("検証レポート準備完了")]
+        translator = UITranslator.instance()
+        self.assertIn(
+            translator.translate("animation_scene_preflight", "export_progress"), labels
+        )
+        self.assertIn(translator.translate("animation_writer", "export_progress"), labels)
+        report_ready_label = translator.translate("animation_report_ready", "export_progress")
+        report_ready = [entry for entry in app_state.progress if entry[2].endswith(report_ready_label)]
         self.assertEqual(report_ready[-1][3], 100)
 
     def test_prepare_progress_reports_timeline_and_prepared_payload_stages(self):
@@ -356,9 +371,13 @@ class TestExportPresenter(unittest.TestCase):
         presenter.prepare()
 
         labels = [entry[2] for entry in app_state.progress if entry[0] in ("begin", "update")]
-        self.assertIn("アニメーション: Mode Cモーションを評価・準備中", labels)
-        self.assertIn("アニメーション: 準備済みデータを生成中", labels)
-        prepared = [entry for entry in app_state.progress if "準備済みデータ" in entry[2]]
+        translator = UITranslator.instance()
+        self.assertIn(
+            translator.translate("animation_timeline_bake", "export_progress"), labels
+        )
+        prepared_label = translator.translate("animation_prepared_payload", "export_progress")
+        self.assertIn(prepared_label, labels)
+        prepared = [entry for entry in app_state.progress if entry[2] == prepared_label]
         self.assertEqual(prepared[-1][3], 100)
 
     def test_current_model_changed_invalidates_all_panes(self):
@@ -369,6 +388,18 @@ class TestExportPresenter(unittest.TestCase):
         app_state.current_model_changed.emit("OtherModel_ROOT")
 
         self.assertEqual(view.invalidations, 1)
+
+    def test_default_workflow_uses_lazy_production_prepare_action(self):
+        view = _View("vmd")
+        app_state = _AppState()
+        production_action = object()
+        with patch(
+            "mmd_tools.ui.presenters.export_presenter.create_maya_vmd_prepare_action",
+            return_value=production_action,
+        ):
+            presenter = ExportPresenter(view, app_state)
+
+        self.assertIs(presenter.workflow_service.prepare_vmd_action, production_action)
 
     def test_validate_exception_publishes_terminal_failed_result(self):
         view = _View()

@@ -19,8 +19,6 @@ from ..actions.prepare_vmd_export_action import (
     VMD_MODE_C,
     VmdExportDiscovery,
 )
-from ..io.vmd_exporter import VmdExporter
-from ..services.scene_revision_service import SceneRevisionService
 from ..validation.snapshot import fingerprint_payload
 
 
@@ -275,6 +273,8 @@ class MayaVmdPrepareBackend:
         payload = collect(collector_options)
         converter = self._converter
         if converter is None:
+            from ..io.vmd_exporter import VmdExporter
+
             converter = VmdExporter(native_exporter=None).to_vmd_data
         elif hasattr(converter, "to_vmd_data") and callable(converter.to_vmd_data):
             converter = converter.to_vmd_data
@@ -336,6 +336,8 @@ class MayaVmdPrepareBackend:
 
     def _service(self) -> Any:
         if self._revision_service is None:
+            from ..services.scene_revision_service import SceneRevisionService
+
             self._revision_service = SceneRevisionService()
         return self._revision_service
 
@@ -559,8 +561,25 @@ class MayaVmdPrepareBackend:
 MayaVmdPrepareRevisionProvider = MayaVmdPrepareBackend
 
 
+def create_maya_vmd_prepare_action() -> Any:
+    """Create the production backend/action pair without importing Maya.
+
+    The backend resolves ``maya.cmds`` only when a prepare operation reaches
+    discovery, and the revision service imports OpenMaya only while arming a
+    watch.  Keeping construction here lets the UI presenter use the real
+    production action while remaining import-safe in mayapy-free tooling and
+    unit-test processes.
+    """
+
+    from ..actions.prepare_vmd_export_action import PrepareVmdExportAction
+
+    backend = MayaVmdPrepareBackend()
+    return PrepareVmdExportAction(backend, backend.revision_provider)
+
+
 __all__ = [
     "MayaVmdExportRoute",
     "MayaVmdPrepareBackend",
     "MayaVmdPrepareRevisionProvider",
+    "create_maya_vmd_prepare_action",
 ]

@@ -1,6 +1,7 @@
 """Presenter for the top-level validated Export workflow."""
 
 from ..qt_compat import QObject
+from ...adapters.maya_vmd_prepare_backend import create_maya_vmd_prepare_action
 from ...core.logger import get_logger
 from ...services.export_workflow_service import (
     ExportWorkflowRequest,
@@ -40,9 +41,14 @@ class ExportPresenter(QObject):
         self.view = view
         self.app_state = app_state
         self._prepared_vmd_token = None
-        self.workflow_service = workflow_service or ExportWorkflowService(
-            scene_service=getattr(app_state, "scene_model_service", None),
-        )
+        if workflow_service is None:
+            # Construction is Maya-import safe; the adapter loads maya.cmds
+            # only when the user actually requests a Mode C preparation.
+            workflow_service = ExportWorkflowService(
+                scene_service=getattr(app_state, "scene_model_service", None),
+                prepare_vmd_action=create_maya_vmd_prepare_action(),
+            )
+        self.workflow_service = workflow_service
         self.view.presenter = self
         prepare_requested = getattr(self.view, "prepare_requested", None)
         if prepare_requested is not None:
@@ -76,8 +82,20 @@ class ExportPresenter(QObject):
         self._clear_prepared_token()
 
     def _clear_prepared_token(self):
-        """Drop the opaque preparation handle without touching output settings."""
+        """Discard the handle and close its host watch without touching output settings."""
+        token = self._prepared_vmd_token
+        if token is None:
+            return
         self._prepared_vmd_token = None
+        invalidate = getattr(self.workflow_service, "invalidate_prepared_vmd", None)
+        if not callable(invalidate):
+            return
+        try:
+            invalidate(token)
+        except Exception:
+            # The UI must not retain a token after a teardown error.  The
+            # action itself is fail-closed and logs/owns host cleanup.
+            logger.error("Failed to invalidate prepared VMD token", exc_info=True)
 
     @property
     def prepared_vmd_token(self):
