@@ -318,6 +318,44 @@ def test_mode_c_semantics_allows_dense_key_inflation_but_requires_tracks():
     assert _vmd_mode_c_semantic_diff(source, {**exported, "bone": []})
 
 
+def test_mode_c_ik_semantics_canonicalizes_state_order_only():
+    source = {
+        "bone": [],
+        "morph": [],
+        "camera": [],
+        "light": [],
+        "shadow": [],
+        "ik": [{"frame": 0, "visible": 1, "states": [["右足IK", 0], ["左足IK", 1]]}],
+    }
+    reordered = {
+        **source,
+        "ik": [{"frame": 0, "visible": 1, "states": [["左足IK", True], ["右足IK", False]]}],
+    }
+
+    assert _vmd_mode_c_semantic_diff(source, reordered) == []
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_fragment"),
+    [
+        ({"frame": 1}, "frame differs"),
+        ({"visible": 0}, "visible differs"),
+        ({"states": [["左足IK", 0], ["右足IK", 0]]}, "state_values differs"),
+        ({"states": [["左足IK", 1], ["別IK", 0]]}, "state_names differ"),
+        ({"states": [["左足IK", 1], ["左足IK", 0]]}, "duplicate IK state name"),
+    ],
+)
+def test_mode_c_ik_semantics_rejects_non_order_changes(change, expected_fragment):
+    source_item = {"frame": 0, "visible": 1, "states": [["左足IK", 1], ["右足IK", 0]]}
+    actual_item = {**source_item, **change}
+    source = {"bone": [], "morph": [], "camera": [], "light": [], "shadow": [], "ik": [source_item]}
+    actual = {**source, "ik": [actual_item]}
+
+    failures = _vmd_mode_c_semantic_diff(source, actual)
+
+    assert any(expected_fragment in failure for failure in failures)
+
+
 def test_exported_vmd_witness_requires_edited_frame_and_morph_value():
     payload = {
         "bone": [{"name": "センター", "frame": 12, "rotation": [0.0, 0.0, 0.1, 1.0]}],

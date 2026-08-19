@@ -479,12 +479,15 @@ def _vmd_payload_diff(expected: Mapping[str, Any], actual: Mapping[str, Any]) ->
     for section in ("bone", "morph", "camera", "light", "shadow", "ik"):
         expected_items = list(expected.get(section, ()))
         actual_items = list(actual.get(section, ()))
+        if section == "ik":
+            failures.extend(_vmd_ik_semantic_diff(expected_items, actual_items))
+            continue
         if len(expected_items) != len(actual_items):
             failures.append(
                 f"{section}.count expected={len(expected_items)} actual={len(actual_items)}"
             )
             continue
-        if section in {"bone", "morph", "ik"}:
+        if section in {"bone", "morph"}:
             expected_names = [item.get("name") for item in expected_items]
             actual_names = [item.get("name") for item in actual_items]
             if expected_names != actual_names:
@@ -517,8 +520,63 @@ def _vmd_payload_diff(expected: Mapping[str, Any], actual: Mapping[str, Any]) ->
             elif section == "shadow":
                 if source != result:
                     failures.append(f"shadow[{index}] differs")
-            elif section == "ik" and source != result:
-                failures.append(f"ik[{index}] differs")
+    return failures
+
+
+def _canonical_ik_states(states: Iterable[Any]) -> tuple[tuple[str, bool], ...]:
+    """Canonicalize IK states by name while preserving strict bool semantics."""
+
+    canonical: list[tuple[str, bool]] = []
+    seen_names: set[str] = set()
+    for state in states or ():
+        if not isinstance(state, (list, tuple)) or len(state) != 2:
+            raise ValueError(f"malformed IK state: {state!r}")
+        name = str(state[0])
+        if name in seen_names:
+            raise ValueError(f"duplicate IK state name: {name!r}")
+        seen_names.add(name)
+        value = state[1]
+        if isinstance(value, bool):
+            enabled = value
+        elif isinstance(value, int) and value in (0, 1):
+            enabled = bool(value)
+        else:
+            raise ValueError(f"IK state is not boolean: {value!r}")
+        canonical.append((name, enabled))
+    return tuple(sorted(canonical, key=lambda item: item[0]))
+
+
+def _vmd_ik_semantic_diff(
+    expected: Iterable[Mapping[str, Any]],
+    actual: Iterable[Mapping[str, Any]],
+) -> list[str]:
+    """Compare IK frames strictly, ignoring only per-frame state order."""
+
+    expected_items = list(expected)
+    actual_items = list(actual)
+    failures: list[str] = []
+    if len(expected_items) != len(actual_items):
+        return [f"ik.count expected={len(expected_items)} actual={len(actual_items)}"]
+    for index, (source, result) in enumerate(zip(expected_items, actual_items)):
+        if source.get("frame") != result.get("frame"):
+            failures.append(f"ik[{index}].frame differs")
+        if source.get("visible") != result.get("visible"):
+            failures.append(f"ik[{index}].visible differs")
+        try:
+            source_states = _canonical_ik_states(source.get("states", ()))
+        except ValueError as exc:
+            failures.append(f"ik[{index}].expected states invalid: {exc}")
+            source_states = None
+        try:
+            result_states = _canonical_ik_states(result.get("states", ()))
+        except ValueError as exc:
+            failures.append(f"ik[{index}].actual states invalid: {exc}")
+            result_states = None
+        if source_states is not None and result_states is not None and source_states != result_states:
+            if [name for name, _ in source_states] != [name for name, _ in result_states]:
+                failures.append(f"ik[{index}].state_names differ")
+            else:
+                failures.append(f"ik[{index}].state_values differs")
     return failures
 
 
@@ -538,8 +596,7 @@ def _vmd_mode_c_semantic_diff(
         expected_items = list(expected.get(section, ()))
         actual_items = list(actual.get(section, ()))
         if section == "ik":
-            if expected_items != actual_items:
-                failures.append("ik track semantics differ")
+            failures.extend(_vmd_ik_semantic_diff(expected_items, actual_items))
         elif expected_items and not actual_items:
             failures.append(f"{section} tracks were dropped")
     return failures
