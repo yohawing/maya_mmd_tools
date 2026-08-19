@@ -15,6 +15,8 @@ from mmd_tools.converters.physics_scene_builder import (
     build_physics_live_graph,
     recover_physics_driver_connections,
 )
+from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -97,6 +99,73 @@ class TestPhysicsGraphAuthority(MayaTestBase):
         cmds.currentTime(10)
         self.assertAlmostEqual(cmds.getAttr(f"{joints[0]}.translateX"), 9.0, places=5)
         self.assertAlmostEqual(cmds.getAttr(f"{joints[0]}.rotateY"), 45.0, places=5)
+
+    def test_sparse_vmd_keys_route_to_physics_pre_inputs(self):
+        _root, joints, graph = self._build_graph("vmdRouteModel")
+        joint = joints[0]
+        driver = graph["drivers"][0]
+        converter = VmdConverter()
+        converter.use_animation_layers = False
+        converter.bone_name_mapping = {"bone0": joint}
+        converter._bone_bind_poses["bone0"] = (0.0, 0.0, 0.0)
+
+        route = converter._build_legacy_bone_key_routes()[joint]
+        expected_targets = {
+            "translateX": "inPreTranslateX",
+            "translateY": "inPreTranslateY",
+            "translateZ": "inPreTranslateZ",
+            "rotateX": "inPreRotateX",
+            "rotateY": "inPreRotateY",
+            "rotateZ": "inPreRotateZ",
+        }
+        self.assertEqual(
+            route["attr_targets"],
+            {
+                channel: (driver, target)
+                for channel, target in expected_targets.items()
+            },
+        )
+
+        frame = VmdBoneFrame()
+        frame.bone_name = "bone0"
+        frame.frame_number = 7
+        frame.position = (1.25, -2.5, 3.75)
+        frame.rotation = (0.0, 0.0, 0.0, 1.0)
+        converter._set_bone_keyframes(joint, [frame], "bone0", route)
+        cmds.currentTime(converter.vmd_frame_to_maya_time(7), edit=True)
+
+        expected_translate = (1.25, -2.5, -3.75)
+        pre_translate = cmds.getAttr(f"{driver}.inPreTranslate")[0]
+        visible_translate = cmds.getAttr(f"{joint}.translate")[0]
+        for actual, expected in zip(pre_translate, expected_translate):
+            self.assertAlmostEqual(actual, expected, places=5)
+        for actual, expected in zip(visible_translate, expected_translate):
+            self.assertAlmostEqual(actual, expected, places=5)
+        for source_channel, target_channel in expected_targets.items():
+            self.assertTrue(
+                cmds.keyframe(
+                    f"{driver}.{target_channel}",
+                    query=True,
+                    keyframeCount=True,
+                )
+            )
+            compound = "outTranslate" if source_channel.startswith("translate") else "outRotate"
+            self.assertEqual(
+                cmds.connectionInfo(
+                    f"{joint}.{source_channel}", sourceFromDestination=True
+                ),
+                f"{driver}.{compound}",
+            )
+
+        pre_rotate = cmds.getAttr(f"{driver}.inPreRotate")[0]
+        visible_rotate = cmds.getAttr(f"{joint}.rotate")[0]
+        for actual, expected in zip(visible_rotate, pre_rotate):
+            self.assertAlmostEqual(actual, expected, places=5)
+
+        self.assertTrue(
+            cmds.isConnected(f"{driver}.outTranslate", f"{joint}.translate")
+        )
+        self.assertTrue(cmds.isConnected(f"{driver}.outRotate", f"{joint}.rotate"))
 
     def test_unattached_dynamic_body_silently_omits_joint_driver(self):
         cmds.namespace(add="unattachedModel")

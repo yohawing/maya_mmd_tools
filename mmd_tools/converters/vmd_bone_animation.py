@@ -262,6 +262,13 @@ def set_bone_keyframes(
     """Set legacy VMD bone keys while preserving hidden Twist channel locks."""
 
     route = key_route or {}
+    blocked_channels = tuple(route.get("blocked_channels") or ())
+    if blocked_channels:
+        raise VmdKeyingError(
+            "VMD bone keying blocked because the physics pre-input owner is "
+            f"ambiguous: joint={joint}; channels={blocked_channels!r}; "
+            f"reason={route.get('block_reason') or 'physics_route_unresolved'}"
+        )
     states = []
     if route.get("fixed_axis_twist"):
         attr_targets = route.get("attr_targets", {})
