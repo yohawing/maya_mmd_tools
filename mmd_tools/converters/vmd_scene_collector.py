@@ -1167,9 +1167,14 @@ class VmdSceneCollector:
                     # append/IK/control-rig authored routes remain the
                     # established priority and must never be overwritten.
                     continue
-                if not _physics_authored_source_is_valid(driver, pre_attr):
+                if _unique_nonphysics_source(f"{driver}.{pre_attr}"):
+                    route[logical_attr] = (driver, pre_attr)
                     continue
-                route[logical_attr] = (driver, pre_attr)
+                authored_source = _unique_nonphysics_source(
+                    f"{target_path}.{logical_attr}"
+                )
+                if authored_source:
+                    route[logical_attr] = authored_source
 
     def collect_morph_frames(
         self,
@@ -2554,26 +2559,30 @@ def _physics_driver_pre_inputs_exist(driver: str) -> bool:
         return False
 
 
-def _physics_authored_source_is_valid(driver: str, attribute: str) -> bool:
-    """Accept one incoming authored/non-physics source, never driver output."""
+def _unique_nonphysics_source(plug: str) -> Optional[tuple[str, str]]:
+    """Return one direct authored source plug, rejecting known physics nodes."""
 
     try:
         sources = cmds.listConnections(
-            f"{driver}.{attribute}",
+            plug,
             source=True,
             destination=False,
             plugs=True,
         ) or []
     except Exception:
-        return False
-    if len(sources) != 1:
-        return False
-    source_node = str(sources[0]).split(".", 1)[0]
+        return None
+    if isinstance(sources, (str, bytes)) or len(sources) != 1:
+        return None
+    source_node, separator, source_attr = str(sources[0]).partition(".")
+    if not separator or not source_node or not source_attr:
+        return None
     try:
         source_type = str(cmds.nodeType(source_node) or "")
     except Exception:
-        return False
-    return source_type not in {
+        return None
+    if source_type in {
         "mmdPhysicsBoneDriver",
         "mmdPhysicsSolver",
-    }
+    }:
+        return None
+    return source_node, source_attr

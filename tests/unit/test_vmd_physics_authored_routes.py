@@ -28,6 +28,8 @@ class _PhysicsCmds:
             "|other_driver": "mmdPhysicsBoneDriver",
             "|curve": "animCurveTL",
             "|curve_rotate": "animCurveTA",
+            "|blend_translate": "animBlendNodeAdditiveDL",
+            "|curve_other": "animCurveTL",
         }
         self.attributes = {
             (driver, attr)
@@ -102,6 +104,9 @@ class _PhysicsCmds:
 class PhysicsAuthoredRouteTests(unittest.TestCase):
     def test_owned_unique_driver_routes_only_authored_pre_inputs(self):
         cmds = _PhysicsCmds()
+        cmds.driver_sources["|model|bone.translateX"] = [
+            "|blend_translate.output"
+        ]
         collector = VmdSceneCollector()
         with mock.patch.object(collector_module, "cmds", cmds), mock.patch.object(
             collector_module, "collect_append_info", return_value={}
@@ -130,6 +135,38 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_joint_authored_source_fallback_is_unique_and_nonphysics(self):
+        cmds = _PhysicsCmds()
+        cmds.driver_sources.clear()
+        cmds.driver_sources.update(
+            {
+                "|model|bone.translateX": ["|blend_translate.output"],
+                "|model|bone.translateY": [
+                    "|curve.output",
+                    "|curve_other.output",
+                ],
+                "|model|bone.translateZ": ["|driver_duplicate.outTranslateZ"],
+            }
+        )
+        collector = VmdSceneCollector()
+        with mock.patch.object(collector_module, "cmds", cmds), mock.patch.object(
+            collector_module, "collect_append_info", return_value={}
+        ), mock.patch.object(
+            collector_module, "collect_mmd_ik_passthrough_info", return_value={}
+        ), mock.patch.object(
+            collector_module, "read_mmd_control_rig_metadata", return_value=None
+        ):
+            routes = collector._scene_authored_input_routes(
+                ["|model|bone"], "|model"
+            )
+
+        self.assertEqual(
+            routes["|model|bone"]["translateX"],
+            ("|blend_translate", "output"),
+        )
+        self.assertNotIn("translateY", routes["|model|bone"])
+        self.assertNotIn("translateZ", routes["|model|bone"])
 
     def test_existing_append_route_wins_and_unowned_driver_is_ignored(self):
         cmds = _PhysicsCmds()
