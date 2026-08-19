@@ -339,6 +339,100 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(selection["counts"]["omitted_default"], 1)
         self.assertEqual(selection["counts"]["constant_one_key"], 1)
 
+    def _configure_static_bone(self, translate_x=0.0):
+        self.cmds.node_types.update({"center_joint": "joint"})
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
+        self.cmds.attrs.update(
+            {
+                ("center_joint", "translateX"): translate_x,
+                ("center_joint", "translateY"): 0.0,
+                ("center_joint", "translateZ"): 0.0,
+                ("center_joint", "rotateX"): 0.0,
+                ("center_joint", "rotateY"): 0.0,
+                ("center_joint", "rotateZ"): 0.0,
+            }
+        )
+
+    def test_mode_c_keyless_bone_static_default_nondefault_and_bind_offset(self):
+        cases = (
+            (1.0, (1.0, 0.0, 0.0), [], "omitted_default"),
+            (2.0, (1.0, 0.0, 0.0), [2], "constant_one_key"),
+            (0.0, (1.0, 0.0, 0.0), [0], "constant_one_key"),
+        )
+        for translate_x, bind, expected_frames, decision in cases:
+            with self.subTest(translate_x=translate_x):
+                self._configure_static_bone(translate_x)
+                collector = VmdSceneCollector()
+                frames = collector.collect_bone_frames(
+                    ["center_joint"],
+                    start_frame=1.2 if translate_x != 0.0 else 0,
+                    end_frame=3.8 if translate_x != 0.0 else 2,
+                    bone_bind_poses={"center": bind},
+                    dense_sample=True,
+                    force_dense_sample=True,
+                    time_converter=lambda value: value,
+                )
+                self.assertEqual(
+                    [frame["frame_number"] for frame in frames], expected_frames
+                )
+                if translate_x == 2.0:
+                    self.assertEqual(frames[0]["position"], (1.0, 0.0, 0.0))
+                selection = collector.diagnostics["track_selection"]
+                self.assertEqual(selection["counts"][decision], 1)
+                self.assertEqual(
+                    selection["evidence"][0]["source_key_count"], 0
+                )
+
+    def test_mode_c_keyless_bone_uses_earliest_requested_dense_integer(self):
+        self._configure_static_bone(1.0)
+
+        frames = VmdSceneCollector().collect_bone_frames(
+            ["center_joint"],
+            start_frame=0,
+            end_frame=4,
+            dense_sample=True,
+            force_dense_sample=True,
+            dense_frame_samples=[3.5, 3, 2],
+            time_converter=lambda value: value,
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [2])
+
+    def test_mode_c_keyless_bone_invalid_dense_samples_fall_back_to_range_start(self):
+        self._configure_static_bone(1.0)
+
+        frames = VmdSceneCollector().collect_bone_frames(
+            ["center_joint"],
+            start_frame=1.2,
+            end_frame=3.8,
+            dense_sample=True,
+            force_dense_sample=True,
+            dense_frame_samples=[-2, 0.5, 4, float("nan")],
+            time_converter=lambda value: value,
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [2])
+
+    def test_mode_c_keyless_bone_incoming_or_empty_range_stays_unclassified(self):
+        for incoming, start, end in ((True, 0, 2), (False, 0.2, 0.8)):
+            with self.subTest(incoming=incoming):
+                self._configure_static_bone()
+                if incoming:
+                    self.cmds.connections[("center_joint", "translateX", True, False)] = [
+                        "constraint.output"
+                    ]
+                collector = VmdSceneCollector()
+                frames = collector.collect_bone_frames(
+                    ["center_joint"],
+                    start_frame=start,
+                    end_frame=end,
+                    dense_sample=True,
+                    force_dense_sample=True,
+                    time_converter=lambda value: value,
+                )
+                self.assertEqual(frames, [])
+                self.assertNotIn("track_selection", collector.diagnostics)
+
     def test_mode_c_routed_single_key_bone_remains_dense(self):
         self.cmds.node_types.update(
             {"center_joint": "joint", "authoring_driver": "transform"}
@@ -452,6 +546,122 @@ class TestVmdSceneCollector(unittest.TestCase):
         selection = collector.diagnostics["track_selection"]
         self.assertEqual(selection["counts"]["omitted_default"], 1)
         self.assertEqual(selection["counts"]["constant_one_key"], 1)
+
+    def _configure_static_morph(self, weight=None):
+        self.cmds.node_types["face_bs"] = "blendShape"
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.aliases["face_bs.weight[0]"] = "smile"
+        if weight is not None:
+            self.cmds.attrs[("face_bs", "weight[0]")] = weight
+
+    def test_mode_c_keyless_direct_morph_default_and_non_default_sample_once(self):
+        for weight in (0.0, 0.5):
+            with self.subTest(weight=weight):
+                self._configure_static_morph(weight)
+                self.cmds.current_time_calls.clear()
+                collector = VmdSceneCollector()
+                frames = collector.collect_morph_frames(
+                    ["face_bs"],
+                    start_frame=1.2,
+                    end_frame=3.8,
+                    time_converter=lambda value: value,
+                    dense_sample=True,
+                    dense_frame_samples=[3, 4],
+                    timeline_evaluation=True,
+                )
+
+                if weight == 0.0:
+                    self.assertEqual(frames, [])
+                    self.assertEqual(
+                        collector.diagnostics["track_selection"]["counts"][
+                            "omitted_default"
+                        ],
+                        1,
+                    )
+                else:
+                    self.assertEqual(
+                        [frame["frame_number"] for frame in frames],
+                        [3],
+                    )
+                    self.assertEqual(
+                        collector.diagnostics["track_selection"]["counts"][
+                            "constant_one_key"
+                        ],
+                        1,
+                    )
+                self.assertEqual(self.cmds.current_time_calls, [3.0, 0.0])
+
+    def test_mode_c_keyless_morph_invalid_dense_samples_fall_back_to_range_start(self):
+        self._configure_static_morph(0.5)
+
+        frames = VmdSceneCollector().collect_morph_frames(
+            ["face_bs"],
+            start_frame=1.2,
+            end_frame=3.8,
+            time_converter=lambda value: value,
+            dense_sample=True,
+            dense_frame_samples=[-2, 0.5, 4, float("inf")],
+            timeline_evaluation=True,
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [2])
+        self.assertEqual(self.cmds.current_time_calls, [2.0, 0.0])
+
+    def test_mode_c_keyless_morph_with_incoming_or_controller_is_not_static_classified(self):
+        self._configure_static_morph()
+        self.cmds.connections[("face_bs", "weight[0]", True, False)] = [
+            "animCurve.output"
+        ]
+
+        collector = VmdSceneCollector()
+        frames = collector.collect_morph_frames(
+            ["face_bs"],
+            start_frame=0,
+            end_frame=2,
+            dense_sample=True,
+            timeline_evaluation=True,
+        )
+        self.assertEqual(frames, [])
+        self.assertNotIn("track_selection", collector.diagnostics)
+
+        self.cmds.connections.clear()
+        self.cmds.node_types["morph_controller"] = "mmdMorphController"
+        with mock.patch.object(
+            collector_module,
+            "_morph_controller_for_model",
+            return_value="morph_controller",
+        ), mock.patch.object(
+            collector_module,
+            "iter_morph_network_metadata",
+            return_value=[SimpleNamespace(name="bone_morph", index=0)],
+        ):
+            collector = VmdSceneCollector()
+            frames = collector.collect_morph_frames(
+                [],
+                target_model="model_root",
+                start_frame=0,
+                end_frame=2,
+                dense_sample=True,
+                timeline_evaluation=True,
+            )
+        self.assertEqual(frames, [])
+        self.assertNotIn("track_selection", collector.diagnostics)
+
+    def test_mode_c_keyless_morph_noninteger_range_does_not_invent_sample(self):
+        self._configure_static_morph()
+
+        collector = VmdSceneCollector()
+        frames = collector.collect_morph_frames(
+            ["face_bs"],
+            start_frame=0.2,
+            end_frame=0.8,
+            dense_sample=True,
+            timeline_evaluation=True,
+        )
+
+        self.assertEqual(frames, [])
+        self.assertEqual(self.cmds.current_time_calls, [])
+        self.assertNotIn("track_selection", collector.diagnostics)
 
     def test_mode_c_morph_with_out_of_range_second_key_remains_dense(self):
         self.cmds.node_types["face_bs"] = "blendShape"

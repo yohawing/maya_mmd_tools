@@ -143,6 +143,24 @@ def _is_direct_authored_track(node: str, attrs: Sequence[str]) -> bool:
     return True
 
 
+def _has_no_incoming_connections(node: str, attrs: Sequence[str]) -> bool:
+    """Return whether every logical plug is completely unconnected."""
+
+    for attr in attrs:
+        try:
+            sources = cmds.listConnections(
+                f"{node}.{attr}",
+                source=True,
+                destination=False,
+                plugs=True,
+            ) or []
+        except Exception:
+            return False
+        if isinstance(sources, (str, bytes)) or sources:
+            return False
+    return True
+
+
 def _new_track_selection() -> dict[str, Any]:
     return {
         "counts": {key: 0 for key in _TRACK_SELECTION_DECISIONS},
@@ -690,6 +708,7 @@ class VmdSceneCollector:
         )
         keyed_times_by_joint = {}
         single_key_joints = set()
+        static_keyless_joints = set()
         if dense_sample:
             all_keyed = []
             for joint in joints:
@@ -880,6 +899,32 @@ class VmdSceneCollector:
                     "fallback_reason": "no eligible dense bone channels",
                 }
 
+        static_sample = (
+            _mode_c_earliest_integer_sample(
+                dense_frames,
+                start_frame,
+                end_frame,
+            )
+            if force_dense_sample
+            else None
+        )
+        if static_sample is not None:
+            for joint in joints:
+                long_name = str((cmds.ls(joint, long=True) or [joint])[0])
+                route = input_routes.get(long_name, {})
+                all_joint_keyed = keyed_times_by_joint.get(joint)
+                if all_joint_keyed is None:
+                    all_joint_keyed = _routed_key_times(joint, route)
+                    keyed_times_by_joint[joint] = all_joint_keyed
+                if (
+                    not route
+                    and not all_joint_keyed
+                    and _has_no_incoming_connections(long_name, _BONE_EXPORT_ATTRS)
+                ):
+                    static_keyless_joints.add(joint)
+                    single_key_joints.add(joint)
+                    keyed_times_by_joint[joint] = [static_sample]
+
         def read_value(joint, attr, frame_number, route, use_native=True):
             nonlocal native_samples
             if use_native and native_samples is not None:
@@ -913,6 +958,7 @@ class VmdSceneCollector:
                 end_frame,
             )
             single_key = joint in single_key_joints
+            static_keyless = joint in static_keyless_joints
             raw_provenance_frames = raw_bone_frames_by_name.get(bone_name, set())
             has_new_authored_key = bool(
                 raw_provenance_frames
@@ -980,10 +1026,18 @@ class VmdSceneCollector:
                         "bone",
                         bone_name,
                         "omitted_default" if is_default else "constant_one_key",
-                        "direct_single_key_default"
+                        (
+                            "keyless_static_default"
+                            if static_keyless
+                            else "direct_single_key_default"
+                        )
                         if is_default
-                        else "direct_single_key_non_default",
-                        len(sparse_frames),
+                        else (
+                            "keyless_static_non_default"
+                            if static_keyless
+                            else "direct_single_key_non_default"
+                        ),
+                        0 if static_keyless else len(sparse_frames),
                         0 if is_default else 1,
                     )
                     if is_default:
@@ -1460,10 +1514,28 @@ class VmdSceneCollector:
         frames = []
         channels = []
         controller_nodes = set()
+        static_keyless_channels = set()
+        static_sample = (
+            _mode_c_earliest_integer_sample(
+                dense_frame_samples,
+                start_frame,
+                end_frame,
+            )
+            if dense_sample and timeline_evaluation
+            else None
+        )
         for blend_shape in blend_shapes:
             for weight_index, morph_name in self._blendshape_morph_names(blend_shape).items():
                 attr = f"weight[{weight_index}]"
                 source_frames = _key_times(blend_shape, (attr,))
+                static_keyless = bool(
+                    static_sample is not None
+                    and not source_frames
+                    and _has_no_incoming_connections(blend_shape, (attr,))
+                )
+                if static_keyless:
+                    static_keyless_channels.add((blend_shape, attr))
+                    source_frames = [static_sample]
                 if source_frames:
                     channels.append((blend_shape, attr, morph_name, source_frames))
 
@@ -1500,9 +1572,7 @@ class VmdSceneCollector:
                     attr = f"inputWeight[{index}]"
                     source_frames = _key_times(controller, (attr,))
                     if source_frames:
-                        channels.append(
-                            (controller, attr, str(entry.name), source_frames)
-                        )
+                        channels.append((controller, attr, str(entry.name), source_frames))
                         controller_nodes.add(controller)
 
         channels = [
@@ -1525,17 +1595,34 @@ class VmdSceneCollector:
             ]
         ]
 
-        def append_frame(morph_name, frame_number, weight, source_frames, direct_single):
+        def append_frame(
+            node,
+            attr,
+            morph_name,
+            frame_number,
+            weight,
+            source_frames,
+            direct_single,
+        ):
+            static_keyless = (node, attr) in static_keyless_channels
             if direct_single:
                 is_default = weight == 0.0
                 self._record_track_selection(
                     "morph",
                     morph_name,
                     "omitted_default" if is_default else "constant_one_key",
-                    "direct_single_key_default"
+                    (
+                        "keyless_static_default"
+                        if static_keyless
+                        else "direct_single_key_default"
+                    )
                     if is_default
-                    else "direct_single_key_non_default",
-                    len(source_frames),
+                    else (
+                        "keyless_static_non_default"
+                        if static_keyless
+                        else "direct_single_key_non_default"
+                    ),
+                    0 if static_keyless else len(source_frames),
                     0 if is_default else 1,
                 )
                 if is_default:
@@ -1555,7 +1642,9 @@ class VmdSceneCollector:
                     attr,
                     morph_name,
                     set(dense_frame_samples)
-                    if dense_sample and dense_frame_samples is not None and not direct_single
+                    if dense_sample
+                    and dense_frame_samples is not None
+                    and not direct_single
                     else set(ranged_source_frames),
                     ranged_source_frames,
                     direct_single,
@@ -1576,6 +1665,8 @@ class VmdSceneCollector:
                         if frame_number not in frames_for_channel:
                             continue
                         append_frame(
+                            node,
+                            attr,
                             morph_name,
                             frame_number,
                             _current_plug_float(node, attr),
@@ -1593,6 +1684,8 @@ class VmdSceneCollector:
                 )
                 for frame_number in planned_frames:
                     append_frame(
+                        node,
+                        attr,
                         morph_name,
                         frame_number,
                         _plug_float(node, attr, frame_number),
@@ -2321,6 +2414,40 @@ def _dense_frame_samples(
     if last < first:
         return []
     return list(range(first, last + 1))
+
+
+def _mode_c_earliest_integer_sample(
+    dense_frame_samples: Optional[Sequence[float]],
+    start_frame: Optional[float],
+    end_frame: Optional[float],
+) -> Optional[float]:
+    """Resolve one requested-range integer sample for keyless Mode C tracks."""
+
+    if start_frame is None or end_frame is None:
+        return None
+    try:
+        first = int(math.ceil(float(start_frame)))
+        last = int(math.floor(float(end_frame)))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if last < first:
+        return None
+    if dense_frame_samples:
+        candidates = []
+        for frame in dense_frame_samples:
+            try:
+                candidate = float(frame)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if (
+                math.isfinite(candidate)
+                and candidate.is_integer()
+                and first <= candidate <= last
+            ):
+                candidates.append(candidate)
+        if candidates:
+            return min(candidates)
+    return float(first)
 
 
 def _plug_float(node: str, attr: str, frame: float) -> float:
