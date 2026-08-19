@@ -60,6 +60,25 @@ def _assert_close(actual: float, expected: float, label: str) -> None:
         raise RuntimeError(f"{label} mismatch: actual={actual!r}, expected={expected!r}")
 
 
+def _assert_bone_frame_parity(native_frames: List[dict], python_frames: List[dict]) -> None:
+    """Compare final collector frames, not just the packed scalar transport."""
+
+    if len(native_frames) != len(python_frames):
+        raise RuntimeError(
+            f"collector frame count mismatch: native={len(native_frames)}, "
+            f"python={len(python_frames)}"
+        )
+    for index, (native, python) in enumerate(zip(native_frames, python_frames)):
+        for key in ("bone_name", "frame_number"):
+            if native[key] != python[key]:
+                raise RuntimeError(f"collector frame {index} {key} mismatch")
+        for key in ("position", "rotation"):
+            if len(native[key]) != len(python[key]):
+                raise RuntimeError(f"collector frame {index} {key} width mismatch")
+            for component, (actual, expected) in enumerate(zip(native[key], python[key])):
+                _assert_close(actual, expected, f"collector frame {index} {key}[{component}]")
+
+
 def main() -> int:
     """Run direct, static, timed, protocol, and registration checks."""
     import maya.cmds as cmds
@@ -151,6 +170,45 @@ def main() -> int:
             offset = 6 + frame_index * len(channels)
             for channel_index, value in enumerate(expected):
                 _assert_close(packed[offset + channel_index], value, f"frame {frame} channel {channel_index}")
+
+        # Exercise the production collector seam.  The native path must yield
+        # the same final VMD position/quaternion dictionaries as the existing
+        # timed Python evaluator, while leaving the current Maya time alone.
+        from mmd_tools.adapters.native_vmd_batch_sampler import NativeVmdBatchSampler
+        from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
+
+        joint = cmds.createNode("joint", name="focused_vmd_batch_joint")
+        cmds.setKeyframe(joint, attribute="translateX", time=0.0, value=0.0)
+        cmds.setKeyframe(joint, attribute="translateX", time=2.0, value=4.0)
+        cmds.setKeyframe(joint, attribute="rotateZ", time=0.0, value=-10.0)
+        cmds.setKeyframe(joint, attribute="rotateZ", time=2.0, value=30.0)
+        collector_frames = [0.0, 1.0, 2.0]
+        collector_kwargs = {
+            "joints": [joint],
+            "start_frame": 0.0,
+            "end_frame": 2.0,
+            "dense_sample": True,
+            "force_dense_sample": True,
+            "dense_frame_samples": collector_frames,
+            "time_converter": lambda value: int(value),
+        }
+        python_frames = VmdSceneCollector().collect_bone_frames(**collector_kwargs)
+        native_collector = VmdSceneCollector(
+            bone_channel_sampler=NativeVmdBatchSampler(cmds)
+        )
+        native_frames = native_collector.collect_bone_frames(
+            **collector_kwargs,
+            bone_channel_sampler=native_collector._bone_channel_sampler,
+        )
+        _assert_bone_frame_parity(native_frames, python_frames)
+        native_evidence = native_collector.diagnostics.get("native_sampler", {})
+        if not native_evidence.get("used"):
+            raise RuntimeError(f"collector did not use native sampler: {native_evidence!r}")
+        _assert_close(
+            float(cmds.currentTime(query=True)),
+            before_time,
+            "collector current time preservation",
+        )
 
         _must_fail(
             cmds,

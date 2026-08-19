@@ -366,15 +366,22 @@ def _read_vmd_import_provenance(target_model: Optional[str]) -> Optional[dict[st
 class VmdSceneCollector:
     """Collect minimum VMD-compatible animation data from a Maya scene."""
 
-    def __init__(self, diagnostics_sink=None):
+    def __init__(self, diagnostics_sink=None, bone_channel_sampler=None):
         """Create a collector with optional end-of-collection diagnostics sink.
 
         The sink receives one small JSON-shaped dictionary after collection;
         it never receives per-frame values.  Keeping it optional preserves the
         existing low-level collector API and keeps the hot loop untouched.
+        ``bone_channel_sampler`` is an optional Mode C-only acceleration seam;
+        malformed or unavailable native results always use the Python
+        evaluator below.
         """
 
         self._diagnostics_sink = diagnostics_sink
+        # Optional native batch sampling is intentionally injected at this
+        # seam.  Route discovery, quaternion conversion, VMD dict assembly,
+        # and every non-bone track remain Python-owned.
+        self._bone_channel_sampler = bone_channel_sampler
         self._diagnostics: dict[str, Any] = {}
 
     @property
@@ -503,6 +510,7 @@ class VmdSceneCollector:
             dense_frame_samples=mode_c_dense_frames,
             preserve_raw_bone_transforms=preserve_raw_bone_transforms,
             raw_bone_transforms=raw_bone_transforms,
+            bone_channel_sampler=self._bone_channel_sampler,
         )
         self._diagnostics["bone_collection"] = {
             "wall_sec": round(time.perf_counter() - bone_started, 6),
@@ -656,6 +664,7 @@ class VmdSceneCollector:
         raw_bone_transforms: Optional[
             Mapping[tuple[str, int], tuple[tuple[float, ...], tuple[float, ...]]]
         ] = None,
+        bone_channel_sampler=None,
     ) -> list[dict]:
         """Collect keyed or one-frame-sampled local joint transforms.
 
@@ -676,6 +685,7 @@ class VmdSceneCollector:
         raw_bone_transforms = raw_bone_transforms or {}
         raw_bone_frames_by_name = _index_raw_bone_transform_frames(raw_bone_transforms)
         value_evaluator = _RoutedPlugValueEvaluator()
+        native_samples = None
         frames = []
         dense_frames = (
             list(dense_frame_samples)
@@ -702,6 +712,118 @@ class VmdSceneCollector:
                         dense_frames = list(
                             range(int(math.floor(min(ranged))), int(math.ceil(max(ranged))) + 1)
                         )
+            if (
+                force_dense_sample
+                and dense_frames
+                and bone_channel_sampler is not None
+            ):
+                # A joint without source keys must not acquire a native track
+                # merely because another joint defines the dense range.
+                native_joints = [
+                    joint
+                    for joint in joints
+                    if keyed_times_by_joint.get(joint)
+                ]
+                if not native_joints:
+                    self._diagnostics["native_sampler"] = {
+                        "available": bool(
+                            getattr(bone_channel_sampler, "available", False)
+                        ),
+                        "used": False,
+                        "fallback_reason": "no eligible dense bone channels",
+                    }
+                else:
+                    native_started = time.perf_counter()
+                    try:
+                        sampler_method = getattr(
+                            bone_channel_sampler,
+                            "sample_dense_bone_channels",
+                            None,
+                        )
+                        if not callable(sampler_method):
+                            sampler_method = getattr(
+                                bone_channel_sampler,
+                                "sample_dense_bones",
+                                None,
+                            )
+                        if not callable(sampler_method):
+                            raise RuntimeError("native sampler has no dense bone method")
+                        native_samples = sampler_method(
+                            dense_frames,
+                            native_joints,
+                            input_routes,
+                        )
+                        if not callable(getattr(native_samples, "value", None)):
+                            raise RuntimeError("native sampler returned no value accessor")
+                        native_diagnostics = getattr(
+                            native_samples,
+                            "diagnostics",
+                            None,
+                        )
+                        if callable(native_diagnostics):
+                            native_diagnostics = native_diagnostics()
+                        self._diagnostics["native_sampler"] = dict(
+                            native_diagnostics or {}
+                        )
+                        self._diagnostics["native_sampler"].setdefault(
+                            "available", True
+                        )
+                        self._diagnostics["native_sampler"].setdefault("used", True)
+                    except Exception as exc:
+                        # Native acceleration is opportunistic.  The established
+                        # evaluator remains the semantic fallback, and the
+                        # reason is retained for the preparation report.
+                        native_samples = None
+                        sampler_diagnostics = getattr(
+                            bone_channel_sampler,
+                            "last_diagnostics",
+                            None,
+                        )
+                        self._diagnostics["native_sampler"] = dict(
+                            sampler_diagnostics or {}
+                        )
+                        self._diagnostics["native_sampler"].update(
+                            {
+                                "available": bool(
+                                    self._diagnostics["native_sampler"].get(
+                                        "available", True
+                                    )
+                                ),
+                                "used": False,
+                                "fallback_reason": f"{type(exc).__name__}: {exc}",
+                                "fallback_wall_sec": round(
+                                    time.perf_counter() - native_started,
+                                    6,
+                                ),
+                            }
+                        )
+            elif bone_channel_sampler is not None:
+                available = getattr(bone_channel_sampler, "available", False)
+                if callable(available):
+                    available = available()
+                self._diagnostics["native_sampler"] = {
+                    "available": bool(available),
+                    "used": False,
+                    "fallback_reason": "no eligible dense bone channels",
+                }
+
+        def read_value(joint, attr, frame_number, route):
+            nonlocal native_samples
+            if native_samples is not None:
+                try:
+                    return float(native_samples.value(joint, attr, frame_number))
+                except Exception as exc:
+                    # A malformed injected result is treated exactly like a
+                    # command/protocol failure and falls back per channel.
+                    self._diagnostics.setdefault("native_sampler", {}).update(
+                        {
+                            "used": False,
+                            "fallback_reason": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+                    native_samples = None
+            return value_evaluator.value(joint, attr, frame_number, route)
+
         for joint in joints:
             bone_name = self._mmd_bone_name(joint)
             bind_pose = _resolve_bind_pose(bone_bind_poses, bone_name, joint)
@@ -735,9 +857,9 @@ class VmdSceneCollector:
             for frame_number in keyed_frames:
                 rotation = _maya_joint_rotate_to_vmd_quaternion(
                     joint,
-                    value_evaluator.value(joint, "rotateX", frame_number, route),
-                    value_evaluator.value(joint, "rotateY", frame_number, route),
-                    value_evaluator.value(joint, "rotateZ", frame_number, route),
+                    read_value(joint, "rotateX", frame_number, route),
+                    read_value(joint, "rotateY", frame_number, route),
+                    read_value(joint, "rotateZ", frame_number, route),
                     rotation_context.get(str(long_names[0])),
                 )
                 vmd_frame = _vmd_frame_number(frame_number, time_converter)
@@ -746,9 +868,9 @@ class VmdSceneCollector:
                         "frame_number": vmd_frame,
                         "position": _maya_translate_to_vmd_position(
                             (
-                                value_evaluator.value(joint, "translateX", frame_number, route),
-                                value_evaluator.value(joint, "translateY", frame_number, route),
-                                value_evaluator.value(joint, "translateZ", frame_number, route),
+                                read_value(joint, "translateX", frame_number, route),
+                                read_value(joint, "translateY", frame_number, route),
+                                read_value(joint, "translateZ", frame_number, route),
                             ),
                             bind_pose,
                             motion_scale,

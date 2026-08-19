@@ -135,12 +135,14 @@ class MayaVmdPrepareBackend:
         converter: Any = None,
         revision_service: Any = None,
         mobject_resolver: Any = None,
+        bone_channel_sampler: Any = None,
     ) -> None:
         self._cmds = cmds_module
         self._collector = collector
         self._converter = converter
         self._revision_service = revision_service
         self._mobject_resolver = mobject_resolver
+        self._bone_channel_sampler = bone_channel_sampler
         self._active_watch: Any = None
         self._active_route: Optional[MayaVmdExportRoute] = None
         self._watch_generation = 0
@@ -287,8 +289,13 @@ class MayaVmdPrepareBackend:
         collector = self._collector
         if collector is None:
             from ..converters.vmd_scene_collector import VmdSceneCollector
+            from .native_vmd_batch_sampler import NativeVmdBatchSampler
 
-            collector = VmdSceneCollector()
+            sampler = self._bone_channel_sampler
+            if sampler is None:
+                sampler = NativeVmdBatchSampler(self._cmds_api())
+                self._bone_channel_sampler = sampler
+            collector = VmdSceneCollector(bone_channel_sampler=sampler)
         collect = getattr(collector, "collect", None)
         if not callable(collect):
             if not callable(collector):
@@ -326,6 +333,11 @@ class MayaVmdPrepareBackend:
             collector_diagnostics = getattr(collector, "diagnostics", None)
         if collector_diagnostics:
             self._diagnostics["collector"] = _copy_diagnostics(collector_diagnostics)
+            native_diagnostics = collector_diagnostics.get("native_sampler")
+            if native_diagnostics is not None:
+                self._diagnostics["native_sampler"] = _copy_diagnostics(
+                    native_diagnostics
+                )
         converter = self._converter
         if converter is None:
             from ..io.vmd_exporter import VmdExporter
