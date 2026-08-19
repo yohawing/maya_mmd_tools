@@ -396,8 +396,9 @@ class NativeVmdBatchSampler:
 
     command_name = "mmdVmdBatchSample"
 
-    def __init__(self, cmds_module: Any = None) -> None:
+    def __init__(self, cmds_module: Any = None, diagnostics_sink=None) -> None:
         self._cmds = cmds_module
+        self._diagnostics_sink = diagnostics_sink
         self._plugin_attempted = False
         self._plugin_path: Optional[str] = None
         self.last_diagnostics: dict[str, Any] = {
@@ -409,6 +410,21 @@ class NativeVmdBatchSampler:
             "used": False,
             "plugin_load_status": "not_attempted",
         }
+
+    def set_diagnostics_sink(self, sink) -> None:
+        """Attach a low-volume sink for pre-command timeout evidence."""
+
+        self._diagnostics_sink = sink
+
+    def _publish_diagnostics(self) -> None:
+        sink = self._diagnostics_sink
+        if not callable(sink):
+            return
+        try:
+            sink(dict(self.last_diagnostics))
+        except Exception:
+            # Diagnostics must never change native sampling semantics.
+            return
 
     @property
     def available(self) -> bool:
@@ -508,11 +524,18 @@ class NativeVmdBatchSampler:
                     "fallback_reason": "native command is unavailable",
                 }
             )
+            self._publish_diagnostics()
             raise NativeVmdBatchSamplerError("native command is unavailable")
         plugin_diagnostics = {
             key: value
             for key, value in self.last_diagnostics.items()
             if key.startswith("plugin_")
+            or key
+            in {
+                "plugin_path",
+                "plugin_load_status",
+                "plugin_load_error",
+            }
         }
         plan = build_dense_bone_sample_plan(
             joints,
@@ -534,12 +557,39 @@ class NativeVmdBatchSampler:
         rows = []
         strategy_counts = None
         chunk_wall_secs = []
+        current_chunk_index = -1
+        self.last_diagnostics = {
+            **plugin_diagnostics,
+            "available": True,
+            "used": True,
+            "status": "sampling",
+            "chunk_index": -1,
+            "chunk_count": chunk_count,
+            "channel_count": physical_channel_count,
+            "frame_count": len(plan.frames),
+            "sample_count": len(plan.frames) * physical_channel_count,
+            "max_frames_per_chunk": max_frames_per_chunk,
+            "max_samples_per_chunk": max_frames_per_chunk * physical_channel_count,
+        }
+        self._publish_diagnostics()
         try:
             for _chunk_index, start in enumerate(
                 range(0, len(plan.frames), max_frames_per_chunk)
             ):
                 end = min(start + max_frames_per_chunk, len(plan.frames))
                 chunk_plan = _chunk_plan(plan, start, end)
+                current_chunk_index = start // max_frames_per_chunk
+                self.last_diagnostics.update(
+                    {
+                        "status": "sampling_chunk",
+                        "chunk_index": current_chunk_index,
+                        "chunk_frame_start": start,
+                        "chunk_frame_end": end - 1,
+                        "chunk_frame_count": end - start,
+                        "chunk_sample_count": (end - start) * physical_channel_count,
+                    }
+                )
+                self._publish_diagnostics()
                 payload = json.dumps(
                     {
                         "version": _PROTOCOL_VERSION,
@@ -573,10 +623,20 @@ class NativeVmdBatchSampler:
                 "fallback_reason": f"{type(exc).__name__}: {exc}",
                 "wall_sec": round(time.perf_counter() - started, 6),
                 "chunk_count": chunk_count,
+                "chunk_index": current_chunk_index,
+                "channel_count": physical_channel_count,
+                "frame_count": len(plan.frames),
+                "sample_count": len(plan.frames) * physical_channel_count,
                 "max_frames_per_chunk": max_frames_per_chunk,
                 "max_samples_per_chunk": max_frames_per_chunk * physical_channel_count,
                 "chunk_wall_sec": chunk_wall_secs,
+                "status": "failed",
+                "protocol_failure": isinstance(exc, NativeVmdBatchSamplerError),
+                "protocol_error": str(exc)
+                if isinstance(exc, NativeVmdBatchSamplerError)
+                else None,
             }
+            self._publish_diagnostics()
             if isinstance(exc, NativeVmdBatchSamplerError):
                 raise
             raise NativeVmdBatchSamplerError("native sampler invocation failed") from exc
@@ -593,6 +653,14 @@ class NativeVmdBatchSampler:
             chunk_wall_secs=tuple(chunk_wall_secs),
         )
         self.last_diagnostics = {**plugin_diagnostics, **result.diagnostics}
+        self.last_diagnostics.update(
+            {
+                "status": "completed",
+                "chunk_index": chunk_count - 1,
+                "protocol_failure": False,
+            }
+        )
+        self._publish_diagnostics()
         return result
 
     # Keep a short alias for injected test doubles and future adapter callers.

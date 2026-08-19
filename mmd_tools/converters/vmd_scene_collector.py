@@ -396,6 +396,26 @@ class VmdSceneCollector:
 
         return self.diagnostics
 
+    def _emit_diagnostics(self) -> None:
+        """Flush the latest bounded diagnostics snapshot to the optional sink."""
+
+        sink = self._diagnostics_sink
+        if not callable(sink):
+            return
+        try:
+            sink(self.diagnostics)
+        except Exception as exc:  # diagnostics must never alter export semantics
+            self._diagnostics["sink_error"] = f"{type(exc).__name__}: {exc}"
+
+    def _accept_native_diagnostics(self, value: Any) -> None:
+        """Merge native preflight/chunk evidence and flush it immediately."""
+
+        if isinstance(value, Mapping):
+            merged = dict(self._diagnostics.get("native_sampler", {}))
+            merged.update(_copy_diagnostics(value))
+            self._diagnostics["native_sampler"] = merged
+            self._emit_diagnostics()
+
     def collect(self, options: Optional[Mapping[str, Any]] = None) -> dict:
         """Collect and publish low-overhead timing diagnostics."""
 
@@ -413,12 +433,7 @@ class VmdSceneCollector:
             self._diagnostics["total"] = {
                 "wall_sec": round(time.perf_counter() - started, 6),
             }
-            sink = self._diagnostics_sink
-            if callable(sink):
-                try:
-                    sink(self.diagnostics)
-                except Exception as exc:  # diagnostics must never alter export semantics
-                    self._diagnostics["sink_error"] = f"{type(exc).__name__}: {exc}"
+            self._emit_diagnostics()
 
     def _collect_impl(self, options: Optional[Mapping[str, Any]] = None) -> dict:
         """Collect VMD exporter input from the current Maya scene.
@@ -733,6 +748,36 @@ class VmdSceneCollector:
                         "fallback_reason": "no eligible dense bone channels",
                     }
                 else:
+                    route_inventory = _native_route_inventory(
+                        native_joints,
+                        input_routes,
+                    )
+                    sampler_available = getattr(
+                        bone_channel_sampler,
+                        "available",
+                        False,
+                    )
+                    if callable(sampler_available):
+                        try:
+                            sampler_available = sampler_available()
+                        except Exception:
+                            sampler_available = False
+                    self._diagnostics["native_sampler"] = {
+                        "status": "preflight",
+                        "available": bool(sampler_available),
+                        "used": False,
+                        "frame_count": len(dense_frames),
+                        "logical_channel_count": len(native_joints) * len(_BONE_EXPORT_ATTRS),
+                        **route_inventory,
+                    }
+                    self._emit_diagnostics()
+                    set_native_sink = getattr(
+                        bone_channel_sampler,
+                        "set_diagnostics_sink",
+                        None,
+                    )
+                    if callable(set_native_sink):
+                        set_native_sink(self._accept_native_diagnostics)
                     native_started = time.perf_counter()
                     try:
                         sampler_method = getattr(
@@ -767,12 +812,12 @@ class VmdSceneCollector:
                             "last_diagnostics",
                             None,
                         )
-                        self._diagnostics["native_sampler"] = dict(
-                            sampler_diagnostics or {}
+                        native_report = dict(
+                            self._diagnostics.get("native_sampler", {})
                         )
-                        self._diagnostics["native_sampler"].update(
-                            native_diagnostics or {}
-                        )
+                        native_report.update(sampler_diagnostics or {})
+                        native_report.update(native_diagnostics or {})
+                        self._diagnostics["native_sampler"] = native_report
                         self._diagnostics["native_sampler"].setdefault(
                             "available", True
                         )
@@ -787,9 +832,11 @@ class VmdSceneCollector:
                             "last_diagnostics",
                             None,
                         )
-                        self._diagnostics["native_sampler"] = dict(
-                            sampler_diagnostics or {}
+                        native_report = dict(
+                            self._diagnostics.get("native_sampler", {})
                         )
+                        native_report.update(sampler_diagnostics or {})
+                        self._diagnostics["native_sampler"] = native_report
                         self._diagnostics["native_sampler"].update(
                             {
                                 "available": bool(
@@ -805,6 +852,12 @@ class VmdSceneCollector:
                                 ),
                             }
                         )
+                        # Direct collector callers may provide a sampler that
+                        # cannot publish its own failure snapshot.  Flush the
+                        # bounded fallback evidence here as well; the native
+                        # gateway publishes before raising, so this does not
+                        # add per-frame logging.
+                        self._emit_diagnostics()
             elif bone_channel_sampler is not None:
                 available = getattr(bone_channel_sampler, "available", False)
                 if callable(available):
@@ -1673,6 +1726,39 @@ def _routed_plug_float(
 ) -> float:
     node, target_attr = route.get(attr, (joint, attr))
     return _plug_float(node, target_attr, frame_number)
+
+
+def _native_route_inventory(
+    joints: Sequence[str],
+    input_routes: Mapping[str, Mapping[str, tuple[str, str]]],
+) -> dict[str, Any]:
+    """Build bounded route/node-type evidence before native sampling starts."""
+
+    target_types: dict[str, set[str]] = {}
+    target_nodes: set[str] = set()
+    physics_drivers: set[str] = set()
+    for joint in joints:
+        long_name = str((cmds.ls(joint, long=True) or [joint])[0])
+        route = input_routes.get(long_name, {})
+        for attr in _BONE_EXPORT_ATTRS:
+            node, _target_attr = route.get(attr, (long_name, attr))
+            node = str(node)
+            target_nodes.add(node)
+            try:
+                node_type = str(cmds.nodeType(node) or "unknown")
+            except Exception:
+                node_type = "unknown"
+            target_types.setdefault(node_type, set()).add(node)
+            if node_type == "mmdPhysicsBoneDriver":
+                physics_drivers.add(node)
+    return {
+        "route_target_node_count": len(target_nodes),
+        "route_target_node_types": {
+            node_type: len(nodes)
+            for node_type, nodes in sorted(target_types.items())
+        },
+        "physics_driver_reached_count": len(physics_drivers),
+    }
 
 
 def _query_current_time() -> Optional[float]:

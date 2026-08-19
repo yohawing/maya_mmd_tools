@@ -303,6 +303,19 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         self.assertFalse(sampler.last_diagnostics["used"])
         self.assertIn("strategy counts differ", sampler.last_diagnostics["fallback_reason"])
 
+    def test_diagnostics_sink_flushes_before_each_native_chunk(self):
+        events = []
+        sampler = NativeVmdBatchSampler(_FakeCmds(), diagnostics_sink=events.append)
+        with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 12):
+            sampler.sample_dense_bone_channels([0, 1, 2], ["joint"])
+        statuses = [event.get("status") for event in events]
+        self.assertEqual(statuses[0], "sampling")
+        self.assertEqual(statuses[1:3], ["sampling_chunk", "sampling_chunk"])
+        self.assertEqual(statuses[-1], "completed")
+        self.assertEqual(events[1]["chunk_index"], 0)
+        self.assertEqual(events[2]["chunk_index"], 1)
+        self.assertEqual(events[-1]["chunk_count"], 2)
+
     def test_collector_only_batches_keyed_joints_and_ignores_raw_provenance(self):
         class _Cmds:
             def ls(self, node, long=False):
