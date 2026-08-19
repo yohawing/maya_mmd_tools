@@ -107,6 +107,21 @@ def main() -> int:
         cmds.connectAttr(f"{source}.sourceValue", f"{conversion}.input", force=True)
         cmds.connectAttr(f"{conversion}.output", f"{node}.convertedValue", force=True)
 
+        # An unconnected computed output is numeric but not a safe static
+        # input.  A hostile/incorrect hint must be downgraded to timed MPlug.
+        computed = cmds.createNode("plusMinusAverage", name="focused_vmd_batch_computed")
+        cmds.setAttr(f"{computed}.input1D[0]", 6.0)
+        computed_result = _call(
+            cmds,
+            _payload(
+                [0.0],
+                [{"plug": f"{computed}.output1D", "unit": "scalar", "hint": "static"}],
+            ),
+        )
+        if computed_result[:6] != [1.0, 1.0, 1.0, 0.0, 0.0, 1.0]:
+            raise RuntimeError(f"computed output was accepted as static: {computed_result[:6]!r}")
+        _assert_close(computed_result[6], 6.0, "computed timed fallback")
+
         frames = [0.5, 1.25, 2.0]
         channels = [
             {"plug": f"{node}.rotateX", "unit": "angle", "hint": "direct_curve"},

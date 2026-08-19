@@ -7,6 +7,7 @@
 #include <maya/MDGContextGuard.h>
 #include <maya/MDoubleArray.h>
 #include <maya/MFnAnimCurve.h>
+#include <maya/MFnAttribute.h>
 #include <maya/MFnDependencyNode.h>
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnUnitAttribute.h>
@@ -180,6 +181,8 @@ bool safeNumericInput(const MPlug& plug)
 {
     if (hasIncoming(plug) || hasParentIncoming(plug) || plug.isCompound()) return false;
     MStatus status;
+    MFnAttribute attribute(plug.attribute(), &status);
+    if (!status || !attribute.isWritable() || !attribute.isStorable()) return false;
     MFnUnitAttribute unit(plug.attribute(), &status);
     if (status) {
         const auto type = unit.unitType(&status);
