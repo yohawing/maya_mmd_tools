@@ -3,6 +3,8 @@
 import os
 import hashlib
 import json
+import sys
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +23,7 @@ from tools.local_asset_roundtrip import (
     _prepare_vmd_mode_c,
     _run_prepared_vmd_exports,
     _import_options,
+    _import_model_action,
     _resolve_morph_controller_input_plug,
     parse_args,
     _require_import_success,
@@ -711,6 +714,68 @@ def test_import_action_contract_rejects_partial_or_warning_results():
     partial = SimpleNamespace(outcome="partial", warnings=["texture"], root_node="|root")
     with pytest.raises(RuntimeError, match="did not complete cleanly"):
         _require_import_success(partial, "ImportModelAction", require_root=True)
+
+
+class _FakeImportModelAction:
+    """Injectable production-action stand-in for root identity tests."""
+
+    def __init__(self, result):
+        self._result = result
+
+    def execute(self, _request):
+        return self._result
+
+
+class _FakeMayaCmds:
+    def __init__(self, matches):
+        self.matches = matches
+        self.calls = []
+
+    def ls(self, node, **kwargs):
+        self.calls.append((node, kwargs))
+        assert kwargs == {"long": True}
+        return self.matches
+
+
+def _patch_import_model_root_resolution(monkeypatch, matches):
+    import mmd_tools.actions.import_model_action as import_model_action
+
+    fake_cmds = _FakeMayaCmds(matches)
+    fake_maya = types.ModuleType("maya")
+    fake_maya.cmds = fake_cmds
+    monkeypatch.setitem(sys.modules, "maya", fake_maya)
+    result = SimpleNamespace(
+        succeeded=True,
+        outcome="success",
+        warnings=[],
+        root_node="model",
+    )
+    monkeypatch.setattr(
+        import_model_action,
+        "ImportModelAction",
+        lambda: _FakeImportModelAction(result),
+    )
+    return fake_cmds
+
+
+def test_import_model_action_canonicalizes_short_root_to_unique_long_path(monkeypatch, tmp_path):
+    fake_cmds = _patch_import_model_root_resolution(monkeypatch, ["|asset|model"])
+
+    assert _import_model_action(tmp_path / "model.pmx") == "|asset|model"
+    assert fake_cmds.calls == [("model", {"long": True})]
+
+
+@pytest.mark.parametrize(
+    "matches",
+    [([], "not a unique Maya DAG path"), (["|a|model", "|b|model"], "not a unique Maya DAG path")],
+)
+def test_import_model_action_fails_closed_when_root_is_missing_or_ambiguous(
+    monkeypatch, tmp_path, matches
+):
+    _patch_import_model_root_resolution(monkeypatch, matches[0])
+
+    with pytest.raises(RuntimeError, match=matches[1]):
+        _import_model_action(tmp_path / "model.pmx")
 
 
 def test_export_request_matches_export_tab_shape_and_disables_raw_mode(tmp_path):

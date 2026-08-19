@@ -993,6 +993,39 @@ def _require_import_success(result: Any, action_name: str, *, require_root: bool
     return str(root) if root else None
 
 
+def _canonical_imported_model_root(root: str) -> str:
+    """Resolve an imported root to one existing, long Maya DAG path.
+
+    Import actions historically returned the short name in some Maya scenes.
+    The public export/prepare contracts require the canonical identity, so do
+    the same unique ``cmds.ls(..., long=True)`` resolution that the Maya
+    adapters use immediately after import.  An unresolved or ambiguous alias
+    must stop the user-path smoke rather than allowing a later phase to report
+    a misleading target error.
+    """
+
+    if not isinstance(root, str) or not root.strip():
+        raise RuntimeError(f"ImportModelAction returned an invalid model root: {root!r}")
+    try:
+        from maya import cmds
+    except Exception as exc:
+        raise RuntimeError("Maya cmds is unavailable while resolving the imported model root") from exc
+    try:
+        matches = cmds.ls(root, long=True) or []
+    except Exception as exc:
+        raise RuntimeError(f"could not resolve imported model root {root!r}") from exc
+    if isinstance(matches, (str, bytes, bytearray)) or len(matches) != 1:
+        raise RuntimeError(
+            f"imported model root is not a unique Maya DAG path: {root!r} -> {matches!r}"
+        )
+    canonical = matches[0]
+    if not isinstance(canonical, str) or not canonical.startswith("|"):
+        raise RuntimeError(
+            f"imported model root did not resolve to a canonical long DAG path: {canonical!r}"
+        )
+    return canonical
+
+
 def _import_model_action(source: Path) -> str:
     """Import a model through the production ImportModelAction boundary."""
 
@@ -1009,7 +1042,7 @@ def _import_model_action(source: Path) -> str:
         raise RuntimeError(f"ImportModelAction failed: {result.error or result.warnings}")
     root = _require_import_success(result, "ImportModelAction", require_root=True)
     assert root is not None
-    return root
+    return _canonical_imported_model_root(root)
 
 
 def _import_vmd_action(root: str, model: Path, source: Path) -> str:
