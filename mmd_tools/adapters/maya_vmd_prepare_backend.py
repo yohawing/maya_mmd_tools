@@ -641,7 +641,7 @@ class MayaVmdPrepareBackend:
     @staticmethod
     def _split_plug(plug: Any) -> tuple[str, str]:
         value = str(plug)
-        node, separator, attribute = value.rpartition(".")
+        node, separator, attribute = value.partition(".")
         if not separator or not node or not attribute:
             raise PrepareVmdExportError(f"Maya returned an unresolved plug {value!r}")
         return node, attribute

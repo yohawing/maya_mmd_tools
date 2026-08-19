@@ -25,6 +25,8 @@ class _FakeCmds:
             "|camera": "uuid-camera",
             "|camera|shape": "uuid-camera-shape",
             "|consumer": "uuid-consumer",
+            "modeCBlendShape": "uuid-blend",
+            "|model|sourceShape": "uuid-source-shape",
         }
         self.type_by_node = {
             "|model": "transform",
@@ -34,6 +36,8 @@ class _FakeCmds:
             "|camera": "transform",
             "|camera|shape": "camera",
             "|consumer": "network",
+            "modeCBlendShape": "blendShape",
+            "|model|sourceShape": "mesh",
         }
         self.connections = {
             "|model": [],
@@ -43,6 +47,8 @@ class _FakeCmds:
             "|camera": [],
             "|camera|shape": [],
             "|consumer": [],
+            "modeCBlendShape": [],
+            "|model|sourceShape": [],
         }
         self.incoming = {
             "|model": [],
@@ -52,7 +58,10 @@ class _FakeCmds:
             "|camera": [],
             "|camera|shape": [],
             "|consumer": [],
+            "modeCBlendShape": [],
+            "|model|sourceShape": [],
         }
+        self.long_name_aliases = {"sourceShape": "|model|sourceShape"}
 
     def ls(self, value=None, **kwargs):
         if kwargs.get("uuid"):
@@ -62,7 +71,7 @@ class _FakeCmds:
             return ["|camera"]
         if value is None:
             return []
-        node = str(value)
+        node = self.long_name_aliases.get(str(value), str(value))
         if node in self.uuid_by_node:
             return [node]
         return []
@@ -183,6 +192,42 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         self.cmds.connections["|consumer"] = ["|consumer.input", "|model|bone.rotateX"]
         discovery = self.backend.discover(_request())
         self.assertNotIn("uuid-consumer", discovery.route.dependency_uuids)
+
+    def test_nested_blendshape_topology_preserves_full_attribute_path(self):
+        destination = (
+            "modeCBlendShape.inputTarget[0].inputTargetGroup[0]."
+            "inputTargetItem[6000].inputGeomTarget"
+        )
+        self.cmds.connections["modeCBlendShape"] = [
+            destination,
+            "sourceShape.worldMesh[0]",
+        ]
+        self.cmds.incoming["modeCBlendShape"] = ["sourceShape.worldMesh[0]"]
+
+        first = self.backend.discover(_request(blend_shapes=["modeCBlendShape"]))
+
+        self.assertIn("uuid-source-shape", first.route.dependency_uuids)
+        self.assertEqual(
+            self.backend._split_plug(destination),
+            (
+                "modeCBlendShape",
+                "inputTarget[0].inputTargetGroup[0]."
+                "inputTargetItem[6000].inputGeomTarget",
+            ),
+        )
+
+        self.cmds.connections["modeCBlendShape"][0] = destination.replace(
+            "inputTargetItem[6000]",
+            "inputTargetItem[6001]",
+        )
+        changed = self.backend.discover(
+            _request(blend_shapes=["modeCBlendShape"])
+        )
+
+        self.assertNotEqual(
+            first.dependency_closure_fingerprint,
+            changed.dependency_closure_fingerprint,
+        )
 
     def test_arm_collects_once_with_current_model_mode_c_options(self):
         discovery = self.backend.discover(_request())
