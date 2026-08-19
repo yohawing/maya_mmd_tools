@@ -34,6 +34,7 @@ DEFAULT_MANIFEST = BUILD_ROOT / "reports" / "local_asset_roundtrip" / "represent
 DEFAULT_OUT_DIR = BUILD_ROOT / "reports" / "local_asset_roundtrip"
 MANIFEST_SCHEMA_VERSION = 2
 FLOAT_TOLERANCE = 1.0e-4
+DEFAULT_EXPORT_WRITE_BUDGET_SEC = 60.0
 EXPECTED_VMD_WARNING = "VMD_MODE_C_RAW_LOSS"
 FAILURE_CLASSIFICATIONS = (
     "import_failed",
@@ -169,26 +170,96 @@ def _classify_failure(
 ) -> str:
     """Map a worker/host failure to the fail-closed public classification."""
 
-    text = f"{status or ''} {error or ''} {phase or ''}".casefold()
-    if "timeout" in text or "timed_out" in text:
+    error_text = str(error or "").casefold()
+    status_text = str(status or "").casefold()
+    phase_text = str(phase or "").casefold()
+    if "timeout" in error_text or "timed_out" in error_text or "timeout" in status_text:
         return "performance_timeout"
-    if any(token in text for token in ("import", "no root", "action")):
-        return "import_failed"
-    if "edit" in text or "sentinel" in text or "recipe" in text:
-        return "edit_failed"
-    if "validation" in text or "blocked" in text:
-        return "validation_blocked"
-    if "export" in text or "writer" in text:
-        return "export_failed"
-    if "parse" in text or "binary" in text:
-        return "parse_failed"
-    if "structural" in text or "track" in text or "count" in text:
-        return "structural_mismatch"
-    if "semantic" in text or "oracle" in text or "pose" in text:
+    # The error is more authoritative than the phase name.  In particular,
+    # a semantic/edit failure often happens after the ``fresh_import`` phase
+    # has started; treating that phase name as an import failure hides the
+    # actionable product defect.
+    if any(
+        token in error_text
+        for token in (
+            "semantic mismatch",
+            "ik mismatch",
+            "ik count mismatch",
+            "ik state mismatch",
+            "ik track mismatch",
+            "ik track semantics differ",
+            "pose mismatch",
+            "oracle mismatch",
+        )
+    ):
         return "semantic_mismatch"
-    if status in {"crash", "environment_blocked"}:
+    if any(
+        token in error_text
+        for token in (
+            "edited morph missing",
+            "missing edited morph",
+            "edited bone missing",
+            "missing edited bone",
+            "sentinel",
+            "edit failed",
+            "recipe",
+        )
+    ):
+        return "edit_failed"
+    if any(
+        token in error_text
+        for token in (
+            "structural mismatch",
+            "track names differ",
+            "required tracks missing",
+            "dropped channel",
+            "dropped required track",
+            "count mismatch",
+        )
+    ):
+        return "structural_mismatch"
+    if any(token in error_text for token in ("importmodelaction", "importvdmaction", "import failed", "no root")):
+        return "import_failed"
+    if "edit" in error_text:
+        return "edit_failed"
+    if "validation" in error_text or "blocked" in error_text:
+        return "validation_blocked"
+    if "export" in error_text or "writer" in error_text:
+        return "export_failed"
+    if "parse" in error_text or "binary" in error_text:
+        return "parse_failed"
+    if "semantic" in error_text or "oracle" in error_text or "pose" in error_text:
+        return "semantic_mismatch"
+    if "structural" in error_text or "track" in error_text or "count" in error_text:
+        return "structural_mismatch"
+    # A phase name is a fallback only.  ``fresh_import`` by itself is not
+    # enough to claim that the import action failed.
+    if "source_import" in phase_text:
+        return "import_failed"
+    if status_text in {"crash", "environment_blocked"}:
         return "environment_blocked"
     return "environment_blocked"
+
+
+def _worker_failure_classification(document: Mapping[str, Any]) -> str | None:
+    """Return the most specific failure reported by a worker run.
+
+    The worker stores the useful classification on an individual ``runs``
+    entry.  The host must not replace that evidence with its own generic
+    ``environment_blocked`` fallback when it flattens the child result into a
+    case summary.
+    """
+
+    runs = document.get("runs")
+    if isinstance(runs, list):
+        for run in reversed(runs):
+            if not isinstance(run, Mapping):
+                continue
+            value = run.get("failure_classification")
+            if value in FAILURE_CLASSIFICATIONS:
+                return str(value)
+    value = document.get("failure_classification")
+    return str(value) if value in FAILURE_CLASSIFICATIONS else None
 
 
 def _allowed_warning_codes(validation: Any, export_format: str) -> tuple[list[str], list[str]]:
@@ -583,6 +654,34 @@ def _metric_snapshot() -> dict[str, int | None]:
     return {"rss_bytes": pages * page_size, "peak_rss_bytes": None}
 
 
+def _export_write_budget_evidence(
+    phases: Iterable[Mapping[str, Any]],
+    budget_sec: float,
+) -> dict[str, Any] | None:
+    """Return fail-closed evidence when completed export writing exceeds budget."""
+
+    if budget_sec <= 0:
+        raise ValueError("export write budget must be positive")
+    phase = next(
+        (item for item in phases if str(item.get("name")) == "export_write"),
+        None,
+    )
+    if phase is None:
+        return None
+    try:
+        actual_sec = float(phase["wall_sec"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if actual_sec <= budget_sec:
+        return None
+    return {
+        "phase": "export_write",
+        "classification": "performance_timeout",
+        "expected_sec": float(budget_sec),
+        "actual_sec": actual_sec,
+    }
+
+
 class _PhaseRecorder:
     """Record one worker phase and asynchronously emit timeout stack samples."""
 
@@ -638,6 +737,7 @@ class _PhaseRecorder:
         if self.thread is not None:
             self.thread.join(timeout=0.2)
         ended = time.perf_counter()
+        wall_elapsed = ended - self.started
         cpu_ended = time.process_time()
         rss_ended = _metric_snapshot()
         self.rss_peak = max(
@@ -658,7 +758,7 @@ class _PhaseRecorder:
         ) else None
         entry = {
             "name": self.name,
-            "wall_sec": round(ended - self.started, 6),
+            "wall_sec": round(wall_elapsed, 6),
             "cpu_sec": round(cpu_ended - self.cpu_started, 6),
             "rss_start_bytes": self.rss_started.get("rss_bytes"),
             "rss_end_bytes": rss_ended.get("rss_bytes"),
@@ -668,6 +768,15 @@ class _PhaseRecorder:
             "stack_samples": list(self.stack_samples),
         }
         self.context.phases.append(entry)
+        if self.name == "export_write" and wall_elapsed > self.context.export_write_budget_sec:
+            self.context.export_write_budget_violations.append(
+                {
+                    "phase": "export_write",
+                    "classification": "performance_timeout",
+                    "expected_sec": float(self.context.export_write_budget_sec),
+                    "actual_sec": round(wall_elapsed, 6),
+                }
+            )
         self.context.write_checkpoint(
             self.name,
             entry["status"],
@@ -684,11 +793,21 @@ class _PhaseRecorder:
 class _WorkerContext:
     """Mutable per-worker evidence state."""
 
-    def __init__(self, checkpoint: Path, stack_dir: Path, phase_timeout_sec: float) -> None:
+    def __init__(
+        self,
+        checkpoint: Path,
+        stack_dir: Path,
+        phase_timeout_sec: float,
+        export_write_budget_sec: float = DEFAULT_EXPORT_WRITE_BUDGET_SEC,
+    ) -> None:
+        if export_write_budget_sec <= 0:
+            raise ValueError("export write budget must be positive")
         self.checkpoint = checkpoint
         self.stack_dir = stack_dir
         self.phase_timeout_sec = phase_timeout_sec
+        self.export_write_budget_sec = float(export_write_budget_sec)
         self.phases: list[dict[str, Any]] = []
+        self.export_write_budget_violations: list[dict[str, Any]] = []
 
     def write_checkpoint(
         self,
@@ -1567,7 +1686,13 @@ def _initialize_maya() -> None:
     load_mmd_tools_plugin(ROOT)
 
 
-def _run_worker(config_path: Path, result_path: Path, checkpoint: Path, phase_timeout_sec: float) -> int:
+def _run_worker(
+    config_path: Path,
+    result_path: Path,
+    checkpoint: Path,
+    phase_timeout_sec: float,
+    export_write_budget_sec: float = DEFAULT_EXPORT_WRITE_BUDGET_SEC,
+) -> int:
     """Run one case repeatedly in a single warmable mayapy process."""
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -1575,7 +1700,12 @@ def _run_worker(config_path: Path, result_path: Path, checkpoint: Path, phase_ti
     repetitions = int(config.get("repetitions", 1))
     out_dir = Path(config["out_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
-    context = _WorkerContext(checkpoint, out_dir / "stacks", phase_timeout_sec)
+    context = _WorkerContext(
+        checkpoint,
+        out_dir / "stacks",
+        phase_timeout_sec,
+        export_write_budget_sec,
+    )
     document: dict[str, Any] = {
         "status": "fail",
         "case": case,
@@ -1590,6 +1720,7 @@ def _run_worker(config_path: Path, result_path: Path, checkpoint: Path, phase_ti
             run_dir = out_dir / f"run-{index:02d}"
             run_dir.mkdir(parents=True, exist_ok=True)
             context.phases = []
+            context.export_write_budget_violations = []
             started = time.perf_counter()
             try:
                 if case.get("vmd"):
@@ -1609,10 +1740,32 @@ def _run_worker(config_path: Path, result_path: Path, checkpoint: Path, phase_ti
                 result = None
                 error = f"{type(exc).__name__}: {exc}"
                 traceback_text = traceback.format_exc(limit=30)
-            failure_classification = None if run_status == "pass" else _classify_failure(
-                status=run_status,
-                error=error,
-                phase=(context.phases[-1].get("name") if context.phases else None),
+            budget_evidence = list(context.export_write_budget_violations)
+            if not budget_evidence:
+                fallback_budget_evidence = _export_write_budget_evidence(
+                    context.phases,
+                    context.export_write_budget_sec,
+                )
+                if fallback_budget_evidence is not None:
+                    budget_evidence.append(fallback_budget_evidence)
+            budget_only_failure = bool(budget_evidence and run_status == "pass")
+            if budget_only_failure:
+                run_status = "fail"
+                error = (
+                    "export_write exceeded budget: "
+                    f"expected={budget_evidence[0]['expected_sec']:g}s "
+                    f"actual={budget_evidence[0]['actual_sec']:g}s"
+                )
+            failure_classification = (
+                None
+                if run_status == "pass"
+                else "performance_timeout"
+                if budget_only_failure
+                else _classify_failure(
+                    status=run_status,
+                    error=error,
+                    phase=(context.phases[-1].get("name") if context.phases else None),
+                )
             )
             document["runs"].append(
                 {
@@ -1624,6 +1777,10 @@ def _run_worker(config_path: Path, result_path: Path, checkpoint: Path, phase_ti
                     "result": result,
                     "error": error,
                     "failure_classification": failure_classification,
+                    "performance_evidence": {
+                        "export_write_budget_sec": context.export_write_budget_sec,
+                        "violations": budget_evidence,
+                    },
                     "traceback": traceback_text,
                 }
             )
@@ -1632,6 +1789,8 @@ def _run_worker(config_path: Path, result_path: Path, checkpoint: Path, phase_ti
         document["status"] = "pass" if len(document["runs"]) == repetitions and all(
             run["status"] == "pass" for run in document["runs"]
         ) else "fail"
+        if document["status"] != "pass":
+            document["failure_classification"] = _worker_failure_classification(document)
     except Exception as exc:  # noqa: BLE001 - include initialization failures.
         document["status"] = "fail"
         document["error"] = f"{type(exc).__name__}: {exc}"
@@ -1651,6 +1810,7 @@ def _run_child(
     *,
     phase_timeout_sec: float,
     case_timeout_sec: float,
+    export_write_budget_sec: float = DEFAULT_EXPORT_WRITE_BUDGET_SEC,
 ) -> dict[str, Any]:
     """Run and watchdog one mayapy child, returning host-owned case evidence."""
 
@@ -1668,6 +1828,8 @@ def _run_child(
         str(checkpoint),
         "--phase-timeout-sec",
         str(phase_timeout_sec),
+        "--export-write-budget-sec",
+        str(export_write_budget_sec),
     ]
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
@@ -1731,6 +1893,9 @@ def _run_child(
     child_result["return_code"] = return_code
     child_result["stdout"] = str(stdout_path)
     child_result["stderr"] = str(stderr_path)
+    nested_failure = _worker_failure_classification(child_result)
+    if nested_failure is not None:
+        child_result["failure_classification"] = nested_failure
     return child_result
 
 
@@ -1753,9 +1918,10 @@ def _summary_markdown(document: Mapping[str, Any]) -> str:
         f"- run id: `{document.get('run_id')}`",
         f"- profile: `{document.get('profile') or 'all'}`",
         f"- manifest: `{document.get('manifest')}`",
+        f"- export_write budget: `{document.get('export_write_budget_sec', 'n/a')}s`",
         "",
-        "| Case | Classification | Status | Runs | Last phase |",
-        "| --- | --- | --- | ---: | --- |",
+        "| Case | Classification | Status | Failure | Runs | Last phase |",
+        "| --- | --- | --- | --- | ---: | --- |",
     ]
     for case in document.get("cases", ()):
         runs = case.get("runs", [])
@@ -1768,7 +1934,7 @@ def _summary_markdown(document: Mapping[str, Any]) -> str:
             last_phase = str(case["last_phase"].get("phase", last_phase))
         lines.append(
             f"| {case.get('name')} | {case.get('classification')} | {case.get('status')} | "
-            f"{len(runs)} | {last_phase} |"
+            f"{case.get('failure_classification', '')} | {len(runs)} | {last_phase} |"
         )
     lines.extend(["", "## Artifacts", ""])
     for case in document.get("cases", ()):
@@ -1790,6 +1956,7 @@ def _run_host(args: argparse.Namespace) -> int:
             "maya": str(args.maya),
             "manifest": str(Path(args.manifest)),
             "run_id": run_id,
+            "export_write_budget_sec": args.export_write_budget_sec,
             "cases": [],
             "failure_classification": _classify_failure(error=str(exc), status="manifest"),
             "error": f"{type(exc).__name__}: {exc}",
@@ -1804,7 +1971,11 @@ def _run_host(args: argparse.Namespace) -> int:
         raise ValueError("no cases selected")
     if args.cold_runs < 1 or args.warm_runs < 0:
         raise ValueError("cold runs must be positive and warm runs must be non-negative")
-    if args.phase_timeout_sec <= 0 or args.case_timeout_sec <= 0:
+    if (
+        args.phase_timeout_sec <= 0
+        or args.case_timeout_sec <= 0
+        or args.export_write_budget_sec <= 0
+    ):
         raise ValueError("timeouts must be positive")
     out_dir.mkdir(parents=True, exist_ok=True)
     from tests.common.maya_location import mayapy as mayapy_for_version
@@ -1820,6 +1991,7 @@ def _run_host(args: argparse.Namespace) -> int:
         "manifest": str(manifest_path),
         "case_timeout_sec": args.case_timeout_sec,
         "phase_timeout_sec": args.phase_timeout_sec,
+        "export_write_budget_sec": args.export_write_budget_sec,
         "cases": [],
     }
     for case in cases:
@@ -1845,22 +2017,30 @@ def _run_host(args: argparse.Namespace) -> int:
             checkpoint,
             phase_timeout_sec=args.phase_timeout_sec,
             case_timeout_sec=args.case_timeout_sec,
+            export_write_budget_sec=args.export_write_budget_sec,
         )
         result["name"] = case["name"]
         result["classification"] = case.get("classification")
         if result.get("status") != "pass":
-            result.setdefault(
-                "failure_classification",
-                _classify_failure(
-                    status=str(result.get("status")),
-                    error=str(result.get("error", "")),
-                    phase=str((result.get("last_phase") or {}).get("phase", "")),
-                ),
+            nested_failure = _worker_failure_classification(result)
+            result["failure_classification"] = nested_failure or _classify_failure(
+                status=str(result.get("status")),
+                error=str(result.get("error", "")),
+                phase=str((result.get("last_phase") or {}).get("phase", "")),
             )
         result["out_dir"] = str(case_dir)
         summary["cases"].append(result)
         _write_json(out_dir / "summary.json", summary)
     summary["status"] = "pass" if all(case.get("status") == "pass" for case in summary["cases"]) else "fail"
+    if summary["status"] != "pass":
+        summary["failure_classification"] = next(
+            (
+                case.get("failure_classification")
+                for case in summary["cases"]
+                if case.get("status") != "pass" and case.get("failure_classification")
+            ),
+            "environment_blocked",
+        )
     _write_json(out_dir / "summary.json", summary)
     (out_dir / "summary.md").write_text(_summary_markdown(summary), encoding="utf-8")
     print(f"summary: {out_dir / 'summary.json'}")
@@ -1880,6 +2060,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-id", default=None, help="Stable report run identifier")
     parser.add_argument("--phase-timeout-sec", type=float, default=300.0)
     parser.add_argument("--case-timeout-sec", type=float, default=1800.0)
+    parser.add_argument(
+        "--export-write-budget-sec",
+        type=float,
+        default=DEFAULT_EXPORT_WRITE_BUDGET_SEC,
+        help="Fail a completed export_write phase when it exceeds this wall-time budget (default: 60s)",
+    )
     parser.add_argument("--cold-runs", type=int, default=1)
     parser.add_argument("--warm-runs", type=int, default=3)
     parser.add_argument("--worker-config", default=None, help=argparse.SUPPRESS)
@@ -1900,6 +2086,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.worker_result),
             Path(args.worker_checkpoint),
             args.phase_timeout_sec,
+            args.export_write_budget_sec,
         )
     return _run_host(args)
 

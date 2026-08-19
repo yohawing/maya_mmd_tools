@@ -12,12 +12,15 @@ from tools.local_asset_roundtrip import (
     _classify_failure,
     _allowed_warning_codes,
     _assert_execute_warnings,
+    _export_write_budget_evidence,
     _export_request,
     _load_manifest,
     _motion_evaluation_frames,
+    parse_args,
     _require_import_success,
     _repetitions,
     _select_cases,
+    _worker_failure_classification,
     _vmd_mode_c_semantic_diff,
     _vmd_edit_track_witness,
     _vmd_payload,
@@ -114,6 +117,56 @@ def test_failure_classification_is_fail_closed():
     assert _classify_failure(error="VMD validation blocked") == "validation_blocked"
     assert _classify_failure(error="fresh semantic oracle mismatch") == "semantic_mismatch"
     assert _classify_failure(status="crash") == "environment_blocked"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        ("AssertionError: VMD semantic mismatch: ik track semantics differ", "semantic_mismatch"),
+        ("exported VMD missing edited morph track at frame 100", "edit_failed"),
+        ("ImportModelAction did not complete cleanly", "import_failed"),
+    ],
+)
+def test_failure_classification_prefers_nested_error_over_fresh_import_phase(error, expected):
+    assert _classify_failure(error=error, phase="fresh_import_oracle") == expected
+
+
+def test_worker_failure_classification_propagates_nested_run_evidence():
+    document = {
+        "status": "fail",
+        "failure_classification": "environment_blocked",
+        "runs": [
+            {
+                "status": "fail",
+                "failure_classification": "semantic_mismatch",
+                "phase_timing": [{"name": "fresh_import_oracle"}],
+            }
+        ],
+    }
+
+    assert _worker_failure_classification(document) == "semantic_mismatch"
+
+
+def test_export_write_budget_is_strictly_fail_closed():
+    assert _export_write_budget_evidence(
+        [{"name": "export_write", "wall_sec": 60.0}],
+        60.0,
+    ) is None
+    evidence = _export_write_budget_evidence(
+        [{"name": "export_write", "wall_sec": 60.001}],
+        60.0,
+    )
+    assert evidence == {
+        "phase": "export_write",
+        "classification": "performance_timeout",
+        "expected_sec": 60.0,
+        "actual_sec": 60.001,
+    }
+
+
+def test_export_write_budget_is_configurable_from_cli():
+    assert parse_args([]).export_write_budget_sec == 60.0
+    assert parse_args(["--export-write-budget-sec", "75"]).export_write_budget_sec == 75.0
 
 
 def test_import_action_contract_rejects_partial_or_warning_results():
