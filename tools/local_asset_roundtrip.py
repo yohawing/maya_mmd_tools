@@ -1519,6 +1519,7 @@ def _export_request(
     start_frame: int | None = None,
     end_frame: int | None = None,
     model_name: str | None = None,
+    prepared_vmd_token: Any = None,
     case: Mapping[str, Any],
 ) -> Any:
     """Build a release-style ExportWorkflow request for one local case."""
@@ -1552,7 +1553,11 @@ def _export_request(
         options["model_name"] = model_name
     if export_format == "vmd":
         options["vmd_mode"] = "C"
-    return ExportWorkflowRequest(str(output), options)
+    return ExportWorkflowRequest(
+        str(output),
+        options,
+        prepared_vmd_token=prepared_vmd_token,
+    )
 
 
 def _run_pmx_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContext) -> dict[str, Any]:
@@ -1729,17 +1734,20 @@ def _run_warm_vmd_export_samples(
     out_dir: Path,
     context: _WorkerContext,
     workflow: Any,
-    fresh_root: str,
+    source_root: str,
+    prepared_vmd_token: Any,
     start_frame: int,
     end_frame: int,
     model_name: str,
     warm_runs: int,
 ) -> list[dict[str, Any]]:
-    """Write dense warm samples from the already-imported fresh scene.
+    """Write dense warm samples from the edited source scene.
 
     Dense correctness is intentionally exercised once.  Warm samples measure
-    only the public validation/execute export path from that same fresh scene;
-    they do not repeat import, edit, parse, or semantic oracle work.
+    only the public validation/execute export path from that same edited scene
+    and prepared Mode C token; they do not repeat import, edit, parse, or
+    semantic oracle work.  The caller must invoke this before the fresh-import
+    boundary invalidates the token's scene ownership.
     """
 
     samples: list[dict[str, Any]] = []
@@ -1751,10 +1759,11 @@ def _run_warm_vmd_export_samples(
             output,
             report_dir,
             export_format="vmd",
-            target_model=fresh_root,
+            target_model=source_root,
             start_frame=start_frame,
             end_frame=end_frame,
             model_name=model_name,
+            prepared_vmd_token=prepared_vmd_token,
             case=case,
         )
         phase_start = len(context.phases)
@@ -1864,6 +1873,206 @@ def _skip_warm_vmd_export_samples(
     return samples
 
 
+def _prepare_vmd_mode_c(
+    workflow: Any,
+    request: Any,
+    context: _WorkerContext,
+) -> tuple[Any, dict[str, Any]]:
+    """Prepare a reusable Mode C payload through the public workflow.
+
+    The runner deliberately has no collector fallback here.  A missing,
+    partial, or token-less preparation is a failed user-path gate even when a
+    legacy direct collector could produce an output.
+    """
+
+    preparation = _phase(context, "prepare_mode_c", lambda: workflow.prepare_vmd(request))
+    token = getattr(preparation, "token", None)
+    succeeded = bool(getattr(preparation, "succeeded", False))
+    evidence = {
+        "status": getattr(preparation, "status", None),
+        "published": bool(getattr(preparation, "published", False)),
+        "succeeded": succeeded,
+        "token_published": token is not None,
+        "error": None,
+    }
+    phase_entries = [
+        item for item in getattr(context, "phases", ())
+        if str(item.get("name")) == "prepare_mode_c"
+    ]
+    if phase_entries:
+        evidence["phase_timing"] = dict(phase_entries[-1])
+    error = getattr(preparation, "error", None)
+    if error is not None:
+        evidence["error"] = f"{type(error).__name__}: {error}"
+    if not succeeded or token is None:
+        raise RuntimeError(
+            "VMD Mode C preparation failed: "
+            f"status={evidence['status']!r} error={evidence['error']!r} "
+            f"token_published={evidence['token_published']}"
+        )
+    evidence["token"] = {
+        "cache_id": str(getattr(token, "cache_id", "")),
+        "scene_session_id": str(getattr(token, "scene_session_id", "")),
+        "target_uuid": str(getattr(token, "target_uuid", "")),
+        "target_identity": str(getattr(token, "target_identity", "")),
+        "revision": str(getattr(token, "revision", "")),
+    }
+    return token, evidence
+
+
+def _run_prepared_vmd_exports(
+    case: Mapping[str, Any],
+    out_dir: Path,
+    context: _WorkerContext,
+    workflow: Any,
+    request: Any,
+    prepared_token: Any,
+    source_root: str,
+    source_payload: Mapping[str, Any],
+    adjustment: dict[str, Any],
+    start_frame: int,
+    end_frame: int,
+    model_name: str,
+    warm_runs: int,
+) -> dict[str, Any]:
+    """Validate/write cold and warm exports under one prepared-token boundary.
+
+    The token remains active for every public Validate/Execute call and is
+    invalidated exactly once before this helper returns, including failures.
+    Keeping this boundary separate from fresh import makes the scene
+    ownership transition explicit.
+    """
+
+    from mmd_tools.core.vmd_data import VmdData
+
+    try:
+        cold_export_phase_start = len(context.phases)
+        validation = _phase(context, "export_validation", lambda: workflow.validate(request))
+        validation_evidence = _report_summary(validation)
+        acknowledged_warnings, unexpected_warnings = _allowed_warning_codes(validation, "vmd")
+        if unexpected_warnings:
+            raise RuntimeError(f"unexpected validation warnings: {unexpected_warnings}")
+        if validation.error is not None or validation_evidence["blocking"]:
+            raise RuntimeError(
+                f"VMD validation blocked: state={validation_evidence['state']} "
+                f"issues={validation_evidence['issues']}"
+            )
+        result = _phase(
+            context,
+            "export_write",
+            lambda: workflow.execute(request, acknowledge_warnings=True),
+        )
+        if not result.succeeded:
+            raise RuntimeError(f"VMD export failed: {result.error or result.report}")
+        acknowledged_warnings = _assert_execute_warnings(result, "vmd")
+        exported_data = _phase(
+            context,
+            "exported_parse",
+            lambda: VmdData().parse_file(str(out_dir / "motion.vmd")),
+        )
+        exported_payload = _vmd_payload(exported_data)
+        adjustment["exported_tracks"] = _vmd_edit_track_witness(exported_payload, adjustment)
+        parser_failures = _vmd_mode_c_semantic_diff(source_payload, exported_payload)
+        source_total_keys = sum(
+            len(source_payload[section])
+            for section in ("bone", "morph", "camera", "light", "shadow", "ik")
+        )
+        exported_total_keys = sum(
+            len(exported_payload[section])
+            for section in ("bone", "morph", "camera", "light", "shadow", "ik")
+        )
+        cold_export_phases = [
+            dict(item)
+            for item in context.phases[cold_export_phase_start:]
+            if str(item.get("name")) == "export_write"
+        ]
+        cold_budget_evidence = _export_write_budget_evidence(
+            cold_export_phases,
+            context.export_write_budget_sec,
+        )
+        cold_phase_timing = list(context.phases[cold_export_phase_start:])
+        warm_samples = (
+            _skip_warm_vmd_export_samples(out_dir, context, warm_runs, cold_budget_evidence)
+            if cold_budget_evidence
+            else _run_warm_vmd_export_samples(
+                case,
+                out_dir,
+                context,
+                workflow,
+                source_root,
+                prepared_token,
+                start_frame,
+                end_frame,
+                model_name,
+                warm_runs,
+            )
+        )
+        return {
+            "validation": validation_evidence,
+            "acknowledged_warnings": acknowledged_warnings,
+            "exported_data": exported_data,
+            "exported_payload": exported_payload,
+            "parser_failures": parser_failures,
+            "source_total_keys": source_total_keys,
+            "exported_total_keys": exported_total_keys,
+            "cold_export_phases": cold_export_phases,
+            "cold_phase_timing": cold_phase_timing,
+            "cold_budget_evidence": cold_budget_evidence,
+            "warm_samples": warm_samples,
+        }
+    finally:
+        workflow.invalidate_prepared_vmd(prepared_token)
+
+
+def _motion_phase_evidence(
+    context: _WorkerContext,
+    preparation_evidence: Mapping[str, Any],
+    cold_phase_timing: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Summarize user-visible preparation/export timing boundaries."""
+
+    def first_phase_entry(name: str, entries: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+        return next(
+            (dict(item) for item in entries if str(item.get("name")) == name),
+            {},
+        )
+
+    edit_start_index = next(
+        (index for index, item in enumerate(context.phases) if item.get("name") == "motion_adjustment"),
+        None,
+    )
+    first_export_index = next(
+        (
+            index
+            for index, item in enumerate(context.phases)
+            if index >= (edit_start_index if edit_start_index is not None else 0)
+            and item.get("name") == "export_write"
+        ),
+        None,
+    )
+    edit_to_first_file_phases = (
+        context.phases[edit_start_index : first_export_index + 1]
+        if edit_start_index is not None and first_export_index is not None
+        else []
+    )
+    edit_to_first_file_sec = round(
+        sum(float(item.get("wall_sec", 0.0) or 0.0) for item in edit_to_first_file_phases),
+        6,
+    )
+    return {
+        "prepare_mode_c": dict(preparation_evidence.get("phase_timing", {})),
+        "cold_validate": first_phase_entry("export_validation", cold_phase_timing),
+        "cold_export": first_phase_entry("export_write", cold_phase_timing),
+        "edit_to_first_file": {
+            "wall_sec": edit_to_first_file_sec,
+            "method": "sum recorded phase wall_sec from motion_adjustment through first export_write",
+            "from_phase": "motion_adjustment",
+            "through_phase": "export_write",
+            "phase_names": [str(item.get("name")) for item in edit_to_first_file_phases],
+        },
+    }
+
+
 def _run_vmd_case(
     case: Mapping[str, Any],
     out_dir: Path,
@@ -1875,6 +2084,7 @@ def _run_vmd_case(
 
     from mmd_tools.core.vmd_data import VmdData
     from mmd_tools.services.export_workflow_service import ExportWorkflowService
+    from mmd_tools.adapters.maya_vmd_prepare_backend import create_maya_vmd_prepare_action
     from tools.export_release_maya_probe import (
         _capture_camera_light_scene_oracle,
         _capture_scene_oracle,
@@ -1947,33 +2157,45 @@ def _run_vmd_case(
         model_name=str(getattr(source_data.header, "model_name", "") or ""),
         case=case,
     )
-    workflow = ExportWorkflowService()
-    cold_export_phase_start = len(context.phases)
-    validation = _phase(context, "export_validation", lambda: workflow.validate(request))
-    validation_evidence = _report_summary(validation)
-    acknowledged_warnings, unexpected_warnings = _allowed_warning_codes(validation, "vmd")
-    if unexpected_warnings:
-        raise RuntimeError(f"unexpected validation warnings: {unexpected_warnings}")
-    if validation.error is not None or validation_evidence["blocking"]:
-        raise RuntimeError(
-            f"VMD validation blocked: state={validation_evidence['state']} "
-            f"issues={validation_evidence['issues']}"
-        )
-    result = _phase(
-        context,
-        "export_write",
-        lambda: workflow.execute(request, acknowledge_warnings=True),
+    workflow = ExportWorkflowService(
+        prepare_vmd_action=create_maya_vmd_prepare_action(),
     )
-    if not result.succeeded:
-        raise RuntimeError(f"VMD export failed: {result.error or result.report}")
-    acknowledged_warnings = _assert_execute_warnings(result, "vmd")
-    exported_data = _phase(context, "exported_parse", lambda: VmdData().parse_file(str(output)))
-    exported_payload = _vmd_payload(exported_data)
-    adjustment["exported_tracks"] = _vmd_edit_track_witness(exported_payload, adjustment)
-    parser_failures = _vmd_mode_c_semantic_diff(source_payload, exported_payload)
-    source_total_keys = sum(len(source_payload[section]) for section in ("bone", "morph", "camera", "light", "shadow", "ik"))
-    exported_total_keys = sum(len(exported_payload[section]) for section in ("bone", "morph", "camera", "light", "shadow", "ik"))
+    prepared_token, preparation_evidence = _prepare_vmd_mode_c(workflow, request, context)
+    # Every public Validate/Execute request, including the cold export below,
+    # must carry the same edited-scene preparation token.
+    request.prepared_vmd_token = prepared_token
+    export_result = _run_prepared_vmd_exports(
+        case,
+        out_dir,
+        context,
+        workflow,
+        request,
+        prepared_token,
+        source_root,
+        source_payload,
+        adjustment,
+        start_frame,
+        end_frame,
+        str(getattr(source_data.header, "model_name", "") or ""),
+        warm_runs,
+    )
+    validation_evidence = export_result["validation"]
+    acknowledged_warnings = export_result["acknowledged_warnings"]
+    exported_data = export_result["exported_data"]
+    exported_payload = export_result["exported_payload"]
+    parser_failures = export_result["parser_failures"]
+    source_total_keys = export_result["source_total_keys"]
+    exported_total_keys = export_result["exported_total_keys"]
     key_inflation = exported_total_keys - source_total_keys
+    cold_export_phases = export_result["cold_export_phases"]
+    cold_budget_evidence = export_result["cold_budget_evidence"]
+    warm_samples = export_result["warm_samples"]
+    cold_phase_timing = export_result["cold_phase_timing"]
+    phase_evidence = _motion_phase_evidence(
+        context,
+        preparation_evidence,
+        cold_phase_timing,
+    )
     def import_fresh() -> tuple[
         str,
         dict[str, Any],
@@ -2053,30 +2275,6 @@ def _run_vmd_case(
         )
     if failures:
         raise AssertionError("VMD semantic mismatch: " + "; ".join(failures[:30]))
-    cold_export_phases = [
-        dict(item)
-        for item in context.phases[cold_export_phase_start:]
-        if str(item.get("name")) == "export_write"
-    ]
-    cold_budget_evidence = _export_write_budget_evidence(
-        cold_export_phases,
-        context.export_write_budget_sec,
-    )
-    warm_samples = (
-        _skip_warm_vmd_export_samples(out_dir, context, warm_runs, cold_budget_evidence)
-        if cold_budget_evidence
-        else _run_warm_vmd_export_samples(
-            case,
-            out_dir,
-            context,
-            workflow,
-            fresh_root,
-            start_frame,
-            end_frame,
-            str(getattr(source_data.header, "model_name", "") or ""),
-            warm_runs,
-        )
-    )
     cold_sample = {
         "index": 1,
         "temperature": "cold",
@@ -2103,6 +2301,8 @@ def _run_vmd_case(
         "source": str(source_vmd),
         "output": str(output),
         "validation": validation_evidence,
+        "preparation": preparation_evidence,
+        "phase_evidence": phase_evidence,
         "acknowledged_warnings": acknowledged_warnings,
         "adjustment": adjustment,
         "evaluation_frames": evaluation_frames,
@@ -2163,7 +2363,8 @@ def _run_worker(
     case = config["case"]
     is_dense = str(case.get("classification")) == "dense"
     # Dense correctness is one full roundtrip.  Its additional repetitions
-    # are export-only samples performed by _run_vmd_case after fresh import.
+    # are export-only samples performed by _run_vmd_case on the same prepared
+    # edited source scene, before the fresh-import boundary.
     repetitions = 1 if is_dense else int(config.get("repetitions", 1))
     warm_runs = int(config.get("warm_runs", 0)) if is_dense else 0
     out_dir = Path(config["out_dir"])
@@ -2181,7 +2382,7 @@ def _run_worker(
         "repetitions": repetitions,
         "warm_runs": warm_runs,
         "export_sample_policy": (
-            "dense: one full roundtrip/cold export plus export-only warm samples"
+            "dense: one full roundtrip/cold export plus same-prepared-scene warm samples"
             if is_dense
             else "non-dense: one full roundtrip/cold export"
         ),
@@ -2420,8 +2621,8 @@ def _summary_markdown(document: Mapping[str, Any]) -> str:
         f"- profile: `{document.get('profile') or 'all'}`",
         f"- manifest: `{document.get('manifest')}`",
         f"- export_write budget: `{document.get('export_write_budget_sec', 'n/a')}s`",
-        "- export samples: Dense uses one full roundtrip/cold sample plus export-only warm samples; "
-        "non-dense uses one full roundtrip/cold sample.",
+        "- export samples: Dense uses one full roundtrip/cold sample plus warm samples from the same "
+        "prepared edited source scene; non-dense uses one full roundtrip/cold sample.",
         "",
         "| Case | Classification | Status | Failure | Runs | Export samples | Last phase |",
         "| --- | --- | --- | --- | ---: | --- | --- |",

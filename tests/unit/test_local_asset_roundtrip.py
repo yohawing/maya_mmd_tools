@@ -17,6 +17,9 @@ from tools.local_asset_roundtrip import (
     _export_request,
     _load_manifest,
     _motion_evaluation_frames,
+    _motion_phase_evidence,
+    _prepare_vmd_mode_c,
+    _run_prepared_vmd_exports,
     _import_options,
     _resolve_morph_controller_input_plug,
     parse_args,
@@ -131,7 +134,7 @@ def test_summary_explicitly_reports_cold_and_warm_export_samples():
     assert "cold=1/1, warm=3/3" in summary
 
 
-def test_dense_warm_samples_use_distinct_outputs_and_the_fresh_target(monkeypatch, tmp_path):
+def test_dense_warm_samples_use_distinct_outputs_and_the_prepared_source_target(monkeypatch, tmp_path):
     phase_requests = []
     export_requests = []
 
@@ -172,12 +175,14 @@ def test_dense_warm_samples_use_distinct_outputs_and_the_fresh_target(monkeypatc
         lambda result, export_format: ["VMD_MODE_C_RAW_LOSS"],
     )
 
+    prepared_token = SimpleNamespace(cache_id="prepared-token")
     samples = _run_warm_vmd_export_samples(
         {"name": "dense", "classification": "dense"},
         tmp_path,
         context,
         _Workflow(),
-        "|fresh_root",
+        "|edited_source_root",
+        prepared_token,
         0,
         20,
         "rabbit",
@@ -190,7 +195,8 @@ def test_dense_warm_samples_use_distinct_outputs_and_the_fresh_target(monkeypatc
         str(tmp_path / "motion-warm-02.vmd"),
         str(tmp_path / "motion-warm-03.vmd"),
     ]
-    assert {request["target_model"] for request in export_requests} == {"|fresh_root"}
+    assert {request["target_model"] for request in export_requests} == {"|edited_source_root"}
+    assert all(request["prepared_vmd_token"] is prepared_token for request in export_requests)
     assert [request["output"].name for request in export_requests] == [
         "motion-warm-01.vmd",
         "motion-warm-02.vmd",
@@ -198,6 +204,139 @@ def test_dense_warm_samples_use_distinct_outputs_and_the_fresh_target(monkeypatc
     ]
     assert len([item for item in phase_requests if item[0] == "execute"]) == 3
     assert all((tmp_path / f"warm-export-{index:02d}.json").is_file() for index in range(1, 4))
+
+
+def test_mode_c_prepare_is_called_once_and_publishes_timing_evidence(monkeypatch):
+    calls = []
+    token = SimpleNamespace(
+        cache_id="cache",
+        scene_session_id="session",
+        target_uuid="uuid",
+        target_identity="|edited_root",
+        revision="4:0",
+    )
+
+    class _Preparation:
+        status = "published"
+        published = True
+        succeeded = True
+        error = None
+
+        def __init__(self):
+            self.token = token
+
+    class _Workflow:
+        def prepare_vmd(self, request):
+            calls.append(request)
+            return _Preparation()
+
+    context = SimpleNamespace(
+        phases=[{"name": "prepare_mode_c", "wall_sec": 12.5, "status": "passed"}],
+    )
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._phase",
+        lambda worker_context, name, function: function(),
+    )
+
+    actual, evidence = _prepare_vmd_mode_c(_Workflow(), {"mode": "C"}, context)
+
+    assert actual is token
+    assert len(calls) == 1
+    assert evidence["token_published"] is True
+    assert evidence["phase_timing"]["wall_sec"] == 12.5
+
+
+def test_mode_c_prepare_failure_is_non_pass_and_has_no_collector_fallback(monkeypatch):
+    calls = []
+
+    class _Workflow:
+        def prepare_vmd(self, request):
+            calls.append(("prepare", request))
+            return SimpleNamespace(
+                status="partial",
+                published=False,
+                succeeded=False,
+                token=None,
+                error=RuntimeError("collector failed"),
+            )
+
+        def collect(self, request):
+            calls.append(("collect", request))
+            raise AssertionError("legacy collector fallback must not run")
+
+    context = SimpleNamespace(phases=[])
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._phase",
+        lambda worker_context, name, function: function(),
+    )
+
+    with pytest.raises(RuntimeError, match="preparation failed"):
+        _prepare_vmd_mode_c(_Workflow(), {"mode": "C"}, context)
+    assert [kind for kind, _request in calls] == ["prepare"]
+
+
+def test_prepared_export_boundary_invalidates_once_on_failure(monkeypatch, tmp_path):
+    invalidated = []
+
+    class _Workflow:
+        def validate(self, request):
+            raise RuntimeError("validation boom")
+
+        def invalidate_prepared_vmd(self, token):
+            invalidated.append(token)
+
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._phase",
+        lambda worker_context, name, function: function(),
+    )
+    context = SimpleNamespace(
+        phases=[],
+        export_write_budget_violations=[],
+        export_write_budget_sec=60.0,
+    )
+    token = SimpleNamespace(cache_id="prepared")
+
+    with pytest.raises(RuntimeError, match="validation boom"):
+        _run_prepared_vmd_exports(
+            {"name": "dense"},
+            tmp_path,
+            context,
+            _Workflow(),
+            SimpleNamespace(prepared_vmd_token=token),
+            token,
+            "|edited_source_root",
+            {"bone": [], "morph": [], "camera": [], "light": [], "shadow": [], "ik": []},
+            {},
+            0,
+            20,
+            "model",
+            3,
+        )
+    assert invalidated == [token]
+
+
+def test_motion_phase_evidence_reports_boundaries_and_edit_to_first_file():
+    context = SimpleNamespace(
+        phases=[
+            {"name": "motion_adjustment", "wall_sec": 2.0},
+            {"name": "edited_motion_oracle", "wall_sec": 3.0},
+            {"name": "prepare_mode_c", "wall_sec": 4.0},
+            {"name": "export_validation", "wall_sec": 5.0},
+            {"name": "export_write", "wall_sec": 6.0},
+            {"name": "exported_parse", "wall_sec": 7.0},
+        ],
+    )
+    evidence = _motion_phase_evidence(
+        context,
+        {"phase_timing": {"name": "prepare_mode_c", "wall_sec": 4.0}},
+        context.phases[3:5],
+    )
+
+    assert evidence["prepare_mode_c"]["wall_sec"] == 4.0
+    assert evidence["cold_validate"]["wall_sec"] == 5.0
+    assert evidence["cold_export"]["wall_sec"] == 6.0
+    assert evidence["edit_to_first_file"]["wall_sec"] == 20.0
+    assert evidence["edit_to_first_file"]["method"].startswith("sum recorded phase wall_sec")
 
 
 def test_motion_morph_witness_uses_tolerance_without_relaxing_frame_keys():
