@@ -76,6 +76,11 @@ class FakeCmds:
         self.aliases = {}
         self.current_unit = "ntsc"
         self.relative_calls = []
+        self.current_time_calls = []
+        self.get_attr_calls = []
+        self.playing = False
+        self.fail_current_time_at = None
+        self.fail_restore_time = None
 
     def ls(self, pattern=None, type=None, objectsOnly=False, long=False, uuid=False):  # noqa: A002,N803
         if pattern and not type and not objectsOnly:
@@ -121,6 +126,7 @@ class FakeCmds:
         return exists and (node, attr) in self.attrs
 
     def getAttr(self, plug, time=None):  # noqa: N802
+        self.get_attr_calls.append((plug, time, self.current_time))
         node, attr = plug.split(".", 1)
         if attr == "worldMatrix[0]":
             return self.world_matrices.get(
@@ -146,6 +152,10 @@ class FakeCmds:
             )
         if time is not None:
             return self.keys.get((node, attr), {}).get(float(time), self.attrs.get((node, attr), 0.0))
+        if (node, attr) in self.keys:
+            return self.keys[(node, attr)].get(
+                self.current_time, self.attrs.get((node, attr), 0.0)
+            )
         return self.attrs.get((node, attr), 0.0)
 
     def listConnections(self, plug, source=False, destination=False, **_kwargs):  # noqa: N802,N803
@@ -156,8 +166,22 @@ class FakeCmds:
         if query:
             return self.current_time
         if edit:
+            if self.fail_current_time_at is not None and float(time) == float(
+                self.fail_current_time_at
+            ):
+                raise RuntimeError("timeline evaluation failed")
+            if self.fail_restore_time is not None and float(time) == float(
+                self.fail_restore_time
+            ):
+                raise RuntimeError("timeline restoration failed")
             self.current_time = float(time)
+            self.current_time_calls.append(float(time))
         return self.current_time
+
+    def play(self, query=False, state=False):
+        if query and state:
+            return self.playing
+        return None
 
     def currentUnit(self, time=None, query=False):  # noqa: N802
         if query:
@@ -199,6 +223,48 @@ class TestVmdSceneCollector(unittest.TestCase):
         collector_module.cmds = self.original_cmds
         collector_module.read_mmd_control_rig_metadata = self.original_read_control_rig_metadata
 
+    def _timeline_sampler(self):
+        cmds_module = self.cmds
+
+        class Samples:
+            def value(self, joint, attr, frame):
+                return float(cmds_module.getAttr(f"{joint}.{attr}", time=frame))
+
+        class Sampler:
+            available = True
+
+            def sample_dense_bone_channels(self, _frames, _joints, _routes):
+                return Samples()
+
+        return Sampler()
+
+    def test_mode_c_requires_timeline_native_sampler(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        self.cmds.keys[("center_joint", "translateX")] = {0.0: 0.0, 2.0: 1.0}
+
+        with self.assertRaisesRegex(RuntimeError, "native bone sampling"):
+            VmdSceneCollector().collect(
+                {
+                    "target_model": "model_root",
+                    "vmd_mode": "C",
+                    "frame_range": (0, 2),
+                }
+            )
+
+    def test_indexes_raw_transform_frames_once_by_bone(self):
+        raw = {
+            ("center", 0): ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+            ("center", 10): ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+            ("arm", 4): ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+        }
+
+        self.assertEqual(
+            collector_module._index_raw_bone_transform_frames(raw),
+            {"center": {0, 10}, "arm": {4}},
+        )
+
     def test_collects_bone_frames_from_mmd_named_joints(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
@@ -232,7 +298,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
             self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0, 2.0: 1.0}
 
-        result = VmdSceneCollector().collect(
+        result = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler()).collect(
             {
                 "target_model": "model_root",
                 "vmd_mode": "C",
@@ -244,6 +310,212 @@ class TestVmdSceneCollector(unittest.TestCase):
             [frame["frame_number"] for frame in result["bone_frames"]],
             [0, 1, 2],
         )
+        self.assertNotIn("interpolation", result["bone_frames"][0])
+
+    def test_mode_c_morph_sampling_is_frame_major_current_time_and_restores(self):
+        self.cmds.node_types["face_bs"] = "blendShape"
+        self.cmds.blendshape_weights["face_bs"] = 2
+        self.cmds.aliases.update(
+            {
+                "face_bs.weight[0]": "smile",
+                "face_bs.weight[1]": "blink",
+            }
+        )
+        self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.0, 2.0: 0.8}
+        self.cmds.keys[("face_bs", "weight[1]")] = {0.0: 0.1, 2.0: 0.9}
+        self.cmds.current_time = 9.0
+
+        frames = VmdSceneCollector().collect_morph_frames(
+            ["face_bs"],
+            time_converter=lambda value: value,
+            dense_sample=True,
+            dense_frame_samples=[2, 0, 1],
+            timeline_evaluation=True,
+        )
+
+        self.assertEqual(len(frames), 6)
+        self.assertEqual(self.cmds.current_time_calls, [0.0, 1.0, 2.0, 9.0])
+        sampled_reads = [
+            call for call in self.cmds.get_attr_calls if call[0].startswith("face_bs.weight")
+        ]
+        self.assertTrue(sampled_reads)
+        self.assertTrue(all(time is None for _plug, time, _current in sampled_reads))
+        self.assertEqual(self.cmds.current_time, 9.0)
+
+    def test_sparse_morph_sampling_keeps_alternate_time_reads(self):
+        self.cmds.node_types["face_bs"] = "blendShape"
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.0, 2.0: 0.8}
+
+        VmdSceneCollector().collect_morph_frames(["face_bs"])
+
+        sampled_reads = [
+            call
+            for call in self.cmds.get_attr_calls
+            if call[0] == "face_bs.weight[0]"
+        ]
+        self.assertEqual([time for _plug, time, _current in sampled_reads], [0.0, 2.0])
+        self.assertEqual(self.cmds.current_time_calls, [])
+
+    def test_mode_c_camera_and_light_use_current_frame_without_double_scrub(self):
+        self.cmds.node_types.update(
+            {"mmd_camera": "transform", "mmd_light": "transform"}
+        )
+        for attr in (
+            "translateX",
+            "translateY",
+            "translateZ",
+            "rotateX",
+            "rotateY",
+            "rotateZ",
+            "mmd_camera_distance",
+            "mmd_camera_viewing_angle",
+            "mmd_camera_perspective",
+        ):
+            self.cmds.keys[("mmd_camera", attr)] = {0.0: 0.0, 2.0: 2.0}
+        for attr in (
+            "mmd_light_colorR",
+            "mmd_light_colorG",
+            "mmd_light_colorB",
+            "rotateX",
+            "rotateY",
+        ):
+            self.cmds.keys[("mmd_light", attr)] = {0.0: 0.0, 2.0: 1.0}
+        self.cmds.current_time = 7.0
+
+        VmdSceneCollector().collect_camera_frames(
+            ["mmd_camera"],
+            time_converter=lambda value: value,
+            dense_sample=True,
+            dense_frame_samples=[2, 0, 1],
+            timeline_evaluation=True,
+        )
+        self.assertEqual(self.cmds.current_time_calls, [0.0, 1.0, 2.0, 7.0])
+        camera_reads = [
+            call for call in self.cmds.get_attr_calls if call[0].startswith("mmd_camera.")
+        ]
+        self.assertTrue(all(time is None for _plug, time, _current in camera_reads))
+
+        self.cmds.current_time_calls.clear()
+        self.cmds.get_attr_calls.clear()
+        VmdSceneCollector().collect_light_frames(
+            ["mmd_light"],
+            time_converter=lambda value: value,
+            dense_sample=True,
+            dense_frame_samples=[2, 0, 1],
+            timeline_evaluation=True,
+        )
+        self.assertEqual(self.cmds.current_time_calls, [0.0, 1.0, 2.0, 7.0])
+        light_reads = [
+            call for call in self.cmds.get_attr_calls if call[0].startswith("mmd_light.")
+        ]
+        self.assertTrue(all(time is None for _plug, time, _current in light_reads))
+
+    def test_mode_c_ik_uses_ascending_current_time_and_restores(self):
+        self.cmds.attrs[("ik_solver", "enabled")] = False
+        self.cmds.keys[("ik_solver", "enabled")] = {2.0: True}
+        self.cmds.current_time = 8.0
+        with mock.patch.object(
+            collector_module,
+            "collect_ik_nodes_by_bone_name",
+            return_value={"左足ＩＫ": "ik_solver"},
+        ):
+            frames = VmdSceneCollector().collect_ik_show_hide_frames(
+                "model_root",
+                time_converter=lambda value: value,
+                timeline_evaluation=True,
+            )
+
+        self.assertEqual([row["frame_number"] for row in frames], [0, 2])
+        self.assertEqual(self.cmds.current_time_calls, [0.0, 2.0, 8.0])
+        ik_reads = [
+            call for call in self.cmds.get_attr_calls if call[0] == "ik_solver.enabled"
+        ]
+        self.assertTrue(all(time is None for _plug, time, _current in ik_reads))
+
+    def test_mode_c_timeline_blocks_playback_and_restores_after_sample_error(self):
+        self.cmds.node_types["face_bs"] = "blendShape"
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.0, 1.0: 1.0}
+        self.cmds.playing = True
+        with self.assertRaisesRegex(RuntimeError, "during playback"):
+            VmdSceneCollector().collect_morph_frames(
+                ["face_bs"],
+                dense_sample=True,
+                dense_frame_samples=[0, 1],
+                timeline_evaluation=True,
+            )
+
+        self.cmds.playing = False
+        self.cmds.current_time = 7.0
+        self.cmds.fail_current_time_at = 1.0
+        with self.assertRaisesRegex(RuntimeError, "at frame 1"):
+            VmdSceneCollector().collect_morph_frames(
+                ["face_bs"],
+                dense_sample=True,
+                dense_frame_samples=[0, 1],
+                timeline_evaluation=True,
+            )
+        self.assertEqual(self.cmds.current_time, 7.0)
+
+    def test_mode_c_timeline_restore_failure_blocks_export(self):
+        self.cmds.node_types["face_bs"] = "blendShape"
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.5}
+        self.cmds.current_time = 7.0
+        self.cmds.fail_restore_time = 7.0
+
+        with self.assertRaisesRegex(RuntimeError, "restoration failed"):
+            VmdSceneCollector().collect_morph_frames(
+                ["face_bs"],
+                dense_sample=True,
+                dense_frame_samples=[0],
+                timeline_evaluation=True,
+            )
+
+    def test_mode_c_timeline_reader_rejects_backward_sampling(self):
+        self.cmds.current_time = 9.0
+
+        with self.assertRaisesRegex(RuntimeError, "ascending order"):
+            with collector_module._MayaTimelineReader() as reader:
+                reader.set_frame(2)
+                reader.set_frame(1)
+
+        self.assertEqual(self.cmds.current_time, 9.0)
+
+    def test_diagnostics_sink_preserves_collection_values_and_reports_counts(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs["center_joint", ATTR_MMD_BONE_NAME] = "center"
+        for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+            self.cmds.keys["center_joint", attribute] = {0.0: 0.0, 2.0: 1.0}
+
+        options = {
+            "target_model": "model_root",
+            "vmd_mode": "C",
+            "frame_range": (0, 2),
+        }
+        plain = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler()).collect(options)
+        captured = []
+        instrumented = VmdSceneCollector(
+            diagnostics_sink=captured.append,
+            bone_channel_sampler=self._timeline_sampler(),
+        )
+        with_sink = instrumented.collect(options)
+
+        self.assertEqual(plain, with_sink)
+        self.assertGreaterEqual(len(captured), 2)
+        diagnostics = instrumented.diagnostics
+        self.assertEqual(diagnostics["status"], "completed")
+        self.assertEqual(diagnostics["route_provenance_dense_planning"]["dense_frame_count"], 3)
+        self.assertEqual(diagnostics["bone_collection"]["joint_count"], 1)
+        self.assertEqual(diagnostics["bone_collection"]["frame_count"], 3)
+        self.assertEqual(diagnostics["bone_collection"]["estimated_scalar_bone_reads"], 18)
+        self.assertEqual(diagnostics["morph_collection"]["frame_count"], 0)
+        self.assertEqual(diagnostics["camera_collection"]["frame_count"], 0)
+        self.assertEqual(diagnostics["light_collection"]["frame_count"], 0)
+        self.assertEqual(diagnostics["ik_collection"]["frame_count"], 0)
+        self.assertGreaterEqual(diagnostics["total"]["wall_sec"], 0.0)
 
     def test_uses_complete_raw_interpolation_provenance_from_model_root(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
@@ -270,6 +542,123 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         self.assertIsNotNone(result["raw_provenance"])
         self.assertEqual(result["bone_frames"][0]["interpolation"], bytes([7]) * 64)
+
+    def test_mode_c_preserves_sparse_keys_with_complete_raw_transform_provenance(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        raw_records = [
+            {
+                "bone_name": "センター",
+                "frame_number": frame,
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+                "interpolation": [7] * 64,
+            }
+            for frame in (0, 2)
+        ]
+        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
+            {
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_transform_complete": True,
+                "raw_bone_key_count": len(raw_records),
+                "raw_bone_interpolation": raw_records,
+            }
+        )
+        for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0, 2.0: 0.0}
+
+        result = VmdSceneCollector().collect(
+            {
+                "target_model": "model_root",
+                "vmd_mode": "C",
+                "frame_range": (0, 2),
+                "preserve_raw_bone_transforms": True,
+            }
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in result["bone_frames"]], [0, 2])
+        self.assertEqual(result["bone_frames"][0]["interpolation"], bytes([7]) * 64)
+
+    def test_mode_c_dense_bakes_when_raw_provenance_is_not_opted_in(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        raw_records = [
+            {
+                "bone_name": "センター",
+                "frame_number": frame,
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+                "interpolation": [7] * 64,
+            }
+            for frame in (0, 2)
+        ]
+        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
+            {
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_transform_complete": True,
+                "raw_bone_key_count": len(raw_records),
+                "raw_bone_interpolation": raw_records,
+            }
+        )
+        for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0, 2.0: 0.0}
+
+        result = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler()).collect(
+            {
+                "target_model": "model_root",
+                "vmd_mode": "C",
+                "frame_range": (0, 2),
+                "preserve_raw_bone_transforms": False,
+            }
+        )
+
+        self.assertEqual(
+            [frame["frame_number"] for frame in result["bone_frames"]],
+            [0, 1, 2],
+        )
+
+    def test_explicit_raw_roundtrip_preserves_transform_values(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        raw_record = {
+            "bone_name": "センター",
+            "frame_number": 0,
+            "position": [1.0, 2.0, 3.0],
+            "rotation": [0.0, 0.0, 0.3826834324, 0.9238795325],
+            "interpolation": [7] * 64,
+        }
+        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
+            {
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_transform_complete": True,
+                "raw_bone_key_count": 1,
+                "raw_bone_interpolation": [raw_record],
+            }
+        )
+        for attribute in (
+            "translateX",
+            "translateY",
+            "translateZ",
+            "rotateX",
+            "rotateY",
+            "rotateZ",
+        ):
+            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0}
+
+        result = VmdSceneCollector().collect(
+            {
+                "target_model": "model_root",
+                "vmd_mode": "C",
+                "preserve_raw_bone_transforms": True,
+            }
+        )
+
+        frame = result["bone_frames"][0]
+        self.assertEqual(frame["position"], (1.0, 2.0, 3.0))
+        self.assertEqual(frame["rotation"], (0.0, 0.0, 0.3826834324, 0.9238795325))
 
     def test_rejects_raw_provenance_with_inconsistent_key_count(self):
         self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
@@ -349,10 +738,10 @@ class TestVmdSceneCollector(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "multiple tagged nodes"):
             VmdSceneCollector().collect()
 
-    def test_target_scoped_auto_discovery_fails_closed_on_tagged_camera_decoy(self):
+    def test_target_model_does_not_hide_ambiguous_scene_camera_track(self):
         root = "|hero:model_ROOT"
         camera_a = "|hero:model_ROOT|hero:camera_a"
-        camera_b = "|hero:model_ROOT|hero:camera_b"
+        camera_b = "|rival:camera_b"
         self.cmds.node_types.update(
             {root: "transform", camera_a: "transform", camera_b: "transform"}
         )
@@ -360,6 +749,23 @@ class TestVmdSceneCollector(unittest.TestCase):
             {
                 (camera_a, ATTR_MMD_CAMERA): True,
                 (camera_b, ATTR_MMD_CAMERA): True,
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "multiple tagged nodes"):
+            VmdSceneCollector().collect({"target_model": root})
+
+    def test_target_model_does_not_hide_ambiguous_scene_light_track(self):
+        root = "|hero:model_ROOT"
+        light_a = "|hero:model_ROOT|hero:light_a"
+        light_b = "|rival:light_b"
+        self.cmds.node_types.update(
+            {root: "transform", light_a: "transform", light_b: "transform"}
+        )
+        self.cmds.attrs.update(
+            {
+                (light_a, ATTR_MMD_LIGHT): True,
+                (light_b, ATTR_MMD_LIGHT): True,
             }
         )
 
@@ -586,6 +992,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                     "target_model": "model_root",
                     "start_frame": 10.0,
                     "end_frame": 20.0,
+                    "vmd_mode": "C",
                 }
             )
         finally:
@@ -602,13 +1009,103 @@ class TestVmdSceneCollector(unittest.TestCase):
             ],
         )
 
+    def test_omits_keyless_all_on_ik_baseline(self):
+        self.cmds.attrs.update(
+            {
+                ("left_ik_solver", "enabled"): True,
+                ("right_ik_solver", "enabled"): True,
+            }
+        )
+        original_collect = collector_module.collect_ik_nodes_by_bone_name
+        collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {
+            "左足ＩＫ": "left_ik_solver",
+            "右足ＩＫ": "right_ik_solver",
+        }
+        try:
+            result = VmdSceneCollector().collect_ik_show_hide_frames(
+                "model_root",
+                time_converter=lambda value: value,
+            )
+        finally:
+            collector_module.collect_ik_nodes_by_bone_name = original_collect
+
+        self.assertEqual(result, [])
+
+    def test_dense_ik_samples_keep_source_state_keys(self):
+        self.cmds.attrs[("ik_solver", "enabled")] = True
+        self.cmds.keys[("ik_solver", "enabled")] = {2.0: 0.0}
+        original_collect = collector_module.collect_ik_nodes_by_bone_name
+        collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {
+            "左足ＩＫ": "ik_solver",
+        }
+        try:
+            result = VmdSceneCollector().collect_ik_show_hide_frames(
+                "model_root",
+                time_converter=lambda value: value,
+                dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+            )
+        finally:
+            collector_module.collect_ik_nodes_by_bone_name = original_collect
+
+        self.assertEqual(
+            [row["frame_number"] for row in result],
+            [0, 1, 2],
+        )
+        self.assertEqual(
+            [row["ik_states"] for row in result],
+            [[("左足ＩＫ", True)], [("左足ＩＫ", True)], [("左足ＩＫ", False)]],
+        )
+
+    def test_dense_ik_omits_keyless_all_on_property_section(self):
+        self.cmds.attrs[("ik_solver", "enabled")] = True
+        original_collect = collector_module.collect_ik_nodes_by_bone_name
+        collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {
+            "左足ＩＫ": "ik_solver",
+        }
+        try:
+            result = VmdSceneCollector().collect_ik_show_hide_frames(
+                "model_root",
+                time_converter=lambda value: value,
+                dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+            )
+        finally:
+            collector_module.collect_ik_nodes_by_bone_name = original_collect
+
+        self.assertEqual(result, [])
+
+    def test_dense_ik_keeps_keyless_constant_off_state(self):
+        self.cmds.attrs[("ik_solver", "enabled")] = False
+        original_collect = collector_module.collect_ik_nodes_by_bone_name
+        collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {
+            "左足ＩＫ": "ik_solver",
+        }
+        try:
+            result = VmdSceneCollector().collect_ik_show_hide_frames(
+                "model_root",
+                time_converter=lambda value: value,
+                dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+            )
+        finally:
+            collector_module.collect_ik_nodes_by_bone_name = original_collect
+
+        self.assertEqual([row["frame_number"] for row in result], [0, 1, 2])
+        self.assertEqual(
+            [row["ik_states"] for row in result],
+            [[("左足ＩＫ", False)]] * 3,
+        )
+
     def test_collects_ik_baseline_before_later_enabled_key(self):
         self.cmds.attrs[("ik_solver", "enabled")] = False
         self.cmds.keys[("ik_solver", "enabled")] = {20.0: 1.0}
         original_collect = collector_module.collect_ik_nodes_by_bone_name
         collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {"左足ＩＫ": "ik_solver"}
         try:
-            result = VmdSceneCollector().collect({"target_model": "model_root"})
+            result = VmdSceneCollector().collect(
+                {"target_model": "model_root", "vmd_mode": "C"}
+            )
         finally:
             collector_module.collect_ik_nodes_by_bone_name = original_collect
 
@@ -625,6 +1122,46 @@ class TestVmdSceneCollector(unittest.TestCase):
                     "visible": True,
                     "ik_states": [("左足ＩＫ", True)],
                 },
+            ],
+        )
+
+    def test_mode_c_keeps_keyed_ik_sparse_when_other_tracks_are_dense(self):
+        self.cmds.attrs[("ik_solver", "enabled")] = False
+        self.cmds.keys[("ik_solver", "enabled")] = {0.0: 0.0}
+        self.cmds.node_types["center_joint"] = "joint"
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        for attribute in (
+            "translateX",
+            "translateY",
+            "translateZ",
+            "rotateX",
+            "rotateY",
+            "rotateZ",
+        ):
+            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0, 3.0: 1.0}
+        original_collect = collector_module.collect_ik_nodes_by_bone_name
+        collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {
+            "左足ＩＫ": "ik_solver",
+        }
+        try:
+            result = VmdSceneCollector().collect(
+                {
+                    "target_model": "model_root",
+                    "vmd_mode": "C",
+                    "frame_range": (0, 3),
+                }
+            )
+        finally:
+            collector_module.collect_ik_nodes_by_bone_name = original_collect
+
+        self.assertEqual(
+            result["ik_show_hide_frames"],
+            [
+                {
+                    "frame_number": 0,
+                    "visible": True,
+                    "ik_states": [("左足ＩＫ", False)],
+                }
             ],
         )
 

@@ -9,6 +9,7 @@ from maya import cmds
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
+from mmd_tools.adapters.maya_vmd_prepare_backend import create_maya_vmd_prepare_action
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_NAME,
@@ -115,15 +116,19 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertAlmostEqual(ry, 0.0, places=5)
         self.assertAlmostEqual(rz, 0.0, places=5)
 
-    def test_export_vmd_action_uses_default_scene_collector(self):
+    def test_export_vmd_action_uses_prepared_mode_c_payload(self):
         root, _joint = self._make_keyed_joint_scene()
         output_path = self.get_temp_filename("action_keyed_joint_export.vmd")
 
-        result = ExportVmdAction().execute(
-            ExportVmdRequest(
-                file_path=output_path,
-                options={"target_model": root, "export_format": "vmd"},
-            )
+        result = self._export_prepared_mode_c(
+            output_path,
+            {
+                "target_model": root,
+                "current_model_root": root,
+                "export_format": "vmd",
+                "vmd_mode": "C",
+                "frame_range": (0, 10),
+            },
         )
 
         self.assertTrue(result.succeeded)
@@ -131,6 +136,9 @@ class TestVmdSceneCollector(MayaTestBase):
         parsed = VmdData().parse_file(output_path)
         self.assertEqual(parsed.header.model_name, "ExportModel")
         self.assertEqual(len(parsed.bone_frames), 11)
+        sampled_frames = sorted({frame.frame_number for frame in parsed.bone_frames})
+        self.assertEqual(len(sampled_frames), 11)
+        self.assertEqual(sampled_frames[-1], 12)
 
     def test_mode_c_frame_range_matches_maya_numeric_oracle(self):
         cmds.currentUnit(time="ntsc")
@@ -142,23 +150,24 @@ class TestVmdSceneCollector(MayaTestBase):
         camera = self._make_keyed_camera()
         light = self._make_keyed_light()
         output_path = self.get_temp_filename("mode_c_numeric_oracle.vmd")
+        cmds.currentTime(7, edit=True)
 
-        result = ExportVmdAction().execute(
-            ExportVmdRequest(
-                file_path=output_path,
-                options={
-                    "target_model": root,
-                    "export_format": "vmd",
-                    "vmd_mode": "C",
-                    "frame_range": (0, 2),
-                    "blend_shapes": [blend_shape],
-                    "cameras": [camera],
-                    "lights": [light],
-                },
-            )
+        result = self._export_prepared_mode_c(
+            output_path,
+            {
+                "target_model": root,
+                "current_model_root": root,
+                "export_format": "vmd",
+                "vmd_mode": "C",
+                "frame_range": (0, 2),
+                "blend_shapes": [blend_shape],
+                "cameras": [camera],
+                "lights": [light],
+            },
         )
 
         self.assertTrue(result.succeeded, result.error)
+        self.assertEqual(float(cmds.currentTime(query=True)), 7.0)
         parsed = VmdData().parse_file(output_path)
         self.assertEqual(
             [frame.frame_number for frame in parsed.bone_frames],
@@ -423,16 +432,18 @@ class TestVmdSceneCollector(MayaTestBase):
         )
 
         output_path = self.get_temp_filename(output_file_name)
-        result = ExportVmdAction().execute(
-            ExportVmdRequest(
-                file_path=output_path,
-                options={
-                    "target_model": source_root,
-                    "export_format": "vmd",
-                    "vmd_mode": "C",
-                    "frame_range": frame_range,
-                },
-            )
+        result = self._export_prepared_mode_c(
+            output_path,
+            {
+                "target_model": source_root,
+                "current_model_root": source_root,
+                "export_format": "vmd",
+                "vmd_mode": "C",
+                "frame_range": frame_range,
+                # Mode C deliberately discards imported raw bone keys;
+                # this integration fixture explicitly accepts that loss.
+                "ack_warnings": True,
+            },
         )
 
         self.assertTrue(result.succeeded, result.error)
@@ -467,19 +478,21 @@ class TestVmdSceneCollector(MayaTestBase):
             "Fresh exported VMD import failed",
         )
 
-        collected = VmdSceneCollector().collect(
+        collected = self._prepare_mode_c_payload(
+            output_path,
             {
                 "target_model": fresh_root,
+                "current_model_root": fresh_root,
                 "vmd_mode": "C",
                 "frame_range": frame_range,
-            }
+            },
         )
         collected_by_key = {
-            (frame["bone_name"], frame["frame_number"]): (
-                frame["position"],
-                frame["rotation"],
+            (frame.bone_name, frame.frame_number): (
+                frame.position,
+                frame.rotation,
             )
-            for frame in collected["bone_frames"]
+            for frame in collected.bone_frames
         }
         self.assertEqual(set(collected_by_key), set(exported_by_key))
         for key in sorted(exported_by_key):
@@ -492,6 +505,30 @@ class TestVmdSceneCollector(MayaTestBase):
                 places=5,
                 msg=f"Quaternion mismatch for {key}",
             )
+
+    def _export_prepared_mode_c(self, output_path, options, exporter=None):
+        """Prepare through the production Maya boundary, then write its copy."""
+        payload = self._prepare_mode_c_payload(output_path, options)
+        return ExportVmdAction(exporter=exporter).execute(
+            ExportVmdRequest(
+                file_path=output_path,
+                options=dict(options),
+                animation_data=payload,
+            )
+        )
+
+    def _prepare_mode_c_payload(self, output_path, options):
+        """Return a detached VmdData copy from one validated production prepare."""
+        request = ExportVmdRequest(file_path=output_path, options=dict(options))
+        prepare_action = create_maya_vmd_prepare_action()
+        preparation = prepare_action.execute(request)
+        self.assertTrue(preparation.succeeded, preparation.error)
+        token = preparation.token
+        try:
+            prepare_action.validate_token(request, token)
+            return token.copy_for_export()
+        finally:
+            prepare_action.invalidate(token)
 
     def _make_keyed_blendshape(self, root):
         base, _base_shape = cmds.polyCube(name="mode_c_base")

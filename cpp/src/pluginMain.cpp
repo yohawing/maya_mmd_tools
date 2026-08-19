@@ -18,6 +18,7 @@
 #include <maya/MStatus.h>
 #include <maya/MDrawRegistry.h>
 
+#include <cstdlib>
 #include <string>
 
 #include "mmdRuntimeBridge.h"
@@ -35,6 +36,7 @@
 #include "MmdAuthoringMorphWeightCommand.h"
 #include "MmdAuthoringMaterialValueCommand.h"
 #include "MmdAuthoringMaterialOutlineCommand.h"
+#include "MmdVmdBatchSamplerCommand.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -56,6 +58,7 @@ static bool sCppRegisteredMmdAuthoringMorphBindingQueryCommand = false;
 static bool sCppRegisteredMmdAuthoringMorphWeightCommand = false;
 static bool sCppRegisteredMmdAuthoringMaterialValueCommand = false;
 static bool sCppRegisteredMmdAuthoringMaterialOutlineCommand = false;
+static bool sCppRegisteredMmdVmdBatchSamplerCommand = false;
 static MmdNativeCasterRenderOverride* sMmdNativeCasterOverride = nullptr;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
@@ -277,7 +280,11 @@ MStatus initializePlugin(MObject obj)
     // initialized.  The E2E explicitly clears/rebinds modelEditor panels so
     // Maya instantiates this late-added operation provider.
     MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer(false);
-    if (renderer) {
+    const char* skipNativeCaster = std::getenv("MMD_TOOLS_CPP_SKIP_NATIVE_CASTER");
+    if (skipNativeCaster && std::string(skipNativeCaster) == "1") {
+        MGlobal::displayInfo(
+            "mmdNativeCaster override skipped by MMD_TOOLS_CPP_SKIP_NATIVE_CASTER.");
+    } else if (renderer) {
         status = plugin.registerCommand(
             "mmdNativeCasterWitness", MmdNativeCasterWitnessCommand::creator,
             MmdNativeCasterWitnessCommand::newSyntax);
@@ -432,6 +439,19 @@ MStatus initializePlugin(MObject obj)
         sCppRegisteredMmdAuthoringMaterialOutlineCommand = true;
     }
 
+    // Optional native Mode C sampling capability.  The Python semantic
+    // sampler remains available when another plugin owns this command name
+    // or the native registration is unavailable.
+    status = plugin.registerCommand("mmdVmdBatchSample",
+                                    MmdVmdBatchSamplerCommand::creator,
+                                    MmdVmdBatchSamplerCommand::newSyntax);
+    if (!status) {
+        MGlobal::displayWarning(
+            "mmdVmdBatchSample registration failed; native VMD sampling is unavailable.");
+    } else {
+        sCppRegisteredMmdVmdBatchSamplerCommand = true;
+    }
+
     return MS::kSuccess;
 }
 
@@ -439,6 +459,14 @@ MStatus uninitializePlugin(MObject obj)
 {
     MStatus status;
     MFnPlugin plugin(obj);
+
+    if (sCppRegisteredMmdVmdBatchSamplerCommand) {
+        status = plugin.deregisterCommand("mmdVmdBatchSample");
+        if (!status) {
+            MGlobal::displayWarning("Failed to deregister mmdVmdBatchSample command.");
+        }
+        sCppRegisteredMmdVmdBatchSamplerCommand = false;
+    }
 
     // Receiver body shaders keep a supported MRenderTargetAssignment to the
     // caster target for their whole lifetime.  Refuse a partial plug-in

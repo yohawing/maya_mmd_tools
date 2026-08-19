@@ -70,6 +70,50 @@ from mmd_tools.core import maya_material_utils  # noqa: E402
 class TestExportScope(unittest.TestCase):
     """Keep root-scoped network morph collection explicit and testable."""
 
+    def test_model_root_resolves_sdef_bones_from_source_pmx_indices(self):
+        """Split-mesh SDEF storage uses model-global PMX indices, not local influences."""
+        sdef_vertex = {
+            "weight_transform_type": 3,
+            "bone_indices": [114, 415],
+        }
+
+        remapped = export_scene_collector_module._remap_merged_vertex_bone_indices(
+            sdef_vertex,
+            local_to_merged={0: 8, 1: 9},
+            source_to_merged={114: 3, 415: 7},
+        )
+
+        self.assertEqual(remapped, [3, 7])
+
+    def test_model_root_keeps_non_sdef_skin_indices_mesh_local(self):
+        """Ordinary Maya skin weights still resolve through each mesh influence list."""
+        bdef_vertex = {
+            "weight_transform_type": 1,
+            "bone_indices": [0, 1],
+        }
+
+        remapped = export_scene_collector_module._remap_merged_vertex_bone_indices(
+            bdef_vertex,
+            local_to_merged={0: 8, 1: 9},
+            source_to_merged={0: 2, 1: 3},
+        )
+
+        self.assertEqual(remapped, [8, 9])
+
+    def test_model_root_restores_mixed_morph_order_without_group_morphs(self):
+        """Authoring projection receives canonical PMX order for ordinary mixed morphs."""
+        morphs = [
+            {"type": "material", "name": "Material", "index": 1},
+            {"type": "vertex", "name": "Vertex", "index": 0},
+        ]
+
+        ordered = morph_converter_module._order_morphs_by_index_if_grouped(
+            morphs,
+            require_contiguous=True,
+        )
+
+        self.assertEqual([morph["name"] for morph in ordered], ["Vertex", "Material"])
+
     def test_additional_uv_storage_readback_is_strict_and_vertex_ordered(self):
         payload = {
             "schema_version": 1,

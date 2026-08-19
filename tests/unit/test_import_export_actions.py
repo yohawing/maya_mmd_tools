@@ -647,10 +647,17 @@ class TestExportVmdAction(unittest.TestCase):
             self.assertEqual(exporter.calls[0][1], vmd_data)
             self.assertTrue(Path(file_path).is_file())
 
-    def test_execute_uses_collector_when_animation_data_is_missing(self):
+    def test_execute_uses_collector_for_mode_a_when_animation_data_is_missing(self):
         exporter = _FakeVmdExporter()
-        collected = {"model_name": "CollectedModel"}
-        options = {"target_model": "model_root"}
+        collected = {
+            "model_name": "CollectedModel",
+            "raw_provenance": {
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_key_count": 0,
+                "raw_bone_interpolation": [],
+            },
+        }
+        options = {"target_model": "model_root", "vmd_mode": "A"}
         action = ExportVmdAction(exporter=exporter, collector=lambda received: collected)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -672,6 +679,27 @@ class TestExportVmdAction(unittest.TestCase):
         self.assertFalse(result.succeeded)
         self.assertIsNone(result.exported_path)
         self.assertIsInstance(result.error, ValueError)
+
+    def test_mode_c_without_prepared_animation_data_never_calls_collector_or_writer(self):
+        exporter = _FakeVmdExporter()
+        collector_calls = []
+        action = ExportVmdAction(
+            exporter=exporter,
+            collector=lambda options: collector_calls.append(options),
+        )
+
+        result = action.execute(
+            ExportVmdRequest(
+                file_path="out.vmd",
+                options={"export_format": "vmd", "vmd_mode": "C"},
+            )
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIsInstance(result.error, ValueError)
+        self.assertIn("prepared animation_data", str(result.error))
+        self.assertEqual(collector_calls, [])
+        self.assertEqual(exporter.calls, [])
 
     def test_execute_reports_exporter_error(self):
         class FailingExporter:

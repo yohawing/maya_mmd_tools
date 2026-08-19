@@ -155,7 +155,7 @@ def apply_ik_enabled_animation(
     )
     default_nodes = set(ik_nodes.values()) if getattr(vmd_data, "bone_frames", None) else set()
 
-    if property_frames or default_nodes:
+    if property_frames:
         min_frame, _max_frame = context.get_animation_frame_range(vmd_data)
         min_time = context.vmd_frame_to_maya_time(min_frame)
         connected_before_keying = {
@@ -167,8 +167,25 @@ def apply_ik_enabled_animation(
                 destination=False,
             )
         }
-        for node in (ik_nodes.values() if property_frames else default_nodes):
+        for node in ik_nodes.values():
             _key_ik_enabled(node, min_time, True, node not in connected_before_keying)
+
+    elif default_nodes:
+        # A VMD without IK property frames means the imported IK solvers are
+        # active by default.  Set the current value for unconnected plugs,
+        # but do not invent an animation key at the bone min-frame.  Existing
+        # animCurve connections own the value and must not be overwritten.
+        connected_before_default = {
+            node
+            for node in default_nodes
+            if cmds.listConnections(
+                f"{node}.enabled",
+                source=True,
+                destination=False,
+            )
+        }
+        for node in default_nodes.difference(connected_before_default):
+            cmds.setAttr(f"{node}.enabled", True)
 
     if property_frames:
         keyed = 0

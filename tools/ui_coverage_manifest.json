@@ -512,8 +512,8 @@
     {
       "id": "export.pane_selector",
       "tab": "export",
-      "kind": "tab_selector",
-      "selector": "objectName=exportPaneTabs",
+      "kind": "category_selector",
+      "selector": "objectName=exportCategoryStack",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
       "expected_handler": "mmd_tools.ui.tabs.export_tab.ExportTab._on_pane_changed"
@@ -570,7 +570,7 @@
       "selector": "objectName=motionMode",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.tabs.export_tab.ExportTab._mark_editing"
+      "expected_handler": "mmd_tools.ui.tabs.export_tab._ExportPage._on_semantic_input_changed"
     },
     {
       "id": "export.motion_frame_range",
@@ -579,7 +579,7 @@
       "selector": "objectName=motionUseFrameRange",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.tabs.export_tab.ExportTab._mark_editing"
+      "expected_handler": "mmd_tools.ui.tabs.export_tab._ExportPage._on_semantic_input_changed"
     },
     {
       "id": "export.motion_frame_start",
@@ -588,7 +588,7 @@
       "selector": "objectName=motionFrameStart",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.tabs.export_tab.ExportTab._mark_editing"
+      "expected_handler": "mmd_tools.ui.tabs.export_tab._ExportPage._on_semantic_input_changed"
     },
     {
       "id": "export.motion_frame_end",
@@ -597,7 +597,7 @@
       "selector": "objectName=motionFrameEnd",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.tabs.export_tab.ExportTab._mark_editing"
+      "expected_handler": "mmd_tools.ui.tabs.export_tab._ExportPage._on_semantic_input_changed"
     },
     {
       "id": "export.validation_filter",

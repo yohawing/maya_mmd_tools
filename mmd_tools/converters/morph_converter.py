@@ -84,7 +84,7 @@ def _order_morphs_by_index_if_grouped(
     a complete zero-based map with ``require_contiguous``.
     """
     ordered = list(morphs)
-    if any(_is_group_morph_payload(morph) for morph in ordered):
+    if require_contiguous or any(_is_group_morph_payload(morph) for morph in ordered):
         indices = []
         for position, morph in enumerate(ordered):
             if "index" not in morph:

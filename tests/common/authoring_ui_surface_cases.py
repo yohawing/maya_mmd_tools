@@ -29,6 +29,7 @@ from mmd_tools.ui.qt_compat import (
     QTextEdit,
     QWidget,
 )
+from mmd_tools.ui.components.category_stack import CategoryStack
 from tests.common.ui_action_coverage import (
     PreconstructionMethodSpy,
     build_surface_witness,
@@ -130,8 +131,22 @@ def locate_surface(window: Any, surface: Mapping[str, Any]) -> QWidget:
 
 def _select_widget_path(window: Any, widget: QWidget) -> None:
     """Reach a control through production tab selectors without forcing visibility."""
+    for stack in window.findChildren(CategoryStack):
+        for index in range(stack.count()):
+            page = stack.stacked_widget.widget(index)
+            if page is widget or page.isAncestorOf(widget):
+                stack.setCurrentIndex(index)
+                break
     parent = widget.parentWidget()
     while parent is not None:
+        if isinstance(parent, CategoryStack):
+            candidate = widget
+            while candidate is not None and candidate.parentWidget() is not parent.stacked_widget:
+                candidate = candidate.parentWidget()
+            if candidate is not None:
+                index = parent.stacked_widget.indexOf(candidate)
+                if index >= 0:
+                    parent.setCurrentIndex(index)
         if isinstance(parent, QTabWidget):
             page = next(
                 (
@@ -268,6 +283,9 @@ def _prepare_surface(window: Any, surface: Mapping[str, Any], widget: QWidget) -
 
 def _interaction(widget: QWidget, kind: str) -> Tuple[str, Any]:
     """Return one real Qt interaction for the selected production control."""
+    if isinstance(widget, CategoryStack):
+        target = 1 if widget.currentIndex() == 0 else 0
+        return "setCurrentIndex", lambda: widget.setCurrentIndex(target)
     if isinstance(widget, QPushButton):
         return "mouseClick", widget.click
     if isinstance(widget, QCheckBox):

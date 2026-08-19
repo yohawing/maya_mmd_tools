@@ -5,12 +5,18 @@ model-scoped PMX network morph controller weights into the dict contract
 consumed by ``VmdExporter``. Bone translation can be converted back to VMD
 offsets when a bind-pose map is supplied, and XYZ joint rotations are
 converted back to VMD quaternions with jointOrient compensation. Explicit
-Mode C requests sample the selected Maya frame range at one-frame intervals;
-Mode A and low-level collector callers retain sparse collection semantics.
+Mode C requests sample the selected Maya frame range at one-frame intervals:
+bones use the native sampler while morph/IK/camera/light tracks advance Maya's
+normal Timeline and read current-frame values. Sampling failures block export.
+An imported raw key/interpolation/transform payload is reused only when the
+caller explicitly opts into ``preserve_raw_bone_transforms``; Mode A and
+low-level collector callers retain sparse collection semantics.
 """
 
 import json
 import math
+import time
+from contextlib import nullcontext
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 import maya.api.OpenMaya as om
@@ -36,6 +42,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
 )
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
+from mmd_tools.converters.bone_morph_runtime import resolve_owned_bone_morph_base_routes
 from mmd_tools.converters.vmd_camera_animation import (
     ATTR_MMD_CAMERA_ROOT_NODE,
     ATTR_MMD_CAMERA_TARGET_NODE,
@@ -49,6 +56,10 @@ from mmd_tools.converters.vmd_import_state import get_stored_bind_translate
 from mmd_tools.converters.vmd_runtime_sampling import (
     maya_time_to_vmd_frame as _maya_time_to_vmd_frame_at_fps,
 )
+from mmd_tools.converters.vmd_redirected_authoring_proxy import (
+    redirected_authority_matches,
+    resolve_redirected_authoring_proxy_authority,
+)
 
 
 _BONE_EXPORT_ATTRS = (
@@ -59,6 +70,8 @@ _BONE_EXPORT_ATTRS = (
     "rotateY",
     "rotateZ",
 )
+
+
 _CAMERA_EXPORT_ATTRS = (
     "translateX",
     "translateY",
@@ -92,6 +105,16 @@ _MAYA_TIME_UNIT_FPS = {
     "palf": 50.0,
     "ntscf": 60.0,
 }
+
+
+def _copy_diagnostics(value: Any) -> Any:
+    """Detach nested timing/count diagnostics from the collector."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _copy_diagnostics(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_copy_diagnostics(item) for item in value]
+    return value
 
 
 def _canonical_dag_path(node: str) -> Optional[str]:
@@ -207,6 +230,18 @@ def _raw_bone_transform_matches(
         return False
 
 
+def _index_raw_bone_transform_frames(
+    raw_bone_transforms: Mapping[
+        tuple[str, int], tuple[tuple[float, ...], tuple[float, ...]]
+    ],
+) -> dict[str, set[int]]:
+    """Index raw transform frame numbers by bone name in one pass."""
+    result: dict[str, set[int]] = {}
+    for bone_name, frame_number in raw_bone_transforms:
+        result.setdefault(bone_name, set()).add(frame_number)
+    return result
+
+
 def _read_vmd_import_provenance(target_model: Optional[str]) -> Optional[dict[str, Any]]:
     """Read complete raw VMD bone provenance from one model root."""
     if not target_model:
@@ -242,7 +277,76 @@ def _read_vmd_import_provenance(target_model: Optional[str]) -> Optional[dict[st
 class VmdSceneCollector:
     """Collect minimum VMD-compatible animation data from a Maya scene."""
 
+    def __init__(self, diagnostics_sink=None, bone_channel_sampler=None):
+        """Create a collector with optional end-of-collection diagnostics sink.
+
+        The sink receives one small JSON-shaped dictionary after collection;
+        it never receives per-frame values.  Keeping it optional preserves the
+        existing low-level collector API and keeps the hot loop untouched.
+        ``bone_channel_sampler`` is the required Mode C bone sampling seam.
+        Native command, protocol, and value failures are fatal for Mode C;
+        sparse non-Mode-C collection continues to use ``cmds.getAttr``.
+        """
+
+        self._diagnostics_sink = diagnostics_sink
+        # Optional native batch sampling is intentionally injected at this
+        # seam.  Route discovery, quaternion conversion, VMD dict assembly,
+        # and every non-bone track remain Python-owned.
+        self._bone_channel_sampler = bone_channel_sampler
+        self._diagnostics: dict[str, Any] = {}
+
+    @property
+    def diagnostics(self) -> dict[str, Any]:
+        """Return detached timing and count evidence for the last collect."""
+
+        return _copy_diagnostics(self._diagnostics)
+
+    @property
+    def diagnostics_copy(self) -> dict[str, Any]:
+        """Alias used by Maya preparation evidence."""
+
+        return self.diagnostics
+
+    def _emit_diagnostics(self) -> None:
+        """Flush the latest bounded diagnostics snapshot to the optional sink."""
+
+        sink = self._diagnostics_sink
+        if not callable(sink):
+            return
+        try:
+            sink(self.diagnostics)
+        except Exception as exc:  # diagnostics must never alter export semantics
+            self._diagnostics["sink_error"] = f"{type(exc).__name__}: {exc}"
+
+    def _accept_native_diagnostics(self, value: Any) -> None:
+        """Merge native preflight/chunk evidence and flush it immediately."""
+
+        if isinstance(value, Mapping):
+            merged = dict(self._diagnostics.get("native_sampler", {}))
+            merged.update(_copy_diagnostics(value))
+            self._diagnostics["native_sampler"] = merged
+            self._emit_diagnostics()
+
     def collect(self, options: Optional[Mapping[str, Any]] = None) -> dict:
+        """Collect and publish low-overhead timing diagnostics."""
+
+        started = time.perf_counter()
+        self._diagnostics = {}
+        try:
+            result = self._collect_impl(options)
+            self._diagnostics["status"] = "completed"
+            return result
+        except Exception as exc:
+            self._diagnostics["status"] = "failed"
+            self._diagnostics["error"] = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            self._diagnostics["total"] = {
+                "wall_sec": round(time.perf_counter() - started, 6),
+            }
+            self._emit_diagnostics()
+
+    def _collect_impl(self, options: Optional[Mapping[str, Any]] = None) -> dict:
         """Collect VMD exporter input from the current Maya scene.
 
         Args:
@@ -250,26 +354,47 @@ class VmdSceneCollector:
                 ``model_root``, ``joints``, ``blend_shapes``, ``cameras``,
                 ``lights``, ``start_frame`` / ``end_frame`` or ``frame_range``,
                 ``vmd_mode``, ``model_name``, ``motion_scale``, and
-                ``bone_bind_poses``. Automatic DAG discovery is scoped to the
-                selected model root; explicit node lists remain authoritative
-                for scene-level callers.
+                ``bone_bind_poses``. Automatic joint and blendShape discovery
+                is scoped to the selected model root; camera/light discovery
+                remains scene-level. Explicit node lists remain authoritative.
         """
         options = options or {}
+        planning_started = time.perf_counter()
         target_model = options.get("target_model") or options.get("model_root")
         joints = list(options.get("joints") or self._find_joints(target_model))
         blend_shapes = list(
             options.get("blend_shapes") or self._find_blend_shapes(target_model)
         )
-        cameras = self._resolve_tagged_track(options, "cameras", ATTR_MMD_CAMERA, target_model)
-        lights = self._resolve_tagged_track(options, "lights", ATTR_MMD_LIGHT, target_model)
+        # Current Model scopes model tracks only. Cameras and lights are
+        # scene-level tracks unless the caller provides an explicit list.
+        cameras = self._resolve_tagged_track(options, "cameras", ATTR_MMD_CAMERA, None)
+        lights = self._resolve_tagged_track(options, "lights", ATTR_MMD_LIGHT, None)
         start_frame, end_frame = _resolve_collection_frame_range(options)
         motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
         bone_bind_poses = options.get("bone_bind_poses") or {}
         maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
         mode = str(options.get("vmd_mode", options.get("mode", "")) or "").upper()
+        preserve_raw_bone_transforms = bool(
+            options.get("preserve_raw_bone_transforms", False)
+        )
         dense_control_rig_export = self._control_rig_dense_export(target_model)
         dense_mode_c_export = mode == "C"
         authored_routes = self._scene_authored_input_routes(joints, target_model)
+        rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
+        raw_provenance = _read_vmd_import_provenance(target_model)
+        if mode != "C" or preserve_raw_bone_transforms:
+            for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
+                rotation_interpolation.setdefault(bone_name, {}).update(values)
+        raw_bone_transforms = _raw_vmd_bone_transforms(raw_provenance)
+        preserve_sparse_mode_c = bool(
+            dense_mode_c_export
+            and preserve_raw_bone_transforms
+            and raw_provenance
+            and raw_bone_transforms
+            and raw_provenance.get("raw_bone_interpolation_complete")
+            and raw_provenance.get("raw_bone_transform_complete")
+        )
+        dense_mode_c_export = dense_mode_c_export and not preserve_sparse_mode_c
         mode_c_dense_frames = (
             self._mode_c_dense_frame_samples(
                 joints,
@@ -284,62 +409,121 @@ class VmdSceneCollector:
             if dense_mode_c_export
             else None
         )
-        rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
-        raw_provenance = _read_vmd_import_provenance(target_model)
-        for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
-            rotation_interpolation.setdefault(bone_name, {}).update(values)
-        raw_bone_transforms = _raw_vmd_bone_transforms(raw_provenance)
+
+        self._diagnostics["route_provenance_dense_planning"] = {
+            "wall_sec": round(time.perf_counter() - planning_started, 6),
+            "joint_count": len(joints),
+            "blend_shape_count": len(blend_shapes),
+            "camera_count": len(cameras),
+            "light_count": len(lights),
+            "authored_route_count": len(authored_routes),
+            "raw_provenance": bool(raw_provenance),
+            "dense_frame_count": len(mode_c_dense_frames or ()),
+        }
+
+        bone_started = time.perf_counter()
+        bone_frames = self.collect_bone_frames(
+            joints,
+            start_frame,
+            end_frame,
+            motion_scale=motion_scale,
+            bone_bind_poses=bone_bind_poses,
+            input_routes=authored_routes,
+            dense_sample=dense_control_rig_export or dense_mode_c_export,
+            force_dense_sample=dense_mode_c_export,
+            time_converter=maya_time_to_vmd,
+            rotation_interpolation=rotation_interpolation,
+            dense_frame_samples=mode_c_dense_frames,
+            preserve_raw_bone_transforms=preserve_raw_bone_transforms,
+            raw_bone_transforms=raw_bone_transforms,
+            bone_channel_sampler=self._bone_channel_sampler,
+        )
+        self._diagnostics["bone_collection"] = {
+            "wall_sec": round(time.perf_counter() - bone_started, 6),
+            "joint_count": len(joints),
+            "frame_count": len(bone_frames),
+            "estimated_scalar_bone_reads": len(bone_frames) * 6,
+        }
+
+        morph_started = time.perf_counter()
+        morph_frames = self.collect_morph_frames(
+            blend_shapes,
+            start_frame,
+            end_frame,
+            time_converter=maya_time_to_vmd,
+            target_model=target_model,
+            dense_sample=dense_mode_c_export,
+            dense_frame_samples=mode_c_dense_frames,
+            timeline_evaluation=mode == "C",
+        )
+        self._diagnostics["morph_collection"] = {
+            "wall_sec": round(time.perf_counter() - morph_started, 6),
+            "frame_count": len(morph_frames),
+        }
+
+        camera_started = time.perf_counter()
+        camera_frames = self.collect_camera_frames(
+            cameras,
+            start_frame,
+            end_frame,
+            time_converter=maya_time_to_vmd,
+            dense_sample=dense_mode_c_export,
+            dense_frame_samples=mode_c_dense_frames,
+            timeline_evaluation=mode == "C",
+        )
+        self._diagnostics["camera_collection"] = {
+            "wall_sec": round(time.perf_counter() - camera_started, 6),
+            "frame_count": len(camera_frames),
+        }
+
+        light_started = time.perf_counter()
+        light_frames = self.collect_light_frames(
+            lights,
+            start_frame,
+            end_frame,
+            time_converter=maya_time_to_vmd,
+            dense_sample=dense_mode_c_export,
+            dense_frame_samples=mode_c_dense_frames,
+            timeline_evaluation=mode == "C",
+        )
+        self._diagnostics["light_collection"] = {
+            "wall_sec": round(time.perf_counter() - light_started, 6),
+            "frame_count": len(light_frames),
+        }
+
+        ik_started = time.perf_counter()
+        ik_frames = self.collect_ik_show_hide_frames(
+            target_model,
+            start_frame,
+            end_frame,
+            time_converter=maya_time_to_vmd,
+            # IK show/hide is a step track, not a numeric pose track.
+            # Keep keyed/baseline semantics even when Mode C bakes the
+            # other tracks at every frame.
+            dense_sample=False,
+            dense_frame_samples=None,
+            timeline_evaluation=mode == "C",
+        )
+        self._diagnostics["ik_collection"] = {
+            "wall_sec": round(time.perf_counter() - ik_started, 6),
+            "frame_count": len(ik_frames),
+        }
+        self._diagnostics["section_counts"] = {
+            "bone_frames": len(bone_frames),
+            "morph_frames": len(morph_frames),
+            "camera_frames": len(camera_frames),
+            "light_frames": len(light_frames),
+            "ik_show_hide_frames": len(ik_frames),
+        }
 
         return {
             "model_name": str(options.get("model_name") or self._model_name(target_model)),
             "raw_provenance": raw_provenance,
-            "bone_frames": self.collect_bone_frames(
-                joints,
-                start_frame,
-                end_frame,
-                motion_scale=motion_scale,
-                bone_bind_poses=bone_bind_poses,
-                input_routes=authored_routes,
-                dense_sample=dense_control_rig_export or dense_mode_c_export,
-                force_dense_sample=dense_mode_c_export,
-                time_converter=maya_time_to_vmd,
-                rotation_interpolation=rotation_interpolation,
-                dense_frame_samples=mode_c_dense_frames,
-                raw_bone_transforms=raw_bone_transforms,
-            ),
-            "morph_frames": self.collect_morph_frames(
-                blend_shapes,
-                start_frame,
-                end_frame,
-                time_converter=maya_time_to_vmd,
-                target_model=target_model,
-                dense_sample=dense_mode_c_export,
-                dense_frame_samples=mode_c_dense_frames,
-            ),
-            "camera_frames": self.collect_camera_frames(
-                cameras,
-                start_frame,
-                end_frame,
-                time_converter=maya_time_to_vmd,
-                dense_sample=dense_mode_c_export,
-                dense_frame_samples=mode_c_dense_frames,
-            ),
-            "light_frames": self.collect_light_frames(
-                lights,
-                start_frame,
-                end_frame,
-                time_converter=maya_time_to_vmd,
-                dense_sample=dense_mode_c_export,
-                dense_frame_samples=mode_c_dense_frames,
-            ),
-            "ik_show_hide_frames": self.collect_ik_show_hide_frames(
-                target_model,
-                start_frame,
-                end_frame,
-                time_converter=maya_time_to_vmd,
-                dense_sample=dense_mode_c_export,
-                dense_frame_samples=mode_c_dense_frames,
-            ),
+            "bone_frames": bone_frames,
+            "morph_frames": morph_frames,
+            "camera_frames": camera_frames,
+            "light_frames": light_frames,
+            "ik_show_hide_frames": ik_frames,
         }
 
     def _mode_c_dense_frame_samples(
@@ -376,7 +560,6 @@ class VmdSceneCollector:
                     f"inputWeight[{int(entry.index)}]"
                     for entry in entries
                     if entry.index is not None
-                    and str(entry.morph_type or "") != "vertex"
                 }
                 keyed_times.extend(_key_times(controller, attrs))
         for camera in cameras:
@@ -407,9 +590,11 @@ class VmdSceneCollector:
         rotation_interpolation: Optional[Mapping[str, Mapping[int, bytes]]] = None,
         force_dense_sample: bool = False,
         dense_frame_samples: Optional[Sequence[float]] = None,
+        preserve_raw_bone_transforms: bool = False,
         raw_bone_transforms: Optional[
             Mapping[tuple[str, int], tuple[tuple[float, ...], tuple[float, ...]]]
         ] = None,
+        bone_channel_sampler=None,
     ) -> list[dict]:
         """Collect keyed or one-frame-sampled local joint transforms.
 
@@ -417,7 +602,10 @@ class VmdSceneCollector:
         rotation-time curve may intentionally keep sparse VMD keys.  Mode C
         uses ``force_dense_sample`` so its numeric pose export is not
         accidentally changed back to sparse collection by raw interpolation
-        metadata.
+        metadata.  ``preserve_raw_bone_transforms`` is an explicit import
+        roundtrip route for callers that have established that raw VMD
+        provenance is authoritative; it does not change the default edited
+        scene behavior.
         """
         bone_bind_poses = bone_bind_poses or {}
         input_routes = input_routes or {}
@@ -425,6 +613,8 @@ class VmdSceneCollector:
         rotation_context = _build_rotation_export_context(joints)
         rotation_interpolation = rotation_interpolation or {}
         raw_bone_transforms = raw_bone_transforms or {}
+        raw_bone_frames_by_name = _index_raw_bone_transform_frames(raw_bone_transforms)
+        native_samples = None
         frames = []
         dense_frames = (
             list(dense_frame_samples)
@@ -451,6 +641,178 @@ class VmdSceneCollector:
                         dense_frames = list(
                             range(int(math.floor(min(ranged))), int(math.ceil(max(ranged))) + 1)
                         )
+            if (
+                force_dense_sample
+                and dense_frames
+                and bone_channel_sampler is None
+                and any(keyed_times_by_joint.get(joint) for joint in joints)
+            ):
+                self._diagnostics["native_sampler"] = {
+                    "available": False,
+                    "used": False,
+                    "fatal": True,
+                    "fallback_reason": "Mode C native sampler was not provided",
+                }
+                self._emit_diagnostics()
+                raise RuntimeError("Mode C native bone sampling is unavailable")
+            if (
+                force_dense_sample
+                and dense_frames
+                and bone_channel_sampler is not None
+            ):
+                # A joint without source keys must not acquire a native track
+                # merely because another joint defines the dense range.
+                native_joints = [
+                    joint
+                    for joint in joints
+                    if keyed_times_by_joint.get(joint)
+                ]
+                if not native_joints:
+                    self._diagnostics["native_sampler"] = {
+                        "available": bool(
+                            getattr(bone_channel_sampler, "available", False)
+                        ),
+                        "used": False,
+                        "fallback_reason": "no eligible dense bone channels",
+                    }
+                else:
+                    route_inventory = _native_route_inventory(
+                        native_joints,
+                        input_routes,
+                    )
+                    sampler_available = getattr(
+                        bone_channel_sampler,
+                        "available",
+                        None,
+                    )
+                    if callable(sampler_available):
+                        try:
+                            sampler_available = sampler_available()
+                        except Exception:
+                            sampler_available = False
+                    self._diagnostics["native_sampler"] = {
+                        "status": "preflight",
+                        "available": bool(sampler_available),
+                        "used": False,
+                        "frame_count": len(dense_frames),
+                        "logical_channel_count": len(native_joints) * len(_BONE_EXPORT_ATTRS),
+                        **route_inventory,
+                    }
+                    self._emit_diagnostics()
+                    set_native_sink = getattr(
+                        bone_channel_sampler,
+                        "set_diagnostics_sink",
+                        None,
+                    )
+                    if callable(set_native_sink):
+                        set_native_sink(self._accept_native_diagnostics)
+                    native_started = time.perf_counter()
+                    try:
+                        if sampler_available is False:
+                            raise RuntimeError("native sampler is unavailable")
+                        sampler_method = getattr(
+                            bone_channel_sampler,
+                            "sample_dense_bone_channels",
+                            None,
+                        )
+                        if not callable(sampler_method):
+                            sampler_method = getattr(
+                                bone_channel_sampler,
+                                "sample_dense_bones",
+                                None,
+                            )
+                        if not callable(sampler_method):
+                            raise RuntimeError("native sampler has no dense bone method")
+                        native_samples = sampler_method(
+                            dense_frames,
+                            native_joints,
+                            input_routes,
+                        )
+                        if not callable(getattr(native_samples, "value", None)):
+                            raise RuntimeError("native sampler returned no value accessor")
+                        native_diagnostics = getattr(
+                            native_samples,
+                            "diagnostics",
+                            None,
+                        )
+                        if callable(native_diagnostics):
+                            native_diagnostics = native_diagnostics()
+                        sampler_diagnostics = getattr(
+                            bone_channel_sampler,
+                            "last_diagnostics",
+                            None,
+                        )
+                        native_report = dict(
+                            self._diagnostics.get("native_sampler", {})
+                        )
+                        native_report.update(sampler_diagnostics or {})
+                        native_report.update(native_diagnostics or {})
+                        self._diagnostics["native_sampler"] = native_report
+                        self._diagnostics["native_sampler"].setdefault(
+                            "available", True
+                        )
+                        self._diagnostics["native_sampler"].setdefault("used", True)
+                    except Exception as exc:
+                        native_samples = None
+                        sampler_diagnostics = getattr(
+                            bone_channel_sampler,
+                            "last_diagnostics",
+                            None,
+                        )
+                        native_report = dict(
+                            self._diagnostics.get("native_sampler", {})
+                        )
+                        native_report.update(sampler_diagnostics or {})
+                        self._diagnostics["native_sampler"] = native_report
+                        self._diagnostics["native_sampler"].update(
+                            {
+                                "available": bool(
+                                    self._diagnostics["native_sampler"].get(
+                                        "available", True
+                                    )
+                                ),
+                                "used": False,
+                                "fallback_reason": f"{type(exc).__name__}: {exc}",
+                                "fatal": True,
+                                "fallback_wall_sec": round(
+                                    time.perf_counter() - native_started,
+                                    6,
+                                ),
+                            }
+                        )
+                        self._emit_diagnostics()
+                        raise RuntimeError(
+                            f"Mode C native bone sampling failed: {exc}"
+                        ) from exc
+            elif bone_channel_sampler is not None:
+                available = getattr(bone_channel_sampler, "available", False)
+                if callable(available):
+                    available = available()
+                self._diagnostics["native_sampler"] = {
+                    "available": bool(available),
+                    "used": False,
+                    "fallback_reason": "no eligible dense bone channels",
+                }
+
+        def read_value(joint, attr, frame_number, route):
+            nonlocal native_samples
+            if native_samples is not None:
+                try:
+                    return float(native_samples.value(joint, attr, frame_number))
+                except Exception as exc:
+                    self._diagnostics.setdefault("native_sampler", {}).update(
+                        {
+                            "used": False,
+                            "fallback_reason": f"{type(exc).__name__}: {exc}",
+                            "fatal": True,
+                        }
+                    )
+                    self._emit_diagnostics()
+                    raise RuntimeError(
+                        f"Mode C native bone value failed for {joint}.{attr}"
+                    ) from exc
+            return _routed_plug_float(joint, attr, frame_number, route)
+
         for joint in joints:
             bone_name = self._mmd_bone_name(joint)
             bind_pose = _resolve_bind_pose(bone_bind_poses, bone_name, joint)
@@ -464,8 +826,15 @@ class VmdSceneCollector:
                 start_frame,
                 end_frame,
             )
+            raw_provenance_frames = raw_bone_frames_by_name.get(bone_name, set())
+            has_new_authored_key = bool(
+                raw_provenance_frames
+                and set(sparse_frames).difference(raw_provenance_frames)
+            )
             preserve_sparse_rotation = (
-                not force_dense_sample and bone_name in rotation_interpolation
+                not force_dense_sample
+                and bone_name in rotation_interpolation
+                and not has_new_authored_key
             )
             keyed_frames = (
                 dense_frames
@@ -477,9 +846,9 @@ class VmdSceneCollector:
             for frame_number in keyed_frames:
                 rotation = _maya_joint_rotate_to_vmd_quaternion(
                     joint,
-                    _routed_plug_float(joint, "rotateX", frame_number, route),
-                    _routed_plug_float(joint, "rotateY", frame_number, route),
-                    _routed_plug_float(joint, "rotateZ", frame_number, route),
+                    read_value(joint, "rotateX", frame_number, route),
+                    read_value(joint, "rotateY", frame_number, route),
+                    read_value(joint, "rotateZ", frame_number, route),
                     rotation_context.get(str(long_names[0])),
                 )
                 vmd_frame = _vmd_frame_number(frame_number, time_converter)
@@ -488,9 +857,9 @@ class VmdSceneCollector:
                         "frame_number": vmd_frame,
                         "position": _maya_translate_to_vmd_position(
                             (
-                                _routed_plug_float(joint, "translateX", frame_number, route),
-                                _routed_plug_float(joint, "translateY", frame_number, route),
-                                _routed_plug_float(joint, "translateZ", frame_number, route),
+                                read_value(joint, "translateX", frame_number, route),
+                                read_value(joint, "translateY", frame_number, route),
+                                read_value(joint, "translateZ", frame_number, route),
                             ),
                             bind_pose,
                             motion_scale,
@@ -505,10 +874,13 @@ class VmdSceneCollector:
                     if force_dense_sample
                     else raw_bone_transforms.get((bone_name, vmd_frame))
                 )
-                if raw_transform is not None and _raw_bone_transform_matches(
-                    payload["position"],
-                    payload["rotation"],
-                    raw_transform,
+                if raw_transform is not None and (
+                    preserve_raw_bone_transforms
+                    or _raw_bone_transform_matches(
+                        payload["position"],
+                        payload["rotation"],
+                        raw_transform,
+                    )
                 ):
                     payload["position"], payload["rotation"] = raw_transform
                 frames.append(payload)
@@ -522,6 +894,7 @@ class VmdSceneCollector:
         time_converter=None,
         dense_sample: bool = False,
         dense_frame_samples: Optional[Sequence[float]] = None,
+        timeline_evaluation: bool = False,
     ) -> list[dict]:
         """Collect keyed owned ``mmdCcdIk.enabled`` values as VMD properties."""
         if not target_model:
@@ -536,7 +909,7 @@ class VmdSceneCollector:
             }
         )
         keyed_frames = (
-            list(dense_frame_samples)
+            sorted(set(dense_frame_samples))
             if dense_sample
             and dense_frame_samples is not None
             and nodes_by_name
@@ -546,40 +919,76 @@ class VmdSceneCollector:
                 end_frame,
             )
         )
+        if dense_sample and dense_frame_samples and nodes_by_name and not all_keyed_frames:
+            first_sample = float(dense_frame_samples[0])
+            if timeline_evaluation:
+                with _MayaTimelineReader() as initial_reader:
+                    initial_reader.set_frame(first_sample)
+                    all_enabled = all(
+                        bool(_current_plug_float(node, "enabled"))
+                        for node in nodes_by_name.values()
+                    )
+            else:
+                all_enabled = all(
+                    bool(_plug_float(node, "enabled", first_sample))
+                    for node in nodes_by_name.values()
+                )
+            if all_enabled:
+                # A keyless production rig defaults to enabled=True.  Dense
+                # sampling must not manufacture a redundant all-ON property
+                # section that was absent from the source motion.
+                return []
         frames = []
+        timeline_reader = _MayaTimelineReader() if timeline_evaluation else None
+
+        def read_enabled(node: str, frame: float) -> bool:
+            if timeline_reader is not None:
+                timeline_reader.set_frame(frame)
+                return bool(_current_plug_float(node, "enabled"))
+            return bool(_plug_float(node, "enabled", frame))
+
         baseline_time = _ik_baseline_time(start_frame, end_frame)
-        if (
-            not dense_sample
-            and nodes_by_name
-            and baseline_time is not None
-            and baseline_time not in all_keyed_frames
-        ):
-            baseline_frame = _vmd_frame_number(baseline_time, time_converter)
-            if baseline_frame >= 0:
+        context = timeline_reader or nullcontext()
+        with context:
+            if (
+                not dense_sample
+                and nodes_by_name
+                and baseline_time is not None
+                and baseline_time not in all_keyed_frames
+            ):
+                baseline_frame = _vmd_frame_number(baseline_time, time_converter)
+                if baseline_frame >= 0:
+                    baseline_states = [
+                        (name, read_enabled(node, baseline_time))
+                        for name, node in sorted(nodes_by_name.items())
+                    ]
+                    # A keyless production rig has enabled=True as its default.
+                    # Omitting that redundant ON section keeps the exported VMD
+                    # faithful to a source with no IK show/hide property frames.
+                    # Keep the baseline when a solver is OFF or any later key
+                    # exists; those states need an explicit VMD representation.
+                    if all_keyed_frames or any(not state for _, state in baseline_states):
+                        frames.append(
+                            {
+                                "frame_number": baseline_frame,
+                                "visible": True,
+                                "ik_states": baseline_states,
+                            }
+                        )
+            for frame in keyed_frames:
+                vmd_frame = _vmd_frame_number(frame, time_converter)
+                if vmd_frame < 0:
+                    continue
                 frames.append(
                     {
-                        "frame_number": baseline_frame,
+                        "frame_number": vmd_frame,
                         "visible": True,
                         "ik_states": [
-                            (name, bool(_plug_float(node, "enabled", baseline_time)))
+                            (name, read_enabled(node, frame))
                             for name, node in sorted(nodes_by_name.items())
                         ],
                     }
                 )
-        for frame in keyed_frames:
-            vmd_frame = _vmd_frame_number(frame, time_converter)
-            if vmd_frame < 0:
-                continue
-            frames.append(
-                {
-                    "frame_number": vmd_frame,
-                    "visible": True,
-                    "ik_states": [
-                        (name, bool(_plug_float(node, "enabled", frame)))
-                        for name, node in sorted(nodes_by_name.items())
-                    ],
-                }
-            )
         return _deduplicate_frames(frames, ("frame_number",))
 
     def _control_rig_dense_export(
@@ -647,10 +1056,34 @@ class VmdSceneCollector:
                         f"inputRotate[{slot}].inputRotateElement{axis}",
                     )
 
+        # The owned accumulator base is the authored layer before append/IK;
+        # it therefore replaces their passthrough routes. Control-rig EDIT
+        # metadata below remains the highest-priority authoring contract.
+        accumulator_resolution = resolve_owned_bone_morph_base_routes(joints)
+        if accumulator_resolution.blocked:
+            details = "; ".join(
+                f"{joint}: channels={channels!r}, reason={reason}"
+                for joint, (channels, reason) in sorted(
+                    accumulator_resolution.blocked.items()
+                )
+            )
+            raise ValueError(
+                "VMD collection blocked by unresolved bone-morph accumulator ownership: "
+                + details
+            )
+        for joint, route in accumulator_resolution.routes.items():
+            routes.setdefault(joint, {}).update(route)
         if not target_model:
+            self._merge_redirected_authoring_proxy_routes(joints, routes)
             return routes
         metadata = read_mmd_control_rig_metadata(target_model)
         if not metadata:
+            self._merge_physics_authored_input_routes(
+                joints=joints,
+                target_model=target_model,
+                routes=routes,
+            )
+            self._merge_redirected_authoring_proxy_routes(joints, routes)
             return routes
         joints_by_path = {
             str((cmds.ls(joint, long=True) or [joint])[0]): str(joint)
@@ -681,7 +1114,117 @@ class VmdSceneCollector:
                 channel = "translate" if attribute == "baseTranslate" else "rotate"
                 for axis in "XYZ":
                     route[f"{channel}{axis}"] = (node, f"{attribute}{axis}")
+        self._merge_physics_authored_input_routes(
+            joints=joints,
+            target_model=target_model,
+            routes=routes,
+        )
+        self._merge_redirected_authoring_proxy_routes(joints, routes)
         return routes
+
+    def _merge_redirected_authoring_proxy_routes(
+        self,
+        joints: Sequence[str],
+        routes: dict[str, dict[str, tuple[str, str]]],
+    ) -> None:
+        """Validate current logical destinations before selecting proxy tracks."""
+        for joint_name in joints:
+            joint = str((cmds.ls(joint_name, long=True) or [joint_name])[0])
+            route_key = str(joint_name) if str(joint_name) in routes else joint
+            proxy_route, authority, claimed = (
+                resolve_redirected_authoring_proxy_authority(joint)
+            )
+            if not claimed:
+                continue
+            current = {
+                channel: routes.get(route_key, {}).get(channel, (joint, channel))
+                for channel in authority
+            }
+            if not proxy_route or not redirected_authority_matches(current, authority):
+                raise ValueError(
+                    "VMD collection blocked by stale redirected authoring proxy "
+                    f"authority: {joint}; current={current!r}; authority={authority!r}"
+                )
+            routes.setdefault(route_key, {}).update(proxy_route)
+
+    def _merge_physics_authored_input_routes(
+        self,
+        *,
+        joints: Sequence[str],
+        target_model: str,
+        routes: dict[str, dict[str, tuple[str, str]]],
+    ) -> None:
+        """Add owned physics-driver pre-inputs without replacing authored routes.
+
+        The final ``outTranslate``/``outRotate`` values are physics results and
+        are not motion sources.  VMD recovery connects authored animation to
+        the driver's ``inPre*`` plugs, so only a unique, model-owned driver
+        with a validated target and an incoming non-physics source is eligible.
+        Missing or ambiguous graph pieces are skipped fail-closed.
+        """
+
+        if not target_model:
+            return
+        root_path = _canonical_dag_path(target_model)
+        if not root_path:
+            return
+        joints_by_path = {
+            str((cmds.ls(joint, long=True) or [joint])[0]): str(joint)
+            for joint in joints
+        }
+        if not joints_by_path:
+            return
+        candidates: dict[str, list[tuple[str, int]]] = {}
+        used_indices: dict[int, list[str]] = {}
+        for solver in _physics_solvers_owned_by_model(root_path):
+            for driver in _physics_drivers_for_solver(solver):
+                target_joint = _physics_driver_target_joint(driver)
+                if not target_joint:
+                    continue
+                target_path = _canonical_dag_path(target_joint)
+                if not target_path or target_path not in joints_by_path:
+                    continue
+                if not _dag_path_is_under_root(target_path, root_path):
+                    continue
+                bone_index = _physics_driver_bone_index(driver)
+                if bone_index is None:
+                    continue
+                if not _physics_driver_pre_inputs_exist(driver):
+                    continue
+                candidates.setdefault(target_path, []).append((driver, bone_index))
+                used_indices.setdefault(bone_index, []).append(target_path)
+
+        # A duplicate target or bone index cannot establish ownership safely.
+        ambiguous_targets = {
+            target
+            for target, values in candidates.items()
+            if len({driver for driver, _index in values}) != 1
+        }
+        ambiguous_indices = {
+            index
+            for index, targets in used_indices.items()
+            if len(set(targets)) != 1
+        }
+        for target_path, values in candidates.items():
+            if target_path in ambiguous_targets:
+                continue
+            driver, bone_index = values[0]
+            if bone_index in ambiguous_indices:
+                continue
+            route = routes.setdefault(target_path, {})
+            for logical_attr, pre_attr in _PHYSICS_PRE_INPUT_ATTRS.items():
+                if logical_attr in route:
+                    # append/IK/control-rig authored routes remain the
+                    # established priority and must never be overwritten.
+                    continue
+                if _unique_nonphysics_source(f"{driver}.{pre_attr}"):
+                    route[logical_attr] = (driver, pre_attr)
+                    continue
+                authored_source = _unique_nonphysics_source(
+                    f"{target_path}.{logical_attr}"
+                )
+                if authored_source:
+                    route[logical_attr] = authored_source
 
     def collect_morph_frames(
         self,
@@ -692,6 +1235,7 @@ class VmdSceneCollector:
         target_model: Optional[str] = None,
         dense_sample: bool = False,
         dense_frame_samples: Optional[Sequence[float]] = None,
+        timeline_evaluation: bool = False,
     ) -> list[dict]:
         """Collect keyed blendShape and model-owned network morph frames.
 
@@ -704,27 +1248,17 @@ class VmdSceneCollector:
         """
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = []
+        channels = []
         for blend_shape in blend_shapes:
             for weight_index, morph_name in self._blendshape_morph_names(blend_shape).items():
                 attr = f"weight[{weight_index}]"
                 source_frames = _key_times(blend_shape, (attr,))
-                keyed_frames = (
-                    list(dense_frame_samples)
-                    if dense_sample
-                    and dense_frame_samples is not None
-                    and source_frames
-                    else _filter_frame_range(source_frames, start_frame, end_frame)
-                )
-                for frame_number in keyed_frames:
-                    frames.append(
-                        {
-                            "morph_name": morph_name,
-                            "frame_number": _vmd_frame_number(frame_number, time_converter),
-                            "weight": _plug_float(blend_shape, attr, frame_number),
-                        }
-                    )
+                if source_frames:
+                    channels.append((blend_shape, attr, morph_name, source_frames))
 
-        # Non-vertex morphs are driven by the model-scoped mmdMorphController.
+        # Model-scoped mmdMorphController keys cover vertex and non-vertex
+        # morphs. Vertex rows are normally also represented by blendShape
+        # targets, so the final deduplication keeps those explicit rows first.
         # Keep the existing blendShape rows first so a malformed scene that
         # reuses a morph name remains deterministic and does not duplicate a
         # VMD name/frame pair.
@@ -737,8 +1271,7 @@ class VmdSceneCollector:
                 metadata_by_index = {}
                 metadata_by_name = {}
                 for entry in metadata:
-                    morph_type = str(entry.morph_type or "")
-                    if morph_type == "vertex" or not entry.name or entry.index is None:
+                    if not entry.name or entry.index is None:
                         continue
                     index = int(entry.index)
                     name = str(entry.name)
@@ -755,21 +1288,65 @@ class VmdSceneCollector:
                         continue
                     attr = f"inputWeight[{index}]"
                     source_frames = _key_times(controller, (attr,))
-                    keyed_frames = (
-                        list(dense_frame_samples)
-                        if dense_sample
-                        and dense_frame_samples is not None
-                        and source_frames
-                        else _filter_frame_range(source_frames, start_frame, end_frame)
-                    )
-                    for frame_number in keyed_frames:
+                    if source_frames:
+                        channels.append(
+                            (controller, attr, str(entry.name), source_frames)
+                        )
+
+        if timeline_evaluation and channels:
+            channel_samples = [
+                (
+                    node,
+                    attr,
+                    morph_name,
+                    set(dense_frame_samples)
+                    if dense_sample and dense_frame_samples is not None
+                    else set(
+                        _filter_frame_range(
+                            source_frames, start_frame, end_frame
+                        )
+                    ),
+                )
+                for node, attr, morph_name, source_frames in channels
+            ]
+            sample_times = sorted(
+                {
+                    frame
+                    for _node, _attr, _morph_name, frames_for_channel in channel_samples
+                    for frame in frames_for_channel
+                }
+            )
+            with _MayaTimelineReader() as timeline_reader:
+                # Frame-major sampling prevents a full Timeline rewind for
+                # every blendShape/controller channel.
+                for frame_number in sample_times:
+                    timeline_reader.set_frame(frame_number)
+                    for node, attr, morph_name, frames_for_channel in channel_samples:
+                        if frame_number not in frames_for_channel:
+                            continue
                         frames.append(
                             {
-                                "morph_name": str(entry.name),
-                                "frame_number": _vmd_frame_number(frame_number, time_converter),
-                                "weight": _plug_float(controller, attr, frame_number),
+                                "morph_name": morph_name,
+                                "frame_number": _vmd_frame_number(
+                                    frame_number, time_converter
+                                ),
+                                "weight": _current_plug_float(node, attr),
                             }
                         )
+        else:
+            for node, attr, morph_name, source_frames in channels:
+                for frame_number in _filter_frame_range(
+                    source_frames, start_frame, end_frame
+                ):
+                    frames.append(
+                        {
+                            "morph_name": morph_name,
+                            "frame_number": _vmd_frame_number(
+                                frame_number, time_converter
+                            ),
+                            "weight": _plug_float(node, attr, frame_number),
+                        }
+                    )
         return _deduplicate_frames(frames, ("morph_name", "frame_number"))
 
     def collect_camera_frames(
@@ -780,108 +1357,207 @@ class VmdSceneCollector:
         time_converter=None,
         dense_sample: bool = False,
         dense_frame_samples: Optional[Sequence[float]] = None,
+        timeline_evaluation: bool = False,
     ) -> list[dict]:
         """Collect keyed MMD camera controller frames."""
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = []
         restore_time = None
-        try:
-            for camera in cameras:
-                camera_target = _camera_target_node(camera)
-                camera_root = _camera_root_node(camera)
-                camera_shape = _camera_shape(camera)
-                source_frames = sorted(
-                    set(_key_times(camera, _CAMERA_EXPORT_ATTRS))
-                    | (set(_key_times(camera_root, _BONE_EXPORT_ATTRS)) if camera_root else set())
-                    | (set(_key_times(camera_target, _TRANSFORM_EXPORT_ATTRS)) if camera_target else set())
-                    | (set(_key_times(camera_shape, _CAMERA_SHAPE_EXPORT_ATTRS)) if camera_shape else set())
-                )
-                keyed_frames = (
-                    list(dense_frame_samples)
-                    if dense_sample
-                    and dense_frame_samples is not None
-                    and source_frames
-                    else _filter_frame_range(
-                        source_frames,
-                        start_frame,
-                        end_frame,
+        timeline_reader = _MayaTimelineReader() if timeline_evaluation else None
+        with timeline_reader or nullcontext():
+            try:
+                for camera in cameras:
+                    camera_target = _camera_target_node(camera)
+                    camera_root = _camera_root_node(camera)
+                    camera_shape = _camera_shape(camera)
+                    source_frames = sorted(
+                        set(_key_times(camera, _CAMERA_EXPORT_ATTRS))
+                        | (
+                            set(_key_times(camera_root, _BONE_EXPORT_ATTRS))
+                            if camera_root
+                            else set()
+                        )
+                        | (
+                            set(_key_times(camera_target, _TRANSFORM_EXPORT_ATTRS))
+                            if camera_target
+                            else set()
+                        )
+                        | (
+                            set(_key_times(camera_shape, _CAMERA_SHAPE_EXPORT_ATTRS))
+                            if camera_shape
+                            else set()
+                        )
                     )
-                )
-                for frame_number in keyed_frames:
-                    uses_raw_mmd_attrs = _uses_raw_mmd_camera_attrs(camera)
-                    uses_aim_roll_rig = _uses_aim_roll_camera(camera) and camera_target
-                    if uses_aim_roll_rig:
-                        if restore_time is None:
-                            restore_time = _query_current_time()
-                        cmds.currentTime(frame_number, edit=True)
-                        motion_scale = _camera_motion_scale(camera)
-                        eye = om.MVector(*cmds.xform(camera, query=True, worldSpace=True, translation=True))
-                        target = om.MVector(*cmds.xform(camera_target, query=True, worldSpace=True, translation=True))
-                        position = (
-                            float(target.x) / motion_scale,
-                            float(target.y) / motion_scale,
-                            -float(target.z) / motion_scale,
+                    keyed_frames = (
+                        sorted(set(dense_frame_samples))
+                        if dense_sample
+                        and dense_frame_samples is not None
+                        and source_frames
+                        else _filter_frame_range(
+                            source_frames,
+                            start_frame,
+                            end_frame,
                         )
-                        matrix = om.MMatrix(cmds.getAttr(f"{camera}.worldMatrix[0]"))
-                        forward = om.MVector(0.0, 0.0, -1.0) * matrix
-                        up = om.MVector(0.0, 1.0, 0.0) * matrix
-                        if forward.length() > 1e-12:
-                            forward.normalize()
-                        if up.length() > 1e-12:
-                            up.normalize()
-                        distance = _signed_camera_distance(eye, target, forward) / motion_scale
-                        rotation = mmd_camera_rotation_from_maya_forward_up(
-                            (forward.x, forward.y, forward.z),
-                            (up.x, up.y, up.z),
+                    )
+                    for frame_number in keyed_frames:
+                        uses_raw_mmd_attrs = _uses_raw_mmd_camera_attrs(camera)
+                        uses_aim_roll_rig = bool(
+                            _uses_aim_roll_camera(camera) and camera_target
                         )
-                        viewing_angle = _camera_viewing_angle(camera, camera_shape, frame_number)
-                        perspective = _camera_perspective_value(camera, camera_shape, frame_number)
-                    elif uses_raw_mmd_attrs and all(
-                        _has_attr(camera, attr) for attr in ("mmd_camera_target_x", "mmd_camera_target_y", "mmd_camera_target_z")
-                    ):
-                        position = (
-                            _plug_float(camera, "mmd_camera_target_x", frame_number),
-                            _plug_float(camera, "mmd_camera_target_y", frame_number),
-                            _plug_float(camera, "mmd_camera_target_z", frame_number),
-                        )
-                    else:
-                        position = (
-                            _plug_float(camera, "translateX", frame_number),
-                            _plug_float(camera, "translateY", frame_number),
-                            -_plug_float(camera, "translateZ", frame_number),
-                        )
-                    if not uses_aim_roll_rig:
-                        if uses_raw_mmd_attrs and all(
+                        if timeline_reader is not None:
+                            timeline_reader.set_frame(frame_number)
+                            read_value = _current_plug_float_at_frame
+                        else:
+                            read_value = _plug_float
+                        if uses_aim_roll_rig:
+                            if timeline_reader is None:
+                                if restore_time is None:
+                                    restore_time = _query_current_time()
+                                cmds.currentTime(frame_number, edit=True)
+                            motion_scale = _camera_motion_scale(camera)
+                            eye = om.MVector(
+                                *cmds.xform(
+                                    camera,
+                                    query=True,
+                                    worldSpace=True,
+                                    translation=True,
+                                )
+                            )
+                            target = om.MVector(
+                                *cmds.xform(
+                                    camera_target,
+                                    query=True,
+                                    worldSpace=True,
+                                    translation=True,
+                                )
+                            )
+                            position = (
+                                float(target.x) / motion_scale,
+                                float(target.y) / motion_scale,
+                                -float(target.z) / motion_scale,
+                            )
+                            matrix = om.MMatrix(
+                                cmds.getAttr(f"{camera}.worldMatrix[0]")
+                            )
+                            forward = om.MVector(0.0, 0.0, -1.0) * matrix
+                            up = om.MVector(0.0, 1.0, 0.0) * matrix
+                            if forward.length() > 1e-12:
+                                forward.normalize()
+                            if up.length() > 1e-12:
+                                up.normalize()
+                            distance = (
+                                _signed_camera_distance(eye, target, forward)
+                                / motion_scale
+                            )
+                            rotation = mmd_camera_rotation_from_maya_forward_up(
+                                (forward.x, forward.y, forward.z),
+                                (up.x, up.y, up.z),
+                            )
+                            viewing_angle = _camera_viewing_angle(
+                                camera, camera_shape, frame_number, read_value
+                            )
+                            perspective = _camera_perspective_value(
+                                camera, camera_shape, frame_number, read_value
+                            )
+                        elif uses_raw_mmd_attrs and all(
                             _has_attr(camera, attr)
-                            for attr in ("mmd_camera_rotation_x", "mmd_camera_rotation_y", "mmd_camera_rotation_z")
+                            for attr in (
+                                "mmd_camera_target_x",
+                                "mmd_camera_target_y",
+                                "mmd_camera_target_z",
+                            )
                         ):
-                            rotation = (
-                                _plug_float(camera, "mmd_camera_rotation_x", frame_number),
-                                _plug_float(camera, "mmd_camera_rotation_y", frame_number),
-                                _plug_float(camera, "mmd_camera_rotation_z", frame_number),
+                            position = (
+                                read_value(
+                                    camera, "mmd_camera_target_x", frame_number
+                                ),
+                                read_value(
+                                    camera, "mmd_camera_target_y", frame_number
+                                ),
+                                read_value(
+                                    camera, "mmd_camera_target_z", frame_number
+                                ),
                             )
                         else:
-                            rotation = (
-                                math.radians(_plug_float(camera, "rotateX", frame_number)),
-                                math.radians(_plug_float(camera, "rotateY", frame_number)),
-                                -math.radians(_plug_float(camera, "rotateZ", frame_number)),
+                            position = (
+                                read_value(camera, "translateX", frame_number),
+                                read_value(camera, "translateY", frame_number),
+                                -read_value(camera, "translateZ", frame_number),
                             )
-                        distance = _plug_float(camera, "mmd_camera_distance", frame_number)
-                        viewing_angle = int(round(_plug_float(camera, "mmd_camera_viewing_angle", frame_number)))
-                        perspective = int(round(_plug_float(camera, "mmd_camera_perspective", frame_number)))
-                    frames.append(
-                        {
-                            "frame_number": _vmd_frame_number(frame_number, time_converter),
-                            "distance": distance,
-                            "position": position,
-                            "rotation": rotation,
-                            "viewing_angle": viewing_angle,
-                            "perspective": perspective,
-                        }
-                    )
-        finally:
-            if restore_time is not None:
-                cmds.currentTime(restore_time, edit=True)
+                        if not uses_aim_roll_rig:
+                            if uses_raw_mmd_attrs and all(
+                                _has_attr(camera, attr)
+                                for attr in (
+                                    "mmd_camera_rotation_x",
+                                    "mmd_camera_rotation_y",
+                                    "mmd_camera_rotation_z",
+                                )
+                            ):
+                                rotation = (
+                                    read_value(
+                                        camera,
+                                        "mmd_camera_rotation_x",
+                                        frame_number,
+                                    ),
+                                    read_value(
+                                        camera,
+                                        "mmd_camera_rotation_y",
+                                        frame_number,
+                                    ),
+                                    read_value(
+                                        camera,
+                                        "mmd_camera_rotation_z",
+                                        frame_number,
+                                    ),
+                                )
+                            else:
+                                rotation = (
+                                    math.radians(
+                                        read_value(camera, "rotateX", frame_number)
+                                    ),
+                                    math.radians(
+                                        read_value(camera, "rotateY", frame_number)
+                                    ),
+                                    -math.radians(
+                                        read_value(camera, "rotateZ", frame_number)
+                                    ),
+                                )
+                            distance = read_value(
+                                camera, "mmd_camera_distance", frame_number
+                            )
+                            viewing_angle = int(
+                                round(
+                                    read_value(
+                                        camera,
+                                        "mmd_camera_viewing_angle",
+                                        frame_number,
+                                    )
+                                )
+                            )
+                            perspective = int(
+                                round(
+                                    read_value(
+                                        camera,
+                                        "mmd_camera_perspective",
+                                        frame_number,
+                                    )
+                                )
+                            )
+                        frames.append(
+                            {
+                                "frame_number": _vmd_frame_number(
+                                    frame_number, time_converter
+                                ),
+                                "distance": distance,
+                                "position": position,
+                                "rotation": rotation,
+                                "viewing_angle": viewing_angle,
+                                "perspective": perspective,
+                            }
+                        )
+            finally:
+                if restore_time is not None:
+                    cmds.currentTime(restore_time, edit=True)
         frames.sort(key=lambda item: item["frame_number"])
         return frames
 
@@ -893,40 +1569,50 @@ class VmdSceneCollector:
         time_converter=None,
         dense_sample: bool = False,
         dense_frame_samples: Optional[Sequence[float]] = None,
+        timeline_evaluation: bool = False,
     ) -> list[dict]:
         """Collect keyed MMD light controller frames."""
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = []
-        for light in lights:
-            color_node, color_attrs = _light_color_source(light)
-            source_frames = set(_key_times(light, _LIGHT_ROTATE_ATTRS)) | set(
-                _key_times(color_node, color_attrs)
-            )
-            keyed_frames = (
-                list(dense_frame_samples)
-                if dense_sample
-                and dense_frame_samples is not None
-                and source_frames
-                else _filter_frame_range(
-                    source_frames,
-                    start_frame,
-                    end_frame,
+        timeline_reader = _MayaTimelineReader() if timeline_evaluation else None
+        with timeline_reader or nullcontext():
+            for light in lights:
+                color_node, color_attrs = _light_color_source(light)
+                source_frames = set(_key_times(light, _LIGHT_ROTATE_ATTRS)) | set(
+                    _key_times(color_node, color_attrs)
                 )
-            )
-            for frame_number in keyed_frames:
-                frames.append(
-                    {
-                        "frame_number": _vmd_frame_number(frame_number, time_converter),
-                        "color": tuple(
-                            _plug_float(color_node, attr, frame_number)
-                            for attr in color_attrs
-                        ),
-                        "position": _maya_light_rotation_to_vmd_direction(
-                            _plug_float(light, "rotateX", frame_number),
-                            _plug_float(light, "rotateY", frame_number),
-                        ),
-                    }
+                keyed_frames = (
+                    sorted(set(dense_frame_samples))
+                    if dense_sample
+                    and dense_frame_samples is not None
+                    and source_frames
+                    else _filter_frame_range(
+                        source_frames,
+                        start_frame,
+                        end_frame,
+                    )
                 )
+                for frame_number in keyed_frames:
+                    if timeline_reader is not None:
+                        timeline_reader.set_frame(frame_number)
+                        read_value = _current_plug_float_at_frame
+                    else:
+                        read_value = _plug_float
+                    frames.append(
+                        {
+                            "frame_number": _vmd_frame_number(
+                                frame_number, time_converter
+                            ),
+                            "color": tuple(
+                                read_value(color_node, attr, frame_number)
+                                for attr in color_attrs
+                            ),
+                            "position": _maya_light_rotation_to_vmd_direction(
+                                read_value(light, "rotateX", frame_number),
+                                read_value(light, "rotateY", frame_number),
+                            ),
+                        }
+                    )
         frames.sort(key=lambda item: item["frame_number"])
         return frames
 
@@ -1182,11 +1868,98 @@ def _routed_plug_float(
     return _plug_float(node, target_attr, frame_number)
 
 
+def _native_route_inventory(
+    joints: Sequence[str],
+    input_routes: Mapping[str, Mapping[str, tuple[str, str]]],
+) -> dict[str, Any]:
+    """Build bounded route/node-type evidence before native sampling starts."""
+
+    target_types: dict[str, set[str]] = {}
+    target_nodes: set[str] = set()
+    physics_drivers: set[str] = set()
+    for joint in joints:
+        long_name = str((cmds.ls(joint, long=True) or [joint])[0])
+        route = input_routes.get(long_name, {})
+        for attr in _BONE_EXPORT_ATTRS:
+            node, _target_attr = route.get(attr, (long_name, attr))
+            node = str(node)
+            target_nodes.add(node)
+            try:
+                node_type = str(cmds.nodeType(node) or "unknown")
+            except Exception:
+                node_type = "unknown"
+            target_types.setdefault(node_type, set()).add(node)
+            if node_type == "mmdPhysicsBoneDriver":
+                physics_drivers.add(node)
+    return {
+        "route_target_node_count": len(target_nodes),
+        "route_target_node_types": {
+            node_type: len(nodes)
+            for node_type, nodes in sorted(target_types.items())
+        },
+        "physics_driver_reached_count": len(physics_drivers),
+    }
+
+
 def _query_current_time() -> Optional[float]:
     try:
         return float(cmds.currentTime(query=True))
     except Exception:
         return None
+
+
+class _MayaTimelineReader:
+    """Read current-frame values while advancing Maya's Timeline safely."""
+
+    def __init__(self) -> None:
+        self._entry_time: Optional[float] = None
+        self._sample_time: Optional[float] = None
+        self._has_sampled = False
+
+    def __enter__(self):
+        try:
+            playing = bool(cmds.play(query=True, state=True))
+        except Exception as exc:
+            raise RuntimeError("Mode C Timeline playback state query failed") from exc
+        if playing:
+            raise RuntimeError("Mode C Timeline sampling cannot run during playback")
+        try:
+            self._entry_time = float(cmds.currentTime(query=True))
+        except Exception as exc:
+            raise RuntimeError("Mode C Timeline entry time query failed") from exc
+        self._sample_time = self._entry_time
+        return self
+
+    def set_frame(self, frame: float) -> None:
+        sample_time = float(frame)
+        if (
+            self._has_sampled
+            and self._sample_time is not None
+            and sample_time < self._sample_time
+        ):
+            raise RuntimeError(
+                "Mode C Timeline samples must be evaluated in ascending order"
+            )
+        if sample_time == self._sample_time:
+            self._has_sampled = True
+            return
+        try:
+            cmds.currentTime(sample_time, edit=True)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Mode C Timeline evaluation failed at frame {sample_time:g}"
+            ) from exc
+        self._sample_time = sample_time
+        self._has_sampled = True
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> bool:
+        if self._entry_time is None:
+            return False
+        try:
+            cmds.currentTime(self._entry_time, edit=True)
+        except Exception as exc:
+            raise RuntimeError("Mode C Timeline time restoration failed") from exc
+        return False
 
 
 def _scene_maya_fps() -> float:
@@ -1295,28 +2068,55 @@ def _plug_float(node: str, attr: str, frame: float) -> float:
     return float(value or 0.0)
 
 
+def _current_plug_float(node: str, attr: str) -> float:
+    """Read one plug at Maya's current Timeline time."""
+    value = cmds.getAttr(f"{node}.{attr}")
+    if isinstance(value, (list, tuple)):
+        if len(value) == 1 and isinstance(value[0], (list, tuple)):
+            value = value[0][0]
+        else:
+            value = value[0]
+    return float(value or 0.0)
+
+
+def _current_plug_float_at_frame(node: str, attr: str, _frame: float) -> float:
+    return _current_plug_float(node, attr)
+
+
 def _camera_shape(camera: str) -> Optional[str]:
     shapes = cmds.listRelatives(camera, shapes=True, type="camera") or []
     return shapes[0] if shapes else None
 
 
-def _camera_viewing_angle(camera: str, camera_shape: Optional[str], frame: float) -> int:
+def _camera_viewing_angle(
+    camera: str,
+    camera_shape: Optional[str],
+    frame: float,
+    read_value=_plug_float,
+) -> int:
     if camera_shape:
-        focal_length = _plug_float(camera_shape, "focalLength", frame)
+        focal_length = read_value(camera_shape, "focalLength", frame)
         if abs(focal_length) > 1e-9:
-            aperture_inch = _plug_float(camera_shape, "verticalFilmAperture", frame)
+            aperture_inch = read_value(
+                camera_shape, "verticalFilmAperture", frame
+            )
             aperture_mm = aperture_inch * 25.4
             return int(round(math.degrees(2.0 * math.atan(aperture_mm / (2.0 * focal_length)))))
     if _has_attr(camera, "mmd_camera_viewing_angle"):
-        return int(round(_plug_float(camera, "mmd_camera_viewing_angle", frame)))
+        return int(round(read_value(camera, "mmd_camera_viewing_angle", frame)))
     return 45
 
 
-def _camera_perspective_value(camera: str, camera_shape: Optional[str], frame: float) -> int:
+def _camera_perspective_value(
+    camera: str,
+    camera_shape: Optional[str],
+    frame: float,
+    read_value=_plug_float,
+) -> int:
     if camera_shape and _has_attr(camera_shape, "orthographic"):
-        return int(round(_plug_float(camera_shape, "orthographic", frame)))
+        return int(round(read_value(camera_shape, "orthographic", frame)))
     if _has_attr(camera, "mmd_camera_perspective"):
-        return int(round(_plug_float(camera, "mmd_camera_perspective", frame)))
+        return int(round(read_value(camera, "mmd_camera_perspective", frame)))
     return 0
 
 
@@ -1686,3 +2486,153 @@ def _resolve_collection_frame_range(
         _optional_float(options.get("start_frame")),
         _optional_float(options.get("end_frame")),
     )
+
+
+_PHYSICS_PRE_INPUT_ATTRS = {
+    "translateX": "inPreTranslateX",
+    "translateY": "inPreTranslateY",
+    "translateZ": "inPreTranslateZ",
+    "rotateX": "inPreRotateX",
+    "rotateY": "inPreRotateY",
+    "rotateZ": "inPreRotateZ",
+}
+
+
+def _physics_solvers_owned_by_model(root_path: str) -> list[str]:
+    """Resolve only solvers whose root or registry owns the Current Model."""
+
+    try:
+        solvers = cmds.ls(type="mmdPhysicsSolver") or []
+    except Exception:
+        return []
+    target_registry = None
+    try:
+        from mmd_tools.core.model_registry import get_model_registry
+
+        target_registry = get_model_registry(root_path)
+    except Exception:
+        pass
+    owned = []
+    for solver in sorted({str(value) for value in solvers}):
+        try:
+            roots = cmds.listConnections(
+                f"{solver}.modelRoot",
+                source=True,
+                destination=False,
+            ) or []
+            registries = cmds.listConnections(
+                f"{solver}.modelRegistry",
+                source=True,
+                destination=False,
+            ) or []
+        except Exception:
+            continue
+        root_matches = [
+            value
+            for value in roots
+            if _canonical_dag_path(value) == root_path
+        ]
+        registry_matches = bool(
+            target_registry
+            and len(registries) == 1
+            and str(registries[0]) == str(target_registry)
+        )
+        # More than one root/registry source is ambiguous even if one happens
+        # to match the Current Model.
+        if (len(roots) == 1 and len(root_matches) == 1) or (
+            not roots and registry_matches
+        ):
+            owned.append(solver)
+    return owned
+
+
+def _physics_drivers_for_solver(solver: str) -> list[str]:
+    """Return unique drivers connected to one solver's output surface."""
+
+    drivers = []
+    seen = set()
+    for output_attr in ("outBoneMatrices", "outBoneCount", "outSolved"):
+        try:
+            connected = cmds.listConnections(
+                f"{solver}.{output_attr}",
+                source=False,
+                destination=True,
+                type="mmdPhysicsBoneDriver",
+            ) or []
+        except Exception:
+            continue
+        for driver in connected:
+            value = str(driver)
+            if value not in seen:
+                seen.add(value)
+                drivers.append(value)
+    return sorted(drivers)
+
+
+def _physics_driver_target_joint(driver: str) -> Optional[str]:
+    """Resolve exactly one rename-safe target-joint message connection."""
+
+    try:
+        if not cmds.attributeQuery(
+            "mmd_target_joint_message", node=driver, exists=True
+        ):
+            return None
+        targets = cmds.listConnections(
+            f"{driver}.mmd_target_joint_message",
+            source=True,
+            destination=False,
+            type="joint",
+        ) or []
+    except Exception:
+        return None
+    return str(targets[0]) if len(targets) == 1 else None
+
+
+def _physics_driver_bone_index(driver: str) -> Optional[int]:
+    try:
+        if not cmds.attributeQuery("inBoneIndex", node=driver, exists=True):
+            return None
+        value = cmds.getAttr(f"{driver}.inBoneIndex")
+        index = int(value)
+    except (TypeError, ValueError, RuntimeError, OverflowError):
+        return None
+    return index if index >= 0 else None
+
+
+def _physics_driver_pre_inputs_exist(driver: str) -> bool:
+    try:
+        return all(
+            bool(cmds.attributeQuery(attribute, node=driver, exists=True))
+            for attribute in _PHYSICS_PRE_INPUT_ATTRS.values()
+        )
+    except Exception:
+        return False
+
+
+def _unique_nonphysics_source(plug: str) -> Optional[tuple[str, str]]:
+    """Return one direct authored source plug, rejecting known physics nodes."""
+
+    try:
+        sources = cmds.listConnections(
+            plug,
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+    except Exception:
+        return None
+    if isinstance(sources, (str, bytes)) or len(sources) != 1:
+        return None
+    source_node, separator, source_attr = str(sources[0]).partition(".")
+    if not separator or not source_node or not source_attr:
+        return None
+    try:
+        source_type = str(cmds.nodeType(source_node) or "")
+    except Exception:
+        return None
+    if source_type in {
+        "mmdPhysicsBoneDriver",
+        "mmdPhysicsSolver",
+    }:
+        return None
+    return source_node, source_attr

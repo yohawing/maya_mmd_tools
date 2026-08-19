@@ -10,11 +10,22 @@ import maya.api.OpenMaya as om
 from maya import cmds
 
 from mmd_tools.converters import bone_morph_runtime
+from mmd_tools.converters import vmd_bone_animation
 from mmd_tools.converters.bone_morph_runtime import build_bone_morph_graph
+from mmd_tools.converters.vmd_redirected_authoring_proxy import (
+    ensure_redirected_authoring_proxy,
+    resolve_redirected_authoring_proxy_authority,
+)
+from mmd_tools.converters import vmd_legacy_bone_routes
+from mmd_tools.converters.vmd_bone_animation import _apply_quaternion_interpolation
+from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_context import VmdImportStateContext
+from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_import_state import clear_existing_motion
 from mmd_tools.converters.vmd_morph_mapping import iter_morph_mappings
 from mmd_tools.nodes.mmd_bone_morph_accum_node import MmdBoneMorphAccumNode
+from mmd_tools.converters.vmd_scene_keying import VmdKeyingError
+from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -213,6 +224,176 @@ class TestBoneMorphRuntime(MayaTestBase):
         self.assertEqual(again["reused"], 1)
         self.assertEqual(len(cmds.ls(type="mmdBoneMorphAccum") or []), 1)
 
+    def test_vmd_import_and_export_share_owned_accumulator_base_route(self):
+        """Sparse VMD authoring never bypasses a live bone-morph layer."""
+        self._require_accumulator_node()
+        root, joint = self._create_indexed_joint()
+        morph = self._create_bone_morph_node(
+            "route_boneMorph",
+            0,
+            [
+                {
+                    "bone_index": 0,
+                    "translation": [0.0, 0.0, 0.0],
+                    "rotation": [0.0, 0.0, 0.0, 1.0],
+                }
+            ],
+        )
+        result = build_bone_morph_graph(root)
+        self.assertTrue(result["success"])
+        accumulator = result["accumulator_nodes"][0]
+
+        converter = mock.MagicMock()
+        converter.bone_name_mapping = {"bone": joint}
+        converter._collect_append_info.return_value = {}
+        converter._collect_ik_link_joints.return_value = {}
+        with (
+            mock.patch.object(
+                vmd_legacy_bone_routes,
+                "control_rig_edit_routes_for_joints",
+                return_value={},
+            ),
+            mock.patch.object(
+                vmd_legacy_bone_routes,
+                "control_rig_edit_authoring_bases_for_joints",
+                return_value={},
+            ),
+            mock.patch.object(
+                vmd_legacy_bone_routes,
+                "control_rig_fixed_axis_twist_joints",
+                return_value=set(),
+            ),
+            mock.patch.object(
+                vmd_legacy_bone_routes,
+                "_physics_pre_input_routes",
+                return_value=({}, {}),
+            ),
+        ):
+            import_route_record = vmd_legacy_bone_routes.build_legacy_bone_key_routes(
+                converter
+            )[joint]
+            import_route = import_route_record["attr_targets"]
+
+        export_route = VmdSceneCollector()._scene_authored_input_routes([joint])[
+            joint
+        ]
+        expected = {
+            f"{kind}{axis}": (accumulator, f"base{kind.capitalize()}{axis}")
+            for kind in ("translate", "rotate")
+            for axis in "XYZ"
+        }
+        self.assertEqual(import_route, expected)
+        self.assertEqual(export_route, expected)
+        self.assertTrue(import_route_record["quaternion_interpolation_safe"])
+
+        proxy_route = ensure_redirected_authoring_proxy(joint, import_route)
+        resolved_proxy, proxy_authority, proxy_claimed = (
+            resolve_redirected_authoring_proxy_authority(joint)
+        )
+        self.assertTrue(proxy_claimed)
+        self.assertEqual(resolved_proxy, proxy_route)
+        self.assertEqual(set(proxy_authority), set(import_route))
+        post_proxy_accumulator = bone_morph_runtime.resolve_owned_bone_morph_base_routes(
+            [joint]
+        )
+        self.assertFalse(post_proxy_accumulator.blocked)
+        self.assertEqual(post_proxy_accumulator.routes[joint], expected)
+        import_route.update(proxy_route)
+        export_route = VmdSceneCollector()._scene_authored_input_routes([joint])[
+            joint
+        ]
+        self.assertEqual(export_route, proxy_route)
+        proxy = proxy_route["rotateX"][0]
+        self.assertEqual(cmds.nodeType(proxy), "transform")
+
+        for axis in "XYZ":
+            node, attr = import_route[f"rotate{axis}"]
+            cmds.setKeyframe(node, attribute=attr, time=0, value=0.0)
+        for axis, value in zip("XYZ", (35.0, 80.0, -25.0)):
+            node, attr = import_route[f"rotate{axis}"]
+            cmds.setKeyframe(node, attribute=attr, time=10, value=value)
+        rotation_plugs = [f"{proxy}.rotate{axis}" for axis in "XYZ"]
+        curves = [
+            (cmds.listConnections(plug, source=True, destination=False) or [None])[0]
+            for plug in rotation_plugs
+        ]
+        before_destinations = {
+            curve: tuple(
+                sorted(
+                    cmds.listConnections(
+                        f"{curve}.output",
+                        source=False,
+                        destination=True,
+                        plugs=True,
+                    )
+                    or []
+                )
+            )
+            for curve in curves
+        }
+        key_context = mock.MagicMock()
+        self.assertTrue(
+            _apply_quaternion_interpolation(key_context, rotation_plugs)
+        )
+        for curve in curves:
+            self.assertEqual(
+                cmds.rotationInterpolation(curve, query=True),
+                "quaternionSlerp",
+            )
+            self.assertEqual(
+                tuple(
+                    sorted(
+                        cmds.listConnections(
+                            f"{curve}.output",
+                            source=False,
+                            destination=True,
+                            plugs=True,
+                        )
+                        or []
+                    )
+                ),
+                before_destinations[curve],
+            )
+        self.assertFalse(cmds.ls("__mmdVmdQuaternionConversion__*"))
+        cmds.currentTime(10, edit=True)
+        expected_quaternion = om.MEulerRotation(
+            *(math.radians(value) for value in (35.0, 80.0, -25.0))
+        ).asQuaternion()
+
+        def _rotation_quaternion(node):
+            values = cmds.getAttr(f"{node}.rotate")[0]
+            return om.MEulerRotation(
+                *(math.radians(float(value)) for value in values)
+            ).asQuaternion()
+
+        def _quaternion_dot(left, right):
+            return abs(
+                left.x * right.x
+                + left.y * right.y
+                + left.z * right.z
+                + left.w * right.w
+            )
+
+        base_values = cmds.getAttr(f"{accumulator}.baseRotate")[0]
+        base_quaternion = om.MEulerRotation(
+            *(math.radians(float(value)) for value in base_values)
+        ).asQuaternion()
+        self.assertAlmostEqual(
+            _quaternion_dot(base_quaternion, expected_quaternion),
+            1.0,
+            places=5,
+        )
+        # With the morph at zero the visible joint pose is exactly the authored
+        # base orientation; quaternion conversion may choose an equivalent
+        # Euler representation, so compare orientation rather than components.
+        cmds.setAttr(f"{morph}.weight", 0.0)
+        joint_quaternion = _rotation_quaternion(joint)
+        self.assertAlmostEqual(
+            _quaternion_dot(joint_quaternion, expected_quaternion),
+            1.0,
+            places=5,
+        )
+
     def test_group_morph_weight_drives_referenced_bone_morph_offset(self):
         """Cross-index controller dirtying drives the referenced bone leaf."""
         self._require_accumulator_node()
@@ -246,6 +427,50 @@ class TestBoneMorphRuntime(MayaTestBase):
         cmds.setAttr(f"{controller}.inputWeight[4]", 0.5)
         self.assertListAlmostEqual(cmds.getAttr(f"{joint}.translate")[0], (0.5, 0.0, 0.0), places=5)
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateZ"), 11.25, delta=0.1)
+
+    def test_owned_accumulator_quaternion_failure_blocks_whole_import(self):
+        """A failed helper conversion is not downgraded to failed_bones."""
+        self._require_accumulator_node()
+        root, joint = self._create_indexed_joint(name="strict_route_joint")
+        self._create_bone_morph_node(
+            "strict_route_boneMorph",
+            0,
+            [
+                {
+                    "bone_index": 0,
+                    "translation": [0.0, 0.0, 0.0],
+                    "rotation": [0.0, 0.0, 0.0, 1.0],
+                }
+            ],
+        )
+        self.assertTrue(build_bone_morph_graph(root)["success"])
+
+        frames = []
+        for frame_number, rotation in (
+            (0, (0.0, 0.0, 0.0, 1.0)),
+            (10, (0.0, math.sqrt(0.5), 0.0, math.sqrt(0.5))),
+        ):
+            frame = VmdBoneFrame()
+            frame.bone_name = "strict"
+            frame.frame_number = frame_number
+            frame.rotation = rotation
+            frame.semantic_interpolation = {
+                "rotation": (0.1, 0.3, 0.7, 0.9)
+            }
+            frames.append(frame)
+
+        converter = VmdConverter()
+        converter.use_animation_layers = False
+        converter.set_bone_name_mapping({"strict": joint})
+        converter._bone_bind_poses["strict"] = (0.0, 0.0, 0.0)
+        with mock.patch.object(
+            vmd_bone_animation,
+            "_apply_quaternion_interpolation",
+            return_value=False,
+        ):
+            with self.assertRaisesRegex(VmdKeyingError, "could not be established"):
+                converter._convert_bone_animation(frames)
+        self.assertEqual(converter.get_failed_bones(), set())
 
     def test_root_scoped_discovery_isolates_same_index_and_skips_legacy_network(self):
         """Building model B isolates its Controller-driven bone leaf and warns for legacy data."""
