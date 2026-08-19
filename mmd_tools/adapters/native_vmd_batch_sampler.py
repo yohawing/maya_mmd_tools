@@ -42,6 +42,8 @@ _NUMERIC_ATTR_TYPES = {
 }
 _HEADER_SIZE = 6
 _PROTOCOL_VERSION = 1
+# Must stay in lock-step with the native command's request sample guard.
+MAX_NATIVE_SAMPLES = 4_194_304
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -109,6 +111,10 @@ class NativeDenseBoneSamples:
     rows: tuple[tuple[float, ...], ...]
     strategy_counts: Mapping[str, int]
     wall_sec: float
+    chunk_count: int = 1
+    max_frames_per_chunk: int = MAX_NATIVE_SAMPLES
+    max_samples_per_chunk: int = MAX_NATIVE_SAMPLES
+    chunk_wall_secs: tuple[float, ...] = ()
 
     def value(self, joint: str, attr: str, frame: float) -> float:
         """Return one logical sample, including duplicate-plug aliases."""
@@ -135,6 +141,10 @@ class NativeDenseBoneSamples:
             "frame_count": len(self.plan.frames),
             "sample_count": self.sample_count,
             "wall_sec": self.wall_sec,
+            "chunk_count": self.chunk_count,
+            "max_frames_per_chunk": self.max_frames_per_chunk,
+            "max_samples_per_chunk": self.max_samples_per_chunk,
+            "chunk_wall_sec": list(self.chunk_wall_secs),
         }
 
 
@@ -371,6 +381,16 @@ def parse_packed_result(
     }
 
 
+def _chunk_plan(plan: DenseBoneSamplePlan, start: int, end: int) -> DenseBoneSamplePlan:
+    """Make a local frame-index plan while preserving channel/logical order."""
+
+    return DenseBoneSamplePlan(
+        frames=plan.frames[start:end],
+        physical_channels=plan.physical_channels,
+        logical_channels=plan.logical_channels,
+    )
+
+
 class NativeVmdBatchSampler:
     """Invoke ``mmdVmdBatchSample`` without changing Maya current time."""
 
@@ -502,19 +522,49 @@ class NativeVmdBatchSampler:
         )
         if not plan.physical_channels:
             raise NativeVmdBatchSamplerError("native sampler requires at least one channel")
-        payload = json.dumps(
-            {
-                "version": _PROTOCOL_VERSION,
-                "frames": list(plan.frames),
-                "channels": list(plan.request_channels),
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
         command = getattr(self._cmds, self.command_name)
+        physical_channel_count = len(plan.physical_channels)
+        max_frames_per_chunk = max(
+            1,
+            MAX_NATIVE_SAMPLES // physical_channel_count,
+        )
+        chunk_count = (
+            len(plan.frames) + max_frames_per_chunk - 1
+        ) // max_frames_per_chunk
+        rows = []
+        strategy_counts = None
+        chunk_wall_secs = []
         try:
-            packed = command(payload=payload)
-            rows, strategy_counts = parse_packed_result(packed, plan)
+            for _chunk_index, start in enumerate(
+                range(0, len(plan.frames), max_frames_per_chunk)
+            ):
+                end = min(start + max_frames_per_chunk, len(plan.frames))
+                chunk_plan = _chunk_plan(plan, start, end)
+                payload = json.dumps(
+                    {
+                        "version": _PROTOCOL_VERSION,
+                        "frames": list(chunk_plan.frames),
+                        "channels": list(chunk_plan.request_channels),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                chunk_started = time.perf_counter()
+                packed = command(payload=payload)
+                chunk_rows, chunk_strategies = parse_packed_result(
+                    packed,
+                    chunk_plan,
+                )
+                chunk_wall_secs.append(
+                    round(time.perf_counter() - chunk_started, 6)
+                )
+                if strategy_counts is None:
+                    strategy_counts = chunk_strategies
+                elif strategy_counts != chunk_strategies:
+                    raise NativeVmdBatchSamplerError(
+                        "native sampler strategy counts differ between chunks"
+                    )
+                rows.extend(chunk_rows)
         except Exception as exc:
             self.last_diagnostics = {
                 **plugin_diagnostics,
@@ -522,15 +572,25 @@ class NativeVmdBatchSampler:
                 "used": False,
                 "fallback_reason": f"{type(exc).__name__}: {exc}",
                 "wall_sec": round(time.perf_counter() - started, 6),
+                "chunk_count": chunk_count,
+                "max_frames_per_chunk": max_frames_per_chunk,
+                "max_samples_per_chunk": max_frames_per_chunk * physical_channel_count,
+                "chunk_wall_sec": chunk_wall_secs,
             }
             if isinstance(exc, NativeVmdBatchSamplerError):
                 raise
             raise NativeVmdBatchSamplerError("native sampler invocation failed") from exc
+        if strategy_counts is None:
+            raise NativeVmdBatchSamplerError("native sampler produced no chunks")
         result = NativeDenseBoneSamples(
             plan=plan,
-            rows=rows,
+            rows=tuple(rows),
             strategy_counts=strategy_counts,
             wall_sec=round(time.perf_counter() - started, 6),
+            chunk_count=chunk_count,
+            max_frames_per_chunk=max_frames_per_chunk,
+            max_samples_per_chunk=max_frames_per_chunk * physical_channel_count,
+            chunk_wall_secs=tuple(chunk_wall_secs),
         )
         self.last_diagnostics = {**plugin_diagnostics, **result.diagnostics}
         return result
@@ -545,6 +605,7 @@ __all__ = [
     "NativeDenseBoneSamples",
     "NativeVmdBatchSampler",
     "NativeVmdBatchSamplerError",
+    "MAX_NATIVE_SAMPLES",
     "build_dense_bone_sample_plan",
     "parse_packed_result",
 ]

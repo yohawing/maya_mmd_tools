@@ -13,6 +13,7 @@ install_maya_stub()
 
 from mmd_tools.converters import vmd_scene_collector as collector_module  # noqa: E402
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector  # noqa: E402
+from mmd_tools.adapters import native_vmd_batch_sampler as sampler_module  # noqa: E402
 
 from mmd_tools.adapters.native_vmd_batch_sampler import (
     NativeVmdBatchSampler,
@@ -121,6 +122,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         self.assertEqual(samples.value("joint_a", "translateX", 1), 11.0)
         self.assertEqual(samples.value("joint_b", "translateX", 1), 11.0)
         self.assertEqual(samples.sample_count, 22)
+        self.assertEqual(samples.diagnostics["chunk_count"], 1)
         self.assertEqual(samples.plan._frame_indices, {0.0: 0, 1.0: 1})
         self.assertEqual(samples.plan._logical_indices[("joint_b", "translateX")], 0)
         # The hot path must remain dictionary indexed even when repeatedly
@@ -227,6 +229,79 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         load.assert_called_once()
         self.assertEqual(sampler.last_diagnostics["plugin_load_status"], "error")
         self.assertIn("load failed", sampler.last_diagnostics["plugin_load_error"])
+
+    def test_large_request_is_chunked_at_native_sample_limit(self):
+        class _ChunkCmds(_FakeCmds):
+            def mmdVmdBatchSample(self, payload=None):
+                request = json.loads(payload)
+                self.calls.append(request)
+                channel_count = len(request["channels"])
+                values = [
+                    float(frame * 100.0 + channel)
+                    for frame in request["frames"]
+                    for channel in range(channel_count)
+                ]
+                return [
+                    1.0,
+                    len(request["frames"]),
+                    channel_count,
+                    0.0,
+                    float(channel_count),
+                    0.0,
+                    *values,
+                ]
+
+        cmds = _ChunkCmds()
+        sampler = NativeVmdBatchSampler(cmds)
+        with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 12):
+            samples = sampler.sample_dense_bone_channels(
+                [0, 1, 2, 3, 4], ["joint"]
+            )
+        self.assertEqual(len(cmds.calls), 3)
+        self.assertEqual([request["frames"] for request in cmds.calls], [[0.0, 1.0], [2.0, 3.0], [4.0]])
+        self.assertTrue(
+            all(
+                len(request["frames"]) * len(request["channels"]) <= 12
+                for request in cmds.calls
+            )
+        )
+        self.assertEqual(samples.value("joint", "translateX", 1), 100.0)
+        self.assertEqual(samples.value("joint", "translateX", 2), 200.0)
+        self.assertEqual(samples.value("joint", "rotateZ", 4), 405.0)
+        self.assertEqual(samples.diagnostics["chunk_count"], 3)
+        self.assertEqual(samples.diagnostics["max_samples_per_chunk"], 12)
+        self.assertEqual(len(samples.diagnostics["chunk_wall_sec"]), 3)
+
+    def test_chunk_strategy_mismatch_is_a_protocol_failure(self):
+        class _ChangingCmds(_FakeCmds):
+            def mmdVmdBatchSample(self, payload=None):
+                request = json.loads(payload)
+                self.calls.append(request)
+                channel_count = len(request["channels"])
+                values = [0.0] * (len(request["frames"]) * channel_count)
+                static_count = channel_count if len(self.calls) == 1 else 0
+                timed_count = 0 if len(self.calls) == 1 else channel_count
+                return [
+                    1.0,
+                    len(request["frames"]),
+                    channel_count,
+                    0.0,
+                    float(static_count),
+                    float(timed_count),
+                    *values,
+                ]
+
+        cmds = _ChangingCmds()
+        sampler = NativeVmdBatchSampler(cmds)
+        with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 12):
+            with self.assertRaisesRegex(
+                NativeVmdBatchSamplerError,
+                "strategy counts differ between chunks",
+            ):
+                sampler.sample_dense_bone_channels([0, 1, 2, 3], ["joint"])
+        self.assertEqual(len(cmds.calls), 2)
+        self.assertFalse(sampler.last_diagnostics["used"])
+        self.assertIn("strategy counts differ", sampler.last_diagnostics["fallback_reason"])
 
     def test_collector_only_batches_keyed_joints_and_ignores_raw_provenance(self):
         class _Cmds:
