@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools.local_asset_roundtrip import (
+    VMD_MODE_C_POSE_TOLERANCE,
     _metric_snapshot,
     _classify_failure,
     _allowed_warning_codes,
@@ -42,6 +43,11 @@ from tools.local_asset_roundtrip import (
     _vmd_payload,
     _vmd_payload_diff,
 )
+
+
+def test_mode_c_pose_tolerance_covers_vmd_ccd_reconstruction_only():
+    assert 0.0099 < VMD_MODE_C_POSE_TOLERANCE
+    assert 0.0101 > VMD_MODE_C_POSE_TOLERANCE
 
 
 def test_metric_snapshot_exposes_rss_on_windows():

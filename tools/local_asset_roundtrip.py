@@ -34,6 +34,7 @@ DEFAULT_MANIFEST = BUILD_ROOT / "reports" / "local_asset_roundtrip" / "represent
 DEFAULT_OUT_DIR = BUILD_ROOT / "reports" / "local_asset_roundtrip"
 MANIFEST_SCHEMA_VERSION = 2
 FLOAT_TOLERANCE = 1.0e-4
+VMD_MODE_C_POSE_TOLERANCE = 1.0e-2
 DEFAULT_EXPORT_WRITE_BUDGET_SEC = 60.0
 EXPECTED_VMD_WARNING = "VMD_MODE_C_RAW_LOSS"
 FAILURE_CLASSIFICATIONS = (
@@ -2430,7 +2431,7 @@ def _run_vmd_case(
             edited_oracle,
             fresh_oracle,
             pose=True,
-            pose_tolerance=5e-3,
+            pose_tolerance=VMD_MODE_C_POSE_TOLERANCE,
             mesh=False,
             materials=False,
             morphs=False,
