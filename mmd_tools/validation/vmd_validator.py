@@ -1,6 +1,9 @@
 """Maya-independent structural validation for VMD Mode A/C export."""
 
+import hashlib
 import math
+from pathlib import Path
+import struct
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ..core.vmd_data import VmdData
@@ -10,6 +13,22 @@ from .export_validator import ExportValidationIssue, ExportValidationReport
 VMD_MODE_A = "A"
 VMD_MODE_C = "C"
 VMD_MODES = frozenset({VMD_MODE_A, VMD_MODE_C})
+
+
+# The stream verifier intentionally never retains one issue per record.  A
+# malformed multi-million-frame file must not turn validation itself into a
+# second unbounded allocation.
+_STREAM_MAX_ISSUES = 100
+_STREAM_SECTIONS = (
+    ("bone_frames", 111),
+    ("morph_frames", 23),
+    ("camera_frames", 61),
+    ("light_frames", 28),
+    ("shadow_frames", 9),
+    ("ik_show_hide_frames", 9),
+)
+_VMD_SIGNATURE = b"Vocaloid Motion Data"
+_VMD_SIGNATURE_V2 = b"Vocaloid Motion Data 0002"
 
 
 def _issue(code: str, path: str, message: str) -> ExportValidationIssue:
@@ -565,10 +584,533 @@ def verify_vmd_output(
     return report
 
 
+def _stream_issue(
+    issues: List[ExportValidationIssue],
+    code: str,
+    path: str,
+    message: str,
+) -> None:
+    """Append a bounded blocking issue for the byte-stream verifier."""
+    if len(issues) < _STREAM_MAX_ISSUES:
+        issues.append(_issue(code, path, message))
+
+
+def _stream_warning(
+    issues: List[ExportValidationIssue],
+    code: str,
+    path: str,
+    message: str,
+) -> None:
+    """Append a bounded non-blocking warning for the byte-stream verifier."""
+    if len(issues) < _STREAM_MAX_ISSUES:
+        issues.append(_warning(code, path, message))
+
+
+def _stream_name(
+    raw_name: bytes,
+    path: str,
+    issues: List[ExportValidationIssue],
+) -> Optional[str]:
+    """Decode one fixed CP932 name without retaining it after validation."""
+    try:
+        name = raw_name.split(b"\x00", 1)[0].decode("cp932")
+    except UnicodeDecodeError:
+        _stream_issue(
+            issues,
+            "OUTPUT_PARSE_FAILED",
+            path,
+            "VMD fixed-width name is not valid CP932",
+        )
+        return None
+    if not name.strip():
+        _stream_issue(issues, "VMD_NAME_EMPTY", path, "VMD bone or morph name must not be empty")
+    return name
+
+
+def _stream_finite(
+    values: Iterable[float],
+    path: str,
+    issues: List[ExportValidationIssue],
+) -> None:
+    """Validate already-unpacked f32 values without retaining their record."""
+    if not all(math.isfinite(value) for value in values):
+        _stream_issue(
+            issues,
+            "VMD_NON_FINITE_NUMBER",
+            path,
+            "VMD numeric value must be finite",
+        )
+
+
+def _stream_bounds_value(value: Any) -> Optional[Tuple[Optional[int], Optional[int]]]:
+    """Normalize the small bounds shapes emitted by stream receipts."""
+    if isinstance(value, Mapping):
+        minimum = value.get(
+            "minimum",
+            value.get("min_frame", value.get("frame_min", value.get("min"))),
+        )
+        maximum = value.get(
+            "maximum",
+            value.get("max_frame", value.get("frame_max", value.get("max"))),
+        )
+    elif isinstance(value, (tuple, list)) and len(value) == 2:
+        minimum, maximum = value
+    else:
+        minimum = getattr(value, "minimum", getattr(value, "min_frame", None))
+        maximum = getattr(value, "maximum", getattr(value, "max_frame", None))
+    try:
+        minimum = None if minimum is None else int(minimum)
+        maximum = None if maximum is None else int(maximum)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return minimum, maximum
+
+
+def _stream_compare_bounds(
+    issues: List[ExportValidationIssue],
+    actual: Mapping[str, Tuple[Optional[int], Optional[int]]],
+    expected: Optional[Mapping[str, Any]],
+) -> None:
+    """Compare frame bounds while accepting both legacy and stream names."""
+    if expected is None:
+        return
+    if isinstance(expected, Mapping) and any(
+        key in expected for key in ("minimum", "min_frame", "frame_min", "min", "maximum", "max_frame", "frame_max", "max")
+    ):
+        expected_value = _stream_bounds_value(expected)
+        if expected_value is None:
+            return
+        frame_values = [
+            frame_number
+            for minimum, maximum in actual.values()
+            for frame_number in (minimum, maximum)
+            if frame_number is not None
+        ]
+        actual_value = (min(frame_values), max(frame_values)) if frame_values else (None, None)
+        if actual_value != expected_value:
+            _stream_issue(
+                issues,
+                "VMD_FRAME_RANGE",
+                "output.frame_bounds",
+                "VMD output bounds {} do not match expected bounds {}".format(actual_value, expected_value),
+            )
+        return
+    if not isinstance(expected, Mapping):
+        expected_value = _stream_bounds_value(expected)
+        if expected_value is None:
+            return
+        frame_values = [
+            frame_number
+            for minimum, maximum in actual.values()
+            for frame_number in (minimum, maximum)
+            if frame_number is not None
+        ]
+        actual_value = (
+            (min(frame_values), max(frame_values))
+            if frame_values
+            else (None, None)
+        )
+        if actual_value != expected_value:
+            _stream_issue(
+                issues,
+                "VMD_FRAME_RANGE",
+                "output.frame_bounds",
+                "VMD output bounds {} do not match expected bounds {}".format(
+                    actual_value,
+                    expected_value,
+                ),
+            )
+        return
+    aliases = {
+        "bones": "bone_frames",
+        "morphs": "morph_frames",
+        "cameras": "camera_frames",
+        "lights": "light_frames",
+        "shadows": "shadow_frames",
+        "ik": "ik_show_hide_frames",
+    }
+    for section, value in expected.items():
+        normalized_section = aliases.get(section, section)
+        if normalized_section not in actual:
+            continue
+        expected_value = _stream_bounds_value(value)
+        if expected_value is None:
+            continue
+        if actual[normalized_section] != expected_value:
+            _stream_issue(
+                issues,
+                "VMD_FRAME_RANGE",
+                "output.{}.frame_bounds".format(normalized_section),
+                "VMD {} bounds {} do not match expected bounds {}".format(
+                    normalized_section,
+                    actual[normalized_section],
+                    expected_value,
+                ),
+            )
+
+
+def _stream_expected_count(
+    expected_counts: Optional[Mapping[str, int]],
+    section_name: str,
+) -> Optional[int]:
+    """Read one expected count using either VMD naming convention."""
+    if not isinstance(expected_counts, Mapping):
+        return None
+    aliases = {
+        "bone_frames": "bones",
+        "morph_frames": "morphs",
+        "camera_frames": "cameras",
+        "light_frames": "lights",
+        "shadow_frames": "shadows",
+        "ik_show_hide_frames": "ik",
+    }
+    value = expected_counts.get(section_name, expected_counts.get(aliases[section_name]))
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _stream_expected_count_declared(
+    expected_counts: Optional[Mapping[str, int]],
+    section_name: str,
+) -> bool:
+    """Return whether metadata explicitly declares one section count."""
+    if not isinstance(expected_counts, Mapping):
+        return False
+    aliases = {
+        "bone_frames": "bones",
+        "morph_frames": "morphs",
+        "camera_frames": "cameras",
+        "light_frames": "lights",
+        "shadow_frames": "shadows",
+        "ik_show_hide_frames": "ik",
+    }
+    return section_name in expected_counts or aliases[section_name] in expected_counts
+
+
+def verify_vmd_output_streaming(
+    file_path: str,
+    mode: str = VMD_MODE_C,
+    *,
+    expected_counts: Optional[Mapping[str, int]] = None,
+    expected_bounds: Optional[Mapping[str, Any]] = None,
+    expected_sha256: Optional[str] = None,
+    expected_size: Optional[int] = None,
+    raw_loss_warning_required: bool = False,
+    ack_warnings: bool = False,
+) -> ExportValidationReport:
+    """Verify a VMD file one wire record at a time.
+
+    Unlike :func:`verify_vmd_output`, this verifier never constructs
+    ``VmdData`` or retains frame/name objects.  It accepts the optional tail
+    sections used by legacy VMD writers, while requiring each section that is
+    present to have a complete count and complete records.  The stream writer
+    emits all six canonical count fields, including an empty IK section.
+    """
+    normalized_mode = str(mode or "").upper()
+    issues: List[ExportValidationIssue] = []
+    if normalized_mode not in VMD_MODES:
+        _stream_issue(
+            issues,
+            "VMD_MODE_UNSUPPORTED",
+            "mode",
+            "VMD mode {!r} is not supported".format(normalized_mode),
+        )
+
+    output_path = Path(file_path)
+    if not output_path.is_file():
+        _stream_issue(issues, "OUTPUT_FILE_MISSING", "output", "temporary output file does not exist")
+        return ExportValidationReport("vmd", tuple(issues), mode=normalized_mode)
+    try:
+        file_size = output_path.stat().st_size
+    except OSError:
+        _stream_issue(issues, "OUTPUT_PARSE_FAILED", "output", "VMD output size could not be read")
+        return ExportValidationReport("vmd", tuple(issues), mode=normalized_mode)
+    if file_size == 0:
+        _stream_issue(issues, "OUTPUT_FILE_EMPTY", "output", "temporary output file is empty")
+        return ExportValidationReport("vmd", tuple(issues), mode=normalized_mode)
+
+    digest = hashlib.sha256()
+    bytes_read = 0
+    counts = {section: 0 for section, _ in _STREAM_SECTIONS}
+    minimums = {section: None for section, _ in _STREAM_SECTIONS}
+    maximums = {section: None for section, _ in _STREAM_SECTIONS}
+
+    def read_bytes(handle: Any, size: int) -> bytes:
+        nonlocal bytes_read
+        data = handle.read(size)
+        bytes_read += len(data)
+        digest.update(data)
+        return data
+
+    def read_exact(handle: Any, size: int, path: str) -> Optional[bytes]:
+        data = read_bytes(handle, size)
+        if len(data) != size:
+            _stream_issue(
+                issues,
+                "OUTPUT_PARSE_FAILED",
+                path,
+                "VMD output is truncated (expected {} bytes, got {})".format(size, len(data)),
+            )
+            return None
+        return data
+
+    def record_frame(section: str, frame_number: int) -> None:
+        counts[section] += 1
+        minimum = minimums[section]
+        maximum = maximums[section]
+        minimums[section] = frame_number if minimum is None else min(minimum, frame_number)
+        maximums[section] = frame_number if maximum is None else max(maximum, frame_number)
+
+    def consume_remaining(handle: Any) -> None:
+        """Finish hashing bytes after a structural failure without retaining them."""
+        nonlocal bytes_read
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            bytes_read += len(chunk)
+            digest.update(chunk)
+
+    try:
+        with output_path.open("rb") as handle:
+            header = read_bytes(handle, 30)
+            if len(header) != 30:
+                _stream_issue(
+                    issues,
+                    "OUTPUT_PARSE_FAILED",
+                    "output.header",
+                    "VMD output header is truncated",
+                )
+                consume_remaining(handle)
+            elif not (
+                header.startswith(_VMD_SIGNATURE_V2) or header.startswith(_VMD_SIGNATURE)
+            ):
+                _stream_issue(
+                    issues,
+                    "OUTPUT_HEADER_INVALID",
+                    "output.header",
+                    "VMD output header is invalid",
+                )
+                consume_remaining(handle)
+            else:
+                model_name = read_exact(handle, 20, "output.model_name")
+                if model_name is None:
+                    consume_remaining(handle)
+                else:
+                    try:
+                        model_name.split(b"\x00", 1)[0].decode("cp932")
+                    except UnicodeDecodeError:
+                        _stream_issue(
+                            issues,
+                            "OUTPUT_PARSE_FAILED",
+                            "output.model_name",
+                            "VMD model name is not valid CP932",
+                        )
+
+                    stopped = False
+                    for section_index, (section, record_size) in enumerate(_STREAM_SECTIONS):
+                        count_data = read_bytes(handle, 4)
+                        if not count_data:
+                            # Camera and later sections were historically
+                            # optional.  End-of-file here is valid only for
+                            # that optional tail.
+                            if section_index < 2 or _stream_expected_count_declared(
+                                expected_counts,
+                                section,
+                            ):
+                                _stream_issue(
+                                    issues,
+                                    "OUTPUT_PARSE_FAILED",
+                                    "output.{}.count".format(section),
+                                    "VMD output is missing a required section count",
+                                )
+                            break
+                        if len(count_data) != 4:
+                            _stream_issue(
+                                issues,
+                                "OUTPUT_PARSE_FAILED",
+                                "output.{}.count".format(section),
+                                "VMD section count is truncated",
+                            )
+                            consume_remaining(handle)
+                            stopped = True
+                            break
+                        (section_count,) = struct.unpack("<I", count_data)
+                        for index in range(section_count):
+                            path = "output.{}[{}]".format(section, index)
+                            if section == "ik_show_hide_frames":
+                                fixed = read_exact(handle, record_size, path)
+                                if fixed is None:
+                                    stopped = True
+                                    break
+                                frame_number, visible, ik_count = struct.unpack("<IBI", fixed)
+                                record_frame(section, frame_number)
+                                if visible not in (0, 1):
+                                    _stream_issue(
+                                        issues,
+                                        "VMD_IK_FLAG_RANGE",
+                                        path + ".visible",
+                                        "VMD visibility flag must be 0 or 1",
+                                    )
+                                for state_index in range(ik_count):
+                                    state_path = "{}.ik_states[{}]".format(path, state_index)
+                                    state = read_exact(handle, 21, state_path)
+                                    if state is None:
+                                        stopped = True
+                                        break
+                                    _stream_name(state[:20], state_path + ".name", issues)
+                                    if state[20] not in (0, 1):
+                                        _stream_issue(
+                                            issues,
+                                            "VMD_IK_FLAG_RANGE",
+                                            state_path + ".enabled",
+                                            "VMD IK flag must be 0 or 1",
+                                        )
+                                if stopped:
+                                    break
+                                continue
+
+                            raw = read_exact(handle, record_size, path)
+                            if raw is None:
+                                stopped = True
+                                break
+                            if section == "bone_frames":
+                                _stream_name(raw[:15], path + ".bone_name", issues)
+                                frame_number = struct.unpack_from("<I", raw, 15)[0]
+                                position = struct.unpack_from("<fff", raw, 19)
+                                rotation = struct.unpack_from("<ffff", raw, 31)
+                                _stream_finite(position, path + ".position", issues)
+                                _stream_finite(rotation, path + ".rotation", issues)
+                                norm = math.sqrt(sum(value * value for value in rotation))
+                                if not math.isfinite(norm) or norm <= 1.0e-12:
+                                    _stream_issue(
+                                        issues,
+                                        "VMD_QUATERNION_INVALID",
+                                        path + ".rotation",
+                                        "VMD quaternion must not be zero",
+                                    )
+                            elif section == "morph_frames":
+                                _stream_name(raw[:15], path + ".morph_name", issues)
+                                frame_number = struct.unpack_from("<I", raw, 15)[0]
+                                _stream_finite((struct.unpack_from("<f", raw, 19)[0],), path + ".value", issues)
+                            elif section == "camera_frames":
+                                frame_number = struct.unpack_from("<I", raw, 0)[0]
+                                distance = struct.unpack_from("<f", raw, 4)[0]
+                                position = struct.unpack_from("<fff", raw, 8)
+                                rotation = struct.unpack_from("<fff", raw, 20)
+                                _stream_finite((distance,), path + ".distance", issues)
+                                _stream_finite(position, path + ".position", issues)
+                                _stream_finite(rotation, path + ".rotation", issues)
+                                perspective = raw[60]
+                                if perspective not in (0, 1):
+                                    _stream_issue(
+                                        issues,
+                                        "VMD_PERSPECTIVE_RANGE",
+                                        path + ".perspective",
+                                        "VMD perspective must be 0 or 1",
+                                    )
+                            elif section == "light_frames":
+                                frame_number = struct.unpack_from("<I", raw, 0)[0]
+                                _stream_finite(struct.unpack_from("<fff", raw, 4), path + ".color", issues)
+                                _stream_finite(struct.unpack_from("<fff", raw, 16), path + ".position", issues)
+                            else:
+                                frame_number = struct.unpack_from("<I", raw, 0)[0]
+                                if raw[4] not in (0, 1, 2):
+                                    _stream_issue(
+                                        issues,
+                                        "VMD_SHADOW_MODE_RANGE",
+                                        path + ".mode",
+                                        "VMD shadow mode must be 0, 1, or 2",
+                                    )
+                                _stream_finite((struct.unpack_from("<f", raw, 5)[0],), path + ".distance", issues)
+                            record_frame(section, frame_number)
+                        if stopped:
+                            consume_remaining(handle)
+                            break
+                    if not stopped:
+                        trailing = read_bytes(handle, 1)
+                        if trailing:
+                            _stream_issue(
+                                issues,
+                                "OUTPUT_PARSE_FAILED",
+                                "output.trailing_bytes",
+                                "VMD output contains trailing bytes after the final section",
+                            )
+                            consume_remaining(handle)
+    except OSError as exc:
+        _stream_issue(
+            issues,
+            "OUTPUT_PARSE_FAILED",
+            "output",
+            "VMD output could not be read: {}".format(type(exc).__name__),
+        )
+
+    if raw_loss_warning_required and not ack_warnings and normalized_mode == VMD_MODE_C:
+        _stream_warning(
+            issues,
+            "VMD_MODE_C_RAW_LOSS",
+            "mode",
+            "VMD Mode C dense bake does not preserve imported raw bone keys or interpolation bytes; acknowledge to continue",
+        )
+
+    for section, _ in _STREAM_SECTIONS:
+        expected = _stream_expected_count(expected_counts, section)
+        if expected is not None and expected != counts[section]:
+            _stream_issue(
+                issues,
+                "VMD_FRAME_COUNT_MISMATCH",
+                "output.{}".format(section),
+                "VMD {} count {} does not match expected count {}".format(
+                    section,
+                    counts[section],
+                    expected,
+                ),
+            )
+    _stream_compare_bounds(
+        issues,
+        {
+            section: (minimums[section], maximums[section])
+            for section, _ in _STREAM_SECTIONS
+        },
+        expected_bounds,
+    )
+
+    actual_sha256 = digest.hexdigest()
+    if expected_sha256 is not None:
+        expected_digest = str(expected_sha256)
+        if expected_digest.startswith("sha256:"):
+            expected_digest = expected_digest[7:]
+        if actual_sha256 != expected_digest:
+            _stream_issue(
+                issues,
+                "OUTPUT_PARSE_FAILED",
+                "output.sha256",
+                "VMD output SHA-256 {} does not match expected {}".format(actual_sha256, expected_digest),
+            )
+    if expected_size is not None:
+        try:
+            normalized_size = int(expected_size)
+        except (TypeError, ValueError, OverflowError):
+            normalized_size = None
+        if normalized_size is not None and bytes_read != normalized_size:
+            _stream_issue(
+                issues,
+                "OUTPUT_PARSE_FAILED",
+                "output.size",
+                "VMD output size {} does not match expected {}".format(bytes_read, normalized_size),
+            )
+    return ExportValidationReport("vmd", tuple(issues), mode=normalized_mode)
+
+
 __all__ = [
     "VMD_MODE_A",
     "VMD_MODE_C",
     "VMD_MODES",
     "validate_vmd_data",
     "verify_vmd_output",
+    "verify_vmd_output_streaming",
 ]

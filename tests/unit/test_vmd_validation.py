@@ -3,6 +3,7 @@
 import hashlib
 import math
 from pathlib import Path
+import struct
 import tempfile
 import unittest
 from unittest import mock
@@ -11,6 +12,7 @@ from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdReques
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from mmd_tools.io.vmd_exporter import VmdExporter
+from mmd_tools.io.vmd_stream_writer import VmdStreamWriter
 from mmd_tools.validation.export_validator import (
     ExportValidationAcknowledgementRequired,
     ExportValidationIssue,
@@ -21,6 +23,7 @@ from mmd_tools.validation.vmd_validator import (
     VMD_MODE_C,
     validate_vmd_data,
     verify_vmd_output,
+    verify_vmd_output_streaming,
 )
 
 
@@ -30,6 +33,26 @@ def _valid_bone_frame() -> VmdBoneFrame:
     frame.bone_name = "センター"
     frame.rotation = (0.0, 0.0, 0.0, 1.0)
     return frame
+
+
+def _write_full_stream_fixture(path: Path) -> bytes:
+    """Write one record in every canonical stream section and return bytes."""
+    writer = VmdStreamWriter(path, "モデル")
+    writer.write_bone(
+        {
+            "bone_name": "センター",
+            "frame": 4,
+            "position": (0.0, 0.0, 0.0),
+            "rotation": (0.0, 0.0, 0.0, 1.0),
+        }
+    )
+    writer.write_morph({"morph_name": "笑い", "frame": 8, "value": 0.25})
+    writer.write_camera({"frame": 12})
+    writer.write_light({"frame": 16})
+    writer.write_shadow({"frame": 20})
+    writer.write_ik({"frame": 24, "visible": True, "ik_states": [("足IK", True)]})
+    writer.finish()
+    return path.read_bytes()
 
 
 class TestVmdValidator(unittest.TestCase):
@@ -218,6 +241,137 @@ class TestVmdValidator(unittest.TestCase):
             )
 
         self.assertEqual(report.issues[0].code, "VMD_FRAME_COUNT_MISMATCH")
+
+    def test_streaming_verifier_matches_stream_writer_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stream.vmd"
+            writer = VmdStreamWriter(path, "モデル")
+            writer.write_bone(
+                {
+                    "bone_name": "センター",
+                    "frame": 4,
+                    "position": (0.0, 0.0, 0.0),
+                    "rotation": (0.0, 0.0, 0.0, 1.0),
+                }
+            )
+            writer.write_morph({"morph_name": "笑い", "frame": 8, "value": 0.25})
+            summary = writer.finish()
+
+            streaming = verify_vmd_output_streaming(
+                str(path),
+                VMD_MODE_C,
+                expected_counts=summary.counts,
+                expected_bounds=summary.frame_bounds,
+                expected_sha256=summary.sha256,
+                expected_size=summary.size,
+            )
+            legacy = verify_vmd_output(str(path), VMD_MODE_C)
+
+        self.assertTrue(streaming.valid, streaming.issues)
+        self.assertEqual(streaming.issues, legacy.issues)
+
+    def test_streaming_verifier_accepts_global_frame_bounds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stream.vmd"
+            writer = VmdStreamWriter(path)
+            writer.write_morph({"morph_name": "笑い", "frame": 8, "value": 0.25})
+            writer.finish()
+
+            report = verify_vmd_output_streaming(
+                str(path),
+                VMD_MODE_C,
+                expected_bounds=(8, 8),
+            )
+
+        self.assertTrue(report.valid, report.issues)
+
+    def test_streaming_verifier_rejects_truncation_in_each_section(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stream.vmd"
+            source = _write_full_stream_fixture(path)
+            # Header/model (50), then count + record for each fixed section;
+            # IK has a 9-byte fixed prefix and one 21-byte state.
+            record_ends = (164, 191, 256, 288, 301, 335)
+            for index, end in enumerate(record_ends):
+                candidate = Path(directory) / "truncated-{}.vmd".format(index)
+                candidate.write_bytes(source[:end])
+                report = verify_vmd_output_streaming(str(candidate), VMD_MODE_C)
+                self.assertFalse(report.valid)
+                self.assertIn("OUTPUT_PARSE_FAILED", [issue.code for issue in report.issues])
+
+    def test_streaming_verifier_requires_declared_empty_tail_sections(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stream.vmd"
+            writer = VmdStreamWriter(path)
+            summary = writer.finish()
+            # Preserve the required bone and morph counts, but remove the four
+            # empty tail counts emitted by the canonical stream writer.
+            path.write_bytes(path.read_bytes()[:58])
+
+            report = verify_vmd_output_streaming(
+                str(path),
+                VMD_MODE_C,
+                expected_counts=summary.counts,
+            )
+
+        self.assertFalse(report.valid)
+        self.assertIn("OUTPUT_PARSE_FAILED", [issue.code for issue in report.issues])
+
+    def test_streaming_verifier_rejects_nonfinite_values_and_wire_flags(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stream.vmd"
+            source = _write_full_stream_fixture(path)
+            # Offsets are stable for the one-record fixture above.
+            corruptions = (
+                (54 + 31, struct.pack("<f", float("nan")), "VMD_NON_FINITE_NUMBER"),
+                (169 + 19, struct.pack("<f", float("inf")), "VMD_NON_FINITE_NUMBER"),
+                (196 + 60, b"\x02", "VMD_PERSPECTIVE_RANGE"),
+                (293 + 4, b"\x09", "VMD_SHADOW_MODE_RANGE"),
+                (306 + 4, b"\x02", "VMD_IK_FLAG_RANGE"),
+                (306 + 9 + 20, b"\x02", "VMD_IK_FLAG_RANGE"),
+                (54, b"\x81 ", "OUTPUT_PARSE_FAILED"),
+            )
+            for index, (offset, payload, code) in enumerate(corruptions):
+                candidate = Path(directory) / "corrupt-{}.vmd".format(index)
+                data = bytearray(source)
+                data[offset : offset + len(payload)] = payload
+                candidate.write_bytes(data)
+                report = verify_vmd_output_streaming(str(candidate), VMD_MODE_C)
+                self.assertFalse(report.valid, "corruption {} produced {}".format(index, report.issues))
+                self.assertIn(code, [issue.code for issue in report.issues])
+
+    def test_streaming_verifier_reports_trailing_bytes_and_metadata_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stream.vmd"
+            writer = VmdStreamWriter(path)
+            writer.finish()
+            path.write_bytes(path.read_bytes() + b"trailing")
+
+            report = verify_vmd_output_streaming(
+                str(path),
+                VMD_MODE_C,
+                expected_counts={"bones": 1},
+                expected_sha256="0" * 64,
+                expected_size=0,
+            )
+
+        codes = [issue.code for issue in report.issues]
+        self.assertIn("OUTPUT_PARSE_FAILED", codes)
+        self.assertIn("VMD_FRAME_COUNT_MISMATCH", codes)
+        self.assertFalse(report.valid)
+
+    def test_streaming_verifier_bounds_issue_memory_for_many_invalid_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "many-invalid.vmd"
+            writer = VmdStreamWriter(path)
+            for frame in range(130):
+                writer.write_morph({"morph_name": "", "frame": frame, "value": 0.0})
+            writer.finish()
+
+            report = verify_vmd_output_streaming(str(path), VMD_MODE_C)
+
+        self.assertFalse(report.valid)
+        self.assertLessEqual(len(report.issues), 100)
 
 
 class _WritingVmdExporter:
