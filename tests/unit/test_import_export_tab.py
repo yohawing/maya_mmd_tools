@@ -122,6 +122,15 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
         ):
             self.assertIn(key, self.source)
 
+    def test_prepare_mode_c_is_motion_only_and_uses_stable_selector(self):
+        self.assertIn('"prepare_mode_c"', self.source)
+        self.assertIn('"exportMotionPrepareButton"', self.source)
+        self.assertIn("self.pane == self.owner.MOTION_PANE", self.source)
+        self.assertIn("currentText().upper() == \"C\"", self.source)
+        # The Model page remains a PMX Validate/Export-only surface.
+        model_section = self.source.split('if self.pane == self.owner.MOTION_PANE:', 1)[0]
+        self.assertNotIn("exportMotionPrepareButton", model_section)
+
     def test_supported_languages_define_model_animation_and_format_actions(self):
         translation_dir = Path(export_tab.__file__).resolve().parents[1] / "translations"
         expected = {
@@ -140,6 +149,9 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
             self.assertEqual(translations["buttons"]["export_pmx"], values[3])
             self.assertEqual(translations["buttons"]["validate_animation"], values[4])
             self.assertEqual(translations["buttons"]["export_vmd"], values[5])
+            self.assertIn("prepare_mode_c", translations["buttons"])
+            self.assertIn("animation_timeline_bake", translations["export_progress"])
+            self.assertIn("animation_prepared_payload", translations["export_progress"])
 
 
 class TestImportExportTabDevModeVisibility(unittest.TestCase):

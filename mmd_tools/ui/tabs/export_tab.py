@@ -31,6 +31,7 @@ from ...services.export_workflow_service import (
     ExportWorkflowRequest,
     ExportWorkflowResult,
     STATE_EDITING,
+    STATE_PREPARED,
 )
 
 
@@ -39,6 +40,8 @@ class _ExportPage(QWidget):
 
     validate_requested = Signal()
     export_requested = Signal()
+    prepare_requested = Signal()
+    semantic_changed = Signal()
 
     def __init__(self, owner, pane: str, title: str):
         super().__init__(owner)
@@ -48,6 +51,7 @@ class _ExportPage(QWidget):
         self.setObjectName(f"export{self.pane.title()}Page")
         self._state = STATE_EDITING
         self._restoring = False
+        self._operation_active = False
         self._build(title)
 
     def _button_text(self, action: str) -> str:
@@ -55,7 +59,11 @@ class _ExportPage(QWidget):
         if self.pane == self.owner.MODEL_PANE:
             key = "validate_model" if action == "validate" else "export_pmx"
         else:
-            key = "validate_animation" if action == "validate" else "export_vmd"
+            key = {
+                "prepare": "prepare_mode_c",
+                "validate": "validate_animation",
+                "export": "export_vmd",
+            }[action]
         return self.owner.tr(key, "buttons")
 
     def _build(self, title: str) -> None:
@@ -117,14 +125,14 @@ class _ExportPage(QWidget):
             self.mode_combo.setObjectName("motionMode")
             self.mode_combo.addItems(["A", "C"])
             self.mode_combo.setCurrentText("C")
-            self.mode_combo.currentTextChanged.connect(self.owner._mark_editing)
+            self.mode_combo.currentTextChanged.connect(self._on_semantic_input_changed)
             self._motion_form.addRow(self.mode_label, self.mode_combo)
 
             self.frame_range_check = QCheckBox(
                 self.owner.tr("use_frame_range", "checkboxes")
             )
             self.frame_range_check.setObjectName("motionUseFrameRange")
-            self.frame_range_check.toggled.connect(self.owner._mark_editing)
+            self.frame_range_check.toggled.connect(self._on_semantic_input_changed)
             self._motion_form.addRow(
                 self.owner.tr("range", "fields"), self.frame_range_check
             )
@@ -132,7 +140,7 @@ class _ExportPage(QWidget):
             self.frame_start_spin.setObjectName("motionFrameStart")
             self.frame_start_spin.setRange(0, 1000000)
             self.frame_start_spin.setValue(0)
-            self.frame_start_spin.valueChanged.connect(self.owner._mark_editing)
+            self.frame_start_spin.valueChanged.connect(self._on_semantic_input_changed)
             self._motion_form.addRow(
                 self.owner.tr("start", "fields"), self.frame_start_spin
             )
@@ -140,7 +148,7 @@ class _ExportPage(QWidget):
             self.frame_end_spin.setObjectName("motionFrameEnd")
             self.frame_end_spin.setRange(0, 1000000)
             self.frame_end_spin.setValue(120)
-            self.frame_end_spin.valueChanged.connect(self.owner._mark_editing)
+            self.frame_end_spin.valueChanged.connect(self._on_semantic_input_changed)
             self._motion_form.addRow(
                 self.owner.tr("end", "fields"), self.frame_end_spin
             )
@@ -165,6 +173,11 @@ class _ExportPage(QWidget):
         export_form.addRow(self.owner.tr("file_path", "labels"), output_row)
 
         buttons = QHBoxLayout()
+        if self.pane == self.owner.MOTION_PANE:
+            self.prepare_button = QPushButton(self._button_text("prepare"))
+            self.prepare_button.setObjectName("exportMotionPrepareButton")
+            self.prepare_button.clicked.connect(self.prepare_requested.emit)
+            buttons.addWidget(self.prepare_button)
         self.validate_button = QPushButton(self._button_text("validate"))
         self.validate_button.clicked.connect(self.validate_requested.emit)
         buttons.addWidget(self.validate_button)
@@ -246,6 +259,12 @@ class _ExportPage(QWidget):
         self.validation_console.clear_report()
         self.owner._persist_semantic_preferences()
 
+    def _on_semantic_input_changed(self, *_args) -> None:
+        """Invalidate the prepared payload for timeline-affecting inputs."""
+        self._mark_editing()
+        self._sync_prepare_enabled()
+        self.semantic_changed.emit()
+
     def set_result(self, result: ExportWorkflowResult) -> None:
         previous_ack = self.validation_console.warnings_acknowledged
         self._state = result.state
@@ -268,7 +287,10 @@ class _ExportPage(QWidget):
 
     def set_operation_active(self, active: bool) -> None:
         """Disable every workflow entry point owned by this page."""
-        enabled = not bool(active)
+        self._operation_active = bool(active)
+        enabled = not self._operation_active
+        if self.pane == self.owner.MOTION_PANE:
+            self.prepare_button.setEnabled(enabled and self.mode_combo.currentText().upper() == "C")
         self.validate_button.setEnabled(enabled)
         self.export_button.setEnabled(enabled)
         self.validation_console.revalidate_button.setEnabled(enabled)
@@ -278,12 +300,28 @@ class _ExportPage(QWidget):
         self.state_label.setText(STATE_EDITING)
         self.validation_console.clear_report()
 
+    def set_prepared(self, preparation) -> None:
+        """Show a successful Mode C preparation without fabricating a report."""
+        del preparation
+        self._state = STATE_PREPARED
+        self.state_label.setText(self._state)
+        self.validation_console.clear_report()
+
+    def _sync_prepare_enabled(self) -> None:
+        if self.pane == self.owner.MOTION_PANE:
+            self.prepare_button.setEnabled(
+                not self._operation_active
+                and self.mode_combo.currentText().upper() == "C"
+            )
+
     def retranslate(self) -> None:
         self.settings_group.setTitle(self.owner.tr("export", "settings"))
         self.export_group.setTitle(self.owner.tr("export", "groups"))
         self.output_browse_button.setText(self.owner.tr("browse", "buttons"))
         self.validate_button.setText(self._button_text("validate"))
         self.export_button.setText(self._button_text("export"))
+        if self.pane == self.owner.MOTION_PANE:
+            self.prepare_button.setText(self._button_text("prepare"))
         self._set_form_label(
             self._export_form,
             self.output_path_edit,
@@ -331,6 +369,8 @@ class ExportTab(BaseTab):
 
     validate_requested = Signal()
     export_requested = Signal()
+    prepare_requested = Signal()
+    motion_semantic_changed = Signal()
 
     MODEL_PANE = "model"
     MOTION_PANE = "motion"
@@ -371,6 +411,9 @@ class ExportTab(BaseTab):
         for pane, page in self._pages.items():
             page.validate_requested.connect(self.validate_requested.emit)
             page.export_requested.connect(self.export_requested.emit)
+            if pane == self.MOTION_PANE:
+                page.prepare_requested.connect(self.prepare_requested.emit)
+                page.semantic_changed.connect(self.motion_semantic_changed.emit)
             self.category_stack.add_page(pane, page)
         self.category_stack.currentChanged.connect(self._on_pane_changed)
         main_layout.addWidget(self.category_stack)
@@ -452,6 +495,10 @@ class ExportTab(BaseTab):
     def set_result(self, result: ExportWorkflowResult) -> None:
         self._active_page().set_result(result)
 
+    def set_prepared(self, preparation) -> None:
+        """Show the Motion page's reusable Mode C payload state."""
+        self._pages[self.MOTION_PANE].set_prepared(preparation)
+
     def set_state(self, state: str) -> None:
         self._active_page().set_state(state)
 
@@ -491,6 +538,7 @@ class ExportTab(BaseTab):
             "output_browse_button",
             "validate_button",
             "export_button",
+            "prepare_button",
             "state_label",
             "validation_console",
             "apply_scale_check",

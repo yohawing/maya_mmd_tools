@@ -20,9 +20,11 @@ from ..validation.snapshot import ExportValidationSnapshot
 
 STATE_EDITING = "Editing"
 STATE_VALIDATING = "Validating"
+STATE_PREPARING = "Preparing"
 STATE_BLOCKED = "Blocked"
 STATE_READY = "Ready"
 STATE_EXPORTING = "Exporting"
+STATE_PREPARED = "Prepared"
 STATE_SUCCEEDED = "Succeeded"
 STATE_FAILED = "Failed"
 
@@ -402,6 +404,8 @@ __all__ = [
     "STATE_EDITING",
     "STATE_EXPORTING",
     "STATE_FAILED",
+    "STATE_PREPARING",
+    "STATE_PREPARED",
     "STATE_READY",
     "STATE_SUCCEEDED",
     "STATE_VALIDATING",
