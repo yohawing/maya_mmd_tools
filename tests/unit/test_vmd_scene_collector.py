@@ -82,6 +82,8 @@ class FakeCmds:
         self.playing = False
         self.fail_current_time_at = None
         self.fail_restore_time = None
+        self.blend_connection_pairs = {}
+        self.anim_layer_parents = {}
 
     def ls(self, pattern=None, type=None, objectsOnly=False, long=False, uuid=False):  # noqa: A002,N803
         if pattern and not type and not objectsOnly:
@@ -160,8 +162,15 @@ class FakeCmds:
         return self.attrs.get((node, attr), 0.0)
 
     def listConnections(self, plug, source=False, destination=False, **_kwargs):  # noqa: N802,N803
+        if "." not in plug:
+            return list(self.blend_connection_pairs.get(plug, []))
         node, attr = plug.split(".", 1)
         return list(self.connections.get((node, attr, bool(source), bool(destination)), []))
+
+    def animLayer(self, layer, q=False, query=False, parent=False, **_kwargs):  # noqa: N802,N803
+        if parent and (q or query):
+            return self.anim_layer_parents.get(layer)
+        return None
 
     def currentTime(self, time=None, edit=False, query=False):  # noqa: N802
         if query:
@@ -196,6 +205,10 @@ class FakeCmds:
         return None
 
     def keyframe(self, plug, query=False, timeChange=False):  # noqa: N803
+        if "." not in plug:
+            if query and timeChange:
+                return sorted({time for (node, _attr), values in self.keys.items() if node == plug for time in values})
+            return []
         node, attr = plug.split(".", 1)
         if query and timeChange:
             return list(self.keys.get((node, attr), {}))
@@ -566,7 +579,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                     self.assertEqual(frames, [])
                     self.assertNotIn("track_selection", collector.diagnostics)
 
-    def test_mode_c_routed_single_key_bone_remains_dense(self):
+    def test_mode_c_arbitrary_routed_output_keeps_single_key_bone_dense(self):
         self.cmds.node_types.update(
             {"center_joint": "joint", "authoring_driver": "transform"}
         )
@@ -588,8 +601,274 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
         selection = collector.diagnostics["track_selection"]
-        self.assertEqual(selection["counts"]["dependency_baked"], 1)
-        self.assertEqual(selection["evidence"][0]["reason"], "routed_dependency")
+        self.assertEqual(selection["counts"]["constant_one_key"], 0)
+        self.assertEqual(
+            selection["evidence"][0]["reason"],
+            "routed_dependency",
+        )
+
+    def test_mode_c_validated_routed_single_key_bone_uses_one_key(self):
+        self.cmds.node_types.update(
+            {"model_root": "transform", "center_joint": "joint", "proxy": "transform"}
+        )
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs["center_joint", ATTR_MMD_BONE_NAME] = "center"
+        self.cmds.keys["proxy", "translateX"] = {0.0: 1.0}
+        route = {
+            attribute: ("proxy", attribute)
+            for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+        }
+
+        collector = VmdSceneCollector()
+        frames = collector.collect_bone_frames(
+            ["center_joint"],
+            0,
+            2,
+            input_routes={"center_joint": route},
+            dense_sample=True,
+            force_dense_sample=True,
+            dense_frame_samples=[0, 1, 2],
+            time_converter=lambda value: value,
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [0])
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        self.assertEqual(evidence[0]["reason"], "routed_direct_single_key_non_default")
+        self.assertEqual(evidence[0]["source_key_count"], 1)
+
+    def test_mode_c_direct_tl_ta_single_key_bone_uses_one_key(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "center_joint": "joint",
+                "tx_curve": "animCurveTL",
+                "rz_curve": "animCurveTA",
+                "time1": "time",
+            }
+        )
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs["center_joint", ATTR_MMD_BONE_NAME] = "center"
+        self.cmds.attrs["center_joint", "translateX"] = 1.0
+        self.cmds.connections.update(
+            {
+                ("center_joint", "translateX", True, False): ["tx_curve.output"],
+                ("center_joint", "rotateZ", True, False): ["rz_curve.output"],
+                ("tx_curve", "input", True, False): ["time1.outTime"],
+                ("rz_curve", "input", True, False): ["time1.outTime"],
+            }
+        )
+        self.cmds.keys["tx_curve", "output"] = {0.0: 1.0}
+        self.cmds.keys["rz_curve", "output"] = {0.0: 0.0}
+
+        collector = VmdSceneCollector()
+        frames = collector.collect_bone_frames(
+            ["center_joint"],
+            0,
+            2,
+            dense_sample=True,
+            force_dense_sample=True,
+            dense_frame_samples=[0, 1, 2],
+            time_converter=lambda value: value,
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [0])
+        self.assertEqual(
+            collector.diagnostics["track_selection"]["evidence"][0]["reason"],
+            "direct_single_key_non_default",
+        )
+
+    def test_mode_c_validated_animation_layer_single_key_bone_uses_one_key(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "center_joint": "joint",
+                "proxy": "transform",
+                "blend_tx": "animBlendNodeAdditiveDL",
+                "blend_rz": "animBlendNodeAdditiveRotation",
+                "curve_tx": "animCurveTL",
+                "curve_rz": "animCurveTA",
+                "base_curve_tx": "animCurveTL",
+                "base_curve_rz": "animCurveTA",
+                "layer": "animLayer",
+                "BaseAnimation": "animLayer",
+            }
+        )
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs["center_joint", ATTR_MMD_BONE_NAME] = "center"
+        self.cmds.attrs["proxy", "translateX"] = 1.25
+        self.cmds.anim_layer_parents["layer"] = "BaseAnimation"
+        self.cmds.connections.update(
+            {
+                ("proxy", "translateX", True, False): ["blend_tx.output"],
+                ("proxy", "rotateZ", True, False): ["blend_rz.outputZ"],
+            }
+        )
+        self.cmds.blend_connection_pairs.update(
+            {
+                "blend_tx": [
+                    "blend_tx.inputA", "base_curve_tx.output",
+                    "blend_tx.inputB", "curve_tx.output",
+                    "blend_tx.weightA", "layer.backgroundWeight",
+                    "blend_tx.weightB", "layer.foregroundWeight",
+                ],
+                "blend_rz": [
+                    "blend_rz.inputAZ", "base_curve_rz.output",
+                    "blend_rz.inputBX", "curve_rz.output",
+                    "blend_rz.rotateOrder", "proxy.rotateOrder",
+                    "blend_rz.weightA", "layer.backgroundWeight",
+                    "blend_rz.weightB", "layer.foregroundWeight",
+                    "blend_rz.accumulationMode", "layer.outRotationAccumulationMode",
+                ],
+            }
+        )
+        self.cmds.keys.update(
+            {
+                ("curve_tx", "output"): {0.0: 1.25},
+                ("curve_rz", "output"): {0.0: 0.0},
+                ("base_curve_tx", "output"): {0.0: 0.0},
+                ("base_curve_rz", "output"): {0.0: 0.0},
+            }
+        )
+        route = {
+            attribute: ("proxy", attribute)
+            for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+        }
+
+        collector = VmdSceneCollector()
+        frames = collector.collect_bone_frames(
+            ["center_joint"],
+            0,
+            2,
+            input_routes={"center_joint": route},
+            dense_sample=True,
+            force_dense_sample=True,
+            dense_frame_samples=[0, 1, 2],
+            time_converter=lambda value: value,
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [0])
+        self.assertEqual(
+            collector.diagnostics["track_selection"]["evidence"][0]["reason"],
+            "layered_direct_single_key_non_default",
+        )
+
+    def test_mode_c_animation_layer_base_curve_extra_key_keeps_bone_dense(self):
+        self.test_mode_c_validated_animation_layer_single_key_bone_uses_one_key()
+        self.cmds.keys["base_curve_tx", "output"][2.0] = 0.5
+        route = {
+            attribute: ("proxy", attribute)
+            for attribute in collector_module._BONE_EXPORT_ATTRS
+        }
+        collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
+        frames = collector.collect_bone_frames(
+            ["center_joint"],
+            0,
+            2,
+            input_routes={"center_joint": route},
+            dense_sample=True,
+            force_dense_sample=True,
+            dense_frame_samples=[0, 1, 2],
+            time_converter=lambda value: value,
+            bone_channel_sampler=self._timeline_sampler(),
+        )
+        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+
+    def test_mode_c_validated_animation_layer_default_single_key_is_omitted(self):
+        self.test_mode_c_validated_animation_layer_single_key_bone_uses_one_key()
+        self.cmds.attrs["proxy", "translateX"] = 0.0
+        route = {
+            attribute: ("proxy", attribute)
+            for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+        }
+        collector = VmdSceneCollector()
+        frames = collector.collect_bone_frames(
+            ["center_joint"],
+            0,
+            2,
+            input_routes={"center_joint": route},
+            dense_sample=True,
+            force_dense_sample=True,
+            dense_frame_samples=[0, 1, 2],
+            time_converter=lambda value: value,
+        )
+        self.assertEqual(frames, [])
+        self.assertEqual(
+            collector.diagnostics["track_selection"]["evidence"][0]["reason"],
+            "layered_direct_single_key_default",
+        )
+
+    def test_mode_c_animation_layer_weight_key_keeps_single_key_bone_dense(self):
+        self.test_mode_c_validated_animation_layer_single_key_bone_uses_one_key()
+        self.cmds.keys["layer", "weight"] = {0.0: 1.0}
+        route = {
+            attribute: ("proxy", attribute)
+            for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+        }
+        collector = VmdSceneCollector()
+        frames = collector.collect_bone_frames(
+            ["center_joint"],
+            0,
+            2,
+            input_routes={"center_joint": route},
+            dense_sample=True,
+            force_dense_sample=True,
+            dense_frame_samples=[0, 1, 2],
+            time_converter=lambda value: value,
+            bone_channel_sampler=self._timeline_sampler(),
+        )
+        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+
+    def test_mode_c_routed_single_key_query_failure_keeps_dense(self):
+        self.test_mode_c_validated_routed_single_key_bone_uses_one_key()
+        route = {
+            attribute: ("proxy", attribute)
+            for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+        }
+        original = self.cmds.listConnections
+
+        def fail(plug, *args, **kwargs):
+            if plug == "proxy.translateX":
+                raise RuntimeError("route query failed")
+            return original(plug, *args, **kwargs)
+
+        self.cmds.listConnections = fail
+        try:
+            collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
+            frames = collector.collect_bone_frames(
+                ["center_joint"],
+                0,
+                2,
+                input_routes={"center_joint": route},
+                dense_sample=True,
+                force_dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+                time_converter=lambda value: value,
+                bone_channel_sampler=self._timeline_sampler(),
+            )
+        finally:
+            self.cmds.listConnections = original
+        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+
+    def test_mode_c_routed_nonwritable_single_key_keeps_dense(self):
+        self.test_mode_c_validated_routed_single_key_bone_uses_one_key()
+        route = {
+            attribute: ("proxy", attribute)
+            for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+        }
+        with mock.patch.object(collector_module, "_mode_c_writable_plug", return_value=False):
+            collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
+            frames = collector.collect_bone_frames(
+                ["center_joint"],
+                0,
+                2,
+                input_routes={"center_joint": route},
+                dense_sample=True,
+                force_dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+                time_converter=lambda value: value,
+                bone_channel_sampler=self._timeline_sampler(),
+            )
+        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
 
     def test_mode_c_bone_with_out_of_range_second_key_remains_dense(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})

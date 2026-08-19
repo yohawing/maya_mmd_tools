@@ -144,6 +144,259 @@ def _is_direct_authored_track(node: str, attrs: Sequence[str]) -> bool:
     return True
 
 
+_MODE_C_LAYER_STATE_ATTRS = ("weight", "mute", "solo", "override", "passthrough")
+_MODE_C_LAYER_OPTIONAL_STATE_ATTRS = ("rotationAccumulationMode",)
+
+
+def _mode_c_writable_plug(node: str, attribute: str) -> bool:
+    """Check the resolved physical plug using Maya API 2.0."""
+    try:
+        selection = om.MSelectionList()
+        selection.add(f"{node}.{attribute}")
+        return bool(om.MFnAttribute(selection.getPlug(0).attribute()).writable)
+    except Exception:
+        return False
+
+
+def _mode_c_layer_chain(layer: str) -> Optional[set[str]]:
+    """Validate one layer and its parents through BaseAnimation."""
+    chain = set()
+    while layer:
+        if layer in chain:
+            return None
+        chain.add(layer)
+        try:
+            for attribute in _MODE_C_LAYER_STATE_ATTRS:
+                plug = f"{layer}.{attribute}"
+                if _incoming_connection_state(layer, (attribute,), strict=True) != "none":
+                    return None
+                if cmds.keyframe(plug, query=True, timeChange=True) or []:
+                    return None
+            for attribute in _MODE_C_LAYER_OPTIONAL_STATE_ATTRS:
+                if not cmds.attributeQuery(attribute, node=layer, exists=True):
+                    continue
+                plug = f"{layer}.{attribute}"
+                if _incoming_connection_state(layer, (attribute,), strict=True) != "none":
+                    return None
+                if cmds.keyframe(plug, query=True, timeChange=True) or []:
+                    return None
+            parent = cmds.animLayer(layer, q=True, parent=True)
+        except Exception:
+            return None
+        if isinstance(parent, (list, tuple)):
+            if len(parent) > 1:
+                return None
+            parent = parent[0] if parent else None
+        layer = str(parent or "")
+    return chain
+
+
+def _mode_c_direct_curve_source(curve: str, expected_type: str) -> bool:
+    """Accept a channel-specific time curve with implicit or explicit time."""
+    try:
+        if str(cmds.nodeType(curve) or "") != expected_type:
+            return False
+        sources = cmds.listConnections(f"{curve}.input", source=True, destination=False, plugs=True, skipConversionNodes=False) or []
+    except Exception:
+        return False
+    if isinstance(sources, (str, bytes)) or len(sources) > 1:
+        return False
+    if not sources:
+        return True
+    try:
+        return str(cmds.nodeType(str(sources[0]).split(".", 1)[0]) or "") == "time"
+    except Exception:
+        return False
+
+
+def _mode_c_validate_anim_blend(
+    node: str,
+    *,
+    expected_type: str,
+    curve_type: str,
+    physical_node: str,
+) -> Optional[str]:
+    """Validate one supported additive Animation Layer blend node."""
+    try:
+        if str(cmds.nodeType(node) or "") != expected_type:
+            return None
+    except Exception:
+        return None
+    try:
+        pairs = cmds.listConnections(
+            node, s=True, d=False, p=True, c=True, skipConversionNodes=False
+        ) or []
+    except Exception:
+        return None
+    if isinstance(pairs, (str, bytes)) or len(pairs) % 2:
+        return None
+    incoming: dict[str, str] = {}
+    for index in range(0, len(pairs), 2):
+        left, right = str(pairs[index]), str(pairs[index + 1])
+        if left.startswith(f"{node}."):
+            destination, source = left.split(".", 1)[1], right
+        elif right.startswith(f"{node}."):
+            destination, source = right.split(".", 1)[1], left
+        else:
+            return None
+        if destination in incoming:
+            return None
+        incoming[destination] = source
+    allowed = (
+        {"weightA", "weightB", "inputA", "inputB"}
+        if expected_type == "animBlendNodeAdditiveDL"
+        else {
+            "rotateOrder", "accumulationMode", "weightA", "weightB",
+            "inputAX", "inputAY", "inputAZ", "inputBX", "inputBY", "inputBZ",
+        }
+    )
+    if any(attribute not in allowed for attribute in incoming):
+        return None
+    input_attrs = (
+        ("inputA", "inputB")
+        if expected_type == "animBlendNodeAdditiveDL"
+        else ("inputAX", "inputAY", "inputAZ", "inputBX", "inputBY", "inputBZ")
+    )
+    for attribute in input_attrs:
+        if attribute in incoming and not _mode_c_direct_curve_source(
+            incoming[attribute].split(".", 1)[0], curve_type
+        ):
+            return None
+        if attribute in incoming and incoming[attribute].split(".", 1)[1] != "output":
+            return None
+    layers = set()
+    for attribute in ("weightA", "weightB", "accumulationMode"):
+        if attribute not in incoming:
+            continue
+        source_node = incoming[attribute].split(".", 1)[0]
+        try:
+            valid_source = str(cmds.nodeType(source_node) or "") == "animLayer"
+        except Exception:
+            valid_source = False
+        if not valid_source:
+            return None
+        source_attribute = incoming[attribute].split(".", 1)[1]
+        expected_source_attribute = {
+            "weightA": "backgroundWeight",
+            "weightB": "foregroundWeight",
+            "accumulationMode": "outRotationAccumulationMode",
+        }[attribute]
+        if source_attribute != expected_source_attribute:
+            return None
+        layers.add(source_node)
+    if expected_type == "animBlendNodeAdditiveRotation" and "rotateOrder" in incoming:
+        rotate_order_node, rotate_order_attr = incoming["rotateOrder"].split(".", 1)
+        if (
+            rotate_order_attr != "rotateOrder"
+            or _canonical_dag_path(rotate_order_node)
+            != _canonical_dag_path(physical_node)
+        ):
+            return None
+    if not layers:
+        return None
+    valid_layers = set()
+    for layer in sorted(layers):
+        chain = _mode_c_layer_chain(layer)
+        if chain is None:
+            return None
+        valid_layers.update(chain)
+    try:
+        scene_layers = cmds.ls(type="animLayer") or []
+    except Exception:
+        return None
+    for scene_layer in scene_layers:
+        if _mode_c_layer_chain(str(scene_layer)) is None:
+            return None
+    for attribute in ("weightA", "weightB", "accumulationMode"):
+        if attribute in incoming and incoming[attribute].split(".", 1)[0] not in valid_layers:
+            return None
+    return sorted(layers)[0]
+
+
+def _mode_c_authored_input_plug(
+    node: str,
+    physical_attr: str,
+    logical_attr: str,
+) -> bool:
+    """Limit one-key route folding to known authored input surfaces."""
+    try:
+        node_type = str(cmds.nodeType(node) or "")
+    except Exception:
+        return False
+    if node_type in {"transform", "joint"}:
+        return physical_attr == logical_attr
+    channel = "Translate" if logical_attr.startswith("translate") else "Rotate"
+    axis = logical_attr[-1]
+    if node_type in {"mmdAppend", "mmdBoneMorphAccum"}:
+        return physical_attr == f"base{channel}{axis}"
+    if node_type == "mmdPhysicsBoneDriver":
+        return physical_attr == f"inPre{channel}{axis}"
+    if node_type != "mmdCcdIk" or channel != "Rotate":
+        return False
+    prefix = "inputRotate["
+    suffix = f"].inputRotateElement{axis}"
+    if not physical_attr.startswith(prefix) or not physical_attr.endswith(suffix):
+        return False
+    return physical_attr[len(prefix) : -len(suffix)].isdigit()
+
+
+def _mode_c_single_key_bone_route(
+    joint: str,
+    route: Mapping[str, tuple[str, str]],
+) -> Optional[str]:
+    """Return ``direct``/``layered`` for a safe one-key source graph."""
+    blend_kinds: set[str] = set()
+    for attribute in _BONE_EXPORT_ATTRS:
+        node, physical_attr = route.get(attribute, (joint, attribute))
+        if not _mode_c_authored_input_plug(
+            str(node), str(physical_attr), attribute
+        ) or not _mode_c_writable_plug(str(node), str(physical_attr)):
+            return None
+        try:
+            sources = cmds.listConnections(f"{node}.{physical_attr}", source=True, destination=False, plugs=True, skipConversionNodes=False) or []
+        except Exception:
+            return None
+        if isinstance(sources, (str, bytes)) or len(sources) > 1:
+            return None
+        if not sources:
+            continue
+        source_node = str(sources[0]).split(".", 1)[0]
+        source_attr = str(sources[0]).split(".", 1)[1]
+        try:
+            source_type = str(cmds.nodeType(source_node) or "")
+        except Exception:
+            return None
+        expected_curve = "animCurveTL" if attribute.startswith("translate") else "animCurveTA"
+        if source_type == expected_curve:
+            if source_attr != "output" or not _mode_c_direct_curve_source(
+                source_node, expected_curve
+            ):
+                return None
+            continue
+        expected_blend = "animBlendNodeAdditiveDL" if attribute.startswith("translate") else "animBlendNodeAdditiveRotation"
+        if source_type != expected_blend:
+            return None
+        expected_output = (
+            "output"
+            if attribute.startswith("translate")
+            else f"output{attribute[-1]}"
+        )
+        if source_attr != expected_output:
+            return None
+        layer = _mode_c_validate_anim_blend(
+            source_node,
+            expected_type=expected_blend,
+            curve_type=expected_curve,
+            physical_node=str(node),
+        )
+        if layer is None:
+            return None
+        blend_kinds.add(layer)
+    if len(blend_kinds) > 1:
+        return None
+    return "layered" if blend_kinds else "direct"
+
+
 def _has_no_incoming_connections(node: str, attrs: Sequence[str]) -> bool:
     """Return whether every logical plug is completely unconnected."""
 
@@ -777,6 +1030,7 @@ class VmdSceneCollector:
         )
         keyed_times_by_joint = {}
         single_key_joints = set()
+        single_key_kinds: dict[str, str] = {}
         static_keyless_joints = set()
         keyless_dependency_joints: dict[str, str] = {}
         direct_multi_key_candidates: dict[str, list[tuple[str, int]]] = {}
@@ -862,12 +1116,13 @@ class VmdSceneCollector:
                             self._mmd_bone_name(joint), []
                         ).append((long_name, len(source_frames)))
                     if (
-                        not route
-                        and len(all_source_frames) == 1
+                        len(all_source_frames) == 1
                         and len(source_frames) == 1
-                        and _is_direct_authored_track(long_name, _BONE_EXPORT_ATTRS)
                     ):
-                        single_key_joints.add(joint)
+                        single_kind = _mode_c_single_key_bone_route(joint, route)
+                        if single_kind:
+                            single_key_joints.add(joint)
+                            single_key_kinds[joint] = single_kind
             if (
                 force_dense_sample
                 and dense_frames
@@ -1180,13 +1435,29 @@ class VmdSceneCollector:
                         (
                             "keyless_static_default"
                             if static_keyless
-                            else "direct_single_key_default"
+                            else (
+                                (
+                                    "layered_direct_single_key_default"
+                                    if single_key_kinds.get(joint) == "layered"
+                                    else "routed_direct_single_key_default"
+                                )
+                                if route
+                                else "direct_single_key_default"
+                            )
                         )
                         if is_default
                         else (
                             "keyless_static_non_default"
                             if static_keyless
-                            else "direct_single_key_non_default"
+                            else (
+                                (
+                                    "layered_direct_single_key_non_default"
+                                    if single_key_kinds.get(joint) == "layered"
+                                    else "routed_direct_single_key_non_default"
+                                )
+                                if route
+                                else "direct_single_key_non_default"
+                            )
                         ),
                         0 if static_keyless else len(sparse_frames),
                         0 if is_default else 1,
