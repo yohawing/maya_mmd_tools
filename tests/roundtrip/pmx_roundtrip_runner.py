@@ -1,5 +1,9 @@
 #!/usr/bin/env python
-"""PMX roundtrip runner: import → parse → export → re-import.
+"""Parser-writer PMX smoke: import → parse → export → re-import.
+
+This runner intentionally bypasses the production Action/Presenter/Workflow
+edit path. It is a parser/writer compatibility smoke, not the user-path
+quality gate; use ``tools/local_asset_roundtrip.py`` for that gate.
 
 For each case in the manifest:
   1. Parse source PMX via PmxData to obtain raw structured data.
@@ -1129,7 +1133,8 @@ def run_manifest(
     limit: int | None,
     require_clean: bool,
 ) -> int:
-    """Run roundtrip cases and write result JSON."""
+    """Run parser-writer smoke cases and write result JSON."""
+    print("parser-writer smoke (not user-path quality gate)", flush=True)
     out_path = _require_build_path(out_dir, "--out-dir")
     out_path.mkdir(parents=True, exist_ok=True)
     cases = _load_cases(manifest_path)
@@ -1163,6 +1168,7 @@ def run_manifest(
         results.append(result)
 
     result_doc = {
+        "runner_kind": "parser-writer-smoke",
         "manifest": str(Path(manifest_path).resolve()),
         "out_dir": str(out_path),
         "total": len(results),
