@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-import copy
 import hashlib
 import inspect
 import math
@@ -139,51 +138,6 @@ class VmdExportDiscovery:
     model_name: str = ""
 
 
-class FrozenVmdDataView:
-    """Read-only deep snapshot of a VMD-like payload.
-
-    ``VmdData`` and its frame classes are mutable Python objects.  This
-    compatibility view recursively freezes object attributes and exposes
-    ``copy_for_export`` for callers that still need an isolated snapshot.  A
-    prepared export token deliberately does not retain this view.
-    """
-
-    __slots__ = ("_value", "_fingerprint")
-
-    def __init__(self, value: Any):
-        object.__setattr__(self, "_value", _freeze_value(value))
-        object.__setattr__(self, "_fingerprint", fingerprint_payload(_canonical_value(value)))
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        raise AttributeError("FrozenVmdDataView is immutable")
-
-    def __getattr__(self, name: str) -> Any:
-        value = self._value
-        if isinstance(value, _FrozenObject):
-            return getattr(value, name)
-        raise AttributeError(name)
-
-    def __getitem__(self, key: Any) -> Any:
-        return self._value[key]
-
-    def __repr__(self) -> str:
-        return f"FrozenVmdDataView({self._value!r})"
-
-    def __hash__(self) -> int:
-        return hash(self._fingerprint)
-
-    @property
-    def fingerprint(self) -> str:
-        """Return the deterministic digest of the frozen payload."""
-
-        return self._fingerprint
-
-    def copy_for_export(self) -> Any:
-        """Return a new mutable payload owned by an exporter."""
-
-        return _thaw_value(self._value)
-
-
 @dataclass(frozen=True)
 class PreparedVmdExportToken:
     """Opaque immutable receipt handle for one safely staged Mode C export."""
@@ -210,18 +164,6 @@ class PreparedVmdExportToken:
         return self.staged_artifact
 
     @property
-    def artifact_receipt(self) -> PreparedVmdArtifactReceipt:
-        """Compatibility alias for Workflow consumers."""
-
-        return self.staged_artifact
-
-    @property
-    def artifact(self) -> PreparedVmdArtifactReceipt:
-        """Short alias for callers treating the receipt as an artifact handle."""
-
-        return self.staged_artifact
-
-    @property
     def validation_report(self) -> ExportValidationReport:
         """Return the cached payload plus output verification report."""
 
@@ -239,10 +181,6 @@ class PrepareVmdExportResult:
     @property
     def succeeded(self) -> bool:
         return self.status == "published" and self.token is not None
-
-    @property
-    def published(self) -> bool:
-        return self.succeeded
 
     @property
     def report(self) -> Optional[ExportValidationReport]:
@@ -468,39 +406,6 @@ def _canonical_value(value: Any) -> Any:
     raise TypeError(f"cannot fingerprint value of type {type(value).__name__}")
 
 
-class _FrozenObject:
-    __slots__ = ("_type", "_attributes")
-
-    def __init__(self, original_type: type, attributes: Mapping[str, Any]):
-        object.__setattr__(self, "_type", original_type)
-        object.__setattr__(self, "_attributes", MappingProxyType(dict(attributes)))
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        raise AttributeError("prepared VMD payload is immutable")
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self._attributes[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-    def __repr__(self) -> str:
-        return f"_FrozenObject({self._type.__name__}, {dict(self._attributes)!r})"
-
-
-def _freeze_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return MappingProxyType({key: _freeze_value(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return tuple(_freeze_value(item) for item in value)
-    if isinstance(value, tuple):
-        return tuple(_freeze_value(item) for item in value)
-    attributes = getattr(value, "__dict__", None)
-    if attributes is not None:
-        return _FrozenObject(type(value), {key: _freeze_value(item) for key, item in attributes.items()})
-    return value
-
-
 def _copy_diagnostics(value: Any) -> Any:
     """Recursively copy report-safe diagnostics without exposing live state."""
 
@@ -523,27 +428,13 @@ def _freeze_diagnostics(value: Any) -> Any:
     return value
 
 
-def _thaw_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {key: _thaw_value(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_thaw_value(item) for item in value]
-    if isinstance(value, _FrozenObject):
-        result = object.__new__(value._type)
-        for key, item in value._attributes.items():
-            setattr(result, key, _thaw_value(item))
-        return result
-    return copy.deepcopy(value)
-
-
 def _revision_method(provider: Any, request: Any, discovery: VmdExportDiscovery) -> Any:
-    for method_name in ("current_revision", "revision", "get_revision", "read_revision"):
-        method = getattr(provider, method_name, None)
-        if callable(method):
-            return method(request, discovery)
-    if callable(provider):
-        return provider(request, discovery)
-    raise PrepareVmdExportError("revision provider must expose current_revision(request, discovery)")
+    method = getattr(provider, "current_revision", None)
+    if not callable(method):
+        raise PrepareVmdExportError(
+            "revision provider must expose current_revision(request, discovery)"
+        )
+    return method(request, discovery)
 
 
 def _arm_revision_provider(provider: Any, request: Any, discovery: VmdExportDiscovery) -> None:
@@ -1088,7 +979,6 @@ def _cache_id(*parts: str) -> str:
 
 
 __all__ = [
-    "FrozenVmdDataView",
     "PREPARED_VMD_EXPORT_SCHEMA_VERSION",
     "PrepareVmdExportAction",
     "PrepareVmdExportDiagnostics",

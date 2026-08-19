@@ -199,16 +199,6 @@ class SceneRevisionService:
         except Exception:
             return None
 
-    def resolve_target_uuid(self, target: Any) -> Optional[str]:
-        """Compatibility spelling for callers that name this operation lookup."""
-
-        return self.target_uuid(target)
-
-    def lookup_target_uuid(self, target: Any) -> Optional[str]:
-        """Explicit lookup spelling used by discovery adapters."""
-
-        return self.target_uuid(target)
-
     def arm(self, dependencies: Iterable[Any]) -> SceneRevisionWatch:
         """Install target and global callbacks for *dependencies*.
 
