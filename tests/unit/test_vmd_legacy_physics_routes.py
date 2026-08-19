@@ -25,6 +25,8 @@ class _PhysicsRouteCmds:
             "|other_driver": "mmdPhysicsBoneDriver",
         }
         self.roots = {"|solver.modelRoot": ["|model"]}
+        self.registries = {}
+        self.registry_roots = {}
         self.drivers = {"|solver.outBoneMatrices": ["|driver"]}
         self.targets = {"|driver.mmd_target_joint_message": ["|model|bone"]}
         self.indices = {"|driver.inBoneIndex": 4}
@@ -36,7 +38,11 @@ class _PhysicsRouteCmds:
 
     def listConnections(self, plug, source=False, destination=False, **_kwargs):
         if source and not destination and plug.endswith(".modelRoot"):
+            if plug in self.registry_roots:
+                return list(self.registry_roots[plug])
             return list(self.roots.get(plug, []))
+        if source and not destination and plug.endswith(".modelRegistry"):
+            return list(self.registries.get(plug, []))
         if destination and not source and plug.endswith(
             (".outBoneMatrices", ".outBoneCount", ".outSolved")
         ):
@@ -133,6 +139,33 @@ class LegacyPhysicsRouteTests(unittest.TestCase):
         cmds.roots["|solver.modelRoot"] = ["|model", "|other_model"]
         route = self._build(cmds)["|model|bone"]
         self.assertEqual(route["block_reason"], "ambiguous_or_unowned_physics_driver")
+
+    def test_unique_validated_model_registry_proves_solver_ownership(self):
+        cmds = _PhysicsRouteCmds()
+        cmds.roots["|solver.modelRoot"] = []
+        cmds.registries["|solver.modelRegistry"] = ["|model_registry"]
+        cmds.registry_roots["|model_registry.modelRoot"] = ["|model"]
+        with mock.patch.object(
+            routes_module,
+            "get_model_registry",
+            return_value="|model_registry",
+        ):
+            route = self._build(cmds)["|model|bone"]
+        self.assertEqual(
+            route["attr_targets"]["translateX"],
+            ("|driver", "inPreTranslateX"),
+        )
+
+        with mock.patch.object(
+            routes_module,
+            "get_model_registry",
+            return_value="|other_registry",
+        ):
+            blocked = self._build(cmds)["|model|bone"]
+        self.assertEqual(
+            blocked["block_reason"],
+            "ambiguous_or_unowned_physics_driver",
+        )
 
     def test_complete_existing_route_does_not_block_on_ambiguous_physics(self):
         cmds = _PhysicsRouteCmds()

@@ -12,6 +12,7 @@ from ..core.mmd_control_rig_motion import (
     control_rig_edit_routes_for_joints,
     control_rig_fixed_axis_twist_joints,
 )
+from ..core.model_registry import get_model_registry
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 
 
@@ -66,18 +67,47 @@ def _physics_pre_input_routes(
             roots = cmds.listConnections(
                 f"{solver}.modelRoot", source=True, destination=False
             ) or []
+            registries = cmds.listConnections(
+                f"{solver}.modelRegistry", source=True, destination=False
+            ) or []
         except Exception:
             roots = []
+            registries = []
         canonical_roots = {
             value
             for root in roots
             if (value := _canonical_dag_path(str(root))) is not None
         }
-        solver_roots[solver] = (
+        direct_root = (
             next(iter(canonical_roots))
             if len(roots) == 1 and len(canonical_roots) == 1
             else None
         )
+        registry_root = None
+        if not roots and len(registries) == 1:
+            registry = str(registries[0])
+            try:
+                registry_roots = cmds.listConnections(
+                    f"{registry}.modelRoot",
+                    source=True,
+                    destination=False,
+                ) or []
+            except Exception:
+                registry_roots = []
+            canonical_registry_roots = {
+                value
+                for root in registry_roots
+                if (value := _canonical_dag_path(str(root))) is not None
+            }
+            if len(registry_roots) == 1 and len(canonical_registry_roots) == 1:
+                candidate_root = next(iter(canonical_registry_roots))
+                try:
+                    validated_registry = get_model_registry(candidate_root)
+                except Exception:
+                    validated_registry = None
+                if str(validated_registry or "") == registry:
+                    registry_root = candidate_root
+        solver_roots[solver] = direct_root or registry_root
         for output_attr in ("outBoneMatrices", "outBoneCount", "outSolved"):
             try:
                 drivers = cmds.listConnections(
