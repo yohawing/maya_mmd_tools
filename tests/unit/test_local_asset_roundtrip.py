@@ -23,6 +23,7 @@ from tools.local_asset_roundtrip import (
     _require_import_success,
     _repetitions,
     _run_warm_vmd_export_samples,
+    _skip_warm_vmd_export_samples,
     _run_worker,
     _compare_motion_morph_witness_values,
     _select_cases,
@@ -246,6 +247,68 @@ def test_dense_worker_runs_full_case_once_and_passes_warm_count(monkeypatch, tmp
     assert len(document["runs"]) == 1
     assert document["warm_runs"] == 3
     assert document["status"] == "pass"
+
+
+def test_cold_budget_failure_records_warm_samples_as_skipped(monkeypatch, tmp_path):
+    context = SimpleNamespace(export_write_budget_sec=60.0)
+    cold_budget = {
+        "phase": "export_write",
+        "classification": "performance_timeout",
+        "expected_sec": 60.0,
+        "actual_sec": 114.0,
+    }
+
+    samples = _skip_warm_vmd_export_samples(tmp_path, context, 3, cold_budget)
+
+    assert [sample["status"] for sample in samples] == ["skipped"] * 3
+    assert [sample["skip_reason"] for sample in samples] == [
+        "skipped_due_to_cold_budget"
+    ] * 3
+    assert all(sample["failure_classification"] == "performance_timeout" for sample in samples)
+    assert all(not sample["output_written"] for sample in samples)
+    assert all((tmp_path / f"warm-export-{index:02d}.json").is_file() for index in range(1, 4))
+
+
+def test_worker_fails_closed_when_warm_samples_are_skipped(monkeypatch, tmp_path):
+    config_path = tmp_path / "worker-config.json"
+    result_path = tmp_path / "worker-result.json"
+    checkpoint = tmp_path / "phase-status.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "case": {"name": "dense", "classification": "dense", "vmd": "motion.vmd"},
+                "out_dir": str(tmp_path / "case"),
+                "repetitions": 1,
+                "warm_runs": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("tools.local_asset_roundtrip._initialize_maya", lambda: None)
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._run_vmd_case",
+        lambda case, out_dir, context, *, warm_runs=0: {
+            "status": "pass",
+            "export_samples": {
+                "cold": [{"status": "fail"}],
+                "warm": [
+                    {
+                        "status": "skipped",
+                        "skip_reason": "skipped_due_to_cold_budget",
+                        "failure_classification": "performance_timeout",
+                        "error": "cold export_write exceeded budget",
+                    }
+                ]
+                * warm_runs,
+            },
+        },
+    )
+
+    assert _run_worker(config_path, result_path, checkpoint, 60.0) == 1
+    document = json.loads(result_path.read_text(encoding="utf-8"))
+    assert document["status"] == "fail"
+    assert document["runs"][0]["failure_classification"] == "performance_timeout"
 
 
 def test_mode_c_semantics_allows_dense_key_inflation_but_requires_tracks():

@@ -1772,6 +1772,41 @@ def _run_warm_vmd_export_samples(
     return samples
 
 
+def _skip_warm_vmd_export_samples(
+    out_dir: Path,
+    context: _WorkerContext,
+    warm_runs: int,
+    cold_budget_evidence: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Record warm samples skipped after a cold export budget violation."""
+
+    samples: list[dict[str, Any]] = []
+    for sample_index in range(warm_runs):
+        sample_number = sample_index + 1
+        sample = {
+            "index": sample_number,
+            "temperature": "warm",
+            "status": "skipped",
+            "skip_reason": "skipped_due_to_cold_budget",
+            "failure_classification": "performance_timeout",
+            "output": str(out_dir / f"motion-warm-{sample_number:02d}.vmd"),
+            "output_written": False,
+            "error": (
+                "warm export skipped because cold export_write exceeded budget: "
+                f"expected={cold_budget_evidence['expected_sec']:g}s "
+                f"actual={cold_budget_evidence['actual_sec']:g}s"
+            ),
+            "performance_evidence": {
+                "export_write_budget_sec": context.export_write_budget_sec,
+                "cold_violation": dict(cold_budget_evidence),
+            },
+            "phase_timing": [],
+        }
+        samples.append(sample)
+        _write_json(out_dir / f"warm-export-{sample_number:02d}.json", sample)
+    return samples
+
+
 def _run_vmd_case(
     case: Mapping[str, Any],
     out_dir: Path,
@@ -1970,16 +2005,20 @@ def _run_vmd_case(
         cold_export_phases,
         context.export_write_budget_sec,
     )
-    warm_samples = _run_warm_vmd_export_samples(
-        case,
-        out_dir,
-        context,
-        workflow,
-        fresh_root,
-        start_frame,
-        end_frame,
-        str(getattr(source_data.header, "model_name", "") or ""),
-        warm_runs,
+    warm_samples = (
+        _skip_warm_vmd_export_samples(out_dir, context, warm_runs, cold_budget_evidence)
+        if cold_budget_evidence
+        else _run_warm_vmd_export_samples(
+            case,
+            out_dir,
+            context,
+            workflow,
+            fresh_root,
+            start_frame,
+            end_frame,
+            str(getattr(source_data.header, "model_name", "") or ""),
+            warm_runs,
+        )
     )
     cold_sample = {
         "index": 1,
