@@ -256,7 +256,7 @@ def request_fingerprint(request: Any) -> str:
             "options",
         ):
             if hasattr(request, name):
-                semantic[name] = getattr(request, name)
+                semantic[name] = _filter_request_value(getattr(request, name))
         if hasattr(request, "file_path"):
             # Explicitly document that an ExportVmdRequest path is not a cache key.
             pass
@@ -545,6 +545,59 @@ class PrepareVmdExportAction:
         if result.error is not None:
             raise result.error
         raise PrepareVmdExportError("VMD preparation did not publish a token")
+
+    def validate_token(self, request: Any, token: PreparedVmdExportToken) -> None:
+        """Assert that a prepared payload still belongs to the live scene.
+
+        Validation deliberately performs discovery and a revision read, but
+        never collects.  ``current_revision`` is the Maya adapter's flush/read
+        boundary, so a key edit queued by Maya cannot be mistaken for a fresh
+        token.  A token is an approval for one semantic request only; output
+        and report paths remain excluded by :func:`request_fingerprint`.
+        """
+
+        def stale(reason: str) -> None:
+            raise PrepareVmdExportError(f"prepared VMD export token is stale: {reason}")
+
+        if not isinstance(token, PreparedVmdExportToken):
+            stale("token type is invalid")
+
+        try:
+            frame_range, frame_step, _scale, mode = _normalize_frame_options(request)
+            discovery = _normalize_discovery(self._backend.discover(request), request)
+            revision = _require_identity(
+                _revision_method(self._revision_provider, request, discovery),
+                "revision",
+            )
+        except PrepareVmdExportError as exc:
+            stale(str(exc))
+        except Exception as exc:
+            stale(f"scene route could not be rediscovered: {type(exc).__name__}: {exc}")
+
+        if token.schema_version != PREPARED_VMD_EXPORT_SCHEMA_VERSION:
+            stale("schema version does not match")
+        if token.scene_session_id != discovery.scene_session_id:
+            stale("scene session does not match")
+        if token.target_uuid != discovery.target_uuid:
+            stale("target UUID does not match")
+        if token.target_identity != discovery.target_identity:
+            stale("target identity does not match")
+        if token.dependency_closure_fingerprint != discovery.dependency_closure_fingerprint:
+            stale("dependency closure does not match")
+        if token.revision != revision:
+            stale("scene revision does not match")
+        if token.mode != mode:
+            stale("mode does not match")
+        if tuple(token.frame_range) != frame_range:
+            stale("frame range does not match")
+        if token.frame_step != frame_step:
+            stale("frame step does not match")
+        if token.semantic_options_fingerprint != request_fingerprint(request):
+            stale("semantic request does not match")
+        if not isinstance(token.prepared_payload, FrozenVmdDataView):
+            stale("prepared payload type is invalid")
+        if token.prepared_payload.fingerprint != token.payload_fingerprint:
+            stale("payload fingerprint does not match")
 
 
 def _cache_id(*parts: str) -> str:

@@ -1,6 +1,6 @@
 """Unit coverage for the immutable Mode C VMD preparation seam."""
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 import unittest
 
 from mmd_tools.actions.prepare_vmd_export_action import (
@@ -158,6 +158,43 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
         changed_semantics = dict(changed_outputs, frame_range=(10, 21))
         self.assertNotEqual(request_fingerprint(base), request_fingerprint(changed_semantics))
+
+    def test_validate_token_rediscoveres_without_collecting_and_allows_output_change(self):
+        backend = _Backend([_discovery(), _discovery(), _discovery()])
+        revisions = _Revisions(["r1", "r1", "r1"])
+        action = PrepareVmdExportAction(backend, revisions)
+        token = action.prepare(_request())
+
+        action.validate_token(_request(options={"output_path": "other.vmd"}), token)
+
+        self.assertEqual(backend.collect_calls, 1)
+        self.assertEqual(backend.discover_calls, 3)
+        self.assertEqual(revisions.arm_calls, 1)
+
+    def test_validate_token_rejects_stale_revision_with_stable_error(self):
+        backend = _Backend([_discovery(), _discovery(), _discovery()])
+        revisions = _Revisions(["r1", "r1", "r2"])
+        action = PrepareVmdExportAction(backend, revisions)
+        token = action.prepare(_request())
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"^prepared VMD export token is stale: scene revision does not match$",
+        ):
+            action.validate_token(_request(), token)
+        self.assertEqual(backend.collect_calls, 1)
+
+    def test_validate_token_rejects_payload_fingerprint_tampering(self):
+        backend = _Backend([_discovery(), _discovery(), _discovery()])
+        revisions = _Revisions(["r1", "r1", "r1"])
+        action = PrepareVmdExportAction(backend, revisions)
+        token = action.prepare(_request())
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"^prepared VMD export token is stale: payload fingerprint does not match$",
+        ):
+            action.validate_token(_request(), replace(token, payload_fingerprint="sha256:stale"))
 
 
 if __name__ == "__main__":

@@ -6,6 +6,10 @@ from typing import Any, Callable, Dict, Optional
 
 from ..actions.export_model_action import ExportModelAction, ExportModelRequest
 from ..actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
+from ..actions.prepare_vmd_export_action import (
+    PrepareVmdExportError,
+    PrepareVmdExportResult,
+)
 from ..validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
@@ -31,6 +35,7 @@ class ExportWorkflowRequest:
     options: Dict[str, Any]
     model_data: Any = None
     animation_data: Any = None
+    prepared_vmd_token: Any = None
 
 
 @dataclass
@@ -117,10 +122,51 @@ class ExportWorkflowService:
         scene_service: Any = None,
         model_action: Optional[ExportModelAction] = None,
         vmd_action: Optional[ExportVmdAction] = None,
+        prepare_vmd_action: Any = None,
     ):
         self.model_action = model_action or ExportModelAction()
         self.vmd_action = vmd_action or ExportVmdAction()
+        self.prepare_vmd_action = prepare_vmd_action
         self.scene_preflight = scene_preflight or ScenePreflight(scene_service=scene_service)
+
+    def prepare_vmd(self, request: ExportWorkflowRequest) -> Any:
+        """Prepare one reusable Mode C payload through the public workflow."""
+        if self.prepare_vmd_action is None:
+            raise PrepareVmdExportError("prepared VMD export action is not configured")
+        options = self._options(request)
+        scene_result = self.scene_preflight.run(options)
+        if scene_result.report.is_blocking:
+            issue_codes = ", ".join(issue.code for issue in scene_result.report.issues)
+            return PrepareVmdExportResult(
+                status="failed",
+                error=PrepareVmdExportError(
+                    f"VMD preparation scene preflight blocked: {issue_codes}"
+                ),
+            )
+        execute = getattr(self.prepare_vmd_action, "execute", None)
+        if not callable(execute):
+            raise TypeError("prepare_vmd_action must expose execute(request)")
+        prepared_request = ExportWorkflowRequest(
+            request.file_path,
+            self._target_options(options, scene_result.metadata),
+            model_data=request.model_data,
+            animation_data=request.animation_data,
+        )
+        return execute(prepared_request)
+
+    def _prepared_vmd_request(
+        self,
+        request: ExportWorkflowRequest,
+        metadata: Mapping[str, Any],
+    ) -> ExportWorkflowRequest:
+        """Apply the same Current Model projection used by export."""
+        return ExportWorkflowRequest(
+            request.file_path,
+            self._target_options(self._options(request), metadata),
+            model_data=request.model_data,
+            animation_data=request.animation_data,
+            prepared_vmd_token=request.prepared_vmd_token,
+        )
 
     @staticmethod
     def _emit_progress(progress_callback: Optional[Callable[[str], None]], stage: str) -> None:
@@ -228,11 +274,22 @@ class ExportWorkflowService:
                     )
             elif export_format == "vmd":
                 self._emit_progress(progress_callback, "payload_collection")
-                payload = self._collect_vmd(
-                    request,
-                    self._target_options(options, metadata),
-                    mode=mode,
-                )
+                if request.prepared_vmd_token is not None:
+                    if self.prepare_vmd_action is None:
+                        raise PrepareVmdExportError(
+                            "prepared VMD export action is not configured"
+                        )
+                    self.prepare_vmd_action.validate_token(
+                        self._prepared_vmd_request(request, metadata),
+                        request.prepared_vmd_token,
+                    )
+                    payload = request.prepared_vmd_token.copy_for_export()
+                else:
+                    payload = self._collect_vmd(
+                        request,
+                        self._target_options(options, metadata),
+                        mode=mode,
+                    )
                 raw_provenance = getattr(payload, "raw_provenance", None)
                 if options.get("raw_provenance") is None and raw_provenance is not None:
                     options["raw_provenance"] = raw_provenance
