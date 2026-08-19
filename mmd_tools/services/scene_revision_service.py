@@ -240,6 +240,18 @@ class SceneRevisionService:
             watch._disable()
             return watch
 
+        # Maya may defer animation-edit notifications until an explicit
+        # flush. Drain edits which happened before this watch existed before
+        # registering its callback, so the new watch starts from a clean
+        # baseline. Edits queued after registration are still flushed by
+        # ``current_revision`` and invalidate the watch normally.
+        try:
+            self._get_oma().MAnimMessage.flushAnimKeyframeEditedCallbacks()
+        except Exception:
+            watch = SceneRevisionWatch(self, dependency_uuids)
+            watch._disable()
+            return watch
+
         watch = SceneRevisionWatch(self, dependency_uuids)
         self._handles.add(watch)
         try:

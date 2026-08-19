@@ -106,12 +106,24 @@ class _FakeAnimMessage(_CallbackOwner):
     def __init__(self, name, log):
         super().__init__(name, log)
         self.flush_count = 0
+        self.callbacks = []
+        self.pending_edits = []
 
     def addAnimCurveEditedCallback(self, *args):
-        return self._add("anim-curve", args)
+        callback_id = self._add("anim-curve", args)
+        self.callbacks.append((callback_id, args))
+        return callback_id
+
+    def queue_edit(self, *objects):
+        self.pending_edits.append(list(objects))
 
     def flushAnimKeyframeEditedCallbacks(self):
         self.flush_count += 1
+        pending = self.pending_edits
+        self.pending_edits = []
+        for objects in pending:
+            for _callback_id, (callback, client_data) in list(self.callbacks):
+                callback(objects, client_data)
 
 
 class _FakeMessage(_CallbackOwner):
@@ -223,6 +235,45 @@ class TestSceneRevisionService(unittest.TestCase):
     def test_current_revision_flushes_pending_animation_callbacks(self):
         self.assertEqual(self.service.current_revision(), 0)
         self.assertEqual(self.oma.MAnimMessage.flush_count, 1)
+
+    def test_arm_discards_preexisting_pending_animation_edits(self):
+        self.oma.MAnimMessage.queue_edit(self.node)
+
+        watch = self.service.arm([self.node])
+
+        self.assertTrue(watch.usable)
+        self.assertTrue(watch.current)
+        self.assertEqual(self.service.revision, 0)
+        self.assertEqual(self.oma.MAnimMessage.flush_count, 1)
+        self.assertEqual(self.service.current_revision(), 0)
+        self.assertTrue(watch.usable)
+        self.assertEqual(self.oma.MAnimMessage.flush_count, 2)
+
+    def test_current_revision_invalidates_post_arm_pending_animation_edits(self):
+        watch = self.service.arm([self.node])
+        self.oma.MAnimMessage.queue_edit(self.node)
+
+        revision = self.service.current_revision()
+
+        self.assertEqual(revision, 1)
+        self.assertTrue(watch.stale)
+        self.assertFalse(watch.usable)
+        self.assertEqual(self.oma.MAnimMessage.flush_count, 2)
+
+    def test_arm_flush_failure_returns_disabled_watch_without_callbacks(self):
+        def fail_flush():
+            raise RuntimeError("flush failed")
+
+        self.oma.MAnimMessage.flushAnimKeyframeEditedCallbacks = fail_flush
+
+        watch = self.service.arm([self.node])
+
+        self.assertTrue(watch.disabled)
+        self.assertFalse(watch.usable)
+        self.assertEqual(
+            [item for item in self.om.log if item[0] == "add"],
+            [],
+        )
 
     def test_name_destroy_undo_redo_and_scene_reset_invalidate(self):
         watch = self.service.arm([self.node])
