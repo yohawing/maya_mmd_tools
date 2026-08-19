@@ -96,6 +96,46 @@ class TestVmdIkAnimation(MayaTestBase):
 
         cmds.delete(left, right)
 
+    def test_apply_ik_enabled_animation_without_properties_sets_default_on_without_key(self):
+        """IK propertyなしでは現在値だけをONにし、min-frame keyを作らない"""
+        node = cmds.createNode("mmdCcdIk", name="default_on_without_property_key_solver")
+        try:
+            cmds.addAttr(node, longName="mmd_ik_bone_name", dataType="string")
+            cmds.setAttr(f"{node}.mmd_ik_bone_name", "左足ＩＫ", type="string")
+            cmds.setAttr(f"{node}.enabled", False)
+
+            apply_ik_enabled_animation(self._ik_enabled_context(), create_test_vmd_data())
+
+            self.assertEqual(cmds.getAttr(f"{node}.enabled"), True)
+            self.assertFalse(cmds.keyframe(f"{node}.enabled", query=True, timeChange=True))
+        finally:
+            if cmds.objExists(node):
+                cmds.delete(node)
+
+    def test_apply_ik_enabled_animation_without_properties_preserves_connected_enabled_curve(self):
+        """IK propertyなしでも既存enabled animCurveの所有権を奪わない"""
+        node = cmds.createNode("mmdCcdIk", name="connected_default_on_solver")
+        try:
+            cmds.addAttr(node, longName="mmd_ik_bone_name", dataType="string")
+            cmds.setAttr(f"{node}.mmd_ik_bone_name", "左足ＩＫ", type="string")
+            cmds.setAttr(f"{node}.enabled", False)
+            cmds.setKeyframe(node, attribute="enabled", time=5.0, value=0)
+            initial_times = cmds.keyframe(f"{node}.enabled", query=True, timeChange=True)
+
+            apply_ik_enabled_animation(self._ik_enabled_context(), create_test_vmd_data())
+
+            self.assertEqual(
+                cmds.keyframe(f"{node}.enabled", query=True, timeChange=True),
+                initial_times,
+            )
+            self.assertEqual(
+                cmds.keyframe(f"{node}.enabled", query=True, time=(5, 5), valueChange=True),
+                [0.0],
+            )
+        finally:
+            if cmds.objExists(node):
+                cmds.delete(node)
+
     def test_apply_ik_enabled_animation_reuses_existing_animcurve_on_reimport(self):
         """再インポート時は接続済み enabled animCurve をそのまま更新する"""
         node = cmds.createNode("mmdCcdIk", name="reimport_ik_solver")
