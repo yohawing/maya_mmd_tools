@@ -36,6 +36,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_BONE_MORPH_BASE,
     INPUT_IK_CONTROLLER,
 )
+from mmd_tools.core.maya_animation_utils import _find_plug as _find_animation_plug
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 from mmd_tools.converters.vmd_camera_animation import (
@@ -207,6 +208,114 @@ def _raw_bone_transform_matches(
         return math.isclose(dot, 1.0, rel_tol=0.0, abs_tol=1.0e-5)
     except (TypeError, ValueError, OverflowError):
         return False
+
+
+def _index_raw_bone_transform_frames(
+    raw_bone_transforms: Mapping[
+        tuple[str, int], tuple[tuple[float, ...], tuple[float, ...]]
+    ],
+) -> dict[str, set[int]]:
+    """Index raw transform frame numbers by bone name in one pass."""
+    result: dict[str, set[int]] = {}
+    for bone_name, frame_number in raw_bone_transforms:
+        result.setdefault(bone_name, set()).add(frame_number)
+    return result
+
+
+class _RoutedPlugValueEvaluator:
+    """Evaluate routed transform plugs without per-scalar ``cmds`` dispatch.
+
+    Maya's API 2.0 value access is intentionally opportunistic here.  Some
+    custom routed plugs are plain numeric attributes rather than unit plugs,
+    and a plug may not be evaluable in the current scene.  Those cases use
+    the established ``cmds.getAttr(time=...)`` path for the affected plug.
+    """
+
+    def __init__(self):
+        self._plugs: dict[tuple[str, str], Any] = {}
+        self._unsupported: set[tuple[str, str]] = set()
+        self._contexts: dict[float, Any] = {}
+        self._context_failed = False
+
+    def value(
+        self,
+        joint: str,
+        attr: str,
+        frame_number: float,
+        route: Mapping[str, tuple[str, str]],
+    ) -> float:
+        node, target_attr = route.get(attr, (joint, attr))
+        key = (str(node), str(target_attr))
+        if key in self._unsupported:
+            return _plug_float(node, target_attr, frame_number)
+        plug = self._plugs.get(key)
+        if plug is None and key not in self._plugs:
+            plug = self._resolve_plug(node, target_attr)
+            self._plugs[key] = plug
+            if plug is None:
+                self._unsupported.add(key)
+                return _plug_float(node, target_attr, frame_number)
+        context = self._context_for_frame(frame_number)
+        if context is None:
+            self._unsupported.add(key)
+            return _plug_float(node, target_attr, frame_number)
+        try:
+            value = self._read_plug(plug, context, attr)
+            if not isinstance(value, (int, float)):
+                raise TypeError("MPlug value is not numeric")
+            return float(value)
+        except (AttributeError, TypeError, ValueError, RuntimeError, OverflowError):
+            self._unsupported.add(key)
+            return _plug_float(node, target_attr, frame_number)
+
+    @staticmethod
+    def _resolve_plug(node: str, attr: str) -> Optional[Any]:
+        try:
+            selection = om.MSelectionList()
+            selection.add(node)
+            dependency_node = om.MFnDependencyNode(selection.getDependNode(0))
+            return _find_animation_plug(dependency_node, attr)
+        except (AttributeError, IndexError, TypeError, ValueError, RuntimeError):
+            return None
+
+    def _context_for_frame(self, frame_number: float) -> Optional[Any]:
+        if self._context_failed:
+            return None
+        key = float(frame_number)
+        if key in self._contexts:
+            return self._contexts[key]
+        try:
+            context = om.MDGContext(om.MTime(key, om.MTime.uiUnit()))
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            self._context_failed = True
+            return None
+        self._contexts[key] = context
+        return context
+
+    @staticmethod
+    def _read_plug(plug: Any, context: Any, attr: str) -> float:
+        if attr.startswith("rotate"):
+            try:
+                angle = plug.asMAngle(context)
+                value = angle.asUnits(om.MAngle.uiUnit())
+                if not isinstance(value, (int, float)):
+                    raise TypeError("MAngle value is not numeric")
+                return float(value)
+            except (AttributeError, TypeError, ValueError, RuntimeError):
+                pass
+        elif attr.startswith("translate"):
+            try:
+                distance = plug.asMDistance(context)
+                value = distance.asUnits(om.MDistance.uiUnit())
+                if not isinstance(value, (int, float)):
+                    raise TypeError("MDistance value is not numeric")
+                return float(value)
+            except (AttributeError, TypeError, ValueError, RuntimeError):
+                pass
+        value = plug.asDouble(context)
+        if not isinstance(value, (int, float)):
+            raise TypeError("MPlug value is not numeric")
+        return float(value)
 
 
 def _read_vmd_import_provenance(target_model: Optional[str]) -> Optional[dict[str, Any]]:
@@ -443,6 +552,8 @@ class VmdSceneCollector:
         rotation_context = _build_rotation_export_context(joints)
         rotation_interpolation = rotation_interpolation or {}
         raw_bone_transforms = raw_bone_transforms or {}
+        raw_bone_frames_by_name = _index_raw_bone_transform_frames(raw_bone_transforms)
+        value_evaluator = _RoutedPlugValueEvaluator()
         frames = []
         dense_frames = (
             list(dense_frame_samples)
@@ -482,11 +593,7 @@ class VmdSceneCollector:
                 start_frame,
                 end_frame,
             )
-            raw_provenance_frames = {
-                frame_number
-                for source_name, frame_number in raw_bone_transforms
-                if source_name == bone_name
-            }
+            raw_provenance_frames = raw_bone_frames_by_name.get(bone_name, set())
             has_new_authored_key = bool(
                 raw_provenance_frames
                 and set(sparse_frames).difference(raw_provenance_frames)
@@ -506,9 +613,9 @@ class VmdSceneCollector:
             for frame_number in keyed_frames:
                 rotation = _maya_joint_rotate_to_vmd_quaternion(
                     joint,
-                    _routed_plug_float(joint, "rotateX", frame_number, route),
-                    _routed_plug_float(joint, "rotateY", frame_number, route),
-                    _routed_plug_float(joint, "rotateZ", frame_number, route),
+                    value_evaluator.value(joint, "rotateX", frame_number, route),
+                    value_evaluator.value(joint, "rotateY", frame_number, route),
+                    value_evaluator.value(joint, "rotateZ", frame_number, route),
                     rotation_context.get(str(long_names[0])),
                 )
                 vmd_frame = _vmd_frame_number(frame_number, time_converter)
@@ -517,9 +624,9 @@ class VmdSceneCollector:
                         "frame_number": vmd_frame,
                         "position": _maya_translate_to_vmd_position(
                             (
-                                _routed_plug_float(joint, "translateX", frame_number, route),
-                                _routed_plug_float(joint, "translateY", frame_number, route),
-                                _routed_plug_float(joint, "translateZ", frame_number, route),
+                                value_evaluator.value(joint, "translateX", frame_number, route),
+                                value_evaluator.value(joint, "translateY", frame_number, route),
+                                value_evaluator.value(joint, "translateZ", frame_number, route),
                             ),
                             bind_pose,
                             motion_scale,

@@ -199,6 +199,156 @@ class TestVmdSceneCollector(unittest.TestCase):
         collector_module.cmds = self.original_cmds
         collector_module.read_mmd_control_rig_metadata = self.original_read_control_rig_metadata
 
+    def test_api_routed_plug_evaluator_reuses_handles_and_ui_units(self):
+        class FakeTime:
+            instances = []
+
+            @classmethod
+            def uiUnit(cls):
+                return "ui-time"
+
+            def __init__(self, value, unit):
+                self.value = float(value)
+                self.unit = unit
+                self.__class__.instances.append(self)
+
+        class FakeContext:
+            instances = []
+
+            def __init__(self, time):
+                self.time = time
+                self.__class__.instances.append(self)
+
+        class FakeAngle:
+            units = []
+
+            def __init__(self, value):
+                self.value = value
+
+            def asUnits(self, unit):
+                self.__class__.units.append(unit)
+                return self.value
+
+        class FakeDistance:
+            units = []
+
+            def __init__(self, value):
+                self.value = value
+
+            def asUnits(self, unit):
+                self.__class__.units.append(unit)
+                return self.value
+
+        class FakePlug:
+            def __init__(self, attr):
+                self.attr = attr
+
+            def asMAngle(self, _context):
+                if not self.attr.startswith("rotate"):
+                    raise TypeError("not an angle plug")
+                return FakeAngle(10.0 + len(self.attr))
+
+            def asMDistance(self, _context):
+                if not self.attr.startswith("translate"):
+                    raise TypeError("not a distance plug")
+                return FakeDistance(20.0 + len(self.attr))
+
+            def asDouble(self, _context):
+                return 99.0
+
+        class FakeSelection:
+            calls = []
+
+            def __init__(self):
+                self.node = None
+
+            def add(self, node):
+                self.node = node
+                self.__class__.calls.append(node)
+
+            def getDependNode(self, _index):
+                return self.node
+
+        class FakeDependencyNode:
+            def __init__(self, node):
+                self.node = node
+
+            def findPlug(self, attr, _networked):
+                return FakePlug(attr)
+
+        class FakeUnit:
+            @staticmethod
+            def uiUnit():
+                return "ui-unit"
+
+        original_om = collector_module.om
+        collector_module.om = SimpleNamespace(
+            MSelectionList=FakeSelection,
+            MFnDependencyNode=FakeDependencyNode,
+            MTime=FakeTime,
+            MDGContext=FakeContext,
+            MAngle=FakeUnit,
+            MDistance=FakeUnit,
+        )
+        try:
+            evaluator = collector_module._RoutedPlugValueEvaluator()
+            values = [
+                evaluator.value("joint", attr, 12.5, {})
+                for attr in collector_module._BONE_EXPORT_ATTRS
+            ]
+            repeated = evaluator.value("joint", "rotateX", 12.5, {})
+        finally:
+            collector_module.om = original_om
+
+        self.assertEqual(
+            values,
+            [30.0, 30.0, 30.0, 17.0, 17.0, 17.0],
+        )
+        self.assertEqual(repeated, 17.0)
+        self.assertEqual(FakeSelection.calls, ["joint"] * 6)
+        self.assertEqual(len(FakeTime.instances), 1)
+        self.assertEqual(FakeTime.instances[0].unit, "ui-time")
+        self.assertEqual(len(FakeContext.instances), 1)
+        self.assertEqual(FakeAngle.units, ["ui-unit"] * 4)
+        self.assertEqual(FakeDistance.units, ["ui-unit"] * 3)
+
+    def test_api_routed_plug_evaluator_falls_back_and_caches_unsupported_plug(self):
+        class BrokenSelection:
+            calls = 0
+
+            def __init__(self):
+                self.__class__.calls += 1
+
+            def add(self, _node):
+                raise RuntimeError("unsupported test plug")
+
+        original_om = collector_module.om
+        collector_module.om = SimpleNamespace(MSelectionList=BrokenSelection)
+        self.cmds.attrs[("joint", "translateX")] = 4.25
+        try:
+            evaluator = collector_module._RoutedPlugValueEvaluator()
+            first = evaluator.value("joint", "translateX", 3.0, {})
+            self.cmds.attrs[("joint", "translateX")] = 8.5
+            second = evaluator.value("joint", "translateX", 4.0, {})
+        finally:
+            collector_module.om = original_om
+
+        self.assertEqual(first, 4.25)
+        self.assertEqual(second, 8.5)
+        self.assertEqual(BrokenSelection.calls, 1)
+
+    def test_indexes_raw_transform_frames_once_by_bone(self):
+        raw = {
+            ("center", 0): ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+            ("center", 10): ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+            ("arm", 4): ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+        }
+
+        self.assertEqual(
+            collector_module._index_raw_bone_transform_frames(raw),
+            {"center": {0, 10}, "arm": {4}},
+        )
+
     def test_collects_bone_frames_from_mmd_named_joints(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
