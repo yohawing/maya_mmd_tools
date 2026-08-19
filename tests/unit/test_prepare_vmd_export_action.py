@@ -1,8 +1,13 @@
 """Unit coverage for the immutable Mode C VMD preparation seam."""
 
 from dataclasses import FrozenInstanceError, replace
+import hashlib
 from pathlib import Path
+import shutil
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from mmd_tools.actions.prepare_vmd_export_action import (
     PrepareVmdExportAction,
@@ -11,6 +16,7 @@ from mmd_tools.actions.prepare_vmd_export_action import (
     request_fingerprint,
 )
 from mmd_tools.actions.prepared_vmd_artifact import stage_vmd_artifact
+from mmd_tools.actions.prepared_vmd_artifact import PreparedVmdArtifactReceipt
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from mmd_tools.validation.export_validator import ExportValidationIssue, ExportValidationReport
@@ -78,6 +84,124 @@ class _HeadlessExporter:
     def export_vmd_animation(file_path, vmd_data):
         vmd_data.write_file(file_path)
         return vmd_data
+
+
+class _StreamingSession:
+    instances = []
+
+    def __init__(self, model_name, *, mode, output_verifier, expected_frame_range=None):
+        self.model_name = model_name
+        self.mode = mode
+        self.output_verifier = output_verifier
+        self.expected_frame_range = expected_frame_range
+        self.finished = False
+        self.cleaned = False
+        self.promote_warning = None
+        self.directory = Path(tempfile.mkdtemp(prefix="mmd-test-stream-"))
+        self.path = self.directory / "prepared.vmd"
+        self.path.write_bytes(b"stream-stage")
+        type(self).instances.append(self)
+
+    def begin_section(self, section):
+        del section
+
+    def write_frame(self, section, frame):
+        del section, frame
+
+    def set_expected_frame_range(self, frame_range):
+        self.expected_frame_range = frame_range
+
+    def finish_collection(self):
+        self.finished = True
+        return SimpleNamespace(
+            counts={
+                "bones": 0,
+                "morphs": 0,
+                "cameras": 0,
+                "lights": 0,
+                "shadows": 0,
+                "ik": 0,
+            }
+        )
+
+    def promote(self, *, raw_loss_warning_required=False):
+        self.promote_warning = raw_loss_warning_required
+        digest = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        report = ExportValidationReport(
+            "vmd",
+            (
+                ExportValidationIssue(
+                    "RAW_LOSS_WARNING",
+                    "warning",
+                    False,
+                    "output",
+                    "raw provenance was omitted",
+                ),
+            ),
+            mode="C",
+        )
+        return PreparedVmdArtifactReceipt(
+            schema_version=1,
+            stage_directory=str(self.directory),
+            file_path=str(self.path),
+            sha256=digest,
+            size=self.path.stat().st_size,
+            section_counts={
+                "bone_frames": 1,
+                "morph_frames": 0,
+                "camera_frames": 0,
+                "light_frames": 0,
+                "shadow_frames": 0,
+                "ik_show_hide_frames": 0,
+            },
+            frame_bounds=(4, 4),
+            output_validation_report=report,
+        )
+
+    def cleanup(self):
+        self.cleaned = True
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+
+class _StreamingBackend(_Backend):
+    def __init__(self, discoveries, *, metadata=None, fail=False, legacy_collect=False):
+        super().__init__(discoveries)
+        self.metadata = (
+            {
+                "validation_frame_range": (4, 8),
+                "section_counts": {
+                    "bones": 0,
+                    "morphs": 0,
+                    "cameras": 0,
+                    "lights": 0,
+                    "shadows": 0,
+                    "ik": 0,
+                },
+            }
+            if metadata is None
+            else metadata
+        )
+        self.fail = fail
+        self.legacy_collect = legacy_collect
+        self.stream_calls = 0
+
+    def supports_streaming(self):
+        return True
+
+    def collect(self, request):
+        if self.legacy_collect:
+            return super().collect(request)
+        self.collect_calls += 1
+        raise AssertionError("streaming prepare must not call collect")
+
+    def collect_to_sink(self, request, sink):
+        del request
+        self.stream_calls += 1
+        if self.fail:
+            raise RuntimeError("sink failed")
+        for section in ("bones", "morphs", "cameras", "lights", "shadows", "ik"):
+            sink.begin_section(section)
+        return dict(self.metadata)
 
 
 def _prepare_action(*args, **kwargs):
@@ -162,6 +286,179 @@ def _discovery(**changes):
 
 
 class PrepareVmdExportActionTests(unittest.TestCase):
+    def test_streaming_prepare_bypasses_legacy_collect_and_retains_warning(self):
+        _StreamingSession.instances.clear()
+        backend = _StreamingBackend(
+            [_discovery(model_name="stream-model"), _discovery(model_name="stream-model")],
+            metadata={
+                "validation_frame_range": (4, 8),
+                "section_counts": {
+                    "bones": 0,
+                    "morphs": 0,
+                    "cameras": 0,
+                    "lights": 0,
+                    "shadows": 0,
+                    "ik": 0,
+                },
+                "raw_provenance": {"source": "fixture"},
+            },
+        )
+        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1"]))
+
+        with patch(
+            "mmd_tools.actions.prepare_vmd_export_action.PreparedVmdStageSession",
+            _StreamingSession,
+        ):
+            result = action.execute(_request(options={"ack_warnings": True}))
+
+        self.assertTrue(result.succeeded, result.error)
+        self.assertEqual(backend.stream_calls, 1)
+        self.assertEqual(backend.collect_calls, 0)
+        session = _StreamingSession.instances[0]
+        self.assertEqual(session.model_name, "stream-model")
+        self.assertEqual(session.expected_frame_range, (4, 8))
+        self.assertTrue(session.finished)
+        self.assertTrue(session.promote_warning)
+        self.assertTrue(result.token.validation_report.requires_warning_ack)
+        self.assertEqual(
+            result.token.combined_validation_report,
+            result.token.staged_artifact.output_validation_report,
+        )
+        action.invalidate()
+
+    def test_streaming_sink_failure_cleans_pending_session(self):
+        _StreamingSession.instances.clear()
+        backend = _StreamingBackend(
+            [_discovery(model_name="stream-model"), _discovery(model_name="stream-model")],
+            fail=True,
+        )
+        action = PrepareVmdExportAction(backend, _Revisions(["r1"]))
+        with patch(
+            "mmd_tools.actions.prepare_vmd_export_action.PreparedVmdStageSession",
+            _StreamingSession,
+        ):
+            result = action.execute(_request())
+        self.assertEqual(result.status, "failed")
+        self.assertIsNone(result.token)
+        self.assertTrue(_StreamingSession.instances[0].cleaned)
+
+    def test_streaming_revision_race_cleans_pending_session(self):
+        _StreamingSession.instances.clear()
+        backend = _StreamingBackend(
+            [_discovery(model_name="stream-model"), _discovery(model_name="stream-model")]
+        )
+        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r2"]))
+        with patch(
+            "mmd_tools.actions.prepare_vmd_export_action.PreparedVmdStageSession",
+            _StreamingSession,
+        ):
+            result = action.execute(_request())
+
+        self.assertEqual(result.status, "partial")
+        self.assertIsNone(result.token)
+        self.assertTrue(_StreamingSession.instances[0].cleaned)
+
+    def test_streaming_keyboard_interrupt_cleans_stage_and_is_preserved(self):
+        class CancelBackend(_StreamingBackend):
+            def collect_to_sink(self, request, sink):
+                del request, sink
+                raise KeyboardInterrupt("cancelled")
+
+        _StreamingSession.instances.clear()
+        backend = CancelBackend([_discovery(model_name="stream-model")])
+        action = PrepareVmdExportAction(backend, _Revisions(["r1"]))
+        with patch(
+            "mmd_tools.actions.prepare_vmd_export_action.PreparedVmdStageSession",
+            _StreamingSession,
+        ):
+            with self.assertRaisesRegex(KeyboardInterrupt, "cancelled"):
+                action.execute(_request())
+
+        self.assertTrue(_StreamingSession.instances[0].cleaned)
+
+    def test_streaming_prepare_rejects_missing_or_malformed_bounded_metadata(self):
+        malformed = (
+            {},
+            {"validation_frame_range": (0, 1)},
+            {
+                "validation_frame_range": (True, 1),
+                "section_counts": {},
+            },
+            {
+                "validation_frame_range": (0, 0x1_0000_0000),
+                "section_counts": {},
+            },
+            {
+                "validation_frame_range": (4, 8),
+                "section_counts": {"bones": 1},
+            },
+        )
+        for metadata in malformed:
+            with self.subTest(metadata=metadata):
+                _StreamingSession.instances.clear()
+                backend = _StreamingBackend(
+                    [
+                        _discovery(model_name="stream-model"),
+                        _discovery(model_name="stream-model"),
+                    ],
+                    metadata=metadata,
+                )
+                action = PrepareVmdExportAction(backend, _Revisions(["r1"]))
+                with patch(
+                    "mmd_tools.actions.prepare_vmd_export_action.PreparedVmdStageSession",
+                    _StreamingSession,
+                ):
+                    result = action.execute(_request())
+                self.assertEqual(result.status, "failed")
+                self.assertIsNone(result.token)
+                self.assertTrue(_StreamingSession.instances[0].cleaned)
+
+    def test_streaming_identity_failure_cleans_promoted_receipt_stage(self):
+        class TamperedSession(_StreamingSession):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.promoted = False
+
+            def promote(self, **kwargs):
+                receipt = super().promote(**kwargs)
+                self.promoted = True
+                Path(receipt.file_path).unlink()
+                return receipt
+
+            def cleanup(self):
+                if not self.promoted:
+                    super().cleanup()
+
+        TamperedSession.instances.clear()
+        backend = _StreamingBackend(
+            [_discovery(model_name="stream-model"), _discovery(model_name="stream-model")]
+        )
+        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1"]))
+        with patch(
+            "mmd_tools.actions.prepare_vmd_export_action.PreparedVmdStageSession",
+            TamperedSession,
+        ):
+            result = action.execute(_request())
+
+        self.assertEqual(result.status, "failed")
+        self.assertFalse(TamperedSession.instances[0].directory.exists())
+
+    def test_explicit_legacy_seams_are_not_bypassed_by_streaming_backend(self):
+        backend = _StreamingBackend(
+            [_discovery(), _discovery()],
+            legacy_collect=True,
+        )
+        result = _prepare_action(
+            backend,
+            _Revisions(["r1", "r1"]),
+            stage_factory=_legacy_stage_factory,
+        ).execute(_request())
+
+        self.assertTrue(result.succeeded, result.error)
+        self.assertEqual(backend.collect_calls, 1)
+        self.assertEqual(backend.stream_calls, 0)
+        result.token.staged_artifact.cleanup()
+
     def test_prepare_stages_the_collected_payload_without_a_second_snapshot(self):
         backend = _Backend([_discovery(), _discovery()])
         staged_payloads = []

@@ -148,6 +148,34 @@ class _FakeCollector:
         return {"bone_frames": [], "morph_frames": []}
 
 
+class _StreamingCollector(_FakeCollector):
+    def __init__(self):
+        super().__init__()
+        self.stream_calls = []
+        self.diagnostics = {
+            "track_selection": {"counts": {"direct": 1}},
+            "streaming": {"enabled": True},
+        }
+
+    def collect_to_sink(self, options, sink):
+        self.stream_calls.append((dict(options), sink))
+        for section in ("bones", "morphs", "cameras", "lights", "shadows", "ik"):
+            sink.begin_section(section)
+        return {
+            "model_name": "fixture",
+            "validation_frame_range": (0, 10),
+            "raw_provenance": False,
+        }
+
+
+class _FakeSink:
+    def __init__(self):
+        self.sections = []
+
+    def begin_section(self, section):
+        self.sections.append(section)
+
+
 def _request(**options):
     values = {
         "current_model_root": "|model",
@@ -193,6 +221,16 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         self.cmds.type_by_node["|other"] = "network"
         changed = self.backend.discover(_request())
         self.assertNotEqual(first.dependency_closure_fingerprint, changed.dependency_closure_fingerprint)
+
+    def test_model_name_prefers_request_then_mmd_attribute_then_identity(self):
+        self.cmds.getAttr = lambda plug: "Imported Name" if plug == "|model.mmd_model_name" else None
+        self.assertEqual(self.backend.discover(_request()).model_name, "Imported Name")
+        self.assertEqual(
+            self.backend.discover(_request(model_name="Requested Name")).model_name,
+            "Requested Name",
+        )
+        self.cmds.getAttr = lambda plug: None
+        self.assertEqual(self.backend.discover(_request()).model_name, "|model")
 
     def test_upstream_closure_does_not_expand_downstream_scene(self):
         self.cmds.uuid_by_node["|consumer"] = "uuid-consumer"
@@ -293,6 +331,32 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         self.assertIn("dict_to_vmd_data", diagnostics)
         self.assertEqual(diagnostics["vmd_data_sections"]["bone_frames"], 0)
         self.assertGreaterEqual(diagnostics["collect_total"], 0.0)
+
+    def test_stream_capability_is_explicit_and_bypasses_converter(self):
+        collector = _StreamingCollector()
+        converter_calls = []
+        backend = MayaVmdPrepareBackend(
+            self.cmds,
+            collector=collector,
+            converter=lambda payload: converter_calls.append(payload),
+            revision_service=self.service,
+            mobject_resolver=lambda node: self.mobjects.setdefault(node, object()),
+        )
+        self.assertTrue(backend.supports_streaming())
+        discovery = backend.discover(_request(model_name="header"))
+        backend.arm(_request(model_name="header"), discovery)
+        sink = _FakeSink()
+        result = backend.collect_to_sink(_request(model_name="header"), sink)
+
+        self.assertEqual(len(collector.stream_calls), 1)
+        self.assertEqual(collector.calls, [])
+        self.assertEqual(converter_calls, [])
+        self.assertEqual(sink.sections, ["bones", "morphs", "cameras", "lights", "shadows", "ik"])
+        self.assertEqual(result["validation_frame_range"], [0, 10])
+        self.assertIn("track_selection", backend.diagnostics["collector"])
+
+    def test_legacy_injected_collector_does_not_claim_stream_capability(self):
+        self.assertFalse(self.backend.supports_streaming())
 
     def test_optional_diagnostics_sink_is_wired_through_factory_and_backend(self):
         events = []

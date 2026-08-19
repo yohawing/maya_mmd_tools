@@ -20,6 +20,7 @@ from ..actions.prepare_vmd_export_action import (
     VMD_MODE_C,
     VmdExportDiscovery,
 )
+from ..core.constants import ATTR_MMD_MODEL_NAME
 from ..validation.snapshot import fingerprint_payload
 
 
@@ -36,6 +37,7 @@ class MayaVmdExportRoute:
     dependency_nodes: tuple[str, ...]
     dependency_uuids: tuple[str, ...]
     dependency_fingerprint: str
+    model_name: str = ""
 
 
 def _field(value: Any, name: str, *aliases: str) -> Any:
@@ -191,6 +193,7 @@ class MayaVmdPrepareBackend:
         started = time.perf_counter()
         options = self._validated_options(request)
         target_model = self._resolve_target_model(options)
+        model_name = self._resolve_model_name(options, target_model)
         target_uuid = self._stable_uuid(target_model)
         closure_started = time.perf_counter()
         records, topology = self._dependency_closure(target_model, options)
@@ -209,6 +212,7 @@ class MayaVmdPrepareBackend:
             dependency_nodes=tuple(sorted(record[1] for record in records)),
             dependency_uuids=tuple(sorted(record[0] for record in records)),
             dependency_fingerprint=dependency_fingerprint,
+            model_name=model_name,
         )
         self._active_route = route
         self._diagnostics["dependency_discovery"] = {
@@ -227,6 +231,7 @@ class MayaVmdPrepareBackend:
             dependency_closure_fingerprint=dependency_fingerprint,
             cache_id=cache_id,
             route=route,
+            model_name=model_name,
         )
 
     def arm(self, request: Any, discovery: VmdExportDiscovery) -> Any:
@@ -302,44 +307,12 @@ class MayaVmdPrepareBackend:
     def collect(self, request: Any) -> Any:
         """Collect one Mode C payload through the production collector."""
 
-        options = self._validated_options(request)
-        if self._active_route is None:
-            raise PrepareVmdExportError("VMD route was not discovered before collection")
-        target_model = self._resolve_target_model(options)
-        if target_model != self._active_route.target_model:
-            raise PrepareVmdExportError("Current Model changed before collection")
-        watch = self._active_watch
-        if watch is None or not self._watch_usable(watch):
-            raise PrepareVmdExportError("scene revision watch is disabled or stale")
-        collector = self._collector
-        if collector is None:
-            from ..converters.vmd_scene_collector import VmdSceneCollector
-            from .native_vmd_batch_sampler import NativeVmdBatchSampler
-
-            sampler = self._bone_channel_sampler
-            if sampler is None:
-                sampler = NativeVmdBatchSampler(self._cmds_api())
-                self._bone_channel_sampler = sampler
-            collector = VmdSceneCollector(
-                diagnostics_sink=self._diagnostics_sink,
-                bone_channel_sampler=sampler,
-            )
+        collector, collector_options = self._collection_context(request)
         collect = getattr(collector, "collect", None)
         if not callable(collect):
             if not callable(collector):
                 raise PrepareVmdExportError("VMD collector is not callable")
             collect = collector
-        # Each invocation gets a new dict.  A collector must not mutate the
-        # route cached by discovery or affect a later export.
-        collector_options = dict(self._active_route.collector_options)
-        collector_options.update(
-            {
-                "target_model": target_model,
-                "vmd_mode": VMD_MODE_C,
-                "mode": VMD_MODE_C,
-                "preserve_raw_bone_transforms": False,
-            }
-        )
         collect_started = time.perf_counter()
         try:
             payload = collect(collector_options)
@@ -355,18 +328,7 @@ class MayaVmdPrepareBackend:
             "wall_sec": round(time.perf_counter() - collect_started, 6),
             "status": "completed",
         }
-        collector_diagnostics = getattr(collector, "diagnostics_copy", None)
-        if callable(collector_diagnostics):
-            collector_diagnostics = collector_diagnostics()
-        elif collector_diagnostics is None:
-            collector_diagnostics = getattr(collector, "diagnostics", None)
-        if collector_diagnostics:
-            self._diagnostics["collector"] = _copy_diagnostics(collector_diagnostics)
-            native_diagnostics = collector_diagnostics.get("native_sampler")
-            if native_diagnostics is not None:
-                self._diagnostics["native_sampler"] = _copy_diagnostics(
-                    native_diagnostics
-                )
+        self._record_collector_diagnostics(collector)
         converter = self._converter
         if converter is None:
             from ..io.vmd_exporter import VmdExporter
@@ -411,6 +373,117 @@ class MayaVmdPrepareBackend:
         self._emit_diagnostics()
         return result
 
+    def supports_streaming(self) -> bool:
+        """Report whether the injected collector explicitly supports sinks.
+
+        The adapter itself always has a ``collect_to_sink`` method, but an
+        injected legacy collector must not be selected merely because that
+        method exists on the backend.  A missing collector means production
+        construction is available and is therefore stream-capable.
+        """
+
+        collector = self._collector
+        return collector is None or callable(getattr(collector, "collect_to_sink", None))
+
+    def collect_to_sink(self, request: Any, sink: Any) -> Mapping[str, Any]:
+        """Collect Mode C directly into a VMD stream sink.
+
+        This path deliberately does not invoke the dictionary collector's
+        converter or construct ``VmdData``.  The returned bounded metadata is
+        owned by the caller and contains only collector evidence needed for
+        output verification and diagnostics.
+        """
+
+        if not self.supports_streaming():
+            raise PrepareVmdExportError("injected VMD collector does not support streaming")
+        collector, collector_options = self._collection_context(request)
+        collect_to_sink = getattr(collector, "collect_to_sink", None)
+        if not callable(collect_to_sink):
+            raise PrepareVmdExportError("VMD collector does not expose collect_to_sink(options, sink)")
+        collect_started = time.perf_counter()
+        try:
+            result = collect_to_sink(collector_options, sink)
+        except BaseException as exc:
+            self._diagnostics["raw_collector"] = {
+                "wall_sec": round(time.perf_counter() - collect_started, 6),
+                "status": "failed",
+                "streaming": True,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            self._record_collector_diagnostics(collector)
+            self._emit_diagnostics()
+            raise
+        self._diagnostics["raw_collector"] = {
+            "wall_sec": round(time.perf_counter() - collect_started, 6),
+            "status": "completed",
+            "streaming": True,
+        }
+        self._record_collector_diagnostics(collector)
+        self._diagnostics["collect_total"] = round(
+            time.perf_counter() - collect_started, 6
+        )
+        self._emit_diagnostics()
+        if result is None:
+            return {}
+        if not isinstance(result, Mapping):
+            raise PrepareVmdExportError("streaming VMD collector must return bounded metadata")
+        return _copy_diagnostics(result)
+
+    def _collection_context(self, request: Any) -> tuple[Any, dict[str, Any]]:
+        """Validate the active route and build one isolated collector call."""
+
+        options = self._validated_options(request)
+        if self._active_route is None:
+            raise PrepareVmdExportError("VMD route was not discovered before collection")
+        target_model = self._resolve_target_model(options)
+        if target_model != self._active_route.target_model:
+            raise PrepareVmdExportError("Current Model changed before collection")
+        watch = self._active_watch
+        if watch is None or not self._watch_usable(watch):
+            raise PrepareVmdExportError("scene revision watch is disabled or stale")
+        collector = self._collector
+        if collector is None:
+            from ..converters.vmd_scene_collector import VmdSceneCollector
+            from .native_vmd_batch_sampler import NativeVmdBatchSampler
+
+            sampler = self._bone_channel_sampler
+            if sampler is None:
+                sampler = NativeVmdBatchSampler(self._cmds_api())
+                self._bone_channel_sampler = sampler
+            collector = VmdSceneCollector(
+                diagnostics_sink=self._diagnostics_sink,
+                bone_channel_sampler=sampler,
+            )
+        # Each invocation gets a new dict.  A collector must not mutate the
+        # route cached by discovery or affect a later export.
+        collector_options = dict(self._active_route.collector_options)
+        collector_options.update(
+            {
+                "target_model": target_model,
+                "model_name": self._active_route.model_name,
+                "vmd_mode": VMD_MODE_C,
+                "mode": VMD_MODE_C,
+                "preserve_raw_bone_transforms": False,
+            }
+        )
+        return collector, collector_options
+
+    def _record_collector_diagnostics(self, collector: Any) -> None:
+        collector_diagnostics = getattr(collector, "diagnostics_copy", None)
+        if callable(collector_diagnostics):
+            collector_diagnostics = collector_diagnostics()
+        elif collector_diagnostics is None:
+            collector_diagnostics = getattr(collector, "diagnostics", None)
+        if not isinstance(collector_diagnostics, Mapping):
+            return
+        if collector_diagnostics:
+            self._diagnostics["collector"] = _copy_diagnostics(collector_diagnostics)
+            native_diagnostics = collector_diagnostics.get("native_sampler")
+            if native_diagnostics is not None:
+                self._diagnostics["native_sampler"] = _copy_diagnostics(
+                    native_diagnostics
+                )
+
     def close(self) -> None:
         """Close the active watch at scene/application teardown."""
 
@@ -440,6 +513,22 @@ class MayaVmdPrepareBackend:
         if current != target:
             raise PrepareVmdExportError("target_model does not match Current Model")
         return current
+
+    def _resolve_model_name(self, options: Mapping[str, Any], target_model: str) -> str:
+        """Resolve VMD header name: request, imported model metadata, identity."""
+
+        requested = _field(options, "model_name")
+        if requested is not None and str(requested).strip():
+            return str(requested)
+        getter = getattr(self._cmds_api(), "getAttr", None)
+        if callable(getter):
+            try:
+                value = getter(f"{target_model}.{ATTR_MMD_MODEL_NAME}")
+            except Exception:
+                value = None
+            if value is not None and str(value).strip():
+                return str(value)
+        return target_model
 
     def _collector_options(self, options: Mapping[str, Any], target_model: str) -> dict[str, Any]:
         result = dict(options)
