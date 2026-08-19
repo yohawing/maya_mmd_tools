@@ -79,6 +79,7 @@ set(SOURCES
     MmdAuthoringMorphWeightCommand.cpp
     MmdAuthoringMaterialValueCommand.cpp
     MmdAuthoringMaterialOutlineCommand.cpp
+    MmdVmdBatchSamplerCommand.cpp
 )
 
 set(HEADERS
@@ -100,6 +101,7 @@ set(HEADERS
     MmdAuthoringMorphWeightCommand.h
     MmdAuthoringMaterialValueCommand.h
     MmdAuthoringMaterialOutlineCommand.h
+    MmdVmdBatchSamplerCommand.h
 )
 
 add_library(mmd_tools_cpp SHARED ${SOURCES} ${HEADERS})
@@ -170,6 +172,7 @@ if(WIN32)
     target_link_directories(mmd_tools_cpp PRIVATE ${MAYA_LIB_DIR})
     target_link_libraries(mmd_tools_cpp PRIVATE
         OpenMaya.lib
+        OpenMayaAnim.lib
         OpenMayaRender.lib
         OpenMayaUI.lib
         Foundation.lib
@@ -198,6 +201,7 @@ if(APPLE)
     target_link_directories(mmd_tools_cpp PRIVATE ${MAYA_LIB_DIR})
     target_link_libraries(mmd_tools_cpp PRIVATE
         OpenMaya
+        OpenMayaAnim
         OpenMayaRender
         OpenMayaUI
         Foundation
