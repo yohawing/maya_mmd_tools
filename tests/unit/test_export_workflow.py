@@ -112,8 +112,10 @@ class _RecordingVmdExporter(VmdExporter):
     def __init__(self):
         super().__init__(native_exporter=None)
         self.written_payload = None
+        self.write_calls = 0
 
     def export_vmd_animation(self, file_path, maya_data):
+        self.write_calls += 1
         self.written_payload = maya_data
         maya_data.header.model_name = "writer-mutated"
         return super().export_vmd_animation(file_path, maya_data)
@@ -261,11 +263,11 @@ class _FakeModelAction:
 class TestExportWorkflowService(unittest.TestCase):
     """UI and headless callers share one validation/action boundary."""
 
-    def test_prepared_vmd_token_avoids_recollection_and_writer_gets_copy(self):
+    def test_prepared_vmd_token_publishes_cached_artifact_without_rewriting(self):
         backend = _VmdPrepareBackend()
         revisions = _VmdRevisions()
-        prepare_action = PrepareVmdExportAction(backend, revisions)
         exporter = _RecordingVmdExporter()
+        prepare_action = PrepareVmdExportAction(backend, revisions, exporter=exporter)
         vmd_action = ExportVmdAction(
             exporter=exporter,
             output_verifier=None,
@@ -296,6 +298,10 @@ class TestExportWorkflowService(unittest.TestCase):
         prepared = service.prepare_vmd(request)
         self.assertTrue(prepared.succeeded)
         token = prepared.token
+        self.assertEqual(exporter.write_calls, 1)
+        vmd_action._validator = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("prepared workflow called VMD validator")
+        )
         validation = service.validate(
             ExportWorkflowRequest(
                 "other-motion.vmd",
@@ -315,18 +321,20 @@ class TestExportWorkflowService(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "motion.vmd"
             output_request = ExportWorkflowRequest(
-                str(Path(directory) / "motion.vmd"),
+                str(target),
                 dict(request.options),
                 prepared_vmd_token=token,
             )
             result = service.execute(output_request)
+            self.assertEqual(target.read_bytes(), Path(token.staged_artifact.file_path).read_bytes())
 
         self.assertEqual(result.state, STATE_SUCCEEDED)
         self.assertEqual(backend.collect_calls, 1)
-        self.assertIsNot(exporter.written_payload, token.copy_for_export())
+        self.assertEqual(exporter.write_calls, 1)
         self.assertEqual(token.payload.header.model_name, "WorkflowFixture")
-        self.assertEqual(exporter.written_payload.header.model_name, "writer-mutated")
+        self.assertEqual(result.action_result.payload_fingerprint, token.staged_artifact.sha256)
 
     def test_prepare_vmd_preflight_blocks_before_discovery_or_collection(self):
         backend = _VmdPrepareBackend()

@@ -10,6 +10,7 @@ from ..actions.prepare_vmd_export_action import (
     PrepareVmdExportError,
     PrepareVmdExportResult,
 )
+from ..actions.publish_prepared_vmd_action import publish_prepared_vmd_artifact
 from ..validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
@@ -300,12 +301,16 @@ class ExportWorkflowService:
                         target_identity=metadata.get("target_identity"),
                     )
             elif export_format == "vmd":
-                self._emit_progress(progress_callback, "payload_collection")
-                if mode == "C" and request.prepared_vmd_token is None:
+                prepared_mode_c = (
+                    str(mode or "").upper() == "C"
+                    and request.prepared_vmd_token is not None
+                )
+                if str(mode or "").upper() == "C" and request.prepared_vmd_token is None:
                     raise PrepareVmdExportError(
                         "Mode C VMD export requires a prepared VMD export token"
                     )
-                if request.prepared_vmd_token is not None:
+                if prepared_mode_c:
+                    self._emit_progress(progress_callback, "prepared_artifact_validation")
                     if self.prepare_vmd_action is None:
                         raise PrepareVmdExportError(
                             "prepared VMD export action is not configured"
@@ -314,13 +319,35 @@ class ExportWorkflowService:
                         self._prepared_vmd_request(request, metadata),
                         request.prepared_vmd_token,
                     )
-                    payload = request.prepared_vmd_token.copy_for_export()
-                else:
-                    payload = self._collect_vmd(
-                        request,
-                        self._target_options(options, metadata),
+                    staged_artifact = request.prepared_vmd_token.staged_artifact
+                    staged_artifact.validate_identity()
+                    payload = request.prepared_vmd_token.prepared_payload
+                    report = _combine_reports(
+                        report,
+                        request.prepared_vmd_token.combined_validation_report,
+                        export_format=export_format,
                         mode=mode,
                     )
+                    self._emit_progress(progress_callback, "report_ready")
+                    return ExportWorkflowResult(
+                        STATE_BLOCKED if report.is_blocking else STATE_READY,
+                        report,
+                        metadata,
+                        payload=payload,
+                    )
+                self._emit_progress(progress_callback, "payload_collection")
+                if request.prepared_vmd_token is not None:
+                    # A token is only valid for Mode C.  Keep this explicit so
+                    # a caller cannot smuggle a prepared artifact into a
+                    # legacy Mode A/B request.
+                    raise PrepareVmdExportError(
+                        "prepared VMD export token requires Mode C"
+                    )
+                payload = self._collect_vmd(
+                    request,
+                    self._target_options(options, metadata),
+                    mode=mode,
+                )
                 raw_provenance = getattr(payload, "raw_provenance", None)
                 if options.get("raw_provenance") is None and raw_provenance is not None:
                     options["raw_provenance"] = raw_provenance
@@ -378,7 +405,15 @@ class ExportWorkflowService:
         if acknowledge_warnings:
             options["ack_warnings"] = True
         export_format = validation.metadata.get("format")
-        self._emit_progress(progress_callback, "writer")
+        prepared_mode_c = (
+            export_format == "vmd"
+            and str(validation.metadata.get("mode") or "").upper() == "C"
+            and request.prepared_vmd_token is not None
+        )
+        self._emit_progress(
+            progress_callback,
+            "prepared_artifact_publish" if prepared_mode_c else "writer",
+        )
         try:
             if export_format == "pmx":
                 options["model_data"] = validation.payload
@@ -386,6 +421,24 @@ class ExportWorkflowService:
                 action_result = self.model_action.execute(
                     ExportModelRequest(request.file_path, options)
                 )
+            elif prepared_mode_c:
+                token = request.prepared_vmd_token
+                report_artifacts = None
+                write_report = getattr(self.vmd_action, "_write_requested_report", None)
+                if callable(write_report):
+                    report_artifacts = write_report(
+                        ExportVmdRequest(request.file_path, options),
+                        validation.report,
+                        token.staged_artifact.sha256,
+                        "C",
+                    )
+                action_result = publish_prepared_vmd_artifact(
+                    token.staged_artifact,
+                    request.file_path,
+                    validation_report=validation.report,
+                    payload_fingerprint=token.staged_artifact.sha256,
+                )
+                action_result.validation_report_artifacts = report_artifacts
             else:
                 raw_provenance = getattr(validation.payload, "raw_provenance", None)
                 if options.get("raw_provenance") is None and raw_provenance is not None:
@@ -407,12 +460,17 @@ class ExportWorkflowService:
                 error=exc,
             )
 
-        report = _combine_reports(
-            validation.report,
-            getattr(action_result, "validation_report", None),
-            export_format=export_format,
-            mode=validation.metadata.get("mode") or "model",
-        )
+        if prepared_mode_c:
+            # The prepared token's combined report was already included by
+            # validate(); appending it again would duplicate every issue.
+            report = validation.report
+        else:
+            report = _combine_reports(
+                validation.report,
+                getattr(action_result, "validation_report", None),
+                export_format=export_format,
+                mode=validation.metadata.get("mode") or "model",
+            )
         succeeded = bool(getattr(action_result, "succeeded", False)) and getattr(action_result, "error", None) is None
         return ExportWorkflowResult(
             STATE_SUCCEEDED if succeeded else STATE_FAILED,
