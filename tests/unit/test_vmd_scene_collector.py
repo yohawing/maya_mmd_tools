@@ -594,15 +594,15 @@ class TestVmdSceneCollector(unittest.TestCase):
         ):
             streamed = streamed_collector.collect_to_sink(options, sink)
 
-        legacy_frames = sorted(
+        legacy_frames = [
             (
                 frame["morph_name"],
                 frame["frame_number"],
                 frame["weight"],
             )
             for frame in legacy["morph_frames"]
-        )
-        streamed_frames = sorted(
+        ]
+        streamed_frames = [
             (
                 frame["morph_name"],
                 frame["frame_number"],
@@ -610,8 +610,11 @@ class TestVmdSceneCollector(unittest.TestCase):
             )
             for section, frame in sink.frames
             if section == "morphs"
+        ]
+        self.assertEqual(
+            sorted(streamed_frames),
+            sorted(legacy_frames),
         )
-        self.assertEqual(streamed_frames, legacy_frames)
         streamed_selection = streamed["diagnostics"]["track_selection"]
         legacy_selection = legacy_collector.diagnostics["track_selection"]
         for key in (
@@ -628,6 +631,348 @@ class TestVmdSceneCollector(unittest.TestCase):
         )
         self.assertTrue(spool.closed)
         self.assertLessEqual(spool.read_attempts, 2 * (record_count + 1))
+
+    def _reduce_exact_run(self, values, protected=()):
+        frames = []
+        report = collector_module._new_key_reduction_report(True)["sections"]["morphs"]
+        reducer = collector_module._ExactRunReducer(
+            frames.append,
+            ("weight",),
+            set(protected),
+            report,
+        )
+        for frame_number, value in enumerate(values):
+            reducer.add(
+                {
+                    "morph_name": "morph",
+                    "frame_number": frame_number,
+                    "weight": value,
+                }
+            )
+        reducer.finish()
+        return frames, report
+
+    def test_exact_run_reducer_retains_plateau_endpoints_and_change_sides(self):
+        aaa, _report = self._reduce_exact_run([1.0, 1.0, 1.0])
+        aaabbb, report = self._reduce_exact_run(
+            [1.0, 1.0, 1.0, 2.0, 2.0, 2.0]
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in aaa], [0, 2])
+        self.assertEqual(
+            [frame["frame_number"] for frame in aaabbb], [0, 2, 3, 5]
+        )
+        self.assertEqual(
+            {key: report[key] for key in ("input", "output", "removed")},
+            {"input": 6, "output": 4, "removed": 2},
+        )
+
+    def test_exact_run_reducer_keeps_short_runs_and_protected_interior(self):
+        one, _report = self._reduce_exact_run([1.0])
+        two, _report = self._reduce_exact_run([1.0, 1.0])
+        protected, _report = self._reduce_exact_run(
+            [1.0, 1.0, 1.0], protected={1}
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in one], [0])
+        self.assertEqual([frame["frame_number"] for frame in two], [0, 1])
+        self.assertEqual(
+            [frame["frame_number"] for frame in protected], [0, 1, 2]
+        )
+
+    def test_exact_run_reducer_diagnostics_are_capped(self):
+        values = [value for value in range(70) for _repeat in range(3)]
+        _frames, report = self._reduce_exact_run(values)
+
+        self.assertEqual(len(report["witness_frames"]), 64)
+        self.assertEqual(report["witness_omitted_count"], 6)
+
+    def test_exact_run_reducer_witnesses_exclude_protected_interior(self):
+        _frames, report = self._reduce_exact_run(
+            [0.0, 0.0, 0.0, 0.0, 0.0], protected={2}
+        )
+
+        self.assertEqual(report["witness_frames"], [1, 3])
+        self.assertNotIn(2, report["witness_frames"])
+
+    def test_exact_run_reducer_propagates_sink_failure(self):
+        report = collector_module._new_key_reduction_report(True)["sections"]["bones"]
+
+        def fail(_payload):
+            raise RuntimeError("reducer sink failed")
+
+        reducer = collector_module._ExactRunReducer(
+            fail,
+            ("position", "rotation"),
+            set(),
+            report,
+        )
+        with self.assertRaisesRegex(RuntimeError, "reducer sink failed"):
+            reducer.add(
+                {
+                    "bone_name": "center",
+                    "frame_number": 0,
+                    "position": (0.0, 0.0, 0.0),
+                    "rotation": (0.0, 0.0, 0.0, 1.0),
+                }
+            )
+
+    def test_mode_c_stream_exact_run_reduces_dependency_bone_and_morph(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "center_joint": "joint",
+                "direct_joint": "joint",
+                "face_bs": "blendShape",
+                "driver": "network",
+            }
+        )
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
+        self.cmds.attrs[("direct_joint", ATTR_MMD_BONE_NAME)] = "direct"
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.aliases["face_bs.weight[0]"] = "smile"
+        self.cmds.keys[("center_joint", "translateX")] = {
+            0.0: 0.0,
+            2.0: 0.0,
+            5.0: 1.0,
+        }
+        self.cmds.keys[("face_bs", "weight[0]")] = {
+            0.0: 0.0,
+            2.0: 0.0,
+            5.0: 1.0,
+        }
+        self.cmds.keys[("direct_joint", "translateX")] = {
+            0.0: 0.0,
+            2.0: 0.0,
+            5.0: 1.0,
+        }
+        self.cmds.connections[("center_joint", "translateX", True, False)] = [
+            "driver.output"
+        ]
+        self.cmds.connections[("face_bs", "weight[0]", True, False)] = [
+            "driver.output"
+        ]
+
+        class Sink:
+            def __init__(self):
+                self.frames = []
+
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, section, frame):
+                self.frames.append((section, frame))
+
+        base_options = {
+            "target_model": "model_root",
+            "joints": ["center_joint", "direct_joint"],
+            "blend_shapes": ["face_bs"],
+            "vmd_mode": "C",
+            "frame_range": (0, 5),
+        }
+        reduced_sink = Sink()
+        reduced = VmdSceneCollector(
+            bone_channel_sampler=self._timeline_sampler()
+        ).collect_to_sink(base_options, reduced_sink)
+        dense_sink = Sink()
+        dense = VmdSceneCollector(
+            bone_channel_sampler=self._timeline_sampler()
+        ).collect_to_sink(
+            {**base_options, "mode_c_exact_run_reduction": False}, dense_sink
+        )
+
+        for section in ("bones", "morphs"):
+            reduced_frames = [
+                frame["frame_number"]
+                for emitted_section, frame in reduced_sink.frames
+                if emitted_section == section
+                and (section != "bones" or frame["bone_name"] == "center")
+            ]
+            dense_frames = [
+                frame["frame_number"]
+                for emitted_section, frame in dense_sink.frames
+                if emitted_section == section
+                and (section != "bones" or frame["bone_name"] == "center")
+            ]
+            self.assertEqual(reduced_frames, [0, 2, 4, 5])
+            self.assertEqual(dense_frames, [0, 1, 2, 3, 4, 5])
+            self.assertEqual(
+                reduced["diagnostics"]["key_reduction"]["sections"][section]["removed"],
+                4 if section == "bones" else 2,
+            )
+            self.assertEqual(dense["diagnostics"]["key_reduction"]["sections"][section]["removed"], 0)
+        self.assertEqual(
+            [
+                frame["frame_number"]
+                for section, frame in reduced_sink.frames
+                if section == "bones" and frame["bone_name"] == "direct"
+            ],
+            [0, 2, 4, 5],
+        )
+
+    def test_mode_c_stream_exact_run_protects_global_ik_key_frame(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "center_joint": "joint",
+                "driver": "network",
+                "ik_node": "mmdCcdIk",
+            }
+        )
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
+        self.cmds.keys[("center_joint", "translateX")] = {0.0: 0.0, 5.0: 1.0}
+        self.cmds.keys[("ik_node", "enabled")] = {2.0: 0.0}
+        self.cmds.connections[("center_joint", "translateX", True, False)] = [
+            "driver.output"
+        ]
+
+        class Sink:
+            def __init__(self):
+                self.frames = []
+
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, section, frame):
+                self.frames.append((section, frame))
+
+        sink = Sink()
+        with mock.patch.object(
+            collector_module,
+            "collect_ik_nodes_by_bone_name",
+            return_value={"leg": "ik_node"},
+        ):
+            VmdSceneCollector(
+                bone_channel_sampler=self._timeline_sampler()
+            ).collect_to_sink(
+                {
+                    "target_model": "model_root",
+                    "joints": ["center_joint"],
+                    "blend_shapes": [],
+                    "vmd_mode": "C",
+                    "frame_range": (0, 5),
+                },
+                sink,
+            )
+
+        self.assertEqual(
+            [
+                frame["frame_number"]
+                for section, frame in sink.frames
+                if section == "bones"
+            ],
+            [0, 2, 4, 5],
+        )
+
+    def test_mode_c_stream_bone_frame_collision_is_first_win_for_all_paths(self):
+        self.cmds.current_unit = "ntscf"
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "direct_joint": "joint",
+                "dependency_joint": "joint",
+                "driver": "network",
+            }
+        )
+        self.cmds.attrs[("direct_joint", ATTR_MMD_BONE_NAME)] = "direct"
+        self.cmds.attrs[("dependency_joint", ATTR_MMD_BONE_NAME)] = "dependency"
+        for joint in ("direct_joint", "dependency_joint"):
+            self.cmds.keys[(joint, "translateX")] = {
+                0.0: 0.2,
+                1.0: 0.9,
+                2.0: 0.4,
+            }
+        self.cmds.connections[("dependency_joint", "translateX", True, False)] = [
+            "driver.output"
+        ]
+
+        class Sink:
+            def __init__(self):
+                self.frames = []
+
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, section, frame):
+                if section == "bones":
+                    self.frames.append(frame)
+
+        options = {
+            "target_model": "model_root",
+            "joints": ["direct_joint", "dependency_joint"],
+            "blend_shapes": [],
+            "vmd_mode": "C",
+            "frame_range": (0, 2),
+        }
+        legacy = VmdSceneCollector(
+            bone_channel_sampler=self._timeline_sampler()
+        ).collect(options)["bone_frames"]
+        expected = sorted(
+            (frame["bone_name"], frame["frame_number"], frame["position"])
+            for frame in legacy
+        )
+
+        for reduction_enabled in (True, False):
+            with self.subTest(reduction_enabled=reduction_enabled):
+                sink = Sink()
+                VmdSceneCollector(
+                    bone_channel_sampler=self._timeline_sampler()
+                ).collect_to_sink(
+                    {
+                        **options,
+                        "mode_c_exact_run_reduction": reduction_enabled,
+                    },
+                    sink,
+                )
+                actual = sorted(
+                    (frame["bone_name"], frame["frame_number"], frame["position"])
+                    for frame in sink.frames
+                )
+
+                self.assertEqual(actual, expected)
+                identities = [
+                    (frame["bone_name"], frame["frame_number"])
+                    for frame in sink.frames
+                ]
+                self.assertEqual(len(identities), len(set(identities)))
+
+    def test_mode_c_stream_direct_exact_constant_remains_one_key(self):
+        self.cmds.node_types.update({"model_root": "transform", "face_bs": "blendShape"})
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.aliases["face_bs.weight[0]"] = "smile"
+        self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.5, 5.0: 0.5}
+        self.cmds.attrs[("face_bs", "weight[0]")] = 0.5
+
+        class Sink:
+            def __init__(self):
+                self.frames = []
+
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, section, frame):
+                self.frames.append((section, frame))
+
+        sink = Sink()
+        result = VmdSceneCollector().collect_to_sink(
+            {
+                "target_model": "model_root",
+                "joints": [],
+                "blend_shapes": ["face_bs"],
+                "vmd_mode": "C",
+                "frame_range": (0, 5),
+            },
+            sink,
+        )
+
+        self.assertEqual(
+            [frame["frame_number"] for section, frame in sink.frames if section == "morphs"],
+            [0],
+        )
+        self.assertEqual(
+            result["diagnostics"]["track_selection"]["counts"]["constant_one_key"],
+            1,
+        )
 
     def test_mode_c_requires_timeline_native_sampler(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})

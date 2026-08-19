@@ -108,6 +108,7 @@ _TRACK_SELECTION_DECISIONS = (
     "physics_output_excluded",
 )
 _MAX_TRACK_SELECTION_EVIDENCE = 128
+_MAX_KEY_REDUCTION_WITNESSES = 64
 _MAYA_TIME_UNIT_FPS = {
     "game": 15.0,
     "film": 24.0,
@@ -127,6 +128,120 @@ def _copy_diagnostics(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_copy_diagnostics(item) for item in value]
     return value
+
+
+def _new_key_reduction_report(enabled: bool) -> dict[str, Any]:
+    """Create bounded aggregate evidence for streaming exact-run reduction."""
+
+    return {
+        "enabled": bool(enabled),
+        "algorithm": "exact_maximal_same_signature_runs",
+        "sections": {
+            section: {
+                "input": 0,
+                "output": 0,
+                "removed": 0,
+                "witness_frames": [],
+                "witness_omitted_count": 0,
+            }
+            for section in ("bones", "morphs")
+        },
+    }
+
+
+class _ExactRunReducer:
+    """Retain exact plateau endpoints and protected interior frames online."""
+
+    def __init__(
+        self,
+        emit,
+        signature_keys: Sequence[str],
+        protected_frames: Optional[set[int]],
+        report: dict[str, Any],
+    ):
+        self._emit = emit
+        self._signature_keys = tuple(signature_keys)
+        self._protected_frames = protected_frames or set()
+        self._report = report
+        self._run_signature = None
+        self._run_first = None
+        self._run_last = None
+        self._run_input_count = 0
+        self._run_output_start = 0
+        self._output_count = 0
+        self._run_removed_witnesses = []
+
+    def _signature(self, payload: Mapping[str, Any]) -> tuple[Any, ...]:
+        return tuple(payload.get(key) for key in self._signature_keys)
+
+    def _write(self, payload: Mapping[str, Any]) -> None:
+        self._emit(payload)
+        self._report["output"] += 1
+        self._output_count += 1
+
+    def add(self, payload: Mapping[str, Any]) -> None:
+        """Consume one frame; sink and comparison failures intentionally escape."""
+
+        self._report["input"] += 1
+        signature = self._signature(payload)
+        if self._run_first is None:
+            self._run_signature = signature
+            self._run_first = payload
+            self._run_last = payload
+            self._run_input_count = 1
+            self._run_output_start = self._output_count
+            self._write(payload)
+            return
+        if signature != self._run_signature:
+            self._finish_run()
+            self._run_signature = signature
+            self._run_first = payload
+            self._run_last = payload
+            self._run_input_count = 1
+            self._run_output_start = self._output_count
+            self._write(payload)
+            return
+        previous_last = self._run_last
+        previous_frame = int(previous_last["frame_number"])
+        first_frame = int(self._run_first["frame_number"])
+        if (
+            previous_frame != first_frame
+            and previous_frame not in self._protected_frames
+        ):
+            if len(self._run_removed_witnesses) < _MAX_KEY_REDUCTION_WITNESSES:
+                self._run_removed_witnesses.append(previous_frame)
+        self._run_input_count += 1
+        self._run_last = payload
+        if int(payload["frame_number"]) in self._protected_frames:
+            self._write(payload)
+
+    def _finish_run(self) -> None:
+        if self._run_first is None:
+            return
+        first_frame = int(self._run_first["frame_number"])
+        last_frame = int(self._run_last["frame_number"])
+        if last_frame != first_frame and last_frame not in self._protected_frames:
+            self._write(self._run_last)
+        removed = self._run_input_count - (
+            self._output_count - self._run_output_start
+        )
+        # Aggregate counts are authoritative; witnesses are deliberately capped.
+        if removed > 0:
+            frames = self._report["witness_frames"]
+            available = _MAX_KEY_REDUCTION_WITNESSES - len(frames)
+            if available > 0:
+                frames.extend(self._run_removed_witnesses[:available])
+            omitted = removed - min(removed, available)
+            if omitted:
+                self._report["witness_omitted_count"] += omitted
+        self._run_first = None
+        self._run_last = None
+        self._run_input_count = 0
+        self._run_removed_witnesses = []
+
+    def finish(self) -> None:
+        self._finish_run()
+        self._report["removed"] = self._report["input"] - self._report["output"]
 
 
 def _is_direct_authored_track(node: str, attrs: Sequence[str]) -> bool:
@@ -844,6 +959,9 @@ class VmdSceneCollector:
         self._source_omission_identities = set()
         self._mode_c_physics_output_excluded_targets = set()
         self._diagnostics["track_selection"] = _new_track_selection()
+        exact_run_reduction = bool(options.get("mode_c_exact_run_reduction", True))
+        key_reduction = _new_key_reduction_report(exact_run_reduction)
+        self._diagnostics["key_reduction"] = key_reduction
         section_counts = {
             "bones": 0,
             "morphs": 0,
@@ -871,6 +989,12 @@ class VmdSceneCollector:
             motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
             bone_bind_poses = options.get("bone_bind_poses") or {}
             maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
+            protected_ik_frames = self._mode_c_protected_ik_frames(
+                target_model,
+                start_frame,
+                end_frame,
+                maya_time_to_vmd,
+            )
             self._control_rig_dense_export(target_model)
             rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
             raw_marker = _read_mode_c_raw_loss_marker(target_model)
@@ -920,6 +1044,9 @@ class VmdSceneCollector:
                 raw_bone_transforms=None,
                 bone_channel_sampler=self._bone_channel_sampler,
                 frame_sink=lambda frame: emit("bones", frame),
+                exact_run_reduction=exact_run_reduction,
+                protected_vmd_frames=protected_ik_frames,
+                key_reduction_report=key_reduction["sections"]["bones"],
             )
             begin_section("morphs")
             self.collect_morph_frames(
@@ -932,6 +1059,9 @@ class VmdSceneCollector:
                 dense_frame_samples=mode_c_dense_frames,
                 timeline_evaluation=True,
                 frame_sink=lambda frame: emit("morphs", frame),
+                exact_run_reduction=exact_run_reduction,
+                protected_vmd_frames=protected_ik_frames,
+                key_reduction_report=key_reduction["sections"]["morphs"],
             )
             begin_section("cameras")
             self.collect_camera_frames(
@@ -1241,6 +1371,29 @@ class VmdSceneCollector:
             keyed_times.extend(_key_times(light, _LIGHT_COLOR_ATTRS + _LIGHT_ROTATE_ATTRS))
         return _dense_frame_samples(keyed_times, start_frame, end_frame)
 
+    @staticmethod
+    def _mode_c_protected_ik_frames(
+        target_model: Optional[str],
+        start_frame: Optional[float],
+        end_frame: Optional[float],
+        time_converter,
+    ) -> set[int]:
+        """Return global IK key/transition frames that numeric tracks retain."""
+
+        if not target_model:
+            return set()
+        nodes = collect_ik_nodes_by_bone_name(target_model=target_model)
+        maya_frames = _filter_frame_range(
+            [
+                frame
+                for node in nodes.values()
+                for frame in _key_times(node, ("enabled",))
+            ],
+            start_frame,
+            end_frame,
+        )
+        return {_vmd_frame_number(frame, time_converter) for frame in maya_frames}
+
     def collect_bone_frames(
         self,
         joints: Sequence[str],
@@ -1260,6 +1413,9 @@ class VmdSceneCollector:
         ] = None,
         bone_channel_sampler=None,
         frame_sink=None,
+        exact_run_reduction: bool = False,
+        protected_vmd_frames: Optional[set[int]] = None,
+        key_reduction_report: Optional[dict[str, Any]] = None,
     ) -> list[dict]:
         """Collect keyed or one-frame-sampled local joint transforms.
 
@@ -1664,7 +1820,39 @@ class VmdSceneCollector:
                     else sparse_frames
                 )
                 track_frames = [] if frame_sink is not None else None
-                for frame_number in keyed_frames:
+                protected_track_frames = set(protected_vmd_frames or ())
+                protected_track_frames.update(
+                    _vmd_frame_number(frame, time_converter) for frame in sparse_frames
+                )
+                reducer = None
+                if frame_sink is not None and exact_run_reduction:
+                    reducer = _ExactRunReducer(
+                        frame_sink,
+                        ("position", "rotation", "interpolation"),
+                        protected_track_frames,
+                        key_reduction_report,
+                    )
+
+                def emit_stream_payload(stream_payload, *, reduce=True):
+                    seen_frames = stream_seen_bone_frames.get(bone_name)
+                    if seen_frames is not None:
+                        stream_frame_number = stream_payload["frame_number"]
+                        if stream_frame_number in seen_frames:
+                            return
+                        seen_frames.add(stream_frame_number)
+                    if reducer is not None and reduce:
+                        reducer.add(stream_payload)
+                    else:
+                        if key_reduction_report is not None:
+                            key_reduction_report["input"] += 1
+                            key_reduction_report["output"] += 1
+                        frame_sink(stream_payload)
+
+                constant_first = None
+                constant_signature = None
+                constant_varied = False
+
+                def build_payload(frame_number):
                     rotation = _maya_joint_rotate_to_vmd_quaternion(
                         joint,
                         read_value(joint, "rotateX", frame_number, route, not single_key),
@@ -1704,6 +1892,18 @@ class VmdSceneCollector:
                         )
                     ):
                         payload["position"], payload["rotation"] = raw_transform
+                    return payload
+
+                def iter_payloads():
+                    last_vmd_frame = None
+                    for frame_number in keyed_frames:
+                        vmd_frame = _vmd_frame_number(frame_number, time_converter)
+                        if track_frames is not None and vmd_frame == last_vmd_frame:
+                            continue
+                        last_vmd_frame = vmd_frame
+                        yield frame_number, build_payload(frame_number)
+
+                for frame_number, payload in iter_payloads():
                     if single_key:
                         is_default = payload["position"] == (0.0, 0.0, 0.0) and payload[
                             "rotation"
@@ -1745,9 +1945,22 @@ class VmdSceneCollector:
                         if is_default:
                             continue
                     if track_frames is not None:
-                        track_frames.append(payload)
+                        if direct_multi_key:
+                            signature = (payload["position"], payload["rotation"])
+                            if constant_first is None:
+                                constant_first = payload
+                                constant_signature = signature
+                            elif signature != constant_signature:
+                                constant_varied = True
+                        else:
+                            emit_stream_payload(payload)
                     else:
                         frames.append(payload)
+                if direct_multi_key and constant_varied:
+                    # Native samples are mmap-backed.  A bounded second read
+                    # preserves protected interiors without buffering a track.
+                    for _frame_number, payload in iter_payloads():
+                        emit_stream_payload(payload)
                 if force_dense_sample and not single_key and not direct_multi_key:
                     keyless_reason = keyless_dependency_joints.get(joint)
                     if keyless_reason:
@@ -1782,32 +1995,23 @@ class VmdSceneCollector:
                             planned_key_count,
                         )
                 if track_frames is not None:
-                    # Keep the exact legacy first-provider behaviour for
-                    # malformed duplicate names while bounding storage to one
-                    # bone track at a time.
-                    collapse_candidate = direct_multi_key and {
-                        bone_name: [(long_name, len(sparse_frames))]
-                    } or {}
-                    collapsed, evidence = _collapse_exact_constant_direct_tracks(
-                        track_frames,
-                        "bone_name",
-                        ("position", "rotation"),
-                        collapse_candidate,
-                        ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
-                        len(dense_frames or ()) if dense_sample else 0,
-                    )
-                    for row in evidence:
-                        self._record_track_selection(
-                            "bone", row[0], row[1], row[2], row[3], row[4]
+                    if direct_multi_key and not constant_varied and constant_first:
+                        is_default = constant_signature == (
+                            (0.0, 0.0, 0.0),
+                            (0.0, 0.0, 0.0, 1.0),
                         )
-                    for payload in collapsed:
-                        seen_frames = stream_seen_bone_frames.get(bone_name)
-                        if seen_frames is not None:
-                            frame_number = payload["frame_number"]
-                            if frame_number in seen_frames:
-                                continue
-                            seen_frames.add(frame_number)
-                        frame_sink(payload)
+                        self._record_track_selection(
+                            "bone",
+                            bone_name,
+                            "omitted_default" if is_default else "constant_one_key",
+                            "dense_exact_constant",
+                            len(sparse_frames),
+                            0 if is_default else 1,
+                        )
+                        if not is_default:
+                            emit_stream_payload(constant_first, reduce=False)
+                    elif reducer is not None:
+                        reducer.finish()
         finally:
             if native_samples is not None:
                 try:
@@ -2355,6 +2559,9 @@ class VmdSceneCollector:
         dense_frame_samples: Optional[Sequence[float]] = None,
         timeline_evaluation: bool = False,
         frame_sink=None,
+        exact_run_reduction: bool = False,
+        protected_vmd_frames: Optional[set[int]] = None,
+        key_reduction_report: Optional[dict[str, Any]] = None,
     ) -> list[dict]:
         """Collect keyed blendShape and model-owned network morph frames.
 
@@ -2599,14 +2806,46 @@ class VmdSceneCollector:
             if len(direct_multi_key_candidates[name]) == 1
         }
         candidate_spool = None
+        candidate_first: dict[int, tuple[int, float]] = {}
+        candidate_varies: set[int] = set()
+        stream_last_vmd_frame: dict[str, int] = {}
+        protected_by_name: dict[str, set[int]] = {}
+        for _node, _attr, morph_name, ranged_source_frames, _direct_single in channels:
+            protected = protected_by_name.setdefault(
+                str(morph_name), set(protected_vmd_frames or ())
+            )
+            protected.update(
+                _vmd_frame_number(frame, time_converter)
+                for frame in ranged_source_frames
+            )
         if frame_sink is not None and stream_candidate_ids:
             candidate_spool = tempfile.TemporaryFile(mode="w+b")
             self._diagnostics.setdefault("morph_collection", {})[
                 "candidate_spool"
             ] = True
-        candidate_first: dict[int, tuple[int, float]] = {}
-        candidate_varies: set[int] = set()
-        stream_last_vmd_frame: dict[str, int] = {}
+        reducers: dict[str, _ExactRunReducer] = {}
+
+        def emit_reduced(payload: Mapping[str, Any]) -> None:
+            if frame_sink is None:
+                frames.append(payload)
+                return
+            if not exact_run_reduction:
+                if key_reduction_report is not None:
+                    key_reduction_report["input"] += 1
+                    key_reduction_report["output"] += 1
+                frame_sink(payload)
+                return
+            name = str(payload["morph_name"])
+            reducer = reducers.get(name)
+            if reducer is None:
+                reducer = _ExactRunReducer(
+                    frame_sink,
+                    ("weight",),
+                    protected_by_name.get(name, set(protected_vmd_frames or ())),
+                    key_reduction_report,
+                )
+                reducers[name] = reducer
+            reducer.add(payload)
 
         def append_frame(
             node,
@@ -2666,10 +2905,7 @@ class VmdSceneCollector:
                 "frame_number": vmd_frame,
                 "weight": weight,
             }
-            if frame_sink is None:
-                frames.append(payload)
-            else:
-                frame_sink(payload)
+            emit_reduced(payload)
 
         try:
             if timeline_evaluation and channels:
@@ -2792,13 +3028,15 @@ class VmdSceneCollector:
                             source_key_count,
                             1,
                         )
-                        frame_sink(
-                            {
-                                "morph_name": name,
-                                "frame_number": first[0],
-                                "weight": first[1],
-                            }
-                        )
+                        payload = {
+                            "morph_name": name,
+                            "frame_number": first[0],
+                            "weight": first[1],
+                        }
+                        if key_reduction_report is not None:
+                            key_reduction_report["input"] += 1
+                            key_reduction_report["output"] += 1
+                        frame_sink(payload)
                 if candidate_varies:
                     # Replay every varying candidate in one aggregate pass.
                     # Rows were already first-win deduplicated before spooling,
@@ -2813,7 +3051,7 @@ class VmdSceneCollector:
                         )
                         if candidate_id not in candidate_varies:
                             continue
-                        frame_sink(
+                        emit_reduced(
                             {
                                 "morph_name": names_by_id[candidate_id],
                                 "frame_number": frame_number,
@@ -2823,6 +3061,8 @@ class VmdSceneCollector:
             finally:
                 candidate_spool.close()
                 candidate_spool = None
+        for reducer in reducers.values():
+            reducer.finish()
         if dense_sample:
             diagnostic_rows = {}
             for node, _attr, morph_name, ranged_source_frames, direct_single in channels:
