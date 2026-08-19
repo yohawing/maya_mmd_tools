@@ -218,7 +218,16 @@ def _classify_failure(
         )
     ):
         return "structural_mismatch"
-    if any(token in error_text for token in ("importmodelaction", "importvdmaction", "import failed", "no root")):
+    if any(
+        token in error_text
+        for token in (
+            "importmodelaction",
+            "importvdmaction",
+            "import failed",
+            "import produced",
+            "no root",
+        )
+    ):
         return "import_failed"
     if "edit" in error_text:
         return "edit_failed"
@@ -902,8 +911,8 @@ def _import_options() -> dict[str, Any]:
     return {
         "scale": 1.0,
         "import_physics": True,
-        "setup_rig": False,
-        "setup_bone_orientation": False,
+        "setup_rig": True,
+        "setup_bone_orientation": True,
         "create_mmd_control_rig": False,
         "create_mmd_shaders": False,
         "use_cpp_fast_load": False,
@@ -1064,6 +1073,102 @@ def _motion_recipe_value(recipe: Mapping[str, Any], key: str, default: Any) -> A
 
 def _normalized_name(value: Any) -> str:
     return " ".join(str(value or "").strip().casefold().split())
+
+
+def _required_ik_track_names(ik_frames: Iterable[Any]) -> set[str]:
+    """Return the IK bone names required by a VMD IK section."""
+
+    names: set[str] = set()
+    for frame in ik_frames or ():
+        for state in getattr(frame, "ik_states", ()) or ():
+            if isinstance(state, (list, tuple)) and state and str(state[0]).strip():
+                names.add(str(state[0]))
+    return names
+
+
+def _capture_ik_import_witness(
+    root: str,
+    ik_frames: Iterable[Any],
+    cmds_module: Any | None = None,
+) -> dict[str, Any]:
+    """Capture root-owned native IK nodes immediately after VMD import."""
+
+    if cmds_module is None:
+        from maya import cmds as cmds_module
+
+    if not root or not cmds_module.objExists(root):
+        raise ValueError(f"IK import witness root is invalid: {root!r}")
+    root_joints = set(
+        str(joint)
+        for joint in (
+            cmds_module.listRelatives(
+                root,
+                allDescendents=True,
+                type="joint",
+                fullPath=True,
+            )
+            or ()
+        )
+    )
+    if cmds_module.nodeType(root) == "joint":
+        root_joints.add(str(root))
+
+    def long_names(nodes: Iterable[Any]) -> set[str]:
+        result: set[str] = set()
+        for node in nodes:
+            resolved = cmds_module.ls(str(node), long=True) or ()
+            result.update(str(item) for item in resolved)
+        return result
+
+    root_joints = long_names(root_joints) or root_joints
+    by_name: dict[str, dict[str, Any]] = {}
+    for node_value in cmds_module.ls(type="mmdCcdIk", long=True) or ():
+        node = str(node_value)
+        connected_joints = long_names(
+            cmds_module.listConnections(
+                node,
+                source=True,
+                destination=True,
+                type="joint",
+            )
+            or ()
+        )
+        if not connected_joints or not connected_joints.issubset(root_joints):
+            continue
+        if not cmds_module.attributeQuery("mmd_ik_bone_name", node=node, exists=True):
+            continue
+        name = str(cmds_module.getAttr(f"{node}.mmd_ik_bone_name") or "")
+        if not name:
+            continue
+        name_key = _normalized_name(name)
+        if name_key in by_name:
+            raise ValueError(f"duplicate root-owned mmdCcdIk track: {name!r}")
+        if not cmds_module.attributeQuery("enabled", node=node, exists=True):
+            raise ValueError(f"root-owned mmdCcdIk node has no enabled attribute: {node!r}")
+        key_times = cmds_module.keyframe(
+            f"{node}.enabled",
+            query=True,
+            timeChange=True,
+        ) or ()
+        by_name[name_key] = {
+            "node": node,
+            "name": name,
+            "enabled": bool(cmds_module.getAttr(f"{node}.enabled")),
+            "enabled_key_times": sorted({float(time) for time in key_times}),
+        }
+
+    required_names = _required_ik_track_names(ik_frames)
+    if not by_name:
+        raise ValueError("VMD import produced no root-owned mmdCcdIk nodes")
+    unresolved = sorted(name for name in required_names if _normalized_name(name) not in by_name)
+    if unresolved:
+        raise ValueError(f"VMD import IK required tracks unresolved: {unresolved[:20]}")
+    return {
+        "nodes": [by_name[key] for key in sorted(by_name)],
+        "names": sorted(item["name"] for item in by_name.values()),
+        "required_names": sorted(required_names),
+        "unresolved_names": unresolved,
+    }
 
 
 def _select_unique_motion_bone(spec: Any, animated_names: Iterable[str]) -> Any:
@@ -1558,16 +1663,26 @@ def _run_vmd_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
     source_data = _phase(context, "source_parse", lambda: VmdData().parse_file(str(source_vmd)))
     source_payload = _vmd_payload(source_data)
 
-    def import_source() -> tuple[str, dict[str, Any], dict[str, Any] | None]:
+    def import_source() -> tuple[
+        str,
+        dict[str, Any],
+        dict[str, Any] | None,
+        dict[str, Any] | None,
+    ]:
         root = _import_model_action(source_model)
         _import_vmd_action(root, source_model, source_vmd)
+        ik_witness = (
+            _capture_ik_import_witness(root, source_data.ik_show_hide_frames)
+            if source_data.ik_show_hide_frames
+            else None
+        )
         scene = _capture_scene_oracle(root, evaluation_frames)
         camera_scene = None
         if source_data.camera_frames and source_data.light_frames:
             camera_scene = _capture_camera_light_scene_oracle(root, oracle_frames)
-        return root, scene, camera_scene
+        return root, scene, camera_scene, ik_witness
 
-    source_root, source_oracle, source_camera_oracle = _phase(
+    source_root, source_oracle, source_camera_oracle, source_ik_witness = _phase(
         context,
         "source_import_oracle",
         import_source,
@@ -1625,9 +1740,19 @@ def _run_vmd_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
     source_total_keys = sum(len(source_payload[section]) for section in ("bone", "morph", "camera", "light", "shadow", "ik"))
     exported_total_keys = sum(len(exported_payload[section]) for section in ("bone", "morph", "camera", "light", "shadow", "ik"))
     key_inflation = exported_total_keys - source_total_keys
-    def import_fresh() -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any]]:
+    def import_fresh() -> tuple[
+        dict[str, Any],
+        dict[str, Any] | None,
+        dict[str, Any],
+        dict[str, Any] | None,
+    ]:
         fresh_root = _import_model_action(source_model)
         _import_vmd_action(fresh_root, source_model, output)
+        fresh_ik_witness = (
+            _capture_ik_import_witness(fresh_root, source_data.ik_show_hide_frames)
+            if source_ik_witness is not None
+            else None
+        )
         scene = _capture_scene_oracle(fresh_root, evaluation_frames)
         camera_scene = None
         if exported_data.camera_frames and exported_data.light_frames:
@@ -1646,10 +1771,19 @@ def _run_vmd_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
         fresh_adjustment["witness"] = _capture_motion_witness(
             fresh_root, fresh_adjustment, evaluation_frames
         )
-        return scene, camera_scene, fresh_adjustment
+        return scene, camera_scene, fresh_adjustment, fresh_ik_witness
 
-    fresh_oracle, fresh_camera_oracle, fresh_adjustment = _phase(context, "fresh_import_oracle", import_fresh)
+    fresh_oracle, fresh_camera_oracle, fresh_adjustment, fresh_ik_witness = _phase(
+        context,
+        "fresh_import_oracle",
+        import_fresh,
+    )
     failures = list(parser_failures)
+    if source_ik_witness is not None:
+        if fresh_ik_witness is None:
+            failures.append("IK semantic mismatch: fresh import IK witness is missing")
+        elif source_ik_witness["names"] != fresh_ik_witness["names"]:
+            failures.append("IK semantic mismatch: fresh import IK node names differ")
     failures.extend(
         _compare_scene_oracles(
             edited_oracle,
@@ -1711,6 +1845,10 @@ def _run_vmd_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
             for section in ("bone", "morph", "camera", "light", "shadow", "ik")
         },
         "source_metrics": metrics,
+        "ik_import_witness": {
+            "source": source_ik_witness,
+            "fresh": fresh_ik_witness,
+        },
     }
 
 

@@ -12,10 +12,12 @@ from tools.local_asset_roundtrip import (
     _classify_failure,
     _allowed_warning_codes,
     _assert_execute_warnings,
+    _capture_ik_import_witness,
     _export_write_budget_evidence,
     _export_request,
     _load_manifest,
     _motion_evaluation_frames,
+    _import_options,
     _resolve_morph_controller_input_plug,
     parse_args,
     _require_import_success,
@@ -170,6 +172,13 @@ def test_export_write_budget_is_configurable_from_cli():
     assert parse_args(["--export-write-budget-sec", "75"]).export_write_budget_sec == 75.0
 
 
+def test_import_options_match_production_rig_defaults():
+    options = _import_options()
+
+    assert options["setup_rig"] is True
+    assert options["setup_bone_orientation"] is True
+
+
 class _FakeMorphCmds:
     def __init__(self, controllers):
         self.controllers = list(controllers)
@@ -226,6 +235,73 @@ def test_morph_witness_rejects_ambiguous_or_invalid_controller_input(
 
     with pytest.raises(ValueError, match=message):
         _resolve_morph_controller_input_plug("|model", index, fake_cmds)
+
+
+class _FakeIkCmds:
+    def __init__(self, nodes):
+        self.nodes = list(nodes)
+
+    def objExists(self, node):
+        return node == "|model"
+
+    def nodeType(self, node):
+        return "transform"
+
+    def listRelatives(self, root, **kwargs):
+        assert root == "|model"
+        return ["|model|joint"]
+
+    def ls(self, node=None, **kwargs):
+        if kwargs.get("type") == "mmdCcdIk":
+            return list(self.nodes)
+        return [node] if node else []
+
+    def listConnections(self, node, **kwargs):
+        assert kwargs.get("type") == "joint"
+        return ["|model|joint"]
+
+    def attributeQuery(self, attribute, node, exists=False):
+        assert exists is True
+        return attribute in {"mmd_ik_bone_name", "enabled"} and node in self.nodes
+
+    def getAttr(self, plug):
+        if plug.endswith(".mmd_ik_bone_name"):
+            return "足IK"
+        if plug.endswith(".enabled"):
+            return True
+        raise AssertionError(f"unexpected fake IK getAttr call: {plug}")
+
+    def keyframe(self, plug, **kwargs):
+        assert plug.endswith(".enabled")
+        assert kwargs == {"query": True, "timeChange": True}
+        return [0.0, 12.0]
+
+
+def test_ik_import_witness_captures_root_owned_nodes_names_and_enabled_keys():
+    frames = [SimpleNamespace(ik_states=[("足IK", 1)])]
+    witness = _capture_ik_import_witness(
+        "|model",
+        frames,
+        _FakeIkCmds(["|model|solver_mmdCcdIk"]),
+    )
+
+    assert witness["names"] == ["足IK"]
+    assert witness["required_names"] == ["足IK"]
+    assert witness["nodes"][0]["enabled_key_times"] == [0.0, 12.0]
+
+
+@pytest.mark.parametrize(
+    ("nodes", "message"),
+    [
+        ([], "no root-owned mmdCcdIk"),
+        (["|model|solver_mmdCcdIk"], "required tracks unresolved"),
+    ],
+)
+def test_ik_import_witness_rejects_missing_or_unresolved_tracks(nodes, message):
+    frames = [SimpleNamespace(ik_states=[("missingIK", 1)])]
+
+    with pytest.raises(ValueError, match=message):
+        _capture_ik_import_witness("|model", frames, _FakeIkCmds(nodes))
 
 
 def test_import_action_contract_rejects_partial_or_warning_results():
