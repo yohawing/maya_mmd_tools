@@ -32,6 +32,13 @@ PREFIX_FRAMES = (120, 300, 600)
 STRATEGIES = ("context", "timeline_probe")
 DEFAULT_FULL_FRAME_COUNT = 6786
 PACKED_HEADER_SIZE = 6
+THIRD_ORACLE_FRAMES = (0.0, 100.0, 110.0, 119.0)
+THIRD_ORACLE_MAX_ERRORS = 20
+THIRD_ORACLE_TOLERANCE = {
+    "angle": 1.0e-7,
+    "distance": 1.0e-7,
+    "scalar": 1.0e-9,
+}
 PHYSICS_NODE_TYPES = frozenset(
     {
         "mmdPhysicsSolver",
@@ -323,6 +330,322 @@ def _route_inventory(plan: Any, routes: Mapping[str, Mapping[str, Sequence[str]]
     }
 
 
+def _finite_matrix(values: Any) -> list[float] | None:
+    """Normalize one Maya matrix and reject malformed/non-finite values."""
+
+    if isinstance(values, (list, tuple)) and len(values) == 1 and isinstance(values[0], (list, tuple)):
+        values = values[0]
+    try:
+        result = [float(value) for value in values]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if len(result) != 16 or any(not math.isfinite(value) for value in result):
+        return None
+    return result
+
+
+def _matrix_product(left: Sequence[float], right: Sequence[float]) -> list[float]:
+    """Multiply two Maya row-major 4x4 matrices."""
+
+    return [
+        sum(float(left[row * 4 + index]) * float(right[index * 4 + column]) for index in range(4))
+        for row in range(4)
+        for column in range(4)
+    ]
+
+
+def _canonical_node_path(node: Any, cmds_module: Any) -> str:
+    matches = cmds_module.ls(str(node), long=True) or []
+    if isinstance(matches, (str, bytes)) or len(matches) != 1:
+        return str(node)
+    return str(matches[0])
+
+
+def _joint_bone_index(joint: str, cmds_module: Any) -> int:
+    try:
+        value = cmds_module.getAttr(f"{joint}.mmd_bone_index")
+        return int(value)
+    except (RuntimeError, TypeError, ValueError, OverflowError):
+        return 2**31 - 1
+
+
+def _is_finger_joint(joint: str, cmds_module: Any) -> bool:
+    """Use stable English PMX aliases so Japanese scene encoding is irrelevant."""
+
+    leaf = str(joint).rsplit("|", 1)[-1].rsplit(":", 1)[-1].casefold()
+    return any(token in leaf for token in ("finger", "thumb", "index", "middle", "ring", "pinky"))
+
+
+def _skin_bind_for_joint(joint: str, root: str, cmds_module: Any) -> list[float] | None:
+    """Find the first model-owned skin bind-pre matrix for a joint."""
+
+    meshes = cmds_module.listRelatives(root, allDescendents=True, type="mesh", fullPath=True) or []
+    for mesh in meshes:
+        for skin in cmds_module.listHistory(mesh, pruneDagObjects=True) or ():
+            if cmds_module.nodeType(skin) != "skinCluster":
+                continue
+            influences = cmds_module.skinCluster(skin, query=True, influence=True) or []
+            canonical_influences = {_canonical_node_path(value, cmds_module): index for index, value in enumerate(influences)}
+            index = canonical_influences.get(_canonical_node_path(joint, cmds_module))
+            if index is None:
+                continue
+            try:
+                raw = cmds_module.getAttr(f"{skin}.bindPreMatrix[{index}]")
+            except RuntimeError:
+                continue
+            matrix = _finite_matrix(raw)
+            if matrix is not None:
+                return matrix
+    return None
+
+
+def _matrix_witness_candidates(
+    root: str,
+    routes: Mapping[str, Mapping[str, Sequence[str]]],
+    cmds_module: Any,
+) -> dict[str, dict[str, Any] | None]:
+    """Resolve deterministic finger/Append/CCD-IK witness joints.
+
+    A category is deliberately returned as ``None`` when no uniquely usable
+    joint exists.  The caller converts that into a failed oracle; missing
+    evidence must never silently become a pass.
+    """
+
+    joints = list(cmds_module.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or [])
+    if cmds_module.nodeType(root) == "joint":
+        joints.insert(0, root)
+    joints = sorted({_canonical_node_path(joint, cmds_module) for joint in joints}, key=lambda value: (_joint_bone_index(value, cmds_module), value))
+    categories: dict[str, dict[str, Any] | None] = {"finger": None, "mmdAppend": None, "mmdCcdIk": None}
+    for joint in joints:
+        bind = _skin_bind_for_joint(joint, root, cmds_module)
+        if bind is None:
+            continue
+        route = routes.get(joint) or {}
+        route_node = None
+        for routed in route.values():
+            try:
+                candidate = _canonical_node_path(routed[0], cmds_module)
+            except (IndexError, TypeError):
+                continue
+            node_type = str(cmds_module.nodeType(candidate) or "")
+            if node_type in {"mmdAppend", "mmdCcdIk"}:
+                route_node = candidate
+                categories[node_type] = categories[node_type] or {
+                    "joint": joint,
+                    "bone_index": _joint_bone_index(joint, cmds_module),
+                    "binding_identity": joint,
+                    "bind_pre_matrix": bind,
+                    "route_node": route_node,
+                    "route_node_type": node_type,
+                }
+        if categories["finger"] is None and _is_finger_joint(joint, cmds_module):
+            categories["finger"] = {
+                "joint": joint,
+                "bone_index": _joint_bone_index(joint, cmds_module),
+                "binding_identity": joint,
+                "bind_pre_matrix": bind,
+                "route_node": None,
+                "route_node_type": None,
+            }
+    return categories
+
+
+def _compare_third_oracle_values(
+    channels: Sequence[Any],
+    frames: Sequence[float],
+    native_rows: Sequence[Sequence[float]],
+    normal_rows: Sequence[Sequence[float]],
+    *,
+    max_errors: int = THIRD_ORACLE_MAX_ERRORS,
+) -> dict[str, Any]:
+    """Compare C++ timeline values with normal currentTime/getAttr values."""
+
+    mismatches: list[dict[str, Any]] = []
+    max_abs_error = 0.0
+    max_relative_error = 0.0
+    compared = 0
+    malformed = 0
+    mismatch_count = 0
+    for frame_index, frame in enumerate(frames):
+        native_row = native_rows[frame_index] if frame_index < len(native_rows) else ()
+        normal_row = normal_rows[frame_index] if frame_index < len(normal_rows) else ()
+        for channel_index, channel in enumerate(channels):
+            try:
+                native_value = float(native_row[channel_index])
+                normal_value = float(normal_row[channel_index])
+            except (IndexError, TypeError, ValueError, OverflowError):
+                malformed += 1
+                mismatch_count += 1
+                if len(mismatches) < max_errors:
+                    mismatches.append({"frame": frame, "channel": getattr(channel, "plug", channel_index), "error": "missing_or_non_numeric"})
+                continue
+            if not math.isfinite(native_value) or not math.isfinite(normal_value):
+                malformed += 1
+                mismatch_count += 1
+                if len(mismatches) < max_errors:
+                    mismatches.append({"frame": frame, "channel": channel.plug, "error": "non_finite"})
+                continue
+            compared += 1
+            absolute = abs(native_value - normal_value)
+            scale = max(abs(native_value), abs(normal_value), 1.0)
+            relative = absolute / scale
+            max_abs_error = max(max_abs_error, absolute)
+            max_relative_error = max(max_relative_error, relative)
+            tolerance = float(THIRD_ORACLE_TOLERANCE.get(str(channel.unit), THIRD_ORACLE_TOLERANCE["scalar"]))
+            if absolute > tolerance:
+                mismatch_count += 1
+                if len(mismatches) < max_errors:
+                    mismatches.append({
+                        "frame": frame,
+                        "channel": channel.plug,
+                        "unit": channel.unit,
+                        "native": native_value,
+                        "normal_getAttr": normal_value,
+                        "abs_error": absolute,
+                        "tolerance": tolerance,
+                    })
+    expected = len(frames) * len(channels)
+    return {
+        "status": "pass" if compared == expected and mismatch_count == 0 else "fail",
+        "frame_count": len(frames),
+        "channel_count": len(channels),
+        "sample_count": expected,
+        "compared_count": compared,
+        "malformed_count": malformed,
+        "mismatch_count": mismatch_count,
+        "max_abs_error": max_abs_error,
+        "max_relative_error": max_relative_error,
+        "mismatches": mismatches,
+        "tolerance_by_unit": dict(THIRD_ORACLE_TOLERANCE),
+    }
+
+
+def _third_oracle_frames(prefix: int) -> tuple[float, ...]:
+    frames = tuple(frame for frame in THIRD_ORACLE_FRAMES if frame < float(prefix))
+    if not frames:
+        raise RuntimeError(f"prefix {prefix} has no third-oracle frames")
+    return frames
+
+
+def _run_third_oracle(
+    root: str,
+    prefix: int,
+    routes: Mapping[str, Mapping[str, Sequence[str]]],
+    cmds_module: Any,
+) -> dict[str, Any]:
+    """Cross-check native timeline sampling against normal Maya timeline reads."""
+
+    from mmd_tools.adapters.native_vmd_batch_sampler import (
+        NativeVmdBatchSampler,
+        build_dense_bone_sample_plan,
+        parse_packed_result,
+    )
+    from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
+
+    frames = _third_oracle_frames(prefix)
+    categories = _matrix_witness_candidates(root, routes, cmds_module)
+    entry_time = float(cmds_module.currentTime(query=True))
+    normal_rows: list[list[float]] = []
+    matrix_samples: dict[str, list[dict[str, Any]]] = {key: [] for key in categories}
+    errors: list[str] = []
+    native_rows: Sequence[Sequence[float]] = ()
+    plan = None
+    native_diagnostics: dict[str, Any] = {}
+    restored_time = None
+    try:
+        collector = VmdSceneCollector()
+        joints = collector._find_joints(root)
+        # Keep the same animated-joint ownership/order as the production plan.
+        if not joints:
+            raise RuntimeError("Current Model has no joints for third oracle")
+        authored_joints = []
+        from mmd_tools.converters.vmd_scene_collector import _routed_key_times
+        for joint in joints:
+            long_joint = str((cmds_module.ls(joint, long=True) or [joint])[0])
+            route = routes.get(long_joint, {})
+            if _routed_key_times(joint, route):
+                authored_joints.append(joint)
+        if not authored_joints:
+            raise RuntimeError("Current Model has no animated bone routes for third oracle")
+        plan = build_dense_bone_sample_plan(authored_joints, frames, input_routes=routes, cmds_module=cmds_module)
+        sampler = NativeVmdBatchSampler(cmds_module)
+        if not sampler.available:
+            raise RuntimeError(f"mmdVmdBatchSample unavailable: {sampler.last_diagnostics!r}")
+        native_diagnostics = dict(sampler.last_diagnostics)
+        packed = [float(value) for value in cmds_module.mmdVmdBatchSample(payload=_payload(plan, "timeline_probe"))]
+        native_rows, strategy_counts = parse_packed_result(packed, plan)
+        native_diagnostics["strategy_counts"] = strategy_counts
+        for frame in frames:
+            cmds_module.currentTime(frame, edit=True)
+            row = []
+            for channel in plan.physical_channels:
+                value = cmds_module.getAttr(channel.plug)
+                if isinstance(value, (list, tuple)):
+                    if len(value) != 1 or isinstance(value[0], (list, tuple)):
+                        raise ValueError(f"normal getAttr returned non-scalar for {channel.plug}: {value!r}")
+                    value = value[0]
+                row.append(float(value))
+            normal_rows.append(row)
+            for category, witness in categories.items():
+                if witness is None:
+                    continue
+                world = _finite_matrix(cmds_module.xform(witness["joint"], query=True, worldSpace=True, matrix=True))
+                if world is None:
+                    raise ValueError(f"{category} witness world matrix is missing or non-finite")
+                skin = _matrix_product(world, witness["bind_pre_matrix"])
+                if not all(math.isfinite(value) for value in skin):
+                    raise ValueError(f"{category} witness skin matrix is non-finite")
+                matrix_samples[category].append({
+                    "frame": frame,
+                    "world_matrix": [round(value, 9) for value in world],
+                    "skin_matrix": [round(value, 9) for value in skin],
+                })
+    except Exception as exc:
+        errors.append(f"third oracle evaluation failed: {type(exc).__name__}: {exc}")
+    finally:
+        try:
+            cmds_module.currentTime(entry_time, edit=True)
+            restored_time = float(cmds_module.currentTime(query=True))
+        except Exception as exc:
+            errors.append(f"currentTime restoration failed: {type(exc).__name__}: {exc}")
+    restored_exactly = restored_time is not None and entry_time == restored_time
+    if not restored_exactly:
+        errors.append(f"currentTime restoration differs: entry={entry_time} restored={restored_time}")
+    scalar = {"status": "fail", "mismatches": [], "frame_count": len(frames), "channel_count": len(plan.physical_channels) if plan is not None else 0}
+    if plan is not None and not errors:
+        scalar = _compare_third_oracle_values(plan.physical_channels, frames, native_rows, normal_rows)
+    witness_report: dict[str, Any] = {"status": "pass", "categories": {}, "missing_categories": []}
+    for category, witness in categories.items():
+        if witness is None:
+            witness_report["status"] = "fail"
+            witness_report["missing_categories"].append(category)
+            witness_report["categories"][category] = {"status": "fail", "error": "unresolved witness category"}
+            continue
+        samples = matrix_samples[category]
+        category_status = "pass" if len(samples) == len(frames) else "fail"
+        if category_status != "pass":
+            witness_report["status"] = "fail"
+        witness_report["categories"][category] = {
+            "status": category_status,
+            "joint": witness["joint"],
+            "bone_index": witness["bone_index"],
+            "binding_identity": witness["binding_identity"],
+            "route_node": witness["route_node"],
+            "route_node_type": witness["route_node_type"],
+            "samples": samples[:20],
+        }
+    status = "pass" if not errors and restored_exactly and scalar.get("status") == "pass" and witness_report["status"] == "pass" else "fail"
+    return {
+        "status": status,
+        "frames": list(frames),
+        "scalar": scalar,
+        "witnesses": witness_report,
+        "current_time": {"entry": entry_time, "restored": restored_time, "restored_exactly": restored_exactly},
+        "native": native_diagnostics,
+        "errors": errors[:THIRD_ORACLE_MAX_ERRORS],
+    }
+
+
 def _animated_joint_plan(root: str, prefix: int, cmds_module: Any) -> tuple[Any, Mapping[str, Any]]:
     from mmd_tools.adapters.native_vmd_batch_sampler import build_dense_bone_sample_plan
     from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector, _routed_key_times
@@ -433,6 +756,10 @@ def _run_worker(config: Mapping[str, Any], strategy: str, prefix: int) -> dict[s
         },
         "native": dict(gateway.last_diagnostics),
     }
+    third_oracle = _run_third_oracle(root, prefix, routes, cmds)
+    result["third_oracle"] = third_oracle
+    if third_oracle.get("status") != "pass":
+        result["status"] = "fail"
     result_path = _result_path(config, strategy, prefix)
     result_path.write_text(
         json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -537,12 +864,13 @@ def _run_controller(config_path: Path, config: Mapping[str, Any]) -> dict[str, A
                     "stderr": str(stderr_path),
                 }
             )
-            if completed.returncode != 0:
+            result_path = _result_path(config, strategy, prefix)
+            if not result_path.exists():
                 raise RuntimeError(
-                    f"probe worker failed: strategy={strategy} prefix={prefix} "
-                    f"return_code={completed.returncode}; stderr={stderr_path}"
+                    f"probe worker failed without structured result: strategy={strategy} "
+                    f"prefix={prefix} return_code={completed.returncode}; stderr={stderr_path}"
                 )
-            result = json.loads(_result_path(config, strategy, prefix).read_text(encoding="utf-8"))
+            result = json.loads(result_path.read_text(encoding="utf-8"))
             results[(strategy, prefix)] = result
     pairs = [
         compare_pair(results[("context", prefix)], results[("timeline_probe", prefix)])
@@ -563,14 +891,19 @@ def _run_controller(config_path: Path, config: Mapping[str, Any]) -> dict[str, A
         )
         for strategy in STRATEGIES
     }
+    third_oracle_pass = all(
+        result.get("third_oracle", {}).get("status") == "pass"
+        for result in results.values()
+    )
     summary = {
         "schema_version": SCHEMA_VERSION,
-        "status": "pass" if parity else "fail",
+        "status": "pass" if parity and third_oracle_pass else "fail",
         "fresh_process_per_strategy_prefix": True,
         "prefix_frames": list(config["prefix_frames"]),
         "full_frame_count": int(config["full_frame_count"]),
         "estimated_full_wall_sec": estimates,
         "packed_values_parity": parity,
+        "third_oracle_pass": third_oracle_pass,
         "pairs": pairs,
         "launches": launches,
         "results": [
@@ -609,6 +942,27 @@ def _console_summary(result: Mapping[str, Any]) -> dict[str, Any]:
             key: packed[key]
             for key in ("header", "float_count", "sha256", "values_sha256")
             if key in packed
+        }
+    third_oracle = result.get("third_oracle")
+    if isinstance(third_oracle, Mapping):
+        scalar = third_oracle.get("scalar")
+        witnesses = third_oracle.get("witnesses")
+        summary["third_oracle"] = {
+            "status": third_oracle.get("status"),
+            "frames": third_oracle.get("frames"),
+            "scalar": {
+                key: scalar[key]
+                for key in ("status", "sample_count", "compared_count", "mismatch_count", "max_abs_error")
+                if isinstance(scalar, Mapping) and key in scalar
+            },
+            "witnesses": {
+                "status": witnesses.get("status"),
+                "missing_categories": witnesses.get("missing_categories"),
+            }
+            if isinstance(witnesses, Mapping)
+            else None,
+            "current_time": third_oracle.get("current_time"),
+            "errors": list(third_oracle.get("errors", ()))[:THIRD_ORACLE_MAX_ERRORS],
         }
     return summary
 

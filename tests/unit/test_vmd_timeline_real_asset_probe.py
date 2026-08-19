@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,8 @@ from tools.vmd_timeline_real_asset_probe import (
     PREFIX_FRAMES,
     ProbeConfigurationError,
     _console_summary,
+    _compare_third_oracle_values,
+    _third_oracle_frames,
     compare_pair,
     estimate_full_wall,
     load_config,
@@ -125,3 +128,43 @@ def test_console_summary_omits_large_route_inventory():
 
     assert "route_inventory" not in summary
     assert "artifact" not in summary["packed"]
+
+
+def test_third_oracle_accepts_normal_timeline_values_with_unit_tolerances():
+    channels = [
+        SimpleNamespace(plug="|model|bone.rotateX", unit="angle"),
+        SimpleNamespace(plug="|model|bone.translateX", unit="distance"),
+        SimpleNamespace(plug="|model|bone.weight", unit="scalar"),
+    ]
+    native = ((10.0, 2.0, 0.25),)
+    normal = ((10.0 + 5.0e-8, 2.0 - 5.0e-8, 0.25 + 5.0e-10),)
+
+    result = _compare_third_oracle_values(channels, (100.0,), native, normal)
+
+    assert result["status"] == "pass"
+    assert result["sample_count"] == 3
+    assert result["mismatch_count"] == 0
+    assert result["max_abs_error"] == pytest.approx(5.0e-8)
+
+
+def test_third_oracle_reports_scalar_mismatch_and_bounds_samples():
+    channel = SimpleNamespace(plug="|model|bone.rotateZ", unit="angle")
+    native = tuple((float(index),) for index in range(25))
+    normal = tuple((float(index) + 1.0e-3,) for index in range(25))
+
+    result = _compare_third_oracle_values(
+        [channel],
+        tuple(float(index) for index in range(25)),
+        native,
+        normal,
+    )
+
+    assert result["status"] == "fail"
+    assert result["mismatch_count"] == 25
+    assert len(result["mismatches"]) == 20
+    assert result["max_abs_error"] == pytest.approx(1.0e-3)
+
+
+def test_third_oracle_frames_are_prefix_bounded():
+    assert _third_oracle_frames(120) == (0.0, 100.0, 110.0, 119.0)
+    assert _third_oracle_frames(110) == (0.0, 100.0)
