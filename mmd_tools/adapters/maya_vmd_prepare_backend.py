@@ -246,7 +246,18 @@ class MayaVmdPrepareBackend:
         if not callable(arm):
             raise PrepareVmdExportError("revision service does not expose arm(dependencies)")
         try:
-            dependencies = [self._resolve_mobject(node) for node in discovery.route.dependency_nodes]
+            # Keep Maya's global time driver in the discovery fingerprint, but
+            # do not watch it as mutable authored scene data. Mode C sampling
+            # deliberately advances and restores currentTime; watching the
+            # time node would invalidate the preparation because of its own
+            # controlled Timeline evaluation. Connection/topology changes to
+            # the time driver remain covered by validate-time rediscovery.
+            watched_nodes = [
+                node
+                for node in discovery.route.dependency_nodes
+                if self._node_type(node) != "time"
+            ]
+            dependencies = [self._resolve_mobject(node) for node in watched_nodes]
         except Exception as exc:
             raise PrepareVmdExportError("could not resolve Maya dependency MObjects") from exc
         try:

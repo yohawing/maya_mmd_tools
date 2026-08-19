@@ -27,6 +27,8 @@ class _FakeCmds:
             "|consumer": "uuid-consumer",
             "modeCBlendShape": "uuid-blend",
             "|model|sourceShape": "uuid-source-shape",
+            "|rotationTime": "uuid-rotation-time",
+            "|time1": "uuid-time",
         }
         self.type_by_node = {
             "|model": "transform",
@@ -38,6 +40,8 @@ class _FakeCmds:
             "|consumer": "network",
             "modeCBlendShape": "blendShape",
             "|model|sourceShape": "mesh",
+            "|rotationTime": "network",
+            "|time1": "time",
         }
         self.connections = {
             "|model": [],
@@ -49,6 +53,8 @@ class _FakeCmds:
             "|consumer": [],
             "modeCBlendShape": [],
             "|model|sourceShape": [],
+            "|rotationTime": [],
+            "|time1": [],
         }
         self.incoming = {
             "|model": [],
@@ -60,6 +66,8 @@ class _FakeCmds:
             "|consumer": [],
             "modeCBlendShape": [],
             "|model|sourceShape": [],
+            "|rotationTime": [],
+            "|time1": [],
         }
         self.long_name_aliases = {"sourceShape": "|model|sourceShape"}
 
@@ -226,6 +234,43 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
 
         self.assertNotEqual(
             first.dependency_closure_fingerprint,
+            changed.dependency_closure_fingerprint,
+        )
+
+    def test_time_driver_is_fingerprinted_but_not_watched(self):
+        self.cmds.connections["|model|bone"] = [
+            "|model|bone.rotateX",
+            "|rotationTime.output",
+        ]
+        self.cmds.incoming["|model|bone"] = ["|rotationTime.output"]
+        self.cmds.connections["|rotationTime"] = [
+            "|rotationTime.inputTime",
+            "|time1.outTime",
+        ]
+        self.cmds.incoming["|rotationTime"] = ["|time1.outTime"]
+        backend = MayaVmdPrepareBackend(
+            self.cmds,
+            collector=self.collector,
+            revision_service=self.service,
+            mobject_resolver=lambda node: node,
+        )
+
+        discovery = backend.discover(_request())
+        backend.arm(_request(), discovery)
+
+        self.assertIn("uuid-time", discovery.route.dependency_uuids)
+        self.assertIn("uuid-rotation-time", discovery.route.dependency_uuids)
+        watched = self.service.watches[-1].dependencies
+        self.assertNotIn("|time1", watched)
+        self.assertIn("|rotationTime", watched)
+        self.assertIn("|model|bone", watched)
+
+        self.cmds.connections["|rotationTime"][1] = "|time1.unwarpedTime"
+        self.cmds.incoming["|rotationTime"] = ["|time1.unwarpedTime"]
+        changed = backend.discover(_request())
+
+        self.assertNotEqual(
+            discovery.dependency_closure_fingerprint,
             changed.dependency_closure_fingerprint,
         )
 
