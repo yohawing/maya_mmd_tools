@@ -394,6 +394,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             [frame["frame_number"] for frame in result["bone_frames"]],
             [0, 1, 2],
         )
+        self.assertNotIn("interpolation", result["bone_frames"][0])
 
     def test_uses_complete_raw_interpolation_provenance_from_model_root(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
@@ -451,11 +452,51 @@ class TestVmdSceneCollector(unittest.TestCase):
                 "target_model": "model_root",
                 "vmd_mode": "C",
                 "frame_range": (0, 2),
+                "preserve_raw_bone_transforms": True,
             }
         )
 
         self.assertEqual([frame["frame_number"] for frame in result["bone_frames"]], [0, 2])
         self.assertEqual(result["bone_frames"][0]["interpolation"], bytes([7]) * 64)
+
+    def test_mode_c_dense_bakes_when_raw_provenance_is_not_opted_in(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        raw_records = [
+            {
+                "bone_name": "センター",
+                "frame_number": frame,
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+                "interpolation": [7] * 64,
+            }
+            for frame in (0, 2)
+        ]
+        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
+            {
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_transform_complete": True,
+                "raw_bone_key_count": len(raw_records),
+                "raw_bone_interpolation": raw_records,
+            }
+        )
+        for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0, 2.0: 0.0}
+
+        result = VmdSceneCollector().collect(
+            {
+                "target_model": "model_root",
+                "vmd_mode": "C",
+                "frame_range": (0, 2),
+                "preserve_raw_bone_transforms": False,
+            }
+        )
+
+        self.assertEqual(
+            [frame["frame_number"] for frame in result["bone_frames"]],
+            [0, 1, 2],
+        )
 
     def test_explicit_raw_roundtrip_preserves_transform_values(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})

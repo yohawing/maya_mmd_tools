@@ -5,10 +5,10 @@ model-scoped PMX network morph controller weights into the dict contract
 consumed by ``VmdExporter``. Bone translation can be converted back to VMD
 offsets when a bind-pose map is supplied, and XYZ joint rotations are
 converted back to VMD quaternions with jointOrient compensation. Explicit
-Mode C requests sample the selected Maya frame range at one-frame intervals
-unless complete imported raw key/interpolation/transform provenance proves that
-the scene is an unedited sparse roundtrip; Mode A and low-level collector
-callers retain sparse collection semantics.
+Mode C requests sample the selected Maya frame range at one-frame intervals.
+An imported raw key/interpolation/transform payload is reused only when the
+caller explicitly opts into ``preserve_raw_bone_transforms``; Mode A and
+low-level collector callers retain sparse collection semantics.
 """
 
 import json
@@ -380,16 +380,21 @@ class VmdSceneCollector:
         bone_bind_poses = options.get("bone_bind_poses") or {}
         maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
         mode = str(options.get("vmd_mode", options.get("mode", "")) or "").upper()
+        preserve_raw_bone_transforms = bool(
+            options.get("preserve_raw_bone_transforms", False)
+        )
         dense_control_rig_export = self._control_rig_dense_export(target_model)
         dense_mode_c_export = mode == "C"
         authored_routes = self._scene_authored_input_routes(joints, target_model)
         rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
         raw_provenance = _read_vmd_import_provenance(target_model)
-        for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
-            rotation_interpolation.setdefault(bone_name, {}).update(values)
+        if mode != "C" or preserve_raw_bone_transforms:
+            for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
+                rotation_interpolation.setdefault(bone_name, {}).update(values)
         raw_bone_transforms = _raw_vmd_bone_transforms(raw_provenance)
         preserve_sparse_mode_c = bool(
             dense_mode_c_export
+            and preserve_raw_bone_transforms
             and raw_provenance
             and raw_bone_transforms
             and raw_provenance.get("raw_bone_interpolation_complete")
@@ -426,9 +431,7 @@ class VmdSceneCollector:
                 time_converter=maya_time_to_vmd,
                 rotation_interpolation=rotation_interpolation,
                 dense_frame_samples=mode_c_dense_frames,
-                preserve_raw_bone_transforms=bool(
-                    options.get("preserve_raw_bone_transforms", False)
-                ),
+                preserve_raw_bone_transforms=preserve_raw_bone_transforms,
                 raw_bone_transforms=raw_bone_transforms,
             ),
             "morph_frames": self.collect_morph_frames(
