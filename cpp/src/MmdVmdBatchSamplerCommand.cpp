@@ -1,7 +1,9 @@
 #include "MmdVmdBatchSamplerCommand.h"
 
 #include <maya/MAngle.h>
+#include <maya/MAnimControl.h>
 #include <maya/MArgDatabase.h>
+#include <maya/MComputation.h>
 #include <maya/MDistance.h>
 #include <maya/MDGContext.h>
 #include <maya/MDGContextGuard.h>
@@ -39,6 +41,7 @@ constexpr const char* kPayloadFlag = "-payload";
 
 enum class UnitKind { Angle, Distance, Scalar };
 enum class Strategy { DirectCurve, Static, TimedMPlug };
+enum class EvaluationMode { Context, TimelineProbe };
 
 struct Channel {
     MPlug plug;
@@ -52,6 +55,40 @@ struct Channel {
 struct Request {
     std::vector<double> frames;
     std::vector<Channel> channels;
+    EvaluationMode evaluationMode = EvaluationMode::Context;
+};
+
+class ComputationGuard final {
+public:
+    ComputationGuard() { computation_.beginComputation(false, true, false); }
+    ~ComputationGuard() { computation_.endComputation(); }
+    bool interrupted() { return computation_.isInterruptRequested(); }
+
+private:
+    MComputation computation_;
+};
+
+class CurrentTimeGuard final {
+public:
+    CurrentTimeGuard() : entryTime_(MAnimControl::currentTime()) {}
+
+    MStatus restore()
+    {
+        if (restored_) return restoreStatus_;
+        restoreStatus_ = MAnimControl::setCurrentTime(entryTime_);
+        restored_ = true;
+        return restoreStatus_;
+    }
+
+    ~CurrentTimeGuard()
+    {
+        if (!restored_) restore();
+    }
+
+private:
+    MTime entryTime_;
+    bool restored_ = false;
+    MStatus restoreStatus_ = MS::kSuccess;
 };
 
 std::string utf8(const MString& value)
@@ -240,13 +277,21 @@ bool parseRequest(const MString& payloadString, Request& request, std::string& e
         error = "duplicate JSON object key";
         return false;
     }
-    if (!payload.is_object() || payload.size() != 3U ||
-        !onlyKeys(payload, {"version", "frames", "channels"}) ||
+    if (!payload.is_object() || (payload.size() != 3U && payload.size() != 4U) ||
+        !onlyKeys(payload, {"version", "frames", "channels", "evaluation_mode"}) ||
         !payload.contains("version") || !exactVersion(payload["version"]) ||
         !payload.contains("frames") || !payload["frames"].is_array() || payload["frames"].empty() ||
         !payload.contains("channels") || !payload["channels"].is_array() || payload["channels"].empty()) {
-        error = "payload requires exactly version, frames, and channels (version=1)";
+        error = "payload requires version, frames, channels, and optional evaluation_mode (version=1)";
         return false;
+    }
+    if (payload.contains("evaluation_mode")) {
+        if (!payload["evaluation_mode"].is_string() ||
+            payload["evaluation_mode"].get<std::string>() != "timeline_probe") {
+            error = "evaluation_mode, when present, must be timeline_probe";
+            return false;
+        }
+        request.evaluationMode = EvaluationMode::TimelineProbe;
     }
 
     double previousFrame = 0.0;
@@ -368,6 +413,17 @@ MStatus sample(const Request& request)
         }
     }
 
+    const bool timelineProbe = request.evaluationMode == EvaluationMode::TimelineProbe;
+    if (timelineProbe && MAnimControl::isPlaying()) {
+        return fail("timeline_probe is unavailable during playback");
+    }
+    std::unique_ptr<CurrentTimeGuard> currentTimeGuard;
+    std::unique_ptr<ComputationGuard> computationGuard;
+    if (timelineProbe) {
+        currentTimeGuard = std::make_unique<CurrentTimeGuard>();
+        computationGuard = std::make_unique<ComputationGuard>();
+    }
+    std::string sampleError;
     std::size_t offset = kHeaderSize;
     for (double frame : request.frames) {
         // One guard is deliberately shared by every timed fallback channel
@@ -375,7 +431,15 @@ MStatus sample(const Request& request)
         // DG context and therefore do not perturb Maya's current time.
         const bool hasTimed = timedCount != 0U;
         std::unique_ptr<MDGContextGuard> guard;
-        if (hasTimed) guard = std::make_unique<MDGContextGuard>(MDGContext(MTime(frame, MTime::uiUnit())));
+        if (timelineProbe) {
+            const MStatus status = MAnimControl::setCurrentTime(MTime(frame, MTime::uiUnit()));
+            if (!status) {
+                sampleError = "timeline_probe could not set frame " + std::to_string(frame);
+                break;
+            }
+        } else if (hasTimed) {
+            guard = std::make_unique<MDGContextGuard>(MDGContext(MTime(frame, MTime::uiUnit())));
+        }
         for (std::size_t channelIndex = 0; channelIndex < request.channels.size(); ++channelIndex) {
             const Channel& channel = request.channels[channelIndex];
             double value = 0.0;
@@ -389,11 +453,23 @@ MStatus sample(const Request& request)
                 ok = true;
             } else ok = readNumeric(channel.plug, channel.unit, value);
             if (!ok || !std::isfinite(value)) {
-                return fail("sampling failed for channel " + channel.canonicalPlug +
-                            " at frame " + std::to_string(frame));
+                sampleError = "sampling failed for channel " + channel.canonicalPlug +
+                              " at frame " + std::to_string(frame);
+                break;
             }
             result[static_cast<unsigned int>(offset++)] = value;
         }
+        if (!sampleError.empty()) break;
+        if (computationGuard && computationGuard->interrupted()) {
+            sampleError = "sampling cancelled";
+            break;
+        }
+    }
+    if (currentTimeGuard && !currentTimeGuard->restore()) {
+        return fail("current time restoration failed");
+    }
+    if (!sampleError.empty()) {
+        return fail(sampleError);
     }
     MPxCommand::setResult(result);
     return MS::kSuccess;

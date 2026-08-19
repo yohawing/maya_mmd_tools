@@ -192,6 +192,26 @@ def main() -> int:
             for channel_index, value in enumerate(expected):
                 _assert_close(packed[offset + channel_index], value, f"frame {frame} channel {channel_index}")
 
+        timeline_request = json.loads(_payload(frames, channels))
+        timeline_request["evaluation_mode"] = "timeline_probe"
+        timeline_packed = _call(
+            cmds,
+            json.dumps(timeline_request, separators=(",", ":"), ensure_ascii=False),
+        )
+        if timeline_packed != packed:
+            raise RuntimeError("timeline_probe packed values differ from context values")
+        _assert_close(
+            float(cmds.currentTime(query=True)),
+            before_time,
+            "timeline_probe current time preservation",
+        )
+        timeline_request["evaluation_mode"] = "timeline"
+        _must_fail(
+            cmds,
+            json.dumps(timeline_request, separators=(",", ":"), ensure_ascii=False),
+            "unsupported evaluation mode",
+        )
+
         # Exercise the production collector seam.  The native path must yield
         # the same final VMD position/quaternion dictionaries as the existing
         # timed Python evaluator, while leaving the current Maya time alone.

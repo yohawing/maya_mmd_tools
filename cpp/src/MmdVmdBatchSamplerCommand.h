@@ -11,7 +11,9 @@
  * returns one MDoubleArray.  The first six doubles are the fixed protocol
  * header: version, frame count, channel count, direct-curve count,
  * static-count, and timed-MPlug-count.  The remaining values are laid out as
- * ``values[frame_index * channel_count + channel_index]``.
+ * ``values[frame_index * channel_count + channel_index]``.  The production
+ * default uses alternate DG contexts; an explicit ``timeline_probe`` request
+ * is reserved for bounded A/B measurement and restores Maya's entry time.
  */
 class MmdVmdBatchSamplerCommand final : public MPxCommand {
 public:
@@ -21,4 +23,3 @@ public:
     MStatus doIt(const MArgList& args) override;
     bool isUndoable() const override;
 };
-
