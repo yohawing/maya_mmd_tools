@@ -1651,9 +1651,14 @@ class VmdSceneCollector:
         into an export.
         """
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
+        standard_dense_mode = bool(dense_sample and timeline_evaluation)
+        if standard_dense_mode and dense_frame_samples is None:
+            dense_frame_samples = _dense_frame_samples((), start_frame, end_frame)
         frames = []
         channels = []
         controller_nodes = set()
+        controller_channel_morph_types = {}
+        keyless_dependency_channels = set()
         static_keyless_channels = set()
         static_sample = (
             _mode_c_earliest_integer_sample(
@@ -1668,15 +1673,37 @@ class VmdSceneCollector:
             for weight_index, morph_name in self._blendshape_morph_names(blend_shape).items():
                 attr = f"weight[{weight_index}]"
                 source_frames = _key_times(blend_shape, (attr,))
+                incoming_state = None
+                if not source_frames:
+                    if standard_dense_mode:
+                        incoming_state = _incoming_connection_state(
+                            blend_shape,
+                            (attr,),
+                            strict=True,
+                        )
+                    elif static_sample is not None:
+                        incoming_state = (
+                            "none"
+                            if _has_no_incoming_connections(blend_shape, (attr,))
+                            else "some"
+                        )
+                keyless_dependency = bool(
+                    standard_dense_mode
+                    and not source_frames
+                    and incoming_state == "some"
+                    and dense_frame_samples
+                )
                 static_keyless = bool(
                     static_sample is not None
                     and not source_frames
-                    and _has_no_incoming_connections(blend_shape, (attr,))
+                    and incoming_state == "none"
                 )
                 if static_keyless:
                     static_keyless_channels.add((blend_shape, attr))
                     source_frames = [static_sample]
-                if source_frames:
+                if keyless_dependency:
+                    keyless_dependency_channels.add((blend_shape, attr))
+                if source_frames or keyless_dependency:
                     channels.append((blend_shape, attr, morph_name, source_frames))
 
         # Model-scoped mmdMorphController keys cover vertex and non-vertex
@@ -1693,6 +1720,7 @@ class VmdSceneCollector:
                 )
                 metadata_by_index = {}
                 metadata_by_name = {}
+                metadata_by_node = {}
                 for entry in metadata:
                     if not entry.name or entry.index is None:
                         continue
@@ -1702,6 +1730,52 @@ class VmdSceneCollector:
                     # contenders instead of guessing which network is active.
                     metadata_by_index.setdefault(index, []).append(entry)
                     metadata_by_name.setdefault(name, []).append(entry)
+                    provider = str(getattr(entry, "node", "") or "")
+                    if provider:
+                        metadata_by_node.setdefault(provider, []).append(entry)
+
+                if standard_dense_mode:
+                    duplicate_nodes = sorted(
+                        node
+                        for node, entries in metadata_by_node.items()
+                        if len(entries) != 1
+                    )
+                    if duplicate_nodes:
+                        node = duplicate_nodes[0]
+                        raise ValueError(
+                            "Mode C morph metadata has conflicting provider ownership "
+                            f"for {node!r}"
+                        )
+                    duplicate_indices = sorted(
+                        index
+                        for index, entries in metadata_by_index.items()
+                        if len(entries) != 1
+                    )
+                    if duplicate_indices:
+                        index = duplicate_indices[0]
+                        providers = sorted(
+                            str(getattr(entry, "node", ""))
+                            for entry in metadata_by_index[index]
+                        )
+                        raise ValueError(
+                            "Mode C morph metadata has duplicate controller index "
+                            f"{index}: {providers}"
+                        )
+                    duplicate_names = sorted(
+                        name
+                        for name, entries in metadata_by_name.items()
+                        if len(entries) != 1
+                    )
+                    if duplicate_names:
+                        name = duplicate_names[0]
+                        providers = sorted(
+                            str(getattr(entry, "node", ""))
+                            for entry in metadata_by_name[name]
+                        )
+                        raise ValueError(
+                            "Mode C morph metadata has duplicate controller name "
+                            f"{name!r}: {providers}"
+                        )
 
                 for index, entries in sorted(metadata_by_index.items()):
                     if len(entries) != 1:
@@ -1711,9 +1785,12 @@ class VmdSceneCollector:
                         continue
                     attr = f"inputWeight[{index}]"
                     source_frames = _key_times(controller, (attr,))
-                    if source_frames:
+                    if source_frames or standard_dense_mode:
                         channels.append((controller, attr, str(entry.name), source_frames))
                         controller_nodes.add(controller)
+                        controller_channel_morph_types[(controller, attr)] = str(
+                            getattr(entry, "morph_type", "") or ""
+                        ).strip().casefold()
 
         channels = [
             (
@@ -1734,6 +1811,60 @@ class VmdSceneCollector:
                 _filter_frame_range(source_frames, start_frame, end_frame)
             ]
         ]
+
+        if standard_dense_mode:
+            output_providers = {}
+            dropped_providers = set()
+            for node, attr, morph_name, _source_frames, _direct_single in channels:
+                output_providers.setdefault(str(morph_name), []).append(
+                    (str(node), str(attr))
+                )
+            for morph_name, providers in sorted(output_providers.items()):
+                unique_providers = sorted(set(providers))
+                if len(unique_providers) <= 1:
+                    continue
+                controller_providers = [
+                    provider
+                    for provider in unique_providers
+                    if provider[0] in controller_nodes
+                ]
+                non_controller_providers = [
+                    provider
+                    for provider in unique_providers
+                    if provider[0] not in controller_nodes
+                ]
+                if (
+                    len(unique_providers) != 2
+                    or len(controller_providers) != 1
+                    or len(non_controller_providers) != 1
+                ):
+                    raise ValueError(
+                        "Mode C morph output has duplicate providers for "
+                        f"{morph_name!r}: {unique_providers}"
+                    )
+                controller_provider = controller_providers[0]
+                controller_type = controller_channel_morph_types.get(
+                    controller_provider,
+                    "",
+                )
+                if controller_type != "vertex":
+                    raise ValueError(
+                        "Mode C morph output has ambiguous non-vertex controller "
+                        f"provider for {morph_name!r}: {unique_providers}"
+                    )
+                dropped_providers.add(
+                    (str(morph_name), non_controller_providers[0])
+                )
+            if dropped_providers:
+                channels = [
+                    channel
+                    for channel in channels
+                    if (
+                        str(channel[2]),
+                        (str(channel[0]), str(channel[1])),
+                    )
+                    not in dropped_providers
+                ]
 
         def append_frame(
             node,
@@ -1833,17 +1964,42 @@ class VmdSceneCollector:
                         direct_single,
                     )
         if dense_sample:
+            diagnostic_rows = {}
             for node, _attr, morph_name, ranged_source_frames, direct_single in channels:
                 if direct_single:
                     continue
-                dependency = node in controller_nodes
+                keyless_dependency = (node, _attr) in keyless_dependency_channels
+                dependency = node in controller_nodes or keyless_dependency
+                reason = (
+                    "keyless_incoming_dependency"
+                    if keyless_dependency
+                    else "keyless_controller_dependency"
+                    if node in controller_nodes and not ranged_source_frames
+                    else "morph_controller_route"
+                    if dependency
+                    else "multiple_source_keys"
+                )
+                candidate = (
+                    dependency,
+                    reason,
+                    len(ranged_source_frames),
+                )
+                current = diagnostic_rows.get(str(morph_name))
+                if current is None or (dependency and not current[0]):
+                    diagnostic_rows[str(morph_name)] = candidate
+            for morph_name, (dependency, reason, source_key_count) in diagnostic_rows.items():
+                planned_key_count = (
+                    len(dense_frame_samples)
+                    if dense_frame_samples is not None
+                    else source_key_count
+                )
                 self._record_track_selection(
                     "morph",
                     morph_name,
                     "dependency_baked" if dependency else "authored_sampled",
-                    "morph_controller_route" if dependency else "multiple_source_keys",
-                    len(ranged_source_frames),
-                    len(dense_frame_samples or ranged_source_frames),
+                    reason,
+                    source_key_count,
+                    planned_key_count,
                 )
         return _deduplicate_frames(frames, ("morph_name", "frame_number"))
 

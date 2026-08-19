@@ -739,7 +739,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual([frame["frame_number"] for frame in frames], [2])
         self.assertEqual(self.cmds.current_time_calls, [2.0, 0.0])
 
-    def test_mode_c_keyless_morph_with_incoming_or_controller_is_not_static_classified(self):
+    def test_mode_c_keyless_morph_with_incoming_or_controller_is_dependency(self):
         self._configure_static_morph()
         self.cmds.connections[("face_bs", "weight[0]", True, False)] = [
             "animCurve.output"
@@ -753,8 +753,11 @@ class TestVmdSceneCollector(unittest.TestCase):
             dense_sample=True,
             timeline_evaluation=True,
         )
-        self.assertEqual(frames, [])
-        self.assertNotIn("track_selection", collector.diagnostics)
+        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        self.assertEqual(evidence[0]["decision"], "dependency_baked")
+        self.assertEqual(evidence[0]["reason"], "keyless_incoming_dependency")
+        self.assertEqual(evidence[0]["source_key_count"], 0)
 
         self.cmds.connections.clear()
         self.cmds.node_types["morph_controller"] = "mmdMorphController"
@@ -776,8 +779,212 @@ class TestVmdSceneCollector(unittest.TestCase):
                 dense_sample=True,
                 timeline_evaluation=True,
             )
-        self.assertEqual(frames, [])
-        self.assertNotIn("track_selection", collector.diagnostics)
+        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        self.assertEqual(evidence[0]["decision"], "dependency_baked")
+        self.assertEqual(evidence[0]["reason"], "keyless_controller_dependency")
+        self.assertEqual(evidence[0]["source_key_count"], 0)
+
+    def test_public_mode_c_keyless_incoming_morph_uses_explicit_range(self):
+        self._configure_static_morph()
+        self.cmds.node_types["model_root"] = "transform"
+        self.cmds.connections[("face_bs", "weight[0]", True, False)] = [
+            "constraint.output"
+        ]
+
+        frames = VmdSceneCollector().collect(
+            {
+                "target_model": "model_root",
+                "blend_shapes": ["face_bs"],
+                "vmd_mode": "C",
+                "frame_range": (0, 2),
+            }
+        )["morph_frames"]
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+
+    def test_mode_c_keyless_morph_connection_query_failure_raises(self):
+        self._configure_static_morph()
+        original = self.cmds.listConnections
+
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("morph connection query failed")
+
+        self.cmds.listConnections = fail
+        try:
+            with self.assertRaisesRegex(RuntimeError, "morph connection query failed"):
+                VmdSceneCollector().collect_morph_frames(
+                    ["face_bs"],
+                    start_frame=0,
+                    end_frame=2,
+                    dense_sample=True,
+                    timeline_evaluation=True,
+                )
+        finally:
+            self.cmds.listConnections = original
+
+    def test_mode_c_duplicate_morph_controller_index_fails_closed(self):
+        self.cmds.node_types["morph_controller"] = "mmdMorphController"
+        metadata = [
+            SimpleNamespace(name="first", index=0, node="provider_a"),
+            SimpleNamespace(name="second", index=0, node="provider_b"),
+        ]
+        with mock.patch.object(
+            collector_module, "_morph_controller_for_model", return_value="morph_controller"
+        ), mock.patch.object(
+            collector_module, "iter_morph_network_metadata", return_value=metadata
+        ):
+            with self.assertRaisesRegex(ValueError, "duplicate controller index 0"):
+                VmdSceneCollector().collect_morph_frames(
+                    [],
+                    target_model="model_root",
+                    start_frame=0,
+                    end_frame=2,
+                    dense_sample=True,
+                    timeline_evaluation=True,
+                )
+
+    def test_mode_c_duplicate_morph_controller_name_fails_closed(self):
+        self.cmds.node_types["morph_controller"] = "mmdMorphController"
+        metadata = [
+            SimpleNamespace(name="same", index=0, node="provider_a"),
+            SimpleNamespace(name="same", index=1, node="provider_b"),
+        ]
+        with mock.patch.object(
+            collector_module, "_morph_controller_for_model", return_value="morph_controller"
+        ), mock.patch.object(
+            collector_module, "iter_morph_network_metadata", return_value=metadata
+        ):
+            with self.assertRaisesRegex(ValueError, "duplicate controller name"):
+                VmdSceneCollector().collect_morph_frames(
+                    [],
+                    target_model="model_root",
+                    start_frame=0,
+                    end_frame=2,
+                    dense_sample=True,
+                    timeline_evaluation=True,
+                )
+
+    def test_mode_c_vertex_controller_owns_duplicate_blendshape_output(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "morph_controller": "mmdMorphController",
+                "face_bs": "blendShape",
+            }
+        )
+        self.cmds.attrs["face_bs", ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON] = json.dumps(
+            {"0": "shared"}, ensure_ascii=False
+        )
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.keys["face_bs", "weight[0]"] = {0.0: 0.25, 2.0: 0.25}
+        self.cmds.keys["morph_controller", "inputWeight[0]"] = {
+            0.0: 0.1,
+            2.0: 0.9,
+        }
+        self.cmds.attrs["morph_controller", "inputWeight[0]"] = 0.7
+        metadata = [
+            SimpleNamespace(
+                morph_type="vertex",
+                name="shared",
+                index=0,
+                node="vertex_provider",
+            )
+        ]
+        with mock.patch.object(
+            collector_module,
+            "_morph_controller_for_model",
+            return_value="morph_controller",
+        ), mock.patch.object(
+            collector_module,
+            "iter_morph_network_metadata",
+            return_value=metadata,
+        ):
+            collector = VmdSceneCollector()
+            frames = collector.collect_morph_frames(
+                ["face_bs"],
+                target_model="model_root",
+                start_frame=0,
+                end_frame=2,
+                dense_sample=True,
+                timeline_evaluation=True,
+            )
+
+        self.assertEqual(
+            [frame["frame_number"] for frame in frames],
+            [0, 1, 2],
+        )
+        self.assertEqual(
+            [frame["weight"] for frame in frames],
+            [0.1, 0.7, 0.9],
+        )
+        self.assertNotIn(0.25, [frame["weight"] for frame in frames])
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["decision"], "dependency_baked")
+        self.assertEqual(evidence[0]["reason"], "morph_controller_route")
+
+    def test_mode_c_nonvertex_controller_duplicate_blendshape_output_raises(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "morph_controller": "mmdMorphController",
+                "face_bs": "blendShape",
+            }
+        )
+        self.cmds.attrs["face_bs", ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON] = json.dumps(
+            {"0": "shared"}, ensure_ascii=False
+        )
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.keys["face_bs", "weight[0]"] = {0.0: 0.25}
+        metadata = [
+            SimpleNamespace(
+                morph_type="bone",
+                name="shared",
+                index=0,
+                node="bone_provider",
+            )
+        ]
+        with mock.patch.object(
+            collector_module,
+            "_morph_controller_for_model",
+            return_value="morph_controller",
+        ), mock.patch.object(
+            collector_module,
+            "iter_morph_network_metadata",
+            return_value=metadata,
+        ):
+            with self.assertRaisesRegex(ValueError, "non-vertex controller"):
+                VmdSceneCollector().collect_morph_frames(
+                    ["face_bs"],
+                    target_model="model_root",
+                    start_frame=0,
+                    end_frame=2,
+                    dense_sample=True,
+                    timeline_evaluation=True,
+                )
+
+    def test_mode_c_duplicate_blendshape_output_provider_fails_closed(self):
+        self.cmds.node_types.update({"face_bs_a": "blendShape", "face_bs_b": "blendShape"})
+        self.cmds.blendshape_weights.update({"face_bs_a": 1, "face_bs_b": 1})
+        self.cmds.aliases.update(
+            {"face_bs_a.weight[0]": "same", "face_bs_b.weight[0]": "same"}
+        )
+        self.cmds.connections.update(
+            {
+                ("face_bs_a", "weight[0]", True, False): ["constraint_a.output"],
+                ("face_bs_b", "weight[0]", True, False): ["constraint_b.output"],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "duplicate providers"):
+            VmdSceneCollector().collect_morph_frames(
+                ["face_bs_a", "face_bs_b"],
+                start_frame=0,
+                end_frame=2,
+                dense_sample=True,
+                timeline_evaluation=True,
+            )
 
     def test_mode_c_keyless_morph_noninteger_range_does_not_invent_sample(self):
         self._configure_static_morph()
