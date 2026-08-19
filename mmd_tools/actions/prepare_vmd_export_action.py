@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import copy
 import hashlib
 import math
+import time
 from types import MappingProxyType
 from typing import Any, Optional, Protocol, Tuple
 
@@ -215,6 +216,36 @@ class PrepareVmdExportResult:
     @property
     def published(self) -> bool:
         return self.succeeded
+
+
+@dataclass(frozen=True)
+class PrepareVmdExportDiagnostics:
+    """Small immutable timing/evidence envelope for one prepare attempt.
+
+    The payload itself is intentionally absent.  This envelope is kept even
+    when preparation fails so a smoke runner can distinguish a slow
+    discovery, collector, or freeze boundary without logging per-frame data.
+    ``phase_timing`` is a mapping of stable phase names to wall-clock seconds.
+    """
+
+    status: str = "not_started"
+    phase_timing: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
+    request_fingerprint: Optional[str] = None
+    payload_fingerprint: Optional[str] = None
+    error: Optional[str] = None
+    backend: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a JSON-shaped copy for report writers."""
+
+        return {
+            "status": self.status,
+            "phase_timing": dict(self.phase_timing),
+            "request_fingerprint": self.request_fingerprint,
+            "payload_fingerprint": self.payload_fingerprint,
+            "error": self.error,
+            "backend": _copy_diagnostics(self.backend),
+        }
 
 
 def _normal_key(key: Any) -> str:
@@ -430,6 +461,28 @@ def _freeze_value(value: Any) -> Any:
     return value
 
 
+def _copy_diagnostics(value: Any) -> Any:
+    """Recursively copy report-safe diagnostics without exposing live state."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _copy_diagnostics(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_copy_diagnostics(item) for item in value]
+    return value
+
+
+def _freeze_diagnostics(value: Any) -> Any:
+    """Recursively freeze diagnostics kept on the action."""
+
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {str(key): _freeze_diagnostics(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_diagnostics(item) for item in value)
+    return value
+
+
 def _thaw_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {key: _thaw_value(item) for key, item in value.items()}
@@ -481,12 +534,25 @@ class PrepareVmdExportAction:
         # report the same scene revision later.
         self._active_token: Optional[PreparedVmdExportToken] = None
         self._boundary_open = False
+        self._diagnostics = PrepareVmdExportDiagnostics()
 
     @property
     def active_token(self) -> Optional[PreparedVmdExportToken]:
         """Return the one token currently owned by this action, if any."""
 
         return self._active_token
+
+    @property
+    def diagnostics(self) -> PrepareVmdExportDiagnostics:
+        """Return immutable diagnostics for the most recent prepare attempt."""
+
+        return self._diagnostics
+
+    @property
+    def diagnostics_copy(self) -> dict[str, Any]:
+        """Return a detached report-writer copy of :attr:`diagnostics`."""
+
+        return self._diagnostics.as_dict()
 
     def invalidate(self, token: Optional[PreparedVmdExportToken] = None) -> bool:
         """Discard a token and close its host-side revision watch.
@@ -521,26 +587,57 @@ class PrepareVmdExportAction:
     def execute(self, request: Any) -> PrepareVmdExportResult:
         """Collect once and publish only when the scene stayed unchanged."""
 
+        started = time.perf_counter()
+        phase_timing: dict[str, float] = {}
+        options_fingerprint: Optional[str] = None
+        payload_fingerprint: Optional[str] = None
+        status = "failed"
+        error_text: Optional[str] = None
+
+        def timed(name: str, begin: float) -> None:
+            phase_timing[name] = round(time.perf_counter() - begin, 6)
+
         # A new preparation always supersedes the previous one.  This also
         # closes the old Maya revision watch before discovery/arm starts.
+        self._diagnostics = PrepareVmdExportDiagnostics(status="running")
         self.invalidate()
         try:
+            fingerprint_begin = time.perf_counter()
             frame_range, frame_step, scale, mode = _normalize_frame_options(request)
+            options_fingerprint = request_fingerprint(request)
+            timed("request_fingerprint", fingerprint_begin)
+
+            discovery_begin = time.perf_counter()
             first = _normalize_discovery(self._backend.discover(request), request)
+            timed("first_discovery", discovery_begin)
             requested_uuid = _read_field(request, "target_uuid")
             requested_identity = _read_field(request, "target_identity")
             if requested_uuid is not None and str(requested_uuid) != first.target_uuid:
                 raise PrepareVmdExportError("requested target_uuid does not match discovered target")
             if requested_identity is not None and str(requested_identity) != first.target_identity:
                 raise PrepareVmdExportError("requested target_identity does not match discovered target")
+            arm_begin = time.perf_counter()
             _arm_revision_provider(self._revision_provider, request, first)
             self._boundary_open = True
+            timed("watcher_arm", arm_begin)
+
+            revision_before_begin = time.perf_counter()
             revision_before = _revision_method(self._revision_provider, request, first)
             revision_before = _require_identity(revision_before, "revision_before")
+            timed("revision_before", revision_before_begin)
+
+            collect_begin = time.perf_counter()
             payload = self._backend.collect(request)
+            timed("backend_collect", collect_begin)
+
+            discovery_begin = time.perf_counter()
             second = _normalize_discovery(self._backend.discover(request), request)
+            timed("second_discovery", discovery_begin)
+
+            revision_after_begin = time.perf_counter()
             revision_after = _revision_method(self._revision_provider, request, second)
             revision_after = _require_identity(revision_after, "revision_after")
+            timed("revision_after", revision_after_begin)
             if revision_before != revision_after:
                 raise PrepareVmdExportRaceError(
                     f"scene revision changed during VMD collection ({revision_before} -> {revision_after})"
@@ -552,13 +649,15 @@ class PrepareVmdExportAction:
                 or first.dependency_closure_fingerprint != second.dependency_closure_fingerprint
             ):
                 raise PrepareVmdExportRaceError("VMD route or dependency closure changed during collection")
+
+            freeze_begin = time.perf_counter()
             prepared_payload = FrozenVmdDataView(payload)
             payload_fingerprint = prepared_payload.fingerprint
-            options_fingerprint = request_fingerprint(request)
+            timed("payload_freeze_fingerprint", freeze_begin)
             cache_id = first.cache_id or _cache_id(
                 first.scene_session_id,
                 first.target_uuid,
-                options_fingerprint,
+                options_fingerprint or request_fingerprint(request),
                 first.dependency_closure_fingerprint,
             )
             token = PreparedVmdExportToken(
@@ -577,13 +676,34 @@ class PrepareVmdExportAction:
                 dependency_closure_fingerprint=first.dependency_closure_fingerprint,
             )
             self._active_token = token
+            status = "published"
             return PrepareVmdExportResult(status="published", token=token)
         except PrepareVmdExportRaceError as exc:
+            status = "partial"
+            error_text = f"{type(exc).__name__}: {exc}"
             self.invalidate()
             return PrepareVmdExportResult(status="partial", error=exc)
         except Exception as exc:
+            error_text = f"{type(exc).__name__}: {exc}"
             self.invalidate()
             return PrepareVmdExportResult(status="failed", error=exc)
+        finally:
+            phase_timing["total"] = round(time.perf_counter() - started, 6)
+            backend_diagnostics = getattr(self._backend, "diagnostics_copy", None)
+            if callable(backend_diagnostics):
+                backend_diagnostics = backend_diagnostics()
+            elif backend_diagnostics is None:
+                backend_diagnostics = getattr(self._backend, "diagnostics", {})
+            if not isinstance(backend_diagnostics, Mapping):
+                backend_diagnostics = {}
+            self._diagnostics = PrepareVmdExportDiagnostics(
+                status=status,
+                phase_timing=MappingProxyType(dict(phase_timing)),
+                request_fingerprint=options_fingerprint,
+                payload_fingerprint=payload_fingerprint,
+                error=error_text,
+                backend=_freeze_diagnostics(backend_diagnostics or {}),
+            )
 
     def prepare(self, request: Any) -> PreparedVmdExportToken:
         """Return a token or raise the preparation error for direct callers."""
@@ -667,6 +787,7 @@ __all__ = [
     "FrozenVmdDataView",
     "PREPARED_VMD_EXPORT_SCHEMA_VERSION",
     "PrepareVmdExportAction",
+    "PrepareVmdExportDiagnostics",
     "PrepareVmdExportError",
     "PrepareVmdExportRequest",
     "PrepareVmdExportResult",

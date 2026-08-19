@@ -396,6 +396,37 @@ class TestVmdSceneCollector(unittest.TestCase):
         )
         self.assertNotIn("interpolation", result["bone_frames"][0])
 
+    def test_diagnostics_sink_preserves_collection_values_and_reports_counts(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs["center_joint", ATTR_MMD_BONE_NAME] = "center"
+        for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+            self.cmds.keys["center_joint", attribute] = {0.0: 0.0, 2.0: 1.0}
+
+        options = {
+            "target_model": "model_root",
+            "vmd_mode": "C",
+            "frame_range": (0, 2),
+        }
+        plain = VmdSceneCollector().collect(options)
+        captured = []
+        instrumented = VmdSceneCollector(diagnostics_sink=captured.append)
+        with_sink = instrumented.collect(options)
+
+        self.assertEqual(plain, with_sink)
+        self.assertEqual(len(captured), 1)
+        diagnostics = instrumented.diagnostics
+        self.assertEqual(diagnostics["status"], "completed")
+        self.assertEqual(diagnostics["route_provenance_dense_planning"]["dense_frame_count"], 3)
+        self.assertEqual(diagnostics["bone_collection"]["joint_count"], 1)
+        self.assertEqual(diagnostics["bone_collection"]["frame_count"], 3)
+        self.assertEqual(diagnostics["bone_collection"]["estimated_scalar_bone_reads"], 18)
+        self.assertEqual(diagnostics["morph_collection"]["frame_count"], 0)
+        self.assertEqual(diagnostics["camera_collection"]["frame_count"], 0)
+        self.assertEqual(diagnostics["light_collection"]["frame_count"], 0)
+        self.assertEqual(diagnostics["ik_collection"]["frame_count"], 0)
+        self.assertGreaterEqual(diagnostics["total"]["wall_sec"], 0.0)
+
     def test_uses_complete_raw_interpolation_provenance_from_model_root(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]

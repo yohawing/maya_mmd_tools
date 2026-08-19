@@ -1928,6 +1928,16 @@ def _prepare_vmd_mode_c(
         "token_published": token is not None,
         "error": None,
     }
+    prepare_action = getattr(workflow, "prepare_vmd_action", None)
+    diagnostics = getattr(prepare_action, "diagnostics_copy", None)
+    if callable(diagnostics):
+        diagnostics = diagnostics()
+    elif diagnostics is None:
+        diagnostics = getattr(prepare_action, "diagnostics", None)
+    if diagnostics is not None:
+        if hasattr(diagnostics, "as_dict") and callable(diagnostics.as_dict):
+            diagnostics = diagnostics.as_dict()
+        evidence["diagnostics"] = diagnostics
     phase_entries = [
         item for item in getattr(context, "phases", ())
         if str(item.get("name")) == "prepare_mode_c"

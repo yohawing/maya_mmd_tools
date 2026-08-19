@@ -103,6 +103,41 @@ class PrepareVmdExportActionTests(unittest.TestCase):
             result.token.payload.bone_frames[0].frame_number = 99
         self.assertEqual(result.token.payload.bone_frames[0].frame_number, 4)
 
+    def test_diagnostics_keep_prepare_phase_evidence_on_success_and_failure(self):
+        backend = _Backend([_discovery(), _discovery()])
+        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1"]))
+
+        result = action.execute(_request())
+        diagnostics = action.diagnostics
+        self.assertEqual(diagnostics.status, "published")
+        self.assertEqual(
+            set(
+                (
+                    "request_fingerprint",
+                    "first_discovery",
+                    "watcher_arm",
+                    "revision_before",
+                    "backend_collect",
+                    "second_discovery",
+                    "revision_after",
+                    "payload_freeze_fingerprint",
+                    "total",
+                )
+            ),
+            set(diagnostics.phase_timing),
+        )
+        self.assertEqual(diagnostics.payload_fingerprint, result.token.payload_fingerprint)
+        copied = action.diagnostics_copy
+        copied["phase_timing"]["total"] = -1
+        self.assertGreaterEqual(diagnostics.phase_timing["total"], 0.0)
+
+        failing = PrepareVmdExportAction(_Backend([_discovery()]), _Revisions([None]))
+        failure = failing.execute(_request())
+        self.assertEqual(failure.status, "failed")
+        self.assertEqual(failing.diagnostics.status, "failed")
+        self.assertIn("revision_before", failing.diagnostics.error)
+        self.assertIn("total", failing.diagnostics.phase_timing)
+
         mutable = result.token.copy_for_export()
         mutable.bone_frames[0].frame_number = 99
         self.assertEqual(result.token.payload.bone_frames[0].frame_number, 4)

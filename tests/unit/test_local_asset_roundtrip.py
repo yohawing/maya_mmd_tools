@@ -229,6 +229,13 @@ def test_mode_c_prepare_is_called_once_and_publishes_timing_evidence(monkeypatch
             self.token = token
 
     class _Workflow:
+        prepare_vmd_action = SimpleNamespace(
+            diagnostics_copy=lambda: {
+                "status": "published",
+                "phase_timing": {"total": 0.25},
+            }
+        )
+
         def prepare_vmd(self, request):
             calls.append(request)
             return _Preparation()
@@ -247,6 +254,7 @@ def test_mode_c_prepare_is_called_once_and_publishes_timing_evidence(monkeypatch
     assert len(calls) == 1
     assert evidence["token_published"] is True
     assert evidence["phase_timing"]["wall_sec"] == 12.5
+    assert evidence["diagnostics"]["phase_timing"]["total"] == 0.25
 
 
 def test_mode_c_prepare_failure_is_non_pass_and_has_no_collector_fallback(monkeypatch):

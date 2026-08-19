@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
+import time
 from typing import Any, Optional
 
 from ..actions.prepare_vmd_export_action import (
@@ -108,6 +109,16 @@ def _as_list(value: Any) -> list[Any]:
         return [value]
 
 
+def _copy_diagnostics(value: Any) -> Any:
+    """Detach nested collector diagnostics for report serialization."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _copy_diagnostics(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_copy_diagnostics(item) for item in value]
+    return value
+
+
 class MayaVmdPrepareBackend:
     """Discover, watch, and collect one Current Model-scoped Mode C route.
 
@@ -133,6 +144,7 @@ class MayaVmdPrepareBackend:
         self._active_watch: Any = None
         self._active_route: Optional[MayaVmdExportRoute] = None
         self._watch_generation = 0
+        self._diagnostics: dict[str, Any] = {}
 
     @property
     def revision_provider(self) -> "MayaVmdPrepareBackend":
@@ -146,13 +158,28 @@ class MayaVmdPrepareBackend:
 
         return self._active_watch
 
+    @property
+    def diagnostics(self) -> dict[str, Any]:
+        """Return detached host-side discovery/collection evidence."""
+
+        return _copy_diagnostics(self._diagnostics)
+
+    @property
+    def diagnostics_copy(self) -> dict[str, Any]:
+        """Alias used by preparation reports."""
+
+        return self.diagnostics
+
     def discover(self, request: Any) -> VmdExportDiscovery:
         """Resolve the Current Model and fingerprint its dependency closure."""
 
+        started = time.perf_counter()
         options = self._validated_options(request)
         target_model = self._resolve_target_model(options)
         target_uuid = self._stable_uuid(target_model)
+        closure_started = time.perf_counter()
         records, topology = self._dependency_closure(target_model, options)
+        closure_sec = round(time.perf_counter() - closure_started, 6)
         dependency_payload = {
             "target_uuid": target_uuid,
             "nodes": sorted(records),
@@ -169,6 +196,14 @@ class MayaVmdPrepareBackend:
             dependency_fingerprint=dependency_fingerprint,
         )
         self._active_route = route
+        self._diagnostics["dependency_discovery"] = {
+            "wall_sec": round(time.perf_counter() - started, 6),
+            "closure_wall_sec": closure_sec,
+            "node_count": len(records),
+            "connection_count": len(topology),
+            "target_uuid": target_uuid,
+            "target_identity": target_model,
+        }
         return VmdExportDiscovery(
             scene_session_id=session_id,
             target_uuid=target_uuid,
@@ -270,7 +305,27 @@ class MayaVmdPrepareBackend:
                 "preserve_raw_bone_transforms": False,
             }
         )
-        payload = collect(collector_options)
+        collect_started = time.perf_counter()
+        try:
+            payload = collect(collector_options)
+        except Exception as exc:
+            self._diagnostics["raw_collector"] = {
+                "wall_sec": round(time.perf_counter() - collect_started, 6),
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            raise
+        self._diagnostics["raw_collector"] = {
+            "wall_sec": round(time.perf_counter() - collect_started, 6),
+            "status": "completed",
+        }
+        collector_diagnostics = getattr(collector, "diagnostics_copy", None)
+        if callable(collector_diagnostics):
+            collector_diagnostics = collector_diagnostics()
+        elif collector_diagnostics is None:
+            collector_diagnostics = getattr(collector, "diagnostics", None)
+        if collector_diagnostics:
+            self._diagnostics["collector"] = _copy_diagnostics(collector_diagnostics)
         converter = self._converter
         if converter is None:
             from ..io.vmd_exporter import VmdExporter
@@ -280,7 +335,38 @@ class MayaVmdPrepareBackend:
             converter = converter.to_vmd_data
         if not callable(converter):
             raise PrepareVmdExportError("VMD converter is not callable")
-        return converter(payload)
+        convert_started = time.perf_counter()
+        try:
+            result = converter(payload)
+        except Exception as exc:
+            self._diagnostics["dict_to_vmd_data"] = {
+                "wall_sec": round(time.perf_counter() - convert_started, 6),
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            raise
+        self._diagnostics["dict_to_vmd_data"] = {
+            "wall_sec": round(time.perf_counter() - convert_started, 6),
+            "status": "completed",
+        }
+        section_counts = {}
+        for name in (
+            "bone_frames",
+            "morph_frames",
+            "camera_frames",
+            "light_frames",
+            "shadow_frames",
+            "ik_show_hide_frames",
+        ):
+            value = getattr(result, name, None)
+            if value is not None:
+                try:
+                    section_counts[name] = len(value)
+                except TypeError:
+                    section_counts[name] = None
+        self._diagnostics["vmd_data_sections"] = section_counts
+        self._diagnostics["collect_total"] = round(time.perf_counter() - collect_started, 6)
+        return result
 
     def close(self) -> None:
         """Close the active watch at scene/application teardown."""

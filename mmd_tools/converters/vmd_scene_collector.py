@@ -13,6 +13,7 @@ low-level collector callers retain sparse collection semantics.
 
 import json
 import math
+import time
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 import maya.api.OpenMaya as om
@@ -62,6 +63,8 @@ _BONE_EXPORT_ATTRS = (
     "rotateY",
     "rotateZ",
 )
+
+
 _CAMERA_EXPORT_ATTRS = (
     "translateX",
     "translateY",
@@ -95,6 +98,16 @@ _MAYA_TIME_UNIT_FPS = {
     "palf": 50.0,
     "ntscf": 60.0,
 }
+
+
+def _copy_diagnostics(value: Any) -> Any:
+    """Detach nested timing/count diagnostics from the collector."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _copy_diagnostics(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_copy_diagnostics(item) for item in value]
+    return value
 
 
 def _canonical_dag_path(node: str) -> Optional[str]:
@@ -353,7 +366,54 @@ def _read_vmd_import_provenance(target_model: Optional[str]) -> Optional[dict[st
 class VmdSceneCollector:
     """Collect minimum VMD-compatible animation data from a Maya scene."""
 
+    def __init__(self, diagnostics_sink=None):
+        """Create a collector with optional end-of-collection diagnostics sink.
+
+        The sink receives one small JSON-shaped dictionary after collection;
+        it never receives per-frame values.  Keeping it optional preserves the
+        existing low-level collector API and keeps the hot loop untouched.
+        """
+
+        self._diagnostics_sink = diagnostics_sink
+        self._diagnostics: dict[str, Any] = {}
+
+    @property
+    def diagnostics(self) -> dict[str, Any]:
+        """Return detached timing and count evidence for the last collect."""
+
+        return _copy_diagnostics(self._diagnostics)
+
+    @property
+    def diagnostics_copy(self) -> dict[str, Any]:
+        """Alias used by Maya preparation evidence."""
+
+        return self.diagnostics
+
     def collect(self, options: Optional[Mapping[str, Any]] = None) -> dict:
+        """Collect and publish low-overhead timing diagnostics."""
+
+        started = time.perf_counter()
+        self._diagnostics = {}
+        try:
+            result = self._collect_impl(options)
+            self._diagnostics["status"] = "completed"
+            return result
+        except Exception as exc:
+            self._diagnostics["status"] = "failed"
+            self._diagnostics["error"] = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            self._diagnostics["total"] = {
+                "wall_sec": round(time.perf_counter() - started, 6),
+            }
+            sink = self._diagnostics_sink
+            if callable(sink):
+                try:
+                    sink(self.diagnostics)
+                except Exception as exc:  # diagnostics must never alter export semantics
+                    self._diagnostics["sink_error"] = f"{type(exc).__name__}: {exc}"
+
+    def _collect_impl(self, options: Optional[Mapping[str, Any]] = None) -> dict:
         """Collect VMD exporter input from the current Maya scene.
 
         Args:
@@ -366,6 +426,7 @@ class VmdSceneCollector:
                 remains scene-level. Explicit node lists remain authoritative.
         """
         options = options or {}
+        planning_started = time.perf_counter()
         target_model = options.get("target_model") or options.get("model_root")
         joints = list(options.get("joints") or self._find_joints(target_model))
         blend_shapes = list(
@@ -416,60 +477,115 @@ class VmdSceneCollector:
             else None
         )
 
+        self._diagnostics["route_provenance_dense_planning"] = {
+            "wall_sec": round(time.perf_counter() - planning_started, 6),
+            "joint_count": len(joints),
+            "blend_shape_count": len(blend_shapes),
+            "camera_count": len(cameras),
+            "light_count": len(lights),
+            "authored_route_count": len(authored_routes),
+            "raw_provenance": bool(raw_provenance),
+            "dense_frame_count": len(mode_c_dense_frames or ()),
+        }
+
+        bone_started = time.perf_counter()
+        bone_frames = self.collect_bone_frames(
+            joints,
+            start_frame,
+            end_frame,
+            motion_scale=motion_scale,
+            bone_bind_poses=bone_bind_poses,
+            input_routes=authored_routes,
+            dense_sample=dense_control_rig_export or dense_mode_c_export,
+            force_dense_sample=dense_mode_c_export,
+            time_converter=maya_time_to_vmd,
+            rotation_interpolation=rotation_interpolation,
+            dense_frame_samples=mode_c_dense_frames,
+            preserve_raw_bone_transforms=preserve_raw_bone_transforms,
+            raw_bone_transforms=raw_bone_transforms,
+        )
+        self._diagnostics["bone_collection"] = {
+            "wall_sec": round(time.perf_counter() - bone_started, 6),
+            "joint_count": len(joints),
+            "frame_count": len(bone_frames),
+            "estimated_scalar_bone_reads": len(bone_frames) * 6,
+        }
+
+        morph_started = time.perf_counter()
+        morph_frames = self.collect_morph_frames(
+            blend_shapes,
+            start_frame,
+            end_frame,
+            time_converter=maya_time_to_vmd,
+            target_model=target_model,
+            dense_sample=dense_mode_c_export,
+            dense_frame_samples=mode_c_dense_frames,
+        )
+        self._diagnostics["morph_collection"] = {
+            "wall_sec": round(time.perf_counter() - morph_started, 6),
+            "frame_count": len(morph_frames),
+        }
+
+        camera_started = time.perf_counter()
+        camera_frames = self.collect_camera_frames(
+            cameras,
+            start_frame,
+            end_frame,
+            time_converter=maya_time_to_vmd,
+            dense_sample=dense_mode_c_export,
+            dense_frame_samples=mode_c_dense_frames,
+        )
+        self._diagnostics["camera_collection"] = {
+            "wall_sec": round(time.perf_counter() - camera_started, 6),
+            "frame_count": len(camera_frames),
+        }
+
+        light_started = time.perf_counter()
+        light_frames = self.collect_light_frames(
+            lights,
+            start_frame,
+            end_frame,
+            time_converter=maya_time_to_vmd,
+            dense_sample=dense_mode_c_export,
+            dense_frame_samples=mode_c_dense_frames,
+        )
+        self._diagnostics["light_collection"] = {
+            "wall_sec": round(time.perf_counter() - light_started, 6),
+            "frame_count": len(light_frames),
+        }
+
+        ik_started = time.perf_counter()
+        ik_frames = self.collect_ik_show_hide_frames(
+            target_model,
+            start_frame,
+            end_frame,
+            time_converter=maya_time_to_vmd,
+            # IK show/hide is a step track, not a numeric pose track.
+            # Keep keyed/baseline semantics even when Mode C bakes the
+            # other tracks at every frame.
+            dense_sample=False,
+            dense_frame_samples=None,
+        )
+        self._diagnostics["ik_collection"] = {
+            "wall_sec": round(time.perf_counter() - ik_started, 6),
+            "frame_count": len(ik_frames),
+        }
+        self._diagnostics["section_counts"] = {
+            "bone_frames": len(bone_frames),
+            "morph_frames": len(morph_frames),
+            "camera_frames": len(camera_frames),
+            "light_frames": len(light_frames),
+            "ik_show_hide_frames": len(ik_frames),
+        }
+
         return {
             "model_name": str(options.get("model_name") or self._model_name(target_model)),
             "raw_provenance": raw_provenance,
-            "bone_frames": self.collect_bone_frames(
-                joints,
-                start_frame,
-                end_frame,
-                motion_scale=motion_scale,
-                bone_bind_poses=bone_bind_poses,
-                input_routes=authored_routes,
-                dense_sample=dense_control_rig_export or dense_mode_c_export,
-                force_dense_sample=dense_mode_c_export,
-                time_converter=maya_time_to_vmd,
-                rotation_interpolation=rotation_interpolation,
-                dense_frame_samples=mode_c_dense_frames,
-                preserve_raw_bone_transforms=preserve_raw_bone_transforms,
-                raw_bone_transforms=raw_bone_transforms,
-            ),
-            "morph_frames": self.collect_morph_frames(
-                blend_shapes,
-                start_frame,
-                end_frame,
-                time_converter=maya_time_to_vmd,
-                target_model=target_model,
-                dense_sample=dense_mode_c_export,
-                dense_frame_samples=mode_c_dense_frames,
-            ),
-            "camera_frames": self.collect_camera_frames(
-                cameras,
-                start_frame,
-                end_frame,
-                time_converter=maya_time_to_vmd,
-                dense_sample=dense_mode_c_export,
-                dense_frame_samples=mode_c_dense_frames,
-            ),
-            "light_frames": self.collect_light_frames(
-                lights,
-                start_frame,
-                end_frame,
-                time_converter=maya_time_to_vmd,
-                dense_sample=dense_mode_c_export,
-                dense_frame_samples=mode_c_dense_frames,
-            ),
-            "ik_show_hide_frames": self.collect_ik_show_hide_frames(
-                target_model,
-                start_frame,
-                end_frame,
-                time_converter=maya_time_to_vmd,
-                # IK show/hide is a step track, not a numeric pose track.
-                # Keep keyed/baseline semantics even when Mode C bakes the
-                # other tracks at every frame.
-                dense_sample=False,
-                dense_frame_samples=None,
-            ),
+            "bone_frames": bone_frames,
+            "morph_frames": morph_frames,
+            "camera_frames": camera_frames,
+            "light_frames": light_frames,
+            "ik_show_hide_frames": ik_frames,
         }
 
     def _mode_c_dense_frame_samples(

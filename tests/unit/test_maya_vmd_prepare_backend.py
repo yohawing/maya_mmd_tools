@@ -194,6 +194,12 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         self.assertEqual(options["target_model"], "|model")
         self.assertEqual(options["vmd_mode"], "C")
         self.assertFalse(options["preserve_raw_bone_transforms"])
+        diagnostics = self.backend.diagnostics
+        self.assertIn("dependency_discovery", diagnostics)
+        self.assertIn("raw_collector", diagnostics)
+        self.assertIn("dict_to_vmd_data", diagnostics)
+        self.assertEqual(diagnostics["vmd_data_sections"]["bone_frames"], 0)
+        self.assertGreaterEqual(diagnostics["collect_total"], 0.0)
 
     def test_disabled_or_stale_watch_fails_closed(self):
         discovery = self.backend.discover(_request())
