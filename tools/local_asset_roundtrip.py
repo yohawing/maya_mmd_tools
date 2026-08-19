@@ -162,6 +162,24 @@ def _adjustment_recipe(raw_case: Mapping[str, Any]) -> Mapping[str, Any]:
     return recipe
 
 
+def _acceptance_options(raw_case: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Validate optional report-only or blocking local-asset acceptance limits."""
+
+    if "acceptance" not in raw_case:
+        return None
+    acceptance = raw_case.get("acceptance")
+    if not isinstance(acceptance, Mapping):
+        raise ValueError("case acceptance must be a mapping")
+    limit = acceptance.get("max_key_count_exclusive")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise ValueError(
+            "acceptance.max_key_count_exclusive must be a positive integer"
+        )
+    normalized = dict(acceptance)
+    normalized["max_key_count_exclusive"] = limit
+    return normalized
+
+
 def _motion_evaluation_frames(oracle_frames: Iterable[int], edit_frame: int) -> list[int]:
     """Include oracle, adjacent, and deterministic interpolation frames."""
 
@@ -343,6 +361,7 @@ def _load_manifest(path_value: str | Path) -> tuple[Path, dict[str, Any]]:
         ):
             raise ValueError(f"case {name!r} requires integer oracle_frames")
         recipe = _adjustment_recipe(raw_case)
+        acceptance = _acceptance_options(raw_case)
         pmx_value, pmx_hash = _case_asset(raw_case, "pmx")
         pmx_path = _resolve_asset_path(pmx_value, path)
         if not pmx_path.is_file():
@@ -355,6 +374,8 @@ def _load_manifest(path_value: str | Path) -> tuple[Path, dict[str, Any]]:
         case["pmx_sha256"] = pmx_hash
         case["oracle_frames"] = list(oracle_frames)
         case["adjustment_recipe"] = dict(recipe)
+        if acceptance is not None:
+            case["acceptance"] = acceptance
         if case_kind == "pmx_vmd":
             vmd_value, vmd_hash = _case_asset(raw_case, "vmd")
             vmd_path = _resolve_asset_path(vmd_value, path)
@@ -635,11 +656,58 @@ def _required_source_vmd_payload(
     return payload
 
 
+def _mode_c_identity(section: Any, name: Any) -> tuple[str, str]:
+    """Return the canonical section/name identity used by collector diagnostics."""
+
+    return (
+        str(section or "").strip().lower(),
+        " ".join(str(name or "").strip().casefold().split()),
+    )
+
+
+def _mode_c_payload_identities(payload: Mapping[str, Any]) -> set[tuple[str, str]]:
+    """Collect unique canonical Bone/Morph identities from one VMD payload."""
+
+    return {
+        _mode_c_identity(section, item.get("name"))
+        for section in ("bone", "morph")
+        for item in payload.get(section, ())
+        if isinstance(item, Mapping)
+    }
+
+
+def _mode_c_omission_identity_commitment(
+    commitment: Any,
+    missing: set[tuple[str, str]],
+) -> tuple[set[tuple[str, str]], str | None]:
+    """Validate the collector's exact source-omission commitment."""
+
+    if not isinstance(commitment, Mapping):
+        return set(), "source omission commitment is missing or not a mapping"
+    count = commitment.get("count")
+    fingerprint = commitment.get("fingerprint")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return set(), "source omission commitment count is invalid"
+    if not isinstance(fingerprint, str):
+        return set(), "source omission commitment fingerprint is invalid"
+    identities = [list(identity) for identity in sorted(missing)]
+    from mmd_tools.validation.snapshot import fingerprint_payload
+
+    expected_fingerprint = fingerprint_payload(identities)
+    if count != len(identities) or fingerprint != expected_fingerprint:
+        return set(), (
+            "source omission commitment does not exactly match missing identities: "
+            f"expected_count={len(identities)} expected_fingerprint={expected_fingerprint}"
+        )
+    return set(missing), None
+
+
 def _mode_c_track_boundary_diff(
     source_payload: Mapping[str, Any],
     prepared_payload: Mapping[str, Any],
     exported_payload: Mapping[str, Any],
     required_track_names: Mapping[str, Iterable[str]],
+    source_omission_commitment: Any = None,
 ) -> dict[str, list[str]]:
     """Classify Mode C required-track loss at prepare and writer boundaries.
 
@@ -652,11 +720,28 @@ def _mode_c_track_boundary_diff(
     """
 
     required_source = _required_source_vmd_payload(source_payload, required_track_names)
+    source_identities = _mode_c_payload_identities(required_source)
+    prepared_identities = _mode_c_payload_identities(prepared_payload)
+    missing_identities = source_identities - prepared_identities
+    allowed_omissions, commitment_error = _mode_c_omission_identity_commitment(
+        source_omission_commitment,
+        missing_identities,
+    )
+    source_to_prepared_payload = dict(required_source)
+    for section in ("bone", "morph"):
+        source_to_prepared_payload[section] = [
+            item
+            for item in required_source.get(section, ())
+            if _mode_c_identity(section, item.get("name")) not in allowed_omissions
+        ]
+    source_to_prepared = _vmd_mode_c_semantic_diff(
+        source_to_prepared_payload,
+        prepared_payload,
+    )
+    if commitment_error is not None:
+        source_to_prepared.insert(0, commitment_error)
     return {
-        "source_to_prepared": _vmd_mode_c_semantic_diff(
-            required_source,
-            prepared_payload,
-        ),
+        "source_to_prepared": source_to_prepared,
         "prepared_to_export": _vmd_payload_diff(
             prepared_payload,
             exported_payload,
@@ -1002,6 +1087,68 @@ def _report_summary(validation: Any) -> dict[str, Any]:
             for severity in ("fatal", "error", "warning", "info")
         },
     }
+
+
+def _vmd_payload_key_count(payload: Mapping[str, Any]) -> int:
+    """Count all serialized VMD keys across every section."""
+
+    return sum(
+        len(payload.get(section, ()))
+        for section in ("bone", "morph", "camera", "light", "shadow", "ik")
+    )
+
+
+def _mode_c_acceptance_evidence(
+    case: Mapping[str, Any],
+    prepared_total: int,
+    exported_total: int,
+) -> dict[str, Any]:
+    """Apply an optional strict key-count acceptance gate and return report fields."""
+
+    acceptance = case.get("acceptance")
+    if acceptance is None:
+        return {
+            "max_key_count_exclusive": None,
+            "headroom_below_key_count_limit": None,
+        }
+    if not isinstance(acceptance, Mapping):
+        raise RuntimeError("VMD acceptance blocked: acceptance is not a mapping")
+    limit = acceptance.get("max_key_count_exclusive")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise RuntimeError(
+            "VMD acceptance blocked: max_key_count_exclusive is invalid"
+        )
+    if prepared_total >= limit or exported_total >= limit:
+        raise RuntimeError(
+            "VMD acceptance blocked: prepared/exported key count must be below "
+            f"max_key_count_exclusive={limit} "
+            f"(prepared={prepared_total}, exported={exported_total})"
+        )
+    return {
+        "max_key_count_exclusive": limit,
+        "headroom_below_key_count_limit": limit - max(prepared_total, exported_total),
+    }
+
+
+def _source_omission_commitment(preparation_evidence: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Read the exact collector omission commitment from Prepare diagnostics."""
+
+    diagnostics = preparation_evidence.get("diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        raise RuntimeError("VMD source omission commitment missing from Prepare diagnostics")
+    backend = diagnostics.get("backend")
+    collector = backend.get("collector") if isinstance(backend, Mapping) else None
+    track_selection = (
+        collector.get("track_selection") if isinstance(collector, Mapping) else None
+    )
+    commitment = (
+        track_selection.get("source_omission_identity")
+        if isinstance(track_selection, Mapping)
+        else None
+    )
+    if not isinstance(commitment, Mapping):
+        raise RuntimeError("VMD source omission commitment missing from Prepare diagnostics")
+    return dict(commitment)
 
 
 def _compare_morph_structure(
@@ -2091,6 +2238,7 @@ def _run_prepared_vmd_exports(
     end_frame: int,
     model_name: str,
     warm_runs: int,
+    preparation_evidence: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Validate/write cold and warm exports under one prepared-token boundary.
 
@@ -2105,6 +2253,7 @@ def _run_prepared_vmd_exports(
     try:
         # Token invalidation happens in ``finally``.  Detach the immutable
         # prepared-scene authority before validation/execute can fail.
+        source_omission_commitment = _source_omission_commitment(preparation_evidence)
         prepared_payload = _copy_prepared_vmd_payload(prepared_token)
         cold_export_phase_start = len(context.phases)
         validation = _phase(context, "export_validation", lambda: workflow.validate(request))
@@ -2131,24 +2280,32 @@ def _run_prepared_vmd_exports(
             lambda: VmdData().parse_file(str(out_dir / "motion.vmd")),
         )
         exported_payload = _vmd_payload(exported_data)
-        adjustment["exported_tracks"] = _vmd_edit_track_witness(exported_payload, adjustment)
+        prepared_total_keys = _vmd_payload_key_count(prepared_payload)
+        exported_total_keys = _vmd_payload_key_count(exported_payload)
+        acceptance_evidence = _mode_c_acceptance_evidence(
+            case,
+            prepared_total_keys,
+            exported_total_keys,
+        )
         track_boundary_failures = _mode_c_track_boundary_diff(
             source_payload,
             prepared_payload,
             exported_payload,
             required_track_names,
+            source_omission_commitment=source_omission_commitment,
         )
         parser_failures = [
             f"{boundary}: {failure}"
             for boundary, boundary_failures in track_boundary_failures.items()
             for failure in boundary_failures
         ]
+        if parser_failures:
+            raise AssertionError(
+                "VMD semantic mismatch: " + "; ".join(parser_failures[:30])
+            )
+        adjustment["exported_tracks"] = _vmd_edit_track_witness(exported_payload, adjustment)
         source_total_keys = sum(
             len(source_payload[section])
-            for section in ("bone", "morph", "camera", "light", "shadow", "ik")
-        )
-        exported_total_keys = sum(
-            len(exported_payload[section])
             for section in ("bone", "morph", "camera", "light", "shadow", "ik")
         )
         cold_export_phases = [
@@ -2186,7 +2343,9 @@ def _run_prepared_vmd_exports(
             "track_boundary_failures": track_boundary_failures,
             "parser_failures": parser_failures,
             "source_total_keys": source_total_keys,
+            "prepared_total_keys": prepared_total_keys,
             "exported_total_keys": exported_total_keys,
+            "acceptance": acceptance_evidence,
             "cold_export_phases": cold_export_phases,
             "cold_phase_timing": cold_phase_timing,
             "cold_budget_evidence": cold_budget_evidence,
@@ -2361,6 +2520,7 @@ def _run_vmd_case(
         end_frame,
         str(getattr(source_data.header, "model_name", "") or ""),
         warm_runs,
+        preparation_evidence,
     )
     validation_evidence = export_result["validation"]
     acknowledged_warnings = export_result["acknowledged_warnings"]
@@ -2370,7 +2530,9 @@ def _run_vmd_case(
     track_boundary_failures = export_result["track_boundary_failures"]
     parser_failures = export_result["parser_failures"]
     source_total_keys = export_result["source_total_keys"]
+    prepared_total_keys = export_result["prepared_total_keys"]
     exported_total_keys = export_result["exported_total_keys"]
+    acceptance_evidence = export_result["acceptance"]
     key_inflation = exported_total_keys - source_total_keys
     cold_export_phases = export_result["cold_export_phases"]
     cold_budget_evidence = export_result["cold_budget_evidence"]
@@ -2505,8 +2667,10 @@ def _run_vmd_case(
         },
         "key_counts": {
             "source": source_total_keys,
+            "prepared": prepared_total_keys,
             "exported": exported_total_keys,
             "inflation": key_inflation,
+            **acceptance_evidence,
         },
         "track_counts": {
             section: {

@@ -22,6 +22,8 @@ from tools.local_asset_roundtrip import (
     _motion_evaluation_frames,
     _motion_phase_evidence,
     _mode_c_track_boundary_diff,
+    _mode_c_acceptance_evidence,
+    _source_omission_commitment,
     _prepare_diagnostics_sink,
     _prepare_vmd_mode_c,
     _run_prepared_vmd_exports,
@@ -43,6 +45,7 @@ from tools.local_asset_roundtrip import (
     _vmd_payload,
     _vmd_payload_diff,
 )
+from mmd_tools.validation.snapshot import fingerprint_payload
 
 
 def test_mode_c_pose_tolerance_covers_vmd_ccd_reconstruction_only():
@@ -81,6 +84,26 @@ def _empty_vmd_data(**sections):
     }
     defaults.update(sections)
     return SimpleNamespace(**defaults)
+
+
+def _empty_source_omission_commitment():
+    return {"count": 0, "fingerprint": fingerprint_payload([])}
+
+
+def _source_omission_commitment_for(*identities):
+    canonical = [
+        list(identity)
+        for identity in sorted(
+            {
+                (
+                    str(section).strip().lower(),
+                    " ".join(str(name or "").strip().casefold().split()),
+                )
+                for section, name in identities
+            }
+        )
+    ]
+    return {"count": len(canonical), "fingerprint": fingerprint_payload(canonical)}
 
 
 def test_vmd_payload_diff_requires_key_times_and_raw_interpolation():
@@ -348,8 +371,167 @@ def test_prepared_export_boundary_invalidates_once_on_failure(monkeypatch, tmp_p
             20,
             "model",
             3,
+            {
+                "diagnostics": {
+                    "backend": {
+                        "collector": {
+                            "track_selection": {
+                                "source_omission_identity": _empty_source_omission_commitment(),
+                            }
+                        }
+                    }
+                }
+            },
         )
     assert lifecycle == [("copy", None), ("invalidate", token)]
+
+
+def test_prepared_export_invalidates_token_when_omission_diagnostics_are_missing(
+    monkeypatch, tmp_path
+):
+    lifecycle = []
+
+    class _Workflow:
+        def invalidate_prepared_vmd(self, token):
+            lifecycle.append(("invalidate", token))
+
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._phase",
+        lambda worker_context, name, function: function(),
+    )
+    context = SimpleNamespace(
+        phases=[],
+        export_write_budget_violations=[],
+        export_write_budget_sec=60.0,
+    )
+    token = SimpleNamespace(
+        cache_id="prepared",
+        copy_for_export=lambda: lifecycle.append(("copy", None)) or _empty_vmd_data(),
+    )
+
+    with pytest.raises(RuntimeError, match="source omission commitment"):
+        _run_prepared_vmd_exports(
+            {"name": "dense"},
+            tmp_path,
+            context,
+            _Workflow(),
+            SimpleNamespace(prepared_vmd_token=token),
+            token,
+            "|edited_source_root",
+            {"bone": [], "morph": [], "camera": [], "light": [], "shadow": [], "ik": []},
+            {"bone": set(), "morph": set()},
+            {},
+            0,
+            20,
+            "model",
+            3,
+            {},
+        )
+    assert lifecycle == [("invalidate", token)]
+
+
+def test_prepared_export_stops_before_warm_samples_on_boundary_failure(monkeypatch, tmp_path):
+    lifecycle = []
+    warm_calls = []
+
+    class _Workflow:
+        def validate(self, request):
+            return SimpleNamespace(
+                error=None,
+                state="valid",
+                report=SimpleNamespace(issues=[], is_blocking=False),
+            )
+
+        def execute(self, request, acknowledge_warnings=False):
+            return SimpleNamespace(succeeded=True, error=None, report=None)
+
+        def invalidate_prepared_vmd(self, token):
+            lifecycle.append(("invalidate", token))
+
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._phase",
+        lambda worker_context, name, function: (
+            SimpleNamespace()
+            if name == "exported_parse"
+            else function()
+        ),
+    )
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._copy_prepared_vmd_payload",
+        lambda prepared_token: {
+            "bone": [],
+            "morph": [],
+            "camera": [],
+            "light": [],
+            "shadow": [],
+            "ik": [],
+        },
+    )
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._vmd_payload",
+        lambda data: {
+            "bone": [],
+            "morph": [],
+            "camera": [],
+            "light": [],
+            "shadow": [],
+            "ik": [],
+        },
+    )
+    def fail_witness(payload, adjustment):
+        raise AssertionError("later witness failure must not mask boundary failure")
+
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._vmd_edit_track_witness",
+        fail_witness,
+    )
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._mode_c_track_boundary_diff",
+        lambda *args, **kwargs: {
+            "source_to_prepared": ["bone required tracks missing: ['lost']"],
+            "prepared_to_export": [],
+        },
+    )
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._run_warm_vmd_export_samples",
+        lambda *args, **kwargs: warm_calls.append(True),
+    )
+    context = SimpleNamespace(
+        phases=[],
+        export_write_budget_violations=[],
+        export_write_budget_sec=60.0,
+    )
+    token = SimpleNamespace(copy_for_export=lambda: _empty_vmd_data())
+    with pytest.raises(AssertionError, match="VMD semantic mismatch"):
+        _run_prepared_vmd_exports(
+            {"name": "dense"},
+            tmp_path,
+            context,
+            _Workflow(),
+            SimpleNamespace(prepared_vmd_token=token),
+            token,
+            "|edited_source_root",
+            {"bone": [], "morph": [], "camera": [], "light": [], "shadow": [], "ik": []},
+            {"bone": set(), "morph": set()},
+            {},
+            0,
+            20,
+            "model",
+            3,
+            {
+                "diagnostics": {
+                    "backend": {
+                        "collector": {
+                            "track_selection": {
+                                "source_omission_identity": _empty_source_omission_commitment(),
+                            }
+                        }
+                    }
+                }
+            },
+        )
+    assert warm_calls == []
+    assert lifecycle == [("invalidate", token)]
 
 
 def test_motion_phase_evidence_reports_boundaries_and_edit_to_first_file():
@@ -523,6 +705,7 @@ def test_mode_c_track_boundaries_exclude_only_model_unmatched_source_tracks():
         prepared,
         exported,
         {"bone": {"センター"}, "morph": set()},
+        _empty_source_omission_commitment(),
     )
 
     assert failures == {"source_to_prepared": [], "prepared_to_export": []}
@@ -541,11 +724,11 @@ def test_mode_c_track_boundaries_reject_supported_physics_track_lost_in_prepare(
         prepared,
         prepared,
         {"bone": {"センター", "右胸"}, "morph": set()},
+        _source_omission_commitment_for(("bone", "別のトラック")),
     )
 
-    assert failures["source_to_prepared"] == [
-        "bone required tracks missing: ['右胸']"
-    ]
+    assert "source omission commitment does not exactly match" in failures["source_to_prepared"][0]
+    assert "bone required tracks missing: ['右胸']" in failures["source_to_prepared"]
     assert failures["prepared_to_export"] == []
 
 
@@ -561,6 +744,7 @@ def test_mode_c_track_boundaries_reject_prepared_authored_track_lost_by_writer()
         prepared,
         exported,
         {"bone": {"センター"}, "morph": set()},
+        _empty_source_omission_commitment(),
     )
 
     assert failures["source_to_prepared"] == []
@@ -601,6 +785,7 @@ def test_mode_c_track_boundaries_accept_identical_dense_prepared_payload():
         payload,
         payload,
         {"bone": {"センター"}, "morph": {"笑顔"}},
+        _empty_source_omission_commitment(),
     )
 
     assert failures == {"source_to_prepared": [], "prepared_to_export": []}
@@ -631,6 +816,7 @@ def test_mode_c_track_boundaries_reject_writer_value_changes_with_same_tracks(
         prepared,
         exported,
         {"bone": {"センター"}, "morph": {"笑顔"}},
+        _empty_source_omission_commitment(),
     )
 
     assert failures["source_to_prepared"] == []
@@ -649,12 +835,77 @@ def test_mode_c_track_boundaries_reject_writer_count_change_with_same_track_name
         prepared,
         exported,
         {"bone": {"センター"}, "morph": {"笑顔"}},
+        _empty_source_omission_commitment(),
     )
 
     assert failures["source_to_prepared"] == []
     assert failures["prepared_to_export"] == [
         "bone.count expected=3 actual=2"
     ]
+
+
+def test_mode_c_track_boundaries_accepts_exact_source_omission_commitment():
+    source_item = _bone()
+    source_item.bone_name = " Source   Only "
+    source = _vmd_payload(_empty_vmd_data(bone_frames=[source_item]))
+    prepared = _vmd_payload(_empty_vmd_data())
+    commitment = _source_omission_commitment_for(("BONE", " source only "))
+
+    failures = _mode_c_track_boundary_diff(
+        source,
+        prepared,
+        prepared,
+        {"bone": {" SOURCE ONLY "}, "morph": set()},
+        commitment,
+    )
+
+    assert failures == {"source_to_prepared": [], "prepared_to_export": []}
+
+
+@pytest.mark.parametrize(
+    "commitment",
+    [
+        None,
+        {"count": True, "fingerprint": fingerprint_payload([])},
+        {"count": -1, "fingerprint": fingerprint_payload([])},
+        {"count": 0.0, "fingerprint": fingerprint_payload([])},
+        {"count": 0, "fingerprint": 123},
+        {"count": 0, "fingerprint": fingerprint_payload([["bone", "wrong"]])},
+        {"count": 2, "fingerprint": fingerprint_payload([["bone", "source only"]])},
+    ],
+)
+def test_mode_c_track_boundaries_rejects_invalid_or_overclaimed_omission_commitment(
+    commitment,
+):
+    source_item = _bone()
+    source_item.bone_name = "Source Only"
+    source = _vmd_payload(_empty_vmd_data(bone_frames=[source_item]))
+    prepared = _vmd_payload(_empty_vmd_data())
+
+    failures = _mode_c_track_boundary_diff(
+        source,
+        prepared,
+        prepared,
+        {"bone": {"Source Only"}, "morph": set()},
+        commitment,
+    )
+
+    assert failures["source_to_prepared"]
+    assert "source omission commitment" in failures["source_to_prepared"][0]
+
+
+def test_mode_c_track_boundaries_requires_empty_commitment_when_nothing_is_missing():
+    payload = _dense_mode_c_payload()
+
+    failures = _mode_c_track_boundary_diff(
+        payload,
+        payload,
+        payload,
+        {"bone": {"センター"}, "morph": {"笑顔"}},
+        None,
+    )
+
+    assert "source omission commitment is missing" in failures["source_to_prepared"][0]
 
 
 def test_mode_c_ik_semantics_canonicalizes_state_order_only():
@@ -1033,6 +1284,104 @@ def test_manifest_requires_schema_hashes_oracle_frames_and_adjustment(tmp_path):
     manifest.write_text(json.dumps(missing_oracle), encoding="utf-8")
     with pytest.raises(ValueError, match="oracle_frames"):
         _load_manifest(manifest)
+
+
+def test_manifest_acceptance_limit_is_optional_and_validated(tmp_path):
+    asset = tmp_path / "model.pmx"
+    asset.write_bytes(b"fixture")
+    digest = hashlib.sha256(b"fixture").hexdigest()
+    case = {
+        "name": "model",
+        "kind": "pmx",
+        "classification": "pmx_only",
+        "pmx": str(asset),
+        "pmx_sha256": digest,
+        "oracle_frames": [0],
+        "adjustment": {"comment_suffix": " [smoke]"},
+        "acceptance": {"max_key_count_exclusive": 10},
+    }
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"schema_version": 2, "cases": [case]}), encoding="utf-8")
+    _, loaded = _load_manifest(manifest)
+    assert loaded["cases"][0]["acceptance"] == {
+        "max_key_count_exclusive": 10
+    }
+
+    for value in (True, 0, -1, 1.5, "10"):
+        bad_case = dict(case, acceptance={"max_key_count_exclusive": value})
+        manifest.write_text(
+            json.dumps({"schema_version": 2, "cases": [bad_case]}), encoding="utf-8"
+        )
+        with pytest.raises(ValueError, match="positive integer"):
+            _load_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ({"acceptance": None}, "mapping"),
+        ({"acceptance": {"max_key_count_exclusive": []}}, "positive integer"),
+    ],
+)
+def test_manifest_rejects_invalid_acceptance_shape(tmp_path, case, expected):
+    asset = tmp_path / "model.pmx"
+    asset.write_bytes(b"fixture")
+    digest = hashlib.sha256(b"fixture").hexdigest()
+    base = {
+        "name": "model",
+        "kind": "pmx",
+        "classification": "pmx_only",
+        "pmx": str(asset),
+        "pmx_sha256": digest,
+        "oracle_frames": [0],
+        "adjustment": {"comment_suffix": " [smoke]"},
+    }
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"schema_version": 2, "cases": [dict(base, **case)]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=expected):
+        _load_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("prepared", "exported", "should_pass"),
+    [(9, 9, True), (10, 9, False), (9, 10, False), (11, 12, False)],
+)
+def test_vmd_acceptance_key_gate_is_strict_and_reportable(prepared, exported, should_pass):
+    case = {"acceptance": {"max_key_count_exclusive": 10}}
+    if should_pass:
+        evidence = _mode_c_acceptance_evidence(case, prepared, exported)
+        assert evidence == {
+            "max_key_count_exclusive": 10,
+            "headroom_below_key_count_limit": 1,
+        }
+    else:
+        with pytest.raises(RuntimeError, match="VMD acceptance blocked"):
+            _mode_c_acceptance_evidence(case, prepared, exported)
+
+    report_only = _mode_c_acceptance_evidence({}, prepared, exported)
+    assert report_only == {
+        "max_key_count_exclusive": None,
+        "headroom_below_key_count_limit": None,
+    }
+
+
+def test_prepare_diagnostics_source_omission_commitment_requires_backend_collector_shape():
+    commitment = {"count": 0, "fingerprint": fingerprint_payload([])}
+    evidence = {
+        "diagnostics": {
+            "backend": {
+                "collector": {
+                    "track_selection": {"source_omission_identity": commitment}
+                }
+            }
+        }
+    }
+    assert _source_omission_commitment(evidence) == commitment
+    with pytest.raises(RuntimeError, match="source omission commitment"):
+        _source_omission_commitment({"diagnostics": {"backend": {}}})
 
 
 def test_only_mode_c_raw_loss_warning_is_acknowledgeable():
