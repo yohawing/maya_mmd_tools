@@ -909,6 +909,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                     "target_model": "model_root",
                     "start_frame": 10.0,
                     "end_frame": 20.0,
+                    "vmd_mode": "C",
                 }
             )
         finally:
@@ -1019,7 +1020,9 @@ class TestVmdSceneCollector(unittest.TestCase):
         original_collect = collector_module.collect_ik_nodes_by_bone_name
         collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {"左足ＩＫ": "ik_solver"}
         try:
-            result = VmdSceneCollector().collect({"target_model": "model_root"})
+            result = VmdSceneCollector().collect(
+                {"target_model": "model_root", "vmd_mode": "C"}
+            )
         finally:
             collector_module.collect_ik_nodes_by_bone_name = original_collect
 
@@ -1036,6 +1039,46 @@ class TestVmdSceneCollector(unittest.TestCase):
                     "visible": True,
                     "ik_states": [("左足ＩＫ", True)],
                 },
+            ],
+        )
+
+    def test_mode_c_keeps_keyed_ik_sparse_when_other_tracks_are_dense(self):
+        self.cmds.attrs[("ik_solver", "enabled")] = False
+        self.cmds.keys[("ik_solver", "enabled")] = {0.0: 0.0}
+        self.cmds.node_types["center_joint"] = "joint"
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        for attribute in (
+            "translateX",
+            "translateY",
+            "translateZ",
+            "rotateX",
+            "rotateY",
+            "rotateZ",
+        ):
+            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0, 3.0: 1.0}
+        original_collect = collector_module.collect_ik_nodes_by_bone_name
+        collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {
+            "左足ＩＫ": "ik_solver",
+        }
+        try:
+            result = VmdSceneCollector().collect(
+                {
+                    "target_model": "model_root",
+                    "vmd_mode": "C",
+                    "frame_range": (0, 3),
+                }
+            )
+        finally:
+            collector_module.collect_ik_nodes_by_bone_name = original_collect
+
+        self.assertEqual(
+            result["ik_show_hide_frames"],
+            [
+                {
+                    "frame_number": 0,
+                    "visible": True,
+                    "ik_states": [("左足ＩＫ", False)],
+                }
             ],
         )
 

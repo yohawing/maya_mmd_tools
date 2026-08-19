@@ -464,8 +464,11 @@ class VmdSceneCollector:
                 start_frame,
                 end_frame,
                 time_converter=maya_time_to_vmd,
-                dense_sample=dense_mode_c_export,
-                dense_frame_samples=mode_c_dense_frames,
+                # IK show/hide is a step track, not a numeric pose track.
+                # Keep keyed/baseline semantics even when Mode C bakes the
+                # other tracks at every frame.
+                dense_sample=False,
+                dense_frame_samples=None,
             ),
         }
 
