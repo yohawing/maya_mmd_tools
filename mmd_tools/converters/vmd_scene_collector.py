@@ -5,7 +5,8 @@ model-scoped PMX network morph controller weights into the dict contract
 consumed by ``VmdExporter``. Bone translation can be converted back to VMD
 offsets when a bind-pose map is supplied, and XYZ joint rotations are
 converted back to VMD quaternions with jointOrient compensation. Explicit
-Mode C requests sample the selected Maya frame range at one-frame intervals.
+Mode C requests sample the selected Maya frame range at one-frame intervals
+through the native Maya Timeline sampler; native failures block the export.
 An imported raw key/interpolation/transform payload is reused only when the
 caller explicitly opts into ``preserve_raw_bone_transforms``; Mode A and
 low-level collector callers retain sparse collection semantics.
@@ -37,7 +38,6 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_BONE_MORPH_BASE,
     INPUT_IK_CONTROLLER,
 )
-from mmd_tools.core.maya_animation_utils import _find_plug as _find_animation_plug
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 from mmd_tools.converters.vmd_camera_animation import (
@@ -235,102 +235,6 @@ def _index_raw_bone_transform_frames(
     return result
 
 
-class _RoutedPlugValueEvaluator:
-    """Evaluate routed transform plugs without per-scalar ``cmds`` dispatch.
-
-    Maya's API 2.0 value access is intentionally opportunistic here.  Some
-    custom routed plugs are plain numeric attributes rather than unit plugs,
-    and a plug may not be evaluable in the current scene.  Those cases use
-    the established ``cmds.getAttr(time=...)`` path for the affected plug.
-    """
-
-    def __init__(self):
-        self._plugs: dict[tuple[str, str], Any] = {}
-        self._unsupported: set[tuple[str, str]] = set()
-        self._contexts: dict[float, Any] = {}
-        self._context_failed = False
-
-    def value(
-        self,
-        joint: str,
-        attr: str,
-        frame_number: float,
-        route: Mapping[str, tuple[str, str]],
-    ) -> float:
-        node, target_attr = route.get(attr, (joint, attr))
-        key = (str(node), str(target_attr))
-        if key in self._unsupported:
-            return _plug_float(node, target_attr, frame_number)
-        plug = self._plugs.get(key)
-        if plug is None and key not in self._plugs:
-            plug = self._resolve_plug(node, target_attr)
-            self._plugs[key] = plug
-            if plug is None:
-                self._unsupported.add(key)
-                return _plug_float(node, target_attr, frame_number)
-        context = self._context_for_frame(frame_number)
-        if context is None:
-            self._unsupported.add(key)
-            return _plug_float(node, target_attr, frame_number)
-        try:
-            value = self._read_plug(plug, context, attr)
-            if not isinstance(value, (int, float)):
-                raise TypeError("MPlug value is not numeric")
-            return float(value)
-        except (AttributeError, TypeError, ValueError, RuntimeError, OverflowError):
-            self._unsupported.add(key)
-            return _plug_float(node, target_attr, frame_number)
-
-    @staticmethod
-    def _resolve_plug(node: str, attr: str) -> Optional[Any]:
-        try:
-            selection = om.MSelectionList()
-            selection.add(node)
-            dependency_node = om.MFnDependencyNode(selection.getDependNode(0))
-            return _find_animation_plug(dependency_node, attr)
-        except (AttributeError, IndexError, TypeError, ValueError, RuntimeError):
-            return None
-
-    def _context_for_frame(self, frame_number: float) -> Optional[Any]:
-        if self._context_failed:
-            return None
-        key = float(frame_number)
-        if key in self._contexts:
-            return self._contexts[key]
-        try:
-            context = om.MDGContext(om.MTime(key, om.MTime.uiUnit()))
-        except (AttributeError, TypeError, ValueError, RuntimeError):
-            self._context_failed = True
-            return None
-        self._contexts[key] = context
-        return context
-
-    @staticmethod
-    def _read_plug(plug: Any, context: Any, attr: str) -> float:
-        if attr.startswith("rotate"):
-            try:
-                angle = plug.asMAngle(context)
-                value = angle.asUnits(om.MAngle.uiUnit())
-                if not isinstance(value, (int, float)):
-                    raise TypeError("MAngle value is not numeric")
-                return float(value)
-            except (AttributeError, TypeError, ValueError, RuntimeError):
-                pass
-        elif attr.startswith("translate"):
-            try:
-                distance = plug.asMDistance(context)
-                value = distance.asUnits(om.MDistance.uiUnit())
-                if not isinstance(value, (int, float)):
-                    raise TypeError("MDistance value is not numeric")
-                return float(value)
-            except (AttributeError, TypeError, ValueError, RuntimeError):
-                pass
-        value = plug.asDouble(context)
-        if not isinstance(value, (int, float)):
-            raise TypeError("MPlug value is not numeric")
-        return float(value)
-
-
 def _read_vmd_import_provenance(target_model: Optional[str]) -> Optional[dict[str, Any]]:
     """Read complete raw VMD bone provenance from one model root."""
     if not target_model:
@@ -372,9 +276,9 @@ class VmdSceneCollector:
         The sink receives one small JSON-shaped dictionary after collection;
         it never receives per-frame values.  Keeping it optional preserves the
         existing low-level collector API and keeps the hot loop untouched.
-        ``bone_channel_sampler`` is an optional Mode C-only acceleration seam;
-        malformed or unavailable native results always use the Python
-        evaluator below.
+        ``bone_channel_sampler`` is the required Mode C bone sampling seam.
+        Native command, protocol, and value failures are fatal for Mode C;
+        sparse non-Mode-C collection continues to use ``cmds.getAttr``.
         """
 
         self._diagnostics_sink = diagnostics_sink
@@ -699,7 +603,6 @@ class VmdSceneCollector:
         rotation_interpolation = rotation_interpolation or {}
         raw_bone_transforms = raw_bone_transforms or {}
         raw_bone_frames_by_name = _index_raw_bone_transform_frames(raw_bone_transforms)
-        value_evaluator = _RoutedPlugValueEvaluator()
         native_samples = None
         frames = []
         dense_frames = (
@@ -730,6 +633,20 @@ class VmdSceneCollector:
             if (
                 force_dense_sample
                 and dense_frames
+                and bone_channel_sampler is None
+                and any(keyed_times_by_joint.get(joint) for joint in joints)
+            ):
+                self._diagnostics["native_sampler"] = {
+                    "available": False,
+                    "used": False,
+                    "fatal": True,
+                    "fallback_reason": "Mode C native sampler was not provided",
+                }
+                self._emit_diagnostics()
+                raise RuntimeError("Mode C native bone sampling is unavailable")
+            if (
+                force_dense_sample
+                and dense_frames
                 and bone_channel_sampler is not None
             ):
                 # A joint without source keys must not acquire a native track
@@ -755,7 +672,7 @@ class VmdSceneCollector:
                     sampler_available = getattr(
                         bone_channel_sampler,
                         "available",
-                        False,
+                        None,
                     )
                     if callable(sampler_available):
                         try:
@@ -780,6 +697,8 @@ class VmdSceneCollector:
                         set_native_sink(self._accept_native_diagnostics)
                     native_started = time.perf_counter()
                     try:
+                        if sampler_available is False:
+                            raise RuntimeError("native sampler is unavailable")
                         sampler_method = getattr(
                             bone_channel_sampler,
                             "sample_dense_bone_channels",
@@ -823,9 +742,6 @@ class VmdSceneCollector:
                         )
                         self._diagnostics["native_sampler"].setdefault("used", True)
                     except Exception as exc:
-                        # Native acceleration is opportunistic.  The established
-                        # evaluator remains the semantic fallback, and the
-                        # reason is retained for the preparation report.
                         native_samples = None
                         sampler_diagnostics = getattr(
                             bone_channel_sampler,
@@ -846,18 +762,17 @@ class VmdSceneCollector:
                                 ),
                                 "used": False,
                                 "fallback_reason": f"{type(exc).__name__}: {exc}",
+                                "fatal": True,
                                 "fallback_wall_sec": round(
                                     time.perf_counter() - native_started,
                                     6,
                                 ),
                             }
                         )
-                        # Direct collector callers may provide a sampler that
-                        # cannot publish its own failure snapshot.  Flush the
-                        # bounded fallback evidence here as well; the native
-                        # gateway publishes before raising, so this does not
-                        # add per-frame logging.
                         self._emit_diagnostics()
+                        raise RuntimeError(
+                            f"Mode C native bone sampling failed: {exc}"
+                        ) from exc
             elif bone_channel_sampler is not None:
                 available = getattr(bone_channel_sampler, "available", False)
                 if callable(available):
@@ -874,16 +789,18 @@ class VmdSceneCollector:
                 try:
                     return float(native_samples.value(joint, attr, frame_number))
                 except Exception as exc:
-                    # A malformed injected result is treated exactly like a
-                    # command/protocol failure and falls back per channel.
                     self._diagnostics.setdefault("native_sampler", {}).update(
                         {
                             "used": False,
                             "fallback_reason": f"{type(exc).__name__}: {exc}",
+                            "fatal": True,
                         }
                     )
-                    native_samples = None
-            return value_evaluator.value(joint, attr, frame_number, route)
+                    self._emit_diagnostics()
+                    raise RuntimeError(
+                        f"Mode C native bone value failed for {joint}.{attr}"
+                    ) from exc
+            return _routed_plug_float(joint, attr, frame_number, route)
 
         for joint in joints:
             bone_name = self._mmd_bone_name(joint)

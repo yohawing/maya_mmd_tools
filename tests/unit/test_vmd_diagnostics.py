@@ -21,13 +21,8 @@ class _Cmds:
         return "mmdPhysicsBoneDriver" if str(node) == "|driver" else "joint"
 
 
-class _Evaluator:
-    def value(self, _joint, _attr, frame, _route):
-        return float(frame)
-
-
 class _FailingSampler:
-    available = False
+    available = True
 
     def set_diagnostics_sink(self, sink):
         self._sink = sink
@@ -53,8 +48,6 @@ class VmdDiagnosticsTests(unittest.TestCase):
             bone_channel_sampler=_FailingSampler(),
         )
         with mock.patch.object(collector_module, "cmds", _Cmds()), mock.patch.object(
-            collector_module, "_RoutedPlugValueEvaluator", _Evaluator
-        ), mock.patch.object(
             collector_module, "_routed_key_times", return_value=[0.0, 1.0]
         ), mock.patch.object(
             collector_module, "_build_rotation_export_context", return_value={}
@@ -70,25 +63,31 @@ class VmdDiagnosticsTests(unittest.TestCase):
             side_effect=lambda values, _bind, _scale: tuple(values),
         ):
             collector._mmd_bone_name = lambda joint: str(joint)
-            collector.collect_bone_frames(
-                ["joint"],
-                input_routes={"joint": {"rotateX": ("|driver", "inPreRotateX")}},
-                dense_sample=True,
-                force_dense_sample=True,
-                dense_frame_samples=[0, 1],
-                time_converter=lambda value: value,
-                bone_channel_sampler=collector._bone_channel_sampler,
-            )
+            with self.assertRaisesRegex(RuntimeError, "Mode C native bone sampling failed"):
+                collector.collect_bone_frames(
+                    ["joint"],
+                    input_routes={"joint": {"rotateX": ("|driver", "inPreRotateX")}},
+                    dense_sample=True,
+                    force_dense_sample=True,
+                    dense_frame_samples=[0, 1],
+                    time_converter=lambda value: value,
+                    bone_channel_sampler=collector._bone_channel_sampler,
+                )
         self.assertGreaterEqual(len(events), 2)
         preflight = events[0]["native_sampler"]
         self.assertEqual(preflight["status"], "preflight")
         self.assertEqual(preflight["route_target_node_count"], 2)
         self.assertEqual(preflight["route_target_node_types"]["mmdPhysicsBoneDriver"], 1)
         self.assertEqual(preflight["physics_driver_reached_count"], 1)
-        chunk = events[1]["native_sampler"]
+        chunk = next(
+            event["native_sampler"]
+            for event in events
+            if event["native_sampler"].get("chunk_index") == 0
+        )
         self.assertEqual(chunk["chunk_index"], 0)
         self.assertTrue(chunk["protocol_failure"])
         self.assertIn("protocol mismatch", chunk["fallback_reason"])
+        self.assertTrue(events[-1]["native_sampler"]["fatal"])
 
 
 if __name__ == "__main__":

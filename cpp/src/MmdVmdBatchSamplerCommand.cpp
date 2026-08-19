@@ -5,8 +5,6 @@
 #include <maya/MArgDatabase.h>
 #include <maya/MComputation.h>
 #include <maya/MDistance.h>
-#include <maya/MDGContext.h>
-#include <maya/MDGContextGuard.h>
 #include <maya/MDoubleArray.h>
 #include <maya/MFnAnimCurve.h>
 #include <maya/MFnAttribute.h>
@@ -32,17 +30,17 @@
 namespace {
 using json = nlohmann::json;
 
-constexpr int kProtocolVersion = 1;
+constexpr int kProtocolVersion = 2;
 constexpr std::size_t kHeaderSize = 6U;
 constexpr std::size_t kMaxSamples = 4'194'304U;
+constexpr std::size_t kMaxTraversalNodes = 4096U;
 constexpr double kMaxFrame = 1.0e9;
 constexpr const char* kCommand = "mmdVmdBatchSample";
 constexpr const char* kPayloadFlag = "-payload";
+constexpr const char* kEvaluationPolicy = "maya_timeline_bake_v1";
 
 enum class UnitKind { Angle, Distance, Scalar };
 enum class Strategy { DirectCurve, Static, TimedMPlug };
-enum class EvaluationMode { Context, TimelineProbe };
-
 struct Channel {
     MPlug plug;
     MPlug directOutput;
@@ -55,7 +53,6 @@ struct Channel {
 struct Request {
     std::vector<double> frames;
     std::vector<Channel> channels;
-    EvaluationMode evaluationMode = EvaluationMode::Context;
 };
 
 class ComputationGuard final {
@@ -252,6 +249,151 @@ bool onlyKeys(const json& object, const std::unordered_set<std::string>& allowed
     return true;
 }
 
+bool physicsNodeType(const MObject& node, std::string& type)
+{
+    MStatus status;
+    MFnDependencyNode dependencyNode(node, &status);
+    if (!status) return false;
+    const MString typeName = dependencyNode.typeName(&status);
+    if (!status || typeName.length() == 0U) return false;
+    type = utf8(typeName);
+    return !type.empty();
+}
+
+bool isPhysicsType(const std::string& type)
+{
+    std::string lower = type;
+    for (char& character : lower) {
+        if (character >= 'A' && character <= 'Z') character = static_cast<char>(character - 'A' + 'a');
+    }
+    return lower.find("physics") != std::string::npos ||
+           lower.find("rigidbody") != std::string::npos ||
+           lower.find("rigid_body") != std::string::npos;
+}
+
+bool collectPlugIncoming(const MPlug& plug, std::vector<MPlug>& sources, std::string& error)
+{
+    MStatus status;
+    MPlugArray connected;
+    const bool hasSources = plug.connectedTo(connected, true, false, &status);
+    if (!status) {
+        error = "could not inspect incoming connections for " + utf8(plug.name(&status));
+        return false;
+    }
+    if (hasSources) {
+        for (unsigned int index = 0U; index < connected.length(); ++index) {
+            sources.push_back(connected[index]);
+        }
+    }
+    if (!plug.isCompound()) return true;
+
+    const unsigned int childCount = plug.numChildren(&status);
+    if (!status) {
+        error = "could not inspect compound children for " + utf8(plug.name(&status));
+        return false;
+    }
+    for (unsigned int index = 0U; index < childCount; ++index) {
+        const MPlug child = plug.child(index, &status);
+        if (!status || child.isNull()) {
+            error = "could not inspect compound child for " + utf8(plug.name(&status));
+            return false;
+        }
+        if (!collectPlugIncoming(child, sources, error)) return false;
+    }
+    return true;
+}
+
+bool collectIncoming(const MPlug& plug, std::vector<MPlug>& sources, std::string& error)
+{
+    if (!collectPlugIncoming(plug, sources, error)) return false;
+
+    MStatus status;
+    const MPlug parent = plug.parent(&status);
+    if (!status) {
+        // Maya reports kFailure for parent() on a top-level plug in some
+        // versions.  Use the plug's child state to distinguish that expected
+        // no-parent case from an actual failed inspection of a compound child.
+        MStatus childStatus;
+        const bool isChild = plug.isChild(&childStatus);
+        if (!childStatus) {
+            error = "could not inspect child state for " + utf8(plug.name(&status));
+            return false;
+        }
+        if (!isChild) return true;
+        error = "could not inspect parent plug for " + utf8(plug.name(&status));
+        return false;
+    }
+    if (!parent.isNull() && parent.isCompound()) {
+        MPlugArray parentSources;
+        const bool parentHasSources = parent.connectedTo(parentSources, true, false, &status);
+        if (!status) {
+            error = "could not inspect incoming parent connections for " + utf8(plug.name(&status));
+            return false;
+        }
+        if (parentHasSources) {
+            for (unsigned int index = 0U; index < parentSources.length(); ++index) {
+                sources.push_back(parentSources[index]);
+            }
+        }
+    }
+    return true;
+}
+
+bool validateUpstream(const Channel& channel, std::string& error)
+{
+    MStatus status;
+    std::string targetType;
+    if (!physicsNodeType(channel.plug.node(), targetType)) {
+        error = "could not resolve channel node type: " + channel.canonicalPlug;
+        return false;
+    }
+    const std::string canonical = channel.canonicalPlug;
+    const std::size_t separator = canonical.rfind('.');
+    const std::string attribute = separator == std::string::npos ? std::string() : canonical.substr(separator + 1U);
+    const bool prePhysicsInput = isPhysicsType(targetType) && attribute.rfind("inPre", 0U) == 0U;
+    if (isPhysicsType(targetType) && !prePhysicsInput) {
+        error = "sampled channel is a physics output: " + channel.canonicalPlug;
+        return false;
+    }
+
+    std::vector<MPlug> queue;
+    if (!collectIncoming(channel.plug, queue, error)) return false;
+    if (prePhysicsInput && queue.empty()) {
+        error = "pre-physics input has no authored upstream source: " + channel.canonicalPlug;
+        return false;
+    }
+    std::unordered_set<std::string> visited;
+    while (!queue.empty()) {
+        if (visited.size() >= kMaxTraversalNodes) {
+            error = "upstream dependency traversal exceeded the safety limit";
+            return false;
+        }
+        const MPlug source = queue.back();
+        queue.pop_back();
+        std::string sourceType;
+        if (!physicsNodeType(source.node(), sourceType)) {
+            error = "could not resolve upstream node type for " + channel.canonicalPlug;
+            return false;
+        }
+        MStatus sourceStatus;
+        const MString sourcePlugName = source.name(&sourceStatus);
+        if (!sourceStatus || sourcePlugName.length() == 0U) {
+            error = "could not resolve upstream plug identity for " + channel.canonicalPlug;
+            return false;
+        }
+        const std::string key = utf8(sourcePlugName);
+        if (!visited.insert(key).second) continue;
+        if (isPhysicsType(sourceType)) {
+            error = "sampled channel has an upstream physics dependency: " + key;
+            return false;
+        }
+        std::vector<MPlug> upstream;
+        if (!collectIncoming(source, upstream, error)) return false;
+        queue.insert(queue.end(), upstream.begin(), upstream.end());
+    }
+    return true;
+}
+
 bool parseRequest(const MString& payloadString, Request& request, std::string& error)
 {
     json payload;
@@ -277,21 +419,15 @@ bool parseRequest(const MString& payloadString, Request& request, std::string& e
         error = "duplicate JSON object key";
         return false;
     }
-    if (!payload.is_object() || (payload.size() != 3U && payload.size() != 4U) ||
-        !onlyKeys(payload, {"version", "frames", "channels", "evaluation_mode"}) ||
+    if (!payload.is_object() || payload.size() != 4U ||
+        !onlyKeys(payload, {"version", "frames", "channels", "evaluation_policy"}) ||
         !payload.contains("version") || !exactVersion(payload["version"]) ||
         !payload.contains("frames") || !payload["frames"].is_array() || payload["frames"].empty() ||
-        !payload.contains("channels") || !payload["channels"].is_array() || payload["channels"].empty()) {
-        error = "payload requires version, frames, channels, and optional evaluation_mode (version=1)";
+        !payload.contains("channels") || !payload["channels"].is_array() || payload["channels"].empty() ||
+        !payload.contains("evaluation_policy") || !payload["evaluation_policy"].is_string() ||
+        payload["evaluation_policy"].get<std::string>() != kEvaluationPolicy) {
+        error = "payload requires version=2, frames, channels, and evaluation_policy=maya_timeline_bake_v1";
         return false;
-    }
-    if (payload.contains("evaluation_mode")) {
-        if (!payload["evaluation_mode"].is_string() ||
-            payload["evaluation_mode"].get<std::string>() != "timeline_probe") {
-            error = "evaluation_mode, when present, must be timeline_probe";
-            return false;
-        }
-        request.evaluationMode = EvaluationMode::TimelineProbe;
     }
 
     double previousFrame = 0.0;
@@ -345,6 +481,7 @@ bool parseRequest(const MString& payloadString, Request& request, std::string& e
             error = "duplicate canonical channel plug: " + channel.canonicalPlug;
             return false;
         }
+        if (!validateUpstream(channel, error)) return false;
         channel.unit = unitKind;
         MPlug directOutput;
         const bool directEligible = findDirectCurve(channel.plug, directOutput);
@@ -413,32 +550,18 @@ MStatus sample(const Request& request)
         }
     }
 
-    const bool timelineProbe = request.evaluationMode == EvaluationMode::TimelineProbe;
-    if (timelineProbe && MAnimControl::isPlaying()) {
-        return fail("timeline_probe is unavailable during playback");
+    if (MAnimControl::isPlaying()) {
+        return fail("maya_timeline_bake_v1 is unavailable during playback");
     }
-    std::unique_ptr<CurrentTimeGuard> currentTimeGuard;
-    std::unique_ptr<ComputationGuard> computationGuard;
-    if (timelineProbe) {
-        currentTimeGuard = std::make_unique<CurrentTimeGuard>();
-        computationGuard = std::make_unique<ComputationGuard>();
-    }
+    CurrentTimeGuard currentTimeGuard;
+    ComputationGuard computationGuard;
     std::string sampleError;
     std::size_t offset = kHeaderSize;
     for (double frame : request.frames) {
-        // One guard is deliberately shared by every timed fallback channel
-        // for this frame.  Direct curves and static values do not require a
-        // DG context and therefore do not perturb Maya's current time.
-        const bool hasTimed = timedCount != 0U;
-        std::unique_ptr<MDGContextGuard> guard;
-        if (timelineProbe) {
-            const MStatus status = MAnimControl::setCurrentTime(MTime(frame, MTime::uiUnit()));
-            if (!status) {
-                sampleError = "timeline_probe could not set frame " + std::to_string(frame);
-                break;
-            }
-        } else if (hasTimed) {
-            guard = std::make_unique<MDGContextGuard>(MDGContext(MTime(frame, MTime::uiUnit())));
+        const MStatus status = MAnimControl::setCurrentTime(MTime(frame, MTime::uiUnit()));
+        if (!status) {
+            sampleError = "maya_timeline_bake_v1 could not set frame " + std::to_string(frame);
+            break;
         }
         for (std::size_t channelIndex = 0; channelIndex < request.channels.size(); ++channelIndex) {
             const Channel& channel = request.channels[channelIndex];
@@ -460,12 +583,12 @@ MStatus sample(const Request& request)
             result[static_cast<unsigned int>(offset++)] = value;
         }
         if (!sampleError.empty()) break;
-        if (computationGuard && computationGuard->interrupted()) {
+        if (computationGuard.interrupted()) {
             sampleError = "sampling cancelled";
             break;
         }
     }
-    if (currentTimeGuard && !currentTimeGuard->restore()) {
+    if (!currentTimeGuard.restore()) {
         return fail("current time restoration failed");
     }
     if (!sampleError.empty()) {

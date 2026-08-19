@@ -1,8 +1,8 @@
-"""Bounded Maya 2024 A/B probe for context versus normal-timeline sampling.
+"""Bounded Maya 2024 probe for the production Timeline sampler.
 
-Run one strategy and one prefix per fresh mayapy process.  The output JSON can
-then be paired by ``prefix_frames``; keeping the processes separate avoids DG
-and stateful-node warmup from contaminating the other strategy.
+Run one prefix per fresh mayapy process.  Keeping the process isolated avoids
+DG and stateful-node warmup contaminating the production bake measurement.
+The old alternate-context A/B path is intentionally no longer exercised.
 """
 
 from __future__ import annotations
@@ -36,11 +36,7 @@ def _plugin_path() -> Path:
 
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--evaluation-mode",
-        required=True,
-        choices=("context", "timeline_probe"),
-    )
+    parser.add_argument("--evaluation-mode", choices=("timeline",), default="timeline")
     parser.add_argument(
         "--prefix-frames",
         required=True,
@@ -51,14 +47,13 @@ def _arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _payload(mode: str, frame_count: int, channels: list[dict[str, str]]) -> str:
+def _payload(_mode: str, frame_count: int, channels: list[dict[str, str]]) -> str:
     request: dict[str, Any] = {
-        "version": 1,
+        "version": 2,
+        "evaluation_policy": "maya_timeline_bake_v1",
         "frames": [float(frame) for frame in range(frame_count)],
         "channels": channels,
     }
-    if mode == "timeline_probe":
-        request["evaluation_mode"] = mode
     return json.dumps(request, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -120,14 +115,25 @@ def main() -> int:
             raise RuntimeError(
                 f"current time was not restored: entry={entry_time}, actual={restored_time}"
             )
-        if packed[:6] != [1.0, float(args.prefix_frames), 2.0, 1.0, 0.0, 1.0]:
+        if packed[:6] != [2.0, float(args.prefix_frames), 2.0, 1.0, 0.0, 1.0]:
             raise RuntimeError(f"unexpected packed header: {packed[:6]!r}")
         expected_length = 6 + args.prefix_frames * len(channels)
         if len(packed) != expected_length or any(not math.isfinite(value) for value in packed):
             raise RuntimeError("invalid packed result")
+        legacy = json.loads(payload)
+        legacy.pop("evaluation_policy")
+        try:
+            cmds.mmdVmdBatchSample(
+                payload=json.dumps(legacy, separators=(",", ":"), ensure_ascii=False)
+            )
+        except Exception:
+            pass
+        else:
+            raise RuntimeError("legacy sampler request unexpectedly succeeded")
         result = {
             "schema_version": 1,
-            "evaluation_mode": args.evaluation_mode,
+            "evaluation_mode": "timeline",
+            "evaluation_policy": "maya_timeline_bake_v1",
             "prefix_frames": args.prefix_frames,
             "wall_sec": round(wall_sec, 6),
             "mean_wall_sec_per_frame": round(wall_sec / args.prefix_frames, 9),

@@ -31,7 +31,12 @@ def _plugin_path() -> Path:
 def _payload(frames: Iterable[float], channels: List[dict[str, str]]) -> str:
     """Serialize with compact separators so Maya receives one argument."""
     return json.dumps(
-        {"version": 1, "frames": list(frames), "channels": channels},
+        {
+            "version": 2,
+            "evaluation_policy": "maya_timeline_bake_v1",
+            "frames": list(frames),
+            "channels": channels,
+        },
         separators=(",", ":"),
         ensure_ascii=False,
     )
@@ -60,27 +65,52 @@ def _assert_close(actual: float, expected: float, label: str) -> None:
         raise RuntimeError(f"{label} mismatch: actual={actual!r}, expected={expected!r}")
 
 
-def _assert_bone_frame_parity(native_frames: List[dict], python_frames: List[dict]) -> None:
-    """Compare final collector frames, not just the packed scalar transport."""
+def _collect_timeline_oracle(cmds: Any, joint: str, frames: Iterable[float]) -> List[dict]:
+    """Read a simple joint through Maya Timeline for an independent oracle."""
+    before_time = float(cmds.currentTime(query=True))
+    result = []
+    try:
+        for frame in frames:
+            cmds.currentTime(frame, edit=True)
+            translation = tuple(
+                float(cmds.getAttr(f"{joint}.translate{axis}"))
+                for axis in ("X", "Y", "Z")
+            )
+            rotate_z = float(cmds.getAttr(f"{joint}.rotateZ"))
+            half_angle = math.radians(rotate_z) * 0.5
+            result.append(
+                {
+                    "bone_name": joint.rsplit("|", 1)[-1],
+                    "frame_number": int(round(float(frame))),
+                    "position": (translation[0], translation[1], -translation[2]),
+                    "rotation": (0.0, 0.0, math.sin(half_angle), math.cos(half_angle)),
+                }
+            )
+    finally:
+        cmds.currentTime(before_time, edit=True)
+    return result
 
-    if len(native_frames) != len(python_frames):
+
+def _assert_bone_frame_matches(actual_frames: List[dict], expected_frames: List[dict]) -> None:
+    """Compare native collector frames with the independent Timeline oracle."""
+    if len(actual_frames) != len(expected_frames):
         raise RuntimeError(
-            f"collector frame count mismatch: native={len(native_frames)}, "
-            f"python={len(python_frames)}"
+            f"collector frame count mismatch: actual={len(actual_frames)}, "
+            f"expected={len(expected_frames)}"
         )
-    for index, (native, python) in enumerate(zip(native_frames, python_frames)):
+    for index, (actual, expected) in enumerate(zip(actual_frames, expected_frames)):
         for key in ("bone_name", "frame_number"):
-            if native[key] != python[key]:
+            if actual[key] != expected[key]:
                 raise RuntimeError(f"collector frame {index} {key} mismatch")
         for key in ("position", "rotation"):
-            if len(native[key]) != len(python[key]):
+            if len(actual[key]) != len(expected[key]):
                 raise RuntimeError(f"collector frame {index} {key} width mismatch")
-            for component, (actual, expected) in enumerate(zip(native[key], python[key])):
-                _assert_close(actual, expected, f"collector frame {index} {key}[{component}]")
+            for component, (value, source) in enumerate(zip(actual[key], expected[key])):
+                _assert_close(value, source, f"collector frame {index} {key}[{component}]")
 
 
 def main() -> int:
-    """Run direct, static, timed, protocol, and registration checks."""
+    """Run direct, static, timed, Timeline-policy, and registration checks."""
     import maya.cmds as cmds
     import maya.standalone
 
@@ -151,6 +181,8 @@ def main() -> int:
         # input.  A hostile/incorrect hint must be downgraded to timed MPlug.
         computed = cmds.createNode("plusMinusAverage", name="focused_vmd_batch_computed")
         cmds.setAttr(f"{computed}.input1D[0]", 6.0)
+        # output1D is a top-level plug.  Maya 2024 may return kFailure from
+        # MPlug.parent() for it; the sampler must treat that as no parent.
         computed_result = _call(
             cmds,
             _payload(
@@ -158,7 +190,7 @@ def main() -> int:
                 [{"plug": f"{computed}.output1D", "unit": "scalar", "hint": "static"}],
             ),
         )
-        if computed_result[:6] != [1.0, 1.0, 1.0, 0.0, 0.0, 1.0]:
+        if computed_result[:6] != [2.0, 1.0, 1.0, 0.0, 0.0, 1.0]:
             raise RuntimeError(f"computed output was accepted as static: {computed_result[:6]!r}")
         _assert_close(computed_result[6], 6.0, "computed timed fallback")
 
@@ -176,7 +208,7 @@ def main() -> int:
         after_time = float(cmds.currentTime(query=True))
         _assert_close(after_time, before_time, "current time preservation")
 
-        if packed[:6] != [1.0, 3.0, 5.0, 3.0, 1.0, 1.0]:
+        if packed[:6] != [2.0, 3.0, 5.0, 3.0, 1.0, 1.0]:
             raise RuntimeError(f"unexpected packed header: {packed[:6]!r}")
         if len(packed) != 6 + len(frames) * len(channels):
             raise RuntimeError(f"unexpected packed length: {len(packed)}")
@@ -192,29 +224,86 @@ def main() -> int:
             for channel_index, value in enumerate(expected):
                 _assert_close(packed[offset + channel_index], value, f"frame {frame} channel {channel_index}")
 
-        timeline_request = json.loads(_payload(frames, channels))
-        timeline_request["evaluation_mode"] = "timeline_probe"
-        timeline_packed = _call(
-            cmds,
-            json.dumps(timeline_request, separators=(",", ":"), ensure_ascii=False),
-        )
-        if timeline_packed != packed:
-            raise RuntimeError("timeline_probe packed values differ from context values")
         _assert_close(
             float(cmds.currentTime(query=True)),
             before_time,
-            "timeline_probe current time preservation",
+            "timeline current time preservation",
         )
-        timeline_request["evaluation_mode"] = "timeline"
+        legacy_request = json.loads(_payload(frames, channels))
+        legacy_request.pop("evaluation_policy")
         _must_fail(
             cmds,
-            json.dumps(timeline_request, separators=(",", ":"), ensure_ascii=False),
-            "unsupported evaluation mode",
+            json.dumps(legacy_request, separators=(",", ":"), ensure_ascii=False),
+            "missing evaluation policy",
+        )
+        legacy_request["evaluation_mode"] = "timeline_probe"
+        _must_fail(
+            cmds,
+            json.dumps(legacy_request, separators=(",", ":"), ensure_ascii=False),
+            "legacy evaluation mode",
         )
 
-        # Exercise the production collector seam.  The native path must yield
-        # the same final VMD position/quaternion dictionaries as the existing
-        # timed Python evaluator, while leaving the current Maya time alone.
+        # Regression: a dependency node can enter through two different
+        # source plugs (compound parent plus child).  One branch is fed by a
+        # physics node; traversal must not mark the shared transform node as
+        # visited after inspecting only the other branch.
+        physics = cmds.createNode(
+            "mmdPhysicsBoneDriver",
+            name="focused_vmd_physics_branch",
+        )
+        shared = cmds.createNode("transform", name="focused_vmd_shared_branch")
+        safe = cmds.createNode("transform", name="focused_vmd_safe_branch")
+        target = cmds.createNode("transform", name="focused_vmd_physics_target")
+        cmds.connectAttr(
+            f"{physics}.outTranslateX",
+            f"{shared}.translateY",
+            force=True,
+        )
+        cmds.connectAttr(
+            f"{safe}.translateX",
+            f"{shared}.translateX",
+            force=True,
+        )
+        cmds.connectAttr(f"{shared}.translate", f"{target}.translate", force=True)
+        cmds.connectAttr(
+            f"{shared}.translateX",
+            f"{target}.translateX",
+            force=True,
+        )
+        target_child_sources = cmds.listConnections(
+            f"{target}.translateX",
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+        target_parent_sources = cmds.listConnections(
+            f"{target}.translate",
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+        if not target_child_sources or not target_parent_sources:
+            raise RuntimeError(
+                "physics branch regression graph did not preserve child and parent sources"
+            )
+        _must_fail(
+            cmds,
+            _payload(
+                [0.0],
+                [
+                    {
+                        "plug": f"{target}.translateX",
+                        "unit": "distance",
+                        "hint": "timed_mplug",
+                    }
+                ],
+            ),
+            "physics dependency through a shared node branch",
+        )
+
+        # Exercise the production collector seam.  Build the expected values
+        # independently through Maya Timeline/currentTime + getAttr; the old
+        # Python timed evaluator is deliberately not used as an oracle.
         from mmd_tools.adapters.native_vmd_batch_sampler import NativeVmdBatchSampler
         from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 
@@ -233,7 +322,7 @@ def main() -> int:
             "dense_frame_samples": collector_frames,
             "time_converter": lambda value: int(value),
         }
-        python_frames = VmdSceneCollector().collect_bone_frames(**collector_kwargs)
+        oracle_frames = _collect_timeline_oracle(cmds, joint, collector_frames)
         native_collector = VmdSceneCollector(
             bone_channel_sampler=NativeVmdBatchSampler(cmds)
         )
@@ -241,7 +330,7 @@ def main() -> int:
             **collector_kwargs,
             bone_channel_sampler=native_collector._bone_channel_sampler,
         )
-        _assert_bone_frame_parity(native_frames, python_frames)
+        _assert_bone_frame_matches(native_frames, oracle_frames)
         native_evidence = native_collector.diagnostics.get("native_sampler", {})
         if not native_evidence.get("used"):
             raise RuntimeError(f"collector did not use native sampler: {native_evidence!r}")
@@ -270,9 +359,9 @@ def main() -> int:
         cmds.loadPlugin(str(plugin_path), quiet=True)
         if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
             raise RuntimeError("mmd_tools_cpp did not reload")
-        if _call(cmds, _payload([0.0], [channels[0]]))[:3] != [1.0, 1.0, 1.0]:
+        if _call(cmds, _payload([0.0], [channels[0]]))[:3] != [2.0, 1.0, 1.0]:
             raise RuntimeError("sampler command was not registered after reload")
-        print("OK: focused mmdVmdBatchSample direct/static/timed/protocol/reload")
+        print("OK: focused mmdVmdBatchSample Timeline/direct/static/timed/protocol/reload")
         return 0
     finally:
         try:

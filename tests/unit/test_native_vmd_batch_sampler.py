@@ -44,7 +44,7 @@ class _FakeCmds:
         channel_count = len(self.calls[-1]["channels"])
         frame_count = len(self.calls[-1]["frames"])
         values = [float(index) for index in range(frame_count * channel_count)]
-        return [1.0, frame_count, channel_count, 0.0, float(channel_count), 0.0, *values]
+        return [2.0, frame_count, channel_count, 0.0, float(channel_count), 0.0, *values]
 
 
 class NativeVmdBatchSamplerTests(unittest.TestCase):
@@ -97,7 +97,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
 
     def test_packed_result_validates_header_length_and_finite_values(self):
         plan = build_dense_bone_sample_plan(["joint"], [0, 1])
-        packed = [1.0, 2.0, 6.0, 0.0, 6.0, 0.0]
+        packed = [2.0, 2.0, 6.0, 0.0, 6.0, 0.0]
         packed.extend(float(index) for index in range(12))
         rows, counts = parse_packed_result(packed, plan)
         self.assertEqual(rows[0], tuple(float(index) for index in range(6)))
@@ -105,7 +105,9 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         with self.assertRaises(NativeVmdBatchSamplerError):
             parse_packed_result(packed[:-1], plan)
         with self.assertRaises(NativeVmdBatchSamplerError):
-            parse_packed_result([1.0, 2.0, 6.0, 0.0, 6.0, 0.0, *([float("nan")] * 12)], plan)
+            parse_packed_result([2.0, 2.0, 6.0, 0.0, 6.0, 0.0, *([float("nan")] * 12)], plan)
+        with self.assertRaisesRegex(NativeVmdBatchSamplerError, "unsupported native sampler protocol"):
+            parse_packed_result([1.0, 2.0, 6.0, 0.0, 6.0, 0.0, *([0.0] * 12)], plan)
 
     def test_command_payload_and_logical_aliases_are_frame_major(self):
         cmds = _FakeCmds()
@@ -117,7 +119,11 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         samples = sampler.sample_dense_bone_channels(
             [0, 1], ["joint_a", "joint_b"], routes
         )
-        self.assertEqual(cmds.calls[0]["version"], 1)
+        self.assertEqual(cmds.calls[0]["version"], 2)
+        self.assertEqual(
+            cmds.calls[0]["evaluation_policy"],
+            sampler_module.EVALUATION_POLICY,
+        )
         self.assertEqual(len(cmds.calls[0]["channels"]), 11)
         self.assertEqual(samples.value("joint_a", "translateX", 1), 11.0)
         self.assertEqual(samples.value("joint_b", "translateX", 1), 11.0)
@@ -242,7 +248,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                     for channel in range(channel_count)
                 ]
                 return [
-                    1.0,
+                    2.0,
                     len(request["frames"]),
                     channel_count,
                     0.0,
@@ -271,6 +277,44 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         self.assertEqual(samples.diagnostics["chunk_count"], 3)
         self.assertEqual(samples.diagnostics["max_samples_per_chunk"], 12)
         self.assertEqual(len(samples.diagnostics["chunk_wall_sec"]), 3)
+        self.assertTrue(
+            all(
+                request["evaluation_policy"] == sampler_module.EVALUATION_POLICY
+                for request in cmds.calls
+            )
+        )
+
+    def test_timeline_requests_are_bounded_to_120_frames(self):
+        class _FrameBoundCmds(_FakeCmds):
+            def mmdVmdBatchSample(self, payload=None):
+                request = json.loads(payload)
+                self.calls.append(request)
+                channel_count = len(request["channels"])
+                return [
+                    2.0,
+                    len(request["frames"]),
+                    channel_count,
+                    0.0,
+                    float(channel_count),
+                    0.0,
+                    *([0.0] * (len(request["frames"]) * channel_count)),
+                ]
+
+        cmds = _FrameBoundCmds()
+        sampler = NativeVmdBatchSampler(cmds)
+        with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 100000):
+            with mock.patch.object(sampler_module, "MAX_NATIVE_FRAMES", 2):
+                sampler.sample_dense_bone_channels(range(5), ["joint"])
+        self.assertEqual(
+            [len(request["frames"]) for request in cmds.calls],
+            [2, 2, 1],
+        )
+        self.assertTrue(
+            all(
+                request["evaluation_policy"] == sampler_module.EVALUATION_POLICY
+                for request in cmds.calls
+            )
+        )
 
     def test_chunk_strategy_mismatch_is_a_protocol_failure(self):
         class _ChangingCmds(_FakeCmds):
@@ -282,7 +326,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                 static_count = channel_count if len(self.calls) == 1 else 0
                 timed_count = 0 if len(self.calls) == 1 else channel_count
                 return [
-                    1.0,
+                    2.0,
                     len(request["frames"]),
                     channel_count,
                     0.0,
@@ -321,10 +365,6 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             def ls(self, node, long=False):
                 return [str(node)]
 
-        class _FallbackEvaluator:
-            def value(self, _joint, _attr, frame, _route):
-                return float(frame)
-
         class _Samples:
             diagnostics = {
                 "available": True,
@@ -356,10 +396,6 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             ("dense", 1): ((99.0, 99.0, 99.0), (0.0, 0.0, 0.0, 1.0)),
         }
         with mock.patch.object(collector_module, "cmds", _Cmds()), mock.patch.object(
-            collector_module,
-            "_RoutedPlugValueEvaluator",
-            _FallbackEvaluator,
-        ), mock.patch.object(
             collector_module,
             "_routed_key_times",
             side_effect=lambda joint, _route: [0.0, 1.0]
@@ -406,14 +442,10 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             "loaded",
         )
 
-    def test_collector_falls_back_when_native_sampling_fails(self):
+    def test_collector_blocks_when_native_sampling_fails(self):
         class _Cmds:
             def ls(self, node, long=False):
                 return [str(node)]
-
-        class _FallbackEvaluator:
-            def value(self, _joint, attr, frame, _route):
-                return float(frame) + (20.0 if attr.startswith("rotate") else 2.0)
 
         class _BrokenNative:
             available = True
@@ -423,10 +455,6 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
 
         collector = VmdSceneCollector(bone_channel_sampler=_BrokenNative())
         with mock.patch.object(collector_module, "cmds", _Cmds()), mock.patch.object(
-            collector_module,
-            "_RoutedPlugValueEvaluator",
-            _FallbackEvaluator,
-        ), mock.patch.object(
             collector_module,
             "_routed_key_times",
             return_value=[0.0, 1.0],
@@ -448,18 +476,18 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             side_effect=lambda values, _bind, _scale: tuple(values),
         ):
             collector._mmd_bone_name = lambda joint: str(joint)
-            result = collector.collect_bone_frames(
-                ["joint"],
-                input_routes={},
-                dense_sample=True,
-                force_dense_sample=True,
-                dense_frame_samples=[0, 1],
-                time_converter=lambda value: value,
-                bone_channel_sampler=collector._bone_channel_sampler,
-            )
-        self.assertEqual(len(result), 2)
-        self.assertEqual(result[0]["position"], (2.0, 2.0, 2.0))
+            with self.assertRaisesRegex(RuntimeError, "Mode C native bone sampling failed"):
+                collector.collect_bone_frames(
+                    ["joint"],
+                    input_routes={},
+                    dense_sample=True,
+                    force_dense_sample=True,
+                    dense_frame_samples=[0, 1],
+                    time_converter=lambda value: value,
+                    bone_channel_sampler=collector._bone_channel_sampler,
+                )
         self.assertFalse(collector.diagnostics["native_sampler"]["used"])
+        self.assertTrue(collector.diagnostics["native_sampler"]["fatal"])
         self.assertIn("fallback_reason", collector.diagnostics["native_sampler"])
 
 

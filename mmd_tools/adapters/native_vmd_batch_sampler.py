@@ -1,9 +1,9 @@
-"""Python gateway for the optional native Mode C scalar sampler.
+"""Python gateway for the native Mode C Timeline scalar sampler.
 
-The gateway owns only the wire protocol and conservative route classification.
-It deliberately does not evaluate Maya plugs itself: callers can fall back to
-the existing collector evaluator when the command is unavailable or when a
-packed result cannot be trusted.
+The gateway owns the strict wire protocol and conservative route
+classification.  Mode C has one production policy: Maya Timeline evaluation.
+Native command, protocol, and value failures are surfaced to the collector;
+there is no alternate evaluator fallback for dense bone sampling.
 """
 
 from __future__ import annotations
@@ -41,9 +41,14 @@ _NUMERIC_ATTR_TYPES = {
     "enum",
 }
 _HEADER_SIZE = 6
-_PROTOCOL_VERSION = 1
+_PROTOCOL_VERSION = 2
+EVALUATION_POLICY = "maya_timeline_bake_v1"
 # Must stay in lock-step with the native command's request sample guard.
 MAX_NATIVE_SAMPLES = 4_194_304
+# Keep one native command bounded even when the sample-count guard permits a
+# much larger request.  Chunk boundaries are intentionally visible in the
+# diagnostics and preserve the production Timeline transaction contract.
+MAX_NATIVE_FRAMES = 120
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -392,7 +397,7 @@ def _chunk_plan(plan: DenseBoneSamplePlan, start: int, end: int) -> DenseBoneSam
 
 
 class NativeVmdBatchSampler:
-    """Invoke ``mmdVmdBatchSample`` without changing Maya current time."""
+    """Invoke ``mmdVmdBatchSample`` under the explicit Timeline policy."""
 
     command_name = "mmdVmdBatchSample"
 
@@ -549,7 +554,10 @@ class NativeVmdBatchSampler:
         physical_channel_count = len(plan.physical_channels)
         max_frames_per_chunk = max(
             1,
-            MAX_NATIVE_SAMPLES // physical_channel_count,
+            min(
+                MAX_NATIVE_FRAMES,
+                MAX_NATIVE_SAMPLES // physical_channel_count,
+            ),
         )
         chunk_count = (
             len(plan.frames) + max_frames_per_chunk - 1
@@ -593,6 +601,7 @@ class NativeVmdBatchSampler:
                 payload = json.dumps(
                     {
                         "version": _PROTOCOL_VERSION,
+                        "evaluation_policy": EVALUATION_POLICY,
                         "frames": list(chunk_plan.frames),
                         "channels": list(chunk_plan.request_channels),
                     },
@@ -673,7 +682,9 @@ __all__ = [
     "NativeDenseBoneSamples",
     "NativeVmdBatchSampler",
     "NativeVmdBatchSamplerError",
+    "EVALUATION_POLICY",
     "MAX_NATIVE_SAMPLES",
+    "MAX_NATIVE_FRAMES",
     "build_dense_bone_sample_plan",
     "parse_packed_result",
 ]
