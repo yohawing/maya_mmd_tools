@@ -1096,16 +1096,56 @@ def _select_unique_motion_morph(spec: Any, animated_names: Iterable[str]) -> Any
     return candidates[0] if candidates else None
 
 
-def _morph_weight_plug(binding: str) -> str:
-    """Resolve a semantic morph network binding to its keyable weight plug."""
+def _resolve_morph_controller_input_plug(
+    root: str,
+    morph_index: int,
+    cmds_module: Any | None = None,
+) -> str:
+    """Resolve one model-owned morph controller input by PMX morph index.
 
-    from maya import cmds
+    ``binding_identity`` describes the semantic morph network, but it is not
+    the authoring/export authority.  The production collector keys morph
+    tracks on the model-owned ``mmdMorphController.inputWeight[index]`` plug;
+    use that same ownership boundary for both source and fresh witnesses.
+    """
 
-    if "." in binding:
-        return binding
-    if cmds.attributeQuery("weight", node=binding, exists=True):
-        return f"{binding}.weight"
-    raise ValueError(f"morph binding has no keyable weight attribute: {binding!r}")
+    if cmds_module is None:
+        from maya import cmds as cmds_module
+
+    if isinstance(morph_index, bool) or not isinstance(morph_index, int) or morph_index < 0:
+        raise ValueError(f"morph index is invalid: {morph_index!r}")
+    if not root or not cmds_module.objExists(root):
+        raise ValueError(f"morph controller root is invalid: {root!r}")
+    if not cmds_module.attributeQuery("mmd_morph_controller", node=root, exists=True):
+        raise ValueError(f"morph controller ownership attribute is missing on root: {root!r}")
+    controllers = cmds_module.listConnections(
+        f"{root}.mmd_morph_controller",
+        source=True,
+        destination=False,
+    ) or []
+    if len(controllers) != 1:
+        raise ValueError(
+            "morph controller ownership must have exactly one connection, "
+            f"got {len(controllers)}"
+        )
+    controller = str(controllers[0])
+    if cmds_module.nodeType(controller) != "mmdMorphController":
+        raise ValueError(f"morph controller has unexpected node type: {controller!r}")
+    if not cmds_module.attributeQuery("inputWeight", node=controller, exists=True):
+        raise ValueError(f"morph controller inputWeight attribute is missing: {controller!r}")
+    try:
+        input_indices = {
+            int(index)
+            for index in (cmds_module.getAttr(f"{controller}.inputWeight", multiIndices=True) or [])
+        }
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError(f"morph controller inputWeight indices are unreadable: {controller!r}") from exc
+    if morph_index not in input_indices:
+        raise ValueError(
+            f"morph controller inputWeight index is missing: controller={controller!r} "
+            f"index={morph_index}"
+        )
+    return f"{controller}.inputWeight[{morph_index}]"
 
 
 def _morph_weight_limits(plug: str) -> tuple[float, float]:
@@ -1165,7 +1205,7 @@ def _apply_motion_adjustment(
     if morph is not None:
         if not isinstance(morph.binding_identity, str) or not morph.binding_identity:
             raise ValueError(f"motion adjustment morph {morph.index} has no binding identity")
-        plug = _morph_weight_plug(morph.binding_identity)
+        plug = _resolve_morph_controller_input_plug(root, int(morph.index))
         before_morph = float(cmds.getAttr(plug))
         minimum, maximum = _morph_weight_limits(plug)
         after_morph = max(minimum, min(maximum, before_morph + morph_delta))
@@ -1175,7 +1215,8 @@ def _apply_motion_adjustment(
         cmds.setKeyframe(plug, time=frame)
         morph_witness = {
             "index": morph.index,
-            "binding_identity": plug,
+            "binding_identity": morph.binding_identity,
+            "controller_input_plug": plug,
             "track_name": morph.name,
             "track_names": [morph.name, morph.name_english],
             "before": before_morph,
@@ -1263,17 +1304,17 @@ def _capture_motion_witness(root: str, adjustment: Mapping[str, Any], frames: It
     witness = {"bone_index": bone_index, "binding_identity": binding, "pose": pose}
     morph_info = adjustment.get("morph")
     if isinstance(morph_info, Mapping):
-        binding = str(morph_info.get("binding_identity") or "")
-        if binding:
-            plug = _morph_weight_plug(binding)
-            witness["morph"] = {
-                "index": int(morph_info["index"]),
-                "binding_identity": plug,
-                "values": {
-                    str(int(frame)): float(cmds.getAttr(plug, time=int(frame)))
-                    for frame in frames
-                },
-            }
+        morph_index = int(morph_info["index"])
+        plug = _resolve_morph_controller_input_plug(root, morph_index)
+        witness["morph"] = {
+            "index": morph_index,
+            "binding_identity": morph_info.get("binding_identity"),
+            "controller_input_plug": plug,
+            "values": {
+                str(int(frame)): float(cmds.getAttr(plug, time=int(frame)))
+                for frame in frames
+            },
+        }
     return witness
 
 

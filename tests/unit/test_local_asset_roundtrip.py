@@ -16,6 +16,7 @@ from tools.local_asset_roundtrip import (
     _export_request,
     _load_manifest,
     _motion_evaluation_frames,
+    _resolve_morph_controller_input_plug,
     parse_args,
     _require_import_success,
     _repetitions,
@@ -167,6 +168,64 @@ def test_export_write_budget_is_strictly_fail_closed():
 def test_export_write_budget_is_configurable_from_cli():
     assert parse_args([]).export_write_budget_sec == 60.0
     assert parse_args(["--export-write-budget-sec", "75"]).export_write_budget_sec == 75.0
+
+
+class _FakeMorphCmds:
+    def __init__(self, controllers):
+        self.controllers = list(controllers)
+        self.calls = []
+
+    def objExists(self, node):
+        return node == "|model"
+
+    def attributeQuery(self, attribute, node, exists=False):
+        if not exists:
+            raise AssertionError("fake only supports existence queries")
+        return (node == "|model" and attribute == "mmd_morph_controller") or (
+            node == "|controller" and attribute == "inputWeight"
+        )
+
+    def listConnections(self, plug, **kwargs):
+        assert plug == "|model.mmd_morph_controller"
+        return list(self.controllers)
+
+    def nodeType(self, node):
+        return "mmdMorphController" if node == "|controller" else "network"
+
+    def getAttr(self, plug, **kwargs):
+        self.calls.append((plug, kwargs))
+        if plug == "|controller.inputWeight":
+            return [2, 7]
+        if ".weight" in plug:
+            raise AssertionError("semantic downstream node.weight must not be selected")
+        raise AssertionError(f"unexpected fake getAttr call: {plug}")
+
+
+def test_morph_witness_resolves_model_owned_controller_input_by_index():
+    fake_cmds = _FakeMorphCmds(["|controller"])
+
+    plug = _resolve_morph_controller_input_plug("|model", 7, fake_cmds)
+
+    assert plug == "|controller.inputWeight[7]"
+    assert fake_cmds.calls == [("|controller.inputWeight", {"multiIndices": True})]
+
+
+@pytest.mark.parametrize(
+    ("controllers", "index", "message"),
+    [
+        ([], 7, "exactly one connection"),
+        (["|controller", "|controller2"], 7, "exactly one connection"),
+        (["|controller"], -1, "index is invalid"),
+        (["|controller"], 3, "index is missing"),
+    ],
+)
+def test_morph_witness_rejects_ambiguous_or_invalid_controller_input(
+    controllers, index, message
+):
+    fake_cmds = _FakeMorphCmds(controllers)
+
+    with pytest.raises(ValueError, match=message):
+        _resolve_morph_controller_input_plug("|model", index, fake_cmds)
 
 
 def test_import_action_contract_rejects_partial_or_warning_results():
