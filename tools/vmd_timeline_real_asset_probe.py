@@ -586,6 +586,33 @@ def _run_controller(config_path: Path, config: Mapping[str, Any]) -> dict[str, A
     return summary
 
 
+def _console_summary(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep terminal output bounded; detailed evidence already lives in JSON."""
+
+    summary = {
+        key: result[key]
+        for key in (
+            "schema_version",
+            "status",
+            "strategy",
+            "prefix_frames",
+            "wall_sec",
+            "estimated_full_wall_sec",
+            "packed_values_parity",
+            "pairs",
+        )
+        if key in result
+    }
+    packed = result.get("packed")
+    if isinstance(packed, Mapping):
+        summary["packed"] = {
+            key: packed[key]
+            for key in ("header", "float_count", "sha256", "values_sha256")
+            if key in packed
+        }
+    return summary
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _arguments(argv)
     config = load_config(args.config)
@@ -597,7 +624,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.strategy is not None or args.prefix is not None:
             raise ProbeConfigurationError("--strategy/--prefix require --worker")
         result = _run_controller(args.config, config)
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    print(json.dumps(_console_summary(result), ensure_ascii=False, sort_keys=True))
     return 0 if result.get("status") == "pass" else 1
 
 

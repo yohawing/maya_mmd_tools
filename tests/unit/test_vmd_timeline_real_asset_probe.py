@@ -11,6 +11,7 @@ import pytest
 from tools.vmd_timeline_real_asset_probe import (
     PREFIX_FRAMES,
     ProbeConfigurationError,
+    _console_summary,
     compare_pair,
     estimate_full_wall,
     load_config,
@@ -108,3 +109,19 @@ def test_full_wall_estimate_uses_all_prefixes_through_origin():
     ]
 
     assert estimate_full_wall(results, 6786) == 67.86
+
+
+def test_console_summary_omits_large_route_inventory():
+    summary = _console_summary(
+        {
+            "schema_version": 1,
+            "status": "pass",
+            "strategy": "context",
+            "prefix_frames": 120,
+            "route_inventory": {"channels": [object()] * 100},
+            "packed": {"header": [1.0], "sha256": "abc", "artifact": "large.bin"},
+        }
+    )
+
+    assert "route_inventory" not in summary
+    assert "artifact" not in summary["packed"]
