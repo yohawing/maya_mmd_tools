@@ -101,9 +101,34 @@ class _BlockingVerifier:
         return ExportValidationReport("vmd", (issue,), mode=mode)
 
 
+class _WarningVerifier:
+    def __call__(self, file_path, mode, *, expected_counts):
+        del file_path, expected_counts
+        issue = ExportValidationIssue(
+            "OUTPUT_WARNING",
+            "warning",
+            False,
+            "output",
+            "output requires acknowledgement",
+        )
+        return ExportValidationReport("vmd", (issue,), mode=mode)
+
+
 def _blocking_validator(*args, **kwargs):
     del args, kwargs
     issue = ExportValidationIssue("VMD_FRAME_RANGE", "fatal", True, "frame_range", "bad")
+    return ExportValidationReport("vmd", (issue,), mode="C")
+
+
+def _warning_validator(*args, **kwargs):
+    del args, kwargs
+    issue = ExportValidationIssue(
+        "PAYLOAD_WARNING",
+        "warning",
+        False,
+        "payload",
+        "payload requires acknowledgement",
+    )
     return ExportValidationReport("vmd", (issue,), mode="C")
 
 
@@ -189,6 +214,28 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertIsNone(result.token)
         self.assertFalse(Path(exporter.paths[0]).parent.exists())
+
+    def test_non_blocking_payload_and_output_warnings_publish_one_verified_stage(self):
+        action = _prepare_action(
+            _Backend([_discovery(), _discovery()]),
+            _Revisions(["r1", "r1"]),
+            validator=_warning_validator,
+            output_verifier=_WarningVerifier(),
+        )
+
+        result = action.execute(_request())
+
+        self.assertTrue(result.succeeded)
+        self.assertIsNotNone(result.token)
+        self.assertTrue(result.token.validation_report.requires_warning_ack)
+        self.assertEqual(
+            [issue.code for issue in result.token.validation_report.issues],
+            ["PAYLOAD_WARNING", "OUTPUT_WARNING"],
+        )
+        stage_path = Path(result.token.staged_artifact.file_path)
+        self.assertTrue(stage_path.exists())
+        action.invalidate()
+        self.assertFalse(stage_path.exists())
 
     def test_legacy_stage_factory_receives_cached_reports(self):
         action = _prepare_action(

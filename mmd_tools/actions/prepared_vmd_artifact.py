@@ -184,8 +184,9 @@ def stage_vmd_artifact(
             raise PreparedVmdArtifactError("VMD output verifier returned no report")
         if bool(getattr(report, "is_blocking", False)) or getattr(report, "valid", True) is False:
             raise PreparedVmdArtifactError(f"staged VMD output verification blocked: {report}")
-        if bool(getattr(report, "requires_warning_ack", False)) and not ack_warnings:
-            raise PreparedVmdArtifactError("staged VMD output verification requires warning acknowledgement")
+        # A warning is retained on the receipt and acknowledged only by the
+        # final publish workflow.  Blocking output findings still fail closed
+        # above and clean the private stage in the exception path.
 
         return PreparedVmdArtifactReceipt(
             schema_version=PREPARED_VMD_ARTIFACT_SCHEMA_VERSION,

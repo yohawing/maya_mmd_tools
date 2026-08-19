@@ -136,6 +136,22 @@ class ExportPresenter(QObject):
                 set_prepared(preparation)
             else:
                 self.view.set_state(STATE_PREPARED)
+            # Keep the verified combined report visible immediately after
+            # Prepare.  The motion page's set_prepared hook resets its console
+            # for the old pre-prepare report, so restore the token-owned report
+            # after the prepared state is established.  Acknowledge controls
+            # remain owned by final Export.
+            preparation_report = getattr(preparation, "report", None)
+            if preparation_report is None:
+                preparation_report = getattr(self._prepared_vmd_token, "validation_report", None)
+            if isinstance(preparation_report, ExportValidationReport):
+                self.view.set_result(
+                    ExportWorkflowResult(
+                        STATE_PREPARED,
+                        preparation_report,
+                        {"output_path": getattr(request, "file_path", None)},
+                    )
+                )
             self.app_state.emit_status(
                 UITranslator.instance().translate(
                     "prepare_mode_c_complete",

@@ -35,14 +35,18 @@ class _Exporter:
 
 
 class _Verifier:
-    def __init__(self, blocking=False):
+    def __init__(self, blocking=False, warning=False):
         self.blocking = blocking
+        self.warning = warning
         self.calls = []
 
     def __call__(self, file_path, mode, *, expected_counts):
         self.calls.append((file_path, mode, dict(expected_counts)))
         if self.blocking:
             issue = ExportValidationIssue("OUTPUT_PARSE_FAILED", "fatal", True, "output", "bad")
+            return ExportValidationReport("vmd", (issue,), mode=mode)
+        if self.warning:
+            issue = ExportValidationIssue("OUTPUT_WARNING", "warning", False, "output", "review")
             return ExportValidationReport("vmd", (issue,), mode=mode)
         return ExportValidationReport("vmd", (), mode=mode)
 
@@ -79,6 +83,19 @@ class PreparedVmdArtifactTests(unittest.TestCase):
                 _data(), exporter=exporter, output_verifier=_Verifier(blocking=True), mode="C"
             )
         self.assertFalse(Path(exporter.paths[0]).parent.exists())
+
+    def test_warning_report_is_retained_on_verified_stage_without_acknowledgement(self):
+        receipt = stage_vmd_artifact(
+            _data(), exporter=_Exporter(), output_verifier=_Verifier(warning=True), mode="C"
+        )
+
+        self.assertTrue(receipt.output_validation_report.requires_warning_ack)
+        self.assertEqual(
+            [issue.code for issue in receipt.output_validation_report.issues],
+            ["OUTPUT_WARNING"],
+        )
+        self.assertTrue(receipt.validate_identity())
+        receipt.cleanup()
 
     def test_missing_or_tampered_stage_is_detected(self):
         receipt = stage_vmd_artifact(

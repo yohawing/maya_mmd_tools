@@ -108,6 +108,18 @@ class _VmdRevisions:
         return "revision-1"
 
 
+def _warning_vmd_validator(payload, mode, **kwargs):
+    del payload, kwargs
+    issue = ExportValidationIssue(
+        "VMD_MODE_C_RAW_LOSS",
+        "warning",
+        False,
+        "mode",
+        "raw VMD interpolation will not be preserved",
+    )
+    return ExportValidationReport("vmd", (issue,), mode=mode)
+
+
 class _RecordingVmdExporter(VmdExporter):
     def __init__(self):
         super().__init__(native_exporter=None)
@@ -335,6 +347,71 @@ class TestExportWorkflowService(unittest.TestCase):
         self.assertEqual(exporter.write_calls, 1)
         self.assertEqual(token.payload.header.model_name, "WorkflowFixture")
         self.assertEqual(result.action_result.payload_fingerprint, token.staged_artifact.sha256)
+
+    def test_prepared_vmd_warning_requires_final_ack_without_recollecting_or_writing(self):
+        backend = _VmdPrepareBackend()
+        revisions = _VmdRevisions()
+        exporter = _RecordingVmdExporter()
+        prepare_action = PrepareVmdExportAction(
+            backend,
+            revisions,
+            exporter=exporter,
+            validator=_warning_vmd_validator,
+        )
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            vmd_action=ExportVmdAction(exporter=exporter, output_verifier=None),
+            prepare_vmd_action=prepare_action,
+        )
+        request = ExportWorkflowRequest(
+            "motion.vmd",
+            {
+                "export_format": "vmd",
+                "vmd_mode": "C",
+                "current_model_root": "model_ROOT",
+                "require_current_model": True,
+                "require_target": True,
+                "target_uuid": "model-uuid",
+                "target_identity": "model_ROOT",
+                "scene_session_id": "scene-1",
+                "dependency_closure_fingerprint": "deps-1",
+            },
+        )
+
+        prepared = service.prepare_vmd(request)
+        token = prepared.token
+        self.assertTrue(prepared.succeeded)
+        self.assertTrue(token.validation_report.requires_warning_ack)
+        self.assertEqual(exporter.write_calls, 1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "motion.vmd"
+            target.write_bytes(b"existing-output")
+            no_ack = service.execute(
+                ExportWorkflowRequest(
+                    str(target), dict(request.options), prepared_vmd_token=token
+                )
+            )
+            self.assertEqual(no_ack.state, STATE_READY)
+            self.assertEqual(target.read_bytes(), b"existing-output")
+            self.assertEqual(backend.collect_calls, 1)
+            self.assertEqual(exporter.write_calls, 1)
+
+            acknowledged = service.execute(
+                ExportWorkflowRequest(
+                    str(target), dict(request.options), prepared_vmd_token=token
+                ),
+                acknowledge_warnings=True,
+            )
+            self.assertEqual(acknowledged.state, STATE_SUCCEEDED)
+            self.assertNotEqual(target.read_bytes(), b"existing-output")
+
+        self.assertEqual(backend.collect_calls, 1)
+        self.assertEqual(exporter.write_calls, 1)
+        prepare_action.invalidate(token)
 
     def test_prepare_vmd_preflight_blocks_before_discovery_or_collection(self):
         backend = _VmdPrepareBackend()

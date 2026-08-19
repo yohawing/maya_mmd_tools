@@ -1,6 +1,7 @@
 """ExportPresenter Current Model ownership and pane invalidation contracts."""
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
@@ -22,7 +23,10 @@ from mmd_tools.ui.validation_console import (  # noqa: E402
     ValidationConsole,
     render_validation_console_text,
 )
-from mmd_tools.validation.export_validator import ExportValidationReport  # noqa: E402
+from mmd_tools.validation.export_validator import (  # noqa: E402
+    ExportValidationIssue,
+    ExportValidationReport,
+)
 
 
 class _Signal:
@@ -221,6 +225,22 @@ class _PrepareFailingWorkflow(_Workflow):
         return PrepareVmdExportResult(status="failed", error=RuntimeError("bake exploded"))
 
 
+class _PrepareWarningWorkflow(_Workflow):
+    def prepare_vmd(self, request):
+        self.prepared.append(request)
+        issue = ExportValidationIssue(
+            "VMD_MODE_C_RAW_LOSS",
+            "warning",
+            False,
+            "mode",
+            "review raw interpolation loss",
+        )
+        token = SimpleNamespace(
+            validation_report=ExportValidationReport("vmd", (issue,), mode="C")
+        )
+        return PrepareVmdExportResult(status="published", token=token)
+
+
 class _PrepareThenFailWorkflow(_Workflow):
     def prepare_vmd(self, request):
         self.prepared.append(request)
@@ -289,6 +309,25 @@ class TestExportPresenter(unittest.TestCase):
         self.assertIs(workflow.executed[-1][0].prepared_vmd_token, preparation.token)
         self.assertIsNone(presenter.prepared_vmd_token)
         self.assertEqual(workflow.invalidated, [preparation.token])
+
+    def test_prepare_surfaces_token_warning_report_to_validation_console(self):
+        view = _ConsoleView("vmd")
+        app_state = _AppState()
+        presenter = ExportPresenter(
+            view,
+            app_state,
+            workflow_service=_PrepareWarningWorkflow(),
+        )
+
+        preparation = presenter.prepare()
+
+        self.assertTrue(preparation.succeeded)
+        self.assertIsNotNone(view.validation_console.report)
+        self.assertTrue(view.validation_console.report.requires_warning_ack)
+        self.assertEqual(
+            view.validation_console.report.issues[0].code,
+            "VMD_MODE_C_RAW_LOSS",
+        )
 
     def test_prepare_failure_publishes_blocking_result_and_keeps_no_token(self):
         view = _View("vmd")

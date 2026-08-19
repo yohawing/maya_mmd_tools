@@ -249,6 +249,14 @@ class PrepareVmdExportResult:
     def published(self) -> bool:
         return self.succeeded
 
+    @property
+    def report(self) -> Optional[ExportValidationReport]:
+        """Expose the token's combined payload/output report when published."""
+
+        if self.token is None:
+            return None
+        return self.token.combined_validation_report
+
 
 @dataclass(frozen=True)
 class PrepareVmdExportDiagnostics:
@@ -590,10 +598,9 @@ def _validate_prepared_vmd(
         )
     if bool(getattr(report, "is_blocking", False)) or getattr(report, "valid", True) is False:
         raise PrepareVmdExportError(f"prepared VMD validation blocked: {report}")
-    if bool(getattr(report, "requires_warning_ack", False)) and _read_field(
-        request, "ack_warnings"
-    ) is not True:
-        raise PrepareVmdExportError("prepared VMD validation requires warning acknowledgement")
+    # Non-blocking warnings belong to the prepared report.  The final export
+    # boundary owns acknowledgement so Prepare can stage one verified artifact
+    # for the user to inspect before deciding whether to publish it.
     return report
 
 
