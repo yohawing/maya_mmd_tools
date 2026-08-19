@@ -69,15 +69,6 @@ class VmdFrameBounds:
     def max_frame(self) -> Optional[int]:
         return self.maximum
 
-    @property
-    def frame_min(self) -> Optional[int]:
-        return self.minimum
-
-    @property
-    def frame_max(self) -> Optional[int]:
-        return self.maximum
-
-
 @dataclass(frozen=True)
 class VmdStreamSummary:
     """Immutable receipt returned after a complete VMD stream is flushed."""
@@ -87,22 +78,6 @@ class VmdStreamSummary:
     counts: Mapping[str, int]
     frame_bounds: Mapping[str, VmdFrameBounds]
     sha256: str
-
-    @property
-    def section_counts(self) -> Mapping[str, int]:
-        return self.counts
-
-    @property
-    def output_path(self) -> str:
-        return self.path
-
-    @property
-    def bytes_written(self) -> int:
-        return self.size
-
-    @property
-    def digest(self) -> str:
-        return self.sha256
 
     @property
     def min_frame(self) -> Optional[int]:

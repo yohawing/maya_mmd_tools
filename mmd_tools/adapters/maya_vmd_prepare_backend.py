@@ -151,18 +151,6 @@ class MayaVmdPrepareBackend:
         self._diagnostics: dict[str, Any] = {}
 
     @property
-    def revision_provider(self) -> "MayaVmdPrepareBackend":
-        """Return the provider paired with this backend for PrepareAction."""
-
-        return self
-
-    @property
-    def active_watch(self) -> Any:
-        """Expose the current watch for host teardown and diagnostics."""
-
-        return self._active_watch
-
-    @property
     def diagnostics(self) -> dict[str, Any]:
         """Return detached host-side discovery/collection evidence."""
 
@@ -728,7 +716,7 @@ def create_maya_vmd_prepare_action(
         diagnostics_sink=diagnostics_sink,
         bone_channel_sampler=bone_channel_sampler,
     )
-    return PrepareVmdExportAction(backend, backend.revision_provider)
+    return PrepareVmdExportAction(backend, backend)
 
 
 __all__ = [

@@ -66,24 +66,6 @@ class PreparedVmdArtifactReceipt:
         if not isinstance(self.output_validation_report, ExportValidationReport):
             raise TypeError("output_validation_report must be ExportValidationReport")
 
-    @property
-    def path(self) -> str:
-        """Compatibility alias for consumers that use path terminology."""
-
-        return self.file_path
-
-    @property
-    def digest(self) -> str:
-        """Compatibility alias for the artifact SHA-256."""
-
-        return self.sha256
-
-    @property
-    def byte_size(self) -> int:
-        """Compatibility alias for the artifact byte count."""
-
-        return self.size
-
     def validate_identity(self) -> bool:
         """Verify that the owned stage still matches its published receipt."""
 
