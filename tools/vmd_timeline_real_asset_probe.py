@@ -25,6 +25,8 @@ from typing import Any, Mapping, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 SCHEMA_VERSION = 1
 PREFIX_FRAMES = (120, 300, 600)
 STRATEGIES = ("context", "timeline_probe")
