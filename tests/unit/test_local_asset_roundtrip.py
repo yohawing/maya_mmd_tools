@@ -559,7 +559,95 @@ def test_mode_c_track_boundaries_reject_prepared_authored_track_lost_by_writer()
 
     assert failures["source_to_prepared"] == []
     assert failures["prepared_to_export"] == [
-        "bone required tracks missing: ['センター']"
+        "bone.count expected=1 actual=0"
+    ]
+
+
+def _dense_mode_c_payload():
+    return {
+        "model_name": "model",
+        "bone": [
+            {
+                "name": "センター",
+                "frame": frame,
+                "position": [float(frame), 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+                "interpolation": [20] * 64,
+            }
+            for frame in range(3)
+        ],
+        "morph": [
+            {"name": "笑顔", "frame": frame, "value": frame * 0.1}
+            for frame in range(3)
+        ],
+        "camera": [],
+        "light": [],
+        "shadow": [],
+        "ik": [],
+    }
+
+
+def test_mode_c_track_boundaries_accept_identical_dense_prepared_payload():
+    payload = _dense_mode_c_payload()
+
+    failures = _mode_c_track_boundary_diff(
+        payload,
+        payload,
+        payload,
+        {"bone": {"センター"}, "morph": {"笑顔"}},
+    )
+
+    assert failures == {"source_to_prepared": [], "prepared_to_export": []}
+
+
+@pytest.mark.parametrize(
+    ("section", "index", "field", "replacement", "expected_failure"),
+    [
+        ("bone", 1, "frame", 7, "bone[1].frame differs"),
+        ("bone", 1, "position", [1.25, 0.0, 0.0], "bone[1].position differs"),
+        ("bone", 1, "rotation", [0.0, 0.0, 0.1, 0.995], "bone[1].rotation differs"),
+        ("bone", 1, "interpolation", [21] * 64, "bone[1].interpolation differs"),
+        ("morph", 1, "value", 0.25, "morph[1].value differs"),
+    ],
+)
+def test_mode_c_track_boundaries_reject_writer_value_changes_with_same_tracks(
+    section, index, field, replacement, expected_failure
+):
+    prepared = _dense_mode_c_payload()
+    exported = {
+        **prepared,
+        section: [dict(item) for item in prepared[section]],
+    }
+    exported[section][index][field] = replacement
+
+    failures = _mode_c_track_boundary_diff(
+        prepared,
+        prepared,
+        exported,
+        {"bone": {"センター"}, "morph": {"笑顔"}},
+    )
+
+    assert failures["source_to_prepared"] == []
+    assert expected_failure in failures["prepared_to_export"]
+
+
+def test_mode_c_track_boundaries_reject_writer_count_change_with_same_track_name():
+    prepared = _dense_mode_c_payload()
+    exported = {
+        **prepared,
+        "bone": [dict(item) for item in prepared["bone"][:-1]],
+    }
+
+    failures = _mode_c_track_boundary_diff(
+        prepared,
+        prepared,
+        exported,
+        {"bone": {"センター"}, "morph": {"笑顔"}},
+    )
+
+    assert failures["source_to_prepared"] == []
+    assert failures["prepared_to_export"] == [
+        "bone.count expected=3 actual=2"
     ]
 
 

@@ -656,7 +656,7 @@ def _mode_c_track_boundary_diff(
             required_source,
             prepared_payload,
         ),
-        "prepared_to_export": _vmd_mode_c_semantic_diff(
+        "prepared_to_export": _vmd_payload_diff(
             prepared_payload,
             exported_payload,
         ),
