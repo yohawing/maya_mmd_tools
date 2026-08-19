@@ -11,13 +11,16 @@ import pytest
 
 from tools.local_asset_roundtrip import (
     VMD_MODE_C_POSE_TOLERANCE,
+    _acceptance_options,
     _metric_snapshot,
     _classify_failure,
     _allowed_warning_codes,
     _assert_execute_warnings,
+    _capture_reduction_witness_oracle,
     _capture_ik_import_witness,
     _export_write_budget_evidence,
     _export_request,
+    _expected_reduction_witnesses,
     _load_manifest,
     _motion_evaluation_frames,
     _motion_phase_evidence,
@@ -37,6 +40,8 @@ from tools.local_asset_roundtrip import (
     _skip_warm_vmd_export_samples,
     _run_worker,
     _compare_motion_morph_witness_values,
+    _compare_reduction_witness_oracles,
+    _key_reduction_evidence,
     _select_cases,
     _summary_markdown,
     _worker_failure_classification,
@@ -965,6 +970,15 @@ def test_motion_evaluation_frames_contains_oracles_and_edit_neighbors():
     assert _motion_evaluation_frames([0, 10], 5) == [0, 4, 5, 6, 10]
 
 
+def test_motion_evaluation_frames_contains_pinned_reduction_witnesses():
+    witnesses = [
+        {"section": "bones", "track": "センター", "frame": 3},
+        {"section": "morphs", "track": "まばたき", "frame": 8},
+    ]
+
+    assert _motion_evaluation_frames([0, 10], 5, witnesses) == [0, 3, 4, 5, 6, 8, 10]
+
+
 def test_failure_classification_is_fail_closed():
     assert _classify_failure(status="timeout") == "performance_timeout"
     assert _classify_failure(error="VMD validation blocked") == "validation_blocked"
@@ -1341,6 +1355,272 @@ def test_manifest_rejects_invalid_acceptance_shape(tmp_path, case, expected):
     )
     with pytest.raises(ValueError, match=expected):
         _load_manifest(manifest)
+
+
+def test_reduction_witness_acceptance_is_strict_and_bounded():
+    witnesses = [
+        {"section": "bones", "track": "センター", "frame": 10},
+        {"section": "morphs", "track": "まばたき", "frame": 20},
+    ]
+    normalized = _acceptance_options(
+        {
+            "acceptance": {
+                "max_key_count_exclusive": 100,
+                "reduction_witnesses": witnesses,
+            }
+        }
+    )
+    assert normalized["reduction_witnesses"] == witnesses
+
+    invalid_values = [
+        [],
+        [{"section": "bone", "track": "センター", "frame": 10}],
+        [{"section": "bones", "track": "", "frame": 10}],
+        [{"section": "bones", "track": "センター", "frame": True}],
+        [{"section": "bones", "track": "センター", "frame": -1}],
+        [{"section": "bones", "track": "センター", "frame": 0x100000000}],
+        [witnesses[0], witnesses[0]],
+        [
+            {"section": "bones", "track": f"bone-{index}", "frame": index}
+            for index in range(17)
+        ],
+    ]
+    for value in invalid_values:
+        with pytest.raises(ValueError, match="reduction_witnesses"):
+            _acceptance_options(
+                {
+                    "acceptance": {
+                        "max_key_count_exclusive": 100,
+                        "reduction_witnesses": value,
+                    }
+                }
+            )
+
+
+def test_legacy_vmd_acceptance_without_reduction_witnesses_remains_ungated(tmp_path):
+    pmx = tmp_path / "model.pmx"
+    vmd = tmp_path / "motion.vmd"
+    pmx.write_bytes(b"pmx")
+    vmd.write_bytes(b"vmd")
+    case = {
+        "name": "legacy-motion",
+        "kind": "pmx_vmd",
+        "classification": "sparse",
+        "pmx": str(pmx),
+        "pmx_sha256": hashlib.sha256(b"pmx").hexdigest(),
+        "vmd": str(vmd),
+        "vmd_sha256": hashlib.sha256(b"vmd").hexdigest(),
+        "oracle_frames": [0, 10],
+        "adjustment": {"edit_frame": 5},
+        "acceptance": {"max_key_count_exclusive": 100},
+    }
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"schema_version": 2, "cases": [case]}),
+        encoding="utf-8",
+    )
+
+    _, loaded = _load_manifest(manifest)
+
+    loaded_case = loaded["cases"][0]
+    assert loaded_case["acceptance"] == {"max_key_count_exclusive": 100}
+    assert _expected_reduction_witnesses(loaded_case) == []
+    assert _motion_evaluation_frames([0, 10], 5, []) == [0, 4, 5, 6, 10]
+
+
+def _reduction_prepare_evidence(*, enabled=True, algorithm="exact_maximal_same_signature_runs"):
+    return {
+        "diagnostics": {
+            "backend": {
+                "collector": {
+                    "key_reduction": {
+                        "enabled": enabled,
+                        "algorithm": algorithm,
+                        "sections": {
+                            "bones": {
+                                "input": 5,
+                                "output": 4,
+                                "removed": 1,
+                                "witnesses": [{"track": "センター", "frame": 2}],
+                                "witness_omitted_count": 0,
+                            },
+                            "morphs": {
+                                "input": 3,
+                                "output": 2,
+                                "removed": 1,
+                                "witnesses": [{"track": "まばたき", "frame": 1}],
+                                "witness_omitted_count": 0,
+                            },
+                        },
+                    }
+                }
+            }
+        }
+    }
+
+
+def test_key_reduction_evidence_requires_counts_and_every_pinned_witness():
+    expected = [
+        {"section": "bones", "track": "センター", "frame": 2},
+        {"section": "morphs", "track": "まばたき", "frame": 1},
+    ]
+    evidence = _key_reduction_evidence(_reduction_prepare_evidence(), expected)
+    assert evidence["removed"] == 2
+    assert evidence["pinned_witnesses"] == expected
+
+    with pytest.raises(RuntimeError, match="not enabled"):
+        _key_reduction_evidence(_reduction_prepare_evidence(enabled=False), expected)
+    with pytest.raises(RuntimeError, match="unexpected algorithm"):
+        _key_reduction_evidence(_reduction_prepare_evidence(algorithm="other"), expected)
+    with pytest.raises(RuntimeError, match="not observed"):
+        _key_reduction_evidence(
+            _reduction_prepare_evidence(),
+            [{"section": "bones", "track": "別Bone", "frame": 2}],
+        )
+
+    inconsistent = _reduction_prepare_evidence()
+    inconsistent["diagnostics"]["backend"]["collector"]["key_reduction"]["sections"][
+        "bones"
+    ]["removed"] = 2
+    with pytest.raises(RuntimeError, match="counts are inconsistent"):
+        _key_reduction_evidence(inconsistent, expected)
+
+    no_reduction = _reduction_prepare_evidence()
+    for section in ("bones", "morphs"):
+        values = no_reduction["diagnostics"]["backend"]["collector"]["key_reduction"][
+            "sections"
+        ][section]
+        values.update(
+            {
+                "input": 2,
+                "output": 2,
+                "removed": 0,
+                "witnesses": [],
+                "witness_omitted_count": 0,
+            }
+        )
+    with pytest.raises(RuntimeError, match="did not remove any keys"):
+        _key_reduction_evidence(no_reduction, [])
+
+    with pytest.raises(RuntimeError, match="missing from Prepare diagnostics"):
+        _key_reduction_evidence({"diagnostics": {"backend": {}}}, expected)
+
+
+def test_reduction_witness_oracle_comparison_is_identity_and_tolerance_strict():
+    expected = [
+        {
+            "section": "bones",
+            "track": "センター",
+            "frame": 2,
+            "model_index": 1,
+            "values": [0.0] * 16,
+        },
+        {
+            "section": "morphs",
+            "track": "まばたき",
+            "frame": 1,
+            "model_index": 2,
+            "values": [0.5],
+        },
+    ]
+    actual = [dict(row, values=list(row["values"])) for row in expected]
+    failures, evidence = _compare_reduction_witness_oracles(expected, actual)
+    assert failures == []
+    assert evidence == {
+        "status": "pass",
+        "witness_count": 2,
+        "frames": [1, 2],
+        "bone_max_error": 0.0,
+        "morph_max_error": 0.0,
+    }
+
+    actual[0]["values"][0] = VMD_MODE_C_POSE_TOLERANCE * 2
+    actual[1]["values"][0] = 0.5 + 1.0e-3
+    failures, evidence = _compare_reduction_witness_oracles(expected, actual)
+    assert len(failures) == 2
+    assert evidence["status"] == "fail"
+
+
+def test_reduction_witness_oracle_resolves_vmd_tracks_without_fallback(monkeypatch):
+    class FakeCmds:
+        def objExists(self, _node):
+            return True
+
+        def attributeQuery(self, attribute, **_kwargs):
+            return attribute in {"mmd_morph_controller", "inputWeight"}
+
+        def listConnections(self, _plug, **_kwargs):
+            return ["morph_controller"]
+
+        def nodeType(self, node):
+            return "mmdMorphController" if node == "morph_controller" else "joint"
+
+        def getAttr(self, plug, **kwargs):
+            if kwargs.get("multiIndices"):
+                return [2]
+            if plug == "morph_controller.inputWeight[2]":
+                return 0.25
+            raise AssertionError(plug)
+
+        def currentTime(self, _frame, **_kwargs):
+            return None
+
+        def refresh(self, **_kwargs):
+            return None
+
+        def xform(self, node, **_kwargs):
+            assert node == "|model|center"
+            return [1.0 if index % 5 == 0 else 0.0 for index in range(16)]
+
+    spec = SimpleNamespace(
+        bones=[
+            SimpleNamespace(
+                index=1,
+                name="センター",
+                name_english="Center",
+                binding_identity="|model|center",
+            )
+        ],
+        morphs=[
+            SimpleNamespace(
+                index=2,
+                name="まばたき",
+                name_english="Blink",
+                binding_identity="morph_node",
+            )
+        ],
+    )
+    composition = SimpleNamespace(
+        coordinator=SimpleNamespace(read_spec=lambda _root: spec)
+    )
+    import maya
+    from mmd_tools.adapters import maya_authoring_factory
+
+    monkeypatch.setattr(maya, "cmds", FakeCmds())
+    monkeypatch.setattr(
+        maya_authoring_factory,
+        "build_maya_authoring_composition",
+        lambda: composition,
+    )
+
+    oracle = _capture_reduction_witness_oracle(
+        "|model",
+        [
+            {"section": "bones", "track": "Center", "frame": 10},
+            {"section": "morphs", "track": "まばたき", "frame": 20},
+        ],
+    )
+    assert [(row["section"], row["model_index"]) for row in oracle] == [
+        ("bones", 1),
+        ("morphs", 2),
+    ]
+    assert oracle[1]["values"] == [0.25]
+
+    with pytest.raises(ValueError, match="resolve uniquely"):
+        _capture_reduction_witness_oracle(
+            "|model",
+            [{"section": "bones", "track": "missing", "frame": 10}],
+        )
 
 
 @pytest.mark.parametrize(

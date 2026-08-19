@@ -37,6 +37,10 @@ FLOAT_TOLERANCE = 1.0e-4
 VMD_MODE_C_POSE_TOLERANCE = 1.0e-2
 DEFAULT_EXPORT_WRITE_BUDGET_SEC = 60.0
 EXPECTED_VMD_WARNING = "VMD_MODE_C_RAW_LOSS"
+MAX_REDUCTION_WITNESSES = 16
+MAX_COLLECTOR_REDUCTION_WITNESSES = 64
+UINT32_MAX = 0xFFFFFFFF
+KEY_REDUCTION_ALGORITHM = "exact_maximal_same_signature_runs"
 FAILURE_CLASSIFICATIONS = (
     "import_failed",
     "edit_failed",
@@ -177,15 +181,64 @@ def _acceptance_options(raw_case: Mapping[str, Any]) -> dict[str, Any] | None:
         )
     normalized = dict(acceptance)
     normalized["max_key_count_exclusive"] = limit
+    raw_witnesses = acceptance.get("reduction_witnesses")
+    if raw_witnesses is not None:
+        if (
+            not isinstance(raw_witnesses, list)
+            or not raw_witnesses
+            or len(raw_witnesses) > MAX_REDUCTION_WITNESSES
+        ):
+            raise ValueError(
+                "acceptance.reduction_witnesses must be a non-empty list with at most "
+                f"{MAX_REDUCTION_WITNESSES} entries"
+            )
+        witnesses = []
+        identities = set()
+        for index, raw_witness in enumerate(raw_witnesses):
+            if not isinstance(raw_witness, Mapping):
+                raise ValueError(
+                    f"acceptance.reduction_witnesses[{index}] must be a mapping"
+                )
+            section = raw_witness.get("section")
+            track = raw_witness.get("track")
+            frame = raw_witness.get("frame")
+            if section not in {"bones", "morphs"}:
+                raise ValueError(
+                    f"acceptance.reduction_witnesses[{index}].section must be bones or morphs"
+                )
+            if not isinstance(track, str) or not track.strip():
+                raise ValueError(
+                    f"acceptance.reduction_witnesses[{index}].track must be non-empty text"
+                )
+            if (
+                isinstance(frame, bool)
+                or not isinstance(frame, int)
+                or frame < 0
+                or frame > UINT32_MAX
+            ):
+                raise ValueError(
+                    f"acceptance.reduction_witnesses[{index}].frame must be a uint32 integer"
+                )
+            identity = (section, track, frame)
+            if identity in identities:
+                raise ValueError("acceptance.reduction_witnesses must be unique")
+            identities.add(identity)
+            witnesses.append({"section": section, "track": track, "frame": frame})
+        normalized["reduction_witnesses"] = witnesses
     return normalized
 
 
-def _motion_evaluation_frames(oracle_frames: Iterable[int], edit_frame: int) -> list[int]:
+def _motion_evaluation_frames(
+    oracle_frames: Iterable[int],
+    edit_frame: int,
+    reduction_witnesses: Iterable[Mapping[str, Any]] = (),
+) -> list[int]:
     """Include oracle, adjacent, and deterministic interpolation frames."""
 
     oracle_set = {int(frame) for frame in oracle_frames}
     frames = set(oracle_set)
     frames.update({int(edit_frame) - 1, int(edit_frame), int(edit_frame) + 1})
+    frames.update(int(witness["frame"]) for witness in reduction_witnesses)
     ordered_oracles = sorted(oracle_set)
     for left, right in zip(ordered_oracles, ordered_oracles[1:]):
         if right - left > 1:
@@ -1167,6 +1220,129 @@ def _source_omission_commitment(preparation_evidence: Mapping[str, Any]) -> Mapp
     return dict(commitment)
 
 
+def _expected_reduction_witnesses(case: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return pinned witnesses, or an empty list for the legacy ungated path."""
+
+    acceptance = case.get("acceptance")
+    if not isinstance(acceptance, Mapping):
+        return []
+    witnesses = acceptance.get("reduction_witnesses")
+    if witnesses is None:
+        return []
+    if not isinstance(witnesses, list) or not witnesses:
+        raise RuntimeError("VMD key reduction witnesses are invalid in case acceptance")
+    return [dict(witness) for witness in witnesses]
+
+
+def _key_reduction_evidence(
+    preparation_evidence: Mapping[str, Any],
+    expected_witnesses: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Validate bounded collector reduction evidence and every pinned witness."""
+
+    diagnostics = preparation_evidence.get("diagnostics")
+    backend = diagnostics.get("backend") if isinstance(diagnostics, Mapping) else None
+    collector = backend.get("collector") if isinstance(backend, Mapping) else None
+    report = collector.get("key_reduction") if isinstance(collector, Mapping) else None
+    if not isinstance(report, Mapping):
+        raise RuntimeError("VMD key reduction evidence is missing from Prepare diagnostics")
+    if report.get("enabled") is not True:
+        raise RuntimeError("VMD key reduction evidence is not enabled")
+    if report.get("algorithm") != KEY_REDUCTION_ALGORITHM:
+        raise RuntimeError("VMD key reduction evidence has an unexpected algorithm")
+    raw_sections = report.get("sections")
+    if not isinstance(raw_sections, Mapping):
+        raise RuntimeError("VMD key reduction evidence sections are missing")
+
+    actual_identities: set[tuple[str, str, int]] = set()
+    normalized_sections: dict[str, Any] = {}
+    total_removed = 0
+    for section in ("bones", "morphs"):
+        raw_section = raw_sections.get(section)
+        if not isinstance(raw_section, Mapping):
+            raise RuntimeError(f"VMD key reduction evidence section is missing: {section}")
+        counts = {}
+        for field in ("input", "output", "removed"):
+            value = raw_section.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise RuntimeError(
+                    f"VMD key reduction evidence {section}.{field} is invalid"
+                )
+            counts[field] = value
+        if counts["removed"] != counts["input"] - counts["output"]:
+            raise RuntimeError(f"VMD key reduction evidence {section} counts are inconsistent")
+        total_removed += counts["removed"]
+
+        raw_witnesses = raw_section.get("witnesses")
+        if (
+            not isinstance(raw_witnesses, list)
+            or len(raw_witnesses) > MAX_COLLECTOR_REDUCTION_WITNESSES
+        ):
+            raise RuntimeError(f"VMD key reduction evidence {section}.witnesses is invalid")
+        witnesses = []
+        for index, raw_witness in enumerate(raw_witnesses):
+            if not isinstance(raw_witness, Mapping):
+                raise RuntimeError(
+                    f"VMD key reduction evidence {section}.witnesses[{index}] is invalid"
+                )
+            track = raw_witness.get("track")
+            frame = raw_witness.get("frame")
+            if not isinstance(track, str) or not track.strip():
+                raise RuntimeError(
+                    f"VMD key reduction evidence {section}.witnesses[{index}].track is invalid"
+                )
+            if (
+                isinstance(frame, bool)
+                or not isinstance(frame, int)
+                or frame < 0
+                or frame > UINT32_MAX
+            ):
+                raise RuntimeError(
+                    f"VMD key reduction evidence {section}.witnesses[{index}].frame is invalid"
+                )
+            identity = (section, track, frame)
+            if identity in actual_identities:
+                raise RuntimeError("VMD key reduction evidence contains duplicate witnesses")
+            actual_identities.add(identity)
+            witnesses.append({"track": track, "frame": frame})
+        witness_omitted_count = raw_section.get("witness_omitted_count")
+        if (
+            isinstance(witness_omitted_count, bool)
+            or not isinstance(witness_omitted_count, int)
+            or witness_omitted_count < 0
+            or witness_omitted_count != counts["removed"] - len(witnesses)
+        ):
+            raise RuntimeError(
+                f"VMD key reduction evidence {section}.witness_omitted_count is inconsistent"
+            )
+        normalized_sections[section] = {
+            **counts,
+            "witness_count": len(witnesses),
+            "witness_omitted_count": witness_omitted_count,
+        }
+
+    if total_removed <= 0:
+        raise RuntimeError("VMD key reduction evidence did not remove any keys")
+    expected_identities = {
+        (str(witness["section"]), str(witness["track"]), int(witness["frame"]))
+        for witness in expected_witnesses
+    }
+    missing = sorted(expected_identities - actual_identities)
+    if missing:
+        raise RuntimeError(f"VMD key reduction witnesses were not observed: {missing!r}")
+    return {
+        "status": "pass",
+        "enabled": True,
+        "algorithm": KEY_REDUCTION_ALGORITHM,
+        "sections": normalized_sections,
+        "removed": total_removed,
+        "pinned_witnesses": [
+            {"section": section, "track": track, "frame": frame}
+            for section, track, frame in sorted(expected_identities)
+        ],
+    }
+
+
 def _compare_morph_structure(
     expected: Mapping[str, Any], actual: Mapping[str, Any]
 ) -> list[str]:
@@ -1768,6 +1944,138 @@ def _capture_motion_witness(root: str, adjustment: Mapping[str, Any], frames: It
             },
         }
     return witness
+
+
+def _capture_reduction_witness_oracle(
+    root: str,
+    witnesses: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Capture only manifest-pinned reduced Bone/Morph tracks at their frames."""
+
+    from maya import cmds
+    from mmd_tools.adapters.maya_authoring_factory import build_maya_authoring_composition
+
+    spec = build_maya_authoring_composition().coordinator.read_spec(root)
+    sections = {"bones": spec.bones, "morphs": spec.morphs}
+    resolved = []
+    for witness in witnesses:
+        section = str(witness["section"])
+        track = str(witness["track"])
+        frame = int(witness["frame"])
+        track_key = _normalized_name(track)
+        candidates = [
+            item
+            for item in sections[section]
+            if track_key
+            in {
+                _normalized_name(item.name),
+                _normalized_name(item.name_english),
+            }
+        ]
+        if len(candidates) != 1:
+            raise ValueError(
+                "reduction witness track must resolve uniquely: "
+                f"section={section!r} track={track!r} matches={len(candidates)}"
+            )
+        item = candidates[0]
+        if section == "bones":
+            binding = getattr(item, "binding_identity", None)
+            if not isinstance(binding, str) or not binding or not cmds.objExists(binding):
+                raise ValueError(f"reduction witness Bone binding is invalid: {track!r}")
+            source = binding
+        else:
+            source = _resolve_morph_controller_input_plug(root, int(item.index), cmds)
+        resolved.append((section, track, frame, int(item.index), source))
+
+    captured = []
+    for section, track, frame, model_index, source in resolved:
+        cmds.currentTime(frame, edit=True)
+        cmds.refresh(force=True)
+        if section == "bones":
+            values = [
+                float(value)
+                for value in (cmds.xform(source, query=True, worldSpace=True, matrix=True) or ())
+            ]
+            if len(values) != 16 or any(not math.isfinite(value) for value in values):
+                raise ValueError(f"reduction witness Bone matrix is invalid: {track!r}")
+        else:
+            value = float(cmds.getAttr(source, time=frame))
+            if not math.isfinite(value):
+                raise ValueError(f"reduction witness Morph value is invalid: {track!r}")
+            values = [value]
+        captured.append(
+            {
+                "section": section,
+                "track": track,
+                "frame": frame,
+                "model_index": model_index,
+                "values": values,
+            }
+        )
+    return captured
+
+
+def _compare_reduction_witness_oracles(
+    expected: Iterable[Mapping[str, Any]],
+    actual: Iterable[Mapping[str, Any]],
+) -> tuple[list[str], dict[str, Any]]:
+    """Compare pinned reduction tracks and return failures plus compact evidence."""
+
+    def by_identity(rows: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str, int], Mapping[str, Any]]:
+        result = {}
+        for row in rows:
+            identity = (str(row.get("section")), str(row.get("track")), int(row.get("frame")))
+            if identity in result:
+                raise ValueError(f"duplicate reduction oracle identity: {identity!r}")
+            result[identity] = row
+        return result
+
+    expected_by_identity = by_identity(expected)
+    actual_by_identity = by_identity(actual)
+    failures = []
+    if set(expected_by_identity) != set(actual_by_identity):
+        failures.append(
+            "reduction witness identities differ: "
+            f"expected={sorted(expected_by_identity)!r} actual={sorted(actual_by_identity)!r}"
+        )
+    max_errors = {"bones": 0.0, "morphs": 0.0}
+    for identity in sorted(set(expected_by_identity) & set(actual_by_identity)):
+        expected_row = expected_by_identity[identity]
+        actual_row = actual_by_identity[identity]
+        if expected_row.get("model_index") != actual_row.get("model_index"):
+            failures.append(f"reduction witness model identity differs: {identity!r}")
+            continue
+        expected_values = list(expected_row.get("values", ()))
+        actual_values = list(actual_row.get("values", ()))
+        if len(expected_values) != len(actual_values):
+            failures.append(f"reduction witness value shape differs: {identity!r}")
+            continue
+        try:
+            error = max(
+                (
+                    abs(float(expected_value) - float(actual_value))
+                    for expected_value, actual_value in zip(expected_values, actual_values)
+                ),
+                default=0.0,
+            )
+        except (TypeError, ValueError, OverflowError):
+            failures.append(f"reduction witness value is not numeric: {identity!r}")
+            continue
+        section = identity[0]
+        max_errors[section] = max(max_errors[section], error)
+        tolerance = VMD_MODE_C_POSE_TOLERANCE if section == "bones" else FLOAT_TOLERANCE
+        if not math.isfinite(error) or error > tolerance:
+            failures.append(
+                f"reduction witness parity differs: {identity!r} max_error={error:g}"
+            )
+    evidence = {
+        "status": "pass" if not failures else "fail",
+        "witness_count": len(expected_by_identity),
+        "frames": sorted({identity[2] for identity in expected_by_identity}),
+        "bone_max_error": max_errors["bones"],
+        "morph_max_error": max_errors["morphs"],
+    }
+    return failures, evidence
 
 
 def _compare_motion_morph_witness_values(
@@ -2448,7 +2756,12 @@ def _run_vmd_case(
         raise ValueError(f"case {case['name']!r} has fewer than two oracle frames")
     recipe = _adjustment_recipe(case)
     edit_frame = int(_motion_recipe_value(recipe, "edit_frame", _motion_recipe_value(recipe, "frame", 1)))
-    evaluation_frames = _motion_evaluation_frames(oracle_frames, edit_frame)
+    reduction_witnesses = _expected_reduction_witnesses(case)
+    evaluation_frames = _motion_evaluation_frames(
+        oracle_frames,
+        edit_frame,
+        reduction_witnesses,
+    )
     output = out_dir / "motion.vmd"
     report_dir = out_dir / "report"
     source_data = _phase(context, "source_parse", lambda: VmdData().parse_file(str(source_vmd)))
@@ -2493,6 +2806,15 @@ def _run_vmd_case(
         "edited_motion_oracle",
         lambda: _capture_scene_oracle(source_root, evaluation_frames),
     )
+    edited_reduction_oracle = (
+        _phase(
+            context,
+            "edited_reduction_oracle",
+            lambda: _capture_reduction_witness_oracle(source_root, reduction_witnesses),
+        )
+        if reduction_witnesses
+        else []
+    )
     adjustment["witness"] = _phase(
         context,
         "edited_motion_witness",
@@ -2519,6 +2841,20 @@ def _run_vmd_case(
     )
     prepared_token, preparation_evidence = _prepare_vmd_mode_c(workflow, request, context)
     preparation_evidence["diagnostics_path"] = str(diagnostics_path)
+    if reduction_witnesses:
+        try:
+            key_reduction_evidence = _key_reduction_evidence(
+                preparation_evidence,
+                reduction_witnesses,
+            )
+        except BaseException:
+            workflow.invalidate_prepared_vmd(prepared_token)
+            raise
+    else:
+        key_reduction_evidence = {
+            "status": "not_configured",
+            "pinned_witnesses": [],
+        }
     # Every public Validate/Execute request, including the cold export below,
     # must carry the same edited-scene preparation token.
     request.prepared_vmd_token = prepared_token
@@ -2566,6 +2902,7 @@ def _run_vmd_case(
         dict[str, Any] | None,
         dict[str, Any],
         dict[str, Any] | None,
+        list[dict[str, Any]],
     ]:
         fresh_root = _import_model_action(source_model)
         _import_vmd_action(fresh_root, source_model, output)
@@ -2592,9 +2929,28 @@ def _run_vmd_case(
         fresh_adjustment["witness"] = _capture_motion_witness(
             fresh_root, fresh_adjustment, evaluation_frames
         )
-        return fresh_root, scene, camera_scene, fresh_adjustment, fresh_ik_witness
+        fresh_reduction_oracle = (
+            _capture_reduction_witness_oracle(fresh_root, reduction_witnesses)
+            if reduction_witnesses
+            else []
+        )
+        return (
+            fresh_root,
+            scene,
+            camera_scene,
+            fresh_adjustment,
+            fresh_ik_witness,
+            fresh_reduction_oracle,
+        )
 
-    fresh_root, fresh_oracle, fresh_camera_oracle, fresh_adjustment, fresh_ik_witness = _phase(
+    (
+        fresh_root,
+        fresh_oracle,
+        fresh_camera_oracle,
+        fresh_adjustment,
+        fresh_ik_witness,
+        fresh_reduction_oracle,
+    ) = _phase(
         context,
         "fresh_import_oracle",
         import_fresh,
@@ -2638,6 +2994,21 @@ def _run_vmd_case(
                 actual_witness.get("morph", {}).get("values", {}),
             )
         )
+    if reduction_witnesses:
+        reduction_failures, reduction_parity = _compare_reduction_witness_oracles(
+            edited_reduction_oracle,
+            fresh_reduction_oracle,
+        )
+    else:
+        reduction_failures = []
+        reduction_parity = {
+            "status": "not_configured",
+            "witness_count": 0,
+            "frames": [],
+            "bone_max_error": None,
+            "morph_max_error": None,
+        }
+    failures.extend(reduction_failures)
     if failures:
         raise AssertionError("VMD semantic mismatch: " + "; ".join(failures[:30]))
     cold_sample = {
@@ -2679,8 +3050,15 @@ def _run_vmd_case(
             "raw_interpolation": False,
             "mode_c_dense_semantics": True,
             "fresh_pose": True,
+            "key_reduction_midpoint_parity": (
+                not reduction_failures if reduction_witnesses else None
+            ),
             "fresh_camera_light": source_camera_oracle is not None,
             "track_boundary_failures": track_boundary_failures,
+        },
+        "key_reduction": {
+            **key_reduction_evidence,
+            "parity": reduction_parity,
         },
         "key_counts": {
             "source": source_total_keys,
