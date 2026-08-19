@@ -22,7 +22,11 @@ from tools.local_asset_roundtrip import (
     parse_args,
     _require_import_success,
     _repetitions,
+    _run_warm_vmd_export_samples,
+    _run_worker,
+    _compare_motion_morph_witness_values,
     _select_cases,
+    _summary_markdown,
     _worker_failure_classification,
     _vmd_mode_c_semantic_diff,
     _vmd_edit_track_witness,
@@ -80,11 +84,168 @@ def test_profile_selects_one_dense_and_one_sparse_case_without_cartesian_pairs()
     assert [case["name"] for case in selected] == ["dense_motion", "sparse_motion"]
 
 
-def test_dense_repetitions_are_cold_one_plus_warm_three():
-    assert _repetitions({"classification": "dense"}, 1, 3) == 4
+def test_dense_repetitions_run_one_full_roundtrip_then_export_only_warm_samples():
+    assert _repetitions({"classification": "dense"}, 1, 3) == 1
     assert _repetitions({"classification": "sparse"}, 1, 3) == 1
     with pytest.raises(ValueError):
         _select_cases([{"name": "dense", "classification": "dense"}], profile="dense-hang-and-sparse-interpolation")
+
+
+def test_summary_explicitly_reports_cold_and_warm_export_samples():
+    summary = _summary_markdown(
+        {
+            "status": "pass",
+            "maya": "2024",
+            "run_id": "test",
+            "profile": None,
+            "manifest": "manifest.json",
+            "export_write_budget_sec": 60.0,
+            "cases": [
+                {
+                    "name": "dense",
+                    "classification": "dense",
+                    "status": "pass",
+                    "warm_runs": 3,
+                    "runs": [
+                        {
+                            "status": "pass",
+                            "result": {
+                                "export_samples": {
+                                    "cold": [{"status": "pass"}],
+                                    "warm": [
+                                        {"status": "pass"},
+                                        {"status": "pass"},
+                                        {"status": "pass"},
+                                    ],
+                                }
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert "Export samples" in summary
+    assert "cold=1/1, warm=3/3" in summary
+
+
+def test_dense_warm_samples_use_distinct_outputs_and_the_fresh_target(monkeypatch, tmp_path):
+    phase_requests = []
+    export_requests = []
+
+    class _Workflow:
+        def validate(self, request):
+            phase_requests.append(("validate", request))
+            return SimpleNamespace(error=None, report=SimpleNamespace(issues=[]))
+
+        def execute(self, request, acknowledge_warnings=False):
+            phase_requests.append(("execute", request, acknowledge_warnings))
+            return SimpleNamespace(succeeded=True, error=None, report=None)
+
+    context = SimpleNamespace(
+        phases=[],
+        export_write_budget_violations=[],
+        export_write_budget_sec=60.0,
+    )
+
+    def fake_phase(worker_context, name, function):
+        result = function()
+        worker_context.phases.append({"name": name, "wall_sec": 0.01, "status": "passed"})
+        return result
+
+    monkeypatch.setattr("tools.local_asset_roundtrip._phase", fake_phase)
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._export_request",
+        lambda output, report_dir, **kwargs: export_requests.append(
+            {"output": output, "report_dir": report_dir, **kwargs}
+        )
+        or {"output": output},
+    )
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._allowed_warning_codes",
+        lambda validation, export_format: (["VMD_MODE_C_RAW_LOSS"], []),
+    )
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._assert_execute_warnings",
+        lambda result, export_format: ["VMD_MODE_C_RAW_LOSS"],
+    )
+
+    samples = _run_warm_vmd_export_samples(
+        {"name": "dense", "classification": "dense"},
+        tmp_path,
+        context,
+        _Workflow(),
+        "|fresh_root",
+        0,
+        20,
+        "rabbit",
+        3,
+    )
+
+    assert [sample["status"] for sample in samples] == ["pass", "pass", "pass"]
+    assert [sample["output"] for sample in samples] == [
+        str(tmp_path / "motion-warm-01.vmd"),
+        str(tmp_path / "motion-warm-02.vmd"),
+        str(tmp_path / "motion-warm-03.vmd"),
+    ]
+    assert {request["target_model"] for request in export_requests} == {"|fresh_root"}
+    assert [request["output"].name for request in export_requests] == [
+        "motion-warm-01.vmd",
+        "motion-warm-02.vmd",
+        "motion-warm-03.vmd",
+    ]
+    assert len([item for item in phase_requests if item[0] == "execute"]) == 3
+    assert all((tmp_path / f"warm-export-{index:02d}.json").is_file() for index in range(1, 4))
+
+
+def test_motion_morph_witness_uses_tolerance_without_relaxing_frame_keys():
+    assert _compare_motion_morph_witness_values(
+        {"0": 0.05, "10": 0.25},
+        {"0": 0.050000000745, "10": 0.24999999},
+    ) == []
+    assert _compare_motion_morph_witness_values({"0": 0.05}, {"1": 0.05})
+    assert _compare_motion_morph_witness_values({"0": 0.05}, {"0": 0.051})
+
+
+def test_dense_worker_runs_full_case_once_and_passes_warm_count(monkeypatch, tmp_path):
+    config_path = tmp_path / "worker-config.json"
+    result_path = tmp_path / "worker-result.json"
+    checkpoint = tmp_path / "phase-status.json"
+    case = {"name": "dense", "classification": "dense", "vmd": "motion.vmd"}
+    config_path.write_text(
+        json.dumps(
+            {
+                "case": case,
+                "out_dir": str(tmp_path / "case"),
+                "repetitions": 4,
+                "warm_runs": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_run_vmd_case(case_value, out_dir, context, *, warm_runs=0):
+        calls.append((case_value, out_dir, warm_runs))
+        return {
+            "status": "pass",
+            "export_samples": {
+                "cold": [{"status": "pass"}],
+                "warm": [{"status": "pass"}] * warm_runs,
+            },
+        }
+
+    monkeypatch.setattr("tools.local_asset_roundtrip._initialize_maya", lambda: None)
+    monkeypatch.setattr("tools.local_asset_roundtrip._run_vmd_case", fake_run_vmd_case)
+
+    assert _run_worker(config_path, result_path, checkpoint, 60.0) == 0
+    document = json.loads(result_path.read_text(encoding="utf-8"))
+    assert len(calls) == 1
+    assert calls[0][2] == 3
+    assert len(document["runs"]) == 1
+    assert document["warm_runs"] == 3
+    assert document["status"] == "pass"
 
 
 def test_mode_c_semantics_allows_dense_key_inflation_but_requires_tracks():

@@ -1423,6 +1423,36 @@ def _capture_motion_witness(root: str, adjustment: Mapping[str, Any], frames: It
     return witness
 
 
+def _compare_motion_morph_witness_values(
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+) -> list[str]:
+    """Compare morph witness frames exactly and values within Maya float tolerance."""
+
+    expected_values = {str(key): value for key, value in expected.items()}
+    actual_values = {str(key): value for key, value in actual.items()}
+    expected_keys = set(expected_values)
+    actual_keys = set(actual_values)
+    failures: list[str] = []
+    if expected_keys != actual_keys:
+        failures.append(
+            "motion witness morph frame keys differ: "
+            f"expected={sorted(expected_keys)!r} actual={sorted(actual_keys)!r}"
+        )
+    for key in sorted(expected_keys & actual_keys):
+        try:
+            difference = abs(float(expected_values[key]) - float(actual_values[key]))
+        except (TypeError, ValueError):
+            failures.append(f"motion witness morph value at frame {key} is not numeric")
+            continue
+        if difference > FLOAT_TOLERANCE:
+            failures.append(
+                f"motion witness morph value differs at frame {key}: "
+                f"expected={expected_values[key]!r} actual={actual_values[key]!r}"
+            )
+    return failures
+
+
 def _export_request(
     output: Path,
     report_dir: Path,
@@ -1637,7 +1667,118 @@ def _pmx_source_import(
     )
 
 
-def _run_vmd_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContext) -> dict[str, Any]:
+def _run_warm_vmd_export_samples(
+    case: Mapping[str, Any],
+    out_dir: Path,
+    context: _WorkerContext,
+    workflow: Any,
+    fresh_root: str,
+    start_frame: int,
+    end_frame: int,
+    model_name: str,
+    warm_runs: int,
+) -> list[dict[str, Any]]:
+    """Write dense warm samples from the already-imported fresh scene.
+
+    Dense correctness is intentionally exercised once.  Warm samples measure
+    only the public validation/execute export path from that same fresh scene;
+    they do not repeat import, edit, parse, or semantic oracle work.
+    """
+
+    samples: list[dict[str, Any]] = []
+    for sample_index in range(warm_runs):
+        sample_number = sample_index + 1
+        output = out_dir / f"motion-warm-{sample_number:02d}.vmd"
+        report_dir = out_dir / f"warm-report-{sample_number:02d}"
+        request = _export_request(
+            output,
+            report_dir,
+            export_format="vmd",
+            target_model=fresh_root,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            model_name=model_name,
+            case=case,
+        )
+        phase_start = len(context.phases)
+        budget_start = len(context.export_write_budget_violations)
+        sample: dict[str, Any] = {
+            "index": sample_number,
+            "temperature": "warm",
+            "output": str(output),
+            "status": "fail",
+        }
+        try:
+            validation = _phase(context, "export_validation", lambda: workflow.validate(request))
+            validation_evidence = _report_summary(validation)
+            acknowledged_warnings, unexpected_warnings = _allowed_warning_codes(validation, "vmd")
+            if unexpected_warnings:
+                raise RuntimeError(f"unexpected validation warnings: {unexpected_warnings}")
+            if validation.error is not None or validation_evidence["blocking"]:
+                raise RuntimeError(
+                    f"VMD validation blocked: state={validation_evidence['state']} "
+                    f"issues={validation_evidence['issues']}"
+                )
+            result = _phase(
+                context,
+                "export_write",
+                lambda: workflow.execute(request, acknowledge_warnings=True),
+            )
+            if not result.succeeded:
+                raise RuntimeError(f"VMD export failed: {result.error or result.report}")
+            acknowledged_warnings = _assert_execute_warnings(result, "vmd")
+            budget_evidence = list(context.export_write_budget_violations[budget_start:])
+            sample.update(
+                {
+                    "status": "pass" if not budget_evidence else "fail",
+                    "validation": validation_evidence,
+                    "acknowledged_warnings": acknowledged_warnings,
+                    "performance_evidence": {
+                        "export_write_budget_sec": context.export_write_budget_sec,
+                        "violations": budget_evidence,
+                    },
+                }
+            )
+            if budget_evidence:
+                sample["failure_classification"] = "performance_timeout"
+                sample["error"] = (
+                    "export_write exceeded budget: "
+                    f"expected={budget_evidence[0]['expected_sec']:g}s "
+                    f"actual={budget_evidence[0]['actual_sec']:g}s"
+                )
+        except PhaseTimeoutError as exc:
+            sample.update(
+                {
+                    "status": "timeout",
+                    "failure_classification": "performance_timeout",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "traceback": traceback.format_exc(limit=20),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - sample evidence is serialized.
+            sample.update(
+                {
+                    "status": "fail",
+                    "failure_classification": _classify_failure(error=str(exc)),
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "traceback": traceback.format_exc(limit=30),
+                }
+            )
+        sample["phase_timing"] = list(context.phases[phase_start:])
+        samples.append(sample)
+        _write_json(out_dir / f"warm-export-{sample_number:02d}.json", sample)
+        if sample["status"] != "pass":
+            break
+    return samples
+
+
+def _run_vmd_case(
+    case: Mapping[str, Any],
+    out_dir: Path,
+    context: _WorkerContext,
+    *,
+    warm_runs: int = 0,
+) -> dict[str, Any]:
     """Run PMX+VMD Action import, Mode C edit/export, and fresh pose parity."""
 
     from mmd_tools.core.vmd_data import VmdData
@@ -1715,6 +1856,7 @@ def _run_vmd_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
         case=case,
     )
     workflow = ExportWorkflowService()
+    cold_export_phase_start = len(context.phases)
     validation = _phase(context, "export_validation", lambda: workflow.validate(request))
     validation_evidence = _report_summary(validation)
     acknowledged_warnings, unexpected_warnings = _allowed_warning_codes(validation, "vmd")
@@ -1741,6 +1883,7 @@ def _run_vmd_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
     exported_total_keys = sum(len(exported_payload[section]) for section in ("bone", "morph", "camera", "light", "shadow", "ik"))
     key_inflation = exported_total_keys - source_total_keys
     def import_fresh() -> tuple[
+        str,
         dict[str, Any],
         dict[str, Any] | None,
         dict[str, Any],
@@ -1771,9 +1914,9 @@ def _run_vmd_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
         fresh_adjustment["witness"] = _capture_motion_witness(
             fresh_root, fresh_adjustment, evaluation_frames
         )
-        return scene, camera_scene, fresh_adjustment, fresh_ik_witness
+        return fresh_root, scene, camera_scene, fresh_adjustment, fresh_ik_witness
 
-    fresh_oracle, fresh_camera_oracle, fresh_adjustment, fresh_ik_witness = _phase(
+    fresh_root, fresh_oracle, fresh_camera_oracle, fresh_adjustment, fresh_ik_witness = _phase(
         context,
         "fresh_import_oracle",
         import_fresh,
@@ -1810,10 +1953,52 @@ def _run_vmd_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
     if expected_witness.get("pose") != actual_witness.get("pose"):
         failures.append("motion witness world/skin matrices differ")
     if isinstance(expected_witness.get("morph"), Mapping):
-        if expected_witness["morph"].get("values") != actual_witness.get("morph", {}).get("values"):
-            failures.append("motion witness morph values differ")
+        failures.extend(
+            _compare_motion_morph_witness_values(
+                expected_witness["morph"].get("values", {}),
+                actual_witness.get("morph", {}).get("values", {}),
+            )
+        )
     if failures:
         raise AssertionError("VMD semantic mismatch: " + "; ".join(failures[:30]))
+    cold_export_phases = [
+        dict(item)
+        for item in context.phases[cold_export_phase_start:]
+        if str(item.get("name")) == "export_write"
+    ]
+    cold_budget_evidence = _export_write_budget_evidence(
+        cold_export_phases,
+        context.export_write_budget_sec,
+    )
+    warm_samples = _run_warm_vmd_export_samples(
+        case,
+        out_dir,
+        context,
+        workflow,
+        fresh_root,
+        start_frame,
+        end_frame,
+        str(getattr(source_data.header, "model_name", "") or ""),
+        warm_runs,
+    )
+    cold_sample = {
+        "index": 1,
+        "temperature": "cold",
+        "output": str(output),
+        "status": "fail" if cold_budget_evidence else "pass",
+        "phase_timing": cold_export_phases,
+        "performance_evidence": {
+            "export_write_budget_sec": context.export_write_budget_sec,
+            "violations": [cold_budget_evidence] if cold_budget_evidence else [],
+        },
+    }
+    if cold_budget_evidence:
+        cold_sample["failure_classification"] = "performance_timeout"
+        cold_sample["error"] = (
+            "export_write exceeded budget: "
+            f"expected={cold_budget_evidence['expected_sec']:g}s "
+            f"actual={cold_budget_evidence['actual_sec']:g}s"
+        )
     return {
         "status": "pass",
         "kind": "pmx_vmd",
@@ -1849,6 +2034,10 @@ def _run_vmd_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
             "source": source_ik_witness,
             "fresh": fresh_ik_witness,
         },
+        "export_samples": {
+            "cold": [cold_sample],
+            "warm": warm_samples,
+        },
     }
 
 
@@ -1876,7 +2065,11 @@ def _run_worker(
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
     case = config["case"]
-    repetitions = int(config.get("repetitions", 1))
+    is_dense = str(case.get("classification")) == "dense"
+    # Dense correctness is one full roundtrip.  Its additional repetitions
+    # are export-only samples performed by _run_vmd_case after fresh import.
+    repetitions = 1 if is_dense else int(config.get("repetitions", 1))
+    warm_runs = int(config.get("warm_runs", 0)) if is_dense else 0
     out_dir = Path(config["out_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
     context = _WorkerContext(
@@ -1890,6 +2083,12 @@ def _run_worker(
         "case": case,
         "out_dir": str(out_dir),
         "repetitions": repetitions,
+        "warm_runs": warm_runs,
+        "export_sample_policy": (
+            "dense: one full roundtrip/cold export plus export-only warm samples"
+            if is_dense
+            else "non-dense: one full roundtrip/cold export"
+        ),
         "runs": [],
         "worker_pid": os.getpid(),
     }
@@ -1903,7 +2102,12 @@ def _run_worker(
             started = time.perf_counter()
             try:
                 if case.get("vmd"):
-                    result = _run_vmd_case(case, run_dir, context)
+                    result = _run_vmd_case(
+                        case,
+                        run_dir,
+                        context,
+                        warm_runs=warm_runs if index == 0 else 0,
+                    )
                 else:
                     result = _run_pmx_case(case, run_dir, context)
                 run_status = "pass"
@@ -1919,6 +2123,25 @@ def _run_worker(
                 result = None
                 error = f"{type(exc).__name__}: {exc}"
                 traceback_text = traceback.format_exc(limit=30)
+            sample_failure = None
+            if run_status == "pass" and isinstance(result, Mapping):
+                export_samples = result.get("export_samples", {})
+                warm_samples = export_samples.get("warm", []) if isinstance(export_samples, Mapping) else []
+                sample_failure = next(
+                    (
+                        sample
+                        for sample in warm_samples
+                        if isinstance(sample, Mapping) and sample.get("status") != "pass"
+                    ),
+                    None,
+                )
+                if sample_failure is not None:
+                    run_status = "fail"
+                    error = str(
+                        sample_failure.get("error")
+                        or f"warm export sample {sample_failure.get('index')} failed"
+                    )
+                    traceback_text = sample_failure.get("traceback")
             budget_evidence = list(context.export_write_budget_violations)
             if not budget_evidence:
                 fallback_budget_evidence = _export_write_budget_evidence(
@@ -1940,6 +2163,9 @@ def _run_worker(
                 if run_status == "pass"
                 else "performance_timeout"
                 if budget_only_failure
+                else str(sample_failure.get("failure_classification"))
+                if isinstance(sample_failure, Mapping)
+                and sample_failure.get("failure_classification") in FAILURE_CLASSIFICATIONS
                 else _classify_failure(
                     status=run_status,
                     error=error,
@@ -2079,10 +2305,10 @@ def _run_child(
 
 
 def _repetitions(case: Mapping[str, Any], cold_runs: int, warm_runs: int) -> int:
-    """Return cold+warm count for Dense cases and one run for other cases."""
+    """Return full correctness run count; Dense warm runs are export-only."""
 
     if str(case.get("classification")) == "dense":
-        return cold_runs + warm_runs
+        return 1
     return 1
 
 
@@ -2098,9 +2324,11 @@ def _summary_markdown(document: Mapping[str, Any]) -> str:
         f"- profile: `{document.get('profile') or 'all'}`",
         f"- manifest: `{document.get('manifest')}`",
         f"- export_write budget: `{document.get('export_write_budget_sec', 'n/a')}s`",
+        "- export samples: Dense uses one full roundtrip/cold sample plus export-only warm samples; "
+        "non-dense uses one full roundtrip/cold sample.",
         "",
-        "| Case | Classification | Status | Failure | Runs | Last phase |",
-        "| --- | --- | --- | --- | ---: | --- |",
+        "| Case | Classification | Status | Failure | Runs | Export samples | Last phase |",
+        "| --- | --- | --- | --- | ---: | --- | --- |",
     ]
     for case in document.get("cases", ()):
         runs = case.get("runs", [])
@@ -2111,9 +2339,20 @@ def _summary_markdown(document: Mapping[str, Any]) -> str:
                 last_phase = str(phase_timing[-1].get("name", ""))
         if case.get("last_phase"):
             last_phase = str(case["last_phase"].get("phase", last_phase))
+        cold_samples = 0
+        warm_samples = 0
+        for run in runs:
+            result = run.get("result", {})
+            export_samples = result.get("export_samples", {}) if isinstance(result, Mapping) else {}
+            if not isinstance(export_samples, Mapping):
+                continue
+            cold_samples += len(export_samples.get("cold", ()))
+            warm_samples += len(export_samples.get("warm", ()))
+        warm_expected = int(case.get("warm_runs", 0) or 0)
+        sample_summary = f"cold={cold_samples}/1, warm={warm_samples}/{warm_expected}"
         lines.append(
             f"| {case.get('name')} | {case.get('classification')} | {case.get('status')} | "
-            f"{case.get('failure_classification', '')} | {len(runs)} | {last_phase} |"
+            f"{case.get('failure_classification', '')} | {len(runs)} | {sample_summary} | {last_phase} |"
         )
     lines.extend(["", "## Artifacts", ""])
     for case in document.get("cases", ()):
@@ -2177,6 +2416,7 @@ def _run_host(args: argparse.Namespace) -> int:
         case_dir = out_dir / "cases" / _safe_name(str(case["name"]))
         case_dir.mkdir(parents=True, exist_ok=True)
         repetitions = _repetitions(case, args.cold_runs, args.warm_runs)
+        warm_runs = args.warm_runs if str(case.get("classification")) == "dense" else 0
         config_path = case_dir / "worker-config.json"
         result_path = case_dir / "worker-result.json"
         checkpoint = case_dir / "phase-status.json"
@@ -2187,6 +2427,7 @@ def _run_host(args: argparse.Namespace) -> int:
                 "case": case,
                 "out_dir": str(case_dir),
                 "repetitions": repetitions,
+                "warm_runs": warm_runs,
             },
         )
         result = _run_child(
