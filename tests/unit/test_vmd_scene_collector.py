@@ -76,6 +76,8 @@ class FakeCmds:
         self.aliases = {}
         self.current_unit = "ntsc"
         self.relative_calls = []
+        self.compound_attrs = {}
+        self.get_attr_calls = []
 
     def ls(self, pattern=None, type=None, objectsOnly=False, long=False, uuid=False):  # noqa: A002,N803
         if pattern and not type and not objectsOnly:
@@ -122,6 +124,7 @@ class FakeCmds:
 
     def getAttr(self, plug, time=None):  # noqa: N802
         node, attr = plug.split(".", 1)
+        self.get_attr_calls.append((plug, time))
         if attr == "worldMatrix[0]":
             return self.world_matrices.get(
                 node,
@@ -144,6 +147,8 @@ class FakeCmds:
                     1.0,
                 ),
             )
+        if attr in {"translate", "rotate"} and (node, attr) in self.compound_attrs:
+            return [tuple(self.compound_attrs[(node, attr)])]
         if time is not None:
             return self.keys.get((node, attr), {}).get(float(time), self.attrs.get((node, attr), 0.0))
         return self.attrs.get((node, attr), 0.0)
@@ -311,6 +316,39 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(len(FakeContext.instances), 1)
         self.assertEqual(FakeAngle.units, ["ui-unit"] * 4)
         self.assertEqual(FakeDistance.units, ["ui-unit"] * 3)
+
+    def test_compound_joint_values_preserve_parity_with_two_getattr_calls(self):
+        self.cmds.compound_attrs[("joint", "translate")] = (1.0, 2.0, 3.0)
+        self.cmds.compound_attrs[("joint", "rotate")] = (10.0, 20.0, 30.0)
+        evaluator = collector_module._RoutedPlugValueEvaluator()
+
+        values = evaluator.compound_values("joint", 12.5, {})
+
+        self.assertEqual(values, ((1.0, 2.0, 3.0), (10.0, 20.0, 30.0)))
+        self.assertEqual(
+            self.cmds.get_attr_calls[-2:],
+            [("joint.translate", 12.5), ("joint.rotate", 12.5)],
+        )
+
+        self.cmds.get_attr_calls.clear()
+        standard_route = {
+            attr: ("joint", attr) for attr in collector_module._BONE_EXPORT_ATTRS
+        }
+        self.assertEqual(evaluator.compound_values("joint", 12.5, standard_route), values)
+        self.assertEqual(
+            self.cmds.get_attr_calls,
+            [("joint.translate", 12.5), ("joint.rotate", 12.5)],
+        )
+
+    def test_compound_joint_values_fall_back_to_cached_scalar_for_routed_channels(self):
+        self.cmds.attrs[("custom_solver", "rotateX")] = 7.5
+        evaluator = collector_module._RoutedPlugValueEvaluator()
+        route = {"rotateX": ("custom_solver", "rotateX")}
+
+        self.assertIsNone(evaluator.compound_values("joint", 12.5, route))
+        self.assertEqual(evaluator.value("joint", "rotateX", 12.5, route), 7.5)
+        self.assertNotIn(("joint.translate", 12.5), self.cmds.get_attr_calls)
+        self.assertNotIn(("joint.rotate", 12.5), self.cmds.get_attr_calls)
 
     def test_api_routed_plug_evaluator_falls_back_and_caches_unsupported_plug(self):
         class BrokenSelection:
