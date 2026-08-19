@@ -1,11 +1,12 @@
-"""Run isolated real-asset VMD context/timeline sampling probes.
+"""Run isolated real-asset VMD production Timeline sampling probes.
 
-The controller launches one fresh mayapy process for every strategy/prefix
-pair.  Only the ASCII config path and numeric/ASCII selectors cross argv;
+The controller launches one fresh mayapy process for every prefix.  Only the
+ASCII config path and numeric selectors cross argv;
 PMX/VMD paths are decoded from the UTF-8 JSON config inside each worker.
 This is a sampling probe, not an export runner: it imports through production
 Actions, reuses production route discovery and sample-plan construction, and
-never writes a VMD or reuses raw VMD transforms.
+samples through ``NativeVmdBatchSampler`` under its production Timeline policy.
+It never writes a VMD or reuses raw VMD transforms.
 """
 
 from __future__ import annotations
@@ -29,9 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 SCHEMA_VERSION = 1
 PREFIX_FRAMES = (120, 300, 600)
-STRATEGIES = ("context", "timeline_probe")
 DEFAULT_FULL_FRAME_COUNT = 6786
-PACKED_HEADER_SIZE = 6
 THIRD_ORACLE_FRAMES = (0.0, 100.0, 110.0, 119.0)
 THIRD_ORACLE_MAX_ERRORS = 20
 THIRD_ORACLE_TOLERANCE = {
@@ -58,7 +57,6 @@ def _arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--worker", action="store_true")
-    parser.add_argument("--strategy", choices=STRATEGIES)
     parser.add_argument("--prefix", type=int, choices=PREFIX_FRAMES)
     return parser.parse_args(argv)
 
@@ -145,27 +143,16 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _result_stem(strategy: str, prefix: int) -> str:
-    return f"{strategy}-{int(prefix):04d}"
+def _result_stem(prefix: int) -> str:
+    return f"production-{int(prefix):04d}"
 
 
-def _result_path(config: Mapping[str, Any], strategy: str, prefix: int) -> Path:
-    return Path(config["out_dir"]) / f"{_result_stem(strategy, prefix)}.json"
+def _result_path(config: Mapping[str, Any], prefix: int) -> Path:
+    return Path(config["out_dir"]) / f"{_result_stem(prefix)}.json"
 
 
-def _packed_path(config: Mapping[str, Any], strategy: str, prefix: int) -> Path:
-    return Path(config["out_dir"]) / f"{_result_stem(strategy, prefix)}.packed.bin"
-
-
-def _payload(plan: Any, strategy: str) -> str:
-    request: dict[str, Any] = {
-        "version": 1,
-        "frames": list(plan.frames),
-        "channels": list(plan.request_channels),
-    }
-    if strategy == "timeline_probe":
-        request["evaluation_mode"] = strategy
-    return json.dumps(request, ensure_ascii=False, separators=(",", ":"))
+def _values_path(config: Mapping[str, Any], prefix: int) -> Path:
+    return Path(config["out_dir"]) / f"{_result_stem(prefix)}.values.bin"
 
 
 def _packed_bytes(values: Sequence[float]) -> bytes:
@@ -569,11 +556,7 @@ def _run_third_oracle(
 ) -> dict[str, Any]:
     """Cross-check native timeline sampling against normal Maya timeline reads."""
 
-    from mmd_tools.adapters.native_vmd_batch_sampler import (
-        NativeVmdBatchSampler,
-        build_dense_bone_sample_plan,
-        parse_packed_result,
-    )
+    from mmd_tools.adapters.native_vmd_batch_sampler import NativeVmdBatchSampler
     from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 
     frames = _third_oracle_frames(prefix)
@@ -601,14 +584,17 @@ def _run_third_oracle(
                 authored_joints.append(joint)
         if not authored_joints:
             raise RuntimeError("Current Model has no animated bone routes for third oracle")
-        plan = build_dense_bone_sample_plan(authored_joints, frames, input_routes=routes, cmds_module=cmds_module)
         sampler = NativeVmdBatchSampler(cmds_module)
         if not sampler.available:
             raise RuntimeError(f"mmdVmdBatchSample unavailable: {sampler.last_diagnostics!r}")
+        samples = sampler.sample_dense_bone_channels(
+            frames,
+            authored_joints,
+            input_routes=routes,
+        )
+        plan = samples.plan
+        native_rows = samples.rows
         native_diagnostics = dict(sampler.last_diagnostics)
-        packed = [float(value) for value in cmds_module.mmdVmdBatchSample(payload=_payload(plan, "timeline_probe"))]
-        native_rows, strategy_counts = parse_packed_result(packed, plan)
-        native_diagnostics["strategy_counts"] = strategy_counts
         for frame in frames:
             cmds_module.currentTime(frame, edit=True)
             row = []
@@ -689,7 +675,11 @@ def _run_third_oracle(
     }
 
 
-def _animated_joint_plan(root: str, prefix: int, cmds_module: Any) -> tuple[Any, Mapping[str, Any]]:
+def _animated_joint_plan(
+    root: str,
+    prefix: int,
+    cmds_module: Any,
+) -> tuple[Any, Mapping[str, Any], list[str]]:
     from mmd_tools.adapters.native_vmd_batch_sampler import build_dense_bone_sample_plan
     from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector, _routed_key_times
 
@@ -710,10 +700,10 @@ def _animated_joint_plan(root: str, prefix: int, cmds_module: Any) -> tuple[Any,
         input_routes=routes,
         cmds_module=cmds_module,
     )
-    return plan, routes
+    return plan, routes, animated
 
 
-def _run_worker(config: Mapping[str, Any], strategy: str, prefix: int) -> dict[str, Any]:
+def _run_worker(config: Mapping[str, Any], prefix: int) -> dict[str, Any]:
     import maya.standalone
     from tests.common.maya_plugin_setup import load_mmd_tools_plugin
 
@@ -723,8 +713,8 @@ def _run_worker(config: Mapping[str, Any], strategy: str, prefix: int) -> dict[s
         pass
     from maya import cmds
     from mmd_tools.adapters.native_vmd_batch_sampler import (
+        EVALUATION_POLICY,
         NativeVmdBatchSampler,
-        parse_packed_result,
     )
 
     out_dir = Path(config["out_dir"])
@@ -733,7 +723,7 @@ def _run_worker(config: Mapping[str, Any], strategy: str, prefix: int) -> dict[s
     import_started = time.perf_counter()
     root = _import_assets(config, cmds)
     import_wall_sec = time.perf_counter() - import_started
-    plan, routes = _animated_joint_plan(root, prefix, cmds)
+    plan, routes, animated = _animated_joint_plan(root, prefix, cmds)
     inventory = _route_inventory(plan, routes, cmds)
     inventory_sha256 = hashlib.sha256(
         json.dumps(
@@ -747,28 +737,27 @@ def _run_worker(config: Mapping[str, Any], strategy: str, prefix: int) -> dict[s
     if not gateway.available:
         raise RuntimeError(f"mmdVmdBatchSample unavailable: {gateway.last_diagnostics!r}")
     entry_time = float(cmds.currentTime(query=True))
-    started = time.perf_counter()
-    packed = [
-        float(value)
-        for value in cmds.mmdVmdBatchSample(payload=_payload(plan, strategy))
-    ]
-    wall_sec = time.perf_counter() - started
+    samples = gateway.sample_dense_bone_channels(
+        range(prefix),
+        animated,
+        input_routes=routes,
+    )
+    wall_sec = samples.wall_sec
     restored_time = float(cmds.currentTime(query=True))
     if not math.isclose(entry_time, restored_time, rel_tol=0.0, abs_tol=1.0e-9):
         raise RuntimeError(
             f"currentTime was not restored: entry={entry_time} restored={restored_time}"
         )
-    rows, strategy_counts = parse_packed_result(packed, plan)
-    del rows
-    packed_blob = _packed_bytes(packed)
-    values_blob = _packed_bytes(packed[PACKED_HEADER_SIZE:])
-    packed_path = _packed_path(config, strategy, prefix)
-    packed_path.write_bytes(packed_blob)
+    values_blob = _packed_bytes(
+        [value for row in samples.rows for value in row]
+    )
+    values_path = _values_path(config, prefix)
+    values_path.write_bytes(values_blob)
     full_count = int(config["full_frame_count"])
     result = {
         "schema_version": SCHEMA_VERSION,
         "status": "pass",
-        "strategy": strategy,
+        "evaluation_policy": EVALUATION_POLICY,
         "prefix_frames": prefix,
         "full_frame_count": full_count,
         "wall_sec": round(wall_sec, 6),
@@ -779,15 +768,13 @@ def _run_worker(config: Mapping[str, Any], strategy: str, prefix: int) -> dict[s
             "restored": restored_time,
             "restored_exactly": entry_time == restored_time,
         },
-        "packed": {
-            "header": packed[:PACKED_HEADER_SIZE],
-            "float_count": len(packed),
-            "byte_count": len(packed_blob),
-            "sha256": hashlib.sha256(packed_blob).hexdigest(),
-            "values_sha256": hashlib.sha256(values_blob).hexdigest(),
-            "artifact": str(packed_path),
+        "sampled_values": {
+            "float_count": samples.sample_count,
+            "byte_count": len(values_blob),
+            "sha256": hashlib.sha256(values_blob).hexdigest(),
+            "artifact": str(values_path),
         },
-        "strategy_counts": strategy_counts,
+        "channel_path_counts": dict(samples.strategy_counts),
         "route_inventory": inventory,
         "route_inventory_sha256": inventory_sha256,
         "assets": {
@@ -803,41 +790,12 @@ def _run_worker(config: Mapping[str, Any], strategy: str, prefix: int) -> dict[s
     result["third_oracle"] = third_oracle
     if third_oracle.get("status") != "pass":
         result["status"] = "fail"
-    result_path = _result_path(config, strategy, prefix)
+    result_path = _result_path(config, prefix)
     result_path.write_text(
         json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return result
-
-
-def compare_pair(context: Mapping[str, Any], timeline: Mapping[str, Any]) -> dict[str, Any]:
-    """Compare one isolated context/timeline pair using their binary artifacts."""
-
-    context_path = Path(str(context["packed"]["artifact"]))
-    timeline_path = Path(str(timeline["packed"]["artifact"]))
-    context_blob = context_path.read_bytes()
-    timeline_blob = timeline_path.read_bytes()
-    header_bytes = PACKED_HEADER_SIZE * 8
-    values_exact = context_blob[header_bytes:] == timeline_blob[header_bytes:]
-    return {
-        "prefix_frames": int(context["prefix_frames"]),
-        "packed_sha256_equal": context["packed"]["sha256"] == timeline["packed"]["sha256"],
-        "values_sha256_equal": context["packed"]["values_sha256"]
-        == timeline["packed"]["values_sha256"],
-        "packed_binary_exactly_equal": context_blob == timeline_blob,
-        "packed_values_exactly_equal": values_exact,
-        "strategy_header_equal": context["packed"]["header"] == timeline["packed"]["header"],
-        "route_inventory_equal": context["route_inventory_sha256"]
-        == timeline["route_inventory_sha256"],
-        "context_wall_sec": float(context["wall_sec"]),
-        "timeline_probe_wall_sec": float(timeline["wall_sec"]),
-        "timeline_over_context_ratio": round(
-            float(timeline["wall_sec"]) / float(context["wall_sec"]), 6
-        )
-        if float(context["wall_sec"]) > 0.0
-        else None,
-    }
 
 
 def estimate_full_wall(results: Sequence[Mapping[str, Any]], full_frame_count: int) -> float:
@@ -857,103 +815,80 @@ def _run_controller(config_path: Path, config: Mapping[str, Any]) -> dict[str, A
     out_dir = Path(config["out_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
     mayapy = config.get("mayapy") or sys.executable
-    results: dict[tuple[str, int], dict[str, Any]] = {}
+    results: dict[int, dict[str, Any]] = {}
     launches = []
     for prefix in config["prefix_frames"]:
-        for strategy in STRATEGIES:
-            stem = _result_stem(strategy, prefix)
-            stdout_path = out_dir / f"{stem}.stdout.log"
-            stderr_path = out_dir / f"{stem}.stderr.log"
-            command = [
-                str(mayapy),
-                str(Path(__file__).resolve()),
-                "--config",
-                str(config_path),
-                "--worker",
-                "--strategy",
-                strategy,
-                "--prefix",
-                str(prefix),
-            ]
-            environment = dict(os.environ)
-            environment["PYTHONUTF8"] = "1"
-            environment.setdefault("MMD_TOOLS_CPP_CONFIG", "Release")
-            environment.setdefault("MMD_TOOLS_CPP_SKIP_NATIVE_CASTER", "1")
-            try:
-                completed = subprocess.run(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    env=environment,
-                    timeout=float(config["worker_timeout_sec"]),
-                )
-            except subprocess.TimeoutExpired as exc:
-                stdout_path.write_text(str(exc.stdout or ""), encoding="utf-8")
-                stderr_path.write_text(str(exc.stderr or ""), encoding="utf-8")
-                raise RuntimeError(
-                    f"probe worker timed out: strategy={strategy} prefix={prefix} "
-                    f"timeout_sec={config['worker_timeout_sec']}"
-                ) from exc
-            stdout_path.write_text(completed.stdout, encoding="utf-8")
-            stderr_path.write_text(completed.stderr, encoding="utf-8")
-            launches.append(
-                {
-                    "strategy": strategy,
-                    "prefix_frames": prefix,
-                    "return_code": completed.returncode,
-                    "stdout": str(stdout_path),
-                    "stderr": str(stderr_path),
-                }
+        stem = _result_stem(prefix)
+        stdout_path = out_dir / f"{stem}.stdout.log"
+        stderr_path = out_dir / f"{stem}.stderr.log"
+        command = [
+            str(mayapy),
+            str(Path(__file__).resolve()),
+            "--config",
+            str(config_path),
+            "--worker",
+            "--prefix",
+            str(prefix),
+        ]
+        environment = dict(os.environ)
+        environment["PYTHONUTF8"] = "1"
+        environment.setdefault("MMD_TOOLS_CPP_CONFIG", "Release")
+        environment.setdefault("MMD_TOOLS_CPP_SKIP_NATIVE_CASTER", "1")
+        result_path = _result_path(config, prefix)
+        if result_path.exists():
+            result_path.unlink()
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=environment,
+                timeout=float(config["worker_timeout_sec"]),
             )
-            result_path = _result_path(config, strategy, prefix)
-            if not result_path.exists():
-                raise RuntimeError(
-                    f"probe worker failed without structured result: strategy={strategy} "
-                    f"prefix={prefix} return_code={completed.returncode}; stderr={stderr_path}"
-                )
-            result = json.loads(result_path.read_text(encoding="utf-8"))
-            results[(strategy, prefix)] = result
-    pairs = [
-        compare_pair(results[("context", prefix)], results[("timeline_probe", prefix)])
-        for prefix in config["prefix_frames"]
-    ]
-    parity = all(
-        item["packed_values_exactly_equal"]
-        and item["packed_sha256_equal"]
-        and item["values_sha256_equal"]
-        and item["strategy_header_equal"]
-        and item["route_inventory_equal"]
-        for item in pairs
-    )
-    estimates = {
-        strategy: estimate_full_wall(
-            [results[(strategy, prefix)] for prefix in config["prefix_frames"]],
-            int(config["full_frame_count"]),
+        except subprocess.TimeoutExpired as exc:
+            stdout_path.write_text(str(exc.stdout or ""), encoding="utf-8")
+            stderr_path.write_text(str(exc.stderr or ""), encoding="utf-8")
+            raise RuntimeError(
+                f"probe worker timed out: prefix={prefix} "
+                f"timeout_sec={config['worker_timeout_sec']}"
+            ) from exc
+        stdout_path.write_text(completed.stdout, encoding="utf-8")
+        stderr_path.write_text(completed.stderr, encoding="utf-8")
+        launches.append(
+            {
+                "prefix_frames": prefix,
+                "return_code": completed.returncode,
+                "stdout": str(stdout_path),
+                "stderr": str(stderr_path),
+            }
         )
-        for strategy in STRATEGIES
-    }
+        if not result_path.exists():
+            raise RuntimeError(
+                f"probe worker failed without structured result: prefix={prefix} "
+                f"return_code={completed.returncode}; stderr={stderr_path}"
+            )
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        results[prefix] = result
+    estimate = estimate_full_wall(
+        [results[prefix] for prefix in config["prefix_frames"]],
+        int(config["full_frame_count"]),
+    )
     third_oracle_pass = all(
         result.get("third_oracle", {}).get("status") == "pass"
         for result in results.values()
     )
     summary = {
         "schema_version": SCHEMA_VERSION,
-        "status": "pass" if parity and third_oracle_pass else "fail",
-        "fresh_process_per_strategy_prefix": True,
+        "status": "pass" if third_oracle_pass else "fail",
+        "fresh_process_per_prefix": True,
         "prefix_frames": list(config["prefix_frames"]),
         "full_frame_count": int(config["full_frame_count"]),
-        "estimated_full_wall_sec": estimates,
-        "packed_values_parity": parity,
+        "estimated_full_wall_sec": estimate,
         "third_oracle_pass": third_oracle_pass,
-        "pairs": pairs,
         "launches": launches,
-        "results": [
-            results[(strategy, prefix)]
-            for prefix in config["prefix_frames"]
-            for strategy in STRATEGIES
-        ],
+        "results": [results[prefix] for prefix in config["prefix_frames"]],
     }
     (out_dir / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -970,21 +905,19 @@ def _console_summary(result: Mapping[str, Any]) -> dict[str, Any]:
         for key in (
             "schema_version",
             "status",
-            "strategy",
+            "evaluation_policy",
             "prefix_frames",
             "wall_sec",
             "estimated_full_wall_sec",
-            "packed_values_parity",
-            "pairs",
         )
         if key in result
     }
-    packed = result.get("packed")
-    if isinstance(packed, Mapping):
-        summary["packed"] = {
-            key: packed[key]
-            for key in ("header", "float_count", "sha256", "values_sha256")
-            if key in packed
+    sampled_values = result.get("sampled_values")
+    if isinstance(sampled_values, Mapping):
+        summary["sampled_values"] = {
+            key: sampled_values[key]
+            for key in ("float_count", "sha256")
+            if key in sampled_values
         }
     third_oracle = result.get("third_oracle")
     if isinstance(third_oracle, Mapping):
@@ -1014,12 +947,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _arguments(argv)
     config = load_config(args.config)
     if args.worker:
-        if args.strategy is None or args.prefix is None:
-            raise ProbeConfigurationError("worker requires --strategy and --prefix")
-        result = _run_worker(config, args.strategy, args.prefix)
+        if args.prefix is None:
+            raise ProbeConfigurationError("worker requires --prefix")
+        result = _run_worker(config, args.prefix)
     else:
-        if args.strategy is not None or args.prefix is not None:
-            raise ProbeConfigurationError("--strategy/--prefix require --worker")
+        if args.prefix is not None:
+            raise ProbeConfigurationError("--prefix requires --worker")
         result = _run_controller(args.config, config)
     print(json.dumps(_console_summary(result), ensure_ascii=False, sort_keys=True))
     return 0 if result.get("status") == "pass" else 1
