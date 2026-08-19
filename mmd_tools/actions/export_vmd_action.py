@@ -8,7 +8,10 @@ from pathlib import Path
 import tempfile
 from typing import Any, Callable, Dict, List, Optional
 
-from ..converters.vmd_scene_collector import VmdSceneCollector
+from ..converters.vmd_scene_collector import (
+    VmdSceneCollector,
+    _scene_maya_time_to_vmd_frame,
+)
 from ..core.logger import get_logger
 from ..io.vmd_exporter import VmdExporter
 from ..validation.export_validator import (
@@ -140,6 +143,17 @@ class ExportVmdAction:
         frame_range = options.get("frame_range")
         if frame_range is None and "frame_start" in options and "frame_end" in options:
             frame_range = (options.get("frame_start"), options.get("frame_end"))
+        if str(mode or "").upper() == VMD_MODE_C and frame_range is not None:
+            try:
+                maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
+                frame_range = tuple(
+                    int(round(float(maya_time_to_vmd(value))))
+                    for value in frame_range
+                )
+            except (IndexError, KeyError, TypeError, ValueError, OverflowError):
+                # Preserve malformed input for the validator's existing
+                # deterministic VMD_FRAME_RANGE report.
+                pass
         raw_provenance = options.get("raw_provenance", options.get("vmd_raw_provenance"))
         try:
             parameters = inspect.signature(self._validator).parameters

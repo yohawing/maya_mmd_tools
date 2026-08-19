@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
 from mmd_tools.core.vmd_data import VmdData
@@ -272,6 +273,43 @@ class _TransformingVmdExporter(_WritingVmdExporter):
 
 class TestExportVmdValidationGate(unittest.TestCase):
     """The action protects the writer boundary and existing target file."""
+
+    def test_mode_c_validator_receives_vmd_range_converted_from_maya_time(self):
+        observed = []
+
+        def validator(_data, mode, *, frame_range=None):
+            observed.append((mode, frame_range))
+            return ExportValidationReport("vmd", (), mode=mode)
+
+        action = ExportVmdAction(validator=validator)
+        with mock.patch(
+            "mmd_tools.actions.export_vmd_action._scene_maya_time_to_vmd_frame",
+            return_value=lambda value: float(value) * 30.0 / 24.0,
+        ) as converter:
+            action._validate(VmdData(), VMD_MODE_C, {"frame_range": (0, 10)})
+            action._validate(VmdData(), VMD_MODE_C, {"frame_range": (-1.0, 10.5)})
+
+        self.assertEqual(observed[0], (VMD_MODE_C, (0, 12)))
+        self.assertEqual(observed[1], (VMD_MODE_C, (-1, 13)))
+        self.assertEqual(converter.call_count, 2)
+
+    def test_mode_c_ntsc_range_is_unchanged_and_mode_a_is_not_converted(self):
+        observed = []
+
+        def validator(_data, mode, *, frame_range=None):
+            observed.append((mode, frame_range))
+            return ExportValidationReport("vmd", (), mode=mode)
+
+        action = ExportVmdAction(validator=validator)
+        with mock.patch(
+            "mmd_tools.actions.export_vmd_action._scene_maya_time_to_vmd_frame",
+            return_value=lambda value: float(value),
+        ) as converter:
+            action._validate(VmdData(), VMD_MODE_C, {"frame_range": (0, 10)})
+            action._validate(VmdData(), VMD_MODE_A, {"frame_range": (0, 10)})
+
+        self.assertEqual(observed, [(VMD_MODE_C, (0, 10)), (VMD_MODE_A, (0, 10))])
+        self.assertEqual(converter.call_count, 1)
 
     def test_fatal_payload_does_not_call_writer_or_change_target(self):
         exporter = _WritingVmdExporter()
