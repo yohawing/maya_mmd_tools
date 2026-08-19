@@ -8,10 +8,15 @@ there is no alternate evaluator fallback for dense bone sampling.
 
 from __future__ import annotations
 
+from array import array
 from dataclasses import dataclass, field
 import json
 import math
+import mmap
+import os
 from pathlib import Path
+import struct
+import tempfile
 import time
 from typing import Any, Mapping, Optional, Sequence
 
@@ -50,6 +55,9 @@ MAX_NATIVE_SAMPLES = 4_194_304
 # diagnostics and preserve the production Timeline transaction contract.
 MAX_NATIVE_FRAMES = 120
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+_DOUBLE_ITEM_SIZE = array("d").itemsize
+if _DOUBLE_ITEM_SIZE != struct.calcsize("=d"):
+    raise RuntimeError("native sampler requires an 8-byte double array")
 
 
 class NativeVmdBatchSamplerError(RuntimeError):
@@ -108,18 +116,52 @@ class DenseBoneSamplePlan:
         return tuple(channel.request() for channel in self.physical_channels)
 
 
-@dataclass(frozen=True)
 class NativeDenseBoneSamples:
-    """Validated frame-major samples, addressable by logical bone channel."""
+    """Validated frame-major samples backed by a read-only mmap spool."""
 
-    plan: DenseBoneSamplePlan
-    rows: tuple[tuple[float, ...], ...]
-    strategy_counts: Mapping[str, int]
-    wall_sec: float
-    chunk_count: int = 1
-    max_frames_per_chunk: int = MAX_NATIVE_SAMPLES
-    max_samples_per_chunk: int = MAX_NATIVE_SAMPLES
-    chunk_wall_secs: tuple[float, ...] = ()
+    def __init__(
+        self,
+        plan: DenseBoneSamplePlan,
+        strategy_counts: Mapping[str, int],
+        wall_sec: float,
+        mapping: mmap.mmap,
+        spool_file: Any,
+        spool_path: str,
+        storage_bytes: int,
+        chunk_count: int = 1,
+        max_frames_per_chunk: int = MAX_NATIVE_SAMPLES,
+        max_samples_per_chunk: int = MAX_NATIVE_SAMPLES,
+        chunk_wall_secs: Sequence[float] = (),
+    ) -> None:
+        self.plan = plan
+        self.strategy_counts = dict(strategy_counts)
+        self.wall_sec = wall_sec
+        self.chunk_count = chunk_count
+        self.max_frames_per_chunk = max_frames_per_chunk
+        self.max_samples_per_chunk = max_samples_per_chunk
+        self.chunk_wall_secs = tuple(chunk_wall_secs)
+        self._mapping = mapping
+        self._spool_file = spool_file
+        self._spool_path = spool_path
+        self._storage_bytes = int(storage_bytes)
+        self._closed = False
+
+    def _ensure_open(self) -> None:
+        if self._closed or self._mapping is None:
+            raise RuntimeError("native sampler samples are closed")
+
+    def _value_at(self, frame_index: int, physical_index: int) -> float:
+        self._ensure_open()
+        offset = (
+            (frame_index * len(self.plan.physical_channels) + physical_index)
+            * _DOUBLE_ITEM_SIZE
+        )
+        try:
+            return float(struct.unpack_from("=d", self._mapping, offset)[0])
+        except (TypeError, ValueError, struct.error) as exc:
+            raise NativeVmdBatchSamplerError(
+                "native sampler spool has an invalid value"
+            ) from exc
 
     def value(self, joint: str, attr: str, frame: float) -> float:
         """Return one logical sample, including duplicate-plug aliases."""
@@ -129,11 +171,24 @@ class NativeDenseBoneSamples:
         physical_index = self.plan._logical_indices.get((str(joint), str(attr)))
         if frame_index is None or physical_index is None:
             raise KeyError((joint, attr, frame))
-        return self.rows[frame_index][physical_index]
+        return self._value_at(frame_index, physical_index)
+
+    @property
+    def rows(self) -> tuple[tuple[float, ...], ...]:
+        """Materialize rows on demand for compatibility with the old result."""
+
+        self._ensure_open()
+        return tuple(
+            tuple(
+                self._value_at(frame_index, channel_index)
+                for channel_index in range(len(self.plan.physical_channels))
+            )
+            for frame_index in range(len(self.plan.frames))
+        )
 
     @property
     def sample_count(self) -> int:
-        return len(self.rows) * len(self.plan.physical_channels)
+        return len(self.plan.frames) * len(self.plan.physical_channels)
 
     @property
     def diagnostics(self) -> dict[str, Any]:
@@ -150,7 +205,55 @@ class NativeDenseBoneSamples:
             "max_frames_per_chunk": self.max_frames_per_chunk,
             "max_samples_per_chunk": self.max_samples_per_chunk,
             "chunk_wall_sec": list(self.chunk_wall_secs),
+            "storage_backend": "read_only_mmap",
+            "storage_bytes": self._storage_bytes,
+            "storage_value_count": self.sample_count,
         }
+
+    def close(self) -> None:
+        """Close the mmap and remove its private spool; safe to call repeatedly."""
+
+        if self._closed:
+            return
+        self._closed = True
+        mapping = self._mapping
+        self._mapping = None
+        if mapping is not None:
+            try:
+                mapping.close()
+            except Exception:
+                pass
+        spool_file = self._spool_file
+        self._spool_file = None
+        if spool_file is not None:
+            try:
+                spool_file.close()
+            except Exception:
+                pass
+        spool_path = self._spool_path
+        self._spool_path = None
+        if spool_path:
+            try:
+                os.unlink(spool_path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                # Cleanup is best effort for interpreter shutdown and must not
+                # turn a completed export into a failure.
+                pass
+
+    def __enter__(self) -> "NativeDenseBoneSamples":
+        self._ensure_open()
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def _canonical_node(node: Any, cmds_module: Any) -> str:
@@ -396,6 +499,35 @@ def _chunk_plan(plan: DenseBoneSamplePlan, start: int, end: int) -> DenseBoneSam
     )
 
 
+def _unlink_spool(path: Optional[str]) -> None:
+    if not path:
+        return
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _close_partial_spool(
+    mapping: Optional[mmap.mmap], spool_file: Any, spool_path: Optional[str]
+) -> None:
+    """Release spool resources in Windows-safe mmap -> file -> unlink order."""
+
+    if mapping is not None:
+        try:
+            mapping.close()
+        except Exception:
+            pass
+    if spool_file is not None:
+        try:
+            spool_file.close()
+        except Exception:
+            pass
+    _unlink_spool(spool_path)
+
+
 class NativeVmdBatchSampler:
     """Invoke ``mmdVmdBatchSample`` under the explicit Timeline policy."""
 
@@ -562,10 +694,12 @@ class NativeVmdBatchSampler:
         chunk_count = (
             len(plan.frames) + max_frames_per_chunk - 1
         ) // max_frames_per_chunk
-        rows = []
         strategy_counts = None
         chunk_wall_secs = []
         current_chunk_index = -1
+        spool_path: Optional[str] = None
+        spool_file = None
+        spool_mapping: Optional[mmap.mmap] = None
         self.last_diagnostics = {
             **plugin_diagnostics,
             "available": True,
@@ -581,6 +715,11 @@ class NativeVmdBatchSampler:
         }
         self._publish_diagnostics()
         try:
+            spool_fd, spool_path = tempfile.mkstemp(
+                prefix="mmd_mode_c_",
+                suffix=".bin",
+            )
+            spool_file = os.fdopen(spool_fd, "w+b")
             for _chunk_index, start in enumerate(
                 range(0, len(plan.frames), max_frames_per_chunk)
             ):
@@ -623,8 +762,52 @@ class NativeVmdBatchSampler:
                     raise NativeVmdBatchSamplerError(
                         "native sampler strategy counts differ between chunks"
                     )
-                rows.extend(chunk_rows)
-        except Exception as exc:
+                chunk_values = array(
+                    "d",
+                    (number for row in chunk_rows for number in row),
+                )
+                chunk_values.tofile(spool_file)
+                del chunk_values
+                del chunk_rows
+            if strategy_counts is None:
+                raise NativeVmdBatchSamplerError("native sampler produced no chunks")
+            spool_file.flush()
+            os.fsync(spool_file.fileno())
+            expected_bytes = len(plan.frames) * physical_channel_count * _DOUBLE_ITEM_SIZE
+            actual_bytes = os.fstat(spool_file.fileno()).st_size
+            if actual_bytes != expected_bytes:
+                raise NativeVmdBatchSamplerError(
+                    "native sampler spool has an unexpected byte size"
+                )
+            spool_file.close()
+            spool_file = None
+            spool_file = open(spool_path, "rb")
+            spool_mapping = mmap.mmap(
+                spool_file.fileno(),
+                actual_bytes,
+                access=mmap.ACCESS_READ,
+            )
+            result = NativeDenseBoneSamples(
+                plan=plan,
+                strategy_counts=strategy_counts,
+                wall_sec=round(time.perf_counter() - started, 6),
+                mapping=spool_mapping,
+                spool_file=spool_file,
+                spool_path=spool_path,
+                storage_bytes=actual_bytes,
+                chunk_count=chunk_count,
+                max_frames_per_chunk=max_frames_per_chunk,
+                max_samples_per_chunk=max_frames_per_chunk * physical_channel_count,
+                chunk_wall_secs=tuple(chunk_wall_secs),
+            )
+            spool_mapping = None
+            spool_file = None
+            spool_path = None
+        except BaseException as exc:
+            _close_partial_spool(spool_mapping, spool_file, spool_path)
+            spool_mapping = None
+            spool_file = None
+            spool_path = None
             self.last_diagnostics = {
                 **plugin_diagnostics,
                 "available": True,
@@ -648,19 +831,9 @@ class NativeVmdBatchSampler:
             self._publish_diagnostics()
             if isinstance(exc, NativeVmdBatchSamplerError):
                 raise
+            if not isinstance(exc, Exception):
+                raise
             raise NativeVmdBatchSamplerError("native sampler invocation failed") from exc
-        if strategy_counts is None:
-            raise NativeVmdBatchSamplerError("native sampler produced no chunks")
-        result = NativeDenseBoneSamples(
-            plan=plan,
-            rows=tuple(rows),
-            strategy_counts=strategy_counts,
-            wall_sec=round(time.perf_counter() - started, 6),
-            chunk_count=chunk_count,
-            max_frames_per_chunk=max_frames_per_chunk,
-            max_samples_per_chunk=max_frames_per_chunk * physical_channel_count,
-            chunk_wall_secs=tuple(chunk_wall_secs),
-        )
         self.last_diagnostics = {**plugin_diagnostics, **result.diagnostics}
         self.last_diagnostics.update(
             {

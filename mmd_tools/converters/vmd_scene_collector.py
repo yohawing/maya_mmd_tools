@@ -618,6 +618,18 @@ def _read_vmd_import_provenance(target_model: Optional[str]) -> Optional[dict[st
     return provenance
 
 
+def _close_native_samples(native_samples: Any) -> None:
+    """Close native sample storage without requiring legacy test fakes to do so."""
+
+    close = getattr(native_samples, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            # Storage cleanup must not mask an export or collection failure.
+            pass
+
+
 class VmdSceneCollector:
     """Collect minimum VMD-compatible animation data from a Maya scene."""
 
@@ -1249,7 +1261,12 @@ class VmdSceneCollector:
                             "available", True
                         )
                         self._diagnostics["native_sampler"].setdefault("used", True)
-                    except Exception as exc:
+                    except BaseException as exc:
+                        if native_samples is not None:
+                            try:
+                                _close_native_samples(native_samples)
+                            except Exception:
+                                pass
                         native_samples = None
                         sampler_diagnostics = getattr(
                             bone_channel_sampler,
@@ -1278,6 +1295,8 @@ class VmdSceneCollector:
                             }
                         )
                         self._emit_diagnostics()
+                        if not isinstance(exc, Exception):
+                            raise
                         raise RuntimeError(
                             f"Mode C native bone sampling failed: {exc}"
                         ) from exc
@@ -1291,34 +1310,40 @@ class VmdSceneCollector:
                     "fallback_reason": "no eligible dense bone channels",
                 }
 
-        static_sample = (
-            _mode_c_earliest_integer_sample(
-                dense_frames,
-                start_frame,
-                end_frame,
+        try:
+            static_sample = (
+                _mode_c_earliest_integer_sample(
+                    dense_frames,
+                    start_frame,
+                    end_frame,
+                )
+                if force_dense_sample
+                else None
             )
-            if force_dense_sample
-            else None
-        )
-        if static_sample is not None:
-            for joint in joints:
-                long_name = str((cmds.ls(joint, long=True) or [joint])[0])
-                route = input_routes.get(long_name, {})
-                all_joint_keyed = keyed_times_by_joint.get(joint)
-                if all_joint_keyed is None:
-                    all_joint_keyed = _routed_key_times(joint, route)
-                    keyed_times_by_joint[joint] = all_joint_keyed
-                if (
-                    not route
-                    and not all_joint_keyed
-                    and long_name
-                    not in self._mode_c_physics_output_excluded_targets
-                    and _incoming_connection_state(long_name, _BONE_EXPORT_ATTRS)
-                    == "none"
-                ):
-                    static_keyless_joints.add(joint)
-                    single_key_joints.add(joint)
-                    keyed_times_by_joint[joint] = [static_sample]
+            if static_sample is not None:
+                for joint in joints:
+                    long_name = str((cmds.ls(joint, long=True) or [joint])[0])
+                    route = input_routes.get(long_name, {})
+                    all_joint_keyed = keyed_times_by_joint.get(joint)
+                    if all_joint_keyed is None:
+                        all_joint_keyed = _routed_key_times(joint, route)
+                        keyed_times_by_joint[joint] = all_joint_keyed
+                    if (
+                        not route
+                        and not all_joint_keyed
+                        and long_name
+                        not in self._mode_c_physics_output_excluded_targets
+                        and _incoming_connection_state(long_name, _BONE_EXPORT_ATTRS)
+                        == "none"
+                    ):
+                        static_keyless_joints.add(joint)
+                        single_key_joints.add(joint)
+                        keyed_times_by_joint[joint] = [static_sample]
+        except BaseException:
+            if native_samples is not None:
+                _close_native_samples(native_samples)
+                native_samples = None
+            raise
 
         def read_value(joint, attr, frame_number, route, use_native=True):
             nonlocal native_samples
@@ -1326,6 +1351,11 @@ class VmdSceneCollector:
                 try:
                     return float(native_samples.value(joint, attr, frame_number))
                 except Exception as exc:
+                    try:
+                        _close_native_samples(native_samples)
+                    except Exception:
+                        pass
+                    native_samples = None
                     self._diagnostics.setdefault("native_sampler", {}).update(
                         {
                             "used": False,
@@ -1339,167 +1369,174 @@ class VmdSceneCollector:
                     ) from exc
             return _routed_plug_float(joint, attr, frame_number, route)
 
-        for joint in joints:
-            bone_name = self._mmd_bone_name(joint)
-            bind_pose = _resolve_bind_pose(bone_bind_poses, bone_name, joint)
-            long_names = cmds.ls(joint, long=True) or [joint]
-            long_name = str(long_names[0])
-            if long_name in self._mode_c_physics_output_excluded_targets:
-                # The physics solver's final output is intentionally outside
-                # standard Mode C.  An incomplete pre-physics route cannot
-                # safely represent any unclaimed channels.
-                continue
-            route = input_routes.get(long_name, {})
-            all_joint_keyed = keyed_times_by_joint.get(joint)
-            if all_joint_keyed is None:
-                all_joint_keyed = _routed_key_times(joint, route)
-            sparse_frames = _filter_frame_range(
-                all_joint_keyed,
-                start_frame,
-                end_frame,
-            )
-            single_key = joint in single_key_joints
-            static_keyless = joint in static_keyless_joints
-            direct_multi_key = (
-                len(direct_multi_key_candidates.get(bone_name, ())) == 1
-                and len(bone_output_providers.get(bone_name, ())) == 1
-                and direct_multi_key_candidates[bone_name][0][0] == long_name
-            )
-            raw_provenance_frames = raw_bone_frames_by_name.get(bone_name, set())
-            has_new_authored_key = bool(
-                raw_provenance_frames
-                and set(sparse_frames).difference(raw_provenance_frames)
-            )
-            preserve_sparse_rotation = (
-                not force_dense_sample
-                and bone_name in rotation_interpolation
-                and not has_new_authored_key
-            )
-            keyed_frames = (
-                sparse_frames
-                if single_key
-                else dense_frames
-                if dense_frames is not None
-                and (all_joint_keyed or joint in keyless_dependency_joints)
-                and not preserve_sparse_rotation
-                else sparse_frames
-            )
-            for frame_number in keyed_frames:
-                rotation = _maya_joint_rotate_to_vmd_quaternion(
-                    joint,
-                    read_value(joint, "rotateX", frame_number, route, not single_key),
-                    read_value(joint, "rotateY", frame_number, route, not single_key),
-                    read_value(joint, "rotateZ", frame_number, route, not single_key),
-                    rotation_context.get(str(long_names[0])),
+        try:
+            for joint in joints:
+                bone_name = self._mmd_bone_name(joint)
+                bind_pose = _resolve_bind_pose(bone_bind_poses, bone_name, joint)
+                long_names = cmds.ls(joint, long=True) or [joint]
+                long_name = str(long_names[0])
+                if long_name in self._mode_c_physics_output_excluded_targets:
+                    # The physics solver's final output is intentionally outside
+                    # standard Mode C.  An incomplete pre-physics route cannot
+                    # safely represent any unclaimed channels.
+                    continue
+                route = input_routes.get(long_name, {})
+                all_joint_keyed = keyed_times_by_joint.get(joint)
+                if all_joint_keyed is None:
+                    all_joint_keyed = _routed_key_times(joint, route)
+                sparse_frames = _filter_frame_range(
+                    all_joint_keyed,
+                    start_frame,
+                    end_frame,
                 )
-                vmd_frame = _vmd_frame_number(frame_number, time_converter)
-                payload = {
-                        "bone_name": bone_name,
-                        "frame_number": vmd_frame,
-                        "position": _maya_translate_to_vmd_position(
-                            (
-                                read_value(joint, "translateX", frame_number, route, not single_key),
-                                read_value(joint, "translateY", frame_number, route, not single_key),
-                                read_value(joint, "translateZ", frame_number, route, not single_key),
+                single_key = joint in single_key_joints
+                static_keyless = joint in static_keyless_joints
+                direct_multi_key = (
+                    len(direct_multi_key_candidates.get(bone_name, ())) == 1
+                    and len(bone_output_providers.get(bone_name, ())) == 1
+                    and direct_multi_key_candidates[bone_name][0][0] == long_name
+                )
+                raw_provenance_frames = raw_bone_frames_by_name.get(bone_name, set())
+                has_new_authored_key = bool(
+                    raw_provenance_frames
+                    and set(sparse_frames).difference(raw_provenance_frames)
+                )
+                preserve_sparse_rotation = (
+                    not force_dense_sample
+                    and bone_name in rotation_interpolation
+                    and not has_new_authored_key
+                )
+                keyed_frames = (
+                    sparse_frames
+                    if single_key
+                    else dense_frames
+                    if dense_frames is not None
+                    and (all_joint_keyed or joint in keyless_dependency_joints)
+                    and not preserve_sparse_rotation
+                    else sparse_frames
+                )
+                for frame_number in keyed_frames:
+                    rotation = _maya_joint_rotate_to_vmd_quaternion(
+                        joint,
+                        read_value(joint, "rotateX", frame_number, route, not single_key),
+                        read_value(joint, "rotateY", frame_number, route, not single_key),
+                        read_value(joint, "rotateZ", frame_number, route, not single_key),
+                        rotation_context.get(str(long_names[0])),
+                    )
+                    vmd_frame = _vmd_frame_number(frame_number, time_converter)
+                    payload = {
+                            "bone_name": bone_name,
+                            "frame_number": vmd_frame,
+                            "position": _maya_translate_to_vmd_position(
+                                (
+                                    read_value(joint, "translateX", frame_number, route, not single_key),
+                                    read_value(joint, "translateY", frame_number, route, not single_key),
+                                    read_value(joint, "translateZ", frame_number, route, not single_key),
+                                ),
+                                bind_pose,
+                                motion_scale,
                             ),
-                            bind_pose,
-                            motion_scale,
-                        ),
-                        "rotation": rotation,
-                    }
-                interpolation = rotation_interpolation.get(bone_name, {}).get(vmd_frame)
-                if interpolation is not None:
-                    payload["interpolation"] = interpolation
-                raw_transform = (
-                    None
-                    if force_dense_sample
-                    else raw_bone_transforms.get((bone_name, vmd_frame))
-                )
-                if raw_transform is not None and (
-                    preserve_raw_bone_transforms
-                    or _raw_bone_transform_matches(
-                        payload["position"],
-                        payload["rotation"],
-                        raw_transform,
+                            "rotation": rotation,
+                        }
+                    interpolation = rotation_interpolation.get(bone_name, {}).get(vmd_frame)
+                    if interpolation is not None:
+                        payload["interpolation"] = interpolation
+                    raw_transform = (
+                        None
+                        if force_dense_sample
+                        else raw_bone_transforms.get((bone_name, vmd_frame))
                     )
-                ):
-                    payload["position"], payload["rotation"] = raw_transform
-                if single_key:
-                    is_default = payload["position"] == (0.0, 0.0, 0.0) and payload[
-                        "rotation"
-                    ] == (0.0, 0.0, 0.0, 1.0)
-                    self._record_track_selection(
-                        "bone",
-                        bone_name,
-                        "omitted_default" if is_default else "constant_one_key",
-                        (
-                            "keyless_static_default"
-                            if static_keyless
-                            else (
-                                (
-                                    "layered_direct_single_key_default"
-                                    if single_key_kinds.get(joint) == "layered"
-                                    else "routed_direct_single_key_default"
-                                )
-                                if route
-                                else "direct_single_key_default"
-                            )
+                    if raw_transform is not None and (
+                        preserve_raw_bone_transforms
+                        or _raw_bone_transform_matches(
+                            payload["position"],
+                            payload["rotation"],
+                            raw_transform,
                         )
-                        if is_default
-                        else (
-                            "keyless_static_non_default"
-                            if static_keyless
-                            else (
-                                (
-                                    "layered_direct_single_key_non_default"
-                                    if single_key_kinds.get(joint) == "layered"
-                                    else "routed_direct_single_key_non_default"
+                    ):
+                        payload["position"], payload["rotation"] = raw_transform
+                    if single_key:
+                        is_default = payload["position"] == (0.0, 0.0, 0.0) and payload[
+                            "rotation"
+                        ] == (0.0, 0.0, 0.0, 1.0)
+                        self._record_track_selection(
+                            "bone",
+                            bone_name,
+                            "omitted_default" if is_default else "constant_one_key",
+                            (
+                                "keyless_static_default"
+                                if static_keyless
+                                else (
+                                    (
+                                        "layered_direct_single_key_default"
+                                        if single_key_kinds.get(joint) == "layered"
+                                        else "routed_direct_single_key_default"
+                                    )
+                                    if route
+                                    else "direct_single_key_default"
                                 )
-                                if route
-                                else "direct_single_key_non_default"
                             )
-                        ),
-                        0 if static_keyless else len(sparse_frames),
-                        0 if is_default else 1,
-                    )
-                    if is_default:
+                            if is_default
+                            else (
+                                "keyless_static_non_default"
+                                if static_keyless
+                                else (
+                                    (
+                                        "layered_direct_single_key_non_default"
+                                        if single_key_kinds.get(joint) == "layered"
+                                        else "routed_direct_single_key_non_default"
+                                    )
+                                    if route
+                                    else "direct_single_key_non_default"
+                                )
+                            ),
+                            0 if static_keyless else len(sparse_frames),
+                            0 if is_default else 1,
+                        )
+                        if is_default:
+                            continue
+                    frames.append(payload)
+                if force_dense_sample and not single_key:
+                    if direct_multi_key:
                         continue
-                frames.append(payload)
-            if force_dense_sample and not single_key:
-                if direct_multi_key:
-                    continue
-                keyless_reason = keyless_dependency_joints.get(joint)
-                if keyless_reason:
-                    decision = "dependency_baked"
-                    reason = keyless_reason
-                    source_key_count = 0
-                elif sparse_frames:
-                    decision = "dependency_baked" if route else "authored_sampled"
-                    reason = "routed_dependency" if route else (
-                        "multiple_source_keys"
-                        if len(sparse_frames) > 1
-                        else "conservative_dense_path"
+                    keyless_reason = keyless_dependency_joints.get(joint)
+                    if keyless_reason:
+                        decision = "dependency_baked"
+                        reason = keyless_reason
+                        source_key_count = 0
+                    elif sparse_frames:
+                        decision = "dependency_baked" if route else "authored_sampled"
+                        reason = "routed_dependency" if route else (
+                            "multiple_source_keys"
+                            if len(sparse_frames) > 1
+                            else "conservative_dense_path"
+                        )
+                        source_key_count = len(sparse_frames)
+                    else:
+                        decision = None
+                        reason = ""
+                        source_key_count = 0
+                    if decision is None:
+                        continue
+                    planned_key_count = (
+                        len(dense_frames or ()) if dense_sample else len(sparse_frames)
                     )
-                    source_key_count = len(sparse_frames)
-                else:
-                    decision = None
-                    reason = ""
-                    source_key_count = 0
-                if decision is None:
-                    continue
-                planned_key_count = (
-                    len(dense_frames or ()) if dense_sample else len(sparse_frames)
-                )
-                current = bone_dense_diagnostic_rows.get(bone_name)
-                if current is None or (
-                    decision == "dependency_baked" and current[0] != "dependency_baked"
-                ):
-                    bone_dense_diagnostic_rows[bone_name] = (
-                        decision,
-                        reason,
-                        source_key_count,
-                        planned_key_count,
-                    )
+                    current = bone_dense_diagnostic_rows.get(bone_name)
+                    if current is None or (
+                        decision == "dependency_baked" and current[0] != "dependency_baked"
+                    ):
+                        bone_dense_diagnostic_rows[bone_name] = (
+                            decision,
+                            reason,
+                            source_key_count,
+                            planned_key_count,
+                        )
+        finally:
+            if native_samples is not None:
+                try:
+                    _close_native_samples(native_samples)
+                finally:
+                    native_samples = None
         for name, (decision, reason, source_key_count, planned_key_count) in (
             bone_dense_diagnostic_rows.items()
         ):

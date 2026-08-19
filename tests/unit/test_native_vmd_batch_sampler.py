@@ -135,6 +135,69 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         # reading a dense track; this guards against reintroducing list.index.
         for _ in range(1000):
             self.assertEqual(samples.value("joint_b", "translateX", 1), 11.0)
+        samples.close()
+
+    def test_samples_use_read_only_mmap_and_cleanup_is_idempotent(self):
+        samples = NativeVmdBatchSampler(_FakeCmds()).sample_dense_bone_channels(
+            [0, 1], ["joint"]
+        )
+        spool_path = Path(samples._spool_path)
+        self.assertTrue(spool_path.exists())
+        self.assertEqual(samples.diagnostics["storage_backend"], "read_only_mmap")
+        self.assertEqual(samples.diagnostics["storage_bytes"], 2 * 6 * 8)
+        self.assertEqual(samples.diagnostics["storage_value_count"], 12)
+        self.assertEqual(samples.value("joint", "rotateZ", 1), 11.0)
+        samples.close()
+        samples.close()
+        self.assertFalse(spool_path.exists())
+        with self.assertRaisesRegex(RuntimeError, "samples are closed"):
+            samples.value("joint", "translateX", 0)
+
+    def test_second_chunk_failure_removes_partial_spool(self):
+        class _BrokenSecondChunk(_FakeCmds):
+            def mmdVmdBatchSample(self, payload=None):
+                if self.calls:
+                    raise RuntimeError("second chunk failed")
+                return super().mmdVmdBatchSample(payload)
+
+        paths = []
+        real_mkstemp = sampler_module.tempfile.mkstemp
+
+        def track_mkstemp(*args, **kwargs):
+            fd, path = real_mkstemp(*args, **kwargs)
+            paths.append(path)
+            return fd, path
+
+        sampler = NativeVmdBatchSampler(_BrokenSecondChunk())
+        with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 12), mock.patch.object(
+            sampler_module.tempfile, "mkstemp", side_effect=track_mkstemp
+        ), self.assertRaises(NativeVmdBatchSamplerError):
+            sampler.sample_dense_bone_channels([0, 1, 2, 3], ["joint"])
+        self.assertEqual(len(paths), 1)
+        self.assertFalse(Path(paths[0]).exists())
+
+    def test_base_exception_cleans_partial_spool_and_is_not_wrapped(self):
+        class _CancelledSecondChunk(_FakeCmds):
+            def mmdVmdBatchSample(self, payload=None):
+                if self.calls:
+                    raise KeyboardInterrupt()
+                return super().mmdVmdBatchSample(payload)
+
+        paths = []
+        real_mkstemp = sampler_module.tempfile.mkstemp
+
+        def track_mkstemp(*args, **kwargs):
+            fd, path = real_mkstemp(*args, **kwargs)
+            paths.append(path)
+            return fd, path
+
+        sampler = NativeVmdBatchSampler(_CancelledSecondChunk())
+        with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 12), mock.patch.object(
+            sampler_module.tempfile, "mkstemp", side_effect=track_mkstemp
+        ), self.assertRaises(KeyboardInterrupt):
+            sampler.sample_dense_bone_channels([0, 1, 2, 3], ["joint"])
+        self.assertEqual(len(paths), 1)
+        self.assertFalse(Path(paths[0]).exists())
 
     def test_command_failure_is_diagnosed(self):
         class Broken(_FakeCmds):
@@ -365,6 +428,9 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             def ls(self, node, long=False):
                 return [str(node)]
 
+            def listConnections(self, _plug, **_kwargs):
+                return []
+
         class _Samples:
             diagnostics = {
                 "available": True,
@@ -372,12 +438,19 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                 "sample_count": 12,
             }
 
+            def __init__(self):
+                self.closed = 0
+
+            def close(self):
+                self.closed += 1
+
             def value(self, _joint, attr, frame):
                 return float(frame) + (10.0 if attr.startswith("rotate") else 1.0)
 
         class _Native:
             def __init__(self):
                 self.joints = None
+                self.samples = None
                 self.last_diagnostics = {
                     "plugin_path": "F:/native/mmd_tools_cpp.mll",
                     "plugin_load_status": "loaded",
@@ -387,10 +460,12 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                 self.joints = tuple(joints)
                 self.frames = tuple(frames)
                 self.routes = routes
-                return _Samples()
+                self.samples = _Samples()
+                return self.samples
 
         native = _Native()
         collector = VmdSceneCollector(bone_channel_sampler=native)
+        collector._mode_c_physics_output_excluded_targets = {"sparse"}
         raw = {
             ("dense", 0): ((99.0, 99.0, 99.0), (0.0, 0.0, 0.0, 1.0)),
             ("dense", 1): ((99.0, 99.0, 99.0), (0.0, 0.0, 0.0, 1.0)),
@@ -437,6 +512,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         self.assertEqual(result[0]["position"], (1.0, 1.0, 1.0))
         self.assertEqual(result[1]["position"], (2.0, 2.0, 2.0))
         self.assertNotEqual(result[0]["position"], raw[("dense", 0)][0])
+        self.assertEqual(native.samples.closed, 1)
         self.assertEqual(
             collector.diagnostics["native_sampler"]["plugin_load_status"],
             "loaded",
@@ -489,6 +565,118 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         self.assertFalse(collector.diagnostics["native_sampler"]["used"])
         self.assertTrue(collector.diagnostics["native_sampler"]["fatal"])
         self.assertIn("fallback_reason", collector.diagnostics["native_sampler"])
+
+    def test_collector_closes_native_samples_when_value_read_fails(self):
+        class _Cmds:
+            def ls(self, node, long=False):
+                return [str(node)]
+
+            def listConnections(self, _plug, **_kwargs):
+                return []
+
+        class _Samples:
+            diagnostics = {"available": True, "used": True}
+
+            def __init__(self):
+                self.closed = 0
+
+            def value(self, _joint, _attr, _frame):
+                raise ValueError("sample read failed")
+
+            def close(self):
+                self.closed += 1
+
+        class _Native:
+            available = True
+
+            def __init__(self):
+                self.samples = _Samples()
+
+            def sample_dense_bone_channels(self, _frames, _joints, _routes):
+                return self.samples
+
+        native = _Native()
+        collector = VmdSceneCollector(bone_channel_sampler=native)
+        with mock.patch.object(collector_module, "cmds", _Cmds()), mock.patch.object(
+            collector_module, "_routed_key_times", return_value=[0.0, 1.0]
+        ), mock.patch.object(
+            collector_module, "_build_rotation_export_context", return_value={}
+        ), mock.patch.object(
+            collector_module,
+            "_maya_joint_rotate_to_vmd_quaternion",
+            side_effect=lambda _joint, rx, ry, rz, _context: (rx, ry, rz, 1.0),
+        ), mock.patch.object(
+            collector_module, "_resolve_bind_pose", return_value=(0.0, 0.0, 0.0)
+        ), mock.patch.object(
+            collector_module,
+            "_maya_translate_to_vmd_position",
+            side_effect=lambda values, _bind, _scale: tuple(values),
+        ):
+            collector._mmd_bone_name = lambda joint: str(joint)
+            with self.assertRaisesRegex(RuntimeError, "Mode C native bone value failed"):
+                collector.collect_bone_frames(
+                    ["joint"],
+                    input_routes={},
+                    dense_sample=True,
+                    force_dense_sample=True,
+                    dense_frame_samples=[0, 1],
+                    time_converter=lambda value: value,
+                    bone_channel_sampler=native,
+                )
+        self.assertEqual(native.samples.closed, 1)
+
+    def test_collector_closes_native_samples_when_static_prepass_fails(self):
+        class _Cmds:
+            def ls(self, node, long=False):
+                return [str(node)]
+
+            def listConnections(self, _plug, **_kwargs):
+                return []
+
+        class _Samples:
+            diagnostics = {"available": True, "used": True}
+
+            def __init__(self):
+                self.closed = 0
+
+            def value(self, _joint, _attr, _frame):
+                return 0.0
+
+            def close(self):
+                self.closed += 1
+
+        class _Native:
+            available = True
+
+            def __init__(self):
+                self.samples = _Samples()
+
+            def sample_dense_bone_channels(self, _frames, _joints, _routes):
+                return self.samples
+
+        native = _Native()
+        collector = VmdSceneCollector(bone_channel_sampler=native)
+        with mock.patch.object(collector_module, "cmds", _Cmds()), mock.patch.object(
+            collector_module, "_routed_key_times", return_value=[0.0, 1.0]
+        ), mock.patch.object(
+            collector_module, "_build_rotation_export_context", return_value={}
+        ), mock.patch.object(
+            collector_module,
+            "_mode_c_earliest_integer_sample",
+            side_effect=KeyboardInterrupt(),
+        ):
+            collector._mmd_bone_name = lambda joint: str(joint)
+            with self.assertRaises(KeyboardInterrupt):
+                collector.collect_bone_frames(
+                    ["joint"],
+                    input_routes={},
+                    dense_sample=True,
+                    force_dense_sample=True,
+                    dense_frame_samples=[0, 1],
+                    time_converter=lambda value: value,
+                    bone_channel_sampler=native,
+                )
+        self.assertEqual(native.samples.closed, 1)
 
 
 if __name__ == "__main__":
