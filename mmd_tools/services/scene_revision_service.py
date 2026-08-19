@@ -13,7 +13,6 @@ already installed for that handle are removed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import uuid
 from typing import Any, Callable, Iterable, Optional, Set, Tuple
 
@@ -76,14 +75,6 @@ def _mobject_from_uuid(om: Any, value: str) -> Any:
     return selection.getDependNode(0)
 
 
-@dataclass(frozen=True)
-class SceneRevisionSnapshot:
-    """Immutable token captured before a prepare/collect operation."""
-
-    session_id: str
-    revision: int
-
-
 class SceneRevisionWatch:
     """One armed dependency watch.
 
@@ -112,9 +103,6 @@ class SceneRevisionWatch:
         """Whether its snapshot still describes the service's current scene."""
 
         return self.usable and self._service.matches(self.session_id, self.revision)
-
-    def snapshot(self) -> SceneRevisionSnapshot:
-        return SceneRevisionSnapshot(self.session_id, self.revision)
 
     def close(self) -> None:
         """Remove every callback registered for this handle."""
@@ -167,9 +155,6 @@ class SceneRevisionService:
     @property
     def revision(self) -> int:
         return self._revision
-
-    def snapshot(self) -> SceneRevisionSnapshot:
-        return SceneRevisionSnapshot(self.session_id, self.revision)
 
     def matches(self, session_id: str, revision: int) -> bool:
         """Check a caller's token without arming another watcher."""
@@ -468,7 +453,6 @@ __all__ = [
     "DEFAULT_RELEVANT_ATTRIBUTE_FLAGS",
     "REDO_EVENT",
     "SceneRevisionService",
-    "SceneRevisionSnapshot",
     "SceneRevisionWatch",
     "UNDO_EVENT",
 ]

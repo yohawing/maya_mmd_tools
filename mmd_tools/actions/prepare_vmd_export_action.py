@@ -428,13 +428,7 @@ def _revision_method(provider: Any, request: Any, discovery: VmdExportDiscovery)
 
 
 def _arm_revision_provider(provider: Any, request: Any, discovery: VmdExportDiscovery) -> None:
-    for method_name in ("arm", "arm_watcher", "watch"):
-        method = getattr(provider, method_name, None)
-        if callable(method):
-            method(request, discovery)
-            return
-    # A revision-only provider is valid; the revision read still forms the
-    # before/after TOCTOU boundary.
+    provider.arm(request, discovery)
 
 
 class PrepareVmdExportAction:
@@ -459,8 +453,13 @@ class PrepareVmdExportAction:
             )
         if not bool(backend.supports_streaming()):
             raise TypeError("backend must support streaming VMD preparation")
-        if revision_provider is None:
-            raise TypeError("revision_provider is required")
+        if revision_provider is None or not callable(
+            getattr(revision_provider, "arm", None)
+        ) or not callable(getattr(revision_provider, "current_revision", None)):
+            raise TypeError(
+                "revision_provider must expose arm(request, discovery) and "
+                "current_revision(request, discovery)"
+            )
         self._backend = backend
         self._revision_provider = revision_provider
         # The action owns exactly one prepared approval.  Keeping this as an

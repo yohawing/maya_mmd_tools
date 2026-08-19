@@ -119,6 +119,9 @@ class _VmdRevisions:
     def __init__(self):
         self.calls = 0
 
+    def arm(self, _request, _discovery):
+        return None
+
     def current_revision(self, _request, _discovery):
         self.calls += 1
         return "revision-1"

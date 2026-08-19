@@ -1472,12 +1472,6 @@ class VmdSceneCollector:
                             None,
                         )
                         if not callable(sampler_method):
-                            sampler_method = getattr(
-                                bone_channel_sampler,
-                                "sample_dense_bones",
-                                None,
-                            )
-                        if not callable(sampler_method):
                             raise RuntimeError("native sampler has no dense bone method")
                         native_samples = sampler_method(
                             dense_frames,

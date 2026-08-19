@@ -845,10 +845,6 @@ class NativeVmdBatchSampler:
         self._publish_diagnostics()
         return result
 
-    # Keep a short alias for injected test doubles and future adapter callers.
-    sample_dense_bones = sample_dense_bone_channels
-
-
 __all__ = [
     "DenseBoneSampleChannel",
     "DenseBoneSamplePlan",
