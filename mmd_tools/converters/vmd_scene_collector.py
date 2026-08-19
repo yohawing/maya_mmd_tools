@@ -96,6 +96,13 @@ _ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
 _MMD_CAMERA_AIM_ROLL_RIG_TYPE = "mmd_aim_roll"
 _TRANSFORM_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 _CAMERA_SHAPE_EXPORT_ATTRS = ("focalLength", "orthographic", "orthographicWidth")
+_TRACK_SELECTION_DECISIONS = (
+    "omitted_default",
+    "constant_one_key",
+    "authored_sampled",
+    "dependency_baked",
+)
+_MAX_TRACK_SELECTION_EVIDENCE = 128
 _MAYA_TIME_UNIT_FPS = {
     "game": 15.0,
     "film": 24.0,
@@ -115,6 +122,32 @@ def _copy_diagnostics(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_copy_diagnostics(item) for item in value]
     return value
+
+
+def _is_direct_authored_track(node: str, attrs: Sequence[str]) -> bool:
+    """Reject unknown incoming graph nodes before selecting one source key."""
+    for attr in attrs:
+        try:
+            sources = cmds.listConnections(
+                f"{node}.{attr}", source=True, destination=False, plugs=True
+            ) or []
+            if isinstance(sources, (str, bytes)):
+                sources = [sources]
+            if len(sources) > 1:
+                return False
+            if sources and not str(cmds.nodeType(str(sources[0]).split(".", 1)[0])).startswith("animCurve"):
+                return False
+        except Exception:
+            return False
+    return True
+
+
+def _new_track_selection() -> dict[str, Any]:
+    return {
+        "counts": {key: 0 for key in _TRACK_SELECTION_DECISIONS},
+        "evidence": [],
+        "evidence_omitted_count": 0,
+    }
 
 
 def _canonical_dag_path(node: str) -> Optional[str]:
@@ -327,6 +360,34 @@ class VmdSceneCollector:
             self._diagnostics["native_sampler"] = merged
             self._emit_diagnostics()
 
+    def _record_track_selection(
+        self,
+        section: str,
+        name: str,
+        decision: str,
+        reason: str,
+        source_key_count: int,
+        planned_key_count: int,
+    ) -> None:
+        """Record bounded track-selection evidence without frame values."""
+        if decision not in _TRACK_SELECTION_DECISIONS:
+            decision = "authored_sampled"
+        report = self._diagnostics.setdefault("track_selection", _new_track_selection())
+        report["counts"][decision] += 1
+        if len(report["evidence"]) < _MAX_TRACK_SELECTION_EVIDENCE:
+            report["evidence"].append(
+                {
+                    "section": section,
+                    "name": str(name),
+                    "decision": decision,
+                    "reason": str(reason),
+                    "source_key_count": max(0, int(source_key_count)),
+                    "planned_key_count": max(0, int(planned_key_count)),
+                }
+            )
+        else:
+            report["evidence_omitted_count"] += 1
+
     def collect(self, options: Optional[Mapping[str, Any]] = None) -> dict:
         """Collect and publish low-overhead timing diagnostics."""
 
@@ -359,6 +420,7 @@ class VmdSceneCollector:
                 remains scene-level. Explicit node lists remain authoritative.
         """
         options = options or {}
+        self._diagnostics["track_selection"] = _new_track_selection()
         planning_started = time.perf_counter()
         target_model = options.get("target_model") or options.get("model_root")
         joints = list(options.get("joints") or self._find_joints(target_model))
@@ -622,6 +684,7 @@ class VmdSceneCollector:
             else None
         )
         keyed_times_by_joint = {}
+        single_key_joints = set()
         if dense_sample:
             all_keyed = []
             for joint in joints:
@@ -641,11 +704,28 @@ class VmdSceneCollector:
                         dense_frames = list(
                             range(int(math.floor(min(ranged))), int(math.ceil(max(ranged))) + 1)
                         )
+            if force_dense_sample:
+                for joint in joints:
+                    long_name = str((cmds.ls(joint, long=True) or [joint])[0])
+                    source_frames = _filter_frame_range(
+                        keyed_times_by_joint.get(joint, ()), start_frame, end_frame
+                    )
+                    if (
+                        not input_routes.get(long_name, {})
+                        and len(keyed_times_by_joint.get(joint, ())) == 1
+                        and len(source_frames) == 1
+                        and _is_direct_authored_track(long_name, _BONE_EXPORT_ATTRS)
+                    ):
+                        single_key_joints.add(joint)
             if (
                 force_dense_sample
                 and dense_frames
                 and bone_channel_sampler is None
-                and any(keyed_times_by_joint.get(joint) for joint in joints)
+                and any(
+                    keyed_times_by_joint.get(joint)
+                    and joint not in single_key_joints
+                    for joint in joints
+                )
             ):
                 self._diagnostics["native_sampler"] = {
                     "available": False,
@@ -666,6 +746,7 @@ class VmdSceneCollector:
                     joint
                     for joint in joints
                     if keyed_times_by_joint.get(joint)
+                    and joint not in single_key_joints
                 ]
                 if not native_joints:
                     self._diagnostics["native_sampler"] = {
@@ -794,9 +875,9 @@ class VmdSceneCollector:
                     "fallback_reason": "no eligible dense bone channels",
                 }
 
-        def read_value(joint, attr, frame_number, route):
+        def read_value(joint, attr, frame_number, route, use_native=True):
             nonlocal native_samples
-            if native_samples is not None:
+            if use_native and native_samples is not None:
                 try:
                     return float(native_samples.value(joint, attr, frame_number))
                 except Exception as exc:
@@ -826,6 +907,7 @@ class VmdSceneCollector:
                 start_frame,
                 end_frame,
             )
+            single_key = joint in single_key_joints
             raw_provenance_frames = raw_bone_frames_by_name.get(bone_name, set())
             has_new_authored_key = bool(
                 raw_provenance_frames
@@ -837,7 +919,9 @@ class VmdSceneCollector:
                 and not has_new_authored_key
             )
             keyed_frames = (
-                dense_frames
+                sparse_frames
+                if single_key
+                else dense_frames
                 if dense_frames is not None
                 and all_joint_keyed
                 and not preserve_sparse_rotation
@@ -846,9 +930,9 @@ class VmdSceneCollector:
             for frame_number in keyed_frames:
                 rotation = _maya_joint_rotate_to_vmd_quaternion(
                     joint,
-                    read_value(joint, "rotateX", frame_number, route),
-                    read_value(joint, "rotateY", frame_number, route),
-                    read_value(joint, "rotateZ", frame_number, route),
+                    read_value(joint, "rotateX", frame_number, route, not single_key),
+                    read_value(joint, "rotateY", frame_number, route, not single_key),
+                    read_value(joint, "rotateZ", frame_number, route, not single_key),
                     rotation_context.get(str(long_names[0])),
                 )
                 vmd_frame = _vmd_frame_number(frame_number, time_converter)
@@ -857,9 +941,9 @@ class VmdSceneCollector:
                         "frame_number": vmd_frame,
                         "position": _maya_translate_to_vmd_position(
                             (
-                                read_value(joint, "translateX", frame_number, route),
-                                read_value(joint, "translateY", frame_number, route),
-                                read_value(joint, "translateZ", frame_number, route),
+                                read_value(joint, "translateX", frame_number, route, not single_key),
+                                read_value(joint, "translateY", frame_number, route, not single_key),
+                                read_value(joint, "translateZ", frame_number, route, not single_key),
                             ),
                             bind_pose,
                             motion_scale,
@@ -883,7 +967,38 @@ class VmdSceneCollector:
                     )
                 ):
                     payload["position"], payload["rotation"] = raw_transform
+                if single_key:
+                    is_default = payload["position"] == (0.0, 0.0, 0.0) and payload[
+                        "rotation"
+                    ] == (0.0, 0.0, 0.0, 1.0)
+                    self._record_track_selection(
+                        "bone",
+                        bone_name,
+                        "omitted_default" if is_default else "constant_one_key",
+                        "direct_single_key_default"
+                        if is_default
+                        else "direct_single_key_non_default",
+                        len(sparse_frames),
+                        0 if is_default else 1,
+                    )
+                    if is_default:
+                        continue
                 frames.append(payload)
+            if force_dense_sample and not single_key and sparse_frames:
+                decision = "dependency_baked" if route else "authored_sampled"
+                reason = "routed_dependency" if route else (
+                    "multiple_source_keys"
+                    if len(sparse_frames) > 1
+                    else "conservative_dense_path"
+                )
+                self._record_track_selection(
+                    "bone",
+                    bone_name,
+                    decision,
+                    reason,
+                    len(sparse_frames),
+                    len(dense_frames or ()) if dense_sample else len(sparse_frames),
+                )
         return _deduplicate_frames(frames, ("bone_name", "frame_number"))
 
     def collect_ik_show_hide_frames(
@@ -1249,6 +1364,7 @@ class VmdSceneCollector:
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = []
         channels = []
+        controller_nodes = set()
         for blend_shape in blend_shapes:
             for weight_index, morph_name in self._blendshape_morph_names(blend_shape).items():
                 attr = f"weight[{weight_index}]"
@@ -1292,6 +1408,50 @@ class VmdSceneCollector:
                         channels.append(
                             (controller, attr, str(entry.name), source_frames)
                         )
+                        controller_nodes.add(controller)
+
+        channels = [
+            (
+                node,
+                attr,
+                morph_name,
+                ranged_source_frames,
+                bool(
+                    dense_sample
+                    and node not in controller_nodes
+                    and len(source_frames) == 1
+                    and len(ranged_source_frames) == 1
+                    and _is_direct_authored_track(node, (attr,))
+                ),
+            )
+            for node, attr, morph_name, source_frames in channels
+            for ranged_source_frames in [
+                _filter_frame_range(source_frames, start_frame, end_frame)
+            ]
+        ]
+
+        def append_frame(morph_name, frame_number, weight, source_frames, direct_single):
+            if direct_single:
+                is_default = weight == 0.0
+                self._record_track_selection(
+                    "morph",
+                    morph_name,
+                    "omitted_default" if is_default else "constant_one_key",
+                    "direct_single_key_default"
+                    if is_default
+                    else "direct_single_key_non_default",
+                    len(source_frames),
+                    0 if is_default else 1,
+                )
+                if is_default:
+                    return
+            frames.append(
+                {
+                    "morph_name": morph_name,
+                    "frame_number": _vmd_frame_number(frame_number, time_converter),
+                    "weight": weight,
+                }
+            )
 
         if timeline_evaluation and channels:
             channel_samples = [
@@ -1300,53 +1460,63 @@ class VmdSceneCollector:
                     attr,
                     morph_name,
                     set(dense_frame_samples)
-                    if dense_sample and dense_frame_samples is not None
-                    else set(
-                        _filter_frame_range(
-                            source_frames, start_frame, end_frame
-                        )
-                    ),
+                    if dense_sample and dense_frame_samples is not None and not direct_single
+                    else set(ranged_source_frames),
+                    ranged_source_frames,
+                    direct_single,
                 )
-                for node, attr, morph_name, source_frames in channels
+                for node, attr, morph_name, ranged_source_frames, direct_single in channels
             ]
             sample_times = sorted(
                 {
                     frame
-                    for _node, _attr, _morph_name, frames_for_channel in channel_samples
+                    for _node, _attr, _morph_name, frames_for_channel, _ranged_source_frames, _direct in channel_samples
                     for frame in frames_for_channel
                 }
             )
             with _MayaTimelineReader() as timeline_reader:
-                # Frame-major sampling prevents a full Timeline rewind for
-                # every blendShape/controller channel.
                 for frame_number in sample_times:
                     timeline_reader.set_frame(frame_number)
-                    for node, attr, morph_name, frames_for_channel in channel_samples:
+                    for node, attr, morph_name, frames_for_channel, ranged_source_frames, direct_single in channel_samples:
                         if frame_number not in frames_for_channel:
                             continue
-                        frames.append(
-                            {
-                                "morph_name": morph_name,
-                                "frame_number": _vmd_frame_number(
-                                    frame_number, time_converter
-                                ),
-                                "weight": _current_plug_float(node, attr),
-                            }
+                        append_frame(
+                            morph_name,
+                            frame_number,
+                            _current_plug_float(node, attr),
+                            ranged_source_frames,
+                            direct_single,
                         )
         else:
-            for node, attr, morph_name, source_frames in channels:
-                for frame_number in _filter_frame_range(
-                    source_frames, start_frame, end_frame
-                ):
-                    frames.append(
-                        {
-                            "morph_name": morph_name,
-                            "frame_number": _vmd_frame_number(
-                                frame_number, time_converter
-                            ),
-                            "weight": _plug_float(node, attr, frame_number),
-                        }
+            for node, attr, morph_name, ranged_source_frames, direct_single in channels:
+                planned_frames = (
+                    ranged_source_frames
+                    if direct_single
+                    else sorted(set(dense_frame_samples))
+                    if dense_sample and dense_frame_samples is not None
+                    else ranged_source_frames
+                )
+                for frame_number in planned_frames:
+                    append_frame(
+                        morph_name,
+                        frame_number,
+                        _plug_float(node, attr, frame_number),
+                        ranged_source_frames,
+                        direct_single,
                     )
+        if dense_sample:
+            for node, _attr, morph_name, ranged_source_frames, direct_single in channels:
+                if direct_single:
+                    continue
+                dependency = node in controller_nodes
+                self._record_track_selection(
+                    "morph",
+                    morph_name,
+                    "dependency_baked" if dependency else "authored_sampled",
+                    "morph_controller_route" if dependency else "multiple_source_keys",
+                    len(ranged_source_frames),
+                    len(dense_frame_samples or ranged_source_frames),
+                )
         return _deduplicate_frames(frames, ("morph_name", "frame_number"))
 
     def collect_camera_frames(
