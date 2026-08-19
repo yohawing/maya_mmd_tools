@@ -213,37 +213,25 @@ class PmxExporter:
                 for channel in (v_raw.get("additional_uvs") or ())
             ]
 
-            # Preserve raw SDEF data when it was collected from an imported PMX.
-            if v_raw.get("weight_transform_type") == 3:
-                if len(bone_indices) != 2 or len(bone_weights) != 1:
-                    raise ValueError("SDEF vertices require two bone indices and one bone weight")
-                v.weight_transform_type = 3
-                v.bone_indices = list(bone_indices)
-                v.bone_weights = [float(bone_weights[0])]
-                v.sdef_c = tuple(v_raw["sdef_c"])
-                v.sdef_r0 = tuple(v_raw["sdef_r0"])
-                v.sdef_r1 = tuple(v_raw["sdef_r1"])
-            # Determine BDEF weight transform type from bone_indices length.
-            elif len(bone_indices) == 1:
-                v.weight_transform_type = 0  # BDEF1
-                v.bone_indices = [bone_indices[0]]
-                v.bone_weights = []
-            elif len(bone_indices) == 2:
-                v.weight_transform_type = 1  # BDEF2
-                v.bone_indices = [bone_indices[0], bone_indices[1]]
-                v.bone_weights = [bone_weights[0] if bone_weights else 0.5]
-            elif len(bone_indices) == 4:
-                v.weight_transform_type = 2  # BDEF4
-                v.bone_indices = list(bone_indices[:4])
-                weights = list(bone_weights[:4]) if bone_weights else []
-                while len(weights) < 4:
-                    weights.append(0.0)
-                v.bone_weights = weights
-            else:
+            if len(bone_indices) not in (1, 2, 4):
                 raise ValueError(
                     f"Unsupported bone_indices length: {len(bone_indices)}. "
                     f"Must be 1 (BDEF1), 2 (BDEF2), or 4 (BDEF4)."
                 )
+            v.weight_transform_type = 2  # BDEF4
+            v.bone_indices = list(bone_indices[:4])
+            weights = list(bone_weights[:4]) if bone_weights else []
+            if len(bone_indices) == 1:
+                weights = [1.0]
+            elif len(bone_indices) == 2 and len(weights) < 2:
+                first_weight = weights[0] if weights else 0.5
+                weights = [first_weight, 1.0 - first_weight]
+            padding_bone = v.bone_indices[0]
+            while len(v.bone_indices) < 4:
+                v.bone_indices.append(padding_bone)
+            while len(weights) < 4:
+                weights.append(0.0)
+            v.bone_weights = weights
 
             for bone_index in v.bone_indices:
                 if bone_index < 0 or bone_index >= bone_count:

@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Defined the bounded v0.7 public Export scope for validation-gated PMX 2.0 and VMD output; PMD remains import-only.
 - Verified the canonical PMX 2.0 IK and flag-dependent bone metadata subset through Maya export and fresh import on Maya 2024/2026.
 - Preserved PMX 2.0 additional UV channels and UV/additional-UV morph four-component metadata through fresh import, while leaving Maya UV-set runtime evaluation and visual parity outside the supported claim.
-- Defined fail-closed export policy for PMX 2.0 SDEF and PMX 2.1-only Flip morphs, Impulse morphs, and soft bodies; retained import provenance supports rejection diagnostics rather than feature support.
+- Standardized PMX vertex export on BDEF4. SDEF/QDEF are imported as linear skin weights without retaining their auxiliary deformation data; explicit SDEF/QDEF payloads and PMX 2.1-only Flip morphs, Impulse morphs, and soft bodies remain fail-closed.
 - Gated VMD Mode C dense model/camera/light export and Mode A raw preservation of bone keys plus 64-byte bone interpolation for unedited motions with matching provenance; other Mode A tracks are outside the validated raw-preservation scope, Mode C does not preserve raw interpolation, and self-shadow remains unsupported.
 - Added canonical MaterialTab authoring for shared toon indices and non-shared custom toon path/index, with PMX parse and Maya 2024/2026 fresh-import evidence.
 

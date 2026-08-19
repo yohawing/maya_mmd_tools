@@ -22,8 +22,6 @@ from mmd_tools.converters.material_shader_parameters import (
 )
 from mmd_tools.core.constants import (
     ATTR_MMD_ADDITIONAL_UVS_JSON,
-    ATTR_MMD_PMX_SDEF_VERTEX_COUNT,
-    ATTR_MMD_SDEF_VERTICES_JSON,
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_OFFSET,
     ATTR_MMD_BONE_FLAGS,
@@ -509,58 +507,8 @@ class TestPmxExporter(MayaTestBase):
             ],
         )
 
-    def test_roundtrip_imported_sdef_storage(self):
-        """Collector reads canonical SDEF storage and writer preserves raw vectors."""
-        transform, _ = self._make_triangle(name="sdef_tri_mesh")
-        self._assign_shader(transform, shader_name="SdefMat")
-        maya_attribute_utils.set_custom_attributes(
-            transform,
-            {ATTR_MMD_PMX_SDEF_VERTEX_COUNT: 1},
-        )
-        maya_attribute_utils.write_json_attr(
-            transform,
-            ATTR_MMD_SDEF_VERTICES_JSON,
-            {
-                "schema_version": 1,
-                "vertex_count": 3,
-                "source_vertex_count": 3,
-                "source_vertex_indices": [0, 1, 2],
-                "sdef_vertices": [
-                    {
-                        "bone_indices": [0, 0],
-                        "bone_weights": [0.75],
-                        "sdef_c": [0.1, 0.2, 0.3],
-                        "sdef_r0": [0.0, 0.1, 0.0],
-                        "sdef_r1": [0.0, 0.0, 0.1],
-                    },
-                    None,
-                    None,
-                ],
-            },
-        )
-
-        maya_data = ExportSceneCollector().collect_from_mesh(transform)
-        self.assertEqual(maya_data["vertices"][0]["weight_transform_type"], 3)
-        self.assertEqual(maya_data["vertices"][0]["bone_indices"], [0, 0])
-        self.assertEqual(maya_data["vertices"][0]["bone_weights"], [0.75])
-
-        output_path = self.get_temp_filename("sdef_triangle.pmx")
-        PmxExporter().export_pmx_model(output_path, maya_data)
-        pmx = _parse_pmx(output_path)
-
-        vertex = pmx.vertices[0]
-        self.assertEqual(vertex.weight_transform_type, 3)
-        self.assertEqual(vertex.bone_indices, [0, 0])
-        self.assertAlmostEqual(vertex.bone_weights[0], 0.75)
-        for actual, expected in zip(
-            (vertex.sdef_c, vertex.sdef_r0, vertex.sdef_r1),
-            ((0.1, 0.2, 0.3), (0.0, 0.1, 0.0), (0.0, 0.0, 0.1)),
-        ):
-            for actual_component, expected_component in zip(actual, expected):
-                self.assertAlmostEqual(actual_component, expected_component, places=6)
-
-    def test_imported_uv_and_sdef_metadata_survive_pmx_fresh_import(self):
-        """Fresh PMX import restores canonical additional-UV and SDEF payloads."""
+    def test_imported_uv_metadata_survives_pmx_fresh_import(self):
+        """Fresh PMX import restores canonical additional-UV payloads."""
         transform, _ = self._make_triangle(name="fresh_metadata_tri_mesh")
         self._assign_shader(transform, shader_name="FreshMetadataMat")
         maya_attribute_utils.write_json_attr(
@@ -579,32 +527,6 @@ class TestPmxExporter(MayaTestBase):
                 ],
             },
         )
-        maya_attribute_utils.set_custom_attributes(
-            transform,
-            {ATTR_MMD_PMX_SDEF_VERTEX_COUNT: 1},
-        )
-        maya_attribute_utils.write_json_attr(
-            transform,
-            ATTR_MMD_SDEF_VERTICES_JSON,
-            {
-                "schema_version": 1,
-                "vertex_count": 3,
-                "source_vertex_count": 3,
-                "source_vertex_indices": [0, 1, 2],
-                "sdef_vertices": [
-                    {
-                        "bone_indices": [0, 0],
-                        "bone_weights": [0.75],
-                        "sdef_c": [0.1, 0.2, 0.3],
-                        "sdef_r0": [0.0, 0.1, 0.0],
-                        "sdef_r1": [0.0, 0.0, 0.1],
-                    },
-                    None,
-                    None,
-                ],
-            },
-        )
-
         collected = ExportSceneCollector().collect_from_mesh(transform)
         output_path = self.get_temp_filename("fresh_import_metadata.pmx")
         PmxExporter().export_pmx_model(output_path, collected)
@@ -629,24 +551,6 @@ class TestPmxExporter(MayaTestBase):
         ):
             for actual, expected in zip(actual_channels, expected_channels):
                 self.assertAlmostEqual(actual, expected, places=6)
-        self.assertEqual(
-            fresh["vertices"][0]["weight_transform_type"],
-            collected["vertices"][0]["weight_transform_type"],
-        )
-        self.assertEqual(
-            fresh["vertices"][0]["bone_indices"],
-            collected["vertices"][0]["bone_indices"],
-        )
-        self.assertEqual(
-            fresh["vertices"][0]["bone_weights"],
-            collected["vertices"][0]["bone_weights"],
-        )
-        for field in ("sdef_c", "sdef_r0", "sdef_r1"):
-            for actual, expected in zip(
-                fresh["vertices"][0][field], collected["vertices"][0][field]
-            ):
-                self.assertAlmostEqual(actual, expected, places=6, msg=field)
-
     def test_imported_pmx_soft_body_provenance_blocks_export(self):
         """Unsupported PMX 2.1 soft bodies survive import as a blocking export sentinel."""
         source_path = self.get_temp_filename("soft_body_import.pmx")
@@ -1055,13 +959,14 @@ class TestPmxExporter(MayaTestBase):
 
         self.assertEqual([bone.name for bone in pmx.bones], ["センター", "上半身"])
         self.assertEqual([bone.parent_bone_index for bone in pmx.bones], [-1, 0])
-        self.assertEqual(pmx.vertices[0].weight_transform_type, 0)
-        self.assertEqual(pmx.vertices[0].bone_indices, [0])
-        self.assertEqual(pmx.vertices[1].weight_transform_type, 1)
-        self.assertEqual(pmx.vertices[1].bone_indices, [1, 0])
+        self.assertEqual(pmx.vertices[0].weight_transform_type, 2)
+        self.assertEqual(pmx.vertices[0].bone_indices, [0, 0, 0, 0])
+        self.assertEqual(pmx.vertices[1].weight_transform_type, 2)
+        self.assertEqual(pmx.vertices[1].bone_indices, [1, 0, 1, 1])
         self.assertAlmostEqual(pmx.vertices[1].bone_weights[0], 0.75)
-        self.assertEqual(pmx.vertices[2].weight_transform_type, 0)
-        self.assertEqual(pmx.vertices[2].bone_indices, [1])
+        self.assertAlmostEqual(pmx.vertices[1].bone_weights[1], 0.25)
+        self.assertEqual(pmx.vertices[2].weight_transform_type, 2)
+        self.assertEqual(pmx.vertices[2].bone_indices, [1, 1, 1, 1])
 
     def test_export_model_action_roundtrips_non_ik_bone_semantics(self):
         """Canonical non-IK bone attrs survive Maya → PMX → parser round-trip."""

@@ -22,7 +22,7 @@ Maya MMD Toolsは、Autodesk MayaでMikuMikuDance (MMD) のPMD/PMXモデルとVM
 
 | 機能 | 状態 | 備考 |
 |---|---|---|
-| メッシュ | ℹ️ | QDEF/SDEFには非対応です。PMX 2.0エクスポートは追加UVレイヤーをPMXメタデータとして保持しますが、UVモーフのMayaランタイム評価は未検証です。|
+| メッシュ | ℹ️ | SDEF/QDEFは通常のskin weightとして読み込み、BDEF4へ変換して出力します。固有の変形方式は保持しません。PMX 2.0エクスポートは追加UVレイヤーをPMXメタデータとして保持しますが、UVモーフのMayaランタイム評価は未検証です。|
 | マテリアル・テクスチャ | ℹ️ | DX11・OpenGLシェーダーによるMMDトゥーンシェーダーを実装しています。共有トゥーンのインデックスと非共有カスタムトゥーンのパス／インデックスを含むPMX対応マテリアル項目は、インポート・編集・エクスポート・再インポートの重点検証があります。PMDのマテリアルはインポート・表示・編集に対応します。Viewport2.0の制約により、MMDシェーダーの再現性が低いです。 |
 | Maya向け名前解決 | ✅ | 辞書・またはハッシュにより安全な名前に変換します。またパスのテクスチャを安全なパスに自動解決します。 |
 | エッジ／輪郭フラグ | ℹ️ | Viewport2.0の制約があるため、オプションでONにできます。 |
@@ -31,7 +31,7 @@ Maya MMD Toolsは、Autodesk MayaでMikuMikuDance (MMD) のPMD/PMXモデルとVM
 | モーフ（頂点・ボーン・マテリアル・グループ・UV） | ℹ️ | 頂点・ボーン・マテリアル・グループは対応済み。PMX 2.0のUV／追加UVモーフ（type 3–7）はエクスポートと再インポートでメタデータを保持しますが、MayaのUV setは変形しません。Flip、Impulseモーフは未対応です。 |
 | 物理（剛体・ジョイント） | ℹ️ | 物理の一部編集が未対応となります　|
 | ソフトボディ（PMX 2.1） | ⛔ | 非対応 |
-| エクスポート | ℹ️ | Exportワークフローから、上記の検証済み範囲でPMX 2.0を書き出せます。Validationはfail-closedで、拒否時には既存出力を保持します。SDEF、PMX 2.1固有のFlip／Impulseモーフ、ソフトボディは意図的に非対応です。PMDはインポート専用です。PMX全項目や表示の完全一致は保証しません。 |
+| エクスポート | ℹ️ | Exportワークフローから、上記の検証済み範囲でPMX 2.0を書き出せます。頂点ウェイト形式はBDEF4へ統一します。Validationはfail-closedで、拒否時には既存出力を保持します。明示的なSDEF/QDEF payload、PMX 2.1固有のFlip／Impulseモーフ、ソフトボディは意図的に非対応です。PMDはインポート専用です。PMX全項目や表示の完全一致は保証しません。 |
 
 ### アニメーション（VMD）
 
@@ -51,8 +51,8 @@ Maya MMD Toolsは、Autodesk MayaでMikuMikuDance (MMD) のPMD/PMXモデルとVM
 
 - **α版のため、詳細なドキュメントは未作成です** ドキュメントの管理コストより、開発速度を優先するためです。
 - **様々な機能が未実装な機能のまま公開されています。** α版の試験的公開なので、ご容赦ください。フィードバックお待ちしております。
-- **QDEF、SDEFには未対応です** 一部のモデル＋モーションでメッシュが痩せてしまう場合があります。
-- **エクスポートは検証済みの限定範囲に対応します** PMX 2.0の追加UV、UV／追加UVモーフmetadata、canonical bone／IK範囲は再インポートまで保持しますが、UVモーフはMayaのUV setには評価されません。PMDはインポート専用で、Export selector／writerには含まれません。SDEF、PMX 2.1固有のFlip／Impulseモーフ、ソフトボディはfail-closedで拒否します。VMD Mode Cはモデル・カメラ・ライトをdense bakeしraw補間を保持せず、セルフ影は非対応です。Mode Aでraw保持を検証済みなのは、provenanceが一致する未編集モーションのボーンキーと64-byteボーン補間だけで、編集後は拒否します。他trackのMode A raw保持、PMX全項目、visual parityは保証しません。
+- **QDEF、SDEFはBDEF4へ劣化変換します** 固有の変形方式を保持しないため、一部のモデル＋モーションでメッシュが痩せてしまう場合があります。
+- **エクスポートは検証済みの限定範囲に対応します** 頂点ウェイト形式はBDEF4へ統一し、SDEF/QDEF固有の補助データは保持しません。PMX 2.0の追加UV、UV／追加UVモーフmetadata、canonical bone／IK範囲は再インポートまで保持しますが、UVモーフはMayaのUV setには評価されません。PMDはインポート専用で、Export selector／writerには含まれません。明示的なSDEF/QDEF payload、PMX 2.1固有のFlip／Impulseモーフ、ソフトボディはfail-closedで拒否します。VMD Mode Cはモデル・カメラ・ライトをdense bakeしraw補間を保持せず、セルフ影は非対応です。Mode Aでraw保持を検証済みなのは、provenanceが一致する未編集モーションのボーンキーと64-byteボーン補間だけで、編集後は拒否します。他trackのMode A raw保持、PMX全項目、visual parityは保証しません。
 - **HumanIKが試験的な機能として公開されています** 必要最低限の機能として公開されています。`MMD > HumanIK (Experimental)`からお試しください。
 - **脚の回転や、ボーンモーフと競合する骨はコントロールリグ下でしか動作しません。** 　ボーンモーフと骨の接続が競合すると骨が動かせなくなってしまう場合があります。
 

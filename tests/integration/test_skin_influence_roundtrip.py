@@ -2,10 +2,8 @@
 
 The fixture is intentionally generated as a small real PMX binary.  Import
 readback runs through the production importer in both unified and
-material-split modes for BDEF1/BDEF2/BDEF4/SDEF/QDEF, including numeric SDEF
-weights.  Public export preserves canonical imported SDEF payloads; a derived
-fixture that changes only SDEF tags to BDEF2 keeps separate BDEF/QDEF
-round-trip coverage.
+material-split modes for BDEF1/BDEF2/BDEF4/SDEF/QDEF. Maya normalizes every
+mode to skinCluster weights and public PMX export writes every vertex as BDEF4.
 """
 
 from __future__ import annotations
@@ -33,7 +31,7 @@ from tests.common.maya_test_base import MayaTestBase
 
 
 _WEIGHT_MODES = (0, 1, 2, 3, 4)
-_EXPECTED_EXPORT_MODES = {0: 0, 1: 1, 2: 2, 4: 2}
+_EXPECTED_EXPORT_MODES = {mode: 2 for mode in _WEIGHT_MODES}
 
 
 def _make_fixture() -> PmxData:
@@ -123,12 +121,8 @@ def _make_fixture() -> PmxData:
 
 
 def _make_exportable_fixture(source_data: PmxData) -> PmxData:
-    """Copy a source fixture with SDEF tags converted to equivalent BDEF2 tags."""
-    export_data = deepcopy(source_data)
-    for vertex in export_data.vertices:
-        if vertex.weight_transform_type == 3:
-            vertex.weight_transform_type = 1
-    return export_data
+    """Copy a source fixture; importer/exporter performs the BDEF4 downgrade."""
+    return deepcopy(source_data)
 
 
 def _weight_map(vertex) -> dict[int, float]:
@@ -204,7 +198,7 @@ class TestSkinInfluenceRoundtrip(MayaTestBase):
         settings.set("import.model.create_mmd_shaders", False)
 
     def test_all_pmx_weight_modes_import_readback_and_export_policy(self):
-        """Read back all modes and preserve SDEF plus BDEF/QDEF export coverage."""
+        """Read every PMX skin mode and export equivalent BDEF4 weights."""
         source_path = self.get_temp_filename("skin_influence_modes.pmx")
         source_data = _make_fixture()
         source_data.write_file(source_path)
@@ -288,20 +282,9 @@ class TestSkinInfluenceRoundtrip(MayaTestBase):
                         output_path,
                         use_native_pmx_parse=False,
                     ).vertices
-                    exported_sdef = [
-                        vertex
-                        for vertex in exported_vertices
-                        if vertex.weight_transform_type == 3
-                    ]
-                    expected_sdef = [
-                        vertex
-                        for vertex in expected_vertices.vertices
-                        if vertex.weight_transform_type == 3
-                    ]
-                    self.assertEqual(len(exported_sdef), len(expected_sdef))
-                    self.assertEqual(
-                        [vertex.bone_indices for vertex in exported_sdef],
-                        [vertex.bone_indices for vertex in expected_sdef],
+                    self.assertTrue(exported_vertices)
+                    self.assertTrue(
+                        all(vertex.weight_transform_type == 2 for vertex in exported_vertices)
                     )
 
                     cmds.file(new=True, force=True)

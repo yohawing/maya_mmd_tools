@@ -561,14 +561,10 @@ class BoneConverter:
 
         if vertex.weight_transform_type == 0:  # BDEF1
             weights = self._get_bdef1_weights(vertex)
-        elif vertex.weight_transform_type == 1:  # BDEF2
+        elif vertex.weight_transform_type in (1, 3):  # BDEF2 / SDEF -> linear weights
             weights = self._get_bdef2_weights(vertex)
-        elif vertex.weight_transform_type == 2:  # BDEF4
+        elif vertex.weight_transform_type in (2, 4):  # BDEF4 / QDEF -> linear weights
             weights = self._get_bdef4_weights(vertex)
-        elif vertex.weight_transform_type == 3:  # SDEF
-            weights = self._get_sdef_weights(vertex)
-        elif vertex.weight_transform_type == 4:  # QDEF
-            weights = self._get_qdef_weights(vertex)
 
         return weights
 
@@ -600,14 +596,6 @@ class BoneConverter:
             if weight > 0:
                 transform_list.append((bone_index, weight))
         return transform_list
-
-    def _get_sdef_weights(self, vertex) -> List[Tuple[int, float]]:
-        """SDEFの重み情報を取得する。"""
-        return self._get_bdef2_weights(vertex)
-
-    def _get_qdef_weights(self, vertex) -> List[Tuple[int, float]]:
-        """QDEFの重み情報を取得する。"""
-        return self._get_bdef4_weights(vertex)
 
     def _get_mesh_used_bone_indices(self, pmx_data, mesh_node) -> List[int]:
         """Return sorted PMX bone indices with positive weights on one mesh."""

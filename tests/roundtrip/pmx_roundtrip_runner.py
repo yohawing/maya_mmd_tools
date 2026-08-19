@@ -40,7 +40,7 @@ from tests.common.maya_plugin_setup import load_mmd_tools_plugin
 # Constants
 # ---------------------------------------------------------------------------
 _UNSUPPORTED_WARN = {
-    "sdef_vertices": "SDEF vertex weight data skipped (not supported by exporter dict)",
+    "special_skinning": "SDEF/QDEF deformation data downgraded to BDEF4",
     "additional_uvs": "Additional UV layers skipped (exporter dict supports 1 UV)",
     "soft_bodies": "Soft body data is PMX v2.1-only and unsupported in roundtrip",
     "bone_ik": "IK bone data skipped during PmxData→dict conversion",
@@ -138,8 +138,7 @@ def _initialize_maya() -> None:
 def _pmxdata_to_exporter_dict(pmx_data: Any, warn_list: list[str]) -> dict:
     """Convert a PmxData object into the dict format expected by PmxExporter.
 
-    Unsupported sections (SDEF, additional UVs, soft bodies, IK, toon textures)
-    are collected as warnings rather than errors.
+    Downgraded or unsupported sections are collected as warnings rather than errors.
     """
     from mmd_tools.core.pmx_data.bone import PmxBoneFlag
     from mmd_tools.core.display_frame_metadata import display_frames_to_dicts
@@ -156,7 +155,7 @@ def _pmxdata_to_exporter_dict(pmx_data: Any, warn_list: list[str]) -> dict:
 
     # -- vertices -----------------------------------------------------------
     vertices_raw: list[dict] = []
-    sdef_count = 0
+    special_skinning_count = 0
     additional_uv_count_total = 0
     for v in pmx_data.vertices:
         vd: dict[str, Any] = {
@@ -167,18 +166,17 @@ def _pmxdata_to_exporter_dict(pmx_data: Any, warn_list: list[str]) -> dict:
             "bone_weights": list(v.bone_weights),
             "edge_magnification": v.edge_magnification,
         }
-        # Warn about SDEF (weight_transform_type == 3)
-        if v.weight_transform_type == 3:
-            sdef_count += 1
+        if v.weight_transform_type in (3, 4):
+            special_skinning_count += 1
         # Warn about additional UVs
         if getattr(v, "additional_uvs", None):
             additional_uv_count_total += 1
         vertices_raw.append(vd)
     maya_data["vertices"] = vertices_raw
 
-    if sdef_count:
+    if special_skinning_count:
         warn_list.append(
-            f"{_UNSUPPORTED_WARN['sdef_vertices']} ({sdef_count} vertices)"
+            f"{_UNSUPPORTED_WARN['special_skinning']} ({special_skinning_count} vertices)"
         )
     if additional_uv_count_total:
         warn_list.append(
