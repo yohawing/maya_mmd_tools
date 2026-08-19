@@ -42,6 +42,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
 )
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
+from mmd_tools.converters.bone_morph_runtime import resolve_owned_bone_morph_base_routes
 from mmd_tools.converters.vmd_camera_animation import (
     ATTR_MMD_CAMERA_ROOT_NODE,
     ATTR_MMD_CAMERA_TARGET_NODE,
@@ -54,6 +55,10 @@ from mmd_tools.converters.vmd_ik_passthrough import collect_mmd_ik_passthrough_i
 from mmd_tools.converters.vmd_import_state import get_stored_bind_translate
 from mmd_tools.converters.vmd_runtime_sampling import (
     maya_time_to_vmd_frame as _maya_time_to_vmd_frame_at_fps,
+)
+from mmd_tools.converters.vmd_redirected_authoring_proxy import (
+    redirected_authority_matches,
+    resolve_redirected_authoring_proxy_authority,
 )
 
 
@@ -1051,7 +1056,25 @@ class VmdSceneCollector:
                         f"inputRotate[{slot}].inputRotateElement{axis}",
                     )
 
+        # The owned accumulator base is the authored layer before append/IK;
+        # it therefore replaces their passthrough routes. Control-rig EDIT
+        # metadata below remains the highest-priority authoring contract.
+        accumulator_resolution = resolve_owned_bone_morph_base_routes(joints)
+        if accumulator_resolution.blocked:
+            details = "; ".join(
+                f"{joint}: channels={channels!r}, reason={reason}"
+                for joint, (channels, reason) in sorted(
+                    accumulator_resolution.blocked.items()
+                )
+            )
+            raise ValueError(
+                "VMD collection blocked by unresolved bone-morph accumulator ownership: "
+                + details
+            )
+        for joint, route in accumulator_resolution.routes.items():
+            routes.setdefault(joint, {}).update(route)
         if not target_model:
+            self._merge_redirected_authoring_proxy_routes(joints, routes)
             return routes
         metadata = read_mmd_control_rig_metadata(target_model)
         if not metadata:
@@ -1060,6 +1083,7 @@ class VmdSceneCollector:
                 target_model=target_model,
                 routes=routes,
             )
+            self._merge_redirected_authoring_proxy_routes(joints, routes)
             return routes
         joints_by_path = {
             str((cmds.ls(joint, long=True) or [joint])[0]): str(joint)
@@ -1095,7 +1119,33 @@ class VmdSceneCollector:
             target_model=target_model,
             routes=routes,
         )
+        self._merge_redirected_authoring_proxy_routes(joints, routes)
         return routes
+
+    def _merge_redirected_authoring_proxy_routes(
+        self,
+        joints: Sequence[str],
+        routes: dict[str, dict[str, tuple[str, str]]],
+    ) -> None:
+        """Validate current logical destinations before selecting proxy tracks."""
+        for joint_name in joints:
+            joint = str((cmds.ls(joint_name, long=True) or [joint_name])[0])
+            route_key = str(joint_name) if str(joint_name) in routes else joint
+            proxy_route, authority, claimed = (
+                resolve_redirected_authoring_proxy_authority(joint)
+            )
+            if not claimed:
+                continue
+            current = {
+                channel: routes.get(route_key, {}).get(channel, (joint, channel))
+                for channel in authority
+            }
+            if not proxy_route or not redirected_authority_matches(current, authority):
+                raise ValueError(
+                    "VMD collection blocked by stale redirected authoring proxy "
+                    f"authority: {joint}; current={current!r}; authority={authority!r}"
+                )
+            routes.setdefault(route_key, {}).update(proxy_route)
 
     def _merge_physics_authored_input_routes(
         self,

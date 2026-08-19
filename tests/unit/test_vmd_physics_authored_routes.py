@@ -10,6 +10,9 @@ from tests.common.maya_stub import install_maya_stub
 install_maya_stub()
 
 from mmd_tools.converters import vmd_scene_collector as collector_module  # noqa: E402
+from mmd_tools.converters.bone_morph_runtime import (  # noqa: E402
+    BoneMorphBaseRouteResolution,
+)
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector  # noqa: E402
 
 
@@ -114,6 +117,10 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
             collector_module, "collect_mmd_ik_passthrough_info", return_value={}
         ), mock.patch.object(
             collector_module, "read_mmd_control_rig_metadata", return_value=None
+        ), mock.patch.object(
+            collector_module,
+            "resolve_owned_bone_morph_base_routes",
+            return_value=BoneMorphBaseRouteResolution(routes={}, blocked={}),
         ):
             routes = collector._scene_authored_input_routes(
                 ["|model|bone"], "|model"
@@ -156,6 +163,10 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
             collector_module, "collect_mmd_ik_passthrough_info", return_value={}
         ), mock.patch.object(
             collector_module, "read_mmd_control_rig_metadata", return_value=None
+        ), mock.patch.object(
+            collector_module,
+            "resolve_owned_bone_morph_base_routes",
+            return_value=BoneMorphBaseRouteResolution(routes={}, blocked={}),
         ):
             routes = collector._scene_authored_input_routes(
                 ["|model|bone"], "|model"
@@ -183,6 +194,10 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
             collector_module, "collect_mmd_ik_passthrough_info", return_value={}
         ), mock.patch.object(
             collector_module, "read_mmd_control_rig_metadata", return_value=None
+        ), mock.patch.object(
+            collector_module,
+            "resolve_owned_bone_morph_base_routes",
+            return_value=BoneMorphBaseRouteResolution(routes={}, blocked={}),
         ):
             routes = collector._scene_authored_input_routes(
                 ["|model|bone", "|other_model|bone"], "|model"
@@ -211,6 +226,10 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
             collector_module, "collect_mmd_ik_passthrough_info", return_value={}
         ), mock.patch.object(
             collector_module, "read_mmd_control_rig_metadata", return_value=None
+        ), mock.patch.object(
+            collector_module,
+            "resolve_owned_bone_morph_base_routes",
+            return_value=BoneMorphBaseRouteResolution(routes={}, blocked={}),
         ):
             routes = collector._scene_authored_input_routes(
                 ["|model|bone"], "|model"

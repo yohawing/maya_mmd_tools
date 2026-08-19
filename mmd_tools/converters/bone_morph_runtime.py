@@ -6,6 +6,7 @@ import json
 import math
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import maya.api.OpenMaya as om
@@ -43,6 +44,14 @@ REQUIRED_ACCUM_ATTRS = (
 _NODE_TYPE_UNAVAILABLE = "node_type_unavailable"
 _PROBE_NODE_NAME = "__mmdBoneMorphAccum_availability_probe__"
 _ARRAY_INDEX_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\](?:\.|$)")
+
+
+@dataclass(frozen=True)
+class BoneMorphBaseRouteResolution:
+    """Owned accumulator routes plus fail-closed claims that could not resolve."""
+
+    routes: Dict[str, Dict[str, Tuple[str, str]]]
+    blocked: Dict[str, Tuple[Tuple[str, ...], str]]
 
 
 def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
@@ -275,6 +284,148 @@ def _is_valid_accumulator(node: str) -> bool:
         )
     except Exception:
         return False
+
+
+def resolve_owned_bone_morph_base_routes(
+    joints: Iterable[str],
+) -> BoneMorphBaseRouteResolution:
+    """Resolve unambiguous authored base channels for owned accumulators.
+
+    The marker and stored target alone are insufficient: a stale or copied
+    accumulator must not capture VMD keys.  Each accepted node must also own
+    both live output connections at the destination selected by the runtime
+    graph (joint, append base, or IK input).  Duplicate candidates and any
+    incomplete ownership proof are skipped fail-closed.
+    """
+    requested: Dict[str, str] = {}
+    for joint in joints:
+        canonical = _canonical_dag_path(str(joint))
+        if canonical:
+            requested[canonical] = str(joint)
+    if not requested:
+        return BoneMorphBaseRouteResolution(routes={}, blocked={})
+
+    candidates: Dict[str, List[str]] = defaultdict(list)
+    invalid_candidates: Dict[str, List[str]] = defaultdict(list)
+    try:
+        accumulators = cmds.ls(type=ACCUM_NODE_TYPE) or []
+    except Exception:
+        return BoneMorphBaseRouteResolution(routes={}, blocked={})
+    for node_value in accumulators:
+        node = str(node_value)
+        try:
+            if not cmds.attributeQuery("mmd_bone_morph_accum", node=node, exists=True):
+                continue
+            if not bool(cmds.getAttr(f"{node}.mmd_bone_morph_accum")):
+                continue
+        except Exception:
+            continue
+        try:
+            has_target = cmds.attributeQuery(
+                "mmd_target_joint", node=node, exists=True
+            )
+            target = (
+                str(cmds.getAttr(f"{node}.mmd_target_joint") or "")
+                if has_target
+                else ""
+            )
+        except Exception:
+            target = ""
+        target_matches = _canonical_dag_paths(target)
+        requested_targets = [match for match in target_matches if match in requested]
+        claimed_targets = set(requested_targets)
+        # A malformed/stale target marker can still be associated safely with
+        # the mapped joint whose live input it partially owns. This slow scan
+        # runs only on malformed candidates, never on the normal import path.
+        if len(target_matches) != 1 or len(requested_targets) != 1:
+            for canonical_joint in requested:
+                if any(
+                    _is_connected(
+                        f"{node}.output{attr_kind.capitalize()}",
+                        _destination_upstream_of_append(canonical_joint, attr_kind),
+                    )
+                    for attr_kind in ("translate", "rotate")
+                ):
+                    claimed_targets.add(canonical_joint)
+        if not claimed_targets:
+            continue
+        if (
+            len(target_matches) != 1
+            or len(requested_targets) != 1
+            or not _is_valid_accumulator(node)
+        ):
+            for claimed_target in claimed_targets:
+                invalid_candidates[claimed_target].append(node)
+            continue
+        candidates[requested_targets[0]].append(node)
+
+    routes: Dict[str, Dict[str, Tuple[str, str]]] = {}
+    blocked: Dict[str, Tuple[Tuple[str, ...], str]] = {}
+    all_channels = tuple(
+        f"{attr_kind}{axis}"
+        for attr_kind in ("translate", "rotate")
+        for axis in ("X", "Y", "Z")
+    )
+    claimed_joints = set(candidates) | set(invalid_candidates)
+    for canonical_joint in claimed_joints:
+        nodes = candidates.get(canonical_joint, [])
+        invalid_nodes = invalid_candidates.get(canonical_joint, [])
+        if invalid_nodes:
+            blocked[requested[canonical_joint]] = (
+                all_channels,
+                "invalid_or_ambiguous_bone_morph_accumulator",
+            )
+            continue
+        if len(set(nodes)) != 1:
+            blocked[requested[canonical_joint]] = (
+                all_channels,
+                "duplicate_bone_morph_accumulator",
+            )
+            continue
+        node = nodes[0]
+        ownership = (
+            (
+                "translate",
+                "baseTranslate",
+                "outputTranslate",
+            ),
+            ("rotate", "baseRotate", "outputRotate"),
+        )
+        if not all(
+            _is_connected(
+                f"{node}.{output_name}",
+                _destination_upstream_of_append(canonical_joint, attr_kind),
+            )
+            for attr_kind, _base_name, output_name in ownership
+        ):
+            blocked[requested[canonical_joint]] = (
+                all_channels,
+                "bone_morph_accumulator_output_unowned",
+            )
+            continue
+        route: Dict[str, Tuple[str, str]] = {}
+        for attr_kind, base_name, _output_name in ownership:
+            for axis in ("X", "Y", "Z"):
+                route[f"{attr_kind}{axis}"] = (node, f"{base_name}{axis}")
+        routes[requested[canonical_joint]] = route
+    return BoneMorphBaseRouteResolution(routes=routes, blocked=blocked)
+
+
+def _canonical_dag_path(node: str) -> Optional[str]:
+    """Return one unambiguous long DAG path, or ``None``."""
+    try:
+        matches = cmds.ls(node, long=True) or []
+    except Exception:
+        return None
+    return str(matches[0]) if len(matches) == 1 else None
+
+
+def _canonical_dag_paths(node: str) -> Tuple[str, ...]:
+    """Return every long DAG match for ambiguity-aware ownership checks."""
+    try:
+        return tuple(str(match) for match in (cmds.ls(node, long=True) or []))
+    except Exception:
+        return ()
 
 
 def _collect_joints_by_bone_index(root_group: str) -> Dict[int, str]:

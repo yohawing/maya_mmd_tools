@@ -16,6 +16,9 @@ from mmd_tools.converters.physics_scene_builder import (
     recover_physics_driver_connections,
 )
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.converters.vmd_redirected_authoring_proxy import (
+    resolve_redirected_authoring_proxy,
+)
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from tests.common.maya_test_base import MayaTestBase
 
@@ -126,12 +129,25 @@ class TestPhysicsGraphAuthority(MayaTestBase):
             },
         )
 
-        frame = VmdBoneFrame()
-        frame.bone_name = "bone0"
-        frame.frame_number = 7
-        frame.position = (1.25, -2.5, 3.75)
-        frame.rotation = (0.0, 0.0, 0.0, 1.0)
-        converter._set_bone_keyframes(joint, [frame], "bone0", route)
+        frames = []
+        for frame_number, position, rotation in (
+            (0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+            (7, (1.25, -2.5, 3.75), (0.0, 0.70710678, 0.0, 0.70710678)),
+        ):
+            frame = VmdBoneFrame()
+            frame.bone_name = "bone0"
+            frame.frame_number = frame_number
+            frame.position = position
+            frame.rotation = rotation
+            frame.semantic_interpolation = {
+                "rotation": (0.1, 0.3, 0.7, 0.9)
+            }
+            frames.append(frame)
+        converter._set_bone_keyframes(joint, frames, "bone0", route)
+        proxy_route, proxy_claimed = resolve_redirected_authoring_proxy(joint)
+        self.assertTrue(proxy_claimed)
+        self.assertEqual(set(proxy_route), set(expected_targets))
+        proxy = proxy_route["rotateX"][0]
         cmds.currentTime(converter.vmd_frame_to_maya_time(7), edit=True)
 
         expected_translate = (1.25, -2.5, -3.75)
@@ -144,9 +160,15 @@ class TestPhysicsGraphAuthority(MayaTestBase):
         for source_channel, target_channel in expected_targets.items():
             self.assertTrue(
                 cmds.keyframe(
-                    f"{driver}.{target_channel}",
+                    f"{proxy}.{source_channel}",
                     query=True,
                     keyframeCount=True,
+                )
+            )
+            self.assertTrue(
+                cmds.isConnected(
+                    f"{proxy}.{source_channel}",
+                    f"{driver}.{target_channel}",
                 )
             )
             compound = "outTranslate" if source_channel.startswith("translate") else "outRotate"
@@ -155,6 +177,20 @@ class TestPhysicsGraphAuthority(MayaTestBase):
                     f"{joint}.{source_channel}", sourceFromDestination=True
                 ),
                 f"{driver}.{compound}",
+            )
+
+        for axis in "XYZ":
+            curve = (
+                cmds.listConnections(
+                    f"{proxy}.rotate{axis}",
+                    source=True,
+                    destination=False,
+                )
+                or [None]
+            )[0]
+            self.assertEqual(
+                cmds.rotationInterpolation(curve, query=True),
+                "quaternionSlerp",
             )
 
         pre_rotate = cmds.getAttr(f"{driver}.inPreRotate")[0]

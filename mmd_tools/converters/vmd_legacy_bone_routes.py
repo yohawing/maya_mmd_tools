@@ -13,6 +13,7 @@ from ..core.mmd_control_rig_motion import (
     control_rig_fixed_axis_twist_joints,
 )
 from ..core.model_registry import get_model_registry
+from .bone_morph_runtime import resolve_owned_bone_morph_base_routes
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 
 
@@ -257,6 +258,9 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
     fixed_axis_twist_joints = control_rig_fixed_axis_twist_joints(
         converter.bone_name_mapping.values()
     )
+    bone_morph_resolution = resolve_owned_bone_morph_base_routes(
+        converter.bone_name_mapping.values()
+    )
     physics_routes, blocked_physics_routes = _physics_pre_input_routes(
         converter.bone_name_mapping.values()
     )
@@ -287,13 +291,23 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
                 if append_node:
                     route["attr_targets"][src_attr] = (append_node, dst_attr)
 
+        # The accumulator is the authored input layer upstream of append/IK.
+        # Route sparse keys to its base channels so bone morph output remains
+        # composed instead of being bypassed by direct append/IK authoring.
+        accumulator_route = bone_morph_resolution.routes.get(joint, {})
+        route["attr_targets"].update(accumulator_route)
+
         # In EDIT, the owned curve is the authored animation input. Unsupported
         # bones and solver-output links retain the established legacy route.
         route["attr_targets"].update(control_route)
         # A complete owned component route is authored as one quaternion
         # track in the controller's persisted authoring basis.
-        route["quaternion_interpolation_safe"] = (
-            all(channel in control_route for channel in ("rotateX", "rotateY", "rotateZ"))
+        rotation_channels = ("rotateX", "rotateY", "rotateZ")
+        route["quaternion_interpolation_safe"] = all(
+            channel in control_route for channel in rotation_channels
+        ) or all(
+            channel in accumulator_route and channel not in control_route
+            for channel in rotation_channels
         )
 
         # A CONTROL_OWNED MMD Control Rig is a single-writer path: when all
@@ -311,7 +325,11 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
         for channel, target in physics_routes.get(joint, {}).items():
             route["attr_targets"].setdefault(channel, target)
 
-        if joint in blocked_physics_routes:
+        accumulator_block = bone_morph_resolution.blocked.get(joint)
+        if accumulator_block:
+            route["blocked_channels"], route["block_reason"] = accumulator_block
+
+        if joint in blocked_physics_routes and not accumulator_block:
             blocked_channels = set(_PHYSICS_PRE_INPUT_ATTRS).difference(
                 route["attr_targets"]
             )

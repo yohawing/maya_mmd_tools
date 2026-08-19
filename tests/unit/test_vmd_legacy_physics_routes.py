@@ -10,6 +10,9 @@ from tests.common.maya_stub import install_maya_stub
 install_maya_stub()
 
 from mmd_tools.converters import vmd_legacy_bone_routes as routes_module  # noqa: E402
+from mmd_tools.converters.bone_morph_runtime import (  # noqa: E402
+    BoneMorphBaseRouteResolution,
+)
 from mmd_tools.converters.vmd_bone_animation import set_bone_keyframes  # noqa: E402
 from mmd_tools.converters.vmd_scene_keying import VmdKeyingError  # noqa: E402
 
@@ -87,6 +90,11 @@ class LegacyPhysicsRouteTests(unittest.TestCase):
                 routes_module,
                 "control_rig_fixed_axis_twist_joints",
                 return_value=set(),
+            ),
+            mock.patch.object(
+                routes_module,
+                "resolve_owned_bone_morph_base_routes",
+                return_value=BoneMorphBaseRouteResolution(routes={}, blocked={}),
             ),
         ):
             return routes_module.build_legacy_bone_key_routes(converter)
@@ -182,7 +190,7 @@ class LegacyPhysicsRouteTests(unittest.TestCase):
 
     def test_blocked_physics_route_raises_before_any_keying(self):
         context = mock.MagicMock()
-        with self.assertRaisesRegex(VmdKeyingError, "physics pre-input owner"):
+        with self.assertRaisesRegex(VmdKeyingError, "authored input owner"):
             set_bone_keyframes(
                 context,
                 "|model|bone",
