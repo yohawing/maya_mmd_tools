@@ -15,6 +15,7 @@ from tools.vmd_timeline_real_asset_probe import (
     _console_summary,
     _compare_third_oracle_values,
     _third_oracle_frames,
+    _witness_category_status,
     compare_pair,
     estimate_full_wall,
     load_config,
@@ -168,3 +169,11 @@ def test_third_oracle_reports_scalar_mismatch_and_bounds_samples():
 def test_third_oracle_frames_are_prefix_bounded():
     assert _third_oracle_frames(120) == (0.0, 100.0, 110.0, 119.0)
     assert _third_oracle_frames(110) == (0.0, 100.0)
+
+
+def test_ccdik_world_witness_may_pass_without_skin_but_append_requires_skin():
+    assert _witness_category_status("mmdCcdIk", 4, 4, False) == "pass"
+    assert _witness_category_status("mmdCcdIk", 4, 4, True) == "pass"
+    assert _witness_category_status("mmdAppend", 4, 4, False) == "fail"
+    assert _witness_category_status("finger", 4, 4, False) == "fail"
+    assert _witness_category_status("mmdCcdIk", 3, 4, False) == "fail"

@@ -417,37 +417,71 @@ def _matrix_witness_candidates(
     joints = sorted({_canonical_node_path(joint, cmds_module) for joint in joints}, key=lambda value: (_joint_bone_index(value, cmds_module), value))
     categories: dict[str, dict[str, Any] | None] = {"finger": None, "mmdAppend": None, "mmdCcdIk": None}
     for joint in joints:
-        bind = _skin_bind_for_joint(joint, root, cmds_module)
-        if bind is None:
-            continue
         route = routes.get(joint) or {}
-        route_node = None
+        route_nodes: dict[str, str] = {}
+        route_node_types = set()
         for routed in route.values():
             try:
                 candidate = _canonical_node_path(routed[0], cmds_module)
             except (IndexError, TypeError):
                 continue
             node_type = str(cmds_module.nodeType(candidate) or "")
+            route_node_types.add(node_type)
             if node_type in {"mmdAppend", "mmdCcdIk"}:
-                route_node = candidate
-                categories[node_type] = categories[node_type] or {
-                    "joint": joint,
-                    "bone_index": _joint_bone_index(joint, cmds_module),
-                    "binding_identity": joint,
-                    "bind_pre_matrix": bind,
-                    "route_node": route_node,
-                    "route_node_type": node_type,
-                }
-        if categories["finger"] is None and _is_finger_joint(joint, cmds_module):
+                route_nodes.setdefault(node_type, candidate)
+                if node_type == "mmdCcdIk" and categories[node_type] is None:
+                    # CCD IK controllers can drive helper/goal bones which are
+                    # deliberately absent from every skinCluster.  Their
+                    # world matrix is still a valid timeline witness; retain
+                    # an explicit no-skin state instead of fabricating one.
+                    bind = _skin_bind_for_joint(joint, root, cmds_module)
+                    categories[node_type] = {
+                        "joint": joint,
+                        "bone_index": _joint_bone_index(joint, cmds_module),
+                        "binding_identity": joint,
+                        "bind_pre_matrix": bind,
+                        "skin_available": bind is not None,
+                        "route_node": candidate,
+                        "route_node_type": node_type,
+                    }
+        needs_skin = _is_finger_joint(joint, cmds_module) or "mmdAppend" in route_node_types
+        bind = _skin_bind_for_joint(joint, root, cmds_module) if needs_skin else None
+        if "mmdAppend" in route_node_types and bind is not None and categories["mmdAppend"] is None:
+            categories["mmdAppend"] = {
+                "joint": joint,
+                "bone_index": _joint_bone_index(joint, cmds_module),
+                "binding_identity": joint,
+                "bind_pre_matrix": bind,
+                "skin_available": True,
+                "route_node": route_nodes["mmdAppend"],
+                "route_node_type": "mmdAppend",
+            }
+        if categories["finger"] is None and _is_finger_joint(joint, cmds_module) and bind is not None:
             categories["finger"] = {
                 "joint": joint,
                 "bone_index": _joint_bone_index(joint, cmds_module),
                 "binding_identity": joint,
                 "bind_pre_matrix": bind,
+                "skin_available": True,
                 "route_node": None,
                 "route_node_type": None,
             }
     return categories
+
+
+def _witness_category_status(
+    category: str,
+    sample_count: int,
+    expected_count: int,
+    skin_available: bool,
+) -> str:
+    """Apply the explicit skin contract for matrix witness categories."""
+
+    if sample_count != expected_count:
+        return "fail"
+    if category in {"finger", "mmdAppend"} and not skin_available:
+        return "fail"
+    return "pass"
 
 
 def _compare_third_oracle_values(
@@ -592,13 +626,16 @@ def _run_third_oracle(
                 world = _finite_matrix(cmds_module.xform(witness["joint"], query=True, worldSpace=True, matrix=True))
                 if world is None:
                     raise ValueError(f"{category} witness world matrix is missing or non-finite")
-                skin = _matrix_product(world, witness["bind_pre_matrix"])
-                if not all(math.isfinite(value) for value in skin):
-                    raise ValueError(f"{category} witness skin matrix is non-finite")
+                skin = None
+                if witness.get("skin_available"):
+                    skin = _matrix_product(world, witness["bind_pre_matrix"])
+                    if not all(math.isfinite(value) for value in skin):
+                        raise ValueError(f"{category} witness skin matrix is non-finite")
                 matrix_samples[category].append({
                     "frame": frame,
                     "world_matrix": [round(value, 9) for value in world],
-                    "skin_matrix": [round(value, 9) for value in skin],
+                    "skin_available": bool(witness.get("skin_available")),
+                    "skin_matrix": [round(value, 9) for value in skin] if skin is not None else None,
                 })
     except Exception as exc:
         errors.append(f"third oracle evaluation failed: {type(exc).__name__}: {exc}")
@@ -622,7 +659,12 @@ def _run_third_oracle(
             witness_report["categories"][category] = {"status": "fail", "error": "unresolved witness category"}
             continue
         samples = matrix_samples[category]
-        category_status = "pass" if len(samples) == len(frames) else "fail"
+        category_status = _witness_category_status(
+            category,
+            len(samples),
+            len(frames),
+            bool(witness.get("skin_available")),
+        )
         if category_status != "pass":
             witness_report["status"] = "fail"
         witness_report["categories"][category] = {
@@ -630,6 +672,7 @@ def _run_third_oracle(
             "joint": witness["joint"],
             "bone_index": witness["bone_index"],
             "binding_identity": witness["binding_identity"],
+            "skin_available": bool(witness.get("skin_available")),
             "route_node": witness["route_node"],
             "route_node_type": witness["route_node_type"],
             "samples": samples[:20],
