@@ -1913,7 +1913,6 @@ class VmdSceneCollector:
                 ranged_source_frames,
                 bool(
                     dense_sample
-                    and node not in controller_nodes
                     and len(source_frames) == 1
                     and len(ranged_source_frames) == 1
                     and _is_direct_authored_track(node, (attr,))
@@ -1982,7 +1981,7 @@ class VmdSceneCollector:
         direct_multi_key_candidates: dict[str, list[tuple[str, int]]] = {}
         if standard_dense_mode:
             for node, attr, morph_name, ranged_source_frames, direct_single in channels:
-                if direct_single or node in controller_nodes:
+                if direct_single:
                     continue
                 if (
                     len(ranged_source_frames) > 1
@@ -2004,6 +2003,7 @@ class VmdSceneCollector:
             static_keyless = (node, attr) in static_keyless_channels
             if direct_single:
                 is_default = weight == 0.0
+                controller_direct = node in controller_nodes
                 self._record_track_selection(
                     "morph",
                     morph_name,
@@ -2011,12 +2011,16 @@ class VmdSceneCollector:
                     (
                         "keyless_static_default"
                         if static_keyless
+                        else "controller_direct_single_default"
+                        if controller_direct
                         else "direct_single_key_default"
                     )
                     if is_default
                     else (
                         "keyless_static_non_default"
                         if static_keyless
+                        else "controller_direct_single_non_default"
+                        if controller_direct
                         else "direct_single_key_non_default"
                     ),
                     0 if static_keyless else len(source_frames),

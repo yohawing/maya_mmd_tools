@@ -830,7 +830,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             collector.diagnostics["track_selection"]["counts"]["authored_sampled"], 1
         )
 
-    def test_mode_c_controller_constant_multi_key_morph_remains_dependency_dense(self):
+    def test_mode_c_controller_constant_multi_key_morph_collapses_after_timeline_sampling(self):
         self.cmds.node_types.update(
             {"model_root": "transform", "morph_controller": "mmdMorphController"}
         )
@@ -858,13 +858,185 @@ class TestVmdSceneCollector(unittest.TestCase):
                 timeline_evaluation=True,
             )
 
-        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+        self.assertEqual([frame["frame_number"] for frame in frames], [0])
         self.assertEqual(
-            collector.diagnostics["track_selection"]["counts"]["dependency_baked"], 1
+            collector.diagnostics["track_selection"]["counts"]["constant_one_key"], 1
         )
         self.assertEqual(
             collector.diagnostics["track_selection"]["evidence"][0]["reason"],
-            "morph_controller_route",
+            "dense_exact_constant",
+        )
+
+    def test_mode_c_controller_direct_single_default_omits_without_dense_scrub(self):
+        self.cmds.node_types["morph_controller"] = "mmdMorphController"
+        self.cmds.keys["morph_controller", "inputWeight[0]"] = {1.0: 0.0}
+        self.cmds.attrs["morph_controller", "inputWeight[0]"] = 0.0
+        metadata = [SimpleNamespace(morph_type="bone", name="bone_morph", index=0)]
+
+        with mock.patch.object(
+            collector_module, "_morph_controller_for_model", return_value="morph_controller"
+        ), mock.patch.object(
+            collector_module, "iter_morph_network_metadata", return_value=metadata
+        ):
+            collector = VmdSceneCollector()
+            frames = collector.collect_morph_frames(
+                [],
+                target_model="model_root",
+                start_frame=0,
+                end_frame=2,
+                time_converter=lambda value: value,
+                dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+                timeline_evaluation=True,
+            )
+
+        self.assertEqual(frames, [])
+        self.assertEqual(self.cmds.current_time_calls, [1.0, 0.0])
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        self.assertEqual(evidence[0]["decision"], "omitted_default")
+        self.assertEqual(evidence[0]["reason"], "controller_direct_single_default")
+        self.assertEqual(evidence[0]["source_key_count"], 1)
+        self.assertEqual(evidence[0]["planned_key_count"], 0)
+
+    def test_mode_c_controller_direct_single_non_default_emits_one_key(self):
+        self.cmds.node_types["morph_controller"] = "mmdMorphController"
+        self.cmds.keys["morph_controller", "inputWeight[0]"] = {1.0: 0.5}
+        self.cmds.attrs["morph_controller", "inputWeight[0]"] = 0.5
+        metadata = [SimpleNamespace(morph_type="bone", name="bone_morph", index=0)]
+
+        with mock.patch.object(
+            collector_module, "_morph_controller_for_model", return_value="morph_controller"
+        ), mock.patch.object(
+            collector_module, "iter_morph_network_metadata", return_value=metadata
+        ):
+            collector = VmdSceneCollector()
+            frames = collector.collect_morph_frames(
+                [],
+                target_model="model_root",
+                start_frame=0,
+                end_frame=2,
+                time_converter=lambda value: value,
+                dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+                timeline_evaluation=True,
+            )
+
+        self.assertEqual(
+            frames,
+            [{"morph_name": "bone_morph", "frame_number": 1, "weight": 0.5}],
+        )
+        self.assertEqual(self.cmds.current_time_calls, [1.0, 0.0])
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        self.assertEqual(evidence[0]["decision"], "constant_one_key")
+        self.assertEqual(evidence[0]["reason"], "controller_direct_single_non_default")
+
+    def test_mode_c_controller_direct_multi_key_near_equal_or_overshoot_stays_dense(self):
+        self.cmds.node_types["morph_controller"] = "mmdMorphController"
+        metadata = [SimpleNamespace(morph_type="bone", name="bone_morph", index=0)]
+
+        for values in (
+            {0.0: 0.5, 1.0: 0.5000000001, 2.0: 0.5},
+            {0.0: 0.5, 1.0: 0.6, 2.0: 0.5},
+        ):
+            with self.subTest(values=values):
+                self.cmds.keys["morph_controller", "inputWeight[0]"] = values
+                self.cmds.attrs["morph_controller", "inputWeight[0]"] = values[0.0]
+                self.cmds.current_time_calls.clear()
+                with mock.patch.object(
+                    collector_module,
+                    "_morph_controller_for_model",
+                    return_value="morph_controller",
+                ), mock.patch.object(
+                    collector_module,
+                    "iter_morph_network_metadata",
+                    return_value=metadata,
+                ):
+                    collector = VmdSceneCollector()
+                    frames = collector.collect_morph_frames(
+                        [],
+                        target_model="model_root",
+                        start_frame=0,
+                        end_frame=2,
+                        time_converter=lambda value: value,
+                        dense_sample=True,
+                        dense_frame_samples=[0, 1, 2],
+                        timeline_evaluation=True,
+                    )
+
+                self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+                self.assertEqual(
+                    collector.diagnostics["track_selection"]["counts"][
+                        "authored_sampled"
+                    ],
+                    1,
+                )
+                self.assertEqual(
+                    collector.diagnostics["track_selection"]["evidence"][0]["reason"],
+                    "multiple_source_keys",
+                )
+
+    def test_mode_c_controller_nonanim_incoming_remains_dependency_dense(self):
+        self.cmds.node_types["morph_controller"] = "mmdMorphController"
+        self.cmds.keys["morph_controller", "inputWeight[0]"] = {0.0: 0.5, 2.0: 0.5}
+        self.cmds.attrs["morph_controller", "inputWeight[0]"] = 0.5
+        self.cmds.connections[
+            "morph_controller", "inputWeight[0]", True, False
+        ] = ["constraint.output"]
+        metadata = [SimpleNamespace(morph_type="bone", name="bone_morph", index=0)]
+
+        with mock.patch.object(
+            collector_module, "_morph_controller_for_model", return_value="morph_controller"
+        ), mock.patch.object(
+            collector_module, "iter_morph_network_metadata", return_value=metadata
+        ):
+            collector = VmdSceneCollector()
+            frames = collector.collect_morph_frames(
+                [],
+                target_model="model_root",
+                start_frame=0,
+                end_frame=2,
+                time_converter=lambda value: value,
+                dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+                timeline_evaluation=True,
+            )
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        self.assertEqual(evidence[0]["decision"], "dependency_baked")
+        self.assertEqual(evidence[0]["reason"], "morph_controller_route")
+
+    def test_mode_c_controller_out_of_range_second_key_is_not_direct_single(self):
+        self.cmds.node_types["morph_controller"] = "mmdMorphController"
+        self.cmds.keys["morph_controller", "inputWeight[0]"] = {0.0: 0.5, 20.0: 0.5}
+        self.cmds.attrs["morph_controller", "inputWeight[0]"] = 0.5
+        metadata = [SimpleNamespace(morph_type="bone", name="bone_morph", index=0)]
+
+        with mock.patch.object(
+            collector_module, "_morph_controller_for_model", return_value="morph_controller"
+        ), mock.patch.object(
+            collector_module, "iter_morph_network_metadata", return_value=metadata
+        ):
+            collector = VmdSceneCollector()
+            frames = collector.collect_morph_frames(
+                [],
+                target_model="model_root",
+                start_frame=0,
+                end_frame=10,
+                time_converter=lambda value: value,
+                dense_sample=True,
+                dense_frame_samples=list(range(11)),
+                timeline_evaluation=True,
+            )
+
+        self.assertEqual([frame["frame_number"] for frame in frames], list(range(11)))
+        self.assertEqual(
+            collector.diagnostics["track_selection"]["counts"]["dependency_baked"],
+            1,
+        )
+        self.assertEqual(
+            collector.diagnostics["track_selection"]["evidence"][0]["source_key_count"],
+            1,
         )
 
     def test_mode_c_exact_default_multi_key_bone_and_morph_are_omitted(self):
@@ -1150,8 +1322,8 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertNotIn(0.25, [frame["weight"] for frame in frames])
         evidence = collector.diagnostics["track_selection"]["evidence"]
         self.assertEqual(len(evidence), 1)
-        self.assertEqual(evidence[0]["decision"], "dependency_baked")
-        self.assertEqual(evidence[0]["reason"], "morph_controller_route")
+        self.assertEqual(evidence[0]["decision"], "authored_sampled")
+        self.assertEqual(evidence[0]["reason"], "multiple_source_keys")
 
     def test_mode_c_nonvertex_controller_duplicate_blendshape_output_raises(self):
         self.cmds.node_types.update(
@@ -1254,7 +1426,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(selection["counts"]["constant_one_key"], 0)
         self.assertEqual(selection["counts"]["omitted_default"], 0)
 
-    def test_mode_c_controller_single_key_morph_remains_dense(self):
+    def test_mode_c_controller_single_key_default_morph_is_omitted(self):
         self.cmds.node_types["morph_controller"] = "mmdMorphController"
         self.cmds.keys[("morph_controller", "inputWeight[0]")] = {0.0: 0.0}
         collector = VmdSceneCollector()
@@ -1275,11 +1447,13 @@ class TestVmdSceneCollector(unittest.TestCase):
                 timeline_evaluation=True,
             )
 
-        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+        self.assertEqual(frames, [])
         selection = collector.diagnostics["track_selection"]
-        self.assertEqual(selection["counts"]["dependency_baked"], 1)
+        self.assertEqual(selection["counts"]["omitted_default"], 1)
         self.assertEqual(selection["counts"]["constant_one_key"], 0)
-        self.assertEqual(selection["counts"]["omitted_default"], 0)
+        self.assertEqual(
+            selection["evidence"][0]["reason"], "controller_direct_single_default"
+        )
 
     def test_track_selection_diagnostics_are_bounded_and_counted(self):
         collector = VmdSceneCollector()
