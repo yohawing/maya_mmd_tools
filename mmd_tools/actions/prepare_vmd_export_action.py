@@ -11,7 +11,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import hashlib
-import inspect
 import math
 import time
 from types import MappingProxyType
@@ -19,16 +18,10 @@ from typing import Any, Optional, Protocol, Tuple
 
 from ..validation.snapshot import fingerprint_payload
 from ..validation.export_validator import ExportValidationReport
-from ..validation.vmd_validator import (
-    VMD_MODE_C,
-    validate_vmd_data,
-    verify_vmd_output,
-    verify_vmd_output_streaming,
-)
+from ..validation.vmd_validator import VMD_MODE_C, verify_vmd_output_streaming
 from .prepared_vmd_artifact import (
     PreparedVmdArtifactReceipt,
     PreparedVmdStageSession,
-    stage_vmd_artifact,
 )
 
 
@@ -68,9 +61,6 @@ class VmdExportPreparationBackend(Protocol):
 
     def discover(self, request: Any) -> Any:
         """Return a route/dependency descriptor for the requested target."""
-
-    def collect(self, request: Any) -> Any:
-        """Collect one payload from the currently discovered scene."""
 
     def supports_streaming(self) -> bool:
         """Explicitly opt into sink-based collection."""
@@ -447,62 +437,6 @@ def _arm_revision_provider(provider: Any, request: Any, discovery: VmdExportDisc
     # before/after TOCTOU boundary.
 
 
-def _validate_prepared_vmd(
-    validator: Any,
-    vmd_data: Any,
-    mode: str,
-    frame_range: Tuple[float, float],
-    request: Any,
-) -> Any:
-    """Run the injected VMD validator once and fail closed on its report."""
-
-    try:
-        parameters = inspect.signature(validator).parameters
-    except (TypeError, ValueError):
-        parameters = {}
-    accepts_kwargs = any(
-        parameter.kind == inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
-    )
-    kwargs = {}
-    raw_provenance = getattr(vmd_data, "raw_provenance", None)
-    if accepts_kwargs or "raw_provenance" in parameters:
-        kwargs["raw_provenance"] = raw_provenance
-    requested_frame_range = _read_field(request, "frame_range")
-    if requested_frame_range in (None, (0, 0), [0, 0]):
-        requested_frame_range = None
-    if (accepts_kwargs or "frame_range" in parameters) and requested_frame_range is not None:
-        kwargs["frame_range"] = tuple(int(round(value)) for value in frame_range)
-    positional_parameters = tuple(
-        parameter
-        for parameter in parameters.values()
-        if parameter.kind
-        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    )
-    if accepts_kwargs or "mode" in parameters or len(positional_parameters) >= 2:
-        report = validator(vmd_data, mode, **kwargs)
-    else:
-        report = validator(vmd_data, **kwargs)
-    if not isinstance(report, ExportValidationReport):
-        raise PrepareVmdExportError(
-            "VMD preparation validator must return ExportValidationReport"
-        )
-    if bool(getattr(report, "is_blocking", False)) or getattr(report, "valid", True) is False:
-        raise PrepareVmdExportError(f"prepared VMD validation blocked: {report}")
-    # Non-blocking warnings belong to the prepared report.  The final export
-    # boundary owns acknowledgement so Prepare can stage one verified artifact
-    # for the user to inspect before deciding whether to publish it.
-    return report
-
-
-def _default_vmd_exporter() -> Any:
-    """Load the production exporter at the action boundary."""
-
-    from ..io.vmd_exporter import VmdExporter
-
-    return VmdExporter()
-
-
 class PrepareVmdExportAction:
     """Prepare one Mode C payload through injected production boundaries."""
 
@@ -510,39 +444,25 @@ class PrepareVmdExportAction:
         self,
         backend: VmdExportPreparationBackend,
         revision_provider: Any,
-        *,
-        exporter: Any = None,
-        validator: Any = None,
-        output_verifier: Any = None,
-        stage_factory: Any = None,
     ):
         has_discovery = backend is not None and callable(getattr(backend, "discover", None))
-        has_legacy_collect = backend is not None and callable(getattr(backend, "collect", None))
         has_stream_collect = backend is not None and callable(
             getattr(backend, "collect_to_sink", None)
         )
         has_stream_capability = backend is not None and callable(
             getattr(backend, "supports_streaming", None)
         )
-        if not has_discovery or not (has_legacy_collect or (has_stream_capability and has_stream_collect)):
+        if not has_discovery or not has_stream_capability or not has_stream_collect:
             raise TypeError(
-                "backend must expose discover(request) and collect(request), "
-                "or explicit supports_streaming()/collect_to_sink(request, sink)"
+                "backend must expose discover(request), supports_streaming(), "
+                "and collect_to_sink(request, sink)"
             )
+        if not bool(backend.supports_streaming()):
+            raise TypeError("backend must support streaming VMD preparation")
         if revision_provider is None:
             raise TypeError("revision_provider is required")
-        self._use_default_streaming_seams = all(
-            value is None
-            for value in (exporter, validator, output_verifier, stage_factory)
-        )
         self._backend = backend
         self._revision_provider = revision_provider
-        self._exporter = exporter if exporter is not None else _default_vmd_exporter()
-        self._validator = validator if validator is not None else validate_vmd_data
-        self._output_verifier = (
-            output_verifier if output_verifier is not None else verify_vmd_output
-        )
-        self._stage_factory = stage_factory if stage_factory is not None else stage_vmd_artifact
         # The action owns exactly one prepared approval.  Keeping this as an
         # identity (rather than a cache id or revision string) prevents a
         # discarded token from becoming valid again when Maya happens to
@@ -606,16 +526,6 @@ class PrepareVmdExportAction:
         """Close the action boundary; repeated calls are safe."""
 
         return self.invalidate()
-
-    def _streaming_capable(self, backend: Any) -> bool:
-        """Use streaming only when the backend explicitly opts in."""
-
-        if not self._use_default_streaming_seams:
-            return False
-        capability = getattr(backend, "supports_streaming", None)
-        if callable(capability):
-            return bool(capability())
-        return bool(capability) if capability is not None else False
 
     @staticmethod
     def _stream_expected_range(metadata: Any) -> Tuple[int, int]:
@@ -698,10 +608,8 @@ class PrepareVmdExportAction:
         options_fingerprint: Optional[str] = None
         payload_fingerprint: Optional[str] = None
         staged_artifact: Optional[PreparedVmdArtifactReceipt] = None
-        payload_validation_report: Optional[ExportValidationReport] = None
         stream_metadata: Mapping[str, Any] = {}
         stream_session: Optional[PreparedVmdStageSession] = None
-        streaming = False
         status = "failed"
         error_text: Optional[str] = None
 
@@ -737,30 +645,19 @@ class PrepareVmdExportAction:
             revision_before = _require_identity(revision_before, "revision_before")
             timed("revision_before", revision_before_begin)
 
-            streaming = self._streaming_capable(self._backend)
             collect_begin = time.perf_counter()
-            if streaming:
-                model_name = first.model_name or str(
-                    _read_field(request, "model_name") or ""
+            model_name = first.model_name or str(_read_field(request, "model_name") or "")
+            stream_session = self._new_stream_session(model_name)
+            self._pending_stage_session = stream_session
+            stream_metadata_value = self._backend.collect_to_sink(request, stream_session)
+            if stream_metadata_value is not None and not isinstance(
+                stream_metadata_value, Mapping
+            ):
+                raise PrepareVmdExportError(
+                    "streaming VMD backend returned invalid bounded metadata"
                 )
-                stream_session = self._new_stream_session(model_name)
-                self._pending_stage_session = stream_session
-                collect_to_sink = getattr(self._backend, "collect_to_sink", None)
-                if not callable(collect_to_sink):
-                    raise PrepareVmdExportError(
-                        "stream-capable VMD backend has no collect_to_sink(request, sink)"
-                    )
-                stream_metadata_value = collect_to_sink(request, stream_session)
-                if stream_metadata_value is not None and not isinstance(
-                    stream_metadata_value, Mapping
-                ):
-                    raise PrepareVmdExportError(
-                        "streaming VMD backend returned invalid bounded metadata"
-                    )
-                stream_metadata = stream_metadata_value or {}
-                self._finish_stream_session(stream_session, stream_metadata)
-            else:
-                payload = self._backend.collect(request)
+            stream_metadata = stream_metadata_value or {}
+            self._finish_stream_session(stream_session, stream_metadata)
             timed("backend_collect", collect_begin)
 
             discovery_begin = time.perf_counter()
@@ -785,50 +682,13 @@ class PrepareVmdExportAction:
                 raise PrepareVmdExportRaceError("VMD route or dependency closure changed during collection")
 
             stage_begin = time.perf_counter()
-            if streaming:
-                raw_loss_warning_required = bool(
-                    stream_metadata.get("raw_provenance")
-                )
-                staged_artifact = self._promote_stream_session(
-                    stream_session, raw_loss_warning_required
-                )
-                staged_artifact.validate_identity()
-                self._pending_stage_session = None
-                combined_validation_report = staged_artifact.output_validation_report
-            else:
-                validation_begin = time.perf_counter()
-                payload_validation_report = _validate_prepared_vmd(
-                    self._validator,
-                    payload,
-                    mode,
-                    frame_range,
-                    request,
-                )
-                timed("payload_validate", validation_begin)
-                stage_kwargs = {
-                    "exporter": self._exporter,
-                    "output_verifier": self._output_verifier,
-                    "mode": mode,
-                }
-                try:
-                    stage_parameters = inspect.signature(self._stage_factory).parameters
-                except (TypeError, ValueError):
-                    stage_parameters = {}
-                if any(
-                    parameter.kind == inspect.Parameter.VAR_KEYWORD
-                    for parameter in stage_parameters.values()
-                ) or "ack_warnings" in stage_parameters:
-                    stage_kwargs["ack_warnings"] = _read_field(request, "ack_warnings") is True
-                staged_artifact = self._stage_factory(payload, **stage_kwargs)
-                if not isinstance(staged_artifact, PreparedVmdArtifactReceipt):
-                    raise PrepareVmdExportError("VMD stage factory returned an invalid receipt")
-                staged_artifact.validate_identity()
-                combined_validation_report = ExportValidationReport(
-                    "vmd",
-                    tuple(payload_validation_report.issues)
-                    + tuple(staged_artifact.output_validation_report.issues),
-                    mode=mode,
-                )
+            raw_loss_warning_required = bool(stream_metadata.get("raw_provenance"))
+            staged_artifact = self._promote_stream_session(
+                stream_session, raw_loss_warning_required
+            )
+            staged_artifact.validate_identity()
+            self._pending_stage_session = None
+            combined_validation_report = staged_artifact.output_validation_report
             payload_fingerprint = staged_artifact.sha256
             timed("artifact_stage_verify", stage_begin)
             cache_id = first.cache_id or _cache_id(

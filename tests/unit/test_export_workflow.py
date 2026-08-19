@@ -28,8 +28,6 @@ from mmd_tools.actions.prepare_vmd_export_action import (  # noqa: E402
     PrepareVmdExportAction,
     VmdExportDiscovery,
 )
-from mmd_tools.core.vmd_data import VmdData  # noqa: E402
-from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame  # noqa: E402
 from mmd_tools.io.vmd_exporter import VmdExporter  # noqa: E402
 
 
@@ -72,10 +70,11 @@ class _SceneService:
 
 
 class _VmdPrepareBackend:
-    def __init__(self):
+    def __init__(self, *, raw_provenance=False):
         self.discover_calls = 0
         self.collect_calls = 0
         self.seen_requests = []
+        self.raw_provenance = raw_provenance
 
     def discover(self, request):
         self.discover_calls += 1
@@ -85,18 +84,35 @@ class _VmdPrepareBackend:
             target_uuid="model-uuid",
             target_identity="model_ROOT",
             dependency_closure_fingerprint="deps-1",
+            model_name="WorkflowFixture",
         )
 
-    def collect(self, _request):
+    def supports_streaming(self):
+        return True
+
+    def collect_to_sink(self, _request, sink):
         self.collect_calls += 1
-        data = VmdData()
-        data.header.model_name = "WorkflowFixture"
-        frame = VmdBoneFrame()
-        frame.bone_name = "center"
-        frame.frame_number = 1
-        frame.rotation = (0.0, 0.0, 0.0, 1.0)
-        data.bone_frames.append(frame)
-        return data
+        sink.write_frame(
+            "bones",
+            {
+                "bone_name": "center",
+                "frame": 1,
+                "position": (0.0, 0.0, 0.0),
+                "rotation": (0.0, 0.0, 0.0, 1.0),
+            },
+        )
+        return {
+            "validation_frame_range": (0, 1),
+            "raw_provenance": self.raw_provenance,
+            "section_counts": {
+                "bones": 1,
+                "morphs": 0,
+                "cameras": 0,
+                "lights": 0,
+                "shadows": 0,
+                "ik": 0,
+            },
+        }
 
 
 class _VmdRevisions:
@@ -106,18 +122,6 @@ class _VmdRevisions:
     def current_revision(self, _request, _discovery):
         self.calls += 1
         return "revision-1"
-
-
-def _warning_vmd_validator(payload, mode, **kwargs):
-    del payload, kwargs
-    issue = ExportValidationIssue(
-        "VMD_MODE_C_RAW_LOSS",
-        "warning",
-        False,
-        "mode",
-        "raw VMD interpolation will not be preserved",
-    )
-    return ExportValidationReport("vmd", (issue,), mode=mode)
 
 
 class _RecordingVmdExporter(VmdExporter):
@@ -279,7 +283,7 @@ class TestExportWorkflowService(unittest.TestCase):
         backend = _VmdPrepareBackend()
         revisions = _VmdRevisions()
         exporter = _RecordingVmdExporter()
-        prepare_action = PrepareVmdExportAction(backend, revisions, exporter=exporter)
+        prepare_action = PrepareVmdExportAction(backend, revisions)
         vmd_action = ExportVmdAction(
             exporter=exporter,
             output_verifier=None,
@@ -310,7 +314,7 @@ class TestExportWorkflowService(unittest.TestCase):
         prepared = service.prepare_vmd(request)
         self.assertTrue(prepared.succeeded)
         token = prepared.token
-        self.assertEqual(exporter.write_calls, 1)
+        self.assertEqual(exporter.write_calls, 0)
         vmd_action._validator = lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("prepared workflow called VMD validator")
         )
@@ -344,21 +348,16 @@ class TestExportWorkflowService(unittest.TestCase):
 
         self.assertEqual(result.state, STATE_SUCCEEDED)
         self.assertEqual(backend.collect_calls, 1)
-        self.assertEqual(exporter.write_calls, 1)
+        self.assertEqual(exporter.write_calls, 0)
         self.assertIsNone(validation.payload)
         self.assertIsNone(result.payload)
         self.assertEqual(result.action_result.payload_fingerprint, token.staged_artifact.sha256)
 
     def test_prepared_vmd_warning_requires_final_ack_without_recollecting_or_writing(self):
-        backend = _VmdPrepareBackend()
+        backend = _VmdPrepareBackend(raw_provenance=True)
         revisions = _VmdRevisions()
         exporter = _RecordingVmdExporter()
-        prepare_action = PrepareVmdExportAction(
-            backend,
-            revisions,
-            exporter=exporter,
-            validator=_warning_vmd_validator,
-        )
+        prepare_action = PrepareVmdExportAction(backend, revisions)
         service = ExportWorkflowService(
             scene_preflight=ScenePreflight(
                 scene_service=_SceneService(),
@@ -386,7 +385,7 @@ class TestExportWorkflowService(unittest.TestCase):
         token = prepared.token
         self.assertTrue(prepared.succeeded)
         self.assertTrue(token.validation_report.requires_warning_ack)
-        self.assertEqual(exporter.write_calls, 1)
+        self.assertEqual(exporter.write_calls, 0)
 
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "motion.vmd"
@@ -399,7 +398,7 @@ class TestExportWorkflowService(unittest.TestCase):
             self.assertEqual(no_ack.state, STATE_READY)
             self.assertEqual(target.read_bytes(), b"existing-output")
             self.assertEqual(backend.collect_calls, 1)
-            self.assertEqual(exporter.write_calls, 1)
+            self.assertEqual(exporter.write_calls, 0)
 
             acknowledged = service.execute(
                 ExportWorkflowRequest(
@@ -411,7 +410,7 @@ class TestExportWorkflowService(unittest.TestCase):
             self.assertNotEqual(target.read_bytes(), b"existing-output")
 
         self.assertEqual(backend.collect_calls, 1)
-        self.assertEqual(exporter.write_calls, 1)
+        self.assertEqual(exporter.write_calls, 0)
         prepare_action.invalidate(token)
 
     def test_prepare_vmd_preflight_blocks_before_discovery_or_collection(self):

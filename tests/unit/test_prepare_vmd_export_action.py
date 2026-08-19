@@ -15,10 +15,7 @@ from mmd_tools.actions.prepare_vmd_export_action import (
     VmdExportDiscovery,
     request_fingerprint,
 )
-from mmd_tools.actions.prepared_vmd_artifact import stage_vmd_artifact
 from mmd_tools.actions.prepared_vmd_artifact import PreparedVmdArtifactReceipt
-from mmd_tools.core.vmd_data import VmdData
-from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from mmd_tools.validation.export_validator import ExportValidationIssue, ExportValidationReport
 
 
@@ -28,26 +25,38 @@ class _Backend:
         self.discover_calls = 0
         self.collect_calls = 0
         self.close_calls = 0
-        self.last_payload = None
 
     def discover(self, request):
         del request
         self.discover_calls += 1
         return self.discoveries[min(self.discover_calls - 1, len(self.discoveries) - 1)]
 
-    def collect(self, request):
+    def supports_streaming(self):
+        return True
+
+    def collect_to_sink(self, request, sink):
         del request
         self.collect_calls += 1
-        data = VmdData()
-        data.header.model_name = "fixture"
-        frame = VmdBoneFrame()
-        frame.bone_name = "center"
-        frame.frame_number = 4
-        frame.position = (1.0, 2.0, 3.0)
-        frame.rotation = (0.0, 0.0, 0.0, 1.0)
-        data.bone_frames.append(frame)
-        self.last_payload = data
-        return data
+        sink.write_frame(
+            "bones",
+            {
+                "bone_name": "center",
+                "frame": 4,
+                "position": (1.0, 2.0, 3.0),
+                "rotation": (0.0, 0.0, 0.0, 1.0),
+            },
+        )
+        return {
+            "validation_frame_range": (0, 30),
+            "section_counts": {
+                "bones": 1,
+                "morphs": 0,
+                "cameras": 0,
+                "lights": 0,
+                "shadows": 0,
+                "ik": 0,
+            },
+        }
 
     def close(self):
         self.close_calls += 1
@@ -67,23 +76,6 @@ class _Revisions:
         del request, discovery
         self.current_revision_calls += 1
         return next(self.revisions)
-
-
-class _FailingExporter:
-    def __init__(self):
-        self.paths = []
-
-    def export_vmd_animation(self, file_path, vmd_data):
-        del vmd_data
-        self.paths.append(file_path)
-        raise RuntimeError("writer failed")
-
-
-class _HeadlessExporter:
-    @staticmethod
-    def export_vmd_animation(file_path, vmd_data):
-        vmd_data.write_file(file_path)
-        return vmd_data
 
 
 class _StreamingSession:
@@ -164,7 +156,7 @@ class _StreamingSession:
 
 
 class _StreamingBackend(_Backend):
-    def __init__(self, discoveries, *, metadata=None, fail=False, legacy_collect=False):
+    def __init__(self, discoveries, *, metadata=None, fail=False):
         super().__init__(discoveries)
         self.metadata = (
             {
@@ -182,17 +174,10 @@ class _StreamingBackend(_Backend):
             else metadata
         )
         self.fail = fail
-        self.legacy_collect = legacy_collect
         self.stream_calls = 0
 
     def supports_streaming(self):
         return True
-
-    def collect(self, request):
-        if self.legacy_collect:
-            return super().collect(request)
-        self.collect_calls += 1
-        raise AssertionError("streaming prepare must not call collect")
 
     def collect_to_sink(self, request, sink):
         del request
@@ -202,61 +187,6 @@ class _StreamingBackend(_Backend):
         for section in ("bones", "morphs", "cameras", "lights", "shadows", "ik"):
             sink.begin_section(section)
         return dict(self.metadata)
-
-
-def _prepare_action(*args, **kwargs):
-    kwargs.setdefault("exporter", _HeadlessExporter())
-    return PrepareVmdExportAction(*args, **kwargs)
-
-
-def _legacy_stage_factory(payload, *, exporter, output_verifier, mode):
-    """Compatibility fake omitting the optional warning argument."""
-
-    return stage_vmd_artifact(
-        payload,
-        exporter=exporter,
-        output_verifier=output_verifier,
-        mode=mode,
-    )
-
-
-class _BlockingVerifier:
-    def __call__(self, file_path, mode, *, expected_counts):
-        del file_path, expected_counts
-        issue = ExportValidationIssue("OUTPUT_PARSE_FAILED", "fatal", True, "output", "bad")
-        return ExportValidationReport("vmd", (issue,), mode=mode)
-
-
-class _WarningVerifier:
-    def __call__(self, file_path, mode, *, expected_counts):
-        del file_path, expected_counts
-        issue = ExportValidationIssue(
-            "OUTPUT_WARNING",
-            "warning",
-            False,
-            "output",
-            "output requires acknowledgement",
-        )
-        return ExportValidationReport("vmd", (issue,), mode=mode)
-
-
-def _blocking_validator(*args, **kwargs):
-    del args, kwargs
-    issue = ExportValidationIssue("VMD_FRAME_RANGE", "fatal", True, "frame_range", "bad")
-    return ExportValidationReport("vmd", (issue,), mode="C")
-
-
-def _warning_validator(*args, **kwargs):
-    del args, kwargs
-    issue = ExportValidationIssue(
-        "PAYLOAD_WARNING",
-        "warning",
-        False,
-        "payload",
-        "payload requires acknowledgement",
-    )
-    return ExportValidationReport("vmd", (issue,), mode="C")
-
 
 def _request(**options):
     values = {
@@ -286,7 +216,7 @@ def _discovery(**changes):
 
 
 class PrepareVmdExportActionTests(unittest.TestCase):
-    def test_streaming_prepare_bypasses_legacy_collect_and_retains_warning(self):
+    def test_streaming_prepare_uses_sink_and_retains_warning(self):
         _StreamingSession.instances.clear()
         backend = _StreamingBackend(
             [_discovery(model_name="stream-model"), _discovery(model_name="stream-model")],
@@ -443,49 +373,32 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertFalse(TamperedSession.instances[0].directory.exists())
 
-    def test_explicit_legacy_seams_are_not_bypassed_by_streaming_backend(self):
-        backend = _StreamingBackend(
-            [_discovery(), _discovery()],
-            legacy_collect=True,
-        )
-        result = _prepare_action(
-            backend,
-            _Revisions(["r1", "r1"]),
-            stage_factory=_legacy_stage_factory,
-        ).execute(_request())
+    def test_legacy_backend_is_rejected_at_construction(self):
+        class LegacyBackend:
+            def discover(self, request):
+                del request
 
-        self.assertTrue(result.succeeded, result.error)
-        self.assertEqual(backend.collect_calls, 1)
-        self.assertEqual(backend.stream_calls, 0)
-        result.token.staged_artifact.cleanup()
+            def collect(self, request):
+                del request
 
-    def test_prepare_stages_the_collected_payload_without_a_second_snapshot(self):
-        backend = _Backend([_discovery(), _discovery()])
-        staged_payloads = []
+        with self.assertRaisesRegex(TypeError, "supports_streaming"):
+            PrepareVmdExportAction(LegacyBackend(), _Revisions(["r1"]))
 
-        def stage_factory(payload, *, exporter, output_verifier, mode):
-            staged_payloads.append(payload)
-            return stage_vmd_artifact(
-                payload,
-                exporter=exporter,
-                output_verifier=output_verifier,
-                mode=mode,
+        class DisabledBackend(_Backend):
+            def supports_streaming(self):
+                return False
+
+        with self.assertRaisesRegex(TypeError, "must support streaming"):
+            PrepareVmdExportAction(
+                DisabledBackend([_discovery()]),
+                _Revisions(["r1"]),
             )
-
-        result = _prepare_action(
-            backend,
-            _Revisions(["r1", "r1"]),
-            stage_factory=stage_factory,
-        ).execute(_request())
-
-        self.assertTrue(result.succeeded)
-        self.assertIs(staged_payloads[0], backend.last_payload)
 
     def test_collects_once_and_publishes_immutable_token(self):
         backend = _Backend([_discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1"])
 
-        action = _prepare_action(backend, revisions)
+        action = PrepareVmdExportAction(backend, revisions)
         result = action.execute(_request())
 
         self.assertTrue(result.succeeded)
@@ -509,73 +422,9 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         action.invalidate()
         self.assertFalse(Path(stage_path).exists())
 
-    def test_validation_and_writer_failures_never_publish_a_stage(self):
-        backend = _Backend([_discovery(), _discovery()])
-        action = _prepare_action(
-            backend,
-            _Revisions(["r1", "r1"]),
-            validator=_blocking_validator,
-            exporter=_FailingExporter(),
-            output_verifier=_BlockingVerifier(),
-        )
-        result = action.execute(_request())
-        self.assertEqual(result.status, "failed")
-        self.assertIsNone(result.token)
-        self.assertIn("validation blocked", str(result.error))
-
-        exporter = _FailingExporter()
-        action = _prepare_action(
-            _Backend([_discovery(), _discovery()]),
-            _Revisions(["r1", "r1"]),
-            exporter=exporter,
-            output_verifier=_BlockingVerifier(),
-        )
-        result = action.execute(_request())
-        self.assertEqual(result.status, "failed")
-        self.assertIsNone(result.token)
-        self.assertFalse(Path(exporter.paths[0]).parent.exists())
-
-    def test_non_blocking_payload_and_output_warnings_publish_one_verified_stage(self):
-        action = _prepare_action(
-            _Backend([_discovery(), _discovery()]),
-            _Revisions(["r1", "r1"]),
-            validator=_warning_validator,
-            output_verifier=_WarningVerifier(),
-        )
-
-        result = action.execute(_request())
-
-        self.assertTrue(result.succeeded)
-        self.assertIsNotNone(result.token)
-        self.assertTrue(result.token.validation_report.requires_warning_ack)
-        self.assertEqual(
-            [issue.code for issue in result.token.validation_report.issues],
-            ["PAYLOAD_WARNING", "OUTPUT_WARNING"],
-        )
-        stage_path = Path(result.token.staged_artifact.file_path)
-        self.assertTrue(stage_path.exists())
-        action.invalidate()
-        self.assertFalse(stage_path.exists())
-
-    def test_legacy_stage_factory_receives_cached_reports(self):
-        action = _prepare_action(
-            _Backend([_discovery(), _discovery()]),
-            _Revisions(["r1", "r1"]),
-            stage_factory=_legacy_stage_factory,
-        )
-        result = action.execute(_request())
-
-        self.assertTrue(result.succeeded)
-        self.assertIsInstance(result.token.validation_report, ExportValidationReport)
-        self.assertEqual(
-            result.token.validation_report.issues,
-            result.token.staged_artifact.output_validation_report.issues,
-        )
-        action.invalidate()
-
     def test_diagnostics_keep_prepare_phase_evidence_on_success_and_failure(self):
         backend = _Backend([_discovery(), _discovery()])
-        action = _prepare_action(backend, _Revisions(["r1", "r1"]))
+        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1"]))
 
         result = action.execute(_request())
         diagnostics = action.diagnostics
@@ -590,7 +439,6 @@ class PrepareVmdExportActionTests(unittest.TestCase):
                     "backend_collect",
                     "second_discovery",
                     "revision_after",
-                    "payload_validate",
                     "artifact_stage_verify",
                     "total",
                 )
@@ -602,7 +450,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         copied["phase_timing"]["total"] = -1
         self.assertGreaterEqual(diagnostics.phase_timing["total"], 0.0)
 
-        failing = _prepare_action(_Backend([_discovery()]), _Revisions([None]))
+        failing = PrepareVmdExportAction(_Backend([_discovery()]), _Revisions([None]))
         failure = failing.execute(_request())
         self.assertEqual(failure.status, "failed")
         self.assertEqual(failing.diagnostics.status, "failed")
@@ -613,7 +461,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_revision_race_is_partial_and_never_publishes(self):
         backend = _Backend([_discovery(), _discovery()])
-        result = _prepare_action(backend, _Revisions(["r1", "r2"])).execute(_request())
+        result = PrepareVmdExportAction(backend, _Revisions(["r1", "r2"])).execute(_request())
 
         self.assertEqual(result.status, "partial")
         self.assertIsNone(result.token)
@@ -621,7 +469,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_dependency_closure_change_is_partial_and_never_publishes(self):
         backend = _Backend([_discovery(), _discovery(dependency_closure_fingerprint="sha256:deps-2")])
-        result = _prepare_action(backend, _Revisions(["r1", "r1"])).execute(_request())
+        result = PrepareVmdExportAction(backend, _Revisions(["r1", "r1"])).execute(_request())
 
         self.assertEqual(result.status, "partial")
         self.assertIsNone(result.token)
@@ -629,7 +477,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_missing_revision_fails_before_collection(self):
         backend = _Backend([_discovery()])
-        result = _prepare_action(backend, _Revisions([None])).execute(_request())
+        result = PrepareVmdExportAction(backend, _Revisions([None])).execute(_request())
 
         self.assertEqual(result.status, "failed")
         self.assertIsNone(result.token)
@@ -638,7 +486,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_non_mode_c_is_rejected_before_discovery(self):
         backend = _Backend([_discovery()])
-        result = _prepare_action(backend, _Revisions(["r1"])).execute(_request(mode="A"))
+        result = PrepareVmdExportAction(backend, _Revisions(["r1"])).execute(_request(mode="A"))
 
         self.assertEqual(result.status, "failed")
         self.assertEqual(backend.discover_calls, 0)
@@ -672,7 +520,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
     def test_validate_token_rediscoveres_without_collecting_and_allows_output_change(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r1"])
-        action = _prepare_action(backend, revisions)
+        action = PrepareVmdExportAction(backend, revisions)
         token = action.prepare(_request())
 
         action.validate_token(_request(options={"output_path": "other.vmd"}), token)
@@ -684,7 +532,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
     def test_validate_token_rejects_stale_revision_with_stable_error(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r2"])
-        action = _prepare_action(backend, revisions)
+        action = PrepareVmdExportAction(backend, revisions)
         token = action.prepare(_request())
 
         with self.assertRaisesRegex(
@@ -698,7 +546,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
     def test_validate_token_rejects_receipt_payload_fingerprint_tampering(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r1"])
-        action = _prepare_action(backend, revisions)
+        action = PrepareVmdExportAction(backend, revisions)
         token = action.prepare(_request())
         tampered = replace(token, payload_fingerprint="sha256:stale")
         action._active_token = tampered
@@ -711,7 +559,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_invalidate_closes_boundary_and_is_idempotent(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
-        action = _prepare_action(backend, _Revisions(["r1", "r1", "r1"]))
+        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1", "r1"]))
         token = action.prepare(_request())
 
         self.assertTrue(action.invalidate(token))
@@ -724,7 +572,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
     def test_discarded_token_cannot_be_reused_at_same_revision(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r1"])
-        action = _prepare_action(backend, revisions)
+        action = PrepareVmdExportAction(backend, revisions)
         token = action.prepare(_request())
         action.invalidate(token)
         discover_calls = backend.discover_calls
@@ -740,7 +588,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_validate_token_rejects_tampered_staged_artifact(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
-        action = _prepare_action(backend, _Revisions(["r1", "r1", "r1"]))
+        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1", "r1"]))
         token = action.prepare(_request())
         stage_path = Path(token.staged_artifact.file_path)
         stage_path.write_bytes(stage_path.read_bytes() + b"tamper")

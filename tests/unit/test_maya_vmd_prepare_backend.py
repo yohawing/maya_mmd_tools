@@ -12,9 +12,6 @@ from mmd_tools.adapters.maya_vmd_prepare_backend import (
     MayaVmdPrepareBackend,
     create_maya_vmd_prepare_action,
 )
-from mmd_tools.core.vmd_data import VmdData
-
-
 class _FakeCmds:
     def __init__(self):
         self.uuid_by_node = {
@@ -148,9 +145,8 @@ class _FakeCollector:
         return {"bone_frames": [], "morph_frames": []}
 
 
-class _StreamingCollector(_FakeCollector):
+class _StreamingCollector:
     def __init__(self):
-        super().__init__()
         self.stream_calls = []
         self.diagnostics = {
             "track_selection": {"counts": {"direct": 1}},
@@ -159,12 +155,23 @@ class _StreamingCollector(_FakeCollector):
 
     def collect_to_sink(self, options, sink):
         self.stream_calls.append((dict(options), sink))
-        for section in ("bones", "morphs", "cameras", "lights", "shadows", "ik"):
+        sections = ("bones", "morphs", "cameras", "lights", "shadows", "ik")
+        for index, section in enumerate(sections):
             sink.begin_section(section)
+            if index < len(sections) - 1:
+                sink.end_section()
         return {
             "model_name": "fixture",
             "validation_frame_range": (0, 10),
             "raw_provenance": False,
+            "section_counts": {
+                "bones": 0,
+                "morphs": 0,
+                "cameras": 0,
+                "lights": 0,
+                "shadows": 0,
+                "ik": 0,
+            },
         }
 
 
@@ -174,6 +181,9 @@ class _FakeSink:
 
     def begin_section(self, section):
         self.sections.append(section)
+
+    def end_section(self):
+        pass
 
 
 def _request(**options):
@@ -191,7 +201,7 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
     def setUp(self):
         self.cmds = _FakeCmds()
         self.service = _FakeRevisionService()
-        self.collector = _FakeCollector()
+        self.collector = _StreamingCollector()
         self.mobjects = {}
         self.backend = MayaVmdPrepareBackend(
             self.cmds,
@@ -312,33 +322,31 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
             changed.dependency_closure_fingerprint,
         )
 
-    def test_arm_collects_once_with_current_model_mode_c_options(self):
+    def test_arm_streams_once_with_current_model_mode_c_options(self):
         discovery = self.backend.discover(_request())
         self.backend.arm(_request(), discovery)
         self.assertTrue(self.service.watches[0].dependencies)
         self.assertTrue(all(value in self.mobjects.values() for value in self.service.watches[0].dependencies))
         self.assertEqual(self.backend.current_revision(_request(), discovery), "3:0")
-        prepared = self.backend.collect(_request())
-        self.assertEqual(len(self.collector.calls), 1)
-        self.assertIsInstance(prepared, VmdData)
-        options = self.collector.calls[0]
+        sink = _FakeSink()
+        prepared = self.backend.collect_to_sink(_request(), sink)
+        self.assertEqual(len(self.collector.stream_calls), 1)
+        options = self.collector.stream_calls[0][0]
         self.assertEqual(options["target_model"], "|model")
         self.assertEqual(options["vmd_mode"], "C")
         self.assertFalse(options["preserve_raw_bone_transforms"])
         diagnostics = self.backend.diagnostics
         self.assertIn("dependency_discovery", diagnostics)
         self.assertIn("raw_collector", diagnostics)
-        self.assertIn("dict_to_vmd_data", diagnostics)
-        self.assertEqual(diagnostics["vmd_data_sections"]["bone_frames"], 0)
+        self.assertTrue(diagnostics["raw_collector"]["streaming"])
         self.assertGreaterEqual(diagnostics["collect_total"], 0.0)
+        self.assertEqual(prepared["section_counts"]["bones"], 0)
 
-    def test_stream_capability_is_explicit_and_bypasses_converter(self):
+    def test_stream_capability_is_explicit(self):
         collector = _StreamingCollector()
-        converter_calls = []
         backend = MayaVmdPrepareBackend(
             self.cmds,
             collector=collector,
-            converter=lambda payload: converter_calls.append(payload),
             revision_service=self.service,
             mobject_resolver=lambda node: self.mobjects.setdefault(node, object()),
         )
@@ -349,14 +357,13 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         result = backend.collect_to_sink(_request(model_name="header"), sink)
 
         self.assertEqual(len(collector.stream_calls), 1)
-        self.assertEqual(collector.calls, [])
-        self.assertEqual(converter_calls, [])
         self.assertEqual(sink.sections, ["bones", "morphs", "cameras", "lights", "shadows", "ik"])
         self.assertEqual(result["validation_frame_range"], [0, 10])
         self.assertIn("track_selection", backend.diagnostics["collector"])
 
     def test_legacy_injected_collector_does_not_claim_stream_capability(self):
-        self.assertFalse(self.backend.supports_streaming())
+        backend = MayaVmdPrepareBackend(self.cmds, collector=_FakeCollector())
+        self.assertFalse(backend.supports_streaming())
 
     def test_optional_diagnostics_sink_is_wired_through_factory_and_backend(self):
         events = []
@@ -373,7 +380,7 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         )
         discovery = backend.discover(_request())
         backend.arm(_request(), discovery)
-        backend.collect(_request())
+        backend.collect_to_sink(_request(), _FakeSink())
         self.assertTrue(events)
         self.assertIn("dependency_discovery", events[0])
 
@@ -384,7 +391,7 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         with self.assertRaises(PrepareVmdExportError):
             self.backend.current_revision(_request(), discovery)
         with self.assertRaises(PrepareVmdExportError):
-            self.backend.collect(_request())
+            self.backend.collect_to_sink(_request(), _FakeSink())
 
     def test_reprepare_replaces_watch_and_invalidates_older_token(self):
         action = PrepareVmdExportAction(self.backend, self.backend)
@@ -402,7 +409,7 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertIsNone(result.token)
         self.assertIn("target_uuid", str(result.error))
-        self.assertEqual(self.collector.calls, [])
+        self.assertEqual(self.collector.stream_calls, [])
 
 
 if __name__ == "__main__":

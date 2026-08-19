@@ -3,7 +3,7 @@
 The public prepare action is intentionally Maya independent.  This adapter
 supplies the small host-side seam it needs: resolve the Current Model, build a
 conservative dependency closure, arm a :class:`SceneRevisionService` watch,
-and collect one Mode C payload.  Maya modules are imported lazily so importing
+and stream one Mode C payload.  Maya modules are imported lazily so importing
 the package remains safe in unit-test and tooling processes.
 """
 
@@ -134,7 +134,6 @@ class MayaVmdPrepareBackend:
         cmds_module: Any = None,
         *,
         collector: Any = None,
-        converter: Any = None,
         revision_service: Any = None,
         mobject_resolver: Any = None,
         bone_channel_sampler: Any = None,
@@ -142,7 +141,6 @@ class MayaVmdPrepareBackend:
     ) -> None:
         self._cmds = cmds_module
         self._collector = collector
-        self._converter = converter
         self._revision_service = revision_service
         self._mobject_resolver = mobject_resolver
         self._bone_channel_sampler = bone_channel_sampler
@@ -303,75 +301,6 @@ class MayaVmdPrepareBackend:
         if not isinstance(revision, (str, int)) or str(revision).strip() == "":
             raise PrepareVmdExportError("scene revision is unavailable")
         return f"{revision}:{self._watch_generation}"
-
-    def collect(self, request: Any) -> Any:
-        """Collect one Mode C payload through the production collector."""
-
-        collector, collector_options = self._collection_context(request)
-        collect = getattr(collector, "collect", None)
-        if not callable(collect):
-            if not callable(collector):
-                raise PrepareVmdExportError("VMD collector is not callable")
-            collect = collector
-        collect_started = time.perf_counter()
-        try:
-            payload = collect(collector_options)
-        except Exception as exc:
-            self._diagnostics["raw_collector"] = {
-                "wall_sec": round(time.perf_counter() - collect_started, 6),
-                "status": "failed",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-            self._emit_diagnostics()
-            raise
-        self._diagnostics["raw_collector"] = {
-            "wall_sec": round(time.perf_counter() - collect_started, 6),
-            "status": "completed",
-        }
-        self._record_collector_diagnostics(collector)
-        converter = self._converter
-        if converter is None:
-            from ..io.vmd_exporter import VmdExporter
-
-            converter = VmdExporter(native_exporter=None).to_vmd_data
-        elif hasattr(converter, "to_vmd_data") and callable(converter.to_vmd_data):
-            converter = converter.to_vmd_data
-        if not callable(converter):
-            raise PrepareVmdExportError("VMD converter is not callable")
-        convert_started = time.perf_counter()
-        try:
-            result = converter(payload)
-        except Exception as exc:
-            self._diagnostics["dict_to_vmd_data"] = {
-                "wall_sec": round(time.perf_counter() - convert_started, 6),
-                "status": "failed",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-            self._emit_diagnostics()
-            raise
-        self._diagnostics["dict_to_vmd_data"] = {
-            "wall_sec": round(time.perf_counter() - convert_started, 6),
-            "status": "completed",
-        }
-        section_counts = {}
-        for name in (
-            "bone_frames",
-            "morph_frames",
-            "camera_frames",
-            "light_frames",
-            "shadow_frames",
-            "ik_show_hide_frames",
-        ):
-            value = getattr(result, name, None)
-            if value is not None:
-                try:
-                    section_counts[name] = len(value)
-                except TypeError:
-                    section_counts[name] = None
-        self._diagnostics["vmd_data_sections"] = section_counts
-        self._diagnostics["collect_total"] = round(time.perf_counter() - collect_started, 6)
-        self._emit_diagnostics()
-        return result
 
     def supports_streaming(self) -> bool:
         """Report whether the injected collector explicitly supports sinks.

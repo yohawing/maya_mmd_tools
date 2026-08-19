@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
-import inspect
 from pathlib import Path
 import shutil
 import tempfile
@@ -22,15 +21,6 @@ from ..validation.vmd_validator import verify_vmd_output_streaming
 
 
 PREPARED_VMD_ARTIFACT_SCHEMA_VERSION = 1
-
-_VMD_SECTIONS = (
-    "bone_frames",
-    "morph_frames",
-    "camera_frames",
-    "light_frames",
-    "shadow_frames",
-    "ik_show_hide_frames",
-)
 
 _STREAM_SECTION_TO_RECEIPT = {
     "bones": "bone_frames",
@@ -54,31 +44,6 @@ def _digest_file(file_path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _section_counts(vmd_data: Any) -> dict[str, int]:
-    return {
-        section: len(getattr(vmd_data, section, ()) or ())
-        for section in _VMD_SECTIONS
-    }
-
-
-def _frame_bounds(vmd_data: Any) -> Optional[Tuple[int, int]]:
-    minimum: Optional[int] = None
-    maximum: Optional[int] = None
-    for section in _VMD_SECTIONS:
-        for frame in getattr(vmd_data, section, ()) or ():
-            try:
-                frame_number = int(frame.frame_number)
-            except (AttributeError, TypeError, ValueError, OverflowError) as exc:
-                raise PreparedVmdArtifactError(
-                    f"staged VMD frame number is invalid in {section}"
-                ) from exc
-            minimum = frame_number if minimum is None else min(minimum, frame_number)
-            maximum = frame_number if maximum is None else max(maximum, frame_number)
-    if minimum is None or maximum is None:
-        return None
-    return minimum, maximum
 
 
 @dataclass(frozen=True)
@@ -423,65 +388,9 @@ class PreparedVmdStageSession:
             raw_loss_warning_required=raw_loss_warning_required,
         )
 
-def stage_vmd_artifact(
-    vmd_data: Any,
-    *,
-    exporter: Any,
-    output_verifier: Any,
-    mode: str,
-    ack_warnings: bool = False,
-) -> PreparedVmdArtifactReceipt:
-    """Write and verify one private VMD stage, cleaning failures eagerly."""
-
-    stage_directory = Path(tempfile.mkdtemp(prefix="mmd-vmd-stage-"))
-    file_path = stage_directory / "prepared.vmd"
-    try:
-        expected_counts = _section_counts(vmd_data)
-        frame_bounds = _frame_bounds(vmd_data)
-        exporter.export_vmd_animation(str(file_path), vmd_data)
-        if not file_path.is_file() or file_path.stat().st_size <= 0:
-            raise PreparedVmdArtifactError("VMD exporter did not produce a non-empty stage")
-
-        try:
-            parameters = inspect.signature(output_verifier).parameters
-        except (TypeError, ValueError):
-            parameters = {}
-        accepts_kwargs = any(
-            parameter.kind == inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters.values()
-        )
-        verifier_kwargs = (
-            {"expected_counts": expected_counts}
-            if accepts_kwargs or "expected_counts" in parameters
-            else {}
-        )
-        report = output_verifier(str(file_path), mode, **verifier_kwargs)
-        if report is None:
-            raise PreparedVmdArtifactError("VMD output verifier returned no report")
-        if bool(getattr(report, "is_blocking", False)) or getattr(report, "valid", True) is False:
-            raise PreparedVmdArtifactError(f"staged VMD output verification blocked: {report}")
-        # A warning is retained on the receipt and acknowledged only by the
-        # final publish workflow.  Blocking output findings still fail closed
-        # above and clean the private stage in the exception path.
-
-        return PreparedVmdArtifactReceipt(
-            schema_version=PREPARED_VMD_ARTIFACT_SCHEMA_VERSION,
-            stage_directory=str(stage_directory),
-            file_path=str(file_path),
-            sha256=_digest_file(file_path),
-            size=file_path.stat().st_size,
-            section_counts=MappingProxyType(expected_counts),
-            frame_bounds=frame_bounds,
-            output_validation_report=report,
-        )
-    except Exception:
-        shutil.rmtree(stage_directory, ignore_errors=True)
-        raise
-
 __all__ = [
     "PREPARED_VMD_ARTIFACT_SCHEMA_VERSION",
     "PreparedVmdArtifactError",
     "PreparedVmdArtifactReceipt",
     "PreparedVmdStageSession",
-    "stage_vmd_artifact",
 ]
