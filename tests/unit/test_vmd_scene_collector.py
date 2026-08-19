@@ -291,6 +291,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         )
         self.assertFalse(sink.finished)
         self.assertEqual(result["section_counts"]["bones"], 3)
+        self.assertEqual(result["validation_frame_range"], (0, 2))
         self.assertEqual({section for section, _frame in sink.frames}, {"bones"})
         self.assertTrue(result["diagnostics"]["streaming"]["enabled"])
 

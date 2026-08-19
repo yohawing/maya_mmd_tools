@@ -981,9 +981,16 @@ class VmdSceneCollector:
             self._diagnostics["total"] = {
                 "wall_sec": round(time.perf_counter() - started, 6),
             }
+            validation_frame_range = None
+            if start_frame is not None and end_frame is not None:
+                validation_frame_range = (
+                    _vmd_frame_number(start_frame, maya_time_to_vmd),
+                    _vmd_frame_number(end_frame, maya_time_to_vmd),
+                )
             return {
                 "model_name": str(options.get("model_name") or self._model_name(target_model)),
                 "raw_provenance": raw_marker,
+                "validation_frame_range": validation_frame_range,
                 "section_counts": dict(section_counts),
                 "diagnostics": self.diagnostics,
             }
