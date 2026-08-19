@@ -614,7 +614,13 @@ def _run_third_oracle(
             input_routes=routes,
         )
         plan = samples.plan
-        native_rows = samples.rows
+        native_rows = tuple(
+            tuple(
+                samples.value(channel.joint, channel.attr, frame)
+                for channel in plan.physical_channels
+            )
+            for frame in plan.frames
+        )
         native_diagnostics = dict(sampler.last_diagnostics)
         for frame in frames:
             cmds_module.currentTime(frame, edit=True)
@@ -770,7 +776,11 @@ def _run_worker(config: Mapping[str, Any], prefix: int) -> dict[str, Any]:
             f"currentTime was not restored: entry={entry_time} restored={restored_time}"
         )
     values_blob = _packed_bytes(
-        [value for row in samples.rows for value in row]
+        [
+            samples.value(channel.joint, channel.attr, frame)
+            for frame in samples.plan.frames
+            for channel in samples.plan.physical_channels
+        ]
     )
     values_path = _values_path(config, prefix)
     values_path.write_bytes(values_blob)

@@ -174,19 +174,6 @@ class NativeDenseBoneSamples:
         return self._value_at(frame_index, physical_index)
 
     @property
-    def rows(self) -> tuple[tuple[float, ...], ...]:
-        """Materialize rows on demand for compatibility with the old result."""
-
-        self._ensure_open()
-        return tuple(
-            tuple(
-                self._value_at(frame_index, channel_index)
-                for channel_index in range(len(self.plan.physical_channels))
-            )
-            for frame_index in range(len(self.plan.frames))
-        )
-
-    @property
     def sample_count(self) -> int:
         return len(self.plan.frames) * len(self.plan.physical_channels)
 
@@ -241,13 +228,6 @@ class NativeDenseBoneSamples:
                 # Cleanup is best effort for interpreter shutdown and must not
                 # turn a completed export into a failure.
                 pass
-
-    def __enter__(self) -> "NativeDenseBoneSamples":
-        self._ensure_open()
-        return self
-
-    def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
-        self.close()
 
     def __del__(self) -> None:
         try:
@@ -533,17 +513,13 @@ class NativeVmdBatchSampler:
 
     command_name = "mmdVmdBatchSample"
 
-    def __init__(self, cmds_module: Any = None, diagnostics_sink=None) -> None:
+    def __init__(self, cmds_module: Any, diagnostics_sink=None) -> None:
         self._cmds = cmds_module
         self._diagnostics_sink = diagnostics_sink
         self._plugin_attempted = False
         self._plugin_path: Optional[str] = None
         self.last_diagnostics: dict[str, Any] = {
-            "available": callable(
-                getattr(cmds_module, self.command_name, None)
-            )
-            if cmds_module is not None
-            else False,
+            "available": callable(getattr(cmds_module, self.command_name, None)),
             "used": False,
             "plugin_load_status": "not_attempted",
         }
@@ -565,19 +541,6 @@ class NativeVmdBatchSampler:
 
     @property
     def available(self) -> bool:
-        if self._cmds is None:
-            try:
-                from maya import cmds as maya_cmds
-            except Exception:
-                self._plugin_attempted = True
-                self.last_diagnostics.update(
-                    {
-                        "available": False,
-                        "plugin_load_status": "maya_unavailable",
-                    }
-                )
-                return False
-            self._cmds = maya_cmds
         if callable(getattr(self._cmds, self.command_name, None)):
             self.last_diagnostics.update(
                 {
