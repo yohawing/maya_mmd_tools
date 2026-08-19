@@ -688,6 +688,16 @@ class VmdSceneCollector:
                 end_frame,
             )
         )
+        if dense_sample and dense_frame_samples and nodes_by_name and not all_keyed_frames:
+            first_sample = float(dense_frame_samples[0])
+            if all(
+                bool(_plug_float(node, "enabled", first_sample))
+                for node in nodes_by_name.values()
+            ):
+                # A keyless production rig defaults to enabled=True.  Dense
+                # sampling must not manufacture a redundant all-ON property
+                # section that was absent from the source motion.
+                return []
         frames = []
         baseline_time = _ik_baseline_time(start_frame, end_frame)
         if (

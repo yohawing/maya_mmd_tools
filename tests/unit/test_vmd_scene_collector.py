@@ -973,6 +973,46 @@ class TestVmdSceneCollector(unittest.TestCase):
             [[("左足ＩＫ", True)], [("左足ＩＫ", True)], [("左足ＩＫ", False)]],
         )
 
+    def test_dense_ik_omits_keyless_all_on_property_section(self):
+        self.cmds.attrs[("ik_solver", "enabled")] = True
+        original_collect = collector_module.collect_ik_nodes_by_bone_name
+        collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {
+            "左足ＩＫ": "ik_solver",
+        }
+        try:
+            result = VmdSceneCollector().collect_ik_show_hide_frames(
+                "model_root",
+                time_converter=lambda value: value,
+                dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+            )
+        finally:
+            collector_module.collect_ik_nodes_by_bone_name = original_collect
+
+        self.assertEqual(result, [])
+
+    def test_dense_ik_keeps_keyless_constant_off_state(self):
+        self.cmds.attrs[("ik_solver", "enabled")] = False
+        original_collect = collector_module.collect_ik_nodes_by_bone_name
+        collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {
+            "左足ＩＫ": "ik_solver",
+        }
+        try:
+            result = VmdSceneCollector().collect_ik_show_hide_frames(
+                "model_root",
+                time_converter=lambda value: value,
+                dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+            )
+        finally:
+            collector_module.collect_ik_nodes_by_bone_name = original_collect
+
+        self.assertEqual([row["frame_number"] for row in result], [0, 1, 2])
+        self.assertEqual(
+            [row["ik_states"] for row in result],
+            [[("左足ＩＫ", False)]] * 3,
+        )
+
     def test_collects_ik_baseline_before_later_enabled_key(self):
         self.cmds.attrs[("ik_solver", "enabled")] = False
         self.cmds.keys[("ik_solver", "enabled")] = {20.0: 1.0}
