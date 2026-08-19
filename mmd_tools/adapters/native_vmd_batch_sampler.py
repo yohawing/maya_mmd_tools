@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import math
+from pathlib import Path
 import time
 from typing import Any, Mapping, Optional, Sequence
 
@@ -41,6 +42,7 @@ _NUMERIC_ATTR_TYPES = {
 }
 _HEADER_SIZE = 6
 _PROTOCOL_VERSION = 1
+_PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 
 
 class NativeVmdBatchSamplerError(RuntimeError):
@@ -376,9 +378,16 @@ class NativeVmdBatchSampler:
 
     def __init__(self, cmds_module: Any = None) -> None:
         self._cmds = cmds_module
+        self._plugin_attempted = False
+        self._plugin_path: Optional[str] = None
         self.last_diagnostics: dict[str, Any] = {
-            "available": self.available,
+            "available": callable(
+                getattr(cmds_module, self.command_name, None)
+            )
+            if cmds_module is not None
+            else False,
             "used": False,
+            "plugin_load_status": "not_attempted",
         }
 
     @property
@@ -387,9 +396,82 @@ class NativeVmdBatchSampler:
             try:
                 from maya import cmds as maya_cmds
             except Exception:
+                self._plugin_attempted = True
+                self.last_diagnostics.update(
+                    {
+                        "available": False,
+                        "plugin_load_status": "maya_unavailable",
+                    }
+                )
                 return False
             self._cmds = maya_cmds
-        return callable(getattr(self._cmds, self.command_name, None))
+        if callable(getattr(self._cmds, self.command_name, None)):
+            self.last_diagnostics.update(
+                {
+                    "available": True,
+                    "plugin_load_status": self.last_diagnostics.get(
+                        "plugin_load_status"
+                    )
+                    if self.last_diagnostics.get("plugin_load_status")
+                    not in {"not_attempted", "already_available"}
+                    else "already_available",
+                }
+            )
+            return True
+        if not self._plugin_attempted:
+            self._load_plugin_once()
+        available = callable(getattr(self._cmds, self.command_name, None))
+        self.last_diagnostics["available"] = available
+        if not available and self.last_diagnostics.get("plugin_load_status") == "loaded":
+            self.last_diagnostics["plugin_load_status"] = "registration_missing"
+        return available
+
+    def _load_plugin_once(self) -> None:
+        """Locate/load the canonical C++ plugin at most once per gateway."""
+
+        self._plugin_attempted = True
+        try:
+            from mmd_tools.core import cpp_plugin_locator
+
+            maya_version = cpp_plugin_locator.running_maya_major_version(
+                self._cmds,
+                default="2024",
+            )
+            candidates = cpp_plugin_locator.plugin_candidate_paths(
+                [_PLUGIN_ROOT], maya_version=maya_version
+            )
+            path = cpp_plugin_locator.find_plugin_path(candidates)
+            if path is None:
+                # Keep the deterministic explicit candidate in diagnostics so
+                # a missing build is actionable, including env overrides.
+                self._plugin_path = str(candidates[0]) if candidates else None
+                self.last_diagnostics.update(
+                    {
+                        "plugin_path": self._plugin_path,
+                        "plugin_load_status": "missing",
+                        "plugin_load_error": "canonical C++ plugin was not found",
+                    }
+                )
+                return
+            self._plugin_path = str(path)
+            self.last_diagnostics["plugin_path"] = self._plugin_path
+            cpp_plugin_locator.prepare_plugin_directory(path)
+            loaded = cpp_plugin_locator.load_plugin(
+                path,
+                self._cmds,
+                prepare=False,
+            )
+            self.last_diagnostics["plugin_load_status"] = (
+                "loaded" if loaded else "already_loaded"
+            )
+        except Exception as exc:
+            self.last_diagnostics.update(
+                {
+                    "plugin_path": self._plugin_path,
+                    "plugin_load_status": "error",
+                    "plugin_load_error": f"{type(exc).__name__}: {exc}",
+                }
+            )
 
     def sample_dense_bone_channels(
         self,
@@ -399,12 +481,19 @@ class NativeVmdBatchSampler:
     ) -> NativeDenseBoneSamples:
         started = time.perf_counter()
         if not self.available:
-            self.last_diagnostics = {
-                "available": False,
-                "used": False,
-                "fallback_reason": "native command is unavailable",
-            }
+            self.last_diagnostics.update(
+                {
+                    "available": False,
+                    "used": False,
+                    "fallback_reason": "native command is unavailable",
+                }
+            )
             raise NativeVmdBatchSamplerError("native command is unavailable")
+        plugin_diagnostics = {
+            key: value
+            for key, value in self.last_diagnostics.items()
+            if key.startswith("plugin_")
+        }
         plan = build_dense_bone_sample_plan(
             joints,
             frames,
@@ -428,6 +517,7 @@ class NativeVmdBatchSampler:
             rows, strategy_counts = parse_packed_result(packed, plan)
         except Exception as exc:
             self.last_diagnostics = {
+                **plugin_diagnostics,
                 "available": True,
                 "used": False,
                 "fallback_reason": f"{type(exc).__name__}: {exc}",
@@ -442,7 +532,7 @@ class NativeVmdBatchSampler:
             strategy_counts=strategy_counts,
             wall_sec=round(time.perf_counter() - started, 6),
         )
-        self.last_diagnostics = result.diagnostics
+        self.last_diagnostics = {**plugin_diagnostics, **result.diagnostics}
         return result
 
     # Keep a short alias for injected test doubles and future adapter callers.

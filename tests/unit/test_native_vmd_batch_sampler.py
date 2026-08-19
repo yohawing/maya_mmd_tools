@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from tests.common.maya_stub import install_maya_stub
@@ -137,6 +138,95 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             sampler.sample_dense_bone_channels([0, 1], ["joint"])
         self.assertFalse(sampler.last_diagnostics["used"])
         self.assertIn("fallback_reason", sampler.last_diagnostics)
+
+    def test_plugin_loads_once_and_registers_the_command(self):
+        class _LoadableCmds:
+            pass
+
+        plugin_path = Path("F:/native/plug-ins/2024/Release/mmd_tools_cpp.mll")
+        cmds = _LoadableCmds()
+
+        def register(_path, _cmds, **_kwargs):
+            _cmds.mmdVmdBatchSample = lambda **_payload: []
+            return True
+
+        sampler = NativeVmdBatchSampler(cmds)
+        with mock.patch(
+            "mmd_tools.core.cpp_plugin_locator.running_maya_major_version",
+            return_value="2024",
+        ), mock.patch(
+            "mmd_tools.core.cpp_plugin_locator.plugin_candidate_paths",
+            return_value=[plugin_path],
+        ), mock.patch(
+            "mmd_tools.core.cpp_plugin_locator.find_plugin_path",
+            return_value=plugin_path,
+        ), mock.patch(
+            "mmd_tools.core.cpp_plugin_locator.prepare_plugin_directory"
+        ) as prepare, mock.patch(
+            "mmd_tools.core.cpp_plugin_locator.load_plugin",
+            side_effect=register,
+        ) as load:
+            self.assertTrue(sampler.available)
+            self.assertTrue(sampler.available)
+        prepare.assert_called_once_with(plugin_path)
+        load.assert_called_once_with(plugin_path, cmds, prepare=False)
+        self.assertEqual(sampler.last_diagnostics["plugin_path"], str(plugin_path))
+        self.assertEqual(sampler.last_diagnostics["plugin_load_status"], "loaded")
+
+        # A subsequent command failure must retain the loader evidence used
+        # to diagnose which native binary actually owned the command.
+        with self.assertRaises(NativeVmdBatchSamplerError):
+            sampler.sample_dense_bone_channels([0.0], ["joint"])
+        self.assertEqual(sampler.last_diagnostics["plugin_path"], str(plugin_path))
+        self.assertEqual(sampler.last_diagnostics["plugin_load_status"], "loaded")
+
+    def test_missing_plugin_is_safe_and_records_candidate(self):
+        class _NoCommand:
+            pass
+
+        candidate = Path("F:/missing/mmd_tools_cpp.mll")
+        sampler = NativeVmdBatchSampler(_NoCommand())
+        with mock.patch(
+            "mmd_tools.core.cpp_plugin_locator.running_maya_major_version",
+            return_value="2024",
+        ), mock.patch(
+            "mmd_tools.core.cpp_plugin_locator.plugin_candidate_paths",
+            return_value=[candidate],
+        ), mock.patch(
+            "mmd_tools.core.cpp_plugin_locator.find_plugin_path",
+            return_value=None,
+        ):
+            self.assertFalse(sampler.available)
+            self.assertFalse(sampler.available)
+        self.assertEqual(sampler.last_diagnostics["plugin_path"], str(candidate))
+        self.assertEqual(sampler.last_diagnostics["plugin_load_status"], "missing")
+
+    def test_plugin_load_exception_is_safe_and_not_retried(self):
+        class _NoCommand:
+            pass
+
+        candidate = Path("F:/broken/mmd_tools_cpp.mll")
+        sampler = NativeVmdBatchSampler(_NoCommand())
+        with mock.patch(
+            "mmd_tools.core.cpp_plugin_locator.running_maya_major_version",
+            return_value="2024",
+        ), mock.patch(
+            "mmd_tools.core.cpp_plugin_locator.plugin_candidate_paths",
+            return_value=[candidate],
+        ), mock.patch(
+            "mmd_tools.core.cpp_plugin_locator.find_plugin_path",
+            return_value=candidate,
+        ), mock.patch(
+            "mmd_tools.core.cpp_plugin_locator.prepare_plugin_directory"
+        ), mock.patch(
+            "mmd_tools.core.cpp_plugin_locator.load_plugin",
+            side_effect=RuntimeError("load failed"),
+        ) as load:
+            self.assertFalse(sampler.available)
+            self.assertFalse(sampler.available)
+        load.assert_called_once()
+        self.assertEqual(sampler.last_diagnostics["plugin_load_status"], "error")
+        self.assertIn("load failed", sampler.last_diagnostics["plugin_load_error"])
 
     def test_collector_only_batches_keyed_joints_and_ignores_raw_provenance(self):
         class _Cmds:

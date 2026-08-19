@@ -97,6 +97,27 @@ def main() -> int:
     maya.standalone.initialize(name="python")
     plugin_name = plugin_path.stem
     try:
+        # Production Prepare does not pre-load the C++ plugin.  Verify the
+        # gateway resolves the Maya-version-specific binary and registers the
+        # command before the command-level checks below.
+        from mmd_tools.adapters.native_vmd_batch_sampler import NativeVmdBatchSampler
+
+        auto_sampler = NativeVmdBatchSampler(cmds)
+        if not auto_sampler.available:
+            raise RuntimeError(
+                f"native sampler gateway did not auto-load: {auto_sampler.last_diagnostics!r}"
+            )
+        if auto_sampler.last_diagnostics.get("plugin_load_status") not in {
+            "loaded",
+            "already_loaded",
+            "already_available",
+        }:
+            raise RuntimeError(
+                f"unexpected auto-load evidence: {auto_sampler.last_diagnostics!r}"
+            )
+        if cmds.pluginInfo(plugin_name, query=True, loaded=True):
+            cmds.unloadPlugin(plugin_name, force=True)
+
         cmds.loadPlugin(str(plugin_path), quiet=True)
         if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
             raise RuntimeError("mmd_tools_cpp did not report loaded")
