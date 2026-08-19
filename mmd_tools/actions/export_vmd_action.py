@@ -201,6 +201,10 @@ class ExportVmdAction:
         try:
             animation_data = request.animation_data
             if animation_data is None:
+                if mode == VMD_MODE_C:
+                    raise ValueError(
+                        "Mode C VMD export requires prepared animation_data"
+                    )
                 if self._collector is None:
                     raise ValueError("VMD export requires animation_data or a collector")
                 collector_options = dict(request.options)

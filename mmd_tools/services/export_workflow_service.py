@@ -245,7 +245,11 @@ class ExportWorkflowService:
         options: Mapping[str, Any],
         mode: str = "C",
     ) -> Any:
-        """Collect and normalize VMD payload through the configured action."""
+        """Collect and normalize non-Mode-C VMD payload through the action."""
+        if str(mode or "").upper() == "C":
+            raise PrepareVmdExportError(
+                "Mode C VMD export requires a prepared VMD export token"
+            )
         animation_data = request.animation_data
         if animation_data is None:
             animation_data = options.get("animation_data")
@@ -297,6 +301,10 @@ class ExportWorkflowService:
                     )
             elif export_format == "vmd":
                 self._emit_progress(progress_callback, "payload_collection")
+                if mode == "C" and request.prepared_vmd_token is None:
+                    raise PrepareVmdExportError(
+                        "Mode C VMD export requires a prepared VMD export token"
+                    )
                 if request.prepared_vmd_token is not None:
                     if self.prepare_vmd_action is None:
                         raise PrepareVmdExportError(

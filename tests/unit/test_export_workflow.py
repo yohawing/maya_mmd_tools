@@ -24,6 +24,7 @@ from mmd_tools.validation.export_validator import (  # noqa: E402
 from mmd_tools.validation.scene_preflight import ScenePreflight  # noqa: E402
 from mmd_tools.actions.export_vmd_action import ExportVmdAction  # noqa: E402
 from mmd_tools.actions.prepare_vmd_export_action import (  # noqa: E402
+    PrepareVmdExportError,
     PrepareVmdExportAction,
     VmdExportDiscovery,
 )
@@ -410,7 +411,15 @@ class TestExportWorkflowService(unittest.TestCase):
 
         def collector(options):
             observed.append(dict(options))
-            return {"model_name": "MotionFixture", "bone_frames": []}
+            return {
+                "model_name": "MotionFixture",
+                "bone_frames": [],
+                "raw_provenance": {
+                    "raw_bone_interpolation_complete": True,
+                    "raw_bone_key_count": 0,
+                    "raw_bone_interpolation": [],
+                },
+            }
 
         vmd_action = ExportVmdAction(
             exporter=VmdExporter(native_exporter=None),
@@ -430,7 +439,7 @@ class TestExportWorkflowService(unittest.TestCase):
                     "motion.vmd",
                     {
                         "export_format": "vmd",
-                        "vmd_mode": "C",
+                        "vmd_mode": "A",
                         "require_target": True,
                         "require_current_model": True,
                         "current_model_root": current_model_root,
@@ -548,15 +557,16 @@ class TestExportWorkflowService(unittest.TestCase):
         self.assertEqual(result.state, STATE_SUCCEEDED)
         self.assertEqual(result.action_result.validation_report.mode, "A")
 
-    def test_vmd_workflow_passes_default_mode_to_scene_collector(self):
+    def test_vmd_workflow_default_mode_requires_prepared_token(self):
         observed = []
+        exporter = _RecordingVmdExporter()
 
         def collector(options):
             observed.append(dict(options))
             return {"model_name": "ModeCFixture", "bone_frames": []}
 
         vmd_action = ExportVmdAction(
-            exporter=VmdExporter(native_exporter=None),
+            exporter=exporter,
             collector=collector,
         )
         service = ExportWorkflowService(
@@ -577,8 +587,22 @@ class TestExportWorkflowService(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result.state, STATE_READY)
-        self.assertEqual(observed[0]["vmd_mode"], "C")
+        self.assertEqual(result.state, STATE_BLOCKED)
+        self.assertIsInstance(result.error, PrepareVmdExportError)
+        self.assertIn("prepared VMD export token", str(result.error))
+        self.assertEqual(observed, [])
+        execute_result = service.execute(
+            ExportWorkflowRequest(
+                "motion.vmd",
+                {
+                    "export_format": "vmd",
+                    "target_model": "model_ROOT",
+                },
+            )
+        )
+        self.assertEqual(execute_result.state, STATE_BLOCKED)
+        self.assertEqual(observed, [])
+        self.assertIsNone(exporter.written_payload)
 
     def test_vmd_workflow_preserves_explicit_raw_provenance(self):
         explicit_provenance = {"source": "explicit"}
