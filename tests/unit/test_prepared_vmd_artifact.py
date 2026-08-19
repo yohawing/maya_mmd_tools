@@ -186,6 +186,15 @@ class PreparedVmdArtifactTests(unittest.TestCase):
         self.assertFalse(verifier.calls[0][2]["ack_warnings"])
         receipt.cleanup()
 
+    def test_incremental_session_rejects_range_change_after_collection(self):
+        session = PreparedVmdStageSession()
+        session.finish_collection()
+
+        with self.assertRaisesRegex(PreparedVmdArtifactError, "cannot change"):
+            session.set_expected_frame_range((0, 1))
+
+        session.cleanup()
+
     def test_incremental_session_frame_range_failure_removes_stage(self):
         session = PreparedVmdStageSession(expected_frame_range=(3, 3))
         stage_directory = Path(session.stage_directory)

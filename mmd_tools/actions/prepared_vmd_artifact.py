@@ -281,6 +281,15 @@ class PreparedVmdStageSession:
             self._handle_failure()
             raise
 
+    def set_expected_frame_range(self, frame_range: Tuple[int, int]) -> None:
+        """Set converted VMD bounds before the writer is finalized."""
+
+        if self._summary is not None or self._receipt is not None or self._cleaned:
+            raise PreparedVmdArtifactError(
+                "VMD stage frame range cannot change after collection"
+            )
+        self._expected_frame_range = frame_range
+
     def finish_collection(self) -> Any:
         """Flush the writer and return its bounded summary.
 
