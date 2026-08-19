@@ -1059,6 +1059,11 @@ class VmdSceneCollector:
             return routes
         metadata = read_mmd_control_rig_metadata(target_model)
         if not metadata:
+            self._merge_physics_authored_input_routes(
+                joints=joints,
+                target_model=target_model,
+                routes=routes,
+            )
             return routes
         joints_by_path = {
             str((cmds.ls(joint, long=True) or [joint])[0]): str(joint)
@@ -1089,7 +1094,86 @@ class VmdSceneCollector:
                 channel = "translate" if attribute == "baseTranslate" else "rotate"
                 for axis in "XYZ":
                     route[f"{channel}{axis}"] = (node, f"{attribute}{axis}")
+        self._merge_physics_authored_input_routes(
+            joints=joints,
+            target_model=target_model,
+            routes=routes,
+        )
         return routes
+
+    def _merge_physics_authored_input_routes(
+        self,
+        *,
+        joints: Sequence[str],
+        target_model: str,
+        routes: dict[str, dict[str, tuple[str, str]]],
+    ) -> None:
+        """Add owned physics-driver pre-inputs without replacing authored routes.
+
+        The final ``outTranslate``/``outRotate`` values are physics results and
+        are not motion sources.  VMD recovery connects authored animation to
+        the driver's ``inPre*`` plugs, so only a unique, model-owned driver
+        with a validated target and an incoming non-physics source is eligible.
+        Missing or ambiguous graph pieces are skipped fail-closed.
+        """
+
+        if not target_model:
+            return
+        root_path = _canonical_dag_path(target_model)
+        if not root_path:
+            return
+        joints_by_path = {
+            str((cmds.ls(joint, long=True) or [joint])[0]): str(joint)
+            for joint in joints
+        }
+        if not joints_by_path:
+            return
+        candidates: dict[str, list[tuple[str, int]]] = {}
+        used_indices: dict[int, list[str]] = {}
+        for solver in _physics_solvers_owned_by_model(root_path):
+            for driver in _physics_drivers_for_solver(solver):
+                target_joint = _physics_driver_target_joint(driver)
+                if not target_joint:
+                    continue
+                target_path = _canonical_dag_path(target_joint)
+                if not target_path or target_path not in joints_by_path:
+                    continue
+                if not _dag_path_is_under_root(target_path, root_path):
+                    continue
+                bone_index = _physics_driver_bone_index(driver)
+                if bone_index is None:
+                    continue
+                if not _physics_driver_pre_inputs_exist(driver):
+                    continue
+                candidates.setdefault(target_path, []).append((driver, bone_index))
+                used_indices.setdefault(bone_index, []).append(target_path)
+
+        # A duplicate target or bone index cannot establish ownership safely.
+        ambiguous_targets = {
+            target
+            for target, values in candidates.items()
+            if len({driver for driver, _index in values}) != 1
+        }
+        ambiguous_indices = {
+            index
+            for index, targets in used_indices.items()
+            if len(set(targets)) != 1
+        }
+        for target_path, values in candidates.items():
+            if target_path in ambiguous_targets:
+                continue
+            driver, bone_index = values[0]
+            if bone_index in ambiguous_indices:
+                continue
+            route = routes.setdefault(target_path, {})
+            for logical_attr, pre_attr in _PHYSICS_PRE_INPUT_ATTRS.items():
+                if logical_attr in route:
+                    # append/IK/control-rig authored routes remain the
+                    # established priority and must never be overwritten.
+                    continue
+                if not _physics_authored_source_is_valid(driver, pre_attr):
+                    continue
+                route[logical_attr] = (driver, pre_attr)
 
     def collect_morph_frames(
         self,
@@ -2095,3 +2179,149 @@ def _resolve_collection_frame_range(
         _optional_float(options.get("start_frame")),
         _optional_float(options.get("end_frame")),
     )
+
+
+_PHYSICS_PRE_INPUT_ATTRS = {
+    "translateX": "inPreTranslateX",
+    "translateY": "inPreTranslateY",
+    "translateZ": "inPreTranslateZ",
+    "rotateX": "inPreRotateX",
+    "rotateY": "inPreRotateY",
+    "rotateZ": "inPreRotateZ",
+}
+
+
+def _physics_solvers_owned_by_model(root_path: str) -> list[str]:
+    """Resolve only solvers whose root or registry owns the Current Model."""
+
+    try:
+        solvers = cmds.ls(type="mmdPhysicsSolver") or []
+    except Exception:
+        return []
+    target_registry = None
+    try:
+        from mmd_tools.core.model_registry import get_model_registry
+
+        target_registry = get_model_registry(root_path)
+    except Exception:
+        pass
+    owned = []
+    for solver in sorted({str(value) for value in solvers}):
+        try:
+            roots = cmds.listConnections(
+                f"{solver}.modelRoot",
+                source=True,
+                destination=False,
+            ) or []
+            registries = cmds.listConnections(
+                f"{solver}.modelRegistry",
+                source=True,
+                destination=False,
+            ) or []
+        except Exception:
+            continue
+        root_matches = [
+            value
+            for value in roots
+            if _canonical_dag_path(value) == root_path
+        ]
+        registry_matches = bool(
+            target_registry
+            and len(registries) == 1
+            and str(registries[0]) == str(target_registry)
+        )
+        # More than one root/registry source is ambiguous even if one happens
+        # to match the Current Model.
+        if (len(roots) == 1 and len(root_matches) == 1) or (
+            not roots and registry_matches
+        ):
+            owned.append(solver)
+    return owned
+
+
+def _physics_drivers_for_solver(solver: str) -> list[str]:
+    """Return unique drivers connected to one solver's output surface."""
+
+    drivers = []
+    seen = set()
+    for output_attr in ("outBoneMatrices", "outBoneCount", "outSolved"):
+        try:
+            connected = cmds.listConnections(
+                f"{solver}.{output_attr}",
+                source=False,
+                destination=True,
+                type="mmdPhysicsBoneDriver",
+            ) or []
+        except Exception:
+            continue
+        for driver in connected:
+            value = str(driver)
+            if value not in seen:
+                seen.add(value)
+                drivers.append(value)
+    return sorted(drivers)
+
+
+def _physics_driver_target_joint(driver: str) -> Optional[str]:
+    """Resolve exactly one rename-safe target-joint message connection."""
+
+    try:
+        if not cmds.attributeQuery(
+            "mmd_target_joint_message", node=driver, exists=True
+        ):
+            return None
+        targets = cmds.listConnections(
+            f"{driver}.mmd_target_joint_message",
+            source=True,
+            destination=False,
+            type="joint",
+        ) or []
+    except Exception:
+        return None
+    return str(targets[0]) if len(targets) == 1 else None
+
+
+def _physics_driver_bone_index(driver: str) -> Optional[int]:
+    try:
+        if not cmds.attributeQuery("inBoneIndex", node=driver, exists=True):
+            return None
+        value = cmds.getAttr(f"{driver}.inBoneIndex")
+        index = int(value)
+    except (TypeError, ValueError, RuntimeError, OverflowError):
+        return None
+    return index if index >= 0 else None
+
+
+def _physics_driver_pre_inputs_exist(driver: str) -> bool:
+    try:
+        return all(
+            bool(cmds.attributeQuery(attribute, node=driver, exists=True))
+            for attribute in _PHYSICS_PRE_INPUT_ATTRS.values()
+        )
+    except Exception:
+        return False
+
+
+def _physics_authored_source_is_valid(driver: str, attribute: str) -> bool:
+    """Accept one incoming authored/non-physics source, never driver output."""
+
+    try:
+        sources = cmds.listConnections(
+            f"{driver}.{attribute}",
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+    except Exception:
+        return False
+    if len(sources) != 1:
+        return False
+    source_node = str(sources[0]).split(".", 1)[0]
+    try:
+        source_type = str(cmds.nodeType(source_node) or "")
+    except Exception:
+        return False
+    return source_type not in {
+        "mmdPhysicsBoneDriver",
+        "mmdPhysicsSolver",
+    }
