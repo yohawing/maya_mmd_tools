@@ -762,7 +762,15 @@ class VmdSceneCollector:
                         )
                         if callable(native_diagnostics):
                             native_diagnostics = native_diagnostics()
+                        sampler_diagnostics = getattr(
+                            bone_channel_sampler,
+                            "last_diagnostics",
+                            None,
+                        )
                         self._diagnostics["native_sampler"] = dict(
+                            sampler_diagnostics or {}
+                        )
+                        self._diagnostics["native_sampler"].update(
                             native_diagnostics or {}
                         )
                         self._diagnostics["native_sampler"].setdefault(

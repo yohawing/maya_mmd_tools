@@ -250,6 +250,10 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         class _Native:
             def __init__(self):
                 self.joints = None
+                self.last_diagnostics = {
+                    "plugin_path": "F:/native/mmd_tools_cpp.mll",
+                    "plugin_load_status": "loaded",
+                }
 
             def sample_dense_bone_channels(self, frames, joints, routes):
                 self.joints = tuple(joints)
@@ -309,6 +313,10 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         self.assertEqual(result[0]["position"], (1.0, 1.0, 1.0))
         self.assertEqual(result[1]["position"], (2.0, 2.0, 2.0))
         self.assertNotEqual(result[0]["position"], raw[("dense", 0)][0])
+        self.assertEqual(
+            collector.diagnostics["native_sampler"]["plugin_load_status"],
+            "loaded",
+        )
 
     def test_collector_falls_back_when_native_sampling_fails(self):
         class _Cmds:
