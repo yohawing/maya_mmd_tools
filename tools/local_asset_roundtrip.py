@@ -614,6 +614,64 @@ def _vmd_mode_c_semantic_diff(
     return failures
 
 
+def _required_source_vmd_payload(
+    source_payload: Mapping[str, Any],
+    required_track_names: Mapping[str, Iterable[str]],
+) -> dict[str, Any]:
+    """Filter raw bone/morph tracks to names resolved against the target model."""
+
+    required = {
+        section: {_normalized_name(name) for name in required_track_names.get(section, ())}
+        for section in ("bone", "morph")
+    }
+    payload = {section: list(source_payload.get(section, ())) for section in source_payload}
+    for section in ("bone", "morph"):
+        payload[section] = [
+            item
+            for item in source_payload.get(section, ())
+            if _normalized_name(item.get("name")) in required[section]
+        ]
+    return payload
+
+
+def _mode_c_track_boundary_diff(
+    source_payload: Mapping[str, Any],
+    prepared_payload: Mapping[str, Any],
+    exported_payload: Mapping[str, Any],
+    required_track_names: Mapping[str, Iterable[str]],
+) -> dict[str, list[str]]:
+    """Classify Mode C required-track loss at prepare and writer boundaries.
+
+    The raw source remains authoritative for model-resolved input tracks, but
+    tracks that cannot resolve to the paired model are explicitly excluded.
+    The immutable prepared snapshot is then authoritative at the writer
+    boundary.  Keeping both comparisons prevents preparation-time loss (for
+    example, a dynamic physics bone) from being mistaken for an allowed raw
+    provenance difference.
+    """
+
+    required_source = _required_source_vmd_payload(source_payload, required_track_names)
+    return {
+        "source_to_prepared": _vmd_mode_c_semantic_diff(
+            required_source,
+            prepared_payload,
+        ),
+        "prepared_to_export": _vmd_mode_c_semantic_diff(
+            prepared_payload,
+            exported_payload,
+        ),
+    }
+
+
+def _copy_prepared_vmd_payload(prepared_token: Any) -> dict[str, Any]:
+    """Detach and normalize the token payload while the token is active."""
+
+    copy_for_export = getattr(prepared_token, "copy_for_export", None)
+    if not callable(copy_for_export):
+        raise TypeError("prepared VMD token does not expose copy_for_export()")
+    return _vmd_payload(copy_for_export())
+
+
 def _vmd_edit_track_witness(
     payload: Mapping[str, Any], adjustment: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -1175,6 +1233,29 @@ def _motion_recipe_value(recipe: Mapping[str, Any], key: str, default: Any) -> A
 
 def _normalized_name(value: Any) -> str:
     return " ".join(str(value or "").strip().casefold().split())
+
+
+def _model_resolved_motion_track_names(root: str) -> dict[str, set[str]]:
+    """Return bone/morph aliases that uniquely resolve on the imported model."""
+
+    from mmd_tools.adapters.maya_authoring_factory import build_maya_authoring_composition
+
+    spec = build_maya_authoring_composition().coordinator.read_spec(root)
+
+    def unique_aliases(items: Iterable[Any]) -> set[str]:
+        aliases: dict[str, set[int]] = {}
+        for item in items:
+            index = int(item.index)
+            for value in (item.name, item.name_english):
+                name = _normalized_name(value)
+                if name:
+                    aliases.setdefault(name, set()).add(index)
+        return {name for name, indices in aliases.items() if len(indices) == 1}
+
+    return {
+        "bone": unique_aliases(spec.bones),
+        "morph": unique_aliases(spec.morphs),
+    }
 
 
 def _required_ik_track_names(ik_frames: Iterable[Any]) -> set[str]:
@@ -2003,6 +2084,7 @@ def _run_prepared_vmd_exports(
     prepared_token: Any,
     source_root: str,
     source_payload: Mapping[str, Any],
+    required_track_names: Mapping[str, Iterable[str]],
     adjustment: dict[str, Any],
     start_frame: int,
     end_frame: int,
@@ -2020,6 +2102,9 @@ def _run_prepared_vmd_exports(
     from mmd_tools.core.vmd_data import VmdData
 
     try:
+        # Token invalidation happens in ``finally``.  Detach the immutable
+        # prepared-scene authority before validation/execute can fail.
+        prepared_payload = _copy_prepared_vmd_payload(prepared_token)
         cold_export_phase_start = len(context.phases)
         validation = _phase(context, "export_validation", lambda: workflow.validate(request))
         validation_evidence = _report_summary(validation)
@@ -2046,7 +2131,17 @@ def _run_prepared_vmd_exports(
         )
         exported_payload = _vmd_payload(exported_data)
         adjustment["exported_tracks"] = _vmd_edit_track_witness(exported_payload, adjustment)
-        parser_failures = _vmd_mode_c_semantic_diff(source_payload, exported_payload)
+        track_boundary_failures = _mode_c_track_boundary_diff(
+            source_payload,
+            prepared_payload,
+            exported_payload,
+            required_track_names,
+        )
+        parser_failures = [
+            f"{boundary}: {failure}"
+            for boundary, boundary_failures in track_boundary_failures.items()
+            for failure in boundary_failures
+        ]
         source_total_keys = sum(
             len(source_payload[section])
             for section in ("bone", "morph", "camera", "light", "shadow", "ik")
@@ -2086,6 +2181,8 @@ def _run_prepared_vmd_exports(
             "acknowledged_warnings": acknowledged_warnings,
             "exported_data": exported_data,
             "exported_payload": exported_payload,
+            "prepared_payload": prepared_payload,
+            "track_boundary_failures": track_boundary_failures,
             "parser_failures": parser_failures,
             "source_total_keys": source_total_keys,
             "exported_total_keys": exported_total_keys,
@@ -2204,6 +2301,11 @@ def _run_vmd_case(
         "source_import_oracle",
         import_source,
     )
+    required_track_names = _phase(
+        context,
+        "source_track_resolution",
+        lambda: _model_resolved_motion_track_names(source_root),
+    )
     adjustment = _phase(
         context,
         "motion_adjustment",
@@ -2252,6 +2354,7 @@ def _run_vmd_case(
         prepared_token,
         source_root,
         source_payload,
+        required_track_names,
         adjustment,
         start_frame,
         end_frame,
@@ -2262,6 +2365,8 @@ def _run_vmd_case(
     acknowledged_warnings = export_result["acknowledged_warnings"]
     exported_data = export_result["exported_data"]
     exported_payload = export_result["exported_payload"]
+    prepared_payload = export_result["prepared_payload"]
+    track_boundary_failures = export_result["track_boundary_failures"]
     parser_failures = export_result["parser_failures"]
     source_total_keys = export_result["source_total_keys"]
     exported_total_keys = export_result["exported_total_keys"]
@@ -2394,6 +2499,7 @@ def _run_vmd_case(
             "mode_c_dense_semantics": True,
             "fresh_pose": True,
             "fresh_camera_light": source_camera_oracle is not None,
+            "track_boundary_failures": track_boundary_failures,
         },
         "key_counts": {
             "source": source_total_keys,
@@ -2401,7 +2507,11 @@ def _run_vmd_case(
             "inflation": key_inflation,
         },
         "track_counts": {
-            section: {"source": len(source_payload[section]), "exported": len(exported_payload[section])}
+            section: {
+                "source": len(source_payload[section]),
+                "prepared": len(prepared_payload[section]),
+                "exported": len(exported_payload[section]),
+            }
             for section in ("bone", "morph", "camera", "light", "shadow", "ik")
         },
         "source_metrics": metrics,

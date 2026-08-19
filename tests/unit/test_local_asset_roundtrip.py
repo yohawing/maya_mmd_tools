@@ -20,6 +20,7 @@ from tools.local_asset_roundtrip import (
     _load_manifest,
     _motion_evaluation_frames,
     _motion_phase_evidence,
+    _mode_c_track_boundary_diff,
     _prepare_diagnostics_sink,
     _prepare_vmd_mode_c,
     _run_prepared_vmd_exports,
@@ -60,6 +61,20 @@ def _bone(interpolation=b"\x14" * 64):
         rotation=(0.0, 0.0, 0.0, 1.0),
         interpolation=interpolation,
     )
+
+
+def _empty_vmd_data(**sections):
+    defaults = {
+        "header": SimpleNamespace(model_name="model"),
+        "bone_frames": [],
+        "morph_frames": [],
+        "camera_frames": [],
+        "light_frames": [],
+        "shadow_frames": [],
+        "ik_show_hide_frames": [],
+    }
+    defaults.update(sections)
+    return SimpleNamespace(**defaults)
 
 
 def test_vmd_payload_diff_requires_key_times_and_raw_interpolation():
@@ -288,14 +303,14 @@ def test_mode_c_prepare_failure_is_non_pass_and_has_no_collector_fallback(monkey
 
 
 def test_prepared_export_boundary_invalidates_once_on_failure(monkeypatch, tmp_path):
-    invalidated = []
+    lifecycle = []
 
     class _Workflow:
         def validate(self, request):
             raise RuntimeError("validation boom")
 
         def invalidate_prepared_vmd(self, token):
-            invalidated.append(token)
+            lifecycle.append(("invalidate", token))
 
     monkeypatch.setattr(
         "tools.local_asset_roundtrip._phase",
@@ -306,7 +321,10 @@ def test_prepared_export_boundary_invalidates_once_on_failure(monkeypatch, tmp_p
         export_write_budget_violations=[],
         export_write_budget_sec=60.0,
     )
-    token = SimpleNamespace(cache_id="prepared")
+    token = SimpleNamespace(
+        cache_id="prepared",
+        copy_for_export=lambda: lifecycle.append(("copy", None)) or _empty_vmd_data(),
+    )
 
     with pytest.raises(RuntimeError, match="validation boom"):
         _run_prepared_vmd_exports(
@@ -318,13 +336,14 @@ def test_prepared_export_boundary_invalidates_once_on_failure(monkeypatch, tmp_p
             token,
             "|edited_source_root",
             {"bone": [], "morph": [], "camera": [], "light": [], "shadow": [], "ik": []},
+            {"bone": set(), "morph": set()},
             {},
             0,
             20,
             "model",
             3,
         )
-    assert invalidated == [token]
+    assert lifecycle == [("copy", None), ("invalidate", token)]
 
 
 def test_motion_phase_evidence_reports_boundaries_and_edit_to_first_file():
@@ -482,6 +501,66 @@ def test_mode_c_semantics_allows_dense_key_inflation_but_requires_tracks():
     exported = {"bone": [{"name": "センター", "frame": 0}, {"name": "センター", "frame": 1}], "morph": [], "camera": [], "light": [], "shadow": [], "ik": []}
     assert _vmd_mode_c_semantic_diff(source, exported) == []
     assert _vmd_mode_c_semantic_diff(source, {**exported, "bone": []})
+
+
+def test_mode_c_track_boundaries_exclude_only_model_unmatched_source_tracks():
+    center = _bone()
+    center.bone_name = "センター"
+    unmatched = _bone()
+    unmatched.bone_name = "別モデル専用"
+    source = _vmd_payload(_empty_vmd_data(bone_frames=[center, unmatched]))
+    prepared = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
+    exported = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
+
+    failures = _mode_c_track_boundary_diff(
+        source,
+        prepared,
+        exported,
+        {"bone": {"センター"}, "morph": set()},
+    )
+
+    assert failures == {"source_to_prepared": [], "prepared_to_export": []}
+
+
+def test_mode_c_track_boundaries_reject_supported_physics_track_lost_in_prepare():
+    center = _bone()
+    center.bone_name = "センター"
+    physics = _bone()
+    physics.bone_name = "右胸"
+    source = _vmd_payload(_empty_vmd_data(bone_frames=[center, physics]))
+    prepared = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
+
+    failures = _mode_c_track_boundary_diff(
+        source,
+        prepared,
+        prepared,
+        {"bone": {"センター", "右胸"}, "morph": set()},
+    )
+
+    assert failures["source_to_prepared"] == [
+        "bone required tracks missing: ['右胸']"
+    ]
+    assert failures["prepared_to_export"] == []
+
+
+def test_mode_c_track_boundaries_reject_prepared_authored_track_lost_by_writer():
+    authored = _bone()
+    authored.bone_name = "センター"
+    source = _vmd_payload(_empty_vmd_data(bone_frames=[authored]))
+    prepared = _vmd_payload(_empty_vmd_data(bone_frames=[authored]))
+    exported = _vmd_payload(_empty_vmd_data())
+
+    failures = _mode_c_track_boundary_diff(
+        source,
+        prepared,
+        exported,
+        {"bone": {"センター"}, "morph": set()},
+    )
+
+    assert failures["source_to_prepared"] == []
+    assert failures["prepared_to_export"] == [
+        "bone required tracks missing: ['センター']"
+    ]
 
 
 def test_mode_c_ik_semantics_canonicalizes_state_order_only():
