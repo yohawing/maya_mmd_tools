@@ -1710,6 +1710,7 @@ def _compare_scene_oracles(
     actual: Mapping[str, Any],
     *,
     pose: bool,
+    pose_tolerance: float = FLOAT_TOLERANCE,
     mesh: bool = True,
     materials: bool = True,
     physics: bool = False,
@@ -1826,7 +1827,7 @@ def _compare_scene_oracles(
                 difference = _compare_float_lists(
                     expected_joint.get("translation", []), actual_joint.get("translation", [])
                 )
-                if difference > FLOAT_TOLERANCE:
+                if difference > pose_tolerance:
                     failures.append(f"pose frame {frame} bone {expected_joint['name']} max error {difference:g}")
 
     if physics:

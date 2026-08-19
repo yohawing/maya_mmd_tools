@@ -1454,6 +1454,53 @@ class ExportReleaseGateTests(unittest.TestCase):
         self.assertTrue(any("material[0].memo" in failure for failure in failures))
         self.assertFalse(any("material[0].sphere_texture_path" in failure for failure in failures))
 
+    def test_scene_oracle_applies_explicit_tolerance_only_to_pose(self):
+        source = {
+            "metadata": {},
+            "pose": {
+                "joint_count": 1,
+                "frames": {"0": [{"name": "center", "translation": [0.0, 0.0, 0.0]}]},
+            },
+        }
+        within_tolerance = {
+            "metadata": {},
+            "pose": {
+                "joint_count": 1,
+                "frames": {"0": [{"name": "center", "translation": [0.0049, 0.0, 0.0]}]},
+            },
+        }
+        beyond_tolerance = {
+            "metadata": {},
+            "pose": {
+                "joint_count": 1,
+                "frames": {"0": [{"name": "center", "translation": [0.0051, 0.0, 0.0]}]},
+            },
+        }
+
+        assert _compare_scene_oracles(
+            source,
+            within_tolerance,
+            pose=True,
+            mesh=False,
+            materials=False,
+        )
+        assert _compare_scene_oracles(
+            source,
+            within_tolerance,
+            pose=True,
+            pose_tolerance=5e-3,
+            mesh=False,
+            materials=False,
+        ) == []
+        assert _compare_scene_oracles(
+            source,
+            beyond_tolerance,
+            pose=True,
+            pose_tolerance=5e-3,
+            mesh=False,
+            materials=False,
+        )
+
     def test_scene_oracle_derives_optional_edge_flag_from_pmx_draw_flags(self):
         """A redundant Maya edge flag may be absent after a PMX fresh import."""
         material = {
