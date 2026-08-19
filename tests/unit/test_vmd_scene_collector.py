@@ -20,6 +20,7 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
 )
+from mmd_tools.validation.snapshot import fingerprint_payload  # noqa: E402
 
 
 class FakeVector:
@@ -1286,11 +1287,46 @@ class TestVmdSceneCollector(unittest.TestCase):
             collector._record_track_selection(
                 "bone", f"bone_{index}", "authored_sampled", "multiple_source_keys", 2, 3
             )
+        collector._record_track_selection(
+            "Bone", "センター", "omitted_default", "direct_single_key_default", 2, 0
+        )
+        collector._record_track_selection(
+            "bone", "センター", "omitted_default", "direct_single_key_default", 2, 0
+        )
+        collector._record_track_selection(
+            "BONE", "  CENTER  Bone ", "omitted_default", "direct_single_key_default", 1, 0
+        )
+        collector._record_track_selection(
+            "bone", "center bone", "omitted_default", "direct_single_key_default", 1, 0
+        )
+        collector._record_track_selection(
+            "MORPH", "smile", "omitted_default", "direct_single_key_default", 3, 0
+        )
+        collector._record_track_selection(
+            "morph", "keyless", "omitted_default", "keyless_static_default", 0, 0
+        )
 
         selection = collector.diagnostics["track_selection"]
         self.assertEqual(selection["counts"]["authored_sampled"], 129)
+        self.assertEqual(selection["counts"]["omitted_default"], 6)
+        self.assertEqual(selection["counts_by_section"]["bone"]["authored_sampled"], 129)
+        self.assertEqual(selection["counts_by_section"]["bone"]["omitted_default"], 4)
+        self.assertEqual(selection["counts_by_section"]["morph"]["omitted_default"], 2)
+        self.assertEqual(
+            selection["key_counts"],
+            {"source": 267, "planned": 387, "reduced": 9, "added": 129},
+        )
         self.assertEqual(len(selection["evidence"]), 128)
-        self.assertEqual(selection["evidence_omitted_count"], 1)
+        self.assertEqual(selection["evidence_omitted_count"], 7)
+        identities = [
+            ["bone", "center bone"],
+            ["bone", "センター"],
+            ["morph", "smile"],
+        ]
+        self.assertEqual(
+            selection["source_omission_identity"],
+            {"count": 3, "fingerprint": fingerprint_payload(identities)},
+        )
         self.assertEqual(
             selection["evidence"][0],
             {
@@ -1301,6 +1337,21 @@ class TestVmdSceneCollector(unittest.TestCase):
                 "source_key_count": 2,
                 "planned_key_count": 3,
             },
+        )
+
+    def test_track_selection_source_omission_identity_resets_per_collect(self):
+        collector = VmdSceneCollector()
+        collector._record_track_selection(
+            "bone", "center", "omitted_default", "direct_single_key_default", 1, 0
+        )
+        first = collector.diagnostics["track_selection"]["source_omission_identity"]
+        self.assertEqual(first["count"], 1)
+
+        collector.collect({})
+        selection = collector.diagnostics["track_selection"]
+        self.assertEqual(selection["source_omission_identity"]["count"], 0)
+        self.assertEqual(
+            selection["source_omission_identity"]["fingerprint"], fingerprint_payload([])
         )
 
     def test_mode_c_morph_sampling_is_frame_major_current_time_and_restores(self):

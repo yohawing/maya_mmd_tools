@@ -60,6 +60,7 @@ from mmd_tools.converters.vmd_redirected_authoring_proxy import (
     redirected_authority_matches,
     resolve_redirected_authoring_proxy_authority,
 )
+from mmd_tools.validation.snapshot import fingerprint_payload
 
 
 _BONE_EXPORT_ATTRS = (
@@ -186,9 +187,25 @@ def _incoming_connection_state(
 def _new_track_selection() -> dict[str, Any]:
     return {
         "counts": {key: 0 for key in _TRACK_SELECTION_DECISIONS},
+        "counts_by_section": {
+            section: {key: 0 for key in _TRACK_SELECTION_DECISIONS}
+            for section in ("bone", "morph")
+        },
+        "key_counts": {key: 0 for key in ("source", "planned", "reduced", "added")},
         "evidence": [],
         "evidence_omitted_count": 0,
+        "source_omission_identity": {
+            "count": 0,
+            "fingerprint": fingerprint_payload([]),
+        },
     }
+
+
+def _normalize_track_selection_identity(section: Any, name: Any) -> tuple[str, str]:
+    """Return the stable section/name pair used by selection diagnostics."""
+
+    normalized_name = " ".join(str(name or "").strip().casefold().split())
+    return str(section).strip().lower(), normalized_name
 
 
 def _canonical_dag_path(node: str) -> Optional[str]:
@@ -372,11 +389,21 @@ class VmdSceneCollector:
         # target that cannot be routed through authored/pre-physics channels
         # must not later be mistaken for an ordinary keyless dependency.
         self._mode_c_physics_output_excluded_targets: set[str] = set()
+        self._source_omission_identities: set[tuple[str, str]] = set()
 
     @property
     def diagnostics(self) -> dict[str, Any]:
         """Return detached timing and count evidence for the last collect."""
 
+        report = self._diagnostics.get("track_selection")
+        if isinstance(report, dict):
+            identities = [
+                list(identity) for identity in sorted(self._source_omission_identities)
+            ]
+            report["source_omission_identity"] = {
+                "count": len(identities),
+                "fingerprint": fingerprint_payload(identities),
+            }
         return _copy_diagnostics(self._diagnostics)
 
     @property
@@ -417,17 +444,31 @@ class VmdSceneCollector:
         """Record bounded track-selection evidence without frame values."""
         if decision not in _TRACK_SELECTION_DECISIONS:
             decision = "authored_sampled"
+        normalized_section, normalized_name = _normalize_track_selection_identity(
+            section, name
+        )
+        source_count = max(0, int(source_key_count))
+        planned_count = max(0, int(planned_key_count))
         report = self._diagnostics.setdefault("track_selection", _new_track_selection())
         report["counts"][decision] += 1
+        section_counts = report["counts_by_section"].get(normalized_section)
+        if section_counts is not None:
+            section_counts[decision] += 1
+        report["key_counts"]["source"] += source_count
+        report["key_counts"]["planned"] += planned_count
+        report["key_counts"]["reduced"] += max(source_count - planned_count, 0)
+        report["key_counts"]["added"] += max(planned_count - source_count, 0)
+        if decision == "omitted_default" and source_count > 0:
+            self._source_omission_identities.add((normalized_section, normalized_name))
         if len(report["evidence"]) < _MAX_TRACK_SELECTION_EVIDENCE:
             report["evidence"].append(
                 {
-                    "section": section,
-                    "name": str(name),
+                    "section": normalized_section,
+                    "name": normalized_name,
                     "decision": decision,
                     "reason": str(reason),
-                    "source_key_count": max(0, int(source_key_count)),
-                    "planned_key_count": max(0, int(planned_key_count)),
+                    "source_key_count": source_count,
+                    "planned_key_count": planned_count,
                 }
             )
         else:
@@ -438,6 +479,7 @@ class VmdSceneCollector:
 
         started = time.perf_counter()
         self._diagnostics = {}
+        self._source_omission_identities = set()
         try:
             result = self._collect_impl(options)
             self._diagnostics["status"] = "completed"
