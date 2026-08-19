@@ -12,15 +12,21 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import copy
 import hashlib
+import inspect
 import math
 import time
 from types import MappingProxyType
 from typing import Any, Optional, Protocol, Tuple
 
 from ..validation.snapshot import fingerprint_payload
+from ..validation.export_validator import ExportValidationReport
+from ..validation.vmd_validator import VMD_MODE_C, validate_vmd_data, verify_vmd_output
+from .prepared_vmd_artifact import (
+    PreparedVmdArtifactReceipt,
+    stage_vmd_artifact,
+)
 
 
-VMD_MODE_C = "C"
 PREPARED_VMD_EXPORT_SCHEMA_VERSION = 1
 
 _IGNORED_REQUEST_KEYS = frozenset(
@@ -182,6 +188,8 @@ class PreparedVmdExportToken:
     prepared_payload: FrozenVmdDataView
     payload_fingerprint: str
     dependency_closure_fingerprint: str
+    staged_artifact: PreparedVmdArtifactReceipt = field(compare=True, hash=False)
+    combined_validation_report: ExportValidationReport = field(compare=True, hash=False)
 
     @property
     def payload(self) -> FrozenVmdDataView:
@@ -199,6 +207,30 @@ class PreparedVmdExportToken:
         """Return a writer-owned mutable copy of the prepared payload."""
 
         return self.prepared_payload.copy_for_export()
+
+    @property
+    def stage_receipt(self) -> PreparedVmdArtifactReceipt:
+        """Return the verified private VMD stage owned by this token."""
+
+        return self.staged_artifact
+
+    @property
+    def artifact_receipt(self) -> PreparedVmdArtifactReceipt:
+        """Compatibility alias for Workflow consumers."""
+
+        return self.staged_artifact
+
+    @property
+    def artifact(self) -> PreparedVmdArtifactReceipt:
+        """Short alias for callers treating the receipt as an artifact handle."""
+
+        return self.staged_artifact
+
+    @property
+    def validation_report(self) -> ExportValidationReport:
+        """Return the cached payload plus output verification report."""
+
+        return self.combined_validation_report
 
 
 @dataclass(frozen=True)
@@ -516,10 +548,76 @@ def _arm_revision_provider(provider: Any, request: Any, discovery: VmdExportDisc
     # before/after TOCTOU boundary.
 
 
+def _validate_prepared_vmd(
+    validator: Any,
+    vmd_data: Any,
+    mode: str,
+    frame_range: Tuple[float, float],
+    request: Any,
+) -> Any:
+    """Run the injected VMD validator once and fail closed on its report."""
+
+    try:
+        parameters = inspect.signature(validator).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    kwargs = {}
+    raw_provenance = getattr(vmd_data, "raw_provenance", None)
+    if accepts_kwargs or "raw_provenance" in parameters:
+        kwargs["raw_provenance"] = raw_provenance
+    requested_frame_range = _read_field(request, "frame_range")
+    if requested_frame_range in (None, (0, 0), [0, 0]):
+        requested_frame_range = None
+    if (accepts_kwargs or "frame_range" in parameters) and requested_frame_range is not None:
+        kwargs["frame_range"] = tuple(int(round(value)) for value in frame_range)
+    positional_parameters = tuple(
+        parameter
+        for parameter in parameters.values()
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    )
+    if accepts_kwargs or "mode" in parameters or len(positional_parameters) >= 2:
+        report = validator(vmd_data, mode, **kwargs)
+    else:
+        report = validator(vmd_data, **kwargs)
+    if not isinstance(report, ExportValidationReport):
+        raise PrepareVmdExportError(
+            "VMD preparation validator must return ExportValidationReport"
+        )
+    if bool(getattr(report, "is_blocking", False)) or getattr(report, "valid", True) is False:
+        raise PrepareVmdExportError(f"prepared VMD validation blocked: {report}")
+    if bool(getattr(report, "requires_warning_ack", False)) and _read_field(
+        request, "ack_warnings"
+    ) is not True:
+        raise PrepareVmdExportError("prepared VMD validation requires warning acknowledgement")
+    return report
+
+
+def _default_vmd_exporter() -> Any:
+    """Load the production exporter at the action boundary."""
+
+    from ..io.vmd_exporter import VmdExporter
+
+    return VmdExporter()
+
+
 class PrepareVmdExportAction:
     """Prepare one Mode C payload through injected production boundaries."""
 
-    def __init__(self, backend: VmdExportPreparationBackend, revision_provider: Any):
+    def __init__(
+        self,
+        backend: VmdExportPreparationBackend,
+        revision_provider: Any,
+        *,
+        exporter: Any = None,
+        validator: Any = None,
+        output_verifier: Any = None,
+        stage_factory: Any = None,
+    ):
         if backend is None or not callable(getattr(backend, "discover", None)) or not callable(
             getattr(backend, "collect", None)
         ):
@@ -528,6 +626,12 @@ class PrepareVmdExportAction:
             raise TypeError("revision_provider is required")
         self._backend = backend
         self._revision_provider = revision_provider
+        self._exporter = exporter if exporter is not None else _default_vmd_exporter()
+        self._validator = validator if validator is not None else validate_vmd_data
+        self._output_verifier = (
+            output_verifier if output_verifier is not None else verify_vmd_output
+        )
+        self._stage_factory = stage_factory if stage_factory is not None else stage_vmd_artifact
         # The action owns exactly one prepared approval.  Keeping this as an
         # identity (rather than a cache id or revision string) prevents a
         # discarded token from becoming valid again when Maya happens to
@@ -565,10 +669,13 @@ class PrepareVmdExportAction:
 
         if token is not None and self._active_token is not token:
             return False
+        active_token = self._active_token
         owned = self._active_token is not None
         if not owned and not self._boundary_open:
             return False
         self._active_token = None
+        if active_token is not None:
+            active_token.staged_artifact.cleanup()
         closed: set[int] = set()
         for owner in (self._backend, self._revision_provider):
             close = getattr(owner, "close", None)
@@ -591,6 +698,8 @@ class PrepareVmdExportAction:
         phase_timing: dict[str, float] = {}
         options_fingerprint: Optional[str] = None
         payload_fingerprint: Optional[str] = None
+        staged_artifact: Optional[PreparedVmdArtifactReceipt] = None
+        payload_validation_report: Optional[ExportValidationReport] = None
         status = "failed"
         error_text: Optional[str] = None
 
@@ -654,6 +763,42 @@ class PrepareVmdExportAction:
             prepared_payload = FrozenVmdDataView(payload)
             payload_fingerprint = prepared_payload.fingerprint
             timed("payload_freeze_fingerprint", freeze_begin)
+            validation_begin = time.perf_counter()
+            writable_payload = prepared_payload.copy_for_export()
+            payload_validation_report = _validate_prepared_vmd(
+                self._validator,
+                writable_payload,
+                mode,
+                frame_range,
+                request,
+            )
+            timed("payload_validate", validation_begin)
+            stage_begin = time.perf_counter()
+            stage_kwargs = {
+                "exporter": self._exporter,
+                "output_verifier": self._output_verifier,
+                "mode": mode,
+            }
+            try:
+                stage_parameters = inspect.signature(self._stage_factory).parameters
+            except (TypeError, ValueError):
+                stage_parameters = {}
+            if any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in stage_parameters.values()
+            ) or "ack_warnings" in stage_parameters:
+                stage_kwargs["ack_warnings"] = _read_field(request, "ack_warnings") is True
+            staged_artifact = self._stage_factory(writable_payload, **stage_kwargs)
+            if not isinstance(staged_artifact, PreparedVmdArtifactReceipt):
+                raise PrepareVmdExportError("VMD stage factory returned an invalid receipt")
+            staged_artifact.validate_identity()
+            combined_validation_report = ExportValidationReport(
+                "vmd",
+                tuple(payload_validation_report.issues)
+                + tuple(staged_artifact.output_validation_report.issues),
+                mode=mode,
+            )
+            timed("artifact_stage_verify", stage_begin)
             cache_id = first.cache_id or _cache_id(
                 first.scene_session_id,
                 first.target_uuid,
@@ -674,6 +819,8 @@ class PrepareVmdExportAction:
                 prepared_payload=prepared_payload,
                 payload_fingerprint=payload_fingerprint,
                 dependency_closure_fingerprint=first.dependency_closure_fingerprint,
+                staged_artifact=staged_artifact,
+                combined_validation_report=combined_validation_report,
             )
             self._active_token = token
             status = "published"
@@ -681,10 +828,14 @@ class PrepareVmdExportAction:
         except PrepareVmdExportRaceError as exc:
             status = "partial"
             error_text = f"{type(exc).__name__}: {exc}"
+            if staged_artifact is not None:
+                staged_artifact.cleanup()
             self.invalidate()
             return PrepareVmdExportResult(status="partial", error=exc)
         except Exception as exc:
             error_text = f"{type(exc).__name__}: {exc}"
+            if staged_artifact is not None:
+                staged_artifact.cleanup()
             self.invalidate()
             return PrepareVmdExportResult(status="failed", error=exc)
         finally:
@@ -776,6 +927,14 @@ class PrepareVmdExportAction:
             stale("prepared payload type is invalid")
         if token.prepared_payload.fingerprint != token.payload_fingerprint:
             stale("payload fingerprint does not match")
+        if not isinstance(token.staged_artifact, PreparedVmdArtifactReceipt):
+            stale("staged artifact type is invalid")
+        if not isinstance(token.combined_validation_report, ExportValidationReport):
+            stale("validation report type is invalid")
+        try:
+            token.staged_artifact.validate_identity()
+        except Exception as exc:
+            stale(f"staged artifact identity is invalid: {exc}")
 
 
 def _cache_id(*parts: str) -> str:
@@ -792,6 +951,7 @@ __all__ = [
     "PrepareVmdExportRequest",
     "PrepareVmdExportResult",
     "PrepareVmdExportRaceError",
+    "PreparedVmdArtifactReceipt",
     "PreparedVmdExportToken",
     "VmdExportDiscovery",
     "VmdExportPreparationBackend",

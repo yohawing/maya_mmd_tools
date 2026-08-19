@@ -1,6 +1,7 @@
 """Unit coverage for the immutable Mode C VMD preparation seam."""
 
 from dataclasses import FrozenInstanceError, replace
+from pathlib import Path
 import unittest
 
 from mmd_tools.actions.prepare_vmd_export_action import (
@@ -9,8 +10,10 @@ from mmd_tools.actions.prepare_vmd_export_action import (
     VmdExportDiscovery,
     request_fingerprint,
 )
+from mmd_tools.actions.prepared_vmd_artifact import stage_vmd_artifact
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
+from mmd_tools.validation.export_validator import ExportValidationIssue, ExportValidationReport
 
 
 class _Backend:
@@ -34,6 +37,7 @@ class _Backend:
         frame.bone_name = "center"
         frame.frame_number = 4
         frame.position = (1.0, 2.0, 3.0)
+        frame.rotation = (0.0, 0.0, 0.0, 1.0)
         data.bone_frames.append(frame)
         return data
 
@@ -55,6 +59,52 @@ class _Revisions:
         del request, discovery
         self.current_revision_calls += 1
         return next(self.revisions)
+
+
+class _FailingExporter:
+    def __init__(self):
+        self.paths = []
+
+    def export_vmd_animation(self, file_path, vmd_data):
+        del vmd_data
+        self.paths.append(file_path)
+        raise RuntimeError("writer failed")
+
+
+class _HeadlessExporter:
+    @staticmethod
+    def export_vmd_animation(file_path, vmd_data):
+        vmd_data.write_file(file_path)
+        return vmd_data
+
+
+def _prepare_action(*args, **kwargs):
+    kwargs.setdefault("exporter", _HeadlessExporter())
+    return PrepareVmdExportAction(*args, **kwargs)
+
+
+def _legacy_stage_factory(payload, *, exporter, output_verifier, mode):
+    """Compatibility fake omitting the optional warning argument."""
+
+    return stage_vmd_artifact(
+        payload,
+        exporter=exporter,
+        output_verifier=output_verifier,
+        mode=mode,
+    )
+
+
+class _BlockingVerifier:
+    def __call__(self, file_path, mode, *, expected_counts):
+        del file_path, expected_counts
+        issue = ExportValidationIssue("OUTPUT_PARSE_FAILED", "fatal", True, "output", "bad")
+        return ExportValidationReport("vmd", (issue,), mode=mode)
+
+
+def _blocking_validator(*args, **kwargs):
+    del args, kwargs
+    issue = ExportValidationIssue("VMD_FRAME_RANGE", "fatal", True, "frame_range", "bad")
+    return ExportValidationReport("vmd", (issue,), mode="C")
 
 
 def _request(**options):
@@ -89,7 +139,8 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         backend = _Backend([_discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1"])
 
-        result = PrepareVmdExportAction(backend, revisions).execute(_request())
+        action = _prepare_action(backend, revisions)
+        result = action.execute(_request())
 
         self.assertTrue(result.succeeded)
         self.assertEqual(backend.discover_calls, 2)
@@ -102,10 +153,62 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         with self.assertRaises(AttributeError):
             result.token.payload.bone_frames[0].frame_number = 99
         self.assertEqual(result.token.payload.bone_frames[0].frame_number, 4)
+        self.assertTrue(result.token.staged_artifact.validate_identity())
+        self.assertIsInstance(result.token.validation_report, ExportValidationReport)
+        self.assertEqual(result.token.validation_report.issues, ())
+        self.assertEqual(
+            result.token.staged_artifact.output_validation_report.issues,
+            result.token.validation_report.issues,
+        )
+        stage_path = result.token.staged_artifact.file_path
+        action.invalidate()
+        self.assertFalse(Path(stage_path).exists())
+
+    def test_validation_and_writer_failures_never_publish_a_stage(self):
+        backend = _Backend([_discovery(), _discovery()])
+        action = _prepare_action(
+            backend,
+            _Revisions(["r1", "r1"]),
+            validator=_blocking_validator,
+            exporter=_FailingExporter(),
+            output_verifier=_BlockingVerifier(),
+        )
+        result = action.execute(_request())
+        self.assertEqual(result.status, "failed")
+        self.assertIsNone(result.token)
+        self.assertIn("validation blocked", str(result.error))
+
+        exporter = _FailingExporter()
+        action = _prepare_action(
+            _Backend([_discovery(), _discovery()]),
+            _Revisions(["r1", "r1"]),
+            exporter=exporter,
+            output_verifier=_BlockingVerifier(),
+        )
+        result = action.execute(_request())
+        self.assertEqual(result.status, "failed")
+        self.assertIsNone(result.token)
+        self.assertFalse(Path(exporter.paths[0]).parent.exists())
+
+    def test_legacy_stage_factory_receives_cached_reports(self):
+        action = _prepare_action(
+            _Backend([_discovery(), _discovery()]),
+            _Revisions(["r1", "r1"]),
+            stage_factory=_legacy_stage_factory,
+        )
+        result = action.execute(_request())
+
+        self.assertTrue(result.succeeded)
+        self.assertIsInstance(result.token.validation_report, ExportValidationReport)
+        self.assertEqual(
+            result.token.validation_report.issues,
+            result.token.staged_artifact.output_validation_report.issues,
+        )
+        action.invalidate()
 
     def test_diagnostics_keep_prepare_phase_evidence_on_success_and_failure(self):
         backend = _Backend([_discovery(), _discovery()])
-        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1"]))
+        action = _prepare_action(backend, _Revisions(["r1", "r1"]))
 
         result = action.execute(_request())
         diagnostics = action.diagnostics
@@ -121,6 +224,8 @@ class PrepareVmdExportActionTests(unittest.TestCase):
                     "second_discovery",
                     "revision_after",
                     "payload_freeze_fingerprint",
+                    "payload_validate",
+                    "artifact_stage_verify",
                     "total",
                 )
             ),
@@ -131,7 +236,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         copied["phase_timing"]["total"] = -1
         self.assertGreaterEqual(diagnostics.phase_timing["total"], 0.0)
 
-        failing = PrepareVmdExportAction(_Backend([_discovery()]), _Revisions([None]))
+        failing = _prepare_action(_Backend([_discovery()]), _Revisions([None]))
         failure = failing.execute(_request())
         self.assertEqual(failure.status, "failed")
         self.assertEqual(failing.diagnostics.status, "failed")
@@ -144,7 +249,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_revision_race_is_partial_and_never_publishes(self):
         backend = _Backend([_discovery(), _discovery()])
-        result = PrepareVmdExportAction(backend, _Revisions(["r1", "r2"])).execute(_request())
+        result = _prepare_action(backend, _Revisions(["r1", "r2"])).execute(_request())
 
         self.assertEqual(result.status, "partial")
         self.assertIsNone(result.token)
@@ -152,7 +257,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_dependency_closure_change_is_partial_and_never_publishes(self):
         backend = _Backend([_discovery(), _discovery(dependency_closure_fingerprint="sha256:deps-2")])
-        result = PrepareVmdExportAction(backend, _Revisions(["r1", "r1"])).execute(_request())
+        result = _prepare_action(backend, _Revisions(["r1", "r1"])).execute(_request())
 
         self.assertEqual(result.status, "partial")
         self.assertIsNone(result.token)
@@ -160,7 +265,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_missing_revision_fails_before_collection(self):
         backend = _Backend([_discovery()])
-        result = PrepareVmdExportAction(backend, _Revisions([None])).execute(_request())
+        result = _prepare_action(backend, _Revisions([None])).execute(_request())
 
         self.assertEqual(result.status, "failed")
         self.assertIsNone(result.token)
@@ -169,7 +274,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_non_mode_c_is_rejected_before_discovery(self):
         backend = _Backend([_discovery()])
-        result = PrepareVmdExportAction(backend, _Revisions(["r1"])).execute(_request(mode="A"))
+        result = _prepare_action(backend, _Revisions(["r1"])).execute(_request(mode="A"))
 
         self.assertEqual(result.status, "failed")
         self.assertEqual(backend.discover_calls, 0)
@@ -203,7 +308,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
     def test_validate_token_rediscoveres_without_collecting_and_allows_output_change(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r1"])
-        action = PrepareVmdExportAction(backend, revisions)
+        action = _prepare_action(backend, revisions)
         token = action.prepare(_request())
 
         action.validate_token(_request(options={"output_path": "other.vmd"}), token)
@@ -215,7 +320,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
     def test_validate_token_rejects_stale_revision_with_stable_error(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r2"])
-        action = PrepareVmdExportAction(backend, revisions)
+        action = _prepare_action(backend, revisions)
         token = action.prepare(_request())
 
         with self.assertRaisesRegex(
@@ -229,7 +334,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
     def test_validate_token_rejects_copied_payload_fingerprint_tampering(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r1"])
-        action = PrepareVmdExportAction(backend, revisions)
+        action = _prepare_action(backend, revisions)
         token = action.prepare(_request())
 
         with self.assertRaisesRegex(
@@ -240,7 +345,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_invalidate_closes_boundary_and_is_idempotent(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
-        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1", "r1"]))
+        action = _prepare_action(backend, _Revisions(["r1", "r1", "r1"]))
         token = action.prepare(_request())
 
         self.assertTrue(action.invalidate(token))
@@ -253,7 +358,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
     def test_discarded_token_cannot_be_reused_at_same_revision(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r1"])
-        action = PrepareVmdExportAction(backend, revisions)
+        action = _prepare_action(backend, revisions)
         token = action.prepare(_request())
         action.invalidate(token)
         discover_calls = backend.discover_calls
@@ -266,6 +371,18 @@ class PrepareVmdExportActionTests(unittest.TestCase):
             action.validate_token(_request(), token)
         self.assertEqual(backend.discover_calls, discover_calls)
         self.assertEqual(revisions.current_revision_calls, revision_calls)
+
+    def test_validate_token_rejects_tampered_staged_artifact(self):
+        backend = _Backend([_discovery(), _discovery(), _discovery()])
+        action = _prepare_action(backend, _Revisions(["r1", "r1", "r1"]))
+        token = action.prepare(_request())
+        stage_path = Path(token.staged_artifact.file_path)
+        stage_path.write_bytes(stage_path.read_bytes() + b"tamper")
+
+        with self.assertRaisesRegex(ValueError, "staged artifact identity is invalid"):
+            action.validate_token(_request(), token)
+        self.assertIsNone(action.active_token)
+        self.assertFalse(stage_path.exists())
 
 
 if __name__ == "__main__":
