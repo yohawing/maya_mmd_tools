@@ -129,10 +129,10 @@ class VmdExportDiscovery:
 class FrozenVmdDataView:
     """Read-only deep snapshot of a VMD-like payload.
 
-    ``VmdData`` and its frame classes are mutable Python objects.  Keeping
-    those objects directly in a frozen token would therefore only freeze the
-    token shell.  This view recursively freezes object attributes and exposes
-    ``copy_for_export`` for the writer-owned mutable copy.
+    ``VmdData`` and its frame classes are mutable Python objects.  This
+    compatibility view recursively freezes object attributes and exposes
+    ``copy_for_export`` for callers that still need an isolated snapshot.  A
+    prepared export token deliberately does not retain this view.
     """
 
     __slots__ = ("_value", "_fingerprint")
@@ -173,7 +173,7 @@ class FrozenVmdDataView:
 
 @dataclass(frozen=True)
 class PreparedVmdExportToken:
-    """Opaque immutable handle for one safely collected Mode C payload."""
+    """Opaque immutable receipt handle for one safely staged Mode C export."""
 
     schema_version: int
     cache_id: str
@@ -185,28 +185,10 @@ class PreparedVmdExportToken:
     frame_range: Tuple[float, float]
     frame_step: float
     semantic_options_fingerprint: str
-    prepared_payload: FrozenVmdDataView
     payload_fingerprint: str
     dependency_closure_fingerprint: str
     staged_artifact: PreparedVmdArtifactReceipt = field(compare=True, hash=False)
     combined_validation_report: ExportValidationReport = field(compare=True, hash=False)
-
-    @property
-    def payload(self) -> FrozenVmdDataView:
-        """Alias used by action callers that treat the token as a payload view."""
-
-        return self.prepared_payload
-
-    @property
-    def vmd_data(self) -> FrozenVmdDataView:
-        """Explicit VmdData-view alias for exporter integrations."""
-
-        return self.prepared_payload
-
-    def copy_for_export(self) -> Any:
-        """Return a writer-owned mutable copy of the prepared payload."""
-
-        return self.prepared_payload.copy_for_export()
 
     @property
     def stage_receipt(self) -> PreparedVmdArtifactReceipt:
@@ -264,7 +246,7 @@ class PrepareVmdExportDiagnostics:
 
     The payload itself is intentionally absent.  This envelope is kept even
     when preparation fails so a smoke runner can distinguish a slow
-    discovery, collector, or freeze boundary without logging per-frame data.
+    discovery, collector, or stage boundary without logging per-frame data.
     ``phase_timing`` is a mapping of stable phase names to wall-clock seconds.
     """
 
@@ -766,15 +748,10 @@ class PrepareVmdExportAction:
             ):
                 raise PrepareVmdExportRaceError("VMD route or dependency closure changed during collection")
 
-            freeze_begin = time.perf_counter()
-            prepared_payload = FrozenVmdDataView(payload)
-            payload_fingerprint = prepared_payload.fingerprint
-            timed("payload_freeze_fingerprint", freeze_begin)
             validation_begin = time.perf_counter()
-            writable_payload = prepared_payload.copy_for_export()
             payload_validation_report = _validate_prepared_vmd(
                 self._validator,
-                writable_payload,
+                payload,
                 mode,
                 frame_range,
                 request,
@@ -795,10 +772,11 @@ class PrepareVmdExportAction:
                 for parameter in stage_parameters.values()
             ) or "ack_warnings" in stage_parameters:
                 stage_kwargs["ack_warnings"] = _read_field(request, "ack_warnings") is True
-            staged_artifact = self._stage_factory(writable_payload, **stage_kwargs)
+            staged_artifact = self._stage_factory(payload, **stage_kwargs)
             if not isinstance(staged_artifact, PreparedVmdArtifactReceipt):
                 raise PrepareVmdExportError("VMD stage factory returned an invalid receipt")
             staged_artifact.validate_identity()
+            payload_fingerprint = staged_artifact.sha256
             combined_validation_report = ExportValidationReport(
                 "vmd",
                 tuple(payload_validation_report.issues)
@@ -823,7 +801,6 @@ class PrepareVmdExportAction:
                 frame_range=frame_range,
                 frame_step=frame_step,
                 semantic_options_fingerprint=options_fingerprint,
-                prepared_payload=prepared_payload,
                 payload_fingerprint=payload_fingerprint,
                 dependency_closure_fingerprint=first.dependency_closure_fingerprint,
                 staged_artifact=staged_artifact,
@@ -930,12 +907,10 @@ class PrepareVmdExportAction:
             stale("frame step does not match")
         if token.semantic_options_fingerprint != request_fingerprint(request):
             stale("semantic request does not match")
-        if not isinstance(token.prepared_payload, FrozenVmdDataView):
-            stale("prepared payload type is invalid")
-        if token.prepared_payload.fingerprint != token.payload_fingerprint:
-            stale("payload fingerprint does not match")
         if not isinstance(token.staged_artifact, PreparedVmdArtifactReceipt):
             stale("staged artifact type is invalid")
+        if token.payload_fingerprint != token.staged_artifact.sha256:
+            stale("payload fingerprint does not match staged artifact")
         if not isinstance(token.combined_validation_report, ExportValidationReport):
             stale("validation report type is invalid")
         try:

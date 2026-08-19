@@ -22,6 +22,7 @@ class _Backend:
         self.discover_calls = 0
         self.collect_calls = 0
         self.close_calls = 0
+        self.last_payload = None
 
     def discover(self, request):
         del request
@@ -39,6 +40,7 @@ class _Backend:
         frame.position = (1.0, 2.0, 3.0)
         frame.rotation = (0.0, 0.0, 0.0, 1.0)
         data.bone_frames.append(frame)
+        self.last_payload = data
         return data
 
     def close(self):
@@ -160,6 +162,28 @@ def _discovery(**changes):
 
 
 class PrepareVmdExportActionTests(unittest.TestCase):
+    def test_prepare_stages_the_collected_payload_without_a_second_snapshot(self):
+        backend = _Backend([_discovery(), _discovery()])
+        staged_payloads = []
+
+        def stage_factory(payload, *, exporter, output_verifier, mode):
+            staged_payloads.append(payload)
+            return stage_vmd_artifact(
+                payload,
+                exporter=exporter,
+                output_verifier=output_verifier,
+                mode=mode,
+            )
+
+        result = _prepare_action(
+            backend,
+            _Revisions(["r1", "r1"]),
+            stage_factory=stage_factory,
+        ).execute(_request())
+
+        self.assertTrue(result.succeeded)
+        self.assertIs(staged_payloads[0], backend.last_payload)
+
     def test_collects_once_and_publishes_immutable_token(self):
         backend = _Backend([_discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1"])
@@ -175,9 +199,8 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         self.assertEqual(result.token.revision, "r1")
         with self.assertRaises(FrozenInstanceError):
             result.token.revision = "r2"
-        with self.assertRaises(AttributeError):
-            result.token.payload.bone_frames[0].frame_number = 99
-        self.assertEqual(result.token.payload.bone_frames[0].frame_number, 4)
+        self.assertFalse(hasattr(result.token, "prepared_payload"))
+        self.assertFalse(hasattr(result.token, "copy_for_export"))
         self.assertTrue(result.token.staged_artifact.validate_identity())
         self.assertIsInstance(result.token.validation_report, ExportValidationReport)
         self.assertEqual(result.token.validation_report.issues, ())
@@ -270,7 +293,6 @@ class PrepareVmdExportActionTests(unittest.TestCase):
                     "backend_collect",
                     "second_discovery",
                     "revision_after",
-                    "payload_freeze_fingerprint",
                     "payload_validate",
                     "artifact_stage_verify",
                     "total",
@@ -290,9 +312,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         self.assertIn("revision_before", failing.diagnostics.error)
         self.assertIn("total", failing.diagnostics.phase_timing)
 
-        mutable = result.token.copy_for_export()
-        mutable.bone_frames[0].frame_number = 99
-        self.assertEqual(result.token.payload.bone_frames[0].frame_number, 4)
+        self.assertFalse(hasattr(result.token, "prepared_payload"))
 
     def test_revision_race_is_partial_and_never_publishes(self):
         backend = _Backend([_discovery(), _discovery()])
@@ -378,17 +398,19 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         self.assertEqual(backend.collect_calls, 1)
         self.assertIsNone(action.active_token)
 
-    def test_validate_token_rejects_copied_payload_fingerprint_tampering(self):
+    def test_validate_token_rejects_receipt_payload_fingerprint_tampering(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r1"])
         action = _prepare_action(backend, revisions)
         token = action.prepare(_request())
+        tampered = replace(token, payload_fingerprint="sha256:stale")
+        action._active_token = tampered
 
         with self.assertRaisesRegex(
             ValueError,
-            r"^prepared VMD export token is stale: token is not active$",
+            r"^prepared VMD export token is stale: payload fingerprint does not match staged artifact$",
         ):
-            action.validate_token(_request(), replace(token, payload_fingerprint="sha256:stale"))
+            action.validate_token(_request(), tampered)
 
     def test_invalidate_closes_boundary_and_is_idempotent(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])

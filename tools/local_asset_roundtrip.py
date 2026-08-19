@@ -749,13 +749,29 @@ def _mode_c_track_boundary_diff(
     }
 
 
-def _copy_prepared_vmd_payload(prepared_token: Any) -> dict[str, Any]:
-    """Detach and normalize the token payload while the token is active."""
+def _read_prepared_vmd_payload(prepared_token: Any) -> dict[str, Any]:
+    """Parse the staged receipt for boundary-only semantic comparisons.
 
-    copy_for_export = getattr(prepared_token, "copy_for_export", None)
-    if not callable(copy_for_export):
-        raise TypeError("prepared VMD token does not expose copy_for_export()")
-    return _vmd_payload(copy_for_export())
+    Prepared tokens are receipt-only and intentionally expose no in-memory
+    ``VmdData`` graph.  The local roundtrip runner still needs a normalized
+    snapshot to compare source, prepared, and exported boundaries, so it reads
+    the already verified private stage while the token is active.
+    """
+
+    from mmd_tools.core.vmd_data import VmdData
+
+    receipt = getattr(prepared_token, "staged_artifact", None)
+    if receipt is None:
+        receipt = getattr(prepared_token, "stage_receipt", None)
+    if receipt is None:
+        raise TypeError("prepared VMD token does not expose a staged artifact receipt")
+    validate_identity = getattr(receipt, "validate_identity", None)
+    if callable(validate_identity):
+        validate_identity()
+    file_path = getattr(receipt, "file_path", None)
+    if not file_path:
+        raise TypeError("prepared VMD receipt does not expose file_path")
+    return _vmd_payload(VmdData().parse_file(str(file_path)))
 
 
 def _vmd_edit_track_witness(
@@ -2251,10 +2267,11 @@ def _run_prepared_vmd_exports(
     from mmd_tools.core.vmd_data import VmdData
 
     try:
-        # Token invalidation happens in ``finally``.  Detach the immutable
-        # prepared-scene authority before validation/execute can fail.
+        # Token invalidation happens in ``finally``.  Read the verified stage
+        # before validation/execute can fail so boundary comparisons remain
+        # independent of the receipt-only token.
         source_omission_commitment = _source_omission_commitment(preparation_evidence)
-        prepared_payload = _copy_prepared_vmd_payload(prepared_token)
+        prepared_payload = _read_prepared_vmd_payload(prepared_token)
         cold_export_phase_start = len(context.phases)
         validation = _phase(context, "export_validation", lambda: workflow.validate(request))
         validation_evidence = _report_summary(validation)

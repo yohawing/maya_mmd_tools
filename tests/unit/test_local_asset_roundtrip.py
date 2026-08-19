@@ -350,9 +350,10 @@ def test_prepared_export_boundary_invalidates_once_on_failure(monkeypatch, tmp_p
         export_write_budget_violations=[],
         export_write_budget_sec=60.0,
     )
-    token = SimpleNamespace(
-        cache_id="prepared",
-        copy_for_export=lambda: lifecycle.append(("copy", None)) or _empty_vmd_data(),
+    token = SimpleNamespace(cache_id="prepared")
+    monkeypatch.setattr(
+        "tools.local_asset_roundtrip._read_prepared_vmd_payload",
+        lambda _token: lifecycle.append(("read", None)) or _vmd_payload(_empty_vmd_data()),
     )
 
     with pytest.raises(RuntimeError, match="validation boom"):
@@ -383,7 +384,7 @@ def test_prepared_export_boundary_invalidates_once_on_failure(monkeypatch, tmp_p
                 }
             },
         )
-    assert lifecycle == [("copy", None), ("invalidate", token)]
+    assert lifecycle == [("read", None), ("invalidate", token)]
 
 
 def test_prepared_export_invalidates_token_when_omission_diagnostics_are_missing(
@@ -404,10 +405,7 @@ def test_prepared_export_invalidates_token_when_omission_diagnostics_are_missing
         export_write_budget_violations=[],
         export_write_budget_sec=60.0,
     )
-    token = SimpleNamespace(
-        cache_id="prepared",
-        copy_for_export=lambda: lifecycle.append(("copy", None)) or _empty_vmd_data(),
-    )
+    token = SimpleNamespace(cache_id="prepared")
 
     with pytest.raises(RuntimeError, match="source omission commitment"):
         _run_prepared_vmd_exports(
@@ -457,7 +455,7 @@ def test_prepared_export_stops_before_warm_samples_on_boundary_failure(monkeypat
         ),
     )
     monkeypatch.setattr(
-        "tools.local_asset_roundtrip._copy_prepared_vmd_payload",
+        "tools.local_asset_roundtrip._read_prepared_vmd_payload",
         lambda prepared_token: {
             "bone": [],
             "morph": [],
@@ -501,7 +499,7 @@ def test_prepared_export_stops_before_warm_samples_on_boundary_failure(monkeypat
         export_write_budget_violations=[],
         export_write_budget_sec=60.0,
     )
-    token = SimpleNamespace(copy_for_export=lambda: _empty_vmd_data())
+    token = SimpleNamespace(staged_artifact=SimpleNamespace(file_path=str(tmp_path / "prepared.vmd")))
     with pytest.raises(AssertionError, match="VMD semantic mismatch"):
         _run_prepared_vmd_exports(
             {"name": "dense"},

@@ -9,6 +9,9 @@ from maya import cmds
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
+from mmd_tools.actions.publish_prepared_vmd_action import (
+    publish_prepared_vmd_artifact,
+)
 from mmd_tools.adapters.maya_vmd_prepare_backend import create_maya_vmd_prepare_action
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
@@ -506,19 +509,8 @@ class TestVmdSceneCollector(MayaTestBase):
                 msg=f"Quaternion mismatch for {key}",
             )
 
-    def _export_prepared_mode_c(self, output_path, options, exporter=None):
-        """Prepare through the production Maya boundary, then write its copy."""
-        payload = self._prepare_mode_c_payload(output_path, options)
-        return ExportVmdAction(exporter=exporter).execute(
-            ExportVmdRequest(
-                file_path=output_path,
-                options=dict(options),
-                animation_data=payload,
-            )
-        )
-
-    def _prepare_mode_c_payload(self, output_path, options):
-        """Return a detached VmdData copy from one validated production prepare."""
+    def _export_prepared_mode_c(self, output_path, options):
+        """Prepare through the production Maya boundary, then publish its stage."""
         request = ExportVmdRequest(file_path=output_path, options=dict(options))
         prepare_action = create_maya_vmd_prepare_action()
         preparation = prepare_action.execute(request)
@@ -526,7 +518,25 @@ class TestVmdSceneCollector(MayaTestBase):
         token = preparation.token
         try:
             prepare_action.validate_token(request, token)
-            return token.copy_for_export()
+            return publish_prepared_vmd_artifact(
+                token.staged_artifact,
+                output_path,
+                validation_report=token.combined_validation_report,
+                payload_fingerprint=token.payload_fingerprint,
+            )
+        finally:
+            prepare_action.invalidate(token)
+
+    def _prepare_mode_c_payload(self, output_path, options):
+        """Parse one validated private stage before invalidating its receipt."""
+        request = ExportVmdRequest(file_path=output_path, options=dict(options))
+        prepare_action = create_maya_vmd_prepare_action()
+        preparation = prepare_action.execute(request)
+        self.assertTrue(preparation.succeeded, preparation.error)
+        token = preparation.token
+        try:
+            prepare_action.validate_token(request, token)
+            return VmdData().parse_file(token.staged_artifact.file_path)
         finally:
             prepare_action.invalidate(token)
 

@@ -321,7 +321,6 @@ class ExportWorkflowService:
                     )
                     staged_artifact = request.prepared_vmd_token.staged_artifact
                     staged_artifact.validate_identity()
-                    payload = request.prepared_vmd_token.prepared_payload
                     report = _combine_reports(
                         report,
                         request.prepared_vmd_token.combined_validation_report,
@@ -333,7 +332,6 @@ class ExportWorkflowService:
                         STATE_BLOCKED if report.is_blocking else STATE_READY,
                         report,
                         metadata,
-                        payload=payload,
                     )
                 self._emit_progress(progress_callback, "payload_collection")
                 if request.prepared_vmd_token is not None:

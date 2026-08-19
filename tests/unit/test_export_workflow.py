@@ -345,7 +345,8 @@ class TestExportWorkflowService(unittest.TestCase):
         self.assertEqual(result.state, STATE_SUCCEEDED)
         self.assertEqual(backend.collect_calls, 1)
         self.assertEqual(exporter.write_calls, 1)
-        self.assertEqual(token.payload.header.model_name, "WorkflowFixture")
+        self.assertIsNone(validation.payload)
+        self.assertIsNone(result.payload)
         self.assertEqual(result.action_result.payload_fingerprint, token.staged_artifact.sha256)
 
     def test_prepared_vmd_warning_requires_final_ack_without_recollecting_or_writing(self):

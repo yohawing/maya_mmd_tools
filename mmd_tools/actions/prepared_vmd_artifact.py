@@ -52,18 +52,21 @@ def _section_counts(vmd_data: Any) -> dict[str, int]:
 
 
 def _frame_bounds(vmd_data: Any) -> Optional[Tuple[int, int]]:
-    frame_numbers = []
+    minimum: Optional[int] = None
+    maximum: Optional[int] = None
     for section in _VMD_SECTIONS:
         for frame in getattr(vmd_data, section, ()) or ():
             try:
-                frame_numbers.append(int(frame.frame_number))
+                frame_number = int(frame.frame_number)
             except (AttributeError, TypeError, ValueError, OverflowError) as exc:
                 raise PreparedVmdArtifactError(
                     f"staged VMD frame number is invalid in {section}"
                 ) from exc
-    if not frame_numbers:
+            minimum = frame_number if minimum is None else min(minimum, frame_number)
+            maximum = frame_number if maximum is None else max(maximum, frame_number)
+    if minimum is None or maximum is None:
         return None
-    return min(frame_numbers), max(frame_numbers)
+    return minimum, maximum
 
 
 @dataclass(frozen=True)
