@@ -426,10 +426,10 @@ class TestVmdSceneCollector(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "multiple tagged nodes"):
             VmdSceneCollector().collect()
 
-    def test_target_scoped_auto_discovery_fails_closed_on_tagged_camera_decoy(self):
+    def test_target_model_does_not_hide_ambiguous_scene_camera_track(self):
         root = "|hero:model_ROOT"
         camera_a = "|hero:model_ROOT|hero:camera_a"
-        camera_b = "|hero:model_ROOT|hero:camera_b"
+        camera_b = "|rival:camera_b"
         self.cmds.node_types.update(
             {root: "transform", camera_a: "transform", camera_b: "transform"}
         )
@@ -437,6 +437,23 @@ class TestVmdSceneCollector(unittest.TestCase):
             {
                 (camera_a, ATTR_MMD_CAMERA): True,
                 (camera_b, ATTR_MMD_CAMERA): True,
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "multiple tagged nodes"):
+            VmdSceneCollector().collect({"target_model": root})
+
+    def test_target_model_does_not_hide_ambiguous_scene_light_track(self):
+        root = "|hero:model_ROOT"
+        light_a = "|hero:model_ROOT|hero:light_a"
+        light_b = "|rival:light_b"
+        self.cmds.node_types.update(
+            {root: "transform", light_a: "transform", light_b: "transform"}
+        )
+        self.cmds.attrs.update(
+            {
+                (light_a, ATTR_MMD_LIGHT): True,
+                (light_b, ATTR_MMD_LIGHT): True,
             }
         )
 

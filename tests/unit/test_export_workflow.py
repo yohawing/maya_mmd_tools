@@ -240,16 +240,59 @@ class TestExportWorkflowService(unittest.TestCase):
         self.assertEqual(result.state, STATE_READY)
         self.assertEqual(observed[0]["target_model"], "model_ROOT")
 
-    def test_current_model_does_not_scope_vmd_scene_tracks(self):
+    def test_current_model_is_forwarded_as_vmd_model_track_target(self):
         options = ExportWorkflowService._target_options(
             {
                 "export_format": "vmd",
                 "current_model_root": "model_ROOT",
+                "cameras": ["scene_camera"],
+                "lights": ["scene_light"],
             },
             {"format": "vmd"},
         )
 
-        self.assertNotIn("target_model", options)
+        self.assertEqual(options["target_model"], "model_ROOT")
+        self.assertEqual(options["cameras"], ["scene_camera"])
+        self.assertEqual(options["lights"], ["scene_light"])
+
+    def test_vmd_current_model_switch_scopes_collector_boundary(self):
+        observed = []
+
+        def collector(options):
+            observed.append(dict(options))
+            return {"model_name": "MotionFixture", "bone_frames": []}
+
+        vmd_action = ExportVmdAction(
+            exporter=VmdExporter(native_exporter=None),
+            collector=collector,
+        )
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            vmd_action=vmd_action,
+        )
+
+        for current_model_root in ("|model_A|root", "|model_B|root"):
+            result = service.validate(
+                ExportWorkflowRequest(
+                    "motion.vmd",
+                    {
+                        "export_format": "vmd",
+                        "vmd_mode": "C",
+                        "require_target": True,
+                        "require_current_model": True,
+                        "current_model_root": current_model_root,
+                    },
+                )
+            )
+            self.assertEqual(result.state, STATE_READY)
+
+        self.assertEqual(
+            [options["target_model"] for options in observed],
+            ["|model_A|root", "|model_B|root"],
+        )
 
     def test_validate_does_not_call_writer_and_execute_reuses_snapshot(self):
         payload = _valid_model_data()

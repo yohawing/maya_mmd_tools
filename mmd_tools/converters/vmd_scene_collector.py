@@ -252,9 +252,9 @@ class VmdSceneCollector:
                 ``model_root``, ``joints``, ``blend_shapes``, ``cameras``,
                 ``lights``, ``start_frame`` / ``end_frame`` or ``frame_range``,
                 ``vmd_mode``, ``model_name``, ``motion_scale``, and
-                ``bone_bind_poses``. Automatic DAG discovery is scoped to the
-                selected model root; explicit node lists remain authoritative
-                for scene-level callers.
+                ``bone_bind_poses``. Automatic joint and blendShape discovery
+                is scoped to the selected model root; camera/light discovery
+                remains scene-level. Explicit node lists remain authoritative.
         """
         options = options or {}
         target_model = options.get("target_model") or options.get("model_root")
@@ -262,8 +262,10 @@ class VmdSceneCollector:
         blend_shapes = list(
             options.get("blend_shapes") or self._find_blend_shapes(target_model)
         )
-        cameras = self._resolve_tagged_track(options, "cameras", ATTR_MMD_CAMERA, target_model)
-        lights = self._resolve_tagged_track(options, "lights", ATTR_MMD_LIGHT, target_model)
+        # Current Model scopes model tracks only. Cameras and lights are
+        # scene-level tracks unless the caller provides an explicit list.
+        cameras = self._resolve_tagged_track(options, "cameras", ATTR_MMD_CAMERA, None)
+        lights = self._resolve_tagged_track(options, "lights", ATTR_MMD_LIGHT, None)
         start_frame, end_frame = _resolve_collection_frame_range(options)
         motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
         bone_bind_poses = options.get("bone_bind_poses") or {}
