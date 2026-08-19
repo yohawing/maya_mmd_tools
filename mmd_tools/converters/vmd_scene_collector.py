@@ -695,16 +695,23 @@ class VmdSceneCollector:
         ):
             baseline_frame = _vmd_frame_number(baseline_time, time_converter)
             if baseline_frame >= 0:
-                frames.append(
-                    {
-                        "frame_number": baseline_frame,
-                        "visible": True,
-                        "ik_states": [
-                            (name, bool(_plug_float(node, "enabled", baseline_time)))
-                            for name, node in sorted(nodes_by_name.items())
-                        ],
-                    }
-                )
+                baseline_states = [
+                    (name, bool(_plug_float(node, "enabled", baseline_time)))
+                    for name, node in sorted(nodes_by_name.items())
+                ]
+                # A keyless production rig has enabled=True as its default.
+                # Omitting that redundant ON section keeps the exported VMD
+                # faithful to a source with no IK show/hide property frames.
+                # Keep the baseline when a solver is OFF or any later key
+                # exists; those states need an explicit VMD representation.
+                if all_keyed_frames or any(not state for _, state in baseline_states):
+                    frames.append(
+                        {
+                            "frame_number": baseline_frame,
+                            "visible": True,
+                            "ik_states": baseline_states,
+                        }
+                    )
         for frame in keyed_frames:
             vmd_frame = _vmd_frame_number(frame, time_converter)
             if vmd_frame < 0:

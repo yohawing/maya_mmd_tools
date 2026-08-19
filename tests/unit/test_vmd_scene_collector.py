@@ -884,6 +884,54 @@ class TestVmdSceneCollector(unittest.TestCase):
             ],
         )
 
+    def test_omits_keyless_all_on_ik_baseline(self):
+        self.cmds.attrs.update(
+            {
+                ("left_ik_solver", "enabled"): True,
+                ("right_ik_solver", "enabled"): True,
+            }
+        )
+        original_collect = collector_module.collect_ik_nodes_by_bone_name
+        collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {
+            "左足ＩＫ": "left_ik_solver",
+            "右足ＩＫ": "right_ik_solver",
+        }
+        try:
+            result = VmdSceneCollector().collect_ik_show_hide_frames(
+                "model_root",
+                time_converter=lambda value: value,
+            )
+        finally:
+            collector_module.collect_ik_nodes_by_bone_name = original_collect
+
+        self.assertEqual(result, [])
+
+    def test_dense_ik_samples_keep_source_state_keys(self):
+        self.cmds.attrs[("ik_solver", "enabled")] = True
+        self.cmds.keys[("ik_solver", "enabled")] = {2.0: 0.0}
+        original_collect = collector_module.collect_ik_nodes_by_bone_name
+        collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {
+            "左足ＩＫ": "ik_solver",
+        }
+        try:
+            result = VmdSceneCollector().collect_ik_show_hide_frames(
+                "model_root",
+                time_converter=lambda value: value,
+                dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+            )
+        finally:
+            collector_module.collect_ik_nodes_by_bone_name = original_collect
+
+        self.assertEqual(
+            [row["frame_number"] for row in result],
+            [0, 1, 2],
+        )
+        self.assertEqual(
+            [row["ik_states"] for row in result],
+            [[("左足ＩＫ", True)], [("左足ＩＫ", True)], [("左足ＩＫ", False)]],
+        )
+
     def test_collects_ik_baseline_before_later_enabled_key(self):
         self.cmds.attrs[("ik_solver", "enabled")] = False
         self.cmds.keys[("ik_solver", "enabled")] = {20.0: 1.0}
