@@ -141,7 +141,7 @@ def _new_key_reduction_report(enabled: bool) -> dict[str, Any]:
                 "input": 0,
                 "output": 0,
                 "removed": 0,
-                "witness_frames": [],
+                "witnesses": [],
                 "witness_omitted_count": 0,
             }
             for section in ("bones", "morphs")
@@ -158,18 +158,20 @@ class _ExactRunReducer:
         signature_keys: Sequence[str],
         protected_frames: Optional[set[int]],
         report: dict[str, Any],
+        track: str,
     ):
         self._emit = emit
         self._signature_keys = tuple(signature_keys)
         self._protected_frames = protected_frames or set()
         self._report = report
+        self._track = str(track)
         self._run_signature = None
         self._run_first = None
         self._run_last = None
         self._run_input_count = 0
         self._run_output_start = 0
         self._output_count = 0
-        self._run_removed_witnesses = []
+        self._run_removed_witness = None
 
     def _signature(self, payload: Mapping[str, Any]) -> tuple[Any, ...]:
         return tuple(payload.get(key) for key in self._signature_keys)
@@ -208,8 +210,8 @@ class _ExactRunReducer:
             previous_frame != first_frame
             and previous_frame not in self._protected_frames
         ):
-            if len(self._run_removed_witnesses) < _MAX_KEY_REDUCTION_WITNESSES:
-                self._run_removed_witnesses.append(previous_frame)
+            if self._run_removed_witness is None:
+                self._run_removed_witness = previous_frame
         self._run_input_count += 1
         self._run_last = payload
         if int(payload["frame_number"]) in self._protected_frames:
@@ -226,22 +228,27 @@ class _ExactRunReducer:
             self._output_count - self._run_output_start
         )
         # Aggregate counts are authoritative; witnesses are deliberately capped.
-        if removed > 0:
-            frames = self._report["witness_frames"]
-            available = _MAX_KEY_REDUCTION_WITNESSES - len(frames)
-            if available > 0:
-                frames.extend(self._run_removed_witnesses[:available])
-            omitted = removed - min(removed, available)
-            if omitted:
-                self._report["witness_omitted_count"] += omitted
+        witnesses = self._report["witnesses"]
+        if (
+            removed > 0
+            and self._run_removed_witness is not None
+            and len(witnesses) < _MAX_KEY_REDUCTION_WITNESSES
+            and not any(row["track"] == self._track for row in witnesses)
+        ):
+            witnesses.append(
+                {"track": self._track, "frame": self._run_removed_witness}
+            )
         self._run_first = None
         self._run_last = None
         self._run_input_count = 0
-        self._run_removed_witnesses = []
+        self._run_removed_witness = None
 
     def finish(self) -> None:
         self._finish_run()
         self._report["removed"] = self._report["input"] - self._report["output"]
+        self._report["witness_omitted_count"] = (
+            self._report["removed"] - len(self._report["witnesses"])
+        )
 
 
 def _is_direct_authored_track(node: str, attrs: Sequence[str]) -> bool:
@@ -1831,6 +1838,7 @@ class VmdSceneCollector:
                         ("position", "rotation", "interpolation"),
                         protected_track_frames,
                         key_reduction_report,
+                        bone_name,
                     )
 
                 def emit_stream_payload(stream_payload, *, reduce=True):
@@ -2843,6 +2851,7 @@ class VmdSceneCollector:
                     ("weight",),
                     protected_by_name.get(name, set(protected_vmd_frames or ())),
                     key_reduction_report,
+                    name,
                 )
                 reducers[name] = reducer
             reducer.add(payload)

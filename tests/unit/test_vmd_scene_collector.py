@@ -632,14 +632,17 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertTrue(spool.closed)
         self.assertLessEqual(spool.read_attempts, 2 * (record_count + 1))
 
-    def _reduce_exact_run(self, values, protected=()):
+    def _reduce_exact_run(self, values, protected=(), track="morph", report=None):
         frames = []
-        report = collector_module._new_key_reduction_report(True)["sections"]["morphs"]
+        report = report or collector_module._new_key_reduction_report(True)[
+            "sections"
+        ]["morphs"]
         reducer = collector_module._ExactRunReducer(
             frames.append,
             ("weight",),
             set(protected),
             report,
+            track,
         )
         for frame_number, value in enumerate(values):
             reducer.add(
@@ -681,10 +684,16 @@ class TestVmdSceneCollector(unittest.TestCase):
         )
 
     def test_exact_run_reducer_diagnostics_are_capped(self):
-        values = [value for value in range(70) for _repeat in range(3)]
-        _frames, report = self._reduce_exact_run(values)
+        report = collector_module._new_key_reduction_report(True)["sections"]["morphs"]
+        for index in range(70):
+            self._reduce_exact_run(
+                [float(index)] * 3,
+                track=f"morph-{index}",
+                report=report,
+            )
 
-        self.assertEqual(len(report["witness_frames"]), 64)
+        self.assertEqual(len(report["witnesses"]), 64)
+        self.assertEqual(len({row["track"] for row in report["witnesses"]}), 64)
         self.assertEqual(report["witness_omitted_count"], 6)
 
     def test_exact_run_reducer_witnesses_exclude_protected_interior(self):
@@ -692,8 +701,9 @@ class TestVmdSceneCollector(unittest.TestCase):
             [0.0, 0.0, 0.0, 0.0, 0.0], protected={2}
         )
 
-        self.assertEqual(report["witness_frames"], [1, 3])
-        self.assertNotIn(2, report["witness_frames"])
+        self.assertEqual(report["witnesses"], [{"track": "morph", "frame": 1}])
+        self.assertEqual(report["witness_omitted_count"], 1)
+        self.assertNotIn(2, [row["frame"] for row in report["witnesses"]])
 
     def test_exact_run_reducer_propagates_sink_failure(self):
         report = collector_module._new_key_reduction_report(True)["sections"]["bones"]
@@ -706,6 +716,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             ("position", "rotation"),
             set(),
             report,
+            "center",
         )
         with self.assertRaisesRegex(RuntimeError, "reducer sink failed"):
             reducer.add(
@@ -809,6 +820,22 @@ class TestVmdSceneCollector(unittest.TestCase):
             ],
             [0, 2, 4, 5],
         )
+        self.assertEqual(
+            reduced["diagnostics"]["key_reduction"]["sections"]["bones"][
+                "witnesses"
+            ],
+            [{"track": "center", "frame": 1}, {"track": "direct", "frame": 1}],
+        )
+        self.assertEqual(
+            reduced["diagnostics"]["key_reduction"]["sections"]["morphs"][
+                "witnesses"
+            ],
+            [{"track": "smile", "frame": 1}],
+        )
+        self.assertEqual(
+            dense["diagnostics"]["key_reduction"]["sections"]["bones"]["witnesses"],
+            [],
+        )
 
     def test_mode_c_stream_exact_run_protects_global_ik_key_frame(self):
         self.cmds.node_types.update(
@@ -842,7 +869,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             "collect_ik_nodes_by_bone_name",
             return_value={"leg": "ik_node"},
         ):
-            VmdSceneCollector(
+            result = VmdSceneCollector(
                 bone_channel_sampler=self._timeline_sampler()
             ).collect_to_sink(
                 {
@@ -863,6 +890,11 @@ class TestVmdSceneCollector(unittest.TestCase):
             ],
             [0, 2, 4, 5],
         )
+        ik_witnesses = result["diagnostics"]["key_reduction"]["sections"]["bones"][
+            "witnesses"
+        ]
+        self.assertEqual(ik_witnesses, [{"track": "center", "frame": 1}])
+        self.assertNotIn(2, [row["frame"] for row in ik_witnesses])
 
     def test_mode_c_stream_bone_frame_collision_is_first_win_for_all_paths(self):
         self.cmds.current_unit = "ntscf"
