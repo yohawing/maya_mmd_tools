@@ -398,6 +398,125 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         self.assertEqual([frame["frame_number"] for frame in frames], [2])
 
+    def test_mode_c_keyless_routed_bone_is_dense_native_dependency(self):
+        self.cmds.node_types.update(
+            {"routed_joint": "joint", "route_driver": "transform"}
+        )
+        self.cmds.attrs[("routed_joint", ATTR_MMD_BONE_NAME)] = "routed"
+        self.cmds.attrs[("route_driver", "output")]=1.25
+        captured = {}
+        cmds_module = self.cmds
+
+        class Samples:
+            def value(self, joint, attr, frame):
+                node, source_attr = captured["routes"].get(joint, {}).get(
+                    attr, (joint, attr)
+                )
+                return cmds_module.getAttr(f"{node}.{source_attr}", time=frame)
+
+        class Sampler:
+            available = True
+
+            def sample_dense_bone_channels(self, frames, joints, routes):
+                captured.update(
+                    {"frames": list(frames), "joints": list(joints), "routes": routes}
+                )
+                return Samples()
+
+        collector = VmdSceneCollector(bone_channel_sampler=Sampler())
+        frames = collector.collect_bone_frames(
+            ["routed_joint"],
+            0,
+            2,
+            input_routes={"routed_joint": {"translateX": ("route_driver", "output")}},
+            dense_sample=True,
+            force_dense_sample=True,
+            dense_frame_samples=[0, 1, 2],
+            time_converter=lambda value: value,
+            bone_channel_sampler=Sampler(),
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+        self.assertEqual(captured["frames"], [0, 1, 2])
+        self.assertEqual(captured["joints"], ["routed_joint"])
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        self.assertEqual(evidence[0]["decision"], "dependency_baked")
+        self.assertEqual(evidence[0]["reason"], "keyless_routed_dependency")
+        self.assertEqual(evidence[0]["source_key_count"], 0)
+
+    def test_mode_c_keyless_incoming_bone_is_dense_dependency(self):
+        self._configure_static_bone()
+        self.cmds.node_types["constraint"] = "parentConstraint"
+        self.cmds.connections[("center_joint", "translateX", True, False)] = [
+            "constraint.output"
+        ]
+        collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
+
+        frames = collector.collect_bone_frames(
+            ["center_joint"],
+            0,
+            2,
+            dense_sample=True,
+            force_dense_sample=True,
+            dense_frame_samples=[0, 1, 2],
+            time_converter=lambda value: value,
+            bone_channel_sampler=self._timeline_sampler(),
+        )
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        self.assertEqual(evidence[0]["decision"], "dependency_baked")
+        self.assertEqual(evidence[0]["reason"], "keyless_incoming_dependency")
+        self.assertEqual(evidence[0]["source_key_count"], 0)
+
+    def test_mode_c_keyless_dependency_without_native_sampler_is_fatal(self):
+        self._configure_static_bone()
+        self.cmds.node_types["constraint"] = "parentConstraint"
+        self.cmds.connections[("center_joint", "translateX", True, False)] = [
+            "constraint.output"
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "native bone sampling"):
+            VmdSceneCollector().collect_bone_frames(
+                ["center_joint"],
+                0,
+                2,
+                dense_sample=True,
+                force_dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+                time_converter=lambda value: value,
+            )
+
+    def test_mode_c_keyless_connection_query_failure_is_fatal(self):
+        self._configure_static_bone()
+        original = self.cmds.listConnections
+
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("connection query failed")
+
+        self.cmds.listConnections = fail
+        try:
+            with self.assertRaisesRegex(RuntimeError, "connection query failed"):
+                VmdSceneCollector().collect_bone_frames(
+                    ["center_joint"],
+                    0,
+                    2,
+                    dense_sample=True,
+                    force_dense_sample=True,
+                    dense_frame_samples=[0, 1, 2],
+                    time_converter=lambda value: value,
+                )
+        finally:
+            self.cmds.listConnections = original
+
+    def test_dense_frame_samples_explicit_range_does_not_need_observed_keys(self):
+        self.assertEqual(
+            collector_module._dense_frame_samples([], 1.2, 3.8), [2, 3]
+        )
+        self.assertEqual(
+            collector_module._dense_frame_samples([], 3.8, 1.2), []
+        )
+
     def test_mode_c_keyless_bone_invalid_dense_samples_fall_back_to_range_start(self):
         self._configure_static_bone(1.0)
 
@@ -421,7 +540,8 @@ class TestVmdSceneCollector(unittest.TestCase):
                     self.cmds.connections[("center_joint", "translateX", True, False)] = [
                         "constraint.output"
                     ]
-                collector = VmdSceneCollector()
+                sampler = self._timeline_sampler() if incoming else None
+                collector = VmdSceneCollector(bone_channel_sampler=sampler)
                 frames = collector.collect_bone_frames(
                     ["center_joint"],
                     start_frame=start,
@@ -429,9 +549,21 @@ class TestVmdSceneCollector(unittest.TestCase):
                     dense_sample=True,
                     force_dense_sample=True,
                     time_converter=lambda value: value,
+                    bone_channel_sampler=sampler,
                 )
-                self.assertEqual(frames, [])
-                self.assertNotIn("track_selection", collector.diagnostics)
+                if incoming:
+                    self.assertEqual(
+                        [frame["frame_number"] for frame in frames], [0, 1, 2]
+                    )
+                    self.assertEqual(
+                        collector.diagnostics["track_selection"]["evidence"][0][
+                            "reason"
+                        ],
+                        "keyless_incoming_dependency",
+                    )
+                else:
+                    self.assertEqual(frames, [])
+                    self.assertNotIn("track_selection", collector.diagnostics)
 
     def test_mode_c_routed_single_key_bone_remains_dense(self):
         self.cmds.node_types.update(

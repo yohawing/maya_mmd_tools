@@ -146,6 +146,26 @@ def _is_direct_authored_track(node: str, attrs: Sequence[str]) -> bool:
 def _has_no_incoming_connections(node: str, attrs: Sequence[str]) -> bool:
     """Return whether every logical plug is completely unconnected."""
 
+    try:
+        return _incoming_connection_state(node, attrs) == "none"
+    except Exception:
+        return False
+
+
+def _incoming_connection_state(
+    node: str,
+    attrs: Sequence[str],
+    *,
+    strict: bool = False,
+) -> str:
+    """Classify logical incoming connections without hiding query failures.
+
+    ``strict`` is used by standard Mode C keyless-track planning.  A failed
+    connection query is not equivalent to an unconnected plug there: sampling
+    the visible joint would otherwise silently bake an unknown dependency.
+    """
+
+    has_incoming = False
     for attr in attrs:
         try:
             sources = cmds.listConnections(
@@ -155,10 +175,12 @@ def _has_no_incoming_connections(node: str, attrs: Sequence[str]) -> bool:
                 plugs=True,
             ) or []
         except Exception:
-            return False
+            if strict:
+                raise
+            return "error"
         if isinstance(sources, (str, bytes)) or sources:
-            return False
-    return True
+            has_incoming = True
+    return "some" if has_incoming else "none"
 
 
 def _new_track_selection() -> dict[str, Any]:
@@ -346,6 +368,10 @@ class VmdSceneCollector:
         # and every non-bone track remain Python-owned.
         self._bone_channel_sampler = bone_channel_sampler
         self._diagnostics: dict[str, Any] = {}
+        # Standard Mode C physics ownership is scoped to one collection.  A
+        # target that cannot be routed through authored/pre-physics channels
+        # must not later be mistaken for an ordinary keyless dependency.
+        self._mode_c_physics_output_excluded_targets: set[str] = set()
 
     @property
     def diagnostics(self) -> dict[str, Any]:
@@ -439,6 +465,7 @@ class VmdSceneCollector:
                 remains scene-level. Explicit node lists remain authoritative.
         """
         options = options or {}
+        self._mode_c_physics_output_excluded_targets = set()
         self._diagnostics["track_selection"] = _new_track_selection()
         planning_started = time.perf_counter()
         target_model = options.get("target_model") or options.get("model_root")
@@ -709,6 +736,7 @@ class VmdSceneCollector:
         keyed_times_by_joint = {}
         single_key_joints = set()
         static_keyless_joints = set()
+        keyless_dependency_joints: dict[str, str] = {}
         if dense_sample:
             all_keyed = []
             for joint in joints:
@@ -734,9 +762,52 @@ class VmdSceneCollector:
                     source_frames = _filter_frame_range(
                         keyed_times_by_joint.get(joint, ()), start_frame, end_frame
                     )
+                    route = input_routes.get(long_name, {})
+                    all_source_frames = keyed_times_by_joint.get(joint, ())
+                    physics_excluded = (
+                        long_name in self._mode_c_physics_output_excluded_targets
+                    )
+                    if physics_excluded:
+                        # Never fall through to the visible, post-physics
+                        # joint when its authored/pre-physics route is
+                        # incomplete.
+                        continue
+                    if not route and not all_source_frames:
+                        incoming_state = _incoming_connection_state(
+                            long_name,
+                            _BONE_EXPORT_ATTRS,
+                            strict=True,
+                        )
+                        if incoming_state == "some":
+                            if dense_frames:
+                                keyless_dependency_joints[joint] = (
+                                    "keyless_incoming_dependency"
+                                )
+                            continue
+                        # A direct keyless joint has no dependency and keeps
+                        # the existing omit/one-key behavior.
+                        if (
+                            len(all_source_frames) == 0
+                            and len(source_frames) == 0
+                            and dense_frames
+                            and _is_direct_authored_track(
+                                long_name, _BONE_EXPORT_ATTRS
+                            )
+                        ):
+                            static_keyless_joints.add(joint)
+                            single_key_joints.add(joint)
+                        continue
                     if (
-                        not input_routes.get(long_name, {})
-                        and len(keyed_times_by_joint.get(joint, ())) == 1
+                        route
+                        and len(all_source_frames) == 0
+                        and dense_frames
+                    ):
+                        keyless_dependency_joints[joint] = (
+                            "keyless_routed_dependency"
+                        )
+                    if (
+                        not route
+                        and len(all_source_frames) == 1
                         and len(source_frames) == 1
                         and _is_direct_authored_track(long_name, _BONE_EXPORT_ATTRS)
                     ):
@@ -746,8 +817,13 @@ class VmdSceneCollector:
                 and dense_frames
                 and bone_channel_sampler is None
                 and any(
-                    keyed_times_by_joint.get(joint)
+                    (
+                        keyed_times_by_joint.get(joint)
+                        or joint in keyless_dependency_joints
+                    )
                     and joint not in single_key_joints
+                    and str((cmds.ls(joint, long=True) or [joint])[0])
+                    not in self._mode_c_physics_output_excluded_targets
                     for joint in joints
                 )
             ):
@@ -769,8 +845,13 @@ class VmdSceneCollector:
                 native_joints = [
                     joint
                     for joint in joints
-                    if keyed_times_by_joint.get(joint)
+                    if (
+                        keyed_times_by_joint.get(joint)
+                        or joint in keyless_dependency_joints
+                    )
                     and joint not in single_key_joints
+                    and str((cmds.ls(joint, long=True) or [joint])[0])
+                    not in self._mode_c_physics_output_excluded_targets
                 ]
                 if not native_joints:
                     self._diagnostics["native_sampler"] = {
@@ -919,7 +1000,10 @@ class VmdSceneCollector:
                 if (
                     not route
                     and not all_joint_keyed
-                    and _has_no_incoming_connections(long_name, _BONE_EXPORT_ATTRS)
+                    and long_name
+                    not in self._mode_c_physics_output_excluded_targets
+                    and _incoming_connection_state(long_name, _BONE_EXPORT_ATTRS)
+                    == "none"
                 ):
                     static_keyless_joints.add(joint)
                     single_key_joints.add(joint)
@@ -948,7 +1032,13 @@ class VmdSceneCollector:
             bone_name = self._mmd_bone_name(joint)
             bind_pose = _resolve_bind_pose(bone_bind_poses, bone_name, joint)
             long_names = cmds.ls(joint, long=True) or [joint]
-            route = input_routes.get(str(long_names[0]), {})
+            long_name = str(long_names[0])
+            if long_name in self._mode_c_physics_output_excluded_targets:
+                # The physics solver's final output is intentionally outside
+                # standard Mode C.  An incomplete pre-physics route cannot
+                # safely represent any unclaimed channels.
+                continue
+            route = input_routes.get(long_name, {})
             all_joint_keyed = keyed_times_by_joint.get(joint)
             if all_joint_keyed is None:
                 all_joint_keyed = _routed_key_times(joint, route)
@@ -974,7 +1064,7 @@ class VmdSceneCollector:
                 if single_key
                 else dense_frames
                 if dense_frames is not None
-                and all_joint_keyed
+                and (all_joint_keyed or joint in keyless_dependency_joints)
                 and not preserve_sparse_rotation
                 else sparse_frames
             )
@@ -1043,19 +1133,32 @@ class VmdSceneCollector:
                     if is_default:
                         continue
                 frames.append(payload)
-            if force_dense_sample and not single_key and sparse_frames:
-                decision = "dependency_baked" if route else "authored_sampled"
-                reason = "routed_dependency" if route else (
-                    "multiple_source_keys"
-                    if len(sparse_frames) > 1
-                    else "conservative_dense_path"
-                )
+            if force_dense_sample and not single_key:
+                keyless_reason = keyless_dependency_joints.get(joint)
+                if keyless_reason:
+                    decision = "dependency_baked"
+                    reason = keyless_reason
+                    source_key_count = 0
+                elif sparse_frames:
+                    decision = "dependency_baked" if route else "authored_sampled"
+                    reason = "routed_dependency" if route else (
+                        "multiple_source_keys"
+                        if len(sparse_frames) > 1
+                        else "conservative_dense_path"
+                    )
+                    source_key_count = len(sparse_frames)
+                else:
+                    decision = None
+                    reason = ""
+                    source_key_count = 0
+                if decision is None:
+                    continue
                 self._record_track_selection(
                     "bone",
                     bone_name,
                     decision,
                     reason,
-                    len(sparse_frames),
+                    source_key_count,
                     len(dense_frames or ()) if dense_sample else len(sparse_frames),
                 )
         return _deduplicate_frames(frames, ("bone_name", "frame_number"))
@@ -1465,6 +1568,42 @@ class VmdSceneCollector:
             if bone_index in ambiguous_indices:
                 continue
             if standard_mode_c:
+                existing_route = dict(routes.get(target_path, {}))
+                completed_route = dict(existing_route)
+                missing_channels = []
+                # Resolve each logical channel independently.  Existing
+                # authoring routes keep priority; a unique authored source on
+                # the visible joint is the next safest source, followed by a
+                # static or animated driver pre-input when that exact plug
+                # exists.  No incoming animation is required for pre-inputs.
+                for logical_attr, pre_attr in _PHYSICS_PRE_INPUT_ATTRS.items():
+                    if logical_attr in completed_route:
+                        continue
+                    authored_source = _unique_nonphysics_source(
+                        f"{target_path}.{logical_attr}"
+                    )
+                    if authored_source:
+                        completed_route[logical_attr] = authored_source
+                        continue
+                    if _physics_driver_pre_input_exists(driver, pre_attr):
+                        completed_route[logical_attr] = (driver, pre_attr)
+                        continue
+                    missing_channels.append(logical_attr)
+                if missing_channels:
+                    # Do not leave a partial route that could be mistaken for
+                    # a safe source by a later collector pass.
+                    routes.pop(target_path, None)
+                    self._mode_c_physics_output_excluded_targets.add(target_path)
+                    self._record_track_selection(
+                        "bone",
+                        self._mmd_bone_name(joints_by_path[target_path]),
+                        "physics_output_excluded",
+                        "incomplete_pre_physics_route",
+                        0,
+                        0,
+                    )
+                    continue
+                routes[target_path] = completed_route
                 self._record_track_selection(
                     "bone",
                     self._mmd_bone_name(joints_by_path[target_path]),
@@ -1473,6 +1612,7 @@ class VmdSceneCollector:
                     0,
                     0,
                 )
+                continue
             route = routes.setdefault(target_path, {})
             for logical_attr, pre_attr in _PHYSICS_PRE_INPUT_ATTRS.items():
                 if logical_attr in route:
@@ -2399,18 +2539,26 @@ def _dense_frame_samples(
     end_frame: Optional[float],
 ) -> Optional[list[int]]:
     """Return one-frame integer samples for a Mode C animation range."""
+    if start_frame is not None and end_frame is not None:
+        try:
+            first = int(math.ceil(float(start_frame)))
+            last = int(math.floor(float(end_frame)))
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if last < first:
+            return []
+        return list(range(first, last + 1))
     observed = [float(value) for value in frames]
     if not observed:
         return None
-    if start_frame is not None and end_frame is not None:
-        first = int(math.ceil(float(start_frame)))
-        last = int(math.floor(float(end_frame)))
-    else:
+    if start_frame is not None or end_frame is not None:
         ranged = _filter_frame_range(observed, start_frame, end_frame)
         if not ranged:
             return None
-        first = int(math.floor(min(ranged)))
-        last = int(math.ceil(max(ranged)))
+    else:
+        ranged = observed
+    first = int(math.floor(min(ranged)))
+    last = int(math.ceil(max(ranged)))
     if last < first:
         return []
     return list(range(first, last + 1))
@@ -3068,6 +3216,15 @@ def _physics_driver_pre_inputs_exist(driver: str) -> bool:
             bool(cmds.attributeQuery(attribute, node=driver, exists=True))
             for attribute in _PHYSICS_PRE_INPUT_ATTRS.values()
         )
+    except Exception:
+        return False
+
+
+def _physics_driver_pre_input_exists(driver: str, attribute: str) -> bool:
+    """Return whether one validated physics pre-input plug exists."""
+
+    try:
+        return bool(cmds.attributeQuery(attribute, node=driver, exists=True))
     except Exception:
         return False
 

@@ -413,6 +413,86 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
             1,
         )
 
+    def test_standard_mode_c_static_physics_pre_inputs_route_all_channels(self):
+        cmds = _PhysicsCmds()
+        cmds.driver_sources.clear()
+
+        _collector, routes = self._collect_routes(cmds, standard_mode_c=True)
+
+        self.assertEqual(
+            routes["|model|bone"],
+            {
+                "translateX": ("|driver", "inPreTranslateX"),
+                "translateY": ("|driver", "inPreTranslateY"),
+                "translateZ": ("|driver", "inPreTranslateZ"),
+                "rotateX": ("|driver", "inPreRotateX"),
+                "rotateY": ("|driver", "inPreRotateY"),
+                "rotateZ": ("|driver", "inPreRotateZ"),
+            },
+        )
+
+    def test_standard_mode_c_existing_route_covers_missing_pre_input(self):
+        cmds = _PhysicsCmds()
+        cmds.attributes.remove(("|driver", "inPreRotateZ"))
+        append = {
+            "|model|bone": {
+                "node": "|append",
+                "attr_map": {"rotateZ": "inputRotateZ"},
+            }
+        }
+
+        collector, routes = self._collect_routes(
+            cmds,
+            append=append,
+            standard_mode_c=True,
+        )
+
+        self.assertNotIn(
+            "|model|bone",
+            collector._mode_c_physics_output_excluded_targets,
+        )
+        self.assertEqual(routes["|model|bone"]["rotateZ"], ("|append", "inputRotateZ"))
+        self.assertEqual(len(routes["|model|bone"]), 6)
+
+    def test_standard_mode_c_joint_authored_source_covers_missing_pre_input(self):
+        cmds = _PhysicsCmds()
+        cmds.attributes.remove(("|driver", "inPreTranslateZ"))
+        cmds.driver_sources["|model|bone.translateZ"] = ["|curve.output"]
+
+        collector, routes = self._collect_routes(cmds, standard_mode_c=True)
+
+        self.assertNotIn(
+            "|model|bone",
+            collector._mode_c_physics_output_excluded_targets,
+        )
+        self.assertEqual(routes["|model|bone"]["translateZ"], ("|curve", "output"))
+        self.assertEqual(len(routes["|model|bone"]), 6)
+
+    def test_standard_mode_c_incomplete_physics_pre_inputs_are_excluded(self):
+        cmds = _PhysicsCmds()
+        cmds.attributes.remove(("|driver", "inPreRotateZ"))
+
+        collector, routes = self._collect_routes(cmds, standard_mode_c=True)
+
+        self.assertNotIn("|model|bone", routes)
+        self.assertEqual(collector._mode_c_physics_output_excluded_targets, {"|model|bone"})
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        self.assertEqual(evidence[0]["decision"], "physics_output_excluded")
+        self.assertEqual(evidence[0]["reason"], "incomplete_pre_physics_route")
+        self.assertEqual(
+            collector.collect_bone_frames(
+                ["|model|bone"],
+                0,
+                2,
+                input_routes=routes,
+                dense_sample=True,
+                force_dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+                time_converter=lambda value: value,
+            ),
+            [],
+        )
+
     def test_owned_unique_driver_routes_only_authored_pre_inputs(self):
         cmds = _PhysicsCmds()
         cmds.driver_sources["|model|bone.translateX"] = [
