@@ -101,6 +101,7 @@ _TRACK_SELECTION_DECISIONS = (
     "constant_one_key",
     "authored_sampled",
     "dependency_baked",
+    "physics_output_excluded",
 )
 _MAX_TRACK_SELECTION_EVIDENCE = 128
 _MAYA_TIME_UNIT_FPS = {
@@ -441,7 +442,6 @@ class VmdSceneCollector:
         )
         dense_control_rig_export = self._control_rig_dense_export(target_model)
         dense_mode_c_export = mode == "C"
-        authored_routes = self._scene_authored_input_routes(joints, target_model)
         rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
         raw_provenance = _read_vmd_import_provenance(target_model)
         if mode != "C" or preserve_raw_bone_transforms:
@@ -457,6 +457,11 @@ class VmdSceneCollector:
             and raw_provenance.get("raw_bone_transform_complete")
         )
         dense_mode_c_export = dense_mode_c_export and not preserve_sparse_mode_c
+        authored_routes = self._scene_authored_input_routes(
+            joints,
+            target_model,
+            standard_mode_c=dense_mode_c_export,
+        )
         mode_c_dense_frames = (
             self._mode_c_dense_frame_samples(
                 joints,
@@ -1140,6 +1145,8 @@ class VmdSceneCollector:
         self,
         joints: Sequence[str],
         target_model: Optional[str] = None,
+        *,
+        standard_mode_c: bool = False,
     ) -> dict[str, dict[str, tuple[str, str]]]:
         """Resolve authored channels that bypass the visible joint transform.
 
@@ -1197,6 +1204,7 @@ class VmdSceneCollector:
                 joints=joints,
                 target_model=target_model,
                 routes=routes,
+                standard_mode_c=standard_mode_c,
             )
             self._merge_redirected_authoring_proxy_routes(joints, routes)
             return routes
@@ -1233,6 +1241,7 @@ class VmdSceneCollector:
             joints=joints,
             target_model=target_model,
             routes=routes,
+            standard_mode_c=standard_mode_c,
         )
         self._merge_redirected_authoring_proxy_routes(joints, routes)
         return routes
@@ -1268,6 +1277,7 @@ class VmdSceneCollector:
         joints: Sequence[str],
         target_model: str,
         routes: dict[str, dict[str, tuple[str, str]]],
+        standard_mode_c: bool = False,
     ) -> None:
         """Add owned physics-driver pre-inputs without replacing authored routes.
 
@@ -1275,7 +1285,10 @@ class VmdSceneCollector:
         are not motion sources.  VMD recovery connects authored animation to
         the driver's ``inPre*`` plugs, so only a unique, model-owned driver
         with a validated target and an incoming non-physics source is eligible.
-        Missing or ambiguous graph pieces are skipped fail-closed.
+        Missing or ambiguous graph pieces are skipped fail-closed for legacy
+        callers.  Standard Mode C uses the same graph boundary but raises on
+        ownership ambiguity so a physics final output cannot be exported by
+        guessing.
         """
 
         if not target_model:
@@ -1289,50 +1302,132 @@ class VmdSceneCollector:
         }
         if not joints_by_path:
             return
-        candidates: dict[str, list[tuple[str, int]]] = {}
+        candidates: dict[str, list[tuple[str, int, bool]]] = {}
         used_indices: dict[int, list[str]] = {}
-        for solver in _physics_solvers_owned_by_model(root_path):
-            for driver in _physics_drivers_for_solver(solver):
-                target_joint = _physics_driver_target_joint(driver)
-                if not target_joint:
-                    continue
-                target_path = _canonical_dag_path(target_joint)
-                if not target_path or target_path not in joints_by_path:
-                    continue
-                if not _dag_path_is_under_root(target_path, root_path):
-                    continue
+        scene_solvers, drivers_by_solver, driver_owners = (
+            _physics_solver_driver_inventory()
+        )
+        owned_solvers = _physics_solvers_owned_by_model(
+            root_path,
+            strict=standard_mode_c,
+            solvers=scene_solvers,
+        )
+        owned_drivers = []
+        selected_driver_owners: dict[str, set[str]] = {}
+        seen_drivers = set()
+        for solver in owned_solvers:
+            for driver in drivers_by_solver.get(solver, ()):
+                selected_driver_owners.setdefault(driver, set()).add(solver)
+                if driver not in seen_drivers:
+                    seen_drivers.add(driver)
+                    owned_drivers.append(driver)
+
+        for driver in sorted(owned_drivers):
+            if standard_mode_c:
+                scene_owners = driver_owners.get(driver, ())
+                selected_owners = sorted(selected_driver_owners.get(driver, ()))
+                if scene_owners != selected_owners or len(scene_owners) != 1:
+                    raise ValueError(
+                        "Mode C physics driver must belong to exactly one "
+                        f"selected solver; driver={driver}, "
+                        f"solvers={scene_owners}"
+                    )
+            target_connections = _physics_driver_target_connections(driver)
+            if standard_mode_c and len(target_connections) != 1:
+                raise ValueError(
+                    "Mode C physics ownership requires exactly one target "
+                    f"connection for {driver}; found {len(target_connections)}"
+                )
+            if len(target_connections) != 1:
+                continue
+            target_joint = target_connections[0]
+            target_path = _canonical_dag_path(target_joint)
+            if standard_mode_c and (
+                not target_path
+                or not _dag_path_is_under_root(target_path, root_path)
+            ):
+                raise ValueError(
+                    "Mode C physics ownership target is outside the selected "
+                    f"model: {driver} -> {target_joint}"
+                )
+            if not target_path or target_path not in joints_by_path:
+                continue
+            if not _dag_path_is_under_root(target_path, root_path):
+                continue
+            if standard_mode_c:
+                bone_index = _physics_driver_bone_index(
+                    driver,
+                    strict=True,
+                )
+                if bone_index is None:
+                    raise ValueError(
+                        "Mode C physics ownership requires a valid non-negative "
+                        f"bone index for {driver}"
+                    )
+            else:
                 bone_index = _physics_driver_bone_index(driver)
                 if bone_index is None:
                     continue
-                if not _physics_driver_pre_inputs_exist(driver):
-                    continue
-                candidates.setdefault(target_path, []).append((driver, bone_index))
-                used_indices.setdefault(bone_index, []).append(target_path)
+            pre_inputs_exist = _physics_driver_pre_inputs_exist(driver)
+            if not standard_mode_c and not pre_inputs_exist:
+                continue
+            candidates.setdefault(target_path, []).append(
+                (driver, bone_index, pre_inputs_exist)
+            )
+            used_indices.setdefault(bone_index, []).append(target_path)
 
         # A duplicate target or bone index cannot establish ownership safely.
         ambiguous_targets = {
             target
             for target, values in candidates.items()
-            if len({driver for driver, _index in values}) != 1
+            if len({driver for driver, _index, _pre_inputs in values}) != 1
         }
         ambiguous_indices = {
             index
             for index, targets in used_indices.items()
             if len(set(targets)) != 1
         }
+        if standard_mode_c and ambiguous_targets:
+            target = sorted(ambiguous_targets)[0]
+            drivers = sorted(
+                driver
+                for driver, _index, _pre_inputs in candidates[target]
+            )
+            raise ValueError(
+                "Mode C physics ownership has duplicate drivers for target "
+                f"{target}: {drivers}"
+            )
+        if standard_mode_c and ambiguous_indices:
+            index = sorted(ambiguous_indices)[0]
+            targets = sorted(set(used_indices[index]))
+            raise ValueError(
+                "Mode C physics ownership has duplicate bone index "
+                f"{index} across targets: {targets}"
+            )
         for target_path, values in candidates.items():
             if target_path in ambiguous_targets:
                 continue
-            driver, bone_index = values[0]
+            driver, bone_index, pre_inputs_exist = values[0]
             if bone_index in ambiguous_indices:
                 continue
+            if standard_mode_c:
+                self._record_track_selection(
+                    "bone",
+                    self._mmd_bone_name(joints_by_path[target_path]),
+                    "physics_output_excluded",
+                    "standard_mode_c_owned_physics_final_output",
+                    0,
+                    0,
+                )
             route = routes.setdefault(target_path, {})
             for logical_attr, pre_attr in _PHYSICS_PRE_INPUT_ATTRS.items():
                 if logical_attr in route:
                     # append/IK/control-rig authored routes remain the
                     # established priority and must never be overwritten.
                     continue
-                if _unique_nonphysics_source(f"{driver}.{pre_attr}"):
+                if pre_inputs_exist and _unique_nonphysics_source(
+                    f"{driver}.{pre_attr}"
+                ):
                     route[logical_attr] = (driver, pre_attr)
                     continue
                 authored_source = _unique_nonphysics_source(
@@ -2668,13 +2763,19 @@ _PHYSICS_PRE_INPUT_ATTRS = {
 }
 
 
-def _physics_solvers_owned_by_model(root_path: str) -> list[str]:
+def _physics_solvers_owned_by_model(
+    root_path: str,
+    *,
+    strict: bool = False,
+    solvers: Optional[Sequence[str]] = None,
+) -> list[str]:
     """Resolve only solvers whose root or registry owns the Current Model."""
 
-    try:
-        solvers = cmds.ls(type="mmdPhysicsSolver") or []
-    except Exception:
-        return []
+    if solvers is None:
+        try:
+            solvers = cmds.ls(type="mmdPhysicsSolver") or []
+        except Exception:
+            return []
     target_registry = None
     try:
         from mmd_tools.core.model_registry import get_model_registry
@@ -2702,11 +2803,32 @@ def _physics_solvers_owned_by_model(root_path: str) -> list[str]:
             for value in roots
             if _canonical_dag_path(value) == root_path
         ]
+        selected_registry_matches = [
+            value
+            for value in registries
+            if target_registry and str(value) == str(target_registry)
+        ]
         registry_matches = bool(
             target_registry
             and len(registries) == 1
             and str(registries[0]) == str(target_registry)
         )
+        selected_claim = bool(root_matches or selected_registry_matches)
+        if strict and selected_claim:
+            root_registry_agrees = bool(
+                len(roots) == 1
+                and len(root_matches) == 1
+                and len(registries) == 1
+                and len(selected_registry_matches) == 1
+            )
+            ambiguous = len(roots) > 1 or len(registries) > 1
+            conflicting = bool(roots and registries and not root_registry_agrees)
+            if ambiguous or conflicting:
+                raise ValueError(
+                    "Mode C physics solver ownership is ambiguous for "
+                    f"{solver}: roots={list(roots)!r}, "
+                    f"registries={list(registries)!r}"
+                )
         # More than one root/registry source is ambiguous even if one happens
         # to match the Current Model.
         if (len(roots) == 1 and len(root_matches) == 1) or (
@@ -2714,6 +2836,32 @@ def _physics_solvers_owned_by_model(root_path: str) -> list[str]:
         ):
             owned.append(solver)
     return owned
+
+
+def _physics_solver_driver_inventory() -> tuple[
+    list[str],
+    dict[str, list[str]],
+    dict[str, list[str]],
+]:
+    """Build one bounded solver/driver ownership inventory for this scene."""
+
+    try:
+        solvers = cmds.ls(type="mmdPhysicsSolver") or []
+    except Exception:
+        return [], {}, {}
+    if isinstance(solvers, (str, bytes)):
+        solvers = [solvers]
+    scene_solvers = sorted({str(value) for value in solvers})
+    drivers_by_solver = {
+        solver: _physics_drivers_for_solver(solver) for solver in scene_solvers
+    }
+    owners_by_driver: dict[str, list[str]] = {}
+    for solver, drivers in drivers_by_solver.items():
+        for driver in drivers:
+            owners_by_driver.setdefault(driver, []).append(solver)
+    for owners in owners_by_driver.values():
+        owners.sort()
+    return scene_solvers, drivers_by_solver, owners_by_driver
 
 
 def _physics_drivers_for_solver(solver: str) -> list[str]:
@@ -2739,14 +2887,13 @@ def _physics_drivers_for_solver(solver: str) -> list[str]:
     return sorted(drivers)
 
 
-def _physics_driver_target_joint(driver: str) -> Optional[str]:
-    """Resolve exactly one rename-safe target-joint message connection."""
-
+def _physics_driver_target_connections(driver: str) -> list[str]:
+    """Return rename-safe target-joint message connections for one driver."""
     try:
         if not cmds.attributeQuery(
             "mmd_target_joint_message", node=driver, exists=True
         ):
-            return None
+            return []
         targets = cmds.listConnections(
             f"{driver}.mmd_target_joint_message",
             source=True,
@@ -2754,16 +2901,35 @@ def _physics_driver_target_joint(driver: str) -> Optional[str]:
             type="joint",
         ) or []
     except Exception:
-        return None
-    return str(targets[0]) if len(targets) == 1 else None
+        return []
+    if isinstance(targets, (str, bytes)):
+        targets = [targets]
+    return [str(target) for target in targets]
 
 
-def _physics_driver_bone_index(driver: str) -> Optional[int]:
+def _physics_driver_target_joint(driver: str) -> Optional[str]:
+    """Resolve exactly one rename-safe target-joint message connection."""
+
+    targets = _physics_driver_target_connections(driver)
+    return targets[0] if len(targets) == 1 else None
+
+
+def _physics_driver_bone_index(
+    driver: str,
+    *,
+    strict: bool = False,
+) -> Optional[int]:
     try:
         if not cmds.attributeQuery("inBoneIndex", node=driver, exists=True):
             return None
         value = cmds.getAttr(f"{driver}.inBoneIndex")
         index = int(value)
+        if strict:
+            if isinstance(value, bool):
+                return None
+            numeric_value = float(value)
+            if not math.isfinite(numeric_value) or numeric_value != index:
+                return None
     except (TypeError, ValueError, RuntimeError, OverflowError):
         return None
     return index if index >= 0 else None
