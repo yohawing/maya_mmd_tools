@@ -38,6 +38,9 @@ plug-ins/*/Debug/
 logs/
 stubs/
 
+# Machine-local asset probes and manifests (never imported by tracked code)
+/tools/local/
+
 # ai agent files
 .gemini/
 .clinerules/

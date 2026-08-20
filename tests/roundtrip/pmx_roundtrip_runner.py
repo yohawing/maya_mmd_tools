@@ -2,8 +2,9 @@
 """Parser-writer PMX smoke: import → parse → export → re-import.
 
 This runner intentionally bypasses the production Action/Presenter/Workflow
-edit path. It is a parser/writer compatibility smoke, not the user-path
-quality gate; use ``tools/local_asset_roundtrip.py`` for that gate.
+edit path. It is a parser/writer compatibility smoke for repository-owned
+fixtures. Machine-local user-asset probes belong under ignored ``tools/local/``
+and are not repository quality gates.
 
 For each case in the manifest:
   1. Parse source PMX via PmxData to obtain raw structured data.

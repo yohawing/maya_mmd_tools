@@ -125,7 +125,6 @@ from tools.nox.maya_sessions import (  # noqa: E402
     run_maya_batch_import as _run_maya_batch_import,
     run_native_physics_bake as _run_native_physics_bake,
     run_pmx_roundtrip as _run_pmx_roundtrip,
-    run_user_roundtrip_smoke as _run_user_roundtrip_smoke,
     run_physics_solver_cycle_probe as _run_physics_solver_cycle_probe,
     run_root_move_ik_target_probe as _run_root_move_ik_target_probe,
     run_root_move_skin_parity_probe as _run_root_move_skin_parity_probe,
@@ -1899,8 +1898,7 @@ def maya_batch_import(session: nox.Session) -> None:
     )
 
 
-# Parser-writer compatibility smoke only; user-path quality lives in
-# ``user_roundtrip_smoke`` below.
+# Parser-writer compatibility smoke for repository-owned fixtures.
 @nox.session(venv_backend="none")
 def pmx_roundtrip(session: nox.Session) -> None:
     """Parser-writer compatibility smoke (not the user-path quality gate).
@@ -1931,18 +1929,6 @@ def pmx_roundtrip(session: nox.Session) -> None:
         mayapy_env=_mayapy_env,
         mayapy_script=_mayapy_script,
         convert_mayapy_path_options=_convert_mayapy_path_options,
-    )
-
-
-@nox.session(venv_backend="none")
-def user_roundtrip_smoke(session: nox.Session) -> None:
-    """Run the production Action/Workflow Model and Motion roundtrip gate."""
-
-    _run_user_roundtrip_smoke(
-        session,
-        posargs=session.posargs,
-        root=ROOT,
-        python_executable=sys.executable,
     )
 
 

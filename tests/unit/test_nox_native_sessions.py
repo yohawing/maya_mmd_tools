@@ -28,7 +28,6 @@ from tools.nox.maya_sessions import (
     run_maya_batch_import,
     run_native_physics_bake,
     run_pmx_roundtrip,
-    run_user_roundtrip_smoke,
     run_physics_solver_cycle_probe,
     run_root_move_ik_target_probe,
     run_root_move_skin_parity_probe,
@@ -218,18 +217,6 @@ class NativeSessionsTest(unittest.TestCase):
         self.assertIn(str(Path("F:/repo/tests/roundtrip/manifest_template.json")), args)
         self.assertEqual(kwargs["env"]["MAYA_SKIP_USERSETUP_PY"], "1")
         self.assertEqual(kwargs["env"]["MMD_TOOLS_SKIP_SHADER_OVERRIDE"], "1")
-
-    def test_user_roundtrip_smoke_host_python_forwards_runner_arguments(self):
-        session = _FakeSession(["--maya", "2024", "--case", "miku"])
-        run_user_roundtrip_smoke(
-            session,
-            posargs=session.posargs,
-            root=Path("F:/repo"),
-            python_executable="python-test",
-        )
-        args, kwargs = session.runs[0]
-        self.assertEqual(args, ("python-test", str(Path("F:/repo/tools/local_asset_roundtrip.py")), "--maya", "2024", "--case", "miku"))
-        self.assertTrue(kwargs["external"])
 
     def test_native_export_smoke_removes_ffi_path_from_child_arguments(self):
         session = _FakeSession(["--strict", "--ffi-path", "build/custom-ffi"])
