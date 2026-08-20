@@ -14,7 +14,6 @@ from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from mmd_tools.io.vmd_exporter import VmdExporter
 from mmd_tools.io.vmd_stream_writer import VmdStreamWriter
 from mmd_tools.validation.export_validator import (
-    ExportValidationAcknowledgementRequired,
     ExportValidationIssue,
     ExportValidationReport,
 )
@@ -65,7 +64,7 @@ class TestVmdValidator(unittest.TestCase):
         self.assertEqual(report.mode, VMD_MODE_C)
         self.assertEqual(report.to_dict()["status"], "ready")
 
-    def test_mode_c_warns_before_dropping_imported_raw_bone_provenance(self):
+    def test_mode_c_reports_raw_loss_as_information_without_acknowledgement(self):
         report = validate_vmd_data(
             VmdData(),
             VMD_MODE_C,
@@ -82,9 +81,10 @@ class TestVmdValidator(unittest.TestCase):
         )
 
         self.assertTrue(report.valid)
-        self.assertTrue(report.requires_warning_ack)
-        self.assertEqual(report.to_dict()["status"], "warning")
+        self.assertFalse(report.requires_warning_ack)
+        self.assertEqual(report.to_dict()["status"], "ready")
         self.assertEqual(report.issues[0].code, "VMD_MODE_C_RAW_LOSS")
+        self.assertEqual(report.issues[0].severity, "info")
         self.assertFalse(report.issues[0].blocking)
 
     def test_mode_c_does_not_warn_when_raw_transforms_are_complete(self):
@@ -136,6 +136,138 @@ class TestVmdValidator(unittest.TestCase):
         )
 
         self.assertIn("VMD_RAW_PROVENANCE_MISMATCH", [issue.code for issue in report.issues])
+
+    def test_mode_a_scopes_raw_records_to_current_model_bones(self):
+        data = VmdData()
+        data.bone_frames.append(_valid_bone_frame())
+        unsupported = {
+            "bone_name": "DokuhebiUnsupported",
+            "frame_number": 0,
+            "interpolation": [31] * 64,
+        }
+        raw_provenance = {
+            "raw_bone_interpolation_complete": True,
+            "raw_bone_key_count": 2,
+            "raw_bone_interpolation": [
+                {
+                    "bone_name": "センター",
+                    "frame_number": 0,
+                    "interpolation": list(data.bone_frames[0].interpolation),
+                },
+                unsupported,
+            ],
+            "current_model_bone_names": ["センター"],
+        }
+
+        report = validate_vmd_data(data, VMD_MODE_A, raw_provenance=raw_provenance)
+
+        self.assertTrue(report.valid, report.summary)
+        self.assertEqual(raw_provenance["raw_bone_interpolation"].count(unsupported), 1)
+
+    def test_mode_a_scoped_raw_interpolation_change_still_blocks(self):
+        data = VmdData()
+        data.bone_frames.append(_valid_bone_frame())
+        raw_provenance = {
+            "raw_bone_interpolation_complete": True,
+            "raw_bone_key_count": 2,
+            "raw_bone_interpolation": [
+                {
+                    "bone_name": "センター",
+                    "frame_number": 0,
+                    "interpolation": [21] * 64,
+                },
+                {
+                    "bone_name": "DokuhebiUnsupported",
+                    "frame_number": 0,
+                    "interpolation": [31] * 64,
+                },
+            ],
+            "current_model_bone_names": ["センター"],
+        }
+
+        report = validate_vmd_data(data, VMD_MODE_A, raw_provenance=raw_provenance)
+
+        self.assertTrue(report.is_blocking)
+        self.assertIn("changed=1", report.summary)
+
+    def test_mode_a_scoped_raw_transforms_ignore_unsupported_and_block_supported_changes(self):
+        supported_raw = {
+            "bone_name": "センター",
+            "frame_number": 0,
+            "position": [1.0, 2.0, 3.0],
+            "rotation": [0.0, 0.0, 0.0, 1.0],
+            "interpolation": [20] * 64,
+        }
+        unsupported_raw = {
+            "bone_name": "DokuhebiUnsupported",
+            "frame_number": 0,
+            "position": [8.0, 9.0, 10.0],
+            "rotation": [0.0, 0.0, 0.0, 1.0],
+            "interpolation": [31] * 64,
+        }
+        raw_provenance = {
+            "raw_bone_interpolation_complete": True,
+            "raw_bone_transform_complete": True,
+            "raw_bone_key_count": 2,
+            "raw_bone_interpolation": [supported_raw, unsupported_raw],
+            "current_model_bone_names": ["センター"],
+        }
+
+        matching = VmdData()
+        matching_frame = _valid_bone_frame()
+        matching_frame.position = (1.0, 2.0, 3.0)
+        matching.bone_frames.append(matching_frame)
+        matching_report = validate_vmd_data(
+            matching,
+            VMD_MODE_A,
+            raw_provenance=raw_provenance,
+        )
+        self.assertTrue(matching_report.valid, matching_report.summary)
+
+        changed = VmdData()
+        changed_frame = _valid_bone_frame()
+        changed_frame.position = (1.5, 2.0, 3.0)
+        changed.bone_frames.append(changed_frame)
+        changed_report = validate_vmd_data(
+            changed,
+            VMD_MODE_A,
+            raw_provenance=raw_provenance,
+        )
+        self.assertTrue(changed_report.is_blocking)
+        self.assertIn("changed=1", changed_report.summary)
+
+        missing_report = validate_vmd_data(
+            VmdData(),
+            VMD_MODE_A,
+            raw_provenance=raw_provenance,
+        )
+        self.assertTrue(missing_report.is_blocking)
+        self.assertIn("missing=1", missing_report.summary)
+
+    def test_mode_a_missing_supported_raw_record_still_blocks_with_scoped_provenance(self):
+        data = VmdData()
+        raw_provenance = {
+            "raw_bone_interpolation_complete": True,
+            "raw_bone_key_count": 2,
+            "raw_bone_interpolation": [
+                {
+                    "bone_name": "センター",
+                    "frame_number": 0,
+                    "interpolation": [20] * 64,
+                },
+                {
+                    "bone_name": "DokuhebiUnsupported",
+                    "frame_number": 0,
+                    "interpolation": [31] * 64,
+                },
+            ],
+            "current_model_bone_names": ["センター"],
+        }
+
+        report = validate_vmd_data(data, VMD_MODE_A, raw_provenance=raw_provenance)
+
+        self.assertTrue(report.is_blocking)
+        self.assertIn("missing=1", report.summary)
 
     def test_mode_a_rejects_raw_interpolation_payload_change(self):
         data = VmdData()
@@ -649,7 +781,7 @@ class TestExportVmdValidationGate(unittest.TestCase):
         self.assertEqual(result.validation_report.mode, VMD_MODE_A)
         self.assertIsNotNone(result.payload_fingerprint)
 
-    def test_mode_c_raw_loss_warning_requires_ack_before_writer(self):
+    def test_mode_c_raw_loss_information_does_not_require_ack_before_writer(self):
         exporter = _WritingVmdExporter()
         raw_provenance = {
             "raw_bone_interpolation_complete": True,
@@ -689,11 +821,30 @@ class TestExportVmdValidationGate(unittest.TestCase):
                 )
             )
 
-        self.assertFalse(first.succeeded)
-        self.assertIsInstance(first.error, ExportValidationAcknowledgementRequired)
+        self.assertTrue(first.succeeded, first.error)
+        self.assertIsNone(first.error)
         self.assertEqual(first.validation_report.issues[0].code, "VMD_MODE_C_RAW_LOSS")
+        self.assertEqual(first.validation_report.issues[0].severity, "info")
         self.assertTrue(second.succeeded, second.error)
-        self.assertEqual(len(exporter.calls), 1)
+        self.assertEqual(len(exporter.calls), 2)
+
+    def test_streaming_mode_c_raw_loss_is_informational_without_ack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mode-c-stream.vmd"
+            writer = VmdStreamWriter(path, "モデル")
+            writer.finish()
+
+            report = verify_vmd_output_streaming(
+                str(path),
+                VMD_MODE_C,
+                raw_loss_warning_required=True,
+                ack_warnings=False,
+            )
+
+        self.assertTrue(report.valid, report.summary)
+        self.assertFalse(report.requires_warning_ack)
+        self.assertEqual(report.issues[0].code, "VMD_MODE_C_RAW_LOSS")
+        self.assertEqual(report.issues[0].severity, "info")
 
     def test_collector_raw_provenance_flows_into_mode_a_validation(self):
         def collector(_options):

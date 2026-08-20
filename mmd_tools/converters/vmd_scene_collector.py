@@ -100,6 +100,7 @@ _ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
 _MMD_CAMERA_AIM_ROLL_RIG_TYPE = "mmd_aim_roll"
 _TRANSFORM_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 _CAMERA_SHAPE_EXPORT_ATTRS = ("focalLength", "orthographic", "orthographicWidth")
+_CURRENT_MODEL_BONE_SCOPE = "current_model_bone_names"
 _TRACK_SELECTION_DECISIONS = (
     "omitted_default",
     "constant_one_key",
@@ -803,8 +804,9 @@ def _read_mode_c_raw_loss_marker(target_model: Optional[str]) -> Optional[dict[s
         return None
     return {
         "warning_code": "VMD_MODE_C_RAW_LOSS",
-        "raw_loss_warning_required": True,
-        "required": True,
+        "raw_loss_warning_required": False,
+        "required": False,
+        "informational": True,
     }
 
 
@@ -1178,6 +1180,11 @@ class VmdSceneCollector:
         dense_mode_c_export = mode == "C"
         rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
         raw_provenance = _read_vmd_import_provenance(target_model)
+        raw_provenance = self._attach_current_model_bone_scope(
+            raw_provenance,
+            joints,
+            target_model,
+        )
         if mode != "C" or preserve_raw_bone_transforms:
             for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
                 rotation_interpolation.setdefault(bone_name, {}).update(values)
@@ -3564,6 +3571,24 @@ class VmdSceneCollector:
             if value:
                 return str(value)
         return str(target_model or "")
+
+    def _attach_current_model_bone_scope(
+        self,
+        raw_provenance: Optional[Mapping[str, Any]],
+        joints: Sequence[str],
+        target_model: Optional[str],
+    ) -> Optional[dict[str, Any]]:
+        """Attach deterministic supported-bone scope without changing source records."""
+        if raw_provenance is None or not target_model:
+            return raw_provenance
+        supported_names = set()
+        for joint in joints:
+            name = self._mmd_bone_name(joint)
+            if name:
+                supported_names.add(str(name))
+        scoped_provenance = dict(raw_provenance)
+        scoped_provenance[_CURRENT_MODEL_BONE_SCOPE] = sorted(supported_names)
+        return scoped_provenance
 
     def _mmd_bone_name(self, joint: str) -> str:
         if _has_attr(joint, ATTR_MMD_BONE_NAME):

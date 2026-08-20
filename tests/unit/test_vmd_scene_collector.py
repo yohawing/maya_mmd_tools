@@ -2790,7 +2790,28 @@ class TestVmdSceneCollector(unittest.TestCase):
         result = VmdSceneCollector().collect({"target_model": "model_root"})
 
         self.assertIsNotNone(result["raw_provenance"])
+        self.assertEqual(result["raw_provenance"]["current_model_bone_names"], ["センター"])
         self.assertEqual(result["bone_frames"][0]["interpolation"], bytes([7]) * 64)
+
+    def test_current_model_bone_scope_is_sorted_without_mutating_raw_records(self):
+        collector = VmdSceneCollector()
+        raw_records = [{"bone_name": "source", "frame_number": 0}]
+        raw_provenance = {"raw_bone_interpolation": raw_records}
+
+        with mock.patch.object(
+            collector,
+            "_mmd_bone_name",
+            side_effect=lambda joint: {"joint_z": "zeta", "joint_a": "alpha"}[joint],
+        ):
+            scoped = collector._attach_current_model_bone_scope(
+                raw_provenance,
+                ["joint_z", "joint_a", "joint_z"],
+                "model_root",
+            )
+
+        self.assertEqual(scoped["current_model_bone_names"], ["alpha", "zeta"])
+        self.assertIs(scoped["raw_bone_interpolation"], raw_records)
+        self.assertNotIn("current_model_bone_names", raw_provenance)
 
     def test_mode_c_preserves_sparse_keys_with_complete_raw_transform_provenance(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})

@@ -13,6 +13,8 @@ from .export_validator import ExportValidationIssue, ExportValidationReport
 VMD_MODE_A = "A"
 VMD_MODE_C = "C"
 VMD_MODES = frozenset({VMD_MODE_A, VMD_MODE_C})
+_CURRENT_MODEL_BONE_SCOPE = "current_model_bone_names"
+_INVALID_BONE_SCOPE = object()
 
 
 # The stream verifier intentionally never retains one issue per record.  A
@@ -78,9 +80,9 @@ def _normalize_frame_range(
     return (start, end), None
 
 
-def _warning(code: str, path: str, message: str) -> ExportValidationIssue:
-    """Create a non-blocking VMD issue that requires explicit acknowledgement."""
-    return ExportValidationIssue(code, "warning", False, path, message)
+def _info(code: str, path: str, message: str) -> ExportValidationIssue:
+    """Create a non-blocking informational VMD issue."""
+    return ExportValidationIssue(code, "info", False, path, message)
 
 
 def _finite_values(values: Iterable[Any], path: str, issues: List[ExportValidationIssue]) -> None:
@@ -141,6 +143,21 @@ def _interpolation(value: Any, expected: int, path: str, issues: List[ExportVali
         )
 
 
+def _raw_bone_scope(raw_provenance: Any) -> Any:
+    """Return the optional Current Model supported-bone name scope."""
+    if not isinstance(raw_provenance, Mapping) or _CURRENT_MODEL_BONE_SCOPE not in raw_provenance:
+        return None
+    values = raw_provenance.get(_CURRENT_MODEL_BONE_SCOPE)
+    if not isinstance(values, (list, tuple, set, frozenset)):
+        return _INVALID_BONE_SCOPE
+    scope = set()
+    for value in values:
+        if not isinstance(value, str) or not value:
+            return _INVALID_BONE_SCOPE
+        scope.add(value)
+    return scope
+
+
 def _raw_bone_provenance_records(
     raw_provenance: Any,
     frame_range: Optional[Tuple[int, int]] = None,
@@ -158,11 +175,17 @@ def _raw_bone_provenance_records(
     if expected_count != len(records):
         return True, None
 
+    scope = _raw_bone_scope(raw_provenance)
+    if scope is _INVALID_BONE_SCOPE:
+        return True, None
+
     normalized: Dict[Tuple[str, int], bytes] = {}
     for record in records:
         if not isinstance(record, Mapping):
             return True, None
         name = str(record.get("bone_name") or "")
+        if scope is not None and name not in scope:
+            continue
         try:
             frame_number = int(record.get("frame_number"))
             interpolation = bytes(record.get("interpolation", ()))
@@ -226,11 +249,17 @@ def _raw_bone_transform_records(
     if expected_count != len(records):
         return True, None
 
+    scope = _raw_bone_scope(raw_provenance)
+    if scope is _INVALID_BONE_SCOPE:
+        return True, None
+
     normalized: Dict[Tuple[str, int], Tuple[Tuple[float, ...], Tuple[float, ...]]] = {}
     for record in records:
         if not isinstance(record, Mapping):
             return True, None
         name = str(record.get("bone_name") or "")
+        if scope is not None and name not in scope:
+            continue
         try:
             frame_number = int(record.get("frame_number"))
             position = tuple(float(value) for value in record.get("position", ()))
@@ -349,10 +378,10 @@ def validate_vmd_data(
         and raw_provenance.get("raw_bone_transform_complete") is not True
     ):
         issues.append(
-            _warning(
+            _info(
                 "VMD_MODE_C_RAW_LOSS",
                 "mode",
-                "VMD Mode C dense bake does not preserve imported raw bone keys or interpolation bytes; acknowledge to continue",
+                "VMD Mode C dense bake does not preserve imported raw bone keys or interpolation bytes",
             )
         )
 
@@ -638,15 +667,15 @@ def _stream_issue(
         issues.append(_issue(code, path, message))
 
 
-def _stream_warning(
+def _stream_info(
     issues: List[ExportValidationIssue],
     code: str,
     path: str,
     message: str,
 ) -> None:
-    """Append a bounded non-blocking warning for the byte-stream verifier."""
+    """Append a bounded informational issue for the byte-stream verifier."""
     if len(issues) < _STREAM_MAX_ISSUES:
-        issues.append(_warning(code, path, message))
+        issues.append(_info(code, path, message))
 
 
 def _stream_name(
@@ -1015,11 +1044,11 @@ def verify_vmd_output_streaming(
         )
 
     if raw_loss_warning_required and not ack_warnings and normalized_mode == VMD_MODE_C:
-        _stream_warning(
+        _stream_info(
             issues,
             "VMD_MODE_C_RAW_LOSS",
             "mode",
-            "VMD Mode C dense bake does not preserve imported raw bone keys or interpolation bytes; acknowledge to continue",
+            "VMD Mode C dense bake does not preserve imported raw bone keys or interpolation bytes",
         )
 
     for section, _ in _STREAM_SECTIONS:

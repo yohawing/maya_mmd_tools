@@ -356,7 +356,7 @@ class TestExportWorkflowService(unittest.TestCase):
         self.assertIsNone(result.payload)
         self.assertEqual(result.action_result.payload_fingerprint, token.staged_artifact.sha256)
 
-    def test_prepared_vmd_warning_requires_final_ack_without_recollecting_or_writing(self):
+    def test_prepared_vmd_raw_loss_info_does_not_require_final_ack(self):
         backend = _VmdPrepareBackend(raw_provenance=True)
         revisions = _VmdRevisions()
         exporter = _RecordingVmdExporter()
@@ -387,30 +387,21 @@ class TestExportWorkflowService(unittest.TestCase):
         prepared = service.prepare_vmd(request)
         token = prepared.token
         self.assertTrue(prepared.succeeded)
-        self.assertTrue(token.validation_report.requires_warning_ack)
+        self.assertFalse(token.validation_report.requires_warning_ack)
         self.assertEqual(exporter.write_calls, 0)
 
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "motion.vmd"
             target.write_bytes(b"existing-output")
-            no_ack = service.execute(
+            result = service.execute(
                 ExportWorkflowRequest(
                     str(target), dict(request.options), prepared_vmd_token=token
                 )
             )
-            self.assertEqual(no_ack.state, STATE_READY)
-            self.assertEqual(target.read_bytes(), b"existing-output")
+            self.assertEqual(result.state, STATE_SUCCEEDED)
+            self.assertNotEqual(target.read_bytes(), b"existing-output")
             self.assertEqual(backend.collect_calls, 1)
             self.assertEqual(exporter.write_calls, 0)
-
-            acknowledged = service.execute(
-                ExportWorkflowRequest(
-                    str(target), dict(request.options), prepared_vmd_token=token
-                ),
-                acknowledge_warnings=True,
-            )
-            self.assertEqual(acknowledged.state, STATE_SUCCEEDED)
-            self.assertNotEqual(target.read_bytes(), b"existing-output")
 
         self.assertEqual(backend.collect_calls, 1)
         self.assertEqual(exporter.write_calls, 0)

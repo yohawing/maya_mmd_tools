@@ -528,7 +528,7 @@ def _report_evidence(directory: Path) -> dict[str, Any]:
 
 
 def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
-    """Run fatal/lossy, target-preservation, and warning-ack boundaries."""
+    """Run fatal/lossy, target-preservation, and raw-loss information boundaries."""
     from tests.common.maya_stub import install_maya_stub
 
     install_maya_stub(profile="headless")
@@ -660,7 +660,7 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
                 "validation_report_evidence": {
                     "gate": "V070-EXPORT-RELEASE-GATE-1",
                     "fixture": "warning-ack-boundary",
-                    "ack_expected": "required",
+                    "ack_expected": "not_required",
                 },
             },
             animation_data=VmdData(),
@@ -680,18 +680,19 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
                 "validation_report_evidence": {
                     "gate": "V070-EXPORT-RELEASE-GATE-1",
                     "fixture": "warning-ack-boundary",
-                    "ack_expected": "accepted",
+                    "ack_expected": "optional",
                 },
             },
             animation_data=VmdData(),
         )
     )
     warning_passed = (
-        not first.succeeded
+        first.succeeded
         and first.validation_report is not None
-        and first.validation_report.requires_warning_ack
+        and not first.validation_report.requires_warning_ack
         and first.validation_report.issues[0].code == "VMD_MODE_C_RAW_LOSS"
-        and len(warning_writer.calls) == 1
+        and first.validation_report.issues[0].severity == "info"
+        and len(warning_writer.calls) == 2
         and second.succeeded
     )
     fixtures.append(
@@ -700,8 +701,12 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
             "status": "pass" if warning_passed else "fail",
             "first_succeeded": first.succeeded,
             "second_succeeded": second.succeeded,
+            "first_requires_warning_ack": bool(
+                first.validation_report and first.validation_report.requires_warning_ack
+            ),
             "writer_calls": len(warning_writer.calls),
             "first_issue_codes": [issue.code for issue in (first.validation_report.issues if first.validation_report else ())],
+            "first_issue_severities": [issue.severity for issue in (first.validation_report.issues if first.validation_report else ())],
             "second_issue_codes": [issue.code for issue in (second.validation_report.issues if second.validation_report else ())],
             "reports": {
                 "no_ack": _report_evidence(warning_dir / "report-no-ack"),
