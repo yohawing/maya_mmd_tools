@@ -1628,7 +1628,38 @@ class VmdSceneCollector:
                     native_started = time.perf_counter()
                     try:
                         if sampler_available is False:
-                            raise RuntimeError("native sampler is unavailable")
+                            sampler_diagnostics = getattr(
+                                bone_channel_sampler,
+                                "last_diagnostics",
+                                None,
+                            )
+                            detail_parts = []
+                            if isinstance(sampler_diagnostics, Mapping):
+                                plugin_status = sampler_diagnostics.get(
+                                    "plugin_load_status"
+                                )
+                                plugin_path = sampler_diagnostics.get("plugin_path")
+                                plugin_error = sampler_diagnostics.get(
+                                    "plugin_load_error"
+                                )
+                                if plugin_status:
+                                    detail_parts.append(
+                                        f"plugin_load_status={plugin_status}"
+                                    )
+                                if plugin_path:
+                                    detail_parts.append(f"plugin_path={plugin_path}")
+                                if plugin_error:
+                                    detail_parts.append(f"plugin_error={plugin_error}")
+                            detail = (
+                                f" ({', '.join(detail_parts)})"
+                                if detail_parts
+                                else ""
+                            )
+                            raise RuntimeError(
+                                "native sampler is unavailable"
+                                f"{detail}. Rebuild the C++ plug-in for this Maya "
+                                "version and restart Maya."
+                            )
                         sampler_method = getattr(
                             bone_channel_sampler,
                             "sample_dense_bone_channels",

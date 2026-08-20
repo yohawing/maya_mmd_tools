@@ -80,11 +80,21 @@ def render_validation_console_text(
         evidence=metadata.get("evidence") or metadata,
     )
     summary = canonical["summary"]
+    display_mode = canonical["mode"]
+    if translator is not None and canonical["format"] == "vmd":
+        mode_key = {
+            "A": "vmd_preserve_imported",
+            "C": "vmd_export_timeline",
+        }.get(str(display_mode).upper())
+        if mode_key is not None:
+            display_mode = translator.translate(
+                f"options.{mode_key}", default=display_mode
+            )
     lines = [
         label("title", "Export Validation Console"),
         f"{label('status', 'Status')}: {canonical['status'].upper()}",
         f"{label('format', 'Format')}: {canonical['format'] or 'unknown'}",
-        f"{label('mode', 'Mode')}: {canonical['mode']}",
+        f"{label('mode', 'Mode')}: {display_mode}",
         f"{label('target', 'Target')}: {canonical['target_identity'] or 'unspecified'}",
         f"{label('snapshot', 'Snapshot')}: {canonical['snapshot_fingerprint'] or 'unspecified'}",
         (

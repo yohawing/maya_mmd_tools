@@ -9,7 +9,6 @@ from ..base_tab import BaseTab
 from ..components.category_stack import CategoryStack
 from ..qt_compat import (
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -120,13 +119,20 @@ class _ExportPage(QWidget):
             )
         else:
             self._motion_form = QFormLayout(self.settings_group)
-            self.mode_label = QLabel(self.owner.tr("vmd_mode", "fields"))
-            self.mode_combo = QComboBox()
-            self.mode_combo.setObjectName("motionMode")
-            self.mode_combo.addItems(["A", "C"])
-            self.mode_combo.setCurrentText("C")
-            self.mode_combo.currentTextChanged.connect(self._on_semantic_input_changed)
-            self._motion_form.addRow(self.mode_label, self.mode_combo)
+            self.bake_export_check = QCheckBox(
+                self.owner.tr("vmd_bake_export", "checkboxes")
+            )
+            self.bake_export_check.setObjectName("motionBakeExport")
+            self.bake_export_check.setChecked(True)
+            self.bake_export_check.toggled.connect(
+                self._on_semantic_input_changed
+            )
+            self._motion_form.addRow(self.bake_export_check)
+            self.bake_export_help = QLabel(
+                self.owner.tr("vmd_bake_export_help", "messages")
+            )
+            self.bake_export_help.setWordWrap(True)
+            self._motion_form.addRow(self.bake_export_help)
 
             self.frame_range_check = QCheckBox(
                 self.owner.tr("use_frame_range", "checkboxes")
@@ -231,7 +237,7 @@ class _ExportPage(QWidget):
         if self.pane == self.owner.MODEL_PANE:
             options["apply_scale"] = self.apply_scale_check.isChecked()
         else:
-            options["vmd_mode"] = self.mode_combo.currentText().upper()
+            options["vmd_mode"] = self._motion_mode()
             if self.frame_range_check.isChecked():
                 options["frame_range"] = (
                     self.frame_start_spin.value(),
@@ -290,7 +296,7 @@ class _ExportPage(QWidget):
         self._operation_active = bool(active)
         enabled = not self._operation_active
         if self.pane == self.owner.MOTION_PANE:
-            self.prepare_button.setEnabled(enabled and self.mode_combo.currentText().upper() == "C")
+            self.prepare_button.setEnabled(enabled and self._motion_mode() == "C")
         self.validate_button.setEnabled(enabled)
         self.export_button.setEnabled(enabled)
         self.validation_console.revalidate_button.setEnabled(enabled)
@@ -311,8 +317,20 @@ class _ExportPage(QWidget):
         if self.pane == self.owner.MOTION_PANE:
             self.prepare_button.setEnabled(
                 not self._operation_active
-                and self.mode_combo.currentText().upper() == "C"
+                and self._motion_mode() == "C"
             )
+
+    def _motion_mode(self) -> str:
+        """Return the stable internal export strategy for the localized choice."""
+
+        if self.pane != self.owner.MOTION_PANE:
+            return ""
+        return "C" if self.bake_export_check.isChecked() else "A"
+
+    def set_motion_mode(self, mode: str) -> None:
+        """Select an internal export strategy without exposing its code as UI copy."""
+
+        self.bake_export_check.setChecked(str(mode or "C").upper() != "A")
 
     def retranslate(self) -> None:
         self.settings_group.setTitle(self.owner.tr("export", "settings"))
@@ -335,7 +353,12 @@ class _ExportPage(QWidget):
                 self.owner.tr("options", "fields"),
             )
         else:
-            self.mode_label.setText(self.owner.tr("vmd_mode", "fields"))
+            self.bake_export_check.setText(
+                self.owner.tr("vmd_bake_export", "checkboxes")
+            )
+            self.bake_export_help.setText(
+                self.owner.tr("vmd_bake_export_help", "messages")
+            )
             self.frame_range_check.setText(
                 self.owner.tr("use_frame_range", "checkboxes")
             )
@@ -462,7 +485,7 @@ class ExportTab(BaseTab):
             bool(getter(settings_keys.EXPORT_GENERAL_APPLY_SCALE, True))
         )
         mode = str(getter(settings_keys.EXPORT_MOTION_MODE, "C") or "C").upper()
-        motion.mode_combo.setCurrentText(mode if mode in ("A", "C") else "C")
+        motion.set_motion_mode(mode)
         motion.frame_range_check.setChecked(
             bool(getter(settings_keys.EXPORT_MOTION_USE_FRAME_RANGE, False))
         )
@@ -481,7 +504,7 @@ class ExportTab(BaseTab):
         model = self._pages[self.MODEL_PANE]
         motion = self._pages[self.MOTION_PANE]
         setter(settings_keys.EXPORT_GENERAL_APPLY_SCALE, model.apply_scale_check.isChecked())
-        setter(settings_keys.EXPORT_MOTION_MODE, motion.mode_combo.currentText().upper())
+        setter(settings_keys.EXPORT_MOTION_MODE, motion._motion_mode())
         setter(
             settings_keys.EXPORT_MOTION_USE_FRAME_RANGE,
             motion.frame_range_check.isChecked(),
@@ -542,8 +565,8 @@ class ExportTab(BaseTab):
             "state_label",
             "validation_console",
             "apply_scale_check",
-            "mode_label",
-            "mode_combo",
+            "bake_export_check",
+            "bake_export_help",
             "frame_range_check",
             "frame_start_spin",
             "frame_end_spin",
@@ -558,8 +581,8 @@ class ExportTab(BaseTab):
                 "_model_form": self.MODEL_PANE,
                 "apply_scale_check": self.MODEL_PANE,
                 "_motion_form": self.MOTION_PANE,
-                "mode_label": self.MOTION_PANE,
-                "mode_combo": self.MOTION_PANE,
+                "bake_export_check": self.MOTION_PANE,
+                "bake_export_help": self.MOTION_PANE,
                 "frame_range_check": self.MOTION_PANE,
                 "frame_start_spin": self.MOTION_PANE,
                 "frame_end_spin": self.MOTION_PANE,

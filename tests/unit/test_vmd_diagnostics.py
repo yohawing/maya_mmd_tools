@@ -40,7 +40,37 @@ class _FailingSampler:
         raise RuntimeError("packed protocol mismatch")
 
 
+class _UnavailableSampler:
+    available = False
+    last_diagnostics = {
+        "plugin_load_status": "registration_missing",
+        "plugin_path": "C:/plug-ins/2026/Debug/mmd_tools_cpp.mll",
+    }
+
+
 class VmdDiagnosticsTests(unittest.TestCase):
+    def test_collector_reports_missing_native_command_with_plugin_identity(self):
+        collector = VmdSceneCollector(bone_channel_sampler=_UnavailableSampler())
+        with mock.patch.object(collector_module, "cmds", _Cmds()), mock.patch.object(
+            collector_module, "_routed_key_times", return_value=[0.0, 1.0]
+        ), mock.patch.object(
+            collector_module, "_build_rotation_export_context", return_value={}
+        ):
+            collector._mmd_bone_name = lambda joint: str(joint)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "plugin_load_status=registration_missing.*mmd_tools_cpp.mll",
+            ):
+                collector.collect_bone_frames(
+                    ["joint"],
+                    input_routes={"joint": {"rotateX": ("|driver", "inPreRotateX")}},
+                    dense_sample=True,
+                    force_dense_sample=True,
+                    dense_frame_samples=[0, 1],
+                    time_converter=lambda value: value,
+                    bone_channel_sampler=collector._bone_channel_sampler,
+                )
+
     def test_collector_flushes_route_inventory_before_native_call(self):
         events = []
         collector = VmdSceneCollector(

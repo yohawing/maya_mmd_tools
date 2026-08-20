@@ -59,7 +59,7 @@
     "validate_model": "モデルを検証",
     "export_pmx": "PMXを書き出す",
     "validate_animation": "アニメーションを検証",
-    "prepare_mode_c": "Mode Cを準備",
+    "prepare_mode_c": "書き出しデータを準備",
     "export_vmd": "VMDを書き出す",
     "apply": "適用",
     "ok": "OK",
@@ -204,6 +204,7 @@
     "use_cpp_rig_nodes": "IK/付与制約に実験的なC++リグノードを使います。利用できない場合はPythonノードにフォールバックします"
   },
   "messages": {
+    "vmd_bake_export_help": "オフの場合は、読み込み元の未編集ボーンキーと補間を保持します。編集済みの場合は自動でベイクせず、書き出しを停止します。",
     "display_element_added": "{element_type}（PMXインデックス {index}）を追加しました",
     "no_display_element_candidates": "表示枠に追加できる要素がありません",
     "duplicate_display_element": "その要素は既にこの表示枠にあります",
@@ -212,7 +213,7 @@
     "facial_display_frame_morph_only": "表情枠にはモーフのみ追加できます",
     "import_success": "インポートが完了しました",
     "export_success": "エクスポートが完了しました",
-    "prepare_mode_c_complete": "VMD Mode C の準備が完了しました",
+    "prepare_mode_c_complete": "VMD書き出しデータの準備が完了しました",
     "export_mmd_asset": "MMDアセットをエクスポート",
     "error_file_not_found": "ファイルが見つかりません",
     "error_invalid_file": "無効なファイル形式です",
@@ -367,6 +368,8 @@
     "humanik_source_tooltip": "SOURCEにはキャラクタライズ済みのMMDモデル、またはシーン内でキャラクタ定義済みのHumanIKキャラクターを指定できます。"
   },
   "options": {
+    "vmd_preserve_imported": "読み込んだ未編集ボーンキーを保持",
+    "vmd_export_timeline": "現在のタイムラインをVMD化",
     "none": "なし",
     "import_mesh": "メッシュをインポート",
     "import_skeleton": "スケルトンをインポート",
@@ -454,6 +457,7 @@
     "joint_values": "ジョイントの値"
   },
   "checkboxes": {
+    "vmd_bake_export": "タイムラインをベイクして書き出す",
     "use_namespace": "ネームスペースを使用",
     "custom_namespace": "カスタムnamespace:",
     "import_models": "モデルをインポート",
@@ -502,7 +506,7 @@
     "motion_scale": "モーション倍率:",
     "reduce_quality": "削減品質:",
     "format": "フォーマット:",
-    "vmd_mode": "VMDモード",
+    "vmd_mode": "書き出し方式",
     "range": "範囲",
     "start": "開始",
     "end": "終了",
@@ -773,7 +777,7 @@
     "save_dialog": "検証レポートを保存",
     "status": "状態",
     "format": "形式",
-    "mode": "モード",
+    "mode": "書き出し方式",
     "target": "対象",
     "snapshot": "スナップショット",
     "summary": "概要",
@@ -860,7 +864,7 @@
     "model_report_ready": "モデル: 検証レポート準備完了",
     "model_writer": "PMXを書き出し中",
     "animation_scene_preflight": "アニメーション: シーンを確認中",
-    "animation_timeline_bake": "アニメーション: Mode Cモーションを評価・準備中",
+    "animation_timeline_bake": "アニメーション: 現在のタイムラインを評価・準備中",
     "animation_payload_collection": "アニメーション: エクスポートデータを収集中",
     "animation_payload_validation": "アニメーション: エクスポートデータを検証中",
     "animation_prepared_payload": "アニメーション: 準備済みデータを生成中",
@@ -875,10 +879,10 @@
       "action": "エクスポート処理の失敗を確認"
     },
     "vmd_mode_c_raw_loss": {
-      "title": "VMD Mode C の元アニメーション情報の損失",
+      "title": "現在のタイムライン書き出しによる元アニメーション情報の損失",
       "impact": "密なベイクにより、読み込んだボーンキーと補間バイト列が置き換えられます。",
-      "remediation": "未編集のモーションは Mode A を使うか、この損失を承認してから Mode C をエクスポートしてください。",
-      "action": "Mode C のアニメーション情報の損失を承認"
+      "remediation": "未編集のボーンモーションは「読み込んだ未編集ボーンキーを保持」を選ぶか、この損失を承認してから現在のタイムラインを書き出してください。",
+      "action": "タイムライン書き出しによるアニメーション情報の損失を承認"
     }
   }
 }

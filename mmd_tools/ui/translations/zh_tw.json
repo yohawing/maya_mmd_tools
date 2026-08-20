@@ -58,7 +58,7 @@
     "validate_model": "驗證模型",
     "export_pmx": "匯出 PMX",
     "validate_animation": "驗證動畫",
-    "prepare_mode_c": "準備 Mode C",
+    "prepare_mode_c": "準備匯出資料",
     "export_vmd": "匯出 VMD",
     "ok": "確定",
     "apply": "套用",
@@ -196,6 +196,7 @@
     "use_cpp_vp2_ownership": "使用原生 mmdRenderShape 的 VP2 RenderOverride。需要啟用 C++ Fast Load，僅用於網格顯示（實驗性）"
   },
   "messages": {
+    "vmd_bake_export_help": "關閉時會保留符合條件且未編輯的匯入骨骼關鍵影格與插值。已編輯動作不會自動烘焙，而是停止匯出。",
     "import_success": "匯入完成",
     "create_model_unavailable": "此工作階段無法建立 MMD 模型",
     "create_model_templates_unavailable": "無法載入內建模型範本。請重新載入外掛程式後再試",
@@ -210,7 +211,7 @@
     "morph_create_impulse_unsupported": "無法建立 PMX 2.1 衝量變形",
     "select_vmd_target_model": "請選擇目標模型，或選擇 Camera Motion。",
     "export_success": "匯出完成",
-    "prepare_mode_c_complete": "VMD Mode C 準備完成",
+    "prepare_mode_c_complete": "VMD 匯出資料準備完成",
     "error_file_not_found": "找不到檔案",
     "error_invalid_file": "無效的檔案格式",
     "error_no_selection": "未選擇任何物件",
@@ -269,6 +270,8 @@
     "humanik_source_tooltip": "可將已角色化的 MMD 模型或場景中已定義的 HumanIK 角色指定為重定向 SOURCE。"
   },
   "options": {
+    "vmd_preserve_imported": "保留未編輯的匯入骨骼關鍵影格",
+    "vmd_export_timeline": "匯出目前時間軸",
     "none": "無",
     "import_mesh": "匯入網格",
     "import_skeleton": "匯入骨骼",
@@ -356,6 +359,7 @@
     "joint_values": "關節數值"
   },
   "checkboxes": {
+    "vmd_bake_export": "烘焙時間軸後匯出",
     "use_namespace": "使用命名空間",
     "import_models": "匯入模型",
     "create_mmd_shaders": "建立MMD著色器",
@@ -384,6 +388,7 @@
     "enable_physics": "啟用物理"
   },
   "fields": {
+    "vmd_mode": "匯出方式",
     "display_frame_name_jp": "日文名稱:",
     "display_frame_name_en": "英文名稱:",
     "special_display_frame": "特殊框（Root／表情）",
@@ -659,7 +664,7 @@
     "model_report_ready": "模型：驗證報告已準備就緒",
     "model_writer": "正在匯出 PMX",
     "animation_scene_preflight": "動畫：正在檢查場景",
-    "animation_timeline_bake": "動畫：正在評估並準備 Mode C 動作",
+    "animation_timeline_bake": "動畫：正在評估並準備目前時間軸",
     "animation_payload_collection": "動畫：正在收集匯出資料",
     "animation_payload_validation": "動畫：正在驗證匯出資料",
     "animation_prepared_payload": "動畫：正在準備匯出資料",

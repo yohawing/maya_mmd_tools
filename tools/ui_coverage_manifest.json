@@ -564,10 +564,10 @@
       "expected_handler": "mmd_tools.ui.tabs.export_tab.ExportTab._mark_editing"
     },
     {
-      "id": "export.motion_mode",
+      "id": "export.motion_bake",
       "tab": "export",
-      "kind": "combo",
-      "selector": "objectName=motionMode",
+      "kind": "check",
+      "selector": "objectName=motionBakeExport",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
       "expected_handler": "mmd_tools.ui.tabs.export_tab._ExportPage._on_semantic_input_changed"

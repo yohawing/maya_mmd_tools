@@ -148,13 +148,15 @@ class TestExportTabGUI(GuiTestBase):
                 "ExportTab.pane_changed", tab.pane_tabs.currentChanged, tab.pane_tabs
             )
             tab.pane_tabs.setCurrentIndex(1)
-            self.assertEqual(tab.mode_combo.currentText(), "C")
+            self.assertTrue(tab.bake_export_check.isChecked())
             self.assertEqual(tab.validate_button.text(), "アニメーションを検証")
             self.assertEqual(tab.export_button.text(), "VMDを書き出す")
-            mode_spy = QtSignalInvocationSpy(
-                "ExportTab.motion_mode_changed", tab.mode_combo.currentTextChanged, tab.mode_combo
+            bake_spy = QtSignalInvocationSpy(
+                "ExportTab.motion_bake_changed",
+                tab.bake_export_check.toggled,
+                tab.bake_export_check,
             )
-            tab.mode_combo.setCurrentText("A")
+            tab.bake_export_check.setChecked(False)
             range_spy = QtSignalInvocationSpy(
                 "ExportTab.frame_range_changed", tab.frame_range_check.toggled, tab.frame_range_check
             )
@@ -182,13 +184,13 @@ class TestExportTabGUI(GuiTestBase):
                 tab.pane_tabs,
             )
             _emit_witness(
-                "export.motion_mode",
+                "export.motion_bake",
                 "selector",
-                "objectName=motionMode",
-                "QTest.setCurrentText(objectName=motionMode, A)",
-                "VMD request mode changed to A",
-                mode_spy,
-                tab.mode_combo,
+                "objectName=motionBakeExport",
+                "QTest.setChecked(objectName=motionBakeExport, false)",
+                "unchecked VMD bake preserves eligible imported bone keys",
+                bake_spy,
+                tab.bake_export_check,
             )
             _emit_witness(
                 "export.motion_frame_range",
@@ -346,6 +348,12 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(tab.validate_button.text(), "モデルを検証")
             self.assertEqual(tab.export_button.text(), "PMXを書き出す")
             self.assertEqual(tab.apply_scale_check.text(), "スケールを適用")
+            tab.pane_tabs.setCurrentIndex(1)
+            self.assertEqual(
+                tab.bake_export_check.text(),
+                "タイムラインをベイクして書き出す",
+            )
+            tab.pane_tabs.setCurrentIndex(0)
             self.assertEqual(
                 tab._model_form.labelForField(tab.apply_scale_check).text(),
                 "オプション",
@@ -382,9 +390,9 @@ class TestExportTabGUI(GuiTestBase):
             tab.validation_console.set_report(report)
             QApplication.processEvents()
             detail = tab.validation_console.detail_text.toPlainText()
-            self.assertIn("タイトル: VMD Mode C の元アニメーション情報の損失", detail)
+            self.assertIn("タイトル: 現在のタイムライン書き出しによる", detail)
             self.assertIn("影響: 密なベイクにより", detail)
-            self.assertIn("対処方法: 未編集のモーションは Mode A", detail)
+            self.assertIn("対処方法: 未編集のボーンモーションは「読み込んだ未編集ボーンキーを保持」", detail)
 
             translator.set_language("en")
             translate_spy = ActionInvocationSpy.wrap(
@@ -394,6 +402,12 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(tab.validate_button.text(), "Validate Model")
             self.assertEqual(tab.export_button.text(), "Export PMX")
             self.assertEqual(tab.apply_scale_check.text(), "Apply Scale")
+            tab.pane_tabs.setCurrentIndex(1)
+            self.assertEqual(
+                tab.bake_export_check.text(),
+                "Bake the timeline for export",
+            )
+            tab.pane_tabs.setCurrentIndex(0)
             self.assertEqual(
                 tab._model_form.labelForField(tab.apply_scale_check).text(),
                 "Options",

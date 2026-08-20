@@ -93,9 +93,10 @@ class TestValidationConsoleRendering(unittest.TestCase):
             rendered = render_validation_console_text(report, localize=True)
 
             self.assertIn("エクスポート検証コンソール", rendered)
-            self.assertIn("タイトル: VMD Mode C の元アニメーション情報の損失", rendered)
+            self.assertIn("書き出し方式: 現在のタイムラインをVMD化", rendered)
+            self.assertIn("タイトル: 現在のタイムライン書き出しによる", rendered)
             self.assertIn("影響: 密なベイクにより", rendered)
-            self.assertIn("対処方法: 未編集のモーションは Mode A", rendered)
+            self.assertIn("対処方法: 未編集のボーンモーションは「読み込んだ未編集ボーンキーを保持」", rendered)
         finally:
             translator.set_language(previous_language)
 

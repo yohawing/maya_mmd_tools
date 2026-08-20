@@ -118,7 +118,7 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
         self.assertIn('"prepare_mode_c"', self.source)
         self.assertIn('"exportMotionPrepareButton"', self.source)
         self.assertIn("self.pane == self.owner.MOTION_PANE", self.source)
-        self.assertIn("currentText().upper() == \"C\"", self.source)
+        self.assertIn("self._motion_mode() == \"C\"", self.source)
         # The Model page remains a PMX Validate/Export-only surface.
         model_section = self.source.split('if self.pane == self.owner.MOTION_PANE:', 1)[0]
         self.assertNotIn("exportMotionPrepareButton", model_section)
@@ -142,6 +142,12 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
             self.assertEqual(translations["buttons"]["validate_animation"], values[4])
             self.assertEqual(translations["buttons"]["export_vmd"], values[5])
             self.assertIn("prepare_mode_c", translations["buttons"])
+            self.assertNotIn("Mode C", translations["buttons"]["prepare_mode_c"])
+            self.assertIn("vmd_preserve_imported", translations["options"])
+            self.assertIn("vmd_export_timeline", translations["options"])
+            self.assertIn("vmd_bake_export", translations["checkboxes"])
+            self.assertIn("vmd_bake_export_help", translations["messages"])
+            self.assertIn("vmd_mode", translations["fields"])
             self.assertIn("animation_timeline_bake", translations["export_progress"])
             self.assertIn("animation_prepared_payload", translations["export_progress"])
 

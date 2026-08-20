@@ -58,7 +58,7 @@
     "validate_model": "验证模型",
     "export_pmx": "导出 PMX",
     "validate_animation": "验证动画",
-    "prepare_mode_c": "准备 Mode C",
+    "prepare_mode_c": "准备导出数据",
     "export_vmd": "导出 VMD",
     "ok": "确定",
     "apply": "应用",
@@ -196,6 +196,7 @@
     "use_cpp_vp2_ownership": "使用原生 mmdRenderShape 的 VP2 RenderOverride。需要启用 C++ Fast Load，仅用于网格显示（实验性）"
   },
   "messages": {
+    "vmd_bake_export_help": "关闭时会保留符合条件且未编辑的导入骨骼关键帧和插值。已编辑动作不会自动烘焙，而是停止导出。",
     "import_success": "导入完成",
     "create_model_unavailable": "此会话无法创建 MMD 模型",
     "create_model_templates_unavailable": "无法加载内置模型模板。请重新加载插件后再试",
@@ -210,7 +211,7 @@
     "morph_create_impulse_unsupported": "无法创建 PMX 2.1 冲量变形",
     "select_vmd_target_model": "请选择目标模型，或选择 Camera Motion。",
     "export_success": "导出完成",
-    "prepare_mode_c_complete": "VMD Mode C 准备完成",
+    "prepare_mode_c_complete": "VMD 导出数据准备完成",
     "error_file_not_found": "找不到文件",
     "error_invalid_file": "无效的文件格式",
     "error_no_selection": "未选择任何对象",
@@ -269,6 +270,8 @@
     "humanik_source_tooltip": "可将已角色化的 MMD 模型或场景中已定义的 HumanIK 角色指定为重定向 SOURCE。"
   },
   "options": {
+    "vmd_preserve_imported": "保留未编辑的导入骨骼关键帧",
+    "vmd_export_timeline": "导出当前时间轴",
     "none": "无",
     "import_mesh": "导入网格",
     "import_skeleton": "导入骨骼",
@@ -356,6 +359,7 @@
     "joint_values": "关节数值"
   },
   "checkboxes": {
+    "vmd_bake_export": "烘焙时间轴后导出",
     "use_namespace": "使用命名空间",
     "import_models": "导入模型",
     "create_mmd_shaders": "创建MMD着色器",
@@ -384,6 +388,7 @@
     "enable_physics": "启用物理"
   },
   "fields": {
+    "vmd_mode": "导出方式",
     "display_frame_name_jp": "日文名称:",
     "display_frame_name_en": "英文名称:",
     "special_display_frame": "特殊框（Root／表情）",
@@ -659,7 +664,7 @@
     "model_report_ready": "模型：验证报告已准备就绪",
     "model_writer": "正在导出 PMX",
     "animation_scene_preflight": "动画：正在检查场景",
-    "animation_timeline_bake": "动画：正在评估并准备 Mode C 动作",
+    "animation_timeline_bake": "动画：正在评估并准备当前时间轴",
     "animation_payload_collection": "动画：正在收集导出数据",
     "animation_payload_validation": "动画：正在验证导出数据",
     "animation_prepared_payload": "动画：正在准备导出数据",

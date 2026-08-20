@@ -59,7 +59,7 @@
     "validate_model": "Validate Model",
     "export_pmx": "Export PMX",
     "validate_animation": "Validate Animation",
-    "prepare_mode_c": "Prepare Mode C",
+    "prepare_mode_c": "Prepare export data",
     "export_vmd": "Export VMD",
     "apply": "Apply",
     "ok": "OK",
@@ -204,6 +204,7 @@
     "use_cpp_rig_nodes": "Use experimental C++ rig nodes for IK/append constraints. Falls back to Python nodes when unavailable"
   },
   "messages": {
+    "vmd_bake_export_help": "When off, eligible unedited imported bone keys and interpolation are preserved. Edited motion is blocked instead of being baked automatically.",
     "display_element_added": "Added {element_type} (PMX index {index})",
     "no_display_element_candidates": "No display-frame element candidates are available",
     "duplicate_display_element": "That element already belongs to this display frame",
@@ -212,7 +213,7 @@
     "facial_display_frame_morph_only": "The Facial display frame can contain only morphs",
     "import_success": "Import completed successfully",
     "export_success": "Export completed successfully",
-    "prepare_mode_c_complete": "VMD Mode C preparation complete",
+    "prepare_mode_c_complete": "VMD export data preparation complete",
     "export_mmd_asset": "Export MMD asset",
     "error_file_not_found": "File not found",
     "error_invalid_file": "Invalid file format",
@@ -367,6 +368,8 @@
     "humanik_source_tooltip": "Select a characterized MMD model, or a HumanIK character already defined in the scene, as the retarget SOURCE."
   },
   "options": {
+    "vmd_preserve_imported": "Preserve unedited imported bone keys",
+    "vmd_export_timeline": "Export the current timeline",
     "none": "None",
     "import_mesh": "Import Mesh",
     "import_skeleton": "Import Skeleton",
@@ -454,6 +457,7 @@
     "joint_values": "Joint Values"
   },
   "checkboxes": {
+    "vmd_bake_export": "Bake the timeline for export",
     "use_namespace": "Use Namespace",
     "custom_namespace": "Custom namespace:",
     "import_models": "Import Models",
@@ -502,7 +506,7 @@
     "motion_scale": "Motion Scale:",
     "reduce_quality": "Reduce Quality:",
     "format": "Format:",
-    "vmd_mode": "VMD mode",
+    "vmd_mode": "Export method",
     "range": "Range",
     "start": "Start",
     "end": "End",
@@ -773,7 +777,7 @@
     "save_dialog": "Save validation report",
     "status": "Status",
     "format": "Format",
-    "mode": "Mode",
+    "mode": "Export method",
     "target": "Target",
     "snapshot": "Snapshot",
     "summary": "Summary",
@@ -860,7 +864,7 @@
     "model_report_ready": "Model: validation report ready",
     "model_writer": "Writing PMX",
     "animation_scene_preflight": "Animation: checking scene",
-    "animation_timeline_bake": "Animation: evaluating and preparing Mode C motion",
+    "animation_timeline_bake": "Animation: evaluating and preparing the current timeline",
     "animation_payload_collection": "Animation: collecting export data",
     "animation_payload_validation": "Animation: validating export data",
     "animation_prepared_payload": "Animation: preparing payload",
@@ -875,10 +879,10 @@
       "action": "Review export workflow failure"
     },
     "vmd_mode_c_raw_loss": {
-      "title": "VMD Mode C raw animation loss",
+      "title": "Raw animation loss when exporting the current timeline",
       "impact": "Dense baking will replace imported raw bone keys and interpolation bytes.",
-      "remediation": "Use Mode A for an unedited imported motion, or acknowledge this loss before exporting Mode C.",
-      "action": "Acknowledge Mode C animation loss"
+      "remediation": "For unedited bone motion, choose Preserve unedited imported bone keys, or acknowledge this loss before exporting the current timeline.",
+      "action": "Acknowledge timeline export animation loss"
     }
   }
 }
