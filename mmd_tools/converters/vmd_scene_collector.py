@@ -727,6 +727,12 @@ def _read_vmd_import_provenance(target_model: Optional[str]) -> Optional[dict[st
         provenance = json.loads(raw or "")
     except (TypeError, ValueError, RuntimeError):
         return None
+    if isinstance(provenance, dict) and not isinstance(
+        provenance.get("raw_bone_interpolation"), list
+    ):
+        from .vmd_runtime_provenance import materialize_raw_bone_source_provenance
+
+        provenance = materialize_raw_bone_source_provenance(provenance)
     if not isinstance(provenance, dict) or not provenance.get("raw_bone_interpolation_complete"):
         return None
     records = provenance.get("raw_bone_interpolation")
