@@ -1121,7 +1121,12 @@ class VmdSceneCollector:
                 "wall_sec": round(time.perf_counter() - started, 6),
             }
             validation_frame_range = None
-            if start_frame is not None and end_frame is not None:
+            if mode_c_dense_frames:
+                validation_frame_range = (
+                    _vmd_frame_number(mode_c_dense_frames[0], maya_time_to_vmd),
+                    _vmd_frame_number(mode_c_dense_frames[-1], maya_time_to_vmd),
+                )
+            elif start_frame is not None and end_frame is not None:
                 validation_frame_range = (
                     _vmd_frame_number(start_frame, maya_time_to_vmd),
                     _vmd_frame_number(end_frame, maya_time_to_vmd),

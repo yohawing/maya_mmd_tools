@@ -3,7 +3,10 @@
 The gateway owns the strict wire protocol and conservative route
 classification.  Mode C has one production policy: Maya Timeline evaluation.
 Native command, protocol, and value failures are surfaced to the collector;
-there is no alternate evaluator fallback for dense bone sampling.
+there is no alternate evaluator fallback for dense bone sampling.  Constant,
+unconnected pre-physics inputs are read once in Python so a Maya session that
+already loaded an older sampler binary can still export without altering its
+scene graph.
 """
 
 from __future__ import annotations
@@ -279,6 +282,81 @@ def _node_type(cmds_module: Any, node: str) -> str:
         return str(method(node) or "")
     except Exception:
         return ""
+
+
+def _static_physics_input_value(
+    cmds_module: Any,
+    channel: DenseBoneSampleChannel,
+) -> Optional[float]:
+    """Read a constant pre-physics input rejected by older native binaries.
+
+    This is deliberately narrower than a sampler fallback: only a channel
+    already classified as static, on an unconnected ``inPre*`` physics input,
+    is handled here.  Every time-varying channel still goes through Maya's
+    native Timeline evaluator.
+    """
+
+    if channel.hint != "static":
+        return None
+    node, separator, attr = channel.plug.rpartition(".")
+    if not separator or not attr.startswith("inPre"):
+        return None
+    node_type = _node_type(cmds_module, node).lower()
+    if not any(token in node_type for token in ("physics", "rigidbody", "rigid_body")):
+        return None
+    get_attr = getattr(cmds_module, "getAttr", None) if cmds_module is not None else None
+    if not callable(get_attr):
+        raise NativeVmdBatchSamplerError(
+            f"static pre-physics input could not be read: {channel.plug}"
+        )
+    try:
+        value = float(get_attr(channel.plug))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise NativeVmdBatchSamplerError(
+            f"static pre-physics input is not numeric: {channel.plug}"
+        ) from exc
+    if not math.isfinite(value):
+        raise NativeVmdBatchSamplerError(
+            f"static pre-physics input is not finite: {channel.plug}"
+        )
+    return value
+
+
+def _native_request_plan(
+    plan: DenseBoneSamplePlan,
+    cmds_module: Any,
+) -> tuple[DenseBoneSamplePlan, dict[int, int], dict[int, float]]:
+    """Split constant physics inputs from channels requiring native sampling."""
+
+    request_channels = []
+    request_index_by_physical = {}
+    static_values = {}
+    for physical_index, channel in enumerate(plan.physical_channels):
+        static_value = _static_physics_input_value(cmds_module, channel)
+        if static_value is not None:
+            static_values[physical_index] = static_value
+            continue
+        request_index = len(request_channels)
+        request_index_by_physical[physical_index] = request_index
+        request_channels.append(
+            DenseBoneSampleChannel(
+                joint=channel.joint,
+                attr=channel.attr,
+                plug=channel.plug,
+                unit=channel.unit,
+                hint=channel.hint,
+                physical_index=request_index,
+            )
+        )
+    return (
+        DenseBoneSamplePlan(
+            frames=plan.frames,
+            physical_channels=tuple(request_channels),
+            logical_channels=(),
+        ),
+        request_index_by_physical,
+        static_values,
+    )
 
 
 def _has_parent_incoming(cmds_module: Any, node: str, attr: str) -> bool:
@@ -645,6 +723,9 @@ class NativeVmdBatchSampler:
         )
         if not plan.physical_channels:
             raise NativeVmdBatchSamplerError("native sampler requires at least one channel")
+        request_plan, request_index_by_physical, static_physics_values = (
+            _native_request_plan(plan, self._cmds)
+        )
         command = getattr(self._cmds, self.command_name)
         physical_channel_count = len(plan.physical_channels)
         max_frames_per_chunk = max(
@@ -673,6 +754,7 @@ class NativeVmdBatchSampler:
             "channel_count": physical_channel_count,
             "frame_count": len(plan.frames),
             "sample_count": len(plan.frames) * physical_channel_count,
+            "python_static_physics_compat_count": len(static_physics_values),
             "max_frames_per_chunk": max_frames_per_chunk,
             "max_samples_per_chunk": max_frames_per_chunk * physical_channel_count,
         }
@@ -687,7 +769,7 @@ class NativeVmdBatchSampler:
                 range(0, len(plan.frames), max_frames_per_chunk)
             ):
                 end = min(start + max_frames_per_chunk, len(plan.frames))
-                chunk_plan = _chunk_plan(plan, start, end)
+                chunk_plan = _chunk_plan(request_plan, start, end)
                 current_chunk_index = start // max_frames_per_chunk
                 self.last_diagnostics.update(
                     {
@@ -700,21 +782,39 @@ class NativeVmdBatchSampler:
                     }
                 )
                 self._publish_diagnostics()
-                payload = json.dumps(
-                    {
-                        "version": _PROTOCOL_VERSION,
-                        "evaluation_policy": EVALUATION_POLICY,
-                        "frames": list(chunk_plan.frames),
-                        "channels": list(chunk_plan.request_channels),
-                    },
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
                 chunk_started = time.perf_counter()
-                packed = command(payload=payload)
-                chunk_rows, chunk_strategies = parse_packed_result(
-                    packed,
-                    chunk_plan,
+                if chunk_plan.physical_channels:
+                    payload = json.dumps(
+                        {
+                            "version": _PROTOCOL_VERSION,
+                            "evaluation_policy": EVALUATION_POLICY,
+                            "frames": list(chunk_plan.frames),
+                            "channels": list(chunk_plan.request_channels),
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    packed = command(payload=payload)
+                    native_rows, chunk_strategies = parse_packed_result(
+                        packed,
+                        chunk_plan,
+                    )
+                else:
+                    native_rows = ((),) * len(chunk_plan.frames)
+                    chunk_strategies = {
+                        "direct_curve": 0,
+                        "static": 0,
+                        "timed_mplug": 0,
+                    }
+                chunk_strategies["static"] += len(static_physics_values)
+                chunk_rows = tuple(
+                    tuple(
+                        static_physics_values[physical_index]
+                        if physical_index in static_physics_values
+                        else native_row[request_index_by_physical[physical_index]]
+                        for physical_index in range(physical_channel_count)
+                    )
+                    for native_row in native_rows
                 )
                 chunk_wall_secs.append(
                     round(time.perf_counter() - chunk_started, 6)
@@ -732,6 +832,7 @@ class NativeVmdBatchSampler:
                 chunk_values.tofile(spool_file)
                 del chunk_values
                 del chunk_rows
+                del native_rows
             if strategy_counts is None:
                 raise NativeVmdBatchSamplerError("native sampler produced no chunks")
             spool_file.flush()
@@ -782,6 +883,7 @@ class NativeVmdBatchSampler:
                 "channel_count": physical_channel_count,
                 "frame_count": len(plan.frames),
                 "sample_count": len(plan.frames) * physical_channel_count,
+                "python_static_physics_compat_count": len(static_physics_values),
                 "max_frames_per_chunk": max_frames_per_chunk,
                 "max_samples_per_chunk": max_frames_per_chunk * physical_channel_count,
                 "chunk_wall_sec": chunk_wall_secs,
@@ -806,6 +908,7 @@ class NativeVmdBatchSampler:
                 "status": "completed",
                 "chunk_index": chunk_count - 1,
                 "protocol_failure": False,
+                "python_static_physics_compat_count": len(static_physics_values),
             }
         )
         self._publish_diagnostics()

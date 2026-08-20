@@ -137,6 +137,39 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             self.assertEqual(samples.value("joint_b", "translateX", 1), 11.0)
         samples.close()
 
+    def test_static_pre_physics_input_is_merged_without_native_request(self):
+        class _LoadedLegacySampler(_FakeCmds):
+            def nodeType(self, node):
+                return "mmdPhysicsBoneDriver" if node == "driver" else "joint"
+
+            def getAttr(self, plug, type=False):
+                if type:
+                    return "double"
+                if plug == "driver.inPreTranslateX":
+                    return 12.5
+                return 0.0
+
+        cmds = _LoadedLegacySampler()
+        sampler = NativeVmdBatchSampler(cmds)
+        samples = sampler.sample_dense_bone_channels(
+            [0, 1],
+            ["joint"],
+            {"joint": {"translateX": ("driver", "inPreTranslateX")}},
+        )
+
+        requested_plugs = [channel["plug"] for channel in cmds.calls[0]["channels"]]
+        self.assertNotIn("driver.inPreTranslateX", requested_plugs)
+        self.assertEqual(len(requested_plugs), 5)
+        self.assertEqual(samples.value("joint", "translateX", 0), 12.5)
+        self.assertEqual(samples.value("joint", "translateX", 1), 12.5)
+        self.assertEqual(samples.value("joint", "translateY", 1), 5.0)
+        self.assertEqual(samples.diagnostics["strategy_counts"]["static"], 6)
+        self.assertEqual(
+            sampler.last_diagnostics["python_static_physics_compat_count"],
+            1,
+        )
+        samples.close()
+
     def test_samples_use_read_only_mmap_and_cleanup_is_idempotent(self):
         samples = NativeVmdBatchSampler(_FakeCmds()).sample_dense_bone_channels(
             [0, 1], ["joint"]

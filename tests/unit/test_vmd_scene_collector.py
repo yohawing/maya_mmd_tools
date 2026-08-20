@@ -295,6 +295,32 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual({section for section, _frame in sink.frames}, {"bones"})
         self.assertTrue(result["diagnostics"]["streaming"]["enabled"])
 
+    def test_mode_c_streaming_derives_validation_range_from_timeline(self):
+        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        for attr in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+            self.cmds.keys[("center_joint", attr)] = {
+                3.0: 0.0,
+                7.0: 1.0 if attr == "translateX" else 0.0,
+            }
+
+        class Sink:
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, _section, _frame):
+                return None
+
+        result = VmdSceneCollector(
+            bone_channel_sampler=self._timeline_sampler()
+        ).collect_to_sink(
+            {"target_model": "model_root", "vmd_mode": "C"},
+            Sink(),
+        )
+
+        self.assertEqual(result["validation_frame_range"], (3, 7))
+
     def test_mode_c_collect_to_sink_rejects_raw_preservation(self):
         with self.assertRaisesRegex(ValueError, "cannot preserve raw"):
             VmdSceneCollector().collect_to_sink(
