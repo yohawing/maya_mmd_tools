@@ -395,7 +395,7 @@ def _errors(matrix, ui_manifest, semantic_manifest):
         for surface in ui_manifest.get("surfaces", [])
         if all(surface.get(key) == value for key, value in selector.items())
     ]
-    if trace.get("expected_surface_count") != 230 or len(surfaces) != 230:
+    if trace.get("expected_surface_count") != 229 or len(surfaces) != 229:
         errors.append("surface_count")
     owner_id = trace.get("version_independent_owner")
     owner_cases = [case for case in ui_manifest.get("cases", []) if case.get("id") == owner_id]
@@ -453,12 +453,12 @@ def test_profiles_encode_focused_sensitive_and_release_version_policy():
     assert manifest["change_kind_policy"] == CHANGE_KIND_POLICY
 
 
-def test_all_230_surfaces_have_one_versionless_headless_owner_and_tab_trace():
+def test_all_229_surfaces_have_one_versionless_headless_owner_and_tab_trace():
     matrix = _load(MATRIX_PATH)
     ui_manifest = _load(UI_MANIFEST_PATH)
     trace = matrix["surface_trace"]
     surfaces = [surface for surface in ui_manifest["surfaces"] if surface["disposition"] == "qt_case"]
-    assert len(surfaces) == 230
+    assert len(surfaces) == 229
     assert {surface["case_id"] for surface in surfaces} == {trace["version_independent_owner"]}
     assert set(trace["headless_only_tabs"]) == {"settings"}
     assert set(trace["tab_representatives"]) | set(trace["headless_only_tabs"]) == {
@@ -572,7 +572,7 @@ def test_mayapy_case_ids_cannot_swap_scripts_or_semantic_scope():
 
 def test_surface_count_owner_and_settings_only_policy_fail_closed():
     matrix = _load(MATRIX_PATH)
-    matrix["surface_trace"]["expected_surface_count"] = 229
+    matrix["surface_trace"]["expected_surface_count"] = 228
     matrix["surface_trace"]["version_independent_owner"] = "real_maya.authoring_representatives"
     matrix["surface_trace"]["headless_only_tabs"]["export"] = "wrong"
     errors = _errors(matrix, _load(UI_MANIFEST_PATH), _load(SEMANTIC_MANIFEST_PATH))

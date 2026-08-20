@@ -11,6 +11,8 @@ from .qt_compat import (
     QStatusBar,
     QProgressBar,
     QLabel,
+    QApplication,
+    QtCore,
 )
 from .components.header_widget import HeaderWidget
 from .application_state import ApplicationState
@@ -88,6 +90,9 @@ class MainWindow(QMainWindow):
         # ApplicationStateのシグナルを接続
         self.app_state.status_message.connect(self.show_status_message)
         self.app_state.progress_updated.connect(self.update_progress)
+        structured_progress = getattr(self.app_state, "progress_state_changed", None)
+        if structured_progress is not None and hasattr(structured_progress, "connect"):
+            structured_progress.connect(self.update_progress_state)
         self.app_state.current_model_changed.connect(self.update_window_title)
         self.app_state.model_list_updated.connect(self._on_model_list_updated)
         refresh_signal = getattr(self.app_state, "model_refresh_completed", None)
@@ -199,6 +204,48 @@ class MainWindow(QMainWindow):
             self.progress_bar.setVisible(False)
             if value >= 100:
                 self.progress_bar.setValue(100)
+
+    def update_progress_state(self, state):
+        """Render structured workflow progress without changing legacy progress."""
+        if not state.active:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setVisible(False)
+            return
+
+        percentage = state.percentage
+        if percentage is None:
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(max(0, min(100, int(percentage))))
+        self.progress_bar.setVisible(True)
+        if state.label:
+            self.status_bar.showMessage(state.label, 0)
+        self._flush_progress_paint()
+
+    @staticmethod
+    def _flush_progress_paint():
+        """Flush only non-user-input paint events when a Qt app is available."""
+        instance = getattr(QApplication, "instance", None)
+        if not callable(instance):
+            return
+        try:
+            app = instance()
+        except RuntimeError:
+            return
+        if app is None:
+            return
+        try:
+            flags = QtCore.QEventLoop.ExcludeUserInputEvents
+        except AttributeError:
+            try:
+                flags = QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
+            except AttributeError:
+                return
+        try:
+            app.processEvents(flags)
+        except (AttributeError, RuntimeError, TypeError):
+            return
 
     def update_window_title(self, model_root=None):
         """ウィンドウタイトルを更新（現在のモデル名を含める）"""

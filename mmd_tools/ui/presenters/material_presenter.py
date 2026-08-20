@@ -14,6 +14,8 @@ from ...core.material_read_projection import (
     MaterialDetailProjection,
     MaterialListProjection,
     MaterialTextureSlot,
+    normalize_material_detail_projection,
+    normalize_material_list_projection,
 )
 from ...core.material_authoring import classify_material_change
 from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt
@@ -235,8 +237,7 @@ class MaterialPresenter:
             projection = self.authoring_coordinator.read_material_list_projection(
                 current_model_root
             )
-            if not isinstance(projection, MaterialListProjection):
-                raise TypeError("material list projection reader returned an invalid result")
+            projection, _ = normalize_material_list_projection(projection)
             if projection.root_identity != current_model_root:
                 raise ValueError(
                     "material list projection root does not match current model root"
@@ -334,12 +335,9 @@ class MaterialPresenter:
             return
         projection = self._material_list_projection
         try:
-            projected = (
-                projection.item_for_index(material_index)
-                if isinstance(projection, MaterialListProjection)
-                else None
-            )
-        except KeyError:
+            projection, _ = normalize_material_list_projection(projection)
+            projected = projection.item_for_index(material_index)
+        except (KeyError, TypeError, ValueError):
             projected = None
         if projected is None or projected.binding_identity != material_name:
             logger.error("Material list row does not match the current projection")
@@ -488,7 +486,9 @@ class MaterialPresenter:
         """Select a canonical binding only when the refreshed projection owns it."""
 
         projection = self._material_list_projection
-        if not isinstance(projection, MaterialListProjection):
+        try:
+            projection, _ = normalize_material_list_projection(projection)
+        except (TypeError, ValueError):
             return False
         try:
             projected = projection.item_for_binding(binding)
@@ -599,11 +599,11 @@ class MaterialPresenter:
             root = self.app_state.current_model_root
             index = self.current_material_index
             projection = self._material_list_projection
+            projection, _ = normalize_material_list_projection(projection)
             if (
                 not isinstance(root, str)
                 or not root
                 or type(index) is not int
-                or not isinstance(projection, MaterialListProjection)
                 or projection.root_identity != root
             ):
                 raise RuntimeError("selected material detail routing is unavailable")
@@ -619,8 +619,7 @@ class MaterialPresenter:
                 material_name,
                 projected.assignment,
             )
-            if not isinstance(detail, MaterialDetailProjection):
-                raise TypeError("material detail projection reader returned an invalid result")
+            detail, _ = normalize_material_detail_projection(detail)
             self._render_material_detail(detail)
         except Exception as exc:
             logger.error(

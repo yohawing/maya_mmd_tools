@@ -39,13 +39,13 @@
     "source_selector": {
       "disposition": "qt_case"
     },
-    "expected_surface_count": 230,
+    "expected_surface_count": 229,
     "target_primary_layer": "headless_qt",
     "target_owner": "headless.authoring_ui_surface_matrix",
     "current_primary_layer": "headless_qt",
     "current_missing_owner_cases": [],
     "status": "complete",
-    "completion": "All 230 qt_case surfaces are owned by one parameterized headless Qt production-surface matrix; Maya-only semantic and persistence oracles remain separate."
+    "completion": "All 229 non-destructive qt_case surfaces are owned by one parameterized headless Qt production-surface matrix; destructive user-state actions and Maya-only semantic and persistence oracles remain separate."
   },
   "persistence_policy": {
     "max_representatives_per_state_family": 1,
@@ -65,7 +65,7 @@
       "redundant_test": [],
       "cost_evidence": {
         "metric": "target_surface_count",
-        "value": 230,
+        "value": 229,
         "source": "tools/ui_coverage_manifest.json"
       }
     },

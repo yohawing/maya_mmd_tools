@@ -17,6 +17,7 @@ from typing import Any
 
 from mmd_tools.core import model_registry
 from mmd_tools.adapters.maya_material_shader_route import (
+    MayaMaterialShaderRoute,
     MayaMaterialTextureSlotRoute,
     material_diffuse_route,
     material_shader_route,
@@ -71,6 +72,80 @@ _MATERIAL_OUTLINE_ATTRS = (
     "mmd_shader_outline_enabled",
     "mmdDoubleSided",
     "mmdTransparencyMode",
+)
+_MATERIAL_SHADER_FAMILIES = frozenset({"dx11Shader", "GLSLShader", "standardSurface"})
+_MATERIAL_SHADER_POLICY_PRIORITY = {
+    "dx11Shader": 0,
+    "GLSLShader": 1,
+    "standardSurface": 2,
+}
+_SOURCE_SHADER_STATE_ATTRS = (
+    "shader",
+    "technique",
+    "DiffuseColorRGB",
+    "DiffuseColorA",
+    "SpecularColor",
+    "Shininess",
+    "AmbientColor",
+    "ToonCoordinateOffset",
+    "EdgeSize",
+    "Opacity",
+    "SphereMode",
+    "MainTextureMultiply",
+    "MainTextureAdd",
+    "SphereTextureMultiply",
+    "SphereTextureAdd",
+    "ToonTextureMultiply",
+    "ToonTextureAdd",
+    "MMDLightDirection",
+    "MMDLightColor",
+    "EdgeColorRGB",
+    "EdgeColorA",
+    "mmd_shader_outline_enabled",
+    "mmdDoubleSided",
+    "mmdTransparencyMode",
+)
+_SOURCE_SHADER_TEXTURE_ATTRS = frozenset(
+    {
+        "MainTexture",
+        "SphereTexture",
+        "ToonTexture",
+        "HasMainTexture",
+        "HasSphereTexture",
+        "HasToonTexture",
+    }
+)
+_SOURCE_SHADER_METADATA_ATTRS = frozenset(
+    {
+        ATTR_MMD_MATERIAL,
+        ATTR_MMD_MATERIAL_INDEX,
+        ATTR_MMD_MATERIAL_NAME,
+        ATTR_MMD_MATERIAL_NAME_EN,
+        ATTR_MMD_DIFFUSE_COLOR,
+        ATTR_MMD_DIFFUSE_ALPHA,
+        ATTR_MMD_SPECULAR_COLOR,
+        ATTR_MMD_SHININESS,
+        ATTR_MMD_AMBIENT_COLOR,
+        ATTR_MMD_DRAW_FLAGS,
+        ATTR_MMD_EDGE_FLAG,
+        ATTR_MMD_EDGE_COLOR,
+        ATTR_MMD_EDGE_ALPHA,
+        ATTR_MMD_EDGE_SIZE,
+        ATTR_MMD_MEMO,
+        ATTR_MMD_TEXTURE_INDEX,
+        ATTR_MMD_TEXTURE_PATH,
+        ATTR_MMD_ORIGINAL_TEXTURE_PATH,
+        ATTR_MMD_RESOLVED_TEXTURE_PATH,
+        ATTR_MMD_SPHERE_TEXTURE_INDEX,
+        ATTR_MMD_SPHERE_PATH,
+        ATTR_MMD_RESOLVED_SPHERE_TEXTURE_PATH,
+        ATTR_MMD_SPHERE_MODE,
+        ATTR_MMD_SHARED_TOON_FLAG,
+        ATTR_MMD_TOON_TEXTURE_INDEX,
+        ATTR_MMD_TOON_TEXTURE_PATH,
+        ATTR_MMD_RESOLVED_TOON_TEXTURE_PATH,
+        ATTR_MMD_MATERIAL_MORPH_OFFSETS,
+    }
 )
 _MUTATING_ADAPTER_METHODS = frozenset(
     {
@@ -131,14 +206,19 @@ class MayaMaterialAuthoring:
         material: MmdMaterialSpec,
         *,
         narrow: bool = False,
+        source_shader: str | None = None,
     ) -> tuple[MmdMaterialSpec, str, str]:
-        """Create or resolve a standardSurface shader and its shading group.
+        """Create or resolve a shader and its shading group.
 
         The returned material is a fresh spec carrying the canonical shader
         identity, so callers can persist that binding in their semantic spec.
+        When ``source_shader`` is provided, its shader family and authored
+        effect state are cloned into an independent binding.
         """
         root = self._require_root(model_root)
         self._require_material(material)
+        if source_shader is not None:
+            source_shader = self._resolve_source_shader(root, source_shader)
         existing = None if narrow else self._resolve_material(root, material)
         if existing is not None:
             shader, shading_group = existing
@@ -152,9 +232,15 @@ class MayaMaterialAuthoring:
             # Keep Maya node names ASCII and deterministic; semantic Unicode
             # names remain lossless in the canonical attributes below.
             name = f"mmdMaterial_{material.index}"
-            shader = self._canonical_node(
-                str(self._call("shading_node", "standardSurface", asShader=True, name=name))
+            shader_type = (
+                str(self._call("node_type", source_shader))
+                if source_shader is not None
+                else self._material_shader_policy(root)
             )
+            shader = self._canonical_node(
+                str(self._call("shading_node", shader_type, asShader=True, name=name))
+            )
+            self._prepare_shader_family(shader, shader_type, source_shader)
             shading_group = str(
                 self._call(
                     "sets",
@@ -469,6 +555,8 @@ class MayaMaterialAuthoring:
             )
             if route is not None:
                 add("viewport_diffuse", list(new.diffuse[:3]))
+                if route.diffuse_alpha_attribute is not None:
+                    add("viewport_diffuse_alpha", new.diffuse[3])
         if "specular" in changed:
             add("specular", list(new.specular))
         if "specular_coefficient" in changed:
@@ -591,12 +679,23 @@ class MayaMaterialAuthoring:
                 has_main_texture=bool(old.resolved_texture_path or old.texture_path),
             )
             if route is not None:
-                self._set_attr(
-                    shader,
-                    route.diffuse_attribute,
-                    new.diffuse[:3],
-                    route.diffuse_attribute_type,
-                )
+                runtime_target = self._resolve_runtime_diffuse_target(shader, route)
+                if runtime_target is None:
+                    self._set_attr(
+                        shader,
+                        route.diffuse_attribute,
+                        new.diffuse[:3],
+                        route.diffuse_attribute_type,
+                    )
+                    if route.diffuse_alpha_attribute is not None:
+                        self._set_attr(
+                            shader,
+                            route.diffuse_alpha_attribute,
+                            new.diffuse[3],
+                            route.diffuse_alpha_attribute_type,
+                        )
+                else:
+                    self._set_runtime_diffuse_base(runtime_target, new.diffuse)
         if "specular" in changed:
             self._set_attr(shader, ATTR_MMD_SPECULAR_COLOR, new.specular, "double3")
         if "specular_coefficient" in changed:
@@ -613,6 +712,112 @@ class MayaMaterialAuthoring:
             self._set_attr(shader, ATTR_MMD_EDGE_SIZE, new.edge_size, "double")
         if "memo" in changed:
             self._set_attr(shader, ATTR_MMD_MEMO, new.memo, "string")
+
+    def _resolve_runtime_diffuse_target(
+        self,
+        shader: str,
+        route: MayaMaterialShaderRoute,
+    ) -> str | None:
+        """Return an owned material-morph evaluator for a driven diffuse plug."""
+
+        destination = f"{shader}.{route.diffuse_attribute}"
+        sources = list(
+            self._call(
+                "list_connections",
+                destination,
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+            or []
+        )
+        if not sources:
+            return None
+        if len(sources) != 1 or not isinstance(sources[0], str) or "." not in sources[0]:
+            raise MayaMaterialAuthoringError(
+                f"material diffuse target has an ambiguous source: {destination!r}"
+            )
+        source_node, source_attr = sources[0].rsplit(".", 1)
+        if (
+            self._call("node_type", source_node) != "mmdMaterialMorphEval"
+            or source_attr != "outputDiffuse"
+        ):
+            raise MayaMaterialAuthoringError(
+                f"material diffuse target is driven by an unsupported source: {sources[0]!r}"
+            )
+        if not self._has_attr(source_node, "baseDiffuse"):
+            raise MayaMaterialAuthoringError(
+                f"material morph evaluator is missing baseDiffuse: {source_node!r}"
+            )
+        if self._call(
+            "list_connections",
+            f"{source_node}.baseDiffuse",
+            source=True,
+            destination=False,
+            plugs=True,
+        ):
+            raise MayaMaterialAuthoringError(
+                f"material morph evaluator baseDiffuse is externally driven: {source_node!r}"
+            )
+        if bool(self._call("get_attr", f"{source_node}.baseDiffuse", lock=True)):
+            raise MayaMaterialAuthoringError(
+                f"material morph evaluator baseDiffuse is locked: {source_node!r}"
+            )
+        if route.diffuse_alpha_attribute is not None:
+            alpha_destination = f"{shader}.{route.diffuse_alpha_attribute}"
+            alpha_sources = list(
+                self._call(
+                    "list_connections",
+                    alpha_destination,
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or []
+            )
+            if alpha_sources != [f"{source_node}.outputDiffuseAlpha"]:
+                raise MayaMaterialAuthoringError(
+                    f"material diffuse alpha target does not match RGB evaluator: {alpha_destination!r}"
+                )
+            if not self._has_attr(source_node, "baseDiffuseA"):
+                raise MayaMaterialAuthoringError(
+                    f"material morph evaluator is missing baseDiffuseA: {source_node!r}"
+                )
+            if self._call(
+                "list_connections",
+                f"{source_node}.baseDiffuseA",
+                source=True,
+                destination=False,
+                plugs=True,
+            ):
+                raise MayaMaterialAuthoringError(
+                    f"material morph evaluator baseDiffuseA is externally driven: {source_node!r}"
+                )
+            if bool(self._call("get_attr", f"{source_node}.baseDiffuseA", lock=True)):
+                raise MayaMaterialAuthoringError(
+                    f"material morph evaluator baseDiffuseA is locked: {source_node!r}"
+                )
+        return source_node
+
+    def _set_runtime_diffuse_base(
+        self,
+        evaluator: str,
+        diffuse: tuple[float, float, float, float],
+    ) -> None:
+        """Update the evaluator's RGB and alpha inputs without touching output."""
+
+        for axis, value in zip("RGB", diffuse[:3]):
+            attr = f"baseDiffuse{axis}"
+            if not self._has_attr(evaluator, attr):
+                raise MayaMaterialAuthoringError(
+                    f"material morph evaluator is missing {attr}: {evaluator!r}"
+                )
+            self._set_attr(evaluator, attr, value, "double")
+        if not self._has_attr(evaluator, "baseDiffuseA"):
+            raise MayaMaterialAuthoringError(
+                f"material morph evaluator is missing baseDiffuseA: {evaluator!r}"
+            )
+        self._set_attr(evaluator, "baseDiffuseA", diffuse[3], "double")
 
     def assign_material(
         self,
@@ -760,6 +965,16 @@ class MayaMaterialAuthoring:
                     f"deleted material {old_material.index} is not resolvable"
                 )
             old_shader, old_shading_group = binding
+            replacement_binding = self._canonical_node(replacement_shader)
+            if (
+                replacement_binding not in old_by_binding
+                or replacement_binding not in new_by_binding
+            ):
+                raise MayaMaterialAuthoringError(
+                    "replacement_shader must be a registry-owned survivor under "
+                    f"root {root!r}"
+                )
+            replacement_shader = replacement_binding
             replacement_sg = self._resolve_replacement_sg(replacement_shader)
             if replacement_sg == old_shading_group:
                 raise MayaMaterialAuthoringError(
@@ -1292,6 +1507,159 @@ class MayaMaterialAuthoring:
                 f"{context} references unknown material {material_index}"
             )
 
+    def _resolve_source_shader(self, root: str, source_shader: str) -> str:
+        """Resolve an explicitly requested duplicate source owned by *root*."""
+        if not isinstance(source_shader, str) or not source_shader.strip():
+            raise MayaMaterialAuthoringError("source_shader must be a non-empty string")
+        source = self._canonical_node(source_shader)
+        members = self._registry.list_model_registry_members(root, REGISTRY_CATEGORY_MATERIAL) or []
+        owned = {self._canonical_node(str(member)) for member in members}
+        if source not in owned:
+            raise MayaMaterialAuthoringError(
+                f"source shader {source!r} is not owned by root {root!r}"
+            )
+        shader_type = str(self._call("node_type", source))
+        if shader_type not in _MATERIAL_SHADER_FAMILIES:
+            raise MayaMaterialAuthoringError(
+                f"source shader {source!r} has unsupported family {shader_type!r}"
+            )
+        shading_groups = list(self._call("list_connections", source, type="shadingEngine") or [])
+        if len(shading_groups) != 1:
+            raise MayaMaterialAuthoringError(
+                f"source shader {source!r} must have exactly one shading group"
+            )
+        return source
+
+    def _material_shader_policy(self, root: str) -> str:
+        """Resolve the current model's authoring shader family deterministically.
+
+        Imported models normally contain one family.  If a legacy or manually
+        edited model contains several supported families, the most common
+        family wins and ties use the fixed hardware-first priority above.  An
+        empty registry retains the historical standardSurface creation path.
+        """
+        members = self._registry.list_model_registry_members(root, REGISTRY_CATEGORY_MATERIAL) or []
+        families: list[str] = []
+        for member in members:
+            shader = self._canonical_node(str(member))
+            shader_type = str(self._call("node_type", shader))
+            if shader_type in _MATERIAL_SHADER_FAMILIES:
+                families.append(shader_type)
+                continue
+            if shader_type in {"lambert", "blinn", "phong"}:
+                families.append("standardSurface")
+                continue
+            raise MayaMaterialAuthoringError(
+                f"material registry contains unsupported shader family {shader_type!r}"
+            )
+        if not families:
+            return "standardSurface"
+        counts = {family: families.count(family) for family in _MATERIAL_SHADER_FAMILIES}
+        return min(
+            (family for family, count in counts.items() if count == max(counts.values())),
+            key=lambda family: _MATERIAL_SHADER_POLICY_PRIORITY[family],
+        )
+
+    def _prepare_shader_family(
+        self,
+        shader: str,
+        shader_type: str,
+        source_shader: str | None,
+    ) -> None:
+        """Initialize one authoring shader without changing its family."""
+        actual_type = str(self._call("node_type", shader))
+        if actual_type != shader_type:
+            raise MayaMaterialAuthoringError(
+                f"created shader family mismatch: expected {shader_type!r}, got {actual_type!r}"
+            )
+        if shader_type == "standardSurface":
+            return
+        if source_shader is not None:
+            self._copy_source_shader_state(source_shader, shader)
+            if self._has_attr(shader, "shader") and not self._get_attr(shader, "shader"):
+                self._set_attr(shader, "shader", self._shader_effect_path(shader_type), "string")
+            if not self._has_attr(shader, "technique") or not self._get_attr(shader, "technique"):
+                self._set_attr(shader, "technique", self._default_shader_technique(shader_type), "string")
+            return
+        self._set_attr(shader, "shader", self._shader_effect_path(shader_type), "string")
+        self._set_attr(shader, "technique", self._default_shader_technique(shader_type), "string")
+
+    @staticmethod
+    def _shader_effect_path(shader_type: str) -> str:
+        shader_name = "MMDShader.fx" if shader_type == "dx11Shader" else "MMDShader.ogsfx"
+        return os.path.normpath(
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "shaders", shader_name)
+        )
+
+    @staticmethod
+    def _default_shader_technique(shader_type: str) -> str:
+        """Return a technique that exists in the selected bundled effect."""
+        return "MMDTechnique" if shader_type == "dx11Shader" else "Main"
+
+    def _copy_source_shader_state(self, source: str, target: str) -> None:
+        """Copy authored shader values while leaving texture inputs for rebinding."""
+        if str(self._call("node_type", source)) != str(self._call("node_type", target)):
+            raise MayaMaterialAuthoringError("duplicate source and target shader families differ")
+        copied: set[str] = set()
+        for attr in _SOURCE_SHADER_STATE_ATTRS:
+            if attr in _SOURCE_SHADER_TEXTURE_ATTRS:
+                continue
+            self._copy_source_shader_attr(source, target, attr)
+            copied.add(attr)
+
+        lister = getattr(self._cmds, "list_attr", None)
+        if not callable(lister):
+            return
+        try:
+            custom_attrs = lister(source, userDefined=True) or []
+        except Exception as exc:
+            raise MayaMaterialAuthoringError(
+                f"failed to inspect authored shader attributes on {source!r}: {exc}"
+            ) from exc
+        for attr in custom_attrs:
+            attr = str(attr)
+            if attr in copied or attr in _SOURCE_SHADER_TEXTURE_ATTRS or attr in _SOURCE_SHADER_METADATA_ATTRS:
+                continue
+            self._copy_source_shader_attr(source, target, attr)
+
+    def _copy_source_shader_attr(self, source: str, target: str, attr: str) -> None:
+        """Copy one scalar/string/compound authored attribute when supported."""
+        if not self._has_attr(source, attr):
+            return
+        value = self._get_attr(source, attr)
+        if value is None:
+            return
+        if isinstance(value, (list, tuple)) and len(value) == 1 and isinstance(value[0], (list, tuple)):
+            value = value[0]
+        attr_type = self._source_attr_type(source, attr, value)
+        if attr_type is None:
+            return
+        if not self._has_attr(target, attr):
+            # _set_attr adds ordinary authored scalar/compound attributes when
+            # an effect did not expose them until its shader file was loaded.
+            self._set_attr(target, attr, value, attr_type)
+            return
+        self._set_attr(target, attr, value, attr_type)
+
+    def _source_attr_type(self, source: str, attr: str, value: Any) -> str | None:
+        try:
+            attr_type = self._call("get_attr", f"{source}.{attr}", type=True)
+        except Exception:
+            attr_type = None
+        if attr_type in {"string", "bool", "double", "float", "long", "short", "double3", "float3"}:
+            return str(attr_type)
+        if isinstance(value, str):
+            return "string"
+        if isinstance(value, bool):
+            return "bool"
+        if isinstance(value, int):
+            return "long"
+        if isinstance(value, float):
+            return "double"
+        if isinstance(value, (list, tuple)) and len(value) == 3:
+            return "double3"
+        return None
+
     def _resolve_material(self, root: str, material: MmdMaterialSpec) -> tuple[str, str] | None:
         self._registry.ensure_model_registry(root)
         members = self._registry.list_model_registry_members(root, REGISTRY_CATEGORY_MATERIAL) or []
@@ -1338,7 +1706,7 @@ class MayaMaterialAuthoring:
         node_type = self._call("node_type", replacement)
         if node_type == "shadingEngine":
             return replacement
-        if node_type in {"standardSurface", "lambert", "blinn", "phong"}:
+        if material_shader_route(str(node_type)) is not None:
             groups = list(self._call("list_connections", replacement, type="shadingEngine") or [])
             if len(groups) == 1:
                 return str(groups[0])
@@ -1701,12 +2069,13 @@ class MayaMaterialAuthoring:
     def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         try:
             result = getattr(self._cmds, method)(*args, **kwargs)
+            observer = getattr(self, "_mutation_observer", None)
             if (
-                self._mutation_observer is not None
+                observer is not None
                 and method in _MUTATING_ADAPTER_METHODS
                 and not (method == "sets" and kwargs.get("query"))
             ):
-                self._mutation_observer()
+                observer()
             return result
         except Exception as exc:
             raise MayaMaterialAuthoringError(f"Maya adapter call {method} failed: {exc}") from exc

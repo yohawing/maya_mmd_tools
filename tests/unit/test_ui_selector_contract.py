@@ -154,10 +154,9 @@ def test_authoring_tabs_have_stable_action_list_table_and_swatch_selectors(qapp)
         BoneTab(),
         (
             ("bone_authoring_toolbar", "boneAuthoringToolbar", QWidget),
-            ("refresh_btn", "boneRefreshButton", QPushButton),
+            ("sync_btn", "boneSyncButton", QPushButton),
             ("reindex_up_btn", "boneMoveUpButton", QPushButton),
             ("reindex_down_btn", "boneMoveDownButton", QPushButton),
-            ("reset_authoring_btn", "boneResetAuthoringButton", QPushButton),
             ("bone_list", "boneList", QListWidget),
             ("search_edit", "boneSearchEdit", QLineEdit),
             ("ik_authoring_toolbar", "boneIkAuthoringToolbar", QWidget),

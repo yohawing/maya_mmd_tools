@@ -157,6 +157,9 @@ class AnimationPresenter:
             self.view.body_picker.select_all_clicked.connect(self.on_select_all)
         if hasattr(self.view.body_picker, "clear_selection_clicked"):
             self.view.body_picker.clear_selection_clicked.connect(self.on_clear_clicked)
+        for picker in (self.view.body_picker, self.view.finger_picker):
+            if hasattr(picker, "background_clicked"):
+                picker.background_clicked.connect(self.on_clear_clicked)
         if hasattr(self.view.body_picker, "ik_toggled"):
             self.view.body_picker.ik_toggled.connect(self.on_ik_toggled)
         if hasattr(self.view.body_picker, "ik_enable_toggle_clicked"):
@@ -535,26 +538,43 @@ class AnimationPresenter:
 
     def on_body_region_clicked(self, region_id: str):
         self._select_picker_regions(
-            [region_id], picker="body", additive=self.view.body_picker.additive_selection
+            [region_id],
+            picker="body",
+            additive=self.view.body_picker.additive_selection,
+            subtractive=getattr(self.view.body_picker, "subtractive_selection", False),
         )
 
     def on_body_regions_selected(self, region_ids: list[str]):
         self._select_picker_regions(
-            region_ids, picker="body", additive=self.view.body_picker.additive_selection
+            region_ids,
+            picker="body",
+            additive=self.view.body_picker.additive_selection,
+            subtractive=getattr(self.view.body_picker, "subtractive_selection", False),
         )
 
     def on_finger_region_clicked(self, region_id: str):
         self._select_picker_regions(
-            [region_id], picker="finger", additive=self.view.finger_picker.additive_selection
+            [region_id],
+            picker="finger",
+            additive=self.view.finger_picker.additive_selection,
+            subtractive=getattr(self.view.finger_picker, "subtractive_selection", False),
         )
 
     def on_finger_regions_selected(self, region_ids: list[str]):
         self._select_picker_regions(
-            region_ids, picker="finger", additive=self.view.finger_picker.additive_selection
+            region_ids,
+            picker="finger",
+            additive=self.view.finger_picker.additive_selection,
+            subtractive=getattr(self.view.finger_picker, "subtractive_selection", False),
         )
 
     def _select_picker_regions(
-        self, region_ids: list[str], *, picker: str, additive: bool = False
+        self,
+        region_ids: list[str],
+        *,
+        picker: str,
+        additive: bool = False,
+        subtractive: bool = False,
     ) -> None:
         """Resolve one or more picker regions and update the UI before Maya blocks."""
 
@@ -586,6 +606,9 @@ class AnimationPresenter:
                 pass
             return
         try:
+            if subtractive:
+                self._deselect_nodes(joints)
+                return
             accepted = self._select_nodes(joints, replace=not additive)
             if not accepted:
                 self._set_status("no_selectable_bones")
@@ -671,6 +694,27 @@ class AnimationPresenter:
         # guard the requested candidates, then preserve the current selection.
         if accepted:
             self._write_selection(accepted, replace=replace)
+        self._sync_picker_to_actual_selection()
+        return accepted
+
+    def _deselect_nodes(self, nodes: list[str]) -> list[str]:
+        """Remove resolved picker targets while preserving every other selection."""
+
+        accepted = []
+        seen_paths = set()
+        for node in nodes:
+            path = self._resolve_selection_path(node)
+            if path is None or path in seen_paths:
+                continue
+            seen_paths.add(path)
+            accepted.append(node)
+
+        if accepted:
+            deselect_fast = getattr(self.maya_adapter, "deselect_fast", None)
+            if callable(deselect_fast):
+                deselect_fast(accepted)
+            else:
+                self.maya_adapter.deselect(accepted)
         self._sync_picker_to_actual_selection()
         return accepted
 

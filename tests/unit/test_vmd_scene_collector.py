@@ -3158,6 +3158,44 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(sparse_frames, [0, 2])
         self.assertEqual(dense_frames, [0, 1, 2])
 
+    def test_new_control_rig_key_forces_dense_sampling_with_raw_provenance(self):
+        self.cmds.node_types["edited_joint"] = "joint"
+        self.cmds.attrs[("edited_joint", ATTR_MMD_BONE_NAME)] = "下半身"
+        for attribute in (
+            "translateX",
+            "translateY",
+            "translateZ",
+            "rotateX",
+            "rotateY",
+            "rotateZ",
+        ):
+            self.cmds.keys[("edited_joint", attribute)] = {
+                0.0: 0.0,
+                2.0: 1.0,
+                3.0: 2.0,
+            }
+
+        frames = VmdSceneCollector().collect_bone_frames(
+            ["edited_joint"],
+            dense_sample=True,
+            rotation_interpolation={
+                "下半身": {
+                    0: bytes([20] * 64),
+                    2: bytes([20] * 64),
+                }
+            },
+            raw_bone_transforms={
+                ("下半身", 0): ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+                ("下半身", 2): ((1.0, 1.0, 1.0), (0.0, 0.0, 0.0, 1.0)),
+            },
+            time_converter=lambda value: value,
+        )
+
+        self.assertEqual(
+            [row["frame_number"] for row in frames],
+            [0, 1, 2, 3],
+        )
+
     def test_rejects_control_rig_export_while_editing(self):
         collector_module.read_mmd_control_rig_metadata = lambda _target_model: {
             "state": "EDIT"
@@ -3494,6 +3532,33 @@ class TestVmdSceneCollector(unittest.TestCase):
             [
                 {"morph_name": "bone_morph", "frame_number": 0, "weight": 0.0},
                 {"morph_name": "bone_morph", "frame_number": 10, "weight": 0.75},
+            ],
+        )
+
+    def test_collects_vertex_morph_frames_from_model_controller_keys(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "morph_controller": "mmdMorphController",
+            }
+        )
+        self.cmds.attrs[("model_root", "mmd_morph_controller")] = True
+        self.cmds.connections[("model_root", "mmd_morph_controller", True, False)] = [
+            "morph_controller"
+        ]
+        self.cmds.keys[("morph_controller", "inputWeight[3]")] = {
+            0.0: 0.0,
+            10.0: 0.75,
+        }
+        metadata = [SimpleNamespace(morph_type="vertex", name="vertex_morph", index=3)]
+        with mock.patch.object(collector_module, "iter_morph_network_metadata", return_value=metadata):
+            result = VmdSceneCollector().collect({"target_model": "model_root"})
+
+        self.assertEqual(
+            result["morph_frames"],
+            [
+                {"morph_name": "vertex_morph", "frame_number": 0, "weight": 0.0},
+                {"morph_name": "vertex_morph", "frame_number": 10, "weight": 0.75},
             ],
         )
 

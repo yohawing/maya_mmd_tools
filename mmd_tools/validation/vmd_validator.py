@@ -346,6 +346,7 @@ def validate_vmd_data(
         and isinstance(raw_provenance, Mapping)
         and isinstance(raw_provenance.get("raw_bone_interpolation"), list)
         and raw_provenance["raw_bone_interpolation"]
+        and raw_provenance.get("raw_bone_transform_complete") is not True
     ):
         issues.append(
             _warning(

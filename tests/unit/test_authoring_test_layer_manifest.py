@@ -242,7 +242,7 @@ def test_surface_count_owner_and_gap_mutations_fail_closed():
     manifest = _load(MANIFEST_PATH)
     ui_manifest = _load(UI_MANIFEST_PATH)
     manifest["surface_coverage"].update(
-        {"expected_surface_count": 229, "target_owner": "manual", "status": "gap"}
+        {"expected_surface_count": 228, "target_owner": "manual", "status": "gap"}
     )
     assert {"surface_count", "surface_owner_rule", "surface_completion"}.issubset(
         _errors(manifest, ui_manifest)

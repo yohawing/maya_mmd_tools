@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Any, Callable, ClassVar, Optional, Tuple
 
 from mmd_tools.core.model_authoring_spec import MmdMaterialSpec
+
+
+PROJECTION_SCHEMA_VERSION = 1
 
 
 def _identity(value: str, *, field: str) -> str:
@@ -47,6 +50,8 @@ class MaterialAssignmentKind(str, Enum):
 @dataclass(frozen=True)
 class MaterialAssignmentSummary:
     """Live shading assignment counts for one model-owned material."""
+
+    projection_schema_version: ClassVar[int] = PROJECTION_SCHEMA_VERSION
 
     kind: MaterialAssignmentKind
     mesh_count: int
@@ -105,6 +110,8 @@ class MaterialAssignmentSummary:
 class MaterialTextureBinding:
     """One exact shader plug and its optional canonical file-node source."""
 
+    projection_schema_version: ClassVar[int] = PROJECTION_SCHEMA_VERSION
+
     slot: MaterialTextureSlot
     shader_plug: str
     file_node_identity: Optional[str] = None
@@ -121,6 +128,8 @@ class MaterialTextureBinding:
 @dataclass(frozen=True)
 class MaterialTextureProvenance:
     """Authored source path and resolved file path for one semantic slot."""
+
+    projection_schema_version: ClassVar[int] = PROJECTION_SCHEMA_VERSION
 
     slot: MaterialTextureSlot
     source_path: Optional[str]
@@ -142,6 +151,8 @@ class MaterialTextureProvenance:
 class MaterialPreviewState:
     """Viewport-only state kept separate from authored PMX semantics."""
 
+    projection_schema_version: ClassVar[int] = PROJECTION_SCHEMA_VERSION
+
     shader_type: str
     outline_enabled: bool
 
@@ -155,6 +166,8 @@ class MaterialPreviewState:
 @dataclass(frozen=True)
 class MaterialListSemantic:
     """Minimal authored values required to render one Material list row."""
+
+    projection_schema_version: ClassVar[int] = PROJECTION_SCHEMA_VERSION
 
     index: int
     binding_identity: str
@@ -172,6 +185,8 @@ class MaterialListSemantic:
 @dataclass(frozen=True)
 class MaterialListItemProjection:
     """One semantic list row with live assignment information."""
+
+    projection_schema_version: ClassVar[int] = PROJECTION_SCHEMA_VERSION
 
     semantic: MaterialListSemantic
     assignment: MaterialAssignmentSummary
@@ -194,6 +209,8 @@ class MaterialListItemProjection:
 @dataclass(frozen=True)
 class MaterialListProjection:
     """One model-root generation of material rows in strict PMX index order."""
+
+    projection_schema_version: ClassVar[int] = PROJECTION_SCHEMA_VERSION
 
     root_identity: str
     items: Tuple[MaterialListItemProjection, ...]
@@ -238,6 +255,8 @@ class MaterialDetailProjection:
     ``textures`` may be sparse when a shader backend does not expose every
     semantic slot, but present slots must follow MAIN, SPHERE, TOON order.
     """
+
+    projection_schema_version: ClassVar[int] = PROJECTION_SCHEMA_VERSION
 
     root_identity: str
     material: MmdMaterialSpec
@@ -310,6 +329,285 @@ class MaterialDetailProjection:
         return matches[0]
 
 
+def _field_names(value: Any) -> Tuple[str, ...]:
+    """Return instance dataclass fields without accepting arbitrary objects."""
+
+    value_type = type(value)
+    if not is_dataclass(value) or isinstance(value, type):
+        raise TypeError("value must be a dataclass instance")
+    return tuple(field.name for field in fields(value_type))
+
+
+def _reload_compatible(value: Any, expected_type: type, *, label: str) -> bool:
+    """Check whether ``value`` is the exact type or a strict old generation.
+
+    Maya can keep objects produced before an in-process module reload alive. A
+    compatible object is accepted only when its module, qualified name,
+    dataclass field layout, and projection schema all match the current class.
+    The caller still reconstructs the current-generation object.
+    """
+
+    if type(value) is expected_type:
+        return False
+    observed_type = type(value)
+    expected_fields = tuple(field.name for field in fields(expected_type))
+    if (
+        not is_dataclass(value)
+        or isinstance(value, type)
+        or observed_type.__module__ != expected_type.__module__
+        or observed_type.__qualname__ != expected_type.__qualname__
+        or _field_names(value) != expected_fields
+        or getattr(observed_type, "projection_schema_version", None)
+        != getattr(expected_type, "projection_schema_version", None)
+    ):
+        raise TypeError(
+            "{} has an incompatible projection class: {}.{}".format(
+                label,
+                observed_type.__module__,
+                observed_type.__qualname__,
+            )
+        )
+    return True
+
+
+def _normalize_enum(
+    value: Any,
+    expected_type: type[Enum],
+    *,
+    label: str,
+) -> Tuple[Enum, bool]:
+    """Normalize an enum member while rejecting unrelated duck types."""
+
+    if type(value) is expected_type:
+        return value, False
+    observed_type = type(value)
+    expected_members = tuple((member.name, member.value) for member in expected_type)
+    observed_members = (
+        tuple((member.name, member.value) for member in observed_type)
+        if isinstance(value, Enum)
+        else ()
+    )
+    if (
+        not isinstance(value, Enum)
+        or observed_type.__module__ != expected_type.__module__
+        or observed_type.__qualname__ != expected_type.__qualname__
+        or observed_members != expected_members
+    ):
+        raise TypeError(
+            "{} has an incompatible enum class: {}.{}".format(
+                label,
+                observed_type.__module__,
+                observed_type.__qualname__,
+            )
+        )
+    return expected_type(value.value), True
+
+
+ProjectionNormalizer = Callable[[Any], Tuple[Any, bool]]
+
+
+def _normalize_dataclass(
+    value: Any,
+    expected_type: type,
+    *,
+    label: str,
+    transforms: Optional[dict[str, ProjectionNormalizer]] = None,
+) -> Tuple[Any, bool]:
+    """Rebuild one compatible old-generation dataclass with current fields."""
+
+    changed = _reload_compatible(value, expected_type, label=label)
+    normalized = {}
+    for field in fields(expected_type):
+        field_value = getattr(value, field.name)
+        transform = (transforms or {}).get(field.name)
+        if transform is not None:
+            field_value, field_changed = transform(field_value)
+            changed = changed or field_changed
+        normalized[field.name] = field_value
+    if not changed:
+        return value, False
+    return expected_type(**normalized), True
+
+
+def _enum_transform(
+    expected_type: type[Enum],
+    *,
+    label: str,
+) -> ProjectionNormalizer:
+    def normalize(value: Any) -> Tuple[Enum, bool]:
+        return _normalize_enum(value, expected_type, label=label)
+
+    return normalize
+
+
+def _optional_transform(normalizer: ProjectionNormalizer) -> ProjectionNormalizer:
+    def normalize(value: Any) -> Tuple[Any, bool]:
+        if value is None:
+            return None, False
+        return normalizer(value)
+
+    return normalize
+
+
+def _tuple_transform(normalizer: ProjectionNormalizer, *, label: str) -> ProjectionNormalizer:
+    def normalize(value: Any) -> Tuple[Tuple[Any, ...], bool]:
+        if not isinstance(value, tuple):
+            raise TypeError("{} must be a tuple".format(label))
+        changed = False
+        normalized = []
+        for item in value:
+            item, item_changed = normalizer(item)
+            normalized.append(item)
+            changed = changed or item_changed
+        return tuple(normalized), changed
+
+    return normalize
+
+
+def _normalize_assignment(
+    value: Any,
+) -> Tuple[MaterialAssignmentSummary, bool]:
+    return _normalize_dataclass(
+        value,
+        MaterialAssignmentSummary,
+        label="material assignment",
+        transforms={
+            "kind": _enum_transform(
+                MaterialAssignmentKind,
+                label="material assignment kind",
+            )
+        },
+    )
+
+
+def _normalize_list_semantic(
+    value: Any,
+) -> Tuple[MaterialListSemantic, bool]:
+    return _normalize_dataclass(
+        value,
+        MaterialListSemantic,
+        label="material list semantic",
+    )
+
+
+def _normalize_list_item(
+    value: Any,
+) -> Tuple[MaterialListItemProjection, bool]:
+    return _normalize_dataclass(
+        value,
+        MaterialListItemProjection,
+        label="material list item",
+        transforms={
+            "semantic": _normalize_list_semantic,
+            "assignment": _normalize_assignment,
+        },
+    )
+
+
+def normalize_material_list_projection(
+    value: Any,
+) -> Tuple[MaterialListProjection, bool]:
+    """Return a current-generation Material list projection.
+
+    The boolean reports whether a previous module generation was rehydrated.
+    Invalid providers raise before a caller can expose stale rows to the UI.
+    """
+
+    if type(value) is MaterialListProjection:
+        return value, False
+    if not isinstance(value.items, tuple):
+        raise TypeError("material list projection items must be a tuple")
+    return _normalize_dataclass(
+        value,
+        MaterialListProjection,
+        label="material list projection",
+        transforms={
+            "items": _tuple_transform(
+                _normalize_list_item,
+                label="material list projection items",
+            )
+        },
+    )
+
+
+def _normalize_material(value: Any) -> Tuple[MmdMaterialSpec, bool]:
+    return _normalize_dataclass(
+        value,
+        MmdMaterialSpec,
+        label="material semantic",
+    )
+
+
+def _normalize_texture_binding(
+    value: Any,
+) -> Tuple[Optional[MaterialTextureBinding], bool]:
+    if value is None:
+        return None, False
+    return _normalize_dataclass(
+        value,
+        MaterialTextureBinding,
+        label="material texture binding",
+        transforms={
+            "slot": _enum_transform(
+                MaterialTextureSlot,
+                label="material texture slot",
+            )
+        },
+    )
+
+
+def _normalize_texture_provenance(
+    value: Any,
+) -> Tuple[MaterialTextureProvenance, bool]:
+    return _normalize_dataclass(
+        value,
+        MaterialTextureProvenance,
+        label="material texture provenance",
+        transforms={
+            "slot": _enum_transform(
+                MaterialTextureSlot,
+                label="material texture slot",
+            ),
+            "binding": _optional_transform(_normalize_texture_binding),
+        },
+    )
+
+
+def _normalize_preview(
+    value: Any,
+) -> Tuple[MaterialPreviewState, bool]:
+    return _normalize_dataclass(
+        value,
+        MaterialPreviewState,
+        label="material preview state",
+    )
+
+
+def normalize_material_detail_projection(
+    value: Any,
+) -> Tuple[MaterialDetailProjection, bool]:
+    """Return a current-generation Material detail projection."""
+
+    if type(value) is MaterialDetailProjection and type(value.material) is MmdMaterialSpec:
+        return value, False
+    if not isinstance(value.textures, tuple):
+        raise TypeError("material detail projection textures must be a tuple")
+    return _normalize_dataclass(
+        value,
+        MaterialDetailProjection,
+        label="material detail projection",
+        transforms={
+            "material": _normalize_material,
+            "assignment": _normalize_assignment,
+            "textures": _tuple_transform(
+                _normalize_texture_provenance,
+                label="material detail projection textures",
+            ),
+            "preview": _normalize_preview,
+        },
+    )
+
+
 __all__ = [
     "MaterialAssignmentKind",
     "MaterialAssignmentSummary",
@@ -321,4 +619,7 @@ __all__ = [
     "MaterialTextureBinding",
     "MaterialTextureProvenance",
     "MaterialTextureSlot",
+    "PROJECTION_SCHEMA_VERSION",
+    "normalize_material_detail_projection",
+    "normalize_material_list_projection",
 ]

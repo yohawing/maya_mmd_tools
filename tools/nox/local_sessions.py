@@ -321,3 +321,4 @@ def run_local_parity(
         env=mayapy_env(mayapy_path, preserve_pythonpath=True),
         external=True,
     )
+

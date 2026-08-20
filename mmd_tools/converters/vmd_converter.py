@@ -134,6 +134,7 @@ from .vmd_runtime_sources import (
     should_use_mmd_runtime_bake,
 )
 from .vmd_runtime_world_bake import bake_bone_poses_from_world_matrices, convert_mmd_world_matrix_to_maya
+from .vmd_import_route import plan_vmd_import_route
 from .vmd_reduced_pose_integration import author_reduced_pose_from_runtime_cache
 from .vmd_scene_keying import (
     batch_create_and_key_curve_arrays,
@@ -811,13 +812,25 @@ class VmdConverter:
             _emit_progress(55)
 
             runtime_success = False
-            if (not import_context.create_mmd_control_rig) and self._should_use_mmd_runtime_bake(
-                vmd_bytes,
-                pmx_bytes,
-                pmx_path,
-                live_rig_target,
-                import_context.bake_mode,
-            ):
+            runtime_bake_available = (
+                not import_context.create_mmd_control_rig
+                and self._should_use_mmd_runtime_bake(
+                    vmd_bytes,
+                    pmx_bytes,
+                    pmx_path,
+                    live_rig_target,
+                    import_context.bake_mode,
+                )
+            )
+            route_plan = plan_vmd_import_route(
+                scene_animation_only=False,
+                target_model=import_context.target_model,
+                bake_mode=import_context.bake_mode,
+                create_mmd_control_rig=import_context.create_mmd_control_rig,
+                runtime_bake_available=runtime_bake_available,
+                registered_sparse_available=registered_sparse_frames is not None,
+            )
+            if route_plan.use_runtime_bake:
                 self.logger.info("Converting with mmd-anim runtime high-precision bake path")
                 # Native physics bake is opt-in and only active when both bake_mode
                 # and use_native_physics_bake are True; otherwise existing path.
@@ -899,7 +912,7 @@ class VmdConverter:
                 if hasattr(import_context.vmd_data, "bone_frames") and import_context.vmd_data.bone_frames:
                     bone_frames = list(
                         registered_sparse_frames
-                        if registered_sparse_frames is not None
+                        if route_plan.use_registered_sparse
                         else import_context.vmd_data.bone_frames
                     )
                     if import_context.create_mmd_control_rig:

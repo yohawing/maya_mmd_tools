@@ -111,6 +111,42 @@ def test_authoring_tabs_expose_shared_icon_operations(qapp):
     assert all(not button.icon().isNull() for row in buttons for button in row)
 
 
+def test_bone_sync_uses_refresh_icon_first_and_retranslates(qapp):
+    from mmd_tools.ui.tabs.bone_tab import BoneTab
+    from mmd_tools.ui.translations import UITranslator
+
+    translator = UITranslator.instance()
+    original_language = translator.get_language()
+    tab = None
+    try:
+        translator.set_language("en")
+        tab = BoneTab()
+        tab.retranslateUi()
+        button = tab.refresh_btn
+
+        assert tuple(tab.bone_authoring_toolbar.buttons) == ("refresh", "move_up", "move_down")
+        assert "sync" not in tab.bone_authoring_toolbar.buttons
+        assert button is tab.sync_btn is tab.reset_authoring_btn
+        assert button.objectName() == "boneSyncButton"
+        assert button.text() == ""
+        assert button.toolTip() == translator.translate("refresh", "buttons")
+        assert button.accessibleName() == translator.translate("refresh", "buttons")
+        icon_key = button.icon().cacheKey()
+
+        translator.set_language("ja")
+        tab.retranslateUi()
+        assert tuple(tab.bone_authoring_toolbar.buttons) == ("refresh", "move_up", "move_down")
+        assert button.icon().cacheKey() == icon_key
+        assert button.text() == ""
+        assert button.toolTip() == translator.translate("refresh", "buttons")
+        assert button.accessibleName() == translator.translate("refresh", "buttons")
+    finally:
+        if tab is not None:
+            tab.close()
+            tab.deleteLater()
+        translator.set_language(original_language)
+
+
 def test_morph_toolbar_has_no_persistent_type_or_manual_reindex_controls(qapp):
     from mmd_tools.ui.tabs.morph_tab import MorphTab
 

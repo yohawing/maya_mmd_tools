@@ -36,6 +36,11 @@ from mmd_tools.core.mmd_control_rig_motion import (
     restore_and_remove_mmd_control_rig,
     restore_mmd_control_rig_attached,
 )
+from mmd_tools.core.model_registry import (
+    REGISTRY_CATEGORY_MORPH,
+    get_model_registry,
+    register_model_members,
+)
 from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_APPEND_BASE,
     INPUT_DIRECT_CHANNEL,
@@ -250,6 +255,9 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             type="string",
         )
         cmds.connectAttr(f"{root}.message", f"{node}.mmd_model_root")
+        registry = get_model_registry(root)
+        if registry:
+            register_model_members(registry, REGISTRY_CATEGORY_MORPH, [node])
         return node
 
     def test_mmt_rig_fixture_classifies_mvp_without_mutating_scene(self):
@@ -710,11 +718,15 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             target_x, source=True, destination=False, plugs=True
         ) or []
         self.assertEqual(len(control_source), 1)
-        self.assertEqual(
-            cmds.ls(control_source[0].split(".", 1)[0], long=True),
-            cmds.ls(control, long=True),
+        baseline_node = control_source[0].split(".", 1)[0]
+        self.assertEqual(cmds.nodeType(baseline_node), "plusMinusAverage")
+        self.assertTrue(control_source[0].endswith(".output1D"))
+        self.assertTrue(
+            cmds.isConnected(
+                f"{control}.translateX",
+                f"{baseline_node}.input1D[0]",
+            )
         )
-        self.assertTrue(control_source[0].endswith(".translateX"))
         self.assertEqual(
             cmds.listConnections(f"{left_ik}.translate", source=True, destination=False, plugs=True),
             [target.rsplit(".", 1)[0] + ".outputTranslate"],
@@ -1910,10 +1922,19 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             target, source=True, destination=False, plugs=True
         ) or []
         self.assertEqual(len(restored_source), 1)
-        self.assertEqual(
-            cmds.ls(restored_source[0].split(".", 1)[0], long=True)[0],
-            row["control"].split(".", 1)[0],
-        )
+        if row.get("translateBaselineOutput"):
+            self.assertEqual(restored_source[0], row["translateBaselineOutput"])
+            self.assertTrue(
+                cmds.isConnected(
+                    row["control"],
+                    f"{row['translateBaselineOutput'].split('.', 1)[0]}.input1D[0]",
+                )
+            )
+        else:
+            self.assertEqual(
+                cmds.ls(restored_source[0].split(".", 1)[0], long=True)[0],
+                row["control"].split(".", 1)[0],
+            )
         self.assertEqual(set(cmds.ls(type="animCurve") or []), curves_before)
 
     def test_native_animcurve_has_independent_owner_representations(self):
@@ -2557,12 +2578,26 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             ("baseTranslate", "translate"),
         ):
             for axis in "XYZ":
-                self.assertTrue(
-                    cmds.isConnected(
-                        f"{control}.{control_name}{axis}",
-                        f"{append_node}.{source_name}{axis}",
+                control_plug = f"{control}.{control_name}{axis}"
+                target_plug = f"{append_node}.{source_name}{axis}"
+                if control_name == "translate":
+                    incoming = cmds.listConnections(
+                        target_plug,
+                        source=True,
+                        destination=False,
+                        plugs=True,
+                    ) or []
+                    self.assertEqual(len(incoming), 1)
+                    baseline_node = incoming[0].split(".", 1)[0]
+                    self.assertEqual(cmds.nodeType(baseline_node), "plusMinusAverage")
+                    self.assertTrue(
+                        cmds.isConnected(
+                            control_plug,
+                            f"{baseline_node}.input1D[0]",
+                        )
                     )
-                )
+                else:
+                    self.assertTrue(cmds.isConnected(control_plug, target_plug))
         source = (
             cmds.listConnections(
                 f"{append_node}.baseRotateX",
@@ -2768,13 +2803,25 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         route_target = (
             row["layerRoute"]["blend"] if row.get("layerRoute") else row["target"]
         )
-        control_to_target = cmds.isConnected(row["control"], route_target)
+        if row.get("translateBaselineOutput"):
+            control_to_target = (
+                cmds.isConnected(row["controlSource"], row["control"])
+                and cmds.isConnected(row["translateBaselineOutput"], route_target)
+            )
+        else:
+            control_to_target = cmds.isConnected(row["control"], route_target)
 
         with self.assertRaisesRegex(MmdControlRigBuildError, "journal source node is missing"):
             restore_mmd_control_rig_attached(root)
 
         self.assertTrue(control_to_target)
-        self.assertTrue(cmds.isConnected(row["control"], route_target))
+        if row.get("translateBaselineOutput"):
+            self.assertTrue(cmds.isConnected(row["controlSource"], row["control"]))
+            self.assertTrue(
+                cmds.isConnected(row["translateBaselineOutput"], route_target)
+            )
+        else:
+            self.assertTrue(cmds.isConnected(row["control"], route_target))
         self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"), metadata_before)
         self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "EDIT")
 

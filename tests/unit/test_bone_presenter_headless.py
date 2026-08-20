@@ -179,6 +179,9 @@ class _FakeList:
     def setCurrentItem(self, item):
         self.current_row = self.items.index(item)
 
+    def clearSelection(self):
+        self.current_row = -1
+
 
 class _FakeListItem:
     def __init__(self, text, data=None):
@@ -217,7 +220,8 @@ class _FakeTable:
 class _FakeView:
     def __init__(self):
         self.bone_list = _FakeList()
-        self.refresh_btn = _FakeButton()
+        self.sync_btn = _FakeButton()
+        self.refresh_btn = self.sync_btn
         self.bind_pose_btn = _FakeButton()
         self.register_joint_btn = _FakeButton()
         self.capture_rest_btn = _FakeButton()
@@ -225,7 +229,7 @@ class _FakeView:
         self.reindex_down_btn = _FakeButton()
         self.apply_reindex_btn = _FakeButton()
         self.unregister_btn = _FakeButton()
-        self.reset_authoring_btn = _FakeButton()
+        self.reset_authoring_btn = self.sync_btn
         self.animation_warning_label = _FakeLabel()
         self.search_edit = _FakeLineEdit()
         self.select_ik_target_btn = _FakeButton()
@@ -360,6 +364,23 @@ def _attr_getter(values):
 
 
 class TestBonePresenterHeadless(unittest.TestCase):
+    def test_sync_handler_prefers_canonical_refresh_button_once(self):
+        view = _FakeView()
+        view.refresh_btn = _FakeButton()
+        view.sync_btn = _FakeButton()
+        view.reset_authoring_btn = _FakeButton()
+        presenter = BonePresenter(
+            view,
+            _FakeAppState(),
+            maya_adapter=_FakeMayaAdapter(),
+        )
+
+        self.assertEqual(len(view.refresh_btn.clicked.callbacks), 1)
+        self.assertIs(view.refresh_btn.clicked.callbacks[0].__self__, presenter)
+        self.assertEqual(view.refresh_btn.clicked.callbacks[0].__func__, presenter.sync_bones.__func__)
+        self.assertEqual(view.sync_btn.clicked.callbacks, [])
+        self.assertEqual(view.reset_authoring_btn.clicked.callbacks, [])
+
     def test_authoring_actions_fail_closed_without_injected_coordinator(self):
         presenter, view, app_state, _ = _make_presenter()
         app_state.current_model_root = TEST_MODEL
@@ -510,6 +531,145 @@ class TestBonePresenterHeadless(unittest.TestCase):
             self.assertTrue(presenter.reset_authoring())
         self.assertTrue(view.animation_warning_label.visible)
         self.assertTrue(view.reset_authoring_btn.enabled)
+
+    def test_sync_without_diff_refreshes_without_confirmation_or_mutation(self):
+        coordinator = Mock()
+        spec = MmdModelAuthoringSpec(
+            model=MmdModelSpec("Model"),
+            bones=(MmdBoneSpec("center", index=0, binding_identity=TEST_BONE),),
+        )
+        coordinator.plan_bone_reset.return_value = BoneResetPlan(
+            current_spec=spec,
+            target_spec=spec,
+            expected_fingerprint=spec.fingerprint(),
+        )
+        presenter, _, app_state, _ = _make_presenter(coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+
+        with patch.object(presenter, "load_bones") as reload:
+            with patch("mmd_tools.ui.qt_compat.QMessageBox.question") as question:
+                self.assertTrue(presenter.sync_bones())
+
+        reload.assert_called_once_with()
+        question.assert_not_called()
+        coordinator.reset_bones.assert_not_called()
+        self.assertIn("no scene differences", app_state.status_messages[-1])
+
+    def test_sync_diff_cancel_is_fail_closed(self):
+        coordinator = Mock()
+        current = MmdModelAuthoringSpec(
+            model=MmdModelSpec("Model"),
+            bones=(MmdBoneSpec("center", index=0, binding_identity=TEST_BONE),),
+        )
+        target = MmdModelAuthoringSpec(
+            model=current.model,
+            bones=(
+                MmdBoneSpec(
+                    "center",
+                    index=0,
+                    rest_position=(1.0, 2.0, 3.0),
+                    binding_identity=TEST_BONE,
+                ),
+            ),
+        )
+        coordinator.plan_bone_reset.return_value = BoneResetPlan(
+            current_spec=current,
+            target_spec=target,
+            expected_fingerprint=current.fingerprint(),
+            rest_updated_indices=(0,),
+        )
+        presenter, _, app_state, _ = _make_presenter(coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+
+        with patch(
+            "mmd_tools.ui.qt_compat.QMessageBox.question",
+            return_value=QMessageBox.No,
+        ):
+            with patch.object(presenter, "load_bones") as reload:
+                self.assertFalse(presenter.sync_bones())
+
+        reload.assert_not_called()
+        coordinator.reset_bones.assert_not_called()
+        self.assertIn("cancelled", app_state.status_messages[-1])
+
+    def test_sync_diff_confirmation_runs_one_atomic_reset(self):
+        coordinator = Mock()
+        current = MmdModelAuthoringSpec(
+            model=MmdModelSpec("Model"),
+            bones=(MmdBoneSpec("center", index=0, binding_identity=TEST_BONE),),
+        )
+        target = MmdModelAuthoringSpec(
+            model=current.model,
+            bones=(
+                MmdBoneSpec(
+                    "center",
+                    index=0,
+                    rest_position=(1.0, 2.0, 3.0),
+                    binding_identity=TEST_BONE,
+                ),
+            ),
+        )
+        plan = BoneResetPlan(
+            current_spec=current,
+            target_spec=target,
+            expected_fingerprint=current.fingerprint(),
+            rest_updated_indices=(0,),
+        )
+        coordinator.plan_bone_reset.return_value = plan
+        coordinator.reset_bones.return_value = target
+        presenter, _, app_state, _ = _make_presenter(coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+
+        with patch(
+            "mmd_tools.ui.qt_compat.QMessageBox.question",
+            return_value=QMessageBox.Yes,
+        ):
+            with patch.object(presenter, "load_bones") as reload:
+                self.assertTrue(presenter.sync_bones())
+
+        coordinator.reset_bones.assert_called_once_with(TEST_MODEL, plan)
+        reload.assert_called_once_with()
+        self.assertIn("rest updated 1", app_state.status_messages[-1])
+
+    def test_sync_blocker_does_not_prompt_or_mutate(self):
+        coordinator = Mock()
+        spec = MmdModelAuthoringSpec(model=MmdModelSpec("Model"))
+        coordinator.plan_bone_reset.return_value = BoneResetPlan(
+            current_spec=spec,
+            target_spec=None,
+            expected_fingerprint=spec.fingerprint(),
+            blockers=("referenced joint",),
+        )
+        presenter, _, app_state, _ = _make_presenter(coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+
+        with patch("mmd_tools.ui.qt_compat.QMessageBox.question") as question:
+            self.assertFalse(presenter.sync_bones())
+
+        question.assert_not_called()
+        coordinator.reset_bones.assert_not_called()
+        self.assertIn("referenced joint", app_state.status_messages[-1])
+
+    def test_sync_stops_for_pending_detail_edit(self):
+        coordinator = Mock()
+        presenter, _, app_state, _ = _make_presenter(coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+        presenter.current_bone = TEST_BONE
+        presenter.bone_data = {"name_jp": "センター"}
+        presenter.view.bone_name_jp_edit.setText("編集済み")
+
+        with patch.object(presenter, "load_bones") as reload:
+            self.assertFalse(presenter.sync_bones())
+
+        reload.assert_not_called()
+        coordinator.plan_bone_reset.assert_not_called()
+        coordinator.reset_bones.assert_not_called()
+        self.assertIn("pending edits", app_state.status_messages[-1])
 
     def test_load_bones_clears_and_returns_when_no_model(self):
         presenter, view, _, adapter = _make_presenter()

@@ -22,6 +22,7 @@ it when the C++ plugin is loaded (mutual-exclusion pattern).
 from __future__ import annotations
 
 import json
+import math
 
 import maya.api.OpenMaya as om
 
@@ -90,6 +91,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._last_kinematic_pose_signature = None
         self._initialized = False
         self._last_reset_generation = -1
+        self._last_gravity = None
         self._last_world_settings_version = None
         self._last_descriptor_version = None
         self._initialization_failure_signatures: set[tuple] = set()
@@ -127,7 +129,6 @@ class MmdPhysicsSolverNode(om.MPxNode):
             self._write_outputs(data, solved=False, status="disabled")
             self._last_kinematic_pose_signature = None
             return
-
         world_settings_changed = (
             self._last_world_settings_version is not None
             and world_settings_version != self._last_world_settings_version
@@ -166,7 +167,19 @@ class MmdPhysicsSolverNode(om.MPxNode):
             self._write_outputs(data, solved=False, status="disabled")
             return
 
+        world_gravity = self._read_world_gravity()
+        if world_gravity is None:
+            self._write_failure(data, status="invalid world gravity")
+            return
+
         force_reset = world_settings_changed or descriptor_changed
+        gravity_changed = self._last_gravity is not None and world_gravity != self._last_gravity
+        if self._last_gravity != world_gravity:
+            if not self._world.set_gravity(world_gravity):
+                self._write_failure(data, status="physics gravity update failed")
+                return
+            self._last_gravity = world_gravity
+        force_reset = force_reset or gravity_changed
         if reset_gen != self._last_reset_generation:
             self._last_reset_generation = reset_gen
             force_reset = True
@@ -810,6 +823,23 @@ class MmdPhysicsSolverNode(om.MPxNode):
         except Exception:
             return False, self._last_reset_generation
 
+    def _read_world_gravity(self):
+        """Read finite Maya-space gravity from the connected world shape."""
+        try:
+            fn = om.MFnDependencyNode(self.thisMObject())
+            plug = fn.findPlug("inWorldSettings", False)
+            connections = plug.connectedTo(True, False)
+            if not connections:
+                return None
+            world_fn = om.MFnDependencyNode(connections[0].node())
+            values = tuple(
+                float(world_fn.findPlug(attribute, False).asDouble())
+                for attribute in ("gravityX", "gravityY", "gravityZ")
+            )
+        except Exception:
+            return None
+        return values if all(math.isfinite(value) for value in values) else None
+
     def _get_connected_model_root(self):
         try:
             fn = om.MFnDependencyNode(self.thisMObject())
@@ -873,6 +903,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._bone_joints = []
         self._kinematic_corrections = {}
         self._kinematic_bone_indices = set()
+        self._last_gravity = None
         for path in self._rb_shape_paths.values():
             _SIMULATED_RB_CACHE.pop(path, None)
         self._rb_shape_paths = {}

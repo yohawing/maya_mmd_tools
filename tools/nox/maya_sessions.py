@@ -238,6 +238,30 @@ def run_pmx_roundtrip(
     )
 
 
+def run_user_roundtrip_smoke(
+    session,
+    *,
+    posargs: list[str],
+    root: Path,
+    python_executable: str = sys.executable,
+) -> None:
+    """Launch the user-path host runner; it owns isolated mayapy children."""
+
+    runner_args = list(posargs)
+    if not runner_args:
+        runner_args = ["--maya", "2024"]
+    session.run(
+        python_executable,
+        str(root / "tools/local_asset_roundtrip.py"),
+        *runner_args,
+        env={
+            "MAYA_SKIP_USERSETUP_PY": "1",
+            "MMD_TOOLS_SKIP_SHADER_OVERRIDE": "1",
+        },
+        external=True,
+    )
+
+
 def run_model_readme_dialog_e2e(
     session,
     *,

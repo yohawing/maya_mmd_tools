@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "gate_id": "V070-UI-COVERAGE-1",
-  "minimum_qt_case_surfaces": 230,
+  "minimum_qt_case_surfaces": 229,
   "inventory_scope": "MainWindow nine tabs; logical mutable/actionable surfaces only, with explicit exclusions for containers and read-only displays.",
   "tabs": [
     {
@@ -318,7 +318,7 @@
       "attribute": "use_cpp_fast_load_check",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.import_export_presenter.ImportExportPresenter.import_file"
+      "expected_handler": "mmd_tools.ui.tabs.import_export_tab.ImportExportTab._on_setting_changed"
     },
     {
       "id": "import_export.cpp_vp2_ownership",
@@ -327,7 +327,7 @@
       "attribute": "use_cpp_vp2_ownership_check",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.import_export_presenter.ImportExportPresenter.import_file"
+      "expected_handler": "mmd_tools.ui.tabs.import_export_tab.ImportExportTab._on_setting_changed"
     },
     {
       "id": "import_export.cpp_rig_nodes",
@@ -336,7 +336,7 @@
       "attribute": "use_cpp_rig_nodes_check",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.import_export_presenter.ImportExportPresenter.import_file"
+      "expected_handler": "mmd_tools.ui.tabs.import_export_tab.ImportExportTab._on_setting_changed"
     },
     {
       "id": "import_export.vmd_fps",
@@ -453,7 +453,7 @@
       "attribute": "new_file_check",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.import_export_presenter.ImportExportPresenter.import_vmd_file"
+      "expected_handler": "mmd_tools.ui.presenters.import_export_presenter.ImportExportPresenter.import_file"
     },
     {
       "id": "import_export.vmd_path",
@@ -505,9 +505,9 @@
       "tab": "import_export",
       "kind": "button",
       "attribute": "clear_history_button",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.import_export_presenter.ImportExportPresenter.import_file"
+      "disposition": "excluded",
+      "reason_code": "destructive_user_state",
+      "reason": "Automated activation clears the user's persisted PMX and VMD file history."
     },
     {
       "id": "export.pane_selector",
@@ -1077,13 +1077,28 @@
       "reason": "Toolbar container; actions are inventoried separately."
     },
     {
-      "id": "bone.refresh",
+      "id": "bone.sync",
       "tab": "bone",
       "kind": "button",
-      "selector": "objectName=boneRefreshButton",
+      "selector": "objectName=boneSyncButton",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.bone_presenter.BonePresenter.load_bones"
+      "expected_handler": "mmd_tools.ui.presenters.bone_presenter.BonePresenter.sync_bones",
+      "action_count": 1,
+      "expected_oracle": "bone sync branch status and scene fingerprint",
+      "expected_status": "bone_sync_*"
+    },
+    {
+      "id": "bone.sync_preflight",
+      "tab": "bone",
+      "kind": "button",
+      "attribute": "sync_btn",
+      "disposition": "qt_case",
+      "case_id": "headless.authoring_ui_surface_matrix",
+      "expected_handler": "mmd_tools.ui.presenters.bone_presenter.BonePresenter.sync_bones",
+      "action_count": 1,
+      "expected_oracle": "bone sync preflight branch status and scene fingerprint",
+      "expected_status": "bone_sync_*"
     },
     {
       "id": "bone.move_up",
@@ -1102,15 +1117,6 @@
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
       "expected_handler": "mmd_tools.ui.presenters.bone_presenter.BonePresenter.move_reindex"
-    },
-    {
-      "id": "bone.reset_authoring",
-      "tab": "bone",
-      "kind": "button",
-      "selector": "objectName=boneResetAuthoringButton",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.bone_presenter.BonePresenter.reset_authoring"
     },
     {
       "id": "bone.list",

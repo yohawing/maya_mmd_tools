@@ -2033,6 +2033,7 @@ class ExportSceneCollector:
             for index, bone in enumerate(merged_bones)
             if bone.get("source_joint")
         }
+        source_bone_to_global = _source_bone_index_map(merged_bones)
         vertex_offset = 0
         expected_additional_uv_count = _get_attr(
             root,

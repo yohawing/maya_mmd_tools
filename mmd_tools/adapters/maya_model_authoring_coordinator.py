@@ -40,6 +40,8 @@ from mmd_tools.core.material_read_projection import (
     MaterialAssignmentSummary,
     MaterialDetailProjection,
     MaterialListProjection,
+    normalize_material_detail_projection,
+    normalize_material_list_projection,
 )
 from mmd_tools.core.morph_authoring import (
     classify_morph_change,
@@ -49,7 +51,10 @@ from mmd_tools.core.morph_authoring import (
     replace_morph as replace_morph_spec,
     replace_morph_offsets as replace_morph_offsets_spec,
 )
-from mmd_tools.core.morph_read_projection import MorphAuthoringReadSnapshot
+from mmd_tools.core.morph_read_projection import (
+    MorphAuthoringReadSnapshot,
+    normalize_morph_authoring_snapshot,
+)
 from mmd_tools.core.morph_topology import (
     MorphTopologyInspection,
     serialize_group_topology,
@@ -62,6 +67,7 @@ from mmd_tools.adapters.transaction_runner import TransactionFailure, Transactio
 
 logger = get_logger(__name__)
 _REHYDRATED_SPEC_TYPE_IDS: set[int] = set()
+_REHYDRATED_PROJECTION_TYPE_IDS: set[tuple[str, int]] = set()
 
 
 class MayaModelAuthoringCoordinatorError(RuntimeError):
@@ -143,10 +149,20 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 f"read_material_list_projection failed for root {model_root!r}: {exc}"
             ) from exc
-        if not isinstance(result, MaterialListProjection):
+        observed_result = result
+        try:
+            result, rehydrated = normalize_material_list_projection(result)
+        except Exception as exc:
             raise MayaModelAuthoringCoordinatorError(
-                "material list projection reader returned an invalid result"
+                "material list projection reader returned an invalid result: "
+                f"{exc}"
+            ) from exc
+        if result.root_identity != model_root:
+            raise MayaModelAuthoringCoordinatorError(
+                "material list projection returned the wrong root"
             )
+        if rehydrated:
+            self._log_projection_rehydration("list", observed_result, result)
         return result
 
     def read_material_detail_projection(
@@ -169,10 +185,14 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 f"read_material_detail_projection failed for root {model_root!r}: {exc}"
             ) from exc
-        if not isinstance(result, MaterialDetailProjection):
+        observed_result = result
+        try:
+            result, rehydrated = normalize_material_detail_projection(result)
+        except Exception as exc:
             raise MayaModelAuthoringCoordinatorError(
-                "material detail projection reader returned an invalid result"
-            )
+                "material detail projection reader returned an invalid result: "
+                f"{exc}"
+            ) from exc
         if (
             result.root_identity != model_root
             or result.material.index != index
@@ -181,6 +201,8 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 "material detail projection returned the wrong binding"
             )
+        if rehydrated:
+            self._log_projection_rehydration("detail", observed_result, result)
         return result
 
     def read_morph_authoring_snapshot(self, model_root: str) -> MorphAuthoringReadSnapshot:
@@ -196,10 +218,20 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 f"read_morph_authoring_snapshot failed for root {model_root!r}: {exc}"
             ) from exc
-        if not isinstance(result, MorphAuthoringReadSnapshot):
+        observed_result = result
+        try:
+            result, rehydrated = normalize_morph_authoring_snapshot(result)
+        except Exception as exc:
             raise MayaModelAuthoringCoordinatorError(
-                "morph authoring snapshot reader returned an invalid result"
+                "morph authoring snapshot reader returned an invalid result: "
+                f"{exc}"
+            ) from exc
+        if result.projection.root_identity != model_root:
+            raise MayaModelAuthoringCoordinatorError(
+                "morph authoring snapshot returned the wrong root"
             )
+        if rehydrated:
+            self._log_morph_snapshot_rehydration(observed_result, result)
         return result
 
     def begin_info_metadata_edit(self, model_root: str, attr: str) -> Any:
@@ -292,24 +324,28 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError("morph topology is not repairable")
         source = serialize_group_topology(inspection.expected)
 
-        def error_factory(failure: TransactionFailure) -> Exception:
-            return MayaModelAuthoringCoordinatorError(str(failure))
+        def mutate(_targets: tuple[Any, ...]) -> str:
+            result = self._backend.apply_morph_topology_repair(model_root, source)
+            if not isinstance(result, str):
+                raise TypeError("morph topology repair returned an invalid result")
+            return result
 
-        TransactionRunner[str](
+        def verify_and_commit(result: str, _targets: tuple[Any, ...]) -> None:
+            try:
+                self._backend.commit_morph_topology_repair(model_root, result)
+            except Exception as exc:
+                raise RuntimeError(f"verify/commit failed: {exc}") from exc
+
+        self._run_transaction(
+            model_root,
             "repair_morph_topology",
             (model_root,),
-            begin=lambda _targets: self._backend.begin_morph_topology_repair(
+            lambda _targets: self._backend.begin_morph_topology_repair(
                 model_root, source
             ),
-            mutate=lambda _targets: self._backend.apply_morph_topology_repair(
-                model_root, source
-            ),
-            verify_and_commit=lambda result, _targets: self._backend.commit_morph_topology_repair(
-                model_root, result
-            ),
-            rollback=lambda _targets: self._backend.rollback_write(model_root),
-            error_factory=error_factory,
-        ).run()
+            mutate,
+            verify_and_commit,
+        )
         return self.inspect_morph_topology(model_root)
 
     def begin_morph_preview(
@@ -668,7 +704,16 @@ class MayaModelAuthoringCoordinator:
             name_english=f"{source.name_english} Copy",
             binding_identity=None,
         )
-        return self._execute_material_create(model_root, "duplicate_material", duplicated)
+        if not isinstance(source.binding_identity, str) or not source.binding_identity.strip():
+            raise MayaModelAuthoringCoordinatorError(
+                "duplicate_material source has no canonical shader binding"
+            )
+        return self._execute_material_create(
+            model_root,
+            "duplicate_material",
+            duplicated,
+            source_shader=source.binding_identity,
+        )
 
     def replace_material(
         self,
@@ -1248,6 +1293,48 @@ class MayaModelAuthoringCoordinator:
             "replace_bone_semantic",
             lambda: replace_bone_semantic_spec(current, bone),
         )
+        previous = self._bone(current, bone.index)
+        replacement = self._bone(target, bone.index)
+        if classify_bone_change(previous, replacement) == "value":
+            structural_patch = getattr(self._bones, "apply_bone_value_patch", None)
+            begin = getattr(self._backend, "begin_bone_value_patch", None)
+            commit = getattr(self._metadata, "commit_bone_value_patch", None)
+            if (
+                isinstance(previous.binding_identity, str)
+                and callable(structural_patch)
+                and callable(begin)
+                and callable(commit)
+            ):
+                def bind() -> MmdBoneSpec:
+                    result = structural_patch(
+                        model_root,
+                        previous,
+                        replacement,
+                        self._cmds,
+                    )
+                    if not isinstance(result, MmdBoneSpec):
+                        raise TypeError(
+                            "bone value patch binding operation returned an invalid bone"
+                        )
+                    return result
+
+                bound = self._execute_bone_value_patch(
+                    model_root,
+                    "replace_bone_semantic",
+                    previous,
+                    replacement,
+                    previous.binding_identity,
+                    begin,
+                    bind,
+                    commit,
+                )
+                return replace(
+                    current,
+                    bones=tuple(
+                        bound if item.index == bound.index else item
+                        for item in current.bones
+                    ),
+                )
         return self._execute(model_root, "replace_bone_semantic", target, lambda: target)
 
     def _resolve_model_scale(self, model_root: str) -> float:
@@ -1337,6 +1424,14 @@ class MayaModelAuthoringCoordinator:
         """Replace one morph's semantic metadata and runtime binding state."""
         current = self._read_current(model_root, "replace_morph")
         target = self._pure("replace_morph", lambda: replace_morph_spec(current, morph))
+        narrow = self._try_replace_morph_value(
+            model_root,
+            "replace_morph",
+            current,
+            target,
+        )
+        if narrow is not None:
+            return narrow
         return self._execute_morph_change(model_root, "replace_morph", current, target)
 
     def replace_morph_offsets(
@@ -1351,6 +1446,14 @@ class MayaModelAuthoringCoordinator:
             "replace_morph_offsets",
             lambda: replace_morph_offsets_spec(current, index, offsets),
         )
+        narrow = self._try_replace_morph_value(
+            model_root,
+            "replace_morph_offsets",
+            current,
+            target,
+        )
+        if narrow is not None:
+            return narrow
         return self._execute_morph_change(model_root, "replace_morph_offsets", current, target)
 
     def delete_morph(self, model_root: str, index: int) -> MmdModelAuthoringSpec:
@@ -1435,6 +1538,73 @@ class MayaModelAuthoringCoordinator:
             operation,
             target,
             lambda: self._morphs(model_root, current, target),
+        )
+
+    def _try_replace_morph_value(
+        self,
+        model_root: str,
+        operation: str,
+        current: MmdModelAuthoringSpec,
+        target: MmdModelAuthoringSpec,
+    ) -> MmdModelAuthoringSpec | None:
+        """Use the selected-morph transaction only for patch-safe changes.
+
+        Offset identity, morph type, and controller topology changes remain on
+        the established full transaction.  A missing narrow capability also
+        keeps compatibility with test doubles and older injected adapters.
+        """
+        changed = [
+            (old, new)
+            for old, new in zip(current.morphs, target.morphs)
+            if old.index == new.index and old.to_mapping() != new.to_mapping()
+        ]
+        if len(changed) != 1:
+            return None
+        previous, replacement = changed[0]
+        if classify_morph_change(previous, replacement) != "value":
+            return None
+        begin = getattr(self._backend, "begin_morph_value_patch", None)
+        commit = getattr(self._metadata, "commit_morph_value_patch", None)
+        if (
+            not isinstance(previous.binding_identity, str)
+            or not callable(begin)
+            or not callable(commit)
+        ):
+            return None
+
+        patch = getattr(self._morphs, "apply_morph_value_patch", None)
+
+        def bind() -> MmdMorphSpec:
+            if callable(patch):
+                result = patch(model_root, previous, replacement, self._cmds)
+            else:
+                from mmd_tools.adapters import maya_morph_authoring
+
+                result = maya_morph_authoring.apply_morph_value_patch(
+                    model_root,
+                    previous,
+                    replacement,
+                    self._cmds,
+                )
+            if not isinstance(result, MmdMorphSpec):
+                raise TypeError("morph value patch binding operation returned an invalid morph")
+            return result
+
+        bound = self._execute_morph_value_patch(
+            model_root,
+            operation,
+            previous,
+            replacement,
+            previous.binding_identity,
+            begin,
+            bind,
+            commit,
+        )
+        return replace(
+            current,
+            morphs=tuple(
+                bound if item.index == bound.index else item for item in current.morphs
+            ),
         )
 
     def reindex_bones(
@@ -1587,6 +1757,8 @@ class MayaModelAuthoringCoordinator:
         model_root: str,
         operation: str,
         material: MmdMaterialSpec,
+        *,
+        source_shader: str | None = None,
     ) -> MmdMaterialSpec:
         """Run create/duplicate without full spec reads or metadata hooks."""
         if not isinstance(material, MmdMaterialSpec):
@@ -1606,7 +1778,10 @@ class MayaModelAuthoringCoordinator:
             begin(model_root, material.index)
 
         def mutate(_targets: tuple[Any, ...]) -> MmdMaterialSpec:
-            result = structural(model_root, material, narrow=True)
+            kwargs: dict[str, Any] = {"narrow": True}
+            if source_shader is not None:
+                kwargs["source_shader"] = source_shader
+            result = structural(model_root, material, **kwargs)
             if isinstance(result, tuple):
                 bound = result[0]
             else:
@@ -1834,6 +2009,81 @@ class MayaModelAuthoringCoordinator:
             begin_transaction,
             mutate,
             lambda _result, _targets: commit(model_root, binding, new_morph),
+        )
+
+    @staticmethod
+    def _log_projection_rehydration(
+        kind: str,
+        observed: Any,
+        canonical: Any,
+    ) -> None:
+        """Log one compact identity diagnostic for a reload-generation read."""
+
+        observed_type = type(observed)
+        key = (kind, id(observed_type))
+        if key in _REHYDRATED_PROJECTION_TYPE_IDS:
+            return
+        _REHYDRATED_PROJECTION_TYPE_IDS.add(key)
+        nested = (
+            observed.items[0]
+            if kind == "list" and getattr(observed, "items", ())
+            else getattr(observed, "material", None)
+        )
+        nested_type = type(nested) if nested is not None else None
+        logger.warning(
+            "Rehydrated material %s projection after module reload: "
+            "actual=%s.%s actual_class_id=%s current_class_id=%s "
+            "root=%s nested=%s nested_class_id=%s",
+            kind,
+            observed_type.__module__,
+            observed_type.__qualname__,
+            id(observed_type),
+            id(type(canonical)),
+            canonical.root_identity,
+            (
+                "{}.{}".format(nested_type.__module__, nested_type.__qualname__)
+                if nested_type is not None
+                else "none"
+            ),
+            id(nested_type) if nested_type is not None else None,
+        )
+
+    @staticmethod
+    def _log_morph_snapshot_rehydration(
+        observed: Any,
+        canonical: MorphAuthoringReadSnapshot,
+    ) -> None:
+        """Log one compact identity diagnostic for a Morph reload read."""
+
+        observed_type = type(observed)
+        key = ("morph", id(observed_type))
+        if key in _REHYDRATED_PROJECTION_TYPE_IDS:
+            return
+        _REHYDRATED_PROJECTION_TYPE_IDS.add(key)
+        projection_type = type(getattr(observed, "projection", None))
+        topology_type = type(getattr(observed, "topology_inspection", None))
+        logger.warning(
+            "Rehydrated morph authoring snapshot after module reload: "
+            "actual=%s.%s actual_class_id=%s current_class_id=%s "
+            "root=%s projection=%s projection_class_id=%s "
+            "topology=%s topology_class_id=%s",
+            observed_type.__module__,
+            observed_type.__qualname__,
+            id(observed_type),
+            id(type(canonical)),
+            canonical.projection.root_identity,
+            (
+                "{}.{}".format(projection_type.__module__, projection_type.__qualname__)
+                if projection_type is not None
+                else "none"
+            ),
+            id(projection_type) if projection_type is not None else None,
+            (
+                "{}.{}".format(topology_type.__module__, topology_type.__qualname__)
+                if topology_type is not None
+                else "none"
+            ),
+            id(topology_type) if topology_type is not None else None,
         )
 
     def _read_current(self, model_root: str, operation: str) -> MmdModelAuthoringSpec:

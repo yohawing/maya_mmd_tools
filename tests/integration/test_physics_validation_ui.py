@@ -167,6 +167,23 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         return root
 
     @staticmethod
+    def _make_presenter(view, app_state):
+        """Build the presenter state that the Qt-free integration fixture needs."""
+        presenter = object.__new__(PhysicsPresenter)
+        presenter.view = view
+        presenter.app_state = app_state
+        presenter.maya_adapter = SimpleNamespace(object_exists=cmds.objExists)
+        presenter._current_kind = None
+        presenter._current_shape = None
+        presenter._bone_candidates = []
+        presenter._rigid_body_candidates = []
+        presenter._pending_refresh_generation = None
+        presenter._last_refresh_generation = None
+        presenter._form_dirty = False
+        presenter._loading_form = False
+        return presenter
+
+    @staticmethod
     def _enable_with_solved_stub(presenter):
         """Exercise a successful UI toggle without requiring a full PMX rig."""
         original_get_attr = cmds.getAttr
@@ -187,12 +204,7 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         root_b = self._create_namespaced_model("Nested:Other", rigid_count=3, joint_count=1)
         view = _FakePhysicsView()
         app_state = SimpleNamespace(current_model_root=root_a)
-        presenter = object.__new__(PhysicsPresenter)
-        presenter.view = view
-        presenter.app_state = app_state
-        presenter.maya_adapter = SimpleNamespace(object_exists=cmds.objExists)
-        presenter._current_kind = None
-        presenter._current_shape = None
+        presenter = self._make_presenter(view, app_state)
 
         presenter.refresh_physics(force=True)
         self.assertEqual(view.rigid_body_list.count(), 1)
@@ -223,12 +235,7 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         root_b = self._create_namespaced_model("ToggleB", rigid_count=1, joint_count=0)
         view = _FakePhysicsView()
         app_state = SimpleNamespace(current_model_root=root_a)
-        presenter = object.__new__(PhysicsPresenter)
-        presenter.view = view
-        presenter.app_state = app_state
-        presenter.maya_adapter = SimpleNamespace(object_exists=cmds.objExists)
-        presenter._current_kind = None
-        presenter._current_shape = None
+        presenter = self._make_presenter(view, app_state)
 
         presenter.refresh_physics(force=True)
         self.assertFalse(view.physics_enable_check.enabled)
@@ -316,12 +323,10 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         solvers = sorted(cmds.ls(type="mmdPhysicsSolver") or [])
         self.assertEqual(len(solvers), 2)
         view = _FakePhysicsView()
-        presenter = object.__new__(PhysicsPresenter)
-        presenter.view = view
-        presenter.app_state = SimpleNamespace(current_model_root=root_a)
-        presenter.maya_adapter = SimpleNamespace(object_exists=cmds.objExists)
-        presenter._current_kind = None
-        presenter._current_shape = None
+        presenter = self._make_presenter(
+            view,
+            SimpleNamespace(current_model_root=root_a),
+        )
 
         presenter.refresh_physics(force=True)
         self.assertTrue(view.physics_enable_check.enabled)
@@ -452,12 +457,10 @@ class TestPhysicsPresenterNamespace(MayaTestBase):
         expected_world = expected_offset * bone_world
 
         view = _FakePhysicsView()
-        presenter = object.__new__(PhysicsPresenter)
-        presenter.view = view
-        presenter.app_state = SimpleNamespace(current_model_root=root)
-        presenter.maya_adapter = SimpleNamespace(object_exists=cmds.objExists)
-        presenter._current_kind = None
-        presenter._current_shape = None
+        presenter = self._make_presenter(
+            view,
+            SimpleNamespace(current_model_root=root),
+        )
         presenter.refresh_physics(force=True)
 
         actual_world = om.MMatrix(cmds.xform(transform, query=True, worldSpace=True, matrix=True))

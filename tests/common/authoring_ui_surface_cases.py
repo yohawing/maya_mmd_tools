@@ -235,7 +235,7 @@ def _prepare_surface(window: Any, surface: Mapping[str, Any], widget: QWidget) -
         view.bone_list.addItem(QListWidgetItem("matrix-bone"))
         view.bone_list.setCurrentRow(0)
         view.set_bone_details_enabled(True)
-        for action in ("move_up", "move_down", "reset"):
+        for action in ("sync", "move_up", "move_down"):
             view.bone_authoring_toolbar.set_action_enabled(action, True, "", "")
         key = surface["id"].split(".", 1)[1]
         if key == "external_parent_key":
