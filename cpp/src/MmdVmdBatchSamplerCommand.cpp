@@ -341,7 +341,6 @@ bool collectIncoming(const MPlug& plug, std::vector<MPlug>& sources, std::string
 
 bool validateUpstream(const Channel& channel, std::string& error)
 {
-    MStatus status;
     std::string targetType;
     if (!physicsNodeType(channel.plug.node(), targetType)) {
         error = "could not resolve channel node type: " + channel.canonicalPlug;
@@ -358,10 +357,6 @@ bool validateUpstream(const Channel& channel, std::string& error)
 
     std::vector<MPlug> queue;
     if (!collectIncoming(channel.plug, queue, error)) return false;
-    if (prePhysicsInput && queue.empty()) {
-        error = "pre-physics input has no authored upstream source: " + channel.canonicalPlug;
-        return false;
-    }
     std::unordered_set<std::string> visited;
     while (!queue.empty()) {
         if (visited.size() >= kMaxTraversalNodes) {

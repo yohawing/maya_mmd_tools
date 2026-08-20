@@ -322,6 +322,44 @@ def main() -> int:
             "legacy evaluation mode",
         )
 
+        # Production physics routes intentionally use an mmdPhysicsBoneDriver
+        # pre-input even when that channel has no incoming animCurve.  The
+        # plug's authored value is the valid pre-physics pose in that case.
+        static_physics = cmds.createNode(
+            "mmdPhysicsBoneDriver",
+            name="focused_vmd_static_physics_input",
+        )
+        cmds.setAttr(f"{static_physics}.inPreTranslateX", 1.25)
+        static_pre_input = _call(
+            cmds,
+            _payload(
+                [0.0, 2.0],
+                [
+                    {
+                        "plug": f"{static_physics}.inPreTranslateX",
+                        "unit": "distance",
+                        "hint": "static",
+                    }
+                ],
+            ),
+        )
+        _assert_close(static_pre_input[6], 1.25, "static physics pre-input frame 0")
+        _assert_close(static_pre_input[7], 1.25, "static physics pre-input frame 2")
+        _must_fail(
+            cmds,
+            _payload(
+                [0.0],
+                [
+                    {
+                        "plug": f"{static_physics}.outTranslateX",
+                        "unit": "distance",
+                        "hint": "timed_mplug",
+                    }
+                ],
+            ),
+            "direct physics output",
+        )
+
         # Regression: a dependency node can enter through two different
         # source plugs (compound parent plus child).  One branch is fed by a
         # physics node; traversal must not mark the shared transform node as

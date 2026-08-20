@@ -796,7 +796,10 @@ class NativeVmdBatchSampler:
                 raise
             if not isinstance(exc, Exception):
                 raise
-            raise NativeVmdBatchSamplerError("native sampler invocation failed") from exc
+            raise NativeVmdBatchSamplerError(
+                "native sampler invocation failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
         self.last_diagnostics = {**plugin_diagnostics, **result.diagnostics}
         self.last_diagnostics.update(
             {

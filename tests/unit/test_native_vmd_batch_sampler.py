@@ -205,7 +205,10 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                 raise RuntimeError("command unavailable")
 
         sampler = NativeVmdBatchSampler(Broken())
-        with self.assertRaises(NativeVmdBatchSamplerError):
+        with self.assertRaisesRegex(
+            NativeVmdBatchSamplerError,
+            "native sampler invocation failed: RuntimeError: command unavailable",
+        ):
             sampler.sample_dense_bone_channels([0, 1], ["joint"])
         self.assertFalse(sampler.last_diagnostics["used"])
         self.assertIn("fallback_reason", sampler.last_diagnostics)
