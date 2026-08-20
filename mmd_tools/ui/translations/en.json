@@ -872,6 +872,18 @@
     "animation_writer": "Writing VMD"
   },
   "validation": {
+    "scene_output_path_invalid": {
+      "title": "The export destination is not valid",
+      "impact": "The file to write has no usable destination.",
+      "remediation": "Choose an output file, then prepare or export again.",
+      "action": "Choose an output file"
+    },
+    "scene_output_extension_mismatch": {
+      "title": "The output extension does not match the format",
+      "impact": "The selected file cannot be written as the requested format.",
+      "remediation": "For VMD export, use a file name ending in .vmd.",
+      "action": "Correct the output extension"
+    },
     "export_workflow_exception": {
       "title": "Unexpected export workflow failure",
       "impact": "The export workflow stopped before it could produce a trustworthy result.",

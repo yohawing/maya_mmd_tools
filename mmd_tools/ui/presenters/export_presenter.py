@@ -9,6 +9,7 @@ from ...services.export_workflow_service import (
     ExportWorkflowService,
     STATE_EXPORTING,
     STATE_FAILED,
+    STATE_BLOCKED,
     STATE_PREPARING,
     STATE_PREPARED,
     STATE_VALIDATING,
@@ -128,6 +129,17 @@ class ExportPresenter(QObject):
             preparation = self.workflow_service.prepare_vmd(request)
             self._update_progress(token, export_format, "prepared_payload")
             if not getattr(preparation, "succeeded", False):
+                preparation_report = getattr(preparation, "report", None)
+                if isinstance(preparation_report, ExportValidationReport):
+                    result = ExportWorkflowResult(
+                        STATE_BLOCKED,
+                        preparation_report,
+                        {"output_path": getattr(request, "file_path", None)},
+                        error=getattr(preparation, "error", None),
+                    )
+                    self.view.set_result(result)
+                    self._emit_status(result)
+                    return preparation
                 error = getattr(preparation, "error", None)
                 raise RuntimeError(error or "VMD preparation did not publish a token")
             self._prepared_vmd_token = preparation.token

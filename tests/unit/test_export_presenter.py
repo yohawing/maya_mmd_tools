@@ -10,6 +10,7 @@ install_headless_ui_stubs()
 
 from mmd_tools.services.export_workflow_service import (  # noqa: E402
     ExportWorkflowResult,
+    STATE_BLOCKED,
     STATE_FAILED,
     STATE_PREPARING,
     STATE_READY,
@@ -225,6 +226,29 @@ class _PrepareFailingWorkflow(_Workflow):
         return PrepareVmdExportResult(status="failed", error=RuntimeError("bake exploded"))
 
 
+class _PreparePreflightBlockedWorkflow(_Workflow):
+    def prepare_vmd(self, request):
+        self.prepared.append(request)
+        report = ExportValidationReport(
+            "vmd",
+            (
+                ExportValidationIssue(
+                    "SCENE_OUTPUT_PATH_INVALID",
+                    "fatal",
+                    True,
+                    "file_path",
+                    "export output path is required",
+                ),
+            ),
+            mode="C",
+        )
+        return PrepareVmdExportResult(
+            status="failed",
+            error=RuntimeError("scene preflight blocked"),
+            failure_report=report,
+        )
+
+
 class _PrepareWarningWorkflow(_Workflow):
     def prepare_vmd(self, request):
         self.prepared.append(request)
@@ -345,6 +369,40 @@ class TestExportPresenter(unittest.TestCase):
         self.assertTrue(result.report.is_blocking)
         self.assertIn("bake exploded", app_state.statuses[-1])
         self.assertEqual(view.operation_states[-2:], [True, False])
+
+    def test_prepare_preflight_failure_preserves_structured_issue(self):
+        view = _View("vmd")
+        app_state = _AppState()
+        presenter = ExportPresenter(
+            view,
+            app_state,
+            workflow_service=_PreparePreflightBlockedWorkflow(),
+        )
+
+        preparation = presenter.prepare()
+
+        self.assertFalse(preparation.succeeded)
+        self.assertIsNone(presenter.prepared_vmd_token)
+        self.assertEqual(view.results[-1].state, STATE_BLOCKED)
+        self.assertEqual(
+            [issue.code for issue in view.results[-1].report.issues],
+            ["SCENE_OUTPUT_PATH_INVALID"],
+        )
+        self.assertNotIn("EXPORT_WORKFLOW_EXCEPTION", str(view.results[-1].report))
+
+        translator = UITranslator.instance()
+        previous_language = translator.get_language()
+        translator.set_language("ja")
+        try:
+            rendered = render_validation_console_text(
+                view.results[-1].report,
+                view.results[-1].metadata,
+                localize=True,
+            )
+        finally:
+            translator.set_language(previous_language)
+        self.assertIn("タイトル: 出力先が正しく指定されていません", rendered)
+        self.assertIn("対処方法: 出力先のファイルを選択", rendered)
 
     def test_failed_reprepare_discards_the_previous_token(self):
         view = _View("vmd")

@@ -872,6 +872,18 @@
     "animation_writer": "VMDを書き出し中"
   },
   "validation": {
+    "scene_output_path_invalid": {
+      "title": "出力先が正しく指定されていません",
+      "impact": "書き出すファイルの保存先を決定できません。",
+      "remediation": "出力先のファイルを選択してから、もう一度準備または書き出しを実行してください。",
+      "action": "出力先を選択"
+    },
+    "scene_output_extension_mismatch": {
+      "title": "出力先の拡張子が形式と一致しません",
+      "impact": "選択した形式として正しく書き出せません。",
+      "remediation": "VMD書き出しでは、出力ファイル名の末尾を .vmd にしてください。",
+      "action": "出力ファイルの拡張子を修正"
+    },
     "export_workflow_exception": {
       "title": "エクスポート処理の予期しない失敗",
       "impact": "信頼できる結果を生成する前にエクスポート処理が停止しました。",

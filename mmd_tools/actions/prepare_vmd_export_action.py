@@ -167,6 +167,7 @@ class PrepareVmdExportResult:
     status: str
     token: Optional[PreparedVmdExportToken] = None
     error: Optional[Exception] = None
+    failure_report: Optional[ExportValidationReport] = None
 
     @property
     def succeeded(self) -> bool:
@@ -174,11 +175,11 @@ class PrepareVmdExportResult:
 
     @property
     def report(self) -> Optional[ExportValidationReport]:
-        """Expose the token's combined payload/output report when published."""
+        """Expose the published or structured failure report."""
 
-        if self.token is None:
-            return None
-        return self.token.combined_validation_report
+        if self.token is not None:
+            return self.token.combined_validation_report
+        return self.failure_report
 
 
 @dataclass(frozen=True)

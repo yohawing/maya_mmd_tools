@@ -433,6 +433,10 @@ class TestExportWorkflowService(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertIsNone(result.token)
         self.assertIn("SCENE_TARGET_STALE", str(result.error))
+        self.assertEqual(
+            [issue.code for issue in result.report.issues],
+            ["SCENE_TARGET_STALE"],
+        )
         self.assertEqual(backend.discover_calls, 0)
         self.assertEqual(backend.collect_calls, 0)
 

@@ -145,6 +145,7 @@ class ExportWorkflowService:
                 error=PrepareVmdExportError(
                     f"VMD preparation scene preflight blocked: {issue_codes}"
                 ),
+                failure_report=scene_result.report,
             )
         execute = getattr(self.prepare_vmd_action, "execute", None)
         if not callable(execute):
