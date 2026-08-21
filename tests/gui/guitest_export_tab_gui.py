@@ -80,6 +80,22 @@ class _WarningWorkflow:
         )
 
 
+class _PaneSwitchWorkflow(_WarningWorkflow):
+    """Switch panes while execute is in flight to reproduce GUI reentrancy."""
+
+    def __init__(self, report, switch_pane):
+        super().__init__(report)
+        self._switch_pane = switch_pane
+
+    def execute(self, request, *, acknowledge_warnings=False, progress_callback=None):
+        self._switch_pane()
+        return super().execute(
+            request,
+            acknowledge_warnings=acknowledge_warnings,
+            progress_callback=progress_callback,
+        )
+
+
 class _GuiAppState:
     """Minimal app-state surface needed by ExportPresenter in this test."""
 
@@ -239,6 +255,9 @@ class TestExportTabGUI(GuiTestBase):
             self.assertFalse(tab._pages[tab.MODEL_PANE].export_button.isEnabled())
 
             tab.pane_tabs.setCurrentIndex(1)
+            tab.set_state("Writing")
+            self.assertEqual(tab._pages[tab.MODEL_PANE].state_label.text(), "Writing")
+            self.assertEqual(animation_page.state_label.text(), "Editing")
             tab.set_operation_active(False)
 
             self.assertTrue(tab._pages[tab.MODEL_PANE].validate_button.isEnabled())
@@ -246,6 +265,43 @@ class TestExportTabGUI(GuiTestBase):
             self.assertFalse(animation_page.validate_button.isEnabled())
             self.assertFalse(animation_page.export_button.isEnabled())
         finally:
+            self._delete_tab(tab)
+
+    def test_export_result_returns_to_operation_page_after_pane_switch(self):
+        """An in-flight Animation result must not land on the Model page."""
+        tab = self._create_visible_tab()
+        report = ExportValidationReport(
+            "vmd",
+            (),
+            mode=VMD_EXPORT_PRESERVE_KEYS,
+        )
+        workflow = _PaneSwitchWorkflow(
+            report,
+            lambda: tab.pane_tabs.setCurrentIndex(0),
+        )
+        app_state = _GuiAppState()
+        presenter = ExportPresenter(tab, app_state, workflow_service=workflow)
+        try:
+            tab.pane_tabs.setCurrentIndex(1)
+            tab.bake_export_check.setChecked(False)
+            model_page = tab._pages[tab.MODEL_PANE]
+            motion_page = tab._pages[tab.MOTION_PANE]
+
+            tab.export_button.click()
+            QApplication.processEvents()
+
+            self.assertEqual(tab.active_pane, tab.MODEL_PANE)
+            self.assertEqual(model_page.state_label.text(), "Editing")
+            self.assertIsNone(model_page.validation_console.report)
+            self.assertEqual(motion_page.state_label.text(), STATE_SUCCEEDED)
+            self.assertIs(motion_page.validation_console.report, report)
+            self.assertTrue(motion_page.validate_button.isEnabled())
+            self.assertTrue(motion_page.export_button.isEnabled())
+        finally:
+            presenter.deleteLater()
+            app = QApplication.instance()
+            if app is not None:
+                app.sendPostedEvents(presenter, QtCore.QEvent.DeferredDelete)
             self._delete_tab(tab)
 
     def test_validation_console_renders_catalog_backed_fatal_issue(self):

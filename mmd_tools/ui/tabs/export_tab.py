@@ -413,6 +413,7 @@ class ExportTab(BaseTab):
         self._timeline_range_provider = timeline_range_provider
         self._active_pane = self.MODEL_PANE
         self._operation_owner_page = None
+        self._result_owner_page = None
         self._build_ui()
         self._load_semantic_preferences()
 
@@ -565,19 +566,23 @@ class ExportTab(BaseTab):
         return self._active_page().build_request(current_model_root)
 
     def set_result(self, result: ExportWorkflowResult) -> None:
-        self._active_page().set_result(result)
+        owner_page = self._result_owner_page
+        self._result_owner_page = None
+        (owner_page if owner_page is not None else self._active_page()).set_result(result)
 
     def set_prepared(self, preparation) -> None:
         """Show the Motion page's reusable Bake Timeline payload state."""
         self._pages[self.MOTION_PANE].set_prepared(preparation)
 
     def set_state(self, state: str) -> None:
-        self._active_page().set_state(state)
+        owner_page = self._operation_owner_page or self._result_owner_page
+        (owner_page if owner_page is not None else self._active_page()).set_state(state)
 
     def set_operation_active(self, active: bool) -> None:
         """Toggle controls only for the page that owns the active operation."""
         if active:
             self._operation_owner_page = self._active_page()
+            self._result_owner_page = self._operation_owner_page
             self._operation_owner_page.set_operation_active(True)
             return
         owner_page = self._operation_owner_page
