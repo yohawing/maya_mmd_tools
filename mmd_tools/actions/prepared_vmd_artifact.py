@@ -1,7 +1,7 @@
 """Private, verified VMD artifacts owned by a prepared export token.
 
 The artifact is intentionally independent from the public export path.  A
-Mode C preparation can therefore pay the writer and verifier cost once while
+Bake Timeline preparation can therefore pay the writer and verifier cost once while
 the later Workflow export only needs to consume an identity-checked file.
 """
 
@@ -17,7 +17,7 @@ from types import MappingProxyType
 from typing import Any, Optional, Tuple
 
 from ..validation.export_validator import ExportValidationReport
-from ..validation.vmd_validator import verify_vmd_output_streaming
+from ..validation.vmd_validator import VMD_EXPORT_BAKE_TIMELINE, verify_vmd_output_streaming
 
 
 PREPARED_VMD_ARTIFACT_SCHEMA_VERSION = 1
@@ -122,12 +122,12 @@ class PreparedVmdStageSession:
         self,
         model_name: str = "",
         *,
-        mode: str = "C",
+        export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
         output_verifier: Any = verify_vmd_output_streaming,
         raw_loss_warning_required: bool = False,
         expected_frame_range: Optional[Tuple[int, int]] = None,
     ) -> None:
-        self._mode = mode
+        self._export_strategy = export_strategy
         self._output_verifier = output_verifier
         self._raw_loss_warning_required = bool(raw_loss_warning_required)
         self._expected_frame_range = expected_frame_range
@@ -290,7 +290,7 @@ class PreparedVmdStageSession:
             verifier = verify_vmd_output_streaming
         report = verifier(
             str(self._file_path),
-            self._mode,
+            self._export_strategy,
             **self._verification_kwargs(
                 summary,
                 raw_loss_warning_required=raw_loss_warning_required,

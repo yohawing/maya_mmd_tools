@@ -287,7 +287,7 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         return Sampler()
 
-    def test_mode_c_collect_to_sink_keeps_canonical_sections_and_never_finishes(self):
+    def test_bake_timeline_collect_to_sink_keeps_canonical_sections_and_never_finishes(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
@@ -313,7 +313,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         result = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler()).collect_to_sink(
             {
                 "target_model": "model_root",
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "frame_range": (0, 2),
             },
             sink,
@@ -329,7 +329,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual({section for section, _frame in sink.frames}, {"bones"})
         self.assertTrue(result["diagnostics"]["streaming"]["enabled"])
 
-    def test_mode_c_streaming_derives_validation_range_from_timeline(self):
+    def test_bake_timeline_streaming_derives_validation_range_from_timeline(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
@@ -349,20 +349,20 @@ class TestVmdSceneCollector(unittest.TestCase):
         result = VmdSceneCollector(
             bone_channel_sampler=self._timeline_sampler()
         ).collect_to_sink(
-            {"target_model": "model_root", "vmd_mode": "C"},
+            {"target_model": "model_root", "export_strategy": "bake_timeline"},
             Sink(),
         )
 
         self.assertEqual(result["validation_frame_range"], (3, 7))
 
-    def test_mode_c_collect_to_sink_rejects_raw_preservation(self):
+    def test_bake_timeline_collect_to_sink_rejects_raw_preservation(self):
         with self.assertRaisesRegex(ValueError, "cannot preserve raw"):
             VmdSceneCollector().collect_to_sink(
-                {"vmd_mode": "C", "preserve_raw_bone_transforms": True},
+                {"export_strategy": "bake_timeline", "preserve_raw_bone_transforms": True},
                 object(),
             )
 
-    def test_mode_c_collect_to_sink_matches_morph_dense_semantics(self):
+    def test_bake_timeline_collect_to_sink_matches_morph_dense_semantics(self):
         self.cmds.node_types.update({"model_root": "transform", "face_bs": "blendShape"})
         self.cmds.blendshape_weights["face_bs"] = 1
         self.cmds.aliases["face_bs.weight[0]"] = "笑い"
@@ -381,7 +381,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         options = {
             "target_model": "model_root",
             "blend_shapes": ["face_bs"],
-            "vmd_mode": "C",
+            "export_strategy": "bake_timeline",
             "frame_range": (0, 2),
         }
         legacy = VmdSceneCollector().collect(options)["morph_frames"]
@@ -390,7 +390,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         streamed = [frame for section, frame in sink.frames if section == "morphs"]
         self.assertEqual(streamed, legacy)
 
-    def test_mode_c_stream_uses_native_morphs_and_omits_camera_light(self):
+    def test_bake_timeline_stream_uses_native_morphs_and_omits_camera_light(self):
         self.cmds.node_types.update(
             {
                 "model_root": "transform",
@@ -424,14 +424,14 @@ class TestVmdSceneCollector(unittest.TestCase):
                     "blend_shapes": ["face_bs"],
                     "cameras": ["camera_ctrl"],
                     "lights": ["light_ctrl"],
-                    "vmd_mode": "C",
+                    "export_strategy": "bake_timeline",
                     "frame_range": (0, 2),
                 },
                 Sink(),
             )
 
         self.assertEqual(
-            collector.diagnostics["unsupported_mode_c_sections"],
+            collector.diagnostics["unsupported_bake_timeline_sections"],
             {"cameras": 1, "lights": 1},
         )
         self.assertEqual(
@@ -439,7 +439,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             3,
         )
 
-    def test_mode_c_stream_morph_post_conversion_first_win_matches_legacy(self):
+    def test_bake_timeline_stream_morph_post_conversion_first_win_matches_legacy(self):
         self.cmds.node_types.update(
             {"model_root": "transform", "face_bs": "blendShape", "driver": "network"}
         )
@@ -472,7 +472,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             "target_model": "model_root",
             "blend_shapes": ["face_bs"],
             "joints": [],
-            "vmd_mode": "C",
+            "export_strategy": "bake_timeline",
             "frame_range": (0, 2),
         }
         legacy_collector = VmdSceneCollector()
@@ -490,7 +490,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual([frame["frame_number"] for frame in streamed_frames], [0, 1])
         self.assertEqual([frame["weight"] for frame in streamed_frames], [0.1, 0.3])
 
-    def test_mode_c_stream_morph_dedups_before_exact_constant_classification(self):
+    def test_bake_timeline_stream_morph_dedups_before_exact_constant_classification(self):
         self.cmds.node_types.update({"model_root": "transform", "face_bs": "blendShape"})
         self.cmds.blendshape_weights["face_bs"] = 1
         self.cmds.aliases["face_bs.weight[0]"] = "笑い"
@@ -515,7 +515,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             "target_model": "model_root",
             "blend_shapes": ["face_bs"],
             "joints": [],
-            "vmd_mode": "C",
+            "export_strategy": "bake_timeline",
             "frame_range": (0, 2),
         }
         legacy_collector = VmdSceneCollector()
@@ -544,7 +544,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             sorted(legacy_selection["evidence"], key=lambda row: row["name"]),
         )
 
-    def test_mode_c_stream_native_samples_close_once_on_sink_failures(self):
+    def test_bake_timeline_stream_native_samples_close_once_on_sink_failures(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
@@ -591,14 +591,14 @@ class TestVmdSceneCollector(unittest.TestCase):
                 VmdSceneCollector(bone_channel_sampler=sampler).collect_to_sink(
                     {
                         "target_model": "model_root",
-                        "vmd_mode": "C",
+                        "export_strategy": "bake_timeline",
                         "frame_range": (0, 2),
                     },
                     Sink(),
                 )
             self.assertEqual(sampler.samples.close_count, 1)
 
-    def test_mode_c_stream_morph_spool_closes_on_sink_failure_and_restores_timeline(self):
+    def test_bake_timeline_stream_morph_spool_closes_on_sink_failure_and_restores_timeline(self):
         self.cmds.node_types.update({"model_root": "transform", "face_bs": "blendShape"})
         self.cmds.blendshape_weights["face_bs"] = 1
         self.cmds.aliases["face_bs.weight[0]"] = "笑い"
@@ -622,7 +622,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             "target_model": "model_root",
             "blend_shapes": ["face_bs"],
             "joints": [],
-            "vmd_mode": "C",
+            "export_strategy": "bake_timeline",
             "frame_range": (0, 2),
         }
         with mock.patch.object(
@@ -633,7 +633,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertTrue(spool.closed)
         self.assertEqual(self.cmds.current_time, 17.5)
 
-    def test_mode_c_stream_morph_spool_replays_multiple_candidates_in_one_pass(self):
+    def test_bake_timeline_stream_morph_spool_replays_multiple_candidates_in_one_pass(self):
         self.cmds.node_types.update({"model_root": "transform", "face_bs": "blendShape"})
         self.cmds.blendshape_weights["face_bs"] = 2
         self.cmds.aliases["face_bs.weight[0]"] = "笑い"
@@ -690,7 +690,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             "target_model": "model_root",
             "blend_shapes": ["face_bs"],
             "joints": [],
-            "vmd_mode": "C",
+            "export_strategy": "bake_timeline",
             "frame_range": (0, 2),
         }
         legacy_collector = VmdSceneCollector()
@@ -837,7 +837,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                 }
             )
 
-    def test_mode_c_stream_exact_run_reduces_dependency_bone_and_morph(self):
+    def test_bake_timeline_stream_exact_run_reduces_dependency_bone_and_morph(self):
         self.cmds.node_types.update(
             {
                 "model_root": "transform",
@@ -887,7 +887,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             "target_model": "model_root",
             "joints": ["center_joint", "direct_joint"],
             "blend_shapes": ["face_bs"],
-            "vmd_mode": "C",
+            "export_strategy": "bake_timeline",
             "frame_range": (0, 5),
         }
         reduced_sink = Sink()
@@ -898,7 +898,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         dense = VmdSceneCollector(
             bone_channel_sampler=self._timeline_sampler()
         ).collect_to_sink(
-            {**base_options, "mode_c_exact_run_reduction": False}, dense_sink
+            {**base_options, "bake_timeline_exact_run_reduction": False}, dense_sink
         )
 
         for section in ("bones", "morphs"):
@@ -946,7 +946,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             [],
         )
 
-    def test_mode_c_stream_exact_run_protects_global_ik_key_frame(self):
+    def test_bake_timeline_stream_exact_run_protects_global_ik_key_frame(self):
         self.cmds.node_types.update(
             {
                 "model_root": "transform",
@@ -985,7 +985,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                     "target_model": "model_root",
                     "joints": ["center_joint"],
                     "blend_shapes": [],
-                    "vmd_mode": "C",
+                    "export_strategy": "bake_timeline",
                     "frame_range": (0, 5),
                 },
                 sink,
@@ -1005,7 +1005,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(ik_witnesses, [{"track": "center", "frame": 1}])
         self.assertNotIn(2, [row["frame"] for row in ik_witnesses])
 
-    def test_mode_c_stream_bone_frame_collision_is_first_win_for_all_paths(self):
+    def test_bake_timeline_stream_bone_frame_collision_is_first_win_for_all_paths(self):
         self.cmds.current_unit = "ntscf"
         self.cmds.node_types.update(
             {
@@ -1042,7 +1042,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             "target_model": "model_root",
             "joints": ["direct_joint", "dependency_joint"],
             "blend_shapes": [],
-            "vmd_mode": "C",
+            "export_strategy": "bake_timeline",
             "frame_range": (0, 2),
         }
         legacy = VmdSceneCollector(
@@ -1061,7 +1061,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                 ).collect_to_sink(
                     {
                         **options,
-                        "mode_c_exact_run_reduction": reduction_enabled,
+                        "bake_timeline_exact_run_reduction": reduction_enabled,
                     },
                     sink,
                 )
@@ -1077,7 +1077,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                 ]
                 self.assertEqual(len(identities), len(set(identities)))
 
-    def test_mode_c_stream_direct_exact_constant_remains_one_key(self):
+    def test_bake_timeline_stream_direct_exact_constant_remains_one_key(self):
         self.cmds.node_types.update({"model_root": "transform", "face_bs": "blendShape"})
         self.cmds.blendshape_weights["face_bs"] = 1
         self.cmds.aliases["face_bs.weight[0]"] = "smile"
@@ -1100,7 +1100,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                 "target_model": "model_root",
                 "joints": [],
                 "blend_shapes": ["face_bs"],
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "frame_range": (0, 5),
             },
             sink,
@@ -1115,7 +1115,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             1,
         )
 
-    def test_mode_c_requires_timeline_native_sampler(self):
+    def test_bake_timeline_requires_timeline_native_sampler(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
@@ -1125,7 +1125,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             VmdSceneCollector().collect(
                 {
                     "target_model": "model_root",
-                    "vmd_mode": "C",
+                    "export_strategy": "bake_timeline",
                     "frame_range": (0, 2),
                 }
             )
@@ -1168,7 +1168,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertAlmostEqual(result["bone_frames"][1]["rotation"][2], 0.7071067811865476)
         self.assertAlmostEqual(result["bone_frames"][1]["rotation"][3], 0.7071067811865476)
 
-    def test_mode_c_dense_samples_requested_frame_range(self):
+    def test_bake_timeline_dense_samples_requested_frame_range(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
@@ -1178,7 +1178,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         result = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler()).collect(
             {
                 "target_model": "model_root",
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "frame_range": (0, 2),
             }
         )
@@ -1189,7 +1189,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         )
         self.assertNotIn("interpolation", result["bone_frames"][0])
 
-    def test_mode_c_direct_single_key_bones_avoid_native_sampling(self):
+    def test_bake_timeline_direct_single_key_bones_avoid_native_sampling(self):
         self.cmds.node_types.update(
             {
                 "model_root": "transform",
@@ -1205,7 +1205,7 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         collector = VmdSceneCollector()
         result = collector.collect(
-            {"target_model": "model_root", "vmd_mode": "C", "frame_range": (0, 2)}
+            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 2)}
         )
 
         self.assertEqual(
@@ -1230,7 +1230,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             }
         )
 
-    def test_mode_c_keyless_bone_static_default_nondefault_and_bind_offset(self):
+    def test_bake_timeline_keyless_bone_static_default_nondefault_and_bind_offset(self):
         cases = (
             (1.0, (1.0, 0.0, 0.0), [], "omitted_default"),
             (2.0, (1.0, 0.0, 0.0), [2], "constant_one_key"),
@@ -1260,7 +1260,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                     selection["evidence"][0]["source_key_count"], 0
                 )
 
-    def test_mode_c_keyless_bone_uses_earliest_requested_dense_integer(self):
+    def test_bake_timeline_keyless_bone_uses_earliest_requested_dense_integer(self):
         self._configure_static_bone(1.0)
 
         frames = VmdSceneCollector().collect_bone_frames(
@@ -1275,7 +1275,7 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         self.assertEqual([frame["frame_number"] for frame in frames], [2])
 
-    def test_mode_c_keyless_routed_bone_is_dense_native_dependency(self):
+    def test_bake_timeline_keyless_routed_bone_is_dense_native_dependency(self):
         self.cmds.node_types.update(
             {"routed_joint": "joint", "route_driver": "transform"}
         )
@@ -1321,7 +1321,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(evidence[0]["reason"], "keyless_routed_dependency")
         self.assertEqual(evidence[0]["source_key_count"], 0)
 
-    def test_mode_c_native_bulk_track_matches_scalar_and_reuses_direct_multi_track(self):
+    def test_bake_timeline_native_bulk_track_matches_scalar_and_reuses_direct_multi_track(self):
         self.cmds.node_types["center_joint"] = "joint"
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
         for attr in (
@@ -1465,7 +1465,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertFalse(scalar_report["bulk_track_api"])
         self.assertGreater(scalar_report["scalar_native_value_read_count"], 0)
 
-    def test_mode_c_native_bulk_track_failure_closes_samples(self):
+    def test_bake_timeline_native_bulk_track_failure_closes_samples(self):
         self.cmds.node_types["center_joint"] = "joint"
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
         self.cmds.keys[("center_joint", "translateX")] = {0.0: 0.0, 2.0: 1.0}
@@ -1525,7 +1525,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(sampler.samples.closed, 1)
         self.assertTrue(collector.diagnostics["native_sampler"]["fatal"])
 
-    def test_mode_c_keyless_incoming_bone_is_dense_dependency(self):
+    def test_bake_timeline_keyless_incoming_bone_is_dense_dependency(self):
         self._configure_static_bone()
         self.cmds.node_types["constraint"] = "parentConstraint"
         self.cmds.connections[("center_joint", "translateX", True, False)] = [
@@ -1550,7 +1550,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(evidence[0]["reason"], "keyless_incoming_dependency")
         self.assertEqual(evidence[0]["source_key_count"], 0)
 
-    def test_mode_c_keyless_dependency_without_native_sampler_is_fatal(self):
+    def test_bake_timeline_keyless_dependency_without_native_sampler_is_fatal(self):
         self._configure_static_bone()
         self.cmds.node_types["constraint"] = "parentConstraint"
         self.cmds.connections[("center_joint", "translateX", True, False)] = [
@@ -1568,7 +1568,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                 time_converter=lambda value: value,
             )
 
-    def test_mode_c_keyless_connection_query_failure_is_fatal(self):
+    def test_bake_timeline_keyless_connection_query_failure_is_fatal(self):
         self._configure_static_bone()
         original = self.cmds.listConnections
 
@@ -1598,7 +1598,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             collector_module._dense_frame_samples([], 3.8, 1.2), []
         )
 
-    def test_mode_c_keyless_bone_invalid_dense_samples_fall_back_to_range_start(self):
+    def test_bake_timeline_keyless_bone_invalid_dense_samples_fall_back_to_range_start(self):
         self._configure_static_bone(1.0)
 
         frames = VmdSceneCollector().collect_bone_frames(
@@ -1613,7 +1613,7 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         self.assertEqual([frame["frame_number"] for frame in frames], [2])
 
-    def test_mode_c_keyless_bone_incoming_or_empty_range_stays_unclassified(self):
+    def test_bake_timeline_keyless_bone_incoming_or_empty_range_stays_unclassified(self):
         for incoming, start, end in ((True, 0, 2), (False, 0.2, 0.8)):
             with self.subTest(incoming=incoming):
                 self._configure_static_bone()
@@ -1646,7 +1646,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                     self.assertEqual(frames, [])
                     self.assertNotIn("track_selection", collector.diagnostics)
 
-    def test_mode_c_arbitrary_routed_output_keeps_single_key_bone_dense(self):
+    def test_bake_timeline_arbitrary_routed_output_keeps_single_key_bone_dense(self):
         self.cmds.node_types.update(
             {"center_joint": "joint", "authoring_driver": "transform"}
         )
@@ -1674,7 +1674,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             "routed_dependency",
         )
 
-    def test_mode_c_validated_routed_single_key_bone_uses_one_key(self):
+    def test_bake_timeline_validated_routed_single_key_bone_uses_one_key(self):
         self.cmds.node_types.update(
             {"model_root": "transform", "center_joint": "joint", "proxy": "transform"}
         )
@@ -1703,7 +1703,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(evidence[0]["reason"], "routed_direct_single_key_non_default")
         self.assertEqual(evidence[0]["source_key_count"], 1)
 
-    def test_mode_c_direct_tl_ta_single_key_bone_uses_one_key(self):
+    def test_bake_timeline_direct_tl_ta_single_key_bone_uses_one_key(self):
         self.cmds.node_types.update(
             {
                 "model_root": "transform",
@@ -1744,7 +1744,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             "direct_single_key_non_default",
         )
 
-    def test_mode_c_validated_animation_layer_single_key_bone_uses_one_key(self):
+    def test_bake_timeline_validated_animation_layer_single_key_bone_uses_one_key(self):
         self.cmds.node_types.update(
             {
                 "model_root": "transform",
@@ -1819,8 +1819,8 @@ class TestVmdSceneCollector(unittest.TestCase):
             "layered_direct_single_key_non_default",
         )
 
-    def test_mode_c_animation_layer_base_curve_extra_key_keeps_bone_dense(self):
-        self.test_mode_c_validated_animation_layer_single_key_bone_uses_one_key()
+    def test_bake_timeline_animation_layer_base_curve_extra_key_keeps_bone_dense(self):
+        self.test_bake_timeline_validated_animation_layer_single_key_bone_uses_one_key()
         self.cmds.keys["base_curve_tx", "output"][2.0] = 0.5
         route = {
             attribute: ("proxy", attribute)
@@ -1840,8 +1840,8 @@ class TestVmdSceneCollector(unittest.TestCase):
         )
         self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
 
-    def test_mode_c_validated_animation_layer_default_single_key_is_omitted(self):
-        self.test_mode_c_validated_animation_layer_single_key_bone_uses_one_key()
+    def test_bake_timeline_validated_animation_layer_default_single_key_is_omitted(self):
+        self.test_bake_timeline_validated_animation_layer_single_key_bone_uses_one_key()
         self.cmds.attrs["proxy", "translateX"] = 0.0
         route = {
             attribute: ("proxy", attribute)
@@ -1864,8 +1864,8 @@ class TestVmdSceneCollector(unittest.TestCase):
             "layered_direct_single_key_default",
         )
 
-    def test_mode_c_animation_layer_weight_key_keeps_single_key_bone_dense(self):
-        self.test_mode_c_validated_animation_layer_single_key_bone_uses_one_key()
+    def test_bake_timeline_animation_layer_weight_key_keeps_single_key_bone_dense(self):
+        self.test_bake_timeline_validated_animation_layer_single_key_bone_uses_one_key()
         self.cmds.keys["layer", "weight"] = {0.0: 1.0}
         route = {
             attribute: ("proxy", attribute)
@@ -1885,8 +1885,8 @@ class TestVmdSceneCollector(unittest.TestCase):
         )
         self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
 
-    def test_mode_c_routed_single_key_query_failure_keeps_dense(self):
-        self.test_mode_c_validated_routed_single_key_bone_uses_one_key()
+    def test_bake_timeline_routed_single_key_query_failure_keeps_dense(self):
+        self.test_bake_timeline_validated_routed_single_key_bone_uses_one_key()
         route = {
             attribute: ("proxy", attribute)
             for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
@@ -1916,13 +1916,13 @@ class TestVmdSceneCollector(unittest.TestCase):
             self.cmds.listConnections = original
         self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
 
-    def test_mode_c_routed_nonwritable_single_key_keeps_dense(self):
-        self.test_mode_c_validated_routed_single_key_bone_uses_one_key()
+    def test_bake_timeline_routed_nonwritable_single_key_keeps_dense(self):
+        self.test_bake_timeline_validated_routed_single_key_bone_uses_one_key()
         route = {
             attribute: ("proxy", attribute)
             for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
         }
-        with mock.patch.object(collector_module, "_mode_c_writable_plug", return_value=False):
+        with mock.patch.object(collector_module, "_bake_timeline_writable_plug", return_value=False):
             collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
             frames = collector.collect_bone_frames(
                 ["center_joint"],
@@ -1937,7 +1937,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             )
         self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
 
-    def test_mode_c_bone_with_out_of_range_second_key_remains_dense(self):
+    def test_bake_timeline_bone_with_out_of_range_second_key_remains_dense(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
@@ -1945,7 +1945,7 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
         result = collector.collect(
-            {"target_model": "model_root", "vmd_mode": "C", "frame_range": (0, 10)}
+            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 10)}
         )
 
         self.assertEqual([frame["frame_number"] for frame in result["bone_frames"]], list(range(11)))
@@ -1954,7 +1954,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(selection["counts"]["constant_one_key"], 0)
         self.assertEqual(selection["counts"]["omitted_default"], 0)
 
-    def test_mode_c_bone_with_non_anim_curve_source_remains_dense(self):
+    def test_bake_timeline_bone_with_non_anim_curve_source_remains_dense(self):
         self.cmds.node_types.update(
             {"model_root": "transform", "center_joint": "joint", "constraint": "parentConstraint"}
         )
@@ -1965,7 +1965,7 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
         result = collector.collect(
-            {"target_model": "model_root", "vmd_mode": "C", "frame_range": (0, 2)}
+            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 2)}
         )
 
         self.assertEqual([frame["frame_number"] for frame in result["bone_frames"]], [0, 1, 2])
@@ -1974,7 +1974,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(selection["counts"]["constant_one_key"], 0)
         self.assertEqual(selection["counts"]["omitted_default"], 0)
 
-    def test_mode_c_direct_constant_multi_key_bone_collapses_after_dense_sampling(self):
+    def test_bake_timeline_direct_constant_multi_key_bone_collapses_after_dense_sampling(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
@@ -1983,7 +1983,7 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
         result = collector.collect(
-            {"target_model": "model_root", "vmd_mode": "C", "frame_range": (0, 2)}
+            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 2)}
         )
 
         self.assertEqual([frame["frame_number"] for frame in result["bone_frames"]], [0])
@@ -1993,7 +1993,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(evidence[0]["source_key_count"], 2)
         self.assertEqual(evidence[0]["planned_key_count"], 1)
 
-    def test_mode_c_direct_nonconstant_multi_key_bone_stays_dense(self):
+    def test_bake_timeline_direct_nonconstant_multi_key_bone_stays_dense(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
@@ -2005,7 +2005,7 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
         result = collector.collect(
-            {"target_model": "model_root", "vmd_mode": "C", "frame_range": (0, 2)}
+            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 2)}
         )
 
         self.assertEqual(
@@ -2015,7 +2015,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             collector.diagnostics["track_selection"]["counts"]["authored_sampled"], 1
         )
 
-    def test_mode_c_routed_constant_multi_key_bone_remains_dependency_dense(self):
+    def test_bake_timeline_routed_constant_multi_key_bone_remains_dependency_dense(self):
         self.cmds.node_types.update(
             {
                 "model_root": "transform",
@@ -2047,7 +2047,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             collector.diagnostics["track_selection"]["counts"]["dependency_baked"], 1
         )
 
-    def test_mode_c_bone_constant_multi_key_duplicate_providers_stay_dense(self):
+    def test_bake_timeline_bone_constant_multi_key_duplicate_providers_stay_dense(self):
         self.cmds.node_types.update(
             {
                 "model_root": "transform",
@@ -2064,7 +2064,7 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
         result = collector.collect(
-            {"target_model": "model_root", "vmd_mode": "C", "frame_range": (0, 2)}
+            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 2)}
         )
 
         self.assertEqual(
@@ -2077,7 +2077,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(selection["counts"]["authored_sampled"], 1)
         self.assertEqual(len(selection["evidence"]), 1)
 
-    def test_mode_c_direct_single_key_bone_excludes_only_that_native_track(self):
+    def test_bake_timeline_direct_single_key_bone_excludes_only_that_native_track(self):
         self.cmds.node_types.update(
             {"model_root": "transform", "single_joint": "joint", "dense_joint": "joint"}
         )
@@ -2096,7 +2096,7 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         sampler.sample_dense_bone_channels = capture
         result = VmdSceneCollector(bone_channel_sampler=sampler).collect(
-            {"target_model": "model_root", "vmd_mode": "C", "frame_range": (0, 2)}
+            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 2)}
         )
 
         self.assertEqual(sampled_joints, ["dense_joint"])
@@ -2105,7 +2105,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             [("dense", 0), ("dense", 1), ("dense", 2)],
         )
 
-    def test_mode_c_direct_single_key_morphs_do_not_scrub_dense_range(self):
+    def test_bake_timeline_direct_single_key_morphs_do_not_scrub_dense_range(self):
         self.cmds.node_types["face_bs"] = "blendShape"
         self.cmds.blendshape_weights["face_bs"] = 2
         self.cmds.aliases.update(
@@ -2129,7 +2129,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(selection["counts"]["omitted_default"], 1)
         self.assertEqual(selection["counts"]["constant_one_key"], 1)
 
-    def test_mode_c_direct_constant_multi_key_morph_collapses_after_timeline_sampling(self):
+    def test_bake_timeline_direct_constant_multi_key_morph_collapses_after_timeline_sampling(self):
         self.cmds.node_types["face_bs"] = "blendShape"
         self.cmds.blendshape_weights["face_bs"] = 1
         self.cmds.aliases["face_bs.weight[0]"] = "smile"
@@ -2152,7 +2152,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(evidence[0]["source_key_count"], 2)
         self.assertEqual(evidence[0]["planned_key_count"], 1)
 
-    def test_mode_c_direct_nonconstant_multi_key_morph_stays_dense(self):
+    def test_bake_timeline_direct_nonconstant_multi_key_morph_stays_dense(self):
         self.cmds.node_types["face_bs"] = "blendShape"
         self.cmds.blendshape_weights["face_bs"] = 1
         self.cmds.aliases["face_bs.weight[0]"] = "smile"
@@ -2176,7 +2176,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             collector.diagnostics["track_selection"]["counts"]["authored_sampled"], 1
         )
 
-    def test_mode_c_controller_constant_multi_key_morph_collapses_after_timeline_sampling(self):
+    def test_bake_timeline_controller_constant_multi_key_morph_collapses_after_timeline_sampling(self):
         self.cmds.node_types.update(
             {"model_root": "transform", "morph_controller": "mmdMorphController"}
         )
@@ -2213,7 +2213,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             "dense_exact_constant",
         )
 
-    def test_mode_c_controller_direct_single_default_omits_without_dense_scrub(self):
+    def test_bake_timeline_controller_direct_single_default_omits_without_dense_scrub(self):
         self.cmds.node_types["morph_controller"] = "mmdMorphController"
         self.cmds.keys["morph_controller", "inputWeight[0]"] = {1.0: 0.0}
         self.cmds.attrs["morph_controller", "inputWeight[0]"] = 0.0
@@ -2244,7 +2244,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(evidence[0]["source_key_count"], 1)
         self.assertEqual(evidence[0]["planned_key_count"], 0)
 
-    def test_mode_c_controller_direct_single_non_default_emits_one_key(self):
+    def test_bake_timeline_controller_direct_single_non_default_emits_one_key(self):
         self.cmds.node_types["morph_controller"] = "mmdMorphController"
         self.cmds.keys["morph_controller", "inputWeight[0]"] = {1.0: 0.5}
         self.cmds.attrs["morph_controller", "inputWeight[0]"] = 0.5
@@ -2276,7 +2276,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(evidence[0]["decision"], "constant_one_key")
         self.assertEqual(evidence[0]["reason"], "controller_direct_single_non_default")
 
-    def test_mode_c_controller_direct_multi_key_near_equal_or_overshoot_stays_dense(self):
+    def test_bake_timeline_controller_direct_multi_key_near_equal_or_overshoot_stays_dense(self):
         self.cmds.node_types["morph_controller"] = "mmdMorphController"
         metadata = [SimpleNamespace(morph_type="bone", name="bone_morph", index=0)]
 
@@ -2321,7 +2321,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                     "multiple_source_keys",
                 )
 
-    def test_mode_c_controller_nonanim_incoming_remains_dependency_dense(self):
+    def test_bake_timeline_controller_nonanim_incoming_remains_dependency_dense(self):
         self.cmds.node_types["morph_controller"] = "mmdMorphController"
         self.cmds.keys["morph_controller", "inputWeight[0]"] = {0.0: 0.5, 2.0: 0.5}
         self.cmds.attrs["morph_controller", "inputWeight[0]"] = 0.5
@@ -2352,7 +2352,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(evidence[0]["decision"], "dependency_baked")
         self.assertEqual(evidence[0]["reason"], "morph_controller_route")
 
-    def test_mode_c_controller_out_of_range_second_key_is_not_direct_single(self):
+    def test_bake_timeline_controller_out_of_range_second_key_is_not_direct_single(self):
         self.cmds.node_types["morph_controller"] = "mmdMorphController"
         self.cmds.keys["morph_controller", "inputWeight[0]"] = {0.0: 0.5, 20.0: 0.5}
         self.cmds.attrs["morph_controller", "inputWeight[0]"] = 0.5
@@ -2385,7 +2385,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             1,
         )
 
-    def test_mode_c_exact_default_multi_key_bone_and_morph_are_omitted(self):
+    def test_bake_timeline_exact_default_multi_key_bone_and_morph_are_omitted(self):
         self.cmds.node_types.update(
             {"model_root": "transform", "center_joint": "joint", "face_bs": "blendShape"}
         )
@@ -2433,7 +2433,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         if weight is not None:
             self.cmds.attrs[("face_bs", "weight[0]")] = weight
 
-    def test_mode_c_keyless_direct_morph_default_and_non_default_sample_once(self):
+    def test_bake_timeline_keyless_direct_morph_default_and_non_default_sample_once(self):
         for weight in (0.0, 0.5):
             with self.subTest(weight=weight):
                 self._configure_static_morph(weight)
@@ -2470,7 +2470,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                     )
                 self.assertEqual(self.cmds.current_time_calls, [3.0, 0.0])
 
-    def test_mode_c_keyless_morph_invalid_dense_samples_fall_back_to_range_start(self):
+    def test_bake_timeline_keyless_morph_invalid_dense_samples_fall_back_to_range_start(self):
         self._configure_static_morph(0.5)
 
         frames = VmdSceneCollector().collect_morph_frames(
@@ -2486,7 +2486,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual([frame["frame_number"] for frame in frames], [2])
         self.assertEqual(self.cmds.current_time_calls, [2.0, 0.0])
 
-    def test_mode_c_keyless_morph_with_incoming_or_controller_is_dependency(self):
+    def test_bake_timeline_keyless_morph_with_incoming_or_controller_is_dependency(self):
         self._configure_static_morph()
         self.cmds.connections[("face_bs", "weight[0]", True, False)] = [
             "animCurve.output"
@@ -2532,7 +2532,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(evidence[0]["reason"], "keyless_controller_dependency")
         self.assertEqual(evidence[0]["source_key_count"], 0)
 
-    def test_public_mode_c_keyless_incoming_morph_uses_explicit_range(self):
+    def test_public_bake_timeline_keyless_incoming_morph_uses_explicit_range(self):
         self._configure_static_morph()
         self.cmds.node_types["model_root"] = "transform"
         self.cmds.connections[("face_bs", "weight[0]", True, False)] = [
@@ -2543,14 +2543,14 @@ class TestVmdSceneCollector(unittest.TestCase):
             {
                 "target_model": "model_root",
                 "blend_shapes": ["face_bs"],
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "frame_range": (0, 2),
             }
         )["morph_frames"]
 
         self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
 
-    def test_mode_c_keyless_morph_connection_query_failure_raises(self):
+    def test_bake_timeline_keyless_morph_connection_query_failure_raises(self):
         self._configure_static_morph()
         original = self.cmds.listConnections
 
@@ -2570,7 +2570,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         finally:
             self.cmds.listConnections = original
 
-    def test_mode_c_duplicate_morph_controller_index_fails_closed(self):
+    def test_bake_timeline_duplicate_morph_controller_index_fails_closed(self):
         self.cmds.node_types["morph_controller"] = "mmdMorphController"
         metadata = [
             SimpleNamespace(name="first", index=0, node="provider_a"),
@@ -2591,7 +2591,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                     timeline_evaluation=True,
                 )
 
-    def test_mode_c_duplicate_morph_controller_name_fails_closed(self):
+    def test_bake_timeline_duplicate_morph_controller_name_fails_closed(self):
         self.cmds.node_types["morph_controller"] = "mmdMorphController"
         metadata = [
             SimpleNamespace(name="same", index=0, node="provider_a"),
@@ -2612,7 +2612,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                     timeline_evaluation=True,
                 )
 
-    def test_mode_c_vertex_controller_owns_duplicate_blendshape_output(self):
+    def test_bake_timeline_vertex_controller_owns_duplicate_blendshape_output(self):
         self.cmds.node_types.update(
             {
                 "model_root": "transform",
@@ -2671,7 +2671,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(evidence[0]["decision"], "authored_sampled")
         self.assertEqual(evidence[0]["reason"], "multiple_source_keys")
 
-    def test_mode_c_nonvertex_controller_duplicate_blendshape_output_raises(self):
+    def test_bake_timeline_nonvertex_controller_duplicate_blendshape_output_raises(self):
         self.cmds.node_types.update(
             {
                 "model_root": "transform",
@@ -2711,7 +2711,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                     timeline_evaluation=True,
                 )
 
-    def test_mode_c_duplicate_blendshape_output_provider_fails_closed(self):
+    def test_bake_timeline_duplicate_blendshape_output_provider_fails_closed(self):
         self.cmds.node_types.update({"face_bs_a": "blendShape", "face_bs_b": "blendShape"})
         self.cmds.blendshape_weights.update({"face_bs_a": 1, "face_bs_b": 1})
         self.cmds.aliases.update(
@@ -2733,7 +2733,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                 timeline_evaluation=True,
             )
 
-    def test_mode_c_keyless_morph_noninteger_range_does_not_invent_sample(self):
+    def test_bake_timeline_keyless_morph_noninteger_range_does_not_invent_sample(self):
         self._configure_static_morph()
 
         collector = VmdSceneCollector()
@@ -2749,7 +2749,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(self.cmds.current_time_calls, [])
         self.assertNotIn("track_selection", collector.diagnostics)
 
-    def test_mode_c_morph_with_out_of_range_second_key_remains_dense(self):
+    def test_bake_timeline_morph_with_out_of_range_second_key_remains_dense(self):
         self.cmds.node_types["face_bs"] = "blendShape"
         self.cmds.blendshape_weights["face_bs"] = 1
         self.cmds.aliases["face_bs.weight[0]"] = "smile"
@@ -2772,7 +2772,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(selection["counts"]["constant_one_key"], 0)
         self.assertEqual(selection["counts"]["omitted_default"], 0)
 
-    def test_mode_c_controller_single_key_default_morph_is_omitted(self):
+    def test_bake_timeline_controller_single_key_default_morph_is_omitted(self):
         self.cmds.node_types["morph_controller"] = "mmdMorphController"
         self.cmds.keys[("morph_controller", "inputWeight[0]")] = {0.0: 0.0}
         collector = VmdSceneCollector()
@@ -2874,7 +2874,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             selection["source_omission_identity"]["fingerprint"], fingerprint_payload([])
         )
 
-    def test_mode_c_morph_sampling_is_frame_major_current_time_and_restores(self):
+    def test_bake_timeline_morph_sampling_is_frame_major_current_time_and_restores(self):
         self.cmds.node_types["face_bs"] = "blendShape"
         self.cmds.blendshape_weights["face_bs"] = 2
         self.cmds.aliases.update(
@@ -2919,7 +2919,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual([time for _plug, time, _current in sampled_reads], [0.0, 2.0])
         self.assertEqual(self.cmds.current_time_calls, [])
 
-    def test_mode_c_camera_and_light_use_current_frame_without_double_scrub(self):
+    def test_bake_timeline_camera_and_light_use_current_frame_without_double_scrub(self):
         self.cmds.node_types.update(
             {"mmd_camera": "transform", "mmd_light": "transform"}
         )
@@ -2973,7 +2973,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         ]
         self.assertTrue(all(time is None for _plug, time, _current in light_reads))
 
-    def test_mode_c_ik_uses_ascending_current_time_and_restores(self):
+    def test_bake_timeline_ik_uses_ascending_current_time_and_restores(self):
         self.cmds.attrs[("ik_solver", "enabled")] = False
         self.cmds.keys[("ik_solver", "enabled")] = {2.0: True}
         self.cmds.current_time = 8.0
@@ -2995,7 +2995,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         ]
         self.assertTrue(all(time is None for _plug, time, _current in ik_reads))
 
-    def test_mode_c_timeline_blocks_playback_and_restores_after_sample_error(self):
+    def test_bake_timeline_timeline_blocks_playback_and_restores_after_sample_error(self):
         self.cmds.node_types["face_bs"] = "blendShape"
         self.cmds.blendshape_weights["face_bs"] = 1
         self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.0, 1.0: 1.0}
@@ -3020,7 +3020,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             )
         self.assertEqual(self.cmds.current_time, 7.0)
 
-    def test_mode_c_timeline_restore_failure_blocks_export(self):
+    def test_bake_timeline_timeline_restore_failure_blocks_export(self):
         self.cmds.node_types["face_bs"] = "blendShape"
         self.cmds.blendshape_weights["face_bs"] = 1
         self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.5}
@@ -3035,7 +3035,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                 timeline_evaluation=True,
             )
 
-    def test_mode_c_timeline_reader_rejects_backward_sampling(self):
+    def test_bake_timeline_timeline_reader_rejects_backward_sampling(self):
         self.cmds.current_time = 9.0
 
         with self.assertRaisesRegex(RuntimeError, "ascending order"):
@@ -3054,7 +3054,7 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         options = {
             "target_model": "model_root",
-            "vmd_mode": "C",
+            "export_strategy": "bake_timeline",
             "frame_range": (0, 2),
         }
         plain = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler()).collect(options)
@@ -3126,7 +3126,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertIs(scoped["raw_bone_interpolation"], raw_records)
         self.assertNotIn("current_model_bone_names", raw_provenance)
 
-    def test_mode_c_preserves_sparse_keys_with_complete_raw_transform_provenance(self):
+    def test_bake_timeline_preserves_sparse_keys_with_complete_raw_transform_provenance(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
@@ -3154,7 +3154,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         result = VmdSceneCollector().collect(
             {
                 "target_model": "model_root",
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "frame_range": (0, 2),
                 "preserve_raw_bone_transforms": True,
             }
@@ -3163,7 +3163,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual([frame["frame_number"] for frame in result["bone_frames"]], [0, 2])
         self.assertEqual(result["bone_frames"][0]["interpolation"], bytes([7]) * 64)
 
-    def test_mode_c_dense_bakes_when_raw_provenance_is_not_opted_in(self):
+    def test_bake_timeline_dense_bakes_when_raw_provenance_is_not_opted_in(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
@@ -3191,7 +3191,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         result = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler()).collect(
             {
                 "target_model": "model_root",
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "frame_range": (0, 2),
                 "preserve_raw_bone_transforms": False,
             }
@@ -3234,7 +3234,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         result = VmdSceneCollector().collect(
             {
                 "target_model": "model_root",
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "preserve_raw_bone_transforms": True,
             }
         )
@@ -3613,7 +3613,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                     "target_model": "model_root",
                     "start_frame": 10.0,
                     "end_frame": 20.0,
-                    "vmd_mode": "C",
+                    "export_strategy": "bake_timeline",
                 }
             )
         finally:
@@ -3725,7 +3725,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {"左足ＩＫ": "ik_solver"}
         try:
             result = VmdSceneCollector().collect(
-                {"target_model": "model_root", "vmd_mode": "C"}
+                {"target_model": "model_root", "export_strategy": "bake_timeline"}
             )
         finally:
             collector_module.collect_ik_nodes_by_bone_name = original_collect
@@ -3746,7 +3746,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             ],
         )
 
-    def test_mode_c_keeps_keyed_ik_sparse_when_other_tracks_are_dense(self):
+    def test_bake_timeline_keeps_keyed_ik_sparse_when_other_tracks_are_dense(self):
         self.cmds.attrs[("ik_solver", "enabled")] = False
         self.cmds.keys[("ik_solver", "enabled")] = {0.0: 0.0}
         self.cmds.node_types["center_joint"] = "joint"
@@ -3768,7 +3768,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             result = VmdSceneCollector().collect(
                 {
                     "target_model": "model_root",
-                    "vmd_mode": "C",
+                    "export_strategy": "bake_timeline",
                     "frame_range": (0, 3),
                 }
             )

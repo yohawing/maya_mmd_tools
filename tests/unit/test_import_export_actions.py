@@ -647,7 +647,7 @@ class TestExportVmdAction(unittest.TestCase):
             self.assertEqual(exporter.calls[0][1], vmd_data)
             self.assertTrue(Path(file_path).is_file())
 
-    def test_execute_uses_collector_for_mode_a_when_animation_data_is_missing(self):
+    def test_execute_uses_collector_for_preserve_keys_when_animation_data_is_missing(self):
         exporter = _FakeVmdExporter()
         collected = {
             "model_name": "CollectedModel",
@@ -657,7 +657,7 @@ class TestExportVmdAction(unittest.TestCase):
                 "raw_bone_interpolation": [],
             },
         }
-        options = {"target_model": "model_root", "vmd_mode": "A"}
+        options = {"target_model": "model_root", "export_strategy": "preserve_keys"}
         action = ExportVmdAction(exporter=exporter, collector=lambda received: collected)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -680,7 +680,7 @@ class TestExportVmdAction(unittest.TestCase):
         self.assertIsNone(result.exported_path)
         self.assertIsInstance(result.error, ValueError)
 
-    def test_mode_c_without_prepared_animation_data_never_calls_collector_or_writer(self):
+    def test_bake_timeline_without_prepared_animation_data_never_calls_collector_or_writer(self):
         exporter = _FakeVmdExporter()
         collector_calls = []
         action = ExportVmdAction(
@@ -691,7 +691,7 @@ class TestExportVmdAction(unittest.TestCase):
         result = action.execute(
             ExportVmdRequest(
                 file_path="out.vmd",
-                options={"export_format": "vmd", "vmd_mode": "C"},
+                options={"export_format": "vmd", "export_strategy": "bake_timeline"},
             )
         )
 

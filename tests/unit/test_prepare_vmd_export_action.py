@@ -1,4 +1,4 @@
-"""Unit coverage for the immutable Mode C VMD preparation seam."""
+"""Unit coverage for the immutable Bake Timeline VMD preparation seam."""
 
 from dataclasses import FrozenInstanceError, replace
 import hashlib
@@ -81,9 +81,9 @@ class _Revisions:
 class _StreamingSession:
     instances = []
 
-    def __init__(self, model_name, *, mode, output_verifier, expected_frame_range=None):
+    def __init__(self, model_name, *, export_strategy, output_verifier, expected_frame_range=None):
         self.model_name = model_name
-        self.mode = mode
+        self.export_strategy = export_strategy
         self.output_verifier = output_verifier
         self.expected_frame_range = expected_frame_range
         self.finished = False
@@ -130,7 +130,7 @@ class _StreamingSession:
                     "raw provenance was omitted",
                 ),
             ),
-            mode="C",
+            mode="bake_timeline",
         )
         return PreparedVmdArtifactReceipt(
             schema_version=1,
@@ -193,7 +193,7 @@ def _request(**options):
         "target_uuid": "model-uuid",
         "target_identity": "|modelRoot",
         "scene_session_id": "scene-1",
-        "mode": "C",
+        "export_strategy": "bake_timeline",
         "frame_range": (0, 30),
         "frame_step": 1,
         "scale": 0.1,
@@ -405,7 +405,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         self.assertEqual(backend.discover_calls, 2)
         self.assertEqual(backend.collect_calls, 1)
         self.assertEqual(revisions.arm_calls, 1)
-        self.assertEqual(result.token.mode, "C")
+        self.assertEqual(result.token.export_strategy, "bake_timeline")
         self.assertEqual(result.token.revision, "r1")
         with self.assertRaises(FrozenInstanceError):
             result.token.revision = "r2"
@@ -484,19 +484,21 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         self.assertEqual(backend.collect_calls, 0)
         self.assertIn("revision_before", str(result.error))
 
-    def test_non_mode_c_is_rejected_before_discovery(self):
+    def test_non_bake_timeline_is_rejected_before_discovery(self):
         backend = _Backend([_discovery()])
-        result = PrepareVmdExportAction(backend, _Revisions(["r1"])).execute(_request(mode="A"))
+        result = PrepareVmdExportAction(backend, _Revisions(["r1"])).execute(
+            _request(export_strategy="preserve_keys")
+        )
 
         self.assertEqual(result.status, "failed")
         self.assertEqual(backend.discover_calls, 0)
-        self.assertIn("Mode C", str(result.error))
+        self.assertIn("Bake Timeline", str(result.error))
 
     def test_request_fingerprint_excludes_output_report_and_ack(self):
         base = {
             "target_uuid": "model-uuid",
             "target_identity": "|modelRoot",
-            "mode": "C",
+            "export_strategy": "bake_timeline",
             "frame_range": (10, 20),
             "frame_step": 2,
             "scale": 0.25,

@@ -36,17 +36,17 @@ DEFAULT_PMX = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube.pmx"
 DEFAULT_PHYSICS_PMX = ROOT / "tests" / "data" / "physics" / "test_hair_physics.pmx"
 DEFAULT_MORPH_PMX = ROOT / "tests" / "data" / "for_unit_test" / "test_vmd_morph_real_gate.pmx"
 DEFAULT_VMD = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube_motion.vmd"
-VMD_MODEL_TRACK_PMX = ROOT / "tests" / "data" / "yw_test_model_control_rig_bone_morph.pmx"
-VMD_MODEL_TRACK_VMD = ROOT / "tests" / "data" / "yw_test_model_control_rig_bone_morph.vmd"
-VMD_MODE_A_PMX = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube.pmx"
-VMD_MODE_A_VMD = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube_motion.vmd"
-VMD_CAMERA_LIGHT_VMD = ROOT / "tests" / "data" / "test_camera_light.vmd"
+VMD_BAKE_TIMELINE_MODEL_TRACK_PMX = ROOT / "tests" / "data" / "yw_test_model_control_rig_bone_morph.pmx"
+VMD_BAKE_TIMELINE_MODEL_TRACK_VMD = ROOT / "tests" / "data" / "yw_test_model_control_rig_bone_morph.vmd"
+VMD_PRESERVE_KEYS_PMX = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube.pmx"
+VMD_PRESERVE_KEYS_VMD = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube_motion.vmd"
+VMD_BAKE_TIMELINE_CAMERA_LIGHT_VMD = ROOT / "tests" / "data" / "test_camera_light.vmd"
 ORACLE_FRAMES = (0, 9, 19, 29, 39, 49)
-VMD_MODEL_TRACK_FRAMES = (0, 6, 10, 12, 20)
-VMD_MODE_A_FRAMES = ORACLE_FRAMES
-VMD_CAMERA_LIGHT_KEY_FRAMES = (0, 30, 60)
-VMD_CAMERA_LIGHT_FRAMES = (0, 15, 30, 45, 60)
-VMD_CAMERA_LIGHT_CANONICAL_INTERPOLATION = tuple([20] * 24)
+VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES = (0, 6, 10, 12, 20)
+VMD_PRESERVE_KEYS_FRAMES = ORACLE_FRAMES
+VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES = (0, 30, 60)
+VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES = (0, 15, 30, 45, 60)
+VMD_BAKE_TIMELINE_CAMERA_LIGHT_CANONICAL_INTERPOLATION = tuple([20] * 24)
 FLOAT_TOLERANCE = 1.0e-4
 NATIVE_CAMERA_TOLERANCE = 1.0e-3
 SUPPORTED_MORPH_TYPES = (
@@ -2939,13 +2939,13 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _vmd_mode_a_payload(data: Any) -> list[dict[str, Any]]:
-    """Normalize every raw VMD bone key for Mode A field-level comparison."""
+def _vmd_preserve_keys_payload(data: Any) -> list[dict[str, Any]]:
+    """Normalize every raw VMD bone key for Preserve Keys field-level comparison."""
     payload = []
     for frame in data.bone_frames:
         interpolation = list(bytes(frame.interpolation))
         if len(interpolation) != 64:
-            raise AssertionError("Mode A bone interpolation must contain 64 bytes")
+            raise AssertionError("Preserve Keys bone interpolation must contain 64 bytes")
         payload.append(
             {
                 "bone_name": str(frame.bone_name),
@@ -2966,26 +2966,26 @@ def _capture_vmd_import_provenance(root: str) -> dict[str, Any]:
 
     plug = f"{root}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}"
     if not cmds.attributeQuery(ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON, node=root, exists=True):
-        raise RuntimeError("Mode A source model has no VMD provenance attribute")
+        raise RuntimeError("Preserve Keys source model has no VMD provenance attribute")
     raw = cmds.getAttr(plug)
     try:
         parsed = json.loads(raw or "{}")
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Mode A VMD provenance is malformed JSON") from exc
+        raise RuntimeError("Preserve Keys VMD provenance is malformed JSON") from exc
     if not isinstance(parsed, dict):
-        raise RuntimeError("Mode A VMD provenance must be an object")
+        raise RuntimeError("Preserve Keys VMD provenance must be an object")
     records = parsed.get("raw_bone_interpolation")
     if not isinstance(records, list):
-        raise RuntimeError("Mode A VMD provenance has no raw bone records")
+        raise RuntimeError("Preserve Keys VMD provenance has no raw bone records")
     normalized_records = []
     for record in records:
         if not isinstance(record, dict):
-            raise RuntimeError("Mode A VMD provenance has a malformed raw bone record")
+            raise RuntimeError("Preserve Keys VMD provenance has a malformed raw bone record")
         interpolation = list(bytes(record.get("interpolation", ())))
         position = _round_values(record.get("position", ()))
         rotation = _round_values(record.get("rotation", ()))
         if len(interpolation) != 64 or len(position) != 3 or len(rotation) != 4:
-            raise RuntimeError("Mode A VMD provenance raw bone payload is malformed")
+            raise RuntimeError("Preserve Keys VMD provenance raw bone payload is malformed")
         normalized_records.append(
             {
                 "bone_name": str(record.get("bone_name") or ""),
@@ -3011,23 +3011,23 @@ def _capture_vmd_import_provenance(root: str) -> dict[str, Any]:
     }
 
 
-def _prepare_vmd_mode_a_fixture(out_dir: Path) -> Path:
-    """Create a runtime Mode A copy with a non-zero raw translation key."""
+def _prepare_vmd_preserve_keys_fixture(out_dir: Path) -> Path:
+    """Create a runtime Preserve Keys copy with a non-zero raw translation key."""
     from mmd_tools.core.vmd_data import VmdData
 
-    data = VmdData().parse_file(str(VMD_MODE_A_VMD))
+    data = VmdData().parse_file(str(VMD_PRESERVE_KEYS_VMD))
     target = next((frame for frame in data.bone_frames if int(frame.frame_number) == 9), None)
     if target is None:
-        raise RuntimeError("Mode A fixture has no frame 9 bone key")
+        raise RuntimeError("Preserve Keys fixture has no frame 9 bone key")
     target.position = (0.25, 0.0, -0.5)
-    output = out_dir / "fixtures" / "mode_a_nonzero_motion.vmd"
+    output = out_dir / "fixtures" / "preserve_keys_nonzero_motion.vmd"
     output.parent.mkdir(parents=True, exist_ok=True)
     data.write_file(str(output))
     return output
 
 
-def _capture_vmd_mode_a_pose_oracle(root: str, frames: Iterable[int]) -> dict[str, Any]:
-    """Capture checked-frame joint world matrices for the Mode A pose oracle."""
+def _capture_vmd_preserve_keys_pose_oracle(root: str, frames: Iterable[int]) -> dict[str, Any]:
+    """Capture checked-frame joint world matrices for the Preserve Keys pose oracle."""
     from maya import cmds
 
     joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
@@ -3040,7 +3040,7 @@ def _capture_vmd_mode_a_pose_oracle(root: str, frames: Iterable[int]) -> dict[st
         indexed.append((int(index), str(name), str(joint)))
     indexed.sort(key=lambda item: (item[0], item[1]))
     if not indexed:
-        raise RuntimeError("Mode A pose oracle found no indexed joints")
+        raise RuntimeError("Preserve Keys pose oracle found no indexed joints")
     pose_frames = {}
     for frame in frames:
         frame_number = int(frame)
@@ -3049,13 +3049,13 @@ def _capture_vmd_mode_a_pose_oracle(root: str, frames: Iterable[int]) -> dict[st
         for index, name, joint in indexed:
             matrix = _round_values(cmds.xform(joint, query=True, worldSpace=True, matrix=True) or [])
             if len(matrix) != 16 or not all(math.isfinite(float(value)) for value in matrix):
-                raise RuntimeError(f"Mode A pose oracle has malformed worldMatrix at frame {frame_number}")
+                raise RuntimeError(f"Preserve Keys pose oracle has malformed worldMatrix at frame {frame_number}")
             entries.append({"index": index, "name": name, "world_matrix": matrix})
         pose_frames[str(frame_number)] = entries
     return {"joint_count": len(indexed), "frames": pose_frames}
 
 
-def _capture_vmd_model_track_oracle(
+def _capture_vmd_bake_timeline_model_track_oracle(
     root: str,
     frames: Iterable[int],
     expected_bone_names: Iterable[str],
@@ -3151,7 +3151,7 @@ def _capture_vmd_model_track_oracle(
     }
 
 
-def _compare_vmd_model_track_oracles(
+def _compare_vmd_bake_timeline_model_track_oracles(
     expected: Mapping[str, Any], actual: Mapping[str, Any]
 ) -> list[str]:
     """Compare source-import and fresh-import model-track semantics."""
@@ -3212,7 +3212,7 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
         ExportWorkflowRequest(
             str(output),
             {
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "export_format": "vmd",
                 "require_target": True,
                 "target_model": source_root,
@@ -3245,6 +3245,7 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
     return {
         "status": "pass",
         "format": "vmd",
+        "export_strategy": "bake_timeline",
         "source": str(source_vmd),
         "output": str(output),
         "report_json": str(report_dir / "report.json"),
@@ -3269,51 +3270,51 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
     }
 
 
-def _run_vmd_mode_a_case(out_dir: Path) -> dict[str, Any]:
-    """Roundtrip an unedited imported VMD through the raw-preserving Mode A path."""
+def _run_vmd_preserve_keys_case(out_dir: Path) -> dict[str, Any]:
+    """Roundtrip an unedited imported VMD through the raw-preserving Preserve Keys path."""
     from mmd_tools.core.vmd_data import VmdData
     from mmd_tools.services.export_workflow_service import (
         ExportWorkflowRequest,
         ExportWorkflowService,
     )
 
-    source_fixture = _prepare_vmd_mode_a_fixture(out_dir)
+    source_fixture = _prepare_vmd_preserve_keys_fixture(out_dir)
     source_data = VmdData().parse_file(str(source_fixture))
-    source_payload = _vmd_mode_a_payload(source_data)
+    source_payload = _vmd_preserve_keys_payload(source_data)
     if not source_payload:
-        raise RuntimeError("Mode A fixture has no bone keys")
+        raise RuntimeError("Preserve Keys fixture has no bone keys")
     if not any(any(abs(float(value)) > FLOAT_TOLERANCE for value in record["position"]) for record in source_payload):
-        raise RuntimeError("Mode A runtime fixture has no non-zero translation key")
+        raise RuntimeError("Preserve Keys runtime fixture has no non-zero translation key")
     if not any(any(abs(float(value)) > FLOAT_TOLERANCE for value in record["rotation"][:3]) for record in source_payload):
-        raise RuntimeError("Mode A runtime fixture has no non-zero rotation key")
-    source_root = _fresh_import(VMD_MODE_A_PMX)
+        raise RuntimeError("Preserve Keys runtime fixture has no non-zero rotation key")
+    source_root = _fresh_import(VMD_PRESERVE_KEYS_PMX)
     source_root = _import_vmd_into_current_scene(
         source_root,
-        VMD_MODE_A_PMX,
+        VMD_PRESERVE_KEYS_PMX,
         source_fixture,
     )
     source_provenance = _capture_vmd_import_provenance(source_root)
-    source_oracle = _capture_vmd_mode_a_pose_oracle(source_root, VMD_MODE_A_FRAMES)
-    output = out_dir / "motion_mode_a.vmd"
+    source_oracle = _capture_vmd_preserve_keys_pose_oracle(source_root, VMD_PRESERVE_KEYS_FRAMES)
+    output = out_dir / "motion_preserve_keys.vmd"
     report_dir = out_dir / "report"
     target_existed_before = output.exists()
     result = ExportWorkflowService().execute(
         ExportWorkflowRequest(
             str(output),
             {
-                "vmd_mode": "A",
+                "export_strategy": "preserve_keys",
                 "export_format": "vmd",
                 "require_target": True,
                 "target_model": source_root,
                 "target_identity": source_root,
-                "start_frame": min(VMD_MODE_A_FRAMES),
-                "end_frame": max(VMD_MODE_A_FRAMES),
+                "start_frame": min(VMD_PRESERVE_KEYS_FRAMES),
+                "end_frame": max(VMD_PRESERVE_KEYS_FRAMES),
                 "model_name": source_data.header.model_name,
                 "validation_report_dir": str(report_dir),
                 "validation_report_evidence": {
                     "gate": "V070-EXPORT-RELEASE-GATE-1",
                     "fixture": source_fixture.name,
-                    "mode": "A",
+                    "export_strategy": "preserve_keys",
                     "fresh_import": True,
                     "oracles": ["bone_keys", "raw_interpolation", "pose", "provenance"],
                     "raw_provenance_required": True,
@@ -3323,29 +3324,29 @@ def _run_vmd_mode_a_case(out_dir: Path) -> dict[str, Any]:
         acknowledge_warnings=True,
     )
     if not result.succeeded:
-        raise RuntimeError(f"VMD Mode A export failed: {result.error or result.report}")
+        raise RuntimeError(f"VMD Preserve Keys export failed: {result.error or result.report}")
     if not output.exists():
-        raise AssertionError("VMD Mode A export reported success without creating output")
+        raise AssertionError("VMD Preserve Keys export reported success without creating output")
     exported_data = VmdData().parse_file(str(output))
-    exported_payload = _vmd_mode_a_payload(exported_data)
+    exported_payload = _vmd_preserve_keys_payload(exported_data)
     if not exported_payload or len(exported_payload) != len(source_payload):
-        raise AssertionError("VMD Mode A output bone key count differs from source")
+        raise AssertionError("VMD Preserve Keys output bone key count differs from source")
     if exported_data.morph_frames or exported_data.camera_frames or exported_data.light_frames:
-        raise AssertionError("VMD Mode A output contains unexpected non-bone tracks")
+        raise AssertionError("VMD Preserve Keys output contains unexpected non-bone tracks")
     if exported_payload != source_payload:
-        raise AssertionError("VMD Mode A output changed raw bone key payload")
+        raise AssertionError("VMD Preserve Keys output changed raw bone key payload")
 
-    fresh_root = _fresh_import(VMD_MODE_A_PMX)
+    fresh_root = _fresh_import(VMD_PRESERVE_KEYS_PMX)
     fresh_root = _import_vmd_into_current_scene(
         fresh_root,
-        VMD_MODE_A_PMX,
+        VMD_PRESERVE_KEYS_PMX,
         output,
     )
     fresh_provenance = _capture_vmd_import_provenance(fresh_root)
-    fresh_oracle = _capture_vmd_mode_a_pose_oracle(fresh_root, VMD_MODE_A_FRAMES)
+    fresh_oracle = _capture_vmd_preserve_keys_pose_oracle(fresh_root, VMD_PRESERVE_KEYS_FRAMES)
     source_sha256 = _sha256_file(source_fixture)
     output_sha256 = _sha256_file(output)
-    pmx_sha256 = _sha256_file(VMD_MODE_A_PMX)
+    pmx_sha256 = _sha256_file(VMD_PRESERVE_KEYS_PMX)
     if source_provenance["raw_bone_interpolation"] != source_payload:
         raise AssertionError("source import raw provenance differs from source VMD payload")
     if fresh_provenance["raw_bone_interpolation"] != exported_payload:
@@ -3355,21 +3356,21 @@ def _run_vmd_mode_a_case(out_dir: Path) -> dict[str, Any]:
         ("fresh", fresh_provenance, output_sha256),
     ):
         if provenance.get("pmx_sha256") != pmx_sha256:
-            raise AssertionError(f"{label} Mode A provenance PMX identity mismatch")
+            raise AssertionError(f"{label} Preserve Keys provenance PMX identity mismatch")
         if provenance.get("raw_vmd_sha256") != vmd_sha256:
-            raise AssertionError(f"{label} Mode A provenance VMD identity mismatch")
+            raise AssertionError(f"{label} Preserve Keys provenance VMD identity mismatch")
         if provenance.get("raw_bone_key_count") != len(source_payload):
-            raise AssertionError(f"{label} Mode A provenance key count mismatch")
+            raise AssertionError(f"{label} Preserve Keys provenance key count mismatch")
         if provenance.get("raw_bone_interpolation_complete") is not True:
-            raise AssertionError(f"{label} Mode A interpolation provenance is incomplete")
+            raise AssertionError(f"{label} Preserve Keys interpolation provenance is incomplete")
         if provenance.get("raw_bone_transform_complete") is not True:
-            raise AssertionError(f"{label} Mode A transform provenance is incomplete")
+            raise AssertionError(f"{label} Preserve Keys transform provenance is incomplete")
         if provenance.get("fallback") != "none":
-            raise AssertionError(f"{label} Mode A provenance reports an unexpected fallback")
+            raise AssertionError(f"{label} Preserve Keys provenance reports an unexpected fallback")
     pose_failures = []
     if source_oracle.get("joint_count") != fresh_oracle.get("joint_count"):
         pose_failures.append("joint_count mismatch")
-    for frame in VMD_MODE_A_FRAMES:
+    for frame in VMD_PRESERVE_KEYS_FRAMES:
         source_joints = source_oracle["frames"].get(str(frame), [])
         fresh_joints = fresh_oracle["frames"].get(str(frame), [])
         if len(source_joints) != len(fresh_joints):
@@ -3382,7 +3383,7 @@ def _run_vmd_mode_a_case(out_dir: Path) -> dict[str, Any]:
             if _compare_float_lists(source_joint["world_matrix"], fresh_joint["world_matrix"]) > FLOAT_TOLERANCE:
                 pose_failures.append(f"frame {frame} joint {index} worldMatrix mismatch")
     if pose_failures:
-        raise AssertionError("VMD Mode A pose mismatch: " + "; ".join(pose_failures))
+        raise AssertionError("VMD Preserve Keys pose mismatch: " + "; ".join(pose_failures))
 
     from maya import cmds
 
@@ -3395,14 +3396,14 @@ def _run_vmd_mode_a_case(out_dir: Path) -> dict[str, Any]:
         None,
     )
     if edited_joint is None:
-        raise RuntimeError("Mode A edited-raw negative could not find bone index 0")
+        raise RuntimeError("Preserve Keys edited-raw negative could not find bone index 0")
     cmds.currentTime(9, edit=True)
     original_translate = float(cmds.getAttr(f"{edited_joint}.translateX"))
     original_rotate = float(cmds.getAttr(f"{edited_joint}.rotateY"))
     cmds.setKeyframe(edited_joint, attribute="translateX", time=9, value=original_translate + 1.0)
     cmds.setKeyframe(edited_joint, attribute="rotateY", time=9, value=original_rotate + 15.0)
-    edited_output = out_dir / "edited_mode_a_sentinel.vmd"
-    sentinel = b"pre-existing Mode A output sentinel"
+    edited_output = out_dir / "edited_preserve_keys_sentinel.vmd"
+    sentinel = b"pre-existing Preserve Keys output sentinel"
     edited_output.parent.mkdir(parents=True, exist_ok=True)
     edited_output.write_bytes(sentinel)
     sentinel_before = _sha256_file(edited_output)
@@ -3410,13 +3411,13 @@ def _run_vmd_mode_a_case(out_dir: Path) -> dict[str, Any]:
         ExportWorkflowRequest(
             str(edited_output),
             {
-                "vmd_mode": "A",
+                "export_strategy": "preserve_keys",
                 "export_format": "vmd",
                 "require_target": True,
                 "target_model": source_root,
                 "target_identity": source_root,
-                "start_frame": min(VMD_MODE_A_FRAMES),
-                "end_frame": max(VMD_MODE_A_FRAMES),
+                "start_frame": min(VMD_PRESERVE_KEYS_FRAMES),
+                "end_frame": max(VMD_PRESERVE_KEYS_FRAMES),
                 "model_name": source_data.header.model_name,
             },
         ),
@@ -3425,16 +3426,16 @@ def _run_vmd_mode_a_case(out_dir: Path) -> dict[str, Any]:
     sentinel_after = _sha256_file(edited_output)
     issue_codes = [issue.code for issue in edited_result.report.issues]
     if edited_result.succeeded or "VMD_RAW_PROVENANCE_MISMATCH" not in issue_codes:
-        raise AssertionError("edited Mode A raw provenance did not fail with stable mismatch code")
+        raise AssertionError("edited Preserve Keys raw provenance did not fail with stable mismatch code")
     if sentinel_before != sentinel_after:
-        raise AssertionError("edited Mode A failure changed the pre-existing output sentinel")
+        raise AssertionError("edited Preserve Keys failure changed the pre-existing output sentinel")
     return {
         "status": "pass",
-        "format": "vmd_mode_a",
-        "mode": "A",
+        "format": "vmd_preserve_keys",
+        "export_strategy": "preserve_keys",
         "source": str(source_fixture),
         "source_fixture": str(source_fixture),
-        "source_model": str(VMD_MODE_A_PMX),
+        "source_model": str(VMD_PRESERVE_KEYS_PMX),
         "output": str(output),
         "report_json": str(report_dir / "report.json"),
         "report_md": str(report_dir / "report.md"),
@@ -3445,7 +3446,7 @@ def _run_vmd_mode_a_case(out_dir: Path) -> dict[str, Any]:
         },
         "fixture": {
             "runtime_copy": True,
-            "original": str(VMD_MODE_A_VMD),
+            "original": str(VMD_PRESERVE_KEYS_VMD),
             "nonzero_translation_frame": 9,
             "nonzero_translation_verified": True,
             "nonzero_rotation_verified": True,
@@ -3467,7 +3468,7 @@ def _run_vmd_mode_a_case(out_dir: Path) -> dict[str, Any]:
             "comparison": {
                 "status": "pass",
                 "boundaries": ["source", "source_import", "exported_file", "fresh_import"],
-                "checked_frames": list(VMD_MODE_A_FRAMES),
+                "checked_frames": list(VMD_PRESERVE_KEYS_FRAMES),
                 "raw_interpolation_preserved": True,
             },
         },
@@ -3488,7 +3489,7 @@ def _run_vmd_mode_a_case(out_dir: Path) -> dict[str, Any]:
             "comparison": {
                 "status": "pass",
                 "boundaries": ["source_import", "fresh_import"],
-                "checked_frames": list(VMD_MODE_A_FRAMES),
+                "checked_frames": list(VMD_PRESERVE_KEYS_FRAMES),
             },
         },
         "edited_raw_negative": {
@@ -3512,7 +3513,7 @@ def _run_vmd_mode_a_case(out_dir: Path) -> dict[str, Any]:
         },
         "collection": {
             "collector": "ExportWorkflowService -> VmdSceneCollector.collect",
-            "mode": "A",
+            "export_strategy": "preserve_keys",
             "target_model": source_root,
             "source_fresh_import": True,
             "result_fresh_import": True,
@@ -3521,29 +3522,29 @@ def _run_vmd_mode_a_case(out_dir: Path) -> dict[str, Any]:
     }
 
 
-def _run_vmd_model_tracks_case(out_dir: Path) -> dict[str, Any]:
-    """Roundtrip real Mode C bone, morph, and IK show/hide model tracks."""
+def _run_vmd_bake_timeline_model_tracks_case(out_dir: Path) -> dict[str, Any]:
+    """Roundtrip real Bake Timeline bone, morph, and IK show/hide model tracks."""
     from mmd_tools.core.vmd_data import VmdData
     from mmd_tools.services.export_workflow_service import (
         ExportWorkflowRequest,
         ExportWorkflowService,
     )
 
-    source_data = VmdData().parse_file(str(VMD_MODEL_TRACK_VMD))
+    source_data = VmdData().parse_file(str(VMD_BAKE_TIMELINE_MODEL_TRACK_VMD))
     if not source_data.bone_frames or not source_data.morph_frames or not source_data.ik_show_hide_frames:
         raise RuntimeError("model-track fixture lacks bone, morph, or IK show/hide frames")
-    source_payload = _vmd_track_payload(source_data, VMD_MODEL_TRACK_FRAMES)
+    source_payload = _vmd_track_payload(source_data, VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES)
     track_options = {**_import_options(), "setup_rig": True}
-    source_root = _fresh_import(VMD_MODEL_TRACK_PMX, import_options=track_options)
+    source_root = _fresh_import(VMD_BAKE_TIMELINE_MODEL_TRACK_PMX, import_options=track_options)
     source_root = _import_vmd_into_current_scene(
         source_root,
-        VMD_MODEL_TRACK_PMX,
-        VMD_MODEL_TRACK_VMD,
+        VMD_BAKE_TIMELINE_MODEL_TRACK_PMX,
+        VMD_BAKE_TIMELINE_MODEL_TRACK_VMD,
         import_options=track_options,
     )
-    source_oracle = _capture_vmd_model_track_oracle(
+    source_oracle = _capture_vmd_bake_timeline_model_track_oracle(
         source_root,
-        VMD_MODEL_TRACK_FRAMES,
+        VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES,
         source_payload["bone_track_names"],
     )
     output = out_dir / "motion.vmd"
@@ -3552,21 +3553,21 @@ def _run_vmd_model_tracks_case(out_dir: Path) -> dict[str, Any]:
         ExportWorkflowRequest(
             str(output),
             {
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "export_format": "vmd",
                 "require_target": True,
                 "target_model": source_root,
-                "start_frame": min(VMD_MODEL_TRACK_FRAMES),
-                "end_frame": max(VMD_MODEL_TRACK_FRAMES),
+                "start_frame": min(VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES),
+                "end_frame": max(VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES),
                 "model_name": source_data.header.model_name,
                 "target_identity": source_root,
                 "validation_report_dir": str(report_dir),
                 "validation_report_evidence": {
                     "gate": "V070-EXPORT-RELEASE-GATE-1",
-                    "fixture": VMD_MODEL_TRACK_VMD.name,
+                    "fixture": VMD_BAKE_TIMELINE_MODEL_TRACK_VMD.name,
                     "fresh_import": True,
                     "oracles": ["bone_tracks", "morph_tracks", "ik_show_hide_tracks"],
-                    "mode_c_raw_loss_warning": True,
+                    "bake_timeline_raw_loss_warning": True,
                 },
             },
         ),
@@ -3576,34 +3577,35 @@ def _run_vmd_model_tracks_case(out_dir: Path) -> dict[str, Any]:
         raise RuntimeError(f"VMD model-track export failed: {result.error or result.report}")
     exported_data = VmdData().parse_file(str(output))
     if not exported_data.bone_frames or not exported_data.morph_frames or not exported_data.ik_show_hide_frames:
-        raise AssertionError("Mode C output lost one or more required model-track types")
-    exported_payload = _vmd_track_payload(exported_data, VMD_MODEL_TRACK_FRAMES)
-    fresh_root = _fresh_import(VMD_MODEL_TRACK_PMX, import_options=track_options)
+        raise AssertionError("Bake Timeline output lost one or more required model-track types")
+    exported_payload = _vmd_track_payload(exported_data, VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES)
+    fresh_root = _fresh_import(VMD_BAKE_TIMELINE_MODEL_TRACK_PMX, import_options=track_options)
     fresh_root = _import_vmd_into_current_scene(
         fresh_root,
-        VMD_MODEL_TRACK_PMX,
+        VMD_BAKE_TIMELINE_MODEL_TRACK_PMX,
         output,
         import_options=track_options,
     )
-    fresh_oracle = _capture_vmd_model_track_oracle(
+    fresh_oracle = _capture_vmd_bake_timeline_model_track_oracle(
         fresh_root,
-        VMD_MODEL_TRACK_FRAMES,
+        VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES,
         source_payload["bone_track_names"],
     )
-    failures = _compare_vmd_model_track_oracles(source_oracle, fresh_oracle)
+    failures = _compare_vmd_bake_timeline_model_track_oracles(source_oracle, fresh_oracle)
     if failures:
         raise AssertionError("VMD model-track semantic mismatch: " + "; ".join(failures))
     return {
         "status": "pass",
-        "format": "vmd_model_tracks",
-        "source": str(VMD_MODEL_TRACK_VMD),
-        "source_model": str(VMD_MODEL_TRACK_PMX),
+        "format": "vmd_bake_timeline_model_tracks",
+        "export_strategy": "bake_timeline",
+        "source": str(VMD_BAKE_TIMELINE_MODEL_TRACK_VMD),
+        "source_model": str(VMD_BAKE_TIMELINE_MODEL_TRACK_PMX),
         "output": str(output),
         "report_json": str(report_dir / "report.json"),
         "report_md": str(report_dir / "report.md"),
-        "mode_c_warning_acknowledged": True,
+        "bake_timeline_warning_acknowledged": True,
         "track_coverage": {
-            "checked_frames": list(VMD_MODEL_TRACK_FRAMES),
+            "checked_frames": list(VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES),
             "tracks": ["bone", "morph", "ik_show_hide"],
             "source_counts": {
                 "bone_frames": len(source_data.bone_frames),
@@ -3629,7 +3631,7 @@ def _run_vmd_model_tracks_case(out_dir: Path) -> dict[str, Any]:
             "comparison": {
                 "status": "pass",
                 "boundaries": ["source_import", "exported_file", "fresh_import"],
-                "checked_frames": list(VMD_MODEL_TRACK_FRAMES),
+                "checked_frames": list(VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES),
                 "raw_key_interpolation_preserved": False,
             },
         },
@@ -3647,6 +3649,7 @@ def _run_vmd_model_tracks_case(out_dir: Path) -> dict[str, Any]:
         },
         "collection": {
             "collector": "ExportWorkflowService -> VmdSceneCollector.collect",
+            "export_strategy": "bake_timeline",
             "target_model": source_root,
             "source_fresh_import": True,
             "result_fresh_import": True,
@@ -3697,7 +3700,7 @@ def _camera_light_payload(data: Any, frames: Iterable[int]) -> dict[str, Any]:
         if int(frame.frame_number) in checked
     }
     for frame, payload in cameras.items():
-        if len(payload["interpolation"]) != len(VMD_CAMERA_LIGHT_CANONICAL_INTERPOLATION):
+        if len(payload["interpolation"]) != len(VMD_BAKE_TIMELINE_CAMERA_LIGHT_CANONICAL_INTERPOLATION):
             raise AssertionError(
                 f"camera frame {frame} interpolation must contain exactly 24 bytes"
             )
@@ -3832,7 +3835,7 @@ def _compare_camera_light_semantics(
     tracks: tuple[str, ...] = ("camera", "light"),
     tolerance: float = FLOAT_TOLERANCE,
 ) -> list[str]:
-    """Compare camera/light fields while allowing Mode C interpolation normalization."""
+    """Compare camera/light fields while allowing Bake Timeline interpolation normalization."""
     failures = []
     for track, fields in (
         ("camera", ("distance", "position", "rotation", "viewing_angle", "perspective")),
@@ -3860,28 +3863,28 @@ def _compare_camera_light_semantics(
     return failures
 
 
-def _run_vmd_camera_light_case(out_dir: Path) -> dict[str, Any]:
-    """Roundtrip standalone camera/light tracks through Mode C and fresh import."""
+def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
+    """Roundtrip standalone camera/light tracks through Bake Timeline and fresh import."""
     from mmd_tools.core.vmd_data import VmdData
     from mmd_tools.services.export_workflow_service import ExportWorkflowRequest, ExportWorkflowService
 
-    source_fixture, normalization = _prepare_camera_light_probe_fixture(VMD_CAMERA_LIGHT_VMD, out_dir)
+    source_fixture, normalization = _prepare_camera_light_probe_fixture(VMD_BAKE_TIMELINE_CAMERA_LIGHT_VMD, out_dir)
     source_data = VmdData().parse_file(str(source_fixture))
-    source_payload = _camera_light_payload(source_data, VMD_CAMERA_LIGHT_KEY_FRAMES)
-    native_dense = _native_camera_light_payload(source_fixture, VMD_CAMERA_LIGHT_FRAMES)
+    source_payload = _camera_light_payload(source_data, VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES)
+    native_dense = _native_camera_light_payload(source_fixture, VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES)
     source_root = _fresh_import(source_fixture)
-    source_scene = _capture_camera_light_scene_oracle(source_root, VMD_CAMERA_LIGHT_FRAMES)
+    source_scene = _capture_camera_light_scene_oracle(source_root, VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES)
     output = out_dir / "camera_light.vmd"
     report_dir = out_dir / "report"
     result = ExportWorkflowService().execute(
         ExportWorkflowRequest(
             str(output),
             {
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "export_format": "vmd",
                 "require_target": False,
-                "start_frame": min(VMD_CAMERA_LIGHT_FRAMES),
-                "end_frame": max(VMD_CAMERA_LIGHT_FRAMES),
+                "start_frame": min(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
+                "end_frame": max(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
                 "model_name": source_data.header.model_name,
                 "validation_report_dir": str(report_dir),
                 "validation_report_evidence": {
@@ -3896,7 +3899,7 @@ def _run_vmd_camera_light_case(out_dir: Path) -> dict[str, Any]:
         acknowledge_warnings=True,
     )
     if not result.succeeded:
-        raise RuntimeError(f"camera/light Mode C export failed: {result.error or result.report}")
+        raise RuntimeError(f"camera/light Bake Timeline export failed: {result.error or result.report}")
     exported_data = VmdData().parse_file(str(output))
     if (
         not exported_data.camera_frames
@@ -3907,21 +3910,21 @@ def _run_vmd_camera_light_case(out_dir: Path) -> dict[str, Any]:
         or exported_data.shadow_frames
     ):
         raise AssertionError("camera/light output has missing or out-of-scope track types")
-    exported_payload = _camera_light_payload(exported_data, VMD_CAMERA_LIGHT_KEY_FRAMES)
-    exported_dense_payload = _camera_light_payload(exported_data, VMD_CAMERA_LIGHT_FRAMES)
-    canonical_interpolation = list(VMD_CAMERA_LIGHT_CANONICAL_INTERPOLATION)
+    exported_payload = _camera_light_payload(exported_data, VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES)
+    exported_dense_payload = _camera_light_payload(exported_data, VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES)
+    canonical_interpolation = list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_CANONICAL_INTERPOLATION)
     if any(
         payload.get("interpolation") != canonical_interpolation
         for payload in exported_dense_payload["camera"].values()
     ):
-        raise AssertionError("Mode C exported camera interpolation is not canonical 24-byte [20] data")
+        raise AssertionError("Bake Timeline exported camera interpolation is not canonical 24-byte [20] data")
     parser_failures = _compare_camera_light_semantics(source_payload, exported_payload, "source/exported_file")
     if parser_failures:
         raise AssertionError("camera/light parser mismatch: " + "; ".join(parser_failures))
     fresh_root = _fresh_import(output)
-    fresh_scene = _capture_camera_light_scene_oracle(fresh_root, VMD_CAMERA_LIGHT_FRAMES)
-    source_scene_key = _camera_light_frame_subset(source_scene, VMD_CAMERA_LIGHT_KEY_FRAMES)
-    fresh_scene_key = _camera_light_frame_subset(fresh_scene, VMD_CAMERA_LIGHT_KEY_FRAMES)
+    fresh_scene = _capture_camera_light_scene_oracle(fresh_root, VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES)
+    source_scene_key = _camera_light_frame_subset(source_scene, VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES)
+    fresh_scene_key = _camera_light_frame_subset(fresh_scene, VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES)
     scene_failures = _compare_camera_light_semantics(source_scene, fresh_scene, "source_import/fresh_import")
     scene_failures.extend(
         _compare_camera_light_semantics(
@@ -3964,15 +3967,16 @@ def _run_vmd_camera_light_case(out_dir: Path) -> dict[str, Any]:
     }
     return {
         "status": "pass",
-        "format": "vmd_camera_light",
+        "format": "vmd_bake_timeline_camera_light",
+        "export_strategy": "bake_timeline",
         "source": str(source_fixture),
         "output": str(output),
         "report_json": str(report_dir / "report.json"),
         "report_md": str(report_dir / "report.md"),
         "normalization": normalization,
-        "mode_c_warning_acknowledged": True,
+        "bake_timeline_warning_acknowledged": True,
         "track_coverage": {
-            "checked_frames": list(VMD_CAMERA_LIGHT_FRAMES),
+            "checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
             "tracks": ["camera", "light"],
             "source_counts": {
                 "camera_frames": len(source_data.camera_frames),
@@ -3997,7 +4001,7 @@ def _run_vmd_camera_light_case(out_dir: Path) -> dict[str, Any]:
             "source": source_interpolation,
             "exported_file": exported_interpolation,
             "raw_preserved": source_interpolation == exported_interpolation,
-            "mode_c_normalized": source_interpolation != exported_interpolation,
+            "bake_timeline_normalized": source_interpolation != exported_interpolation,
             "canonical_expected": canonical_interpolation,
             "canonical_length": len(canonical_interpolation),
             "canonical_exported": True,
@@ -4005,13 +4009,13 @@ def _run_vmd_camera_light_case(out_dir: Path) -> dict[str, Any]:
         "comparison": {
             "status": "pass",
             "boundaries": ["source", "source_import", "exported_file", "fresh_import"],
-            "checked_frames": list(VMD_CAMERA_LIGHT_KEY_FRAMES),
-            "dense_checked_frames": list(VMD_CAMERA_LIGHT_FRAMES),
+            "checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES),
+            "dense_checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
             "dense_status": "pass",
             "raw_interpolation_preserved": source_interpolation == exported_interpolation,
         },
         "dense": {
-            "checked_frames": list(VMD_CAMERA_LIGHT_FRAMES),
+            "checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
             "native_expected": native_dense,
             "native_comparison_tracks": ["camera"],
             "light_comparison": "source_import/fresh_import",
@@ -4030,6 +4034,7 @@ def _run_vmd_camera_light_case(out_dir: Path) -> dict[str, Any]:
         },
         "collection": {
             "collector": "ExportWorkflowService -> VmdSceneCollector.collect",
+            "export_strategy": "bake_timeline",
             "standalone_scene": True,
             "source_fresh_import": True,
             "result_fresh_import": True,
@@ -4212,39 +4217,39 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
             }
         )
     try:
-        cases.append(_run_vmd_mode_a_case(out_dir / "vmd-mode-a"))
+        cases.append(_run_vmd_preserve_keys_case(out_dir / "vmd-preserve-keys"))
     except Exception as exc:
         cases.append(
             {
                 "status": "fail",
-                "format": "vmd_mode_a",
-                "source": str(VMD_MODE_A_VMD),
-                "source_model": str(VMD_MODE_A_PMX),
+                "format": "vmd_preserve_keys",
+                "source": str(VMD_PRESERVE_KEYS_VMD),
+                "source_model": str(VMD_PRESERVE_KEYS_PMX),
                 "error": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc(limit=12),
             }
         )
     try:
-        cases.append(_run_vmd_model_tracks_case(out_dir / "vmd-model-tracks"))
+        cases.append(_run_vmd_bake_timeline_model_tracks_case(out_dir / "vmd-bake-timeline-model-tracks"))
     except Exception as exc:
         cases.append(
             {
                 "status": "fail",
-                "format": "vmd_model_tracks",
-                "source": str(VMD_MODEL_TRACK_VMD),
-                "source_model": str(VMD_MODEL_TRACK_PMX),
+                "format": "vmd_bake_timeline_model_tracks",
+                "source": str(VMD_BAKE_TIMELINE_MODEL_TRACK_VMD),
+                "source_model": str(VMD_BAKE_TIMELINE_MODEL_TRACK_PMX),
                 "error": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc(limit=12),
             }
         )
     try:
-        cases.append(_run_vmd_camera_light_case(out_dir / "vmd-camera-light"))
+        cases.append(_run_vmd_bake_timeline_camera_light_case(out_dir / "vmd-bake-timeline-camera-light"))
     except Exception as exc:
         cases.append(
             {
                 "status": "fail",
-                "format": "vmd_camera_light",
-                "source": str(VMD_CAMERA_LIGHT_VMD),
+                "format": "vmd_bake_timeline_camera_light",
+                "source": str(VMD_BAKE_TIMELINE_CAMERA_LIGHT_VMD),
                 "error": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc(limit=12),
             }
@@ -4266,9 +4271,9 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
             "pmx_impulse": str(impulse_fixture),
             "pmx_flip": str(flip_fixture),
             "vmd": str(vmd_path),
-            "vmd_mode_a": str(VMD_MODE_A_VMD),
-            "vmd_model_tracks": str(VMD_MODEL_TRACK_VMD),
-            "vmd_camera_light": str(VMD_CAMERA_LIGHT_VMD),
+            "vmd_preserve_keys": str(VMD_PRESERVE_KEYS_VMD),
+            "vmd_bake_timeline_model_tracks": str(VMD_BAKE_TIMELINE_MODEL_TRACK_VMD),
+            "vmd_bake_timeline_camera_light": str(VMD_BAKE_TIMELINE_CAMERA_LIGHT_VMD),
         },
         "cases": cases,
     }

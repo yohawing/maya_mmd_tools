@@ -5,11 +5,11 @@ model-scoped PMX network morph controller weights into the dict contract
 consumed by ``VmdExporter``. Bone translation can be converted back to VMD
 offsets when a bind-pose map is supplied, and XYZ joint rotations are
 converted back to VMD quaternions with jointOrient compensation. Explicit
-Mode C requests sample the selected Maya frame range at one-frame intervals:
+Bake Timeline requests sample the selected Maya frame range at one-frame intervals:
 bones use the native sampler while morph/IK/camera/light tracks advance Maya's
 normal Timeline and read current-frame values. Sampling failures block export.
 An imported raw key/interpolation/transform payload is reused only when the
-caller explicitly opts into ``preserve_raw_bone_transforms``; Mode A and
+caller explicitly opts into ``preserve_raw_bone_transforms``; Preserve Keys and
 low-level collector callers retain sparse collection semantics.
 """
 
@@ -270,11 +270,11 @@ def _is_direct_authored_track(node: str, attrs: Sequence[str]) -> bool:
     return True
 
 
-_MODE_C_LAYER_STATE_ATTRS = ("weight", "mute", "solo", "override", "passthrough")
-_MODE_C_LAYER_OPTIONAL_STATE_ATTRS = ("rotationAccumulationMode",)
+_BAKE_TIMELINE_LAYER_STATE_ATTRS = ("weight", "mute", "solo", "override", "passthrough")
+_BAKE_TIMELINE_LAYER_OPTIONAL_STATE_ATTRS = ("rotationAccumulationMode",)
 
 
-def _mode_c_writable_plug(node: str, attribute: str) -> bool:
+def _bake_timeline_writable_plug(node: str, attribute: str) -> bool:
     """Check the resolved physical plug using Maya API 2.0."""
     try:
         selection = om.MSelectionList()
@@ -284,7 +284,7 @@ def _mode_c_writable_plug(node: str, attribute: str) -> bool:
         return False
 
 
-def _mode_c_layer_chain(layer: str) -> Optional[set[str]]:
+def _bake_timeline_layer_chain(layer: str) -> Optional[set[str]]:
     """Validate one layer and its parents through BaseAnimation."""
     chain = set()
     while layer:
@@ -292,13 +292,13 @@ def _mode_c_layer_chain(layer: str) -> Optional[set[str]]:
             return None
         chain.add(layer)
         try:
-            for attribute in _MODE_C_LAYER_STATE_ATTRS:
+            for attribute in _BAKE_TIMELINE_LAYER_STATE_ATTRS:
                 plug = f"{layer}.{attribute}"
                 if _incoming_connection_state(layer, (attribute,), strict=True) != "none":
                     return None
                 if cmds.keyframe(plug, query=True, timeChange=True) or []:
                     return None
-            for attribute in _MODE_C_LAYER_OPTIONAL_STATE_ATTRS:
+            for attribute in _BAKE_TIMELINE_LAYER_OPTIONAL_STATE_ATTRS:
                 if not cmds.attributeQuery(attribute, node=layer, exists=True):
                     continue
                 plug = f"{layer}.{attribute}"
@@ -317,7 +317,7 @@ def _mode_c_layer_chain(layer: str) -> Optional[set[str]]:
     return chain
 
 
-def _mode_c_direct_curve_source(curve: str, expected_type: str) -> bool:
+def _bake_timeline_direct_curve_source(curve: str, expected_type: str) -> bool:
     """Accept a channel-specific time curve with implicit or explicit time."""
     try:
         if str(cmds.nodeType(curve) or "") != expected_type:
@@ -335,7 +335,7 @@ def _mode_c_direct_curve_source(curve: str, expected_type: str) -> bool:
         return False
 
 
-def _mode_c_validate_anim_blend(
+def _bake_timeline_validate_anim_blend(
     node: str,
     *,
     expected_type: str,
@@ -384,7 +384,7 @@ def _mode_c_validate_anim_blend(
         else ("inputAX", "inputAY", "inputAZ", "inputBX", "inputBY", "inputBZ")
     )
     for attribute in input_attrs:
-        if attribute in incoming and not _mode_c_direct_curve_source(
+        if attribute in incoming and not _bake_timeline_direct_curve_source(
             incoming[attribute].split(".", 1)[0], curve_type
         ):
             return None
@@ -422,7 +422,7 @@ def _mode_c_validate_anim_blend(
         return None
     valid_layers = set()
     for layer in sorted(layers):
-        chain = _mode_c_layer_chain(layer)
+        chain = _bake_timeline_layer_chain(layer)
         if chain is None:
             return None
         valid_layers.update(chain)
@@ -431,7 +431,7 @@ def _mode_c_validate_anim_blend(
     except Exception:
         return None
     for scene_layer in scene_layers:
-        if _mode_c_layer_chain(str(scene_layer)) is None:
+        if _bake_timeline_layer_chain(str(scene_layer)) is None:
             return None
     for attribute in ("weightA", "weightB", "accumulationMode"):
         if attribute in incoming and incoming[attribute].split(".", 1)[0] not in valid_layers:
@@ -439,7 +439,7 @@ def _mode_c_validate_anim_blend(
     return sorted(layers)[0]
 
 
-def _mode_c_authored_input_plug(
+def _bake_timeline_authored_input_plug(
     node: str,
     physical_attr: str,
     logical_attr: str,
@@ -466,7 +466,7 @@ def _mode_c_authored_input_plug(
     return physical_attr[len(prefix) : -len(suffix)].isdigit()
 
 
-def _mode_c_single_key_bone_route(
+def _bake_timeline_single_key_bone_route(
     joint: str,
     route: Mapping[str, tuple[str, str]],
 ) -> Optional[str]:
@@ -474,9 +474,9 @@ def _mode_c_single_key_bone_route(
     blend_kinds: set[str] = set()
     for attribute in _BONE_EXPORT_ATTRS:
         node, physical_attr = route.get(attribute, (joint, attribute))
-        if not _mode_c_authored_input_plug(
+        if not _bake_timeline_authored_input_plug(
             str(node), str(physical_attr), attribute
-        ) or not _mode_c_writable_plug(str(node), str(physical_attr)):
+        ) or not _bake_timeline_writable_plug(str(node), str(physical_attr)):
             return None
         try:
             sources = cmds.listConnections(f"{node}.{physical_attr}", source=True, destination=False, plugs=True, skipConversionNodes=False) or []
@@ -494,7 +494,7 @@ def _mode_c_single_key_bone_route(
             return None
         expected_curve = "animCurveTL" if attribute.startswith("translate") else "animCurveTA"
         if source_type == expected_curve:
-            if source_attr != "output" or not _mode_c_direct_curve_source(
+            if source_attr != "output" or not _bake_timeline_direct_curve_source(
                 source_node, expected_curve
             ):
                 return None
@@ -509,7 +509,7 @@ def _mode_c_single_key_bone_route(
         )
         if source_attr != expected_output:
             return None
-        layer = _mode_c_validate_anim_blend(
+        layer = _bake_timeline_validate_anim_blend(
             source_node,
             expected_type=expected_blend,
             curve_type=expected_curve,
@@ -540,7 +540,7 @@ def _incoming_connection_state(
 ) -> str:
     """Classify logical incoming connections without hiding query failures.
 
-    ``strict`` is used by standard Mode C keyless-track planning.  A failed
+    ``strict`` is used by standard Bake Timeline keyless-track planning.  A failed
     connection query is not equivalent to an unconnected plug there: sampling
     the visible joint would otherwise silently bake an unknown dependency.
     """
@@ -631,7 +631,7 @@ def _raw_vmd_rotation_interpolation(
 def _raw_vmd_bone_transforms(
     provenance: Optional[Mapping[str, Any]],
 ) -> dict[tuple[str, int], tuple[tuple[float, ...], tuple[float, ...]]]:
-    """Decode complete raw bone position/rotation records for Mode A reuse."""
+    """Decode complete raw bone position/rotation records for imported-key reuse."""
     if not isinstance(provenance, Mapping) or not provenance.get(
         "raw_bone_transform_complete"
     ):
@@ -783,7 +783,7 @@ def _write_stream_frame(sink: Any, section: str, frame: Mapping[str, Any]) -> No
     method(frame)
 
 
-def _read_mode_c_raw_loss_marker(target_model: Optional[str]) -> Optional[dict[str, Any]]:
+def _read_bake_timeline_raw_loss_marker(target_model: Optional[str]) -> Optional[dict[str, Any]]:
     """Return a bounded raw-loss marker without decoding raw frame records."""
 
     if not target_model:
@@ -800,7 +800,7 @@ def _read_mode_c_raw_loss_marker(target_model: Optional[str]) -> Optional[dict[s
         return None
     # This intentionally does not call json.loads: imported provenance may
     # contain millions of raw records.  A complete interpolation payload is
-    # enough to require the existing acknowledgement warning in Mode C.
+    # enough to require the existing acknowledgement warning in Bake Timeline.
     text = str(raw or "")
     if not re.search(
         r'"raw_bone_interpolation_complete"\s*:\s*true\b',
@@ -809,7 +809,7 @@ def _read_mode_c_raw_loss_marker(target_model: Optional[str]) -> Optional[dict[s
     ):
         return None
     return {
-        "warning_code": "VMD_MODE_C_RAW_LOSS",
+        "warning_code": "VMD_BAKE_TIMELINE_RAW_LOSS",
         "raw_loss_warning_required": False,
         "required": False,
         "informational": True,
@@ -825,9 +825,10 @@ class VmdSceneCollector:
         The sink receives one small JSON-shaped dictionary after collection;
         it never receives per-frame values.  Keeping it optional preserves the
         existing low-level collector API and keeps the hot loop untouched.
-        ``bone_channel_sampler`` is the required Mode C bone sampling seam.
-        Native command, protocol, and value failures are fatal for Mode C;
-        sparse non-Mode-C collection continues to use ``cmds.getAttr``.
+        ``bone_channel_sampler`` is the required Bake Timeline bone sampling
+        seam. Native command, protocol, and value failures are fatal for Bake
+        Timeline; sparse Preserve Keys collection continues to use
+        ``cmds.getAttr``.
         """
 
         self._diagnostics_sink = diagnostics_sink
@@ -836,10 +837,10 @@ class VmdSceneCollector:
         # and every non-bone track remain Python-owned.
         self._bone_channel_sampler = bone_channel_sampler
         self._diagnostics: dict[str, Any] = {}
-        # Standard Mode C physics ownership is scoped to one collection.  A
+        # Standard Bake Timeline physics ownership is scoped to one collection.  A
         # target that cannot be routed through authored/pre-physics channels
         # must not later be mistaken for an ordinary keyless dependency.
-        self._mode_c_physics_output_excluded_targets: set[str] = set()
+        self._bake_timeline_physics_output_excluded_targets: set[str] = set()
         self._source_omission_identities: set[tuple[str, str]] = set()
 
     @property
@@ -950,7 +951,7 @@ class VmdSceneCollector:
         options: Optional[Mapping[str, Any]],
         sink: Any,
     ) -> dict[str, Any]:
-        """Stream standard Mode C sections into a VMD writer-compatible sink.
+        """Stream standard Bake Timeline sections into a VMD writer-compatible sink.
 
         The legacy ``collect`` API intentionally remains object-graph based.
         This internal path shares the same planners and per-track collectors,
@@ -960,21 +961,21 @@ class VmdSceneCollector:
         """
 
         if sink is None:
-            raise TypeError("Mode C stream collection requires a sink")
+            raise TypeError("Bake Timeline stream collection requires a sink")
         options = options or {}
-        mode = str(options.get("vmd_mode", options.get("mode", "")) or "").upper()
-        if mode != "C":
-            raise ValueError("collect_to_sink supports standard Mode C only")
+        export_strategy = str(options.get("export_strategy", "") or "").lower()
+        if export_strategy != "bake_timeline":
+            raise ValueError("collect_to_sink supports standard Bake Timeline only")
         if options.get("preserve_raw_bone_transforms"):
             raise ValueError(
-                "streaming Mode C cannot preserve raw bone frame records"
+                "streaming Bake Timeline cannot preserve raw imported bone frame records"
             )
         started = time.perf_counter()
         self._diagnostics = {}
         self._source_omission_identities = set()
-        self._mode_c_physics_output_excluded_targets = set()
+        self._bake_timeline_physics_output_excluded_targets = set()
         self._diagnostics["track_selection"] = _new_track_selection()
-        exact_run_reduction = bool(options.get("mode_c_exact_run_reduction", True))
+        exact_run_reduction = bool(options.get("bake_timeline_exact_run_reduction", True))
         key_reduction = _new_key_reduction_report(exact_run_reduction)
         self._diagnostics["key_reduction"] = key_reduction
         section_counts = {
@@ -1008,7 +1009,7 @@ class VmdSceneCollector:
             motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
             bone_bind_poses = options.get("bone_bind_poses") or {}
             maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
-            protected_ik_frames = self._mode_c_protected_ik_frames(
+            protected_ik_frames = self._bake_timeline_protected_ik_frames(
                 target_model,
                 start_frame,
                 end_frame,
@@ -1016,13 +1017,13 @@ class VmdSceneCollector:
             )
             self._control_rig_dense_export(target_model)
             rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
-            raw_marker = _read_mode_c_raw_loss_marker(target_model)
+            raw_marker = _read_bake_timeline_raw_loss_marker(target_model)
             authored_routes = self._scene_authored_input_routes(
                 joints,
                 target_model,
-                standard_mode_c=True,
+                strict_bake_timeline=True,
             )
-            mode_c_dense_frames = self._mode_c_dense_frame_samples(
+            bake_timeline_dense_frames = self._bake_timeline_dense_frame_samples(
                 joints,
                 blend_shapes,
                 cameras,
@@ -1039,7 +1040,7 @@ class VmdSceneCollector:
                 "light_count": len(lights),
                 "authored_route_count": len(authored_routes),
                 "raw_provenance": bool(raw_marker),
-                "dense_frame_count": len(mode_c_dense_frames or ()),
+                "dense_frame_count": len(bake_timeline_dense_frames or ()),
                 "streaming": True,
             }
 
@@ -1058,7 +1059,7 @@ class VmdSceneCollector:
                 force_dense_sample=True,
                 time_converter=maya_time_to_vmd,
                 rotation_interpolation=rotation_interpolation,
-                dense_frame_samples=mode_c_dense_frames,
+                dense_frame_samples=bake_timeline_dense_frames,
                 preserve_raw_bone_transforms=False,
                 raw_bone_transforms=None,
                 bone_channel_sampler=self._bone_channel_sampler,
@@ -1075,7 +1076,7 @@ class VmdSceneCollector:
                 time_converter=maya_time_to_vmd,
                 target_model=target_model,
                 dense_sample=True,
-                dense_frame_samples=mode_c_dense_frames,
+                dense_frame_samples=bake_timeline_dense_frames,
                 timeline_evaluation=True,
                 frame_sink=lambda frame: emit("morphs", frame),
                 exact_run_reduction=exact_run_reduction,
@@ -1085,7 +1086,7 @@ class VmdSceneCollector:
             )
             begin_section("cameras")
             begin_section("lights")
-            self._diagnostics["unsupported_mode_c_sections"] = {
+            self._diagnostics["unsupported_bake_timeline_sections"] = {
                 "cameras": len(unsupported_cameras),
                 "lights": len(unsupported_lights),
             }
@@ -1116,10 +1117,10 @@ class VmdSceneCollector:
                 "wall_sec": round(time.perf_counter() - started, 6),
             }
             validation_frame_range = None
-            if mode_c_dense_frames:
+            if bake_timeline_dense_frames:
                 validation_frame_range = (
-                    _vmd_frame_number(mode_c_dense_frames[0], maya_time_to_vmd),
-                    _vmd_frame_number(mode_c_dense_frames[-1], maya_time_to_vmd),
+                    _vmd_frame_number(bake_timeline_dense_frames[0], maya_time_to_vmd),
+                    _vmd_frame_number(bake_timeline_dense_frames[-1], maya_time_to_vmd),
                 )
             elif start_frame is not None and end_frame is not None:
                 validation_frame_range = (
@@ -1150,13 +1151,13 @@ class VmdSceneCollector:
             options: Optional mapping. Supported keys are ``target_model`` /
                 ``model_root``, ``joints``, ``blend_shapes``, ``cameras``,
                 ``lights``, ``start_frame`` / ``end_frame`` or ``frame_range``,
-                ``vmd_mode``, ``model_name``, ``motion_scale``, and
+                ``export_strategy``, ``model_name``, ``motion_scale``, and
                 ``bone_bind_poses``. Automatic joint and blendShape discovery
                 is scoped to the selected model root; camera/light discovery
                 remains scene-level. Explicit node lists remain authoritative.
         """
         options = options or {}
-        self._mode_c_physics_output_excluded_targets = set()
+        self._bake_timeline_physics_output_excluded_targets = set()
         self._diagnostics["track_selection"] = _new_track_selection()
         planning_started = time.perf_counter()
         target_model = options.get("target_model") or options.get("model_root")
@@ -1172,9 +1173,15 @@ class VmdSceneCollector:
         motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
         bone_bind_poses = options.get("bone_bind_poses") or {}
         maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
-        mode = str(options.get("vmd_mode", options.get("mode", "")) or "").upper()
-        if mode == "C":
-            self._diagnostics["unsupported_mode_c_sections"] = {
+        export_strategy = str(
+            options.get("export_strategy", "preserve_keys")
+            or "preserve_keys"
+        ).lower()
+        if export_strategy not in {"preserve_keys", "bake_timeline"}:
+            raise ValueError(f"unsupported VMD export strategy: {export_strategy!r}")
+        bake_timeline_export = export_strategy == "bake_timeline"
+        if bake_timeline_export:
+            self._diagnostics["unsupported_bake_timeline_sections"] = {
                 "cameras": len(cameras),
                 "lights": len(lights),
             }
@@ -1184,7 +1191,6 @@ class VmdSceneCollector:
             options.get("preserve_raw_bone_transforms", False)
         )
         dense_control_rig_export = self._control_rig_dense_export(target_model)
-        dense_mode_c_export = mode == "C"
         rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
         raw_provenance = _read_vmd_import_provenance(target_model)
         raw_provenance = self._attach_current_model_bone_scope(
@@ -1192,26 +1198,26 @@ class VmdSceneCollector:
             joints,
             target_model,
         )
-        if mode != "C" or preserve_raw_bone_transforms:
+        if not bake_timeline_export or preserve_raw_bone_transforms:
             for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
                 rotation_interpolation.setdefault(bone_name, {}).update(values)
         raw_bone_transforms = _raw_vmd_bone_transforms(raw_provenance)
-        preserve_sparse_mode_c = bool(
-            dense_mode_c_export
+        preserve_keys_export = export_strategy == "preserve_keys" or bool(
+            bake_timeline_export
             and preserve_raw_bone_transforms
             and raw_provenance
             and raw_bone_transforms
             and raw_provenance.get("raw_bone_interpolation_complete")
             and raw_provenance.get("raw_bone_transform_complete")
         )
-        dense_mode_c_export = dense_mode_c_export and not preserve_sparse_mode_c
+        bake_timeline_export = bake_timeline_export and not preserve_keys_export
         authored_routes = self._scene_authored_input_routes(
             joints,
             target_model,
-            standard_mode_c=dense_mode_c_export,
+            strict_bake_timeline=bake_timeline_export,
         )
-        mode_c_dense_frames = (
-            self._mode_c_dense_frame_samples(
+        bake_timeline_dense_frames = (
+            self._bake_timeline_dense_frame_samples(
                 joints,
                 blend_shapes,
                 cameras,
@@ -1221,7 +1227,7 @@ class VmdSceneCollector:
                 start_frame,
                 end_frame,
             )
-            if dense_mode_c_export
+            if bake_timeline_export
             else None
         )
 
@@ -1233,7 +1239,7 @@ class VmdSceneCollector:
             "light_count": len(lights),
             "authored_route_count": len(authored_routes),
             "raw_provenance": bool(raw_provenance),
-            "dense_frame_count": len(mode_c_dense_frames or ()),
+            "dense_frame_count": len(bake_timeline_dense_frames or ()),
         }
 
         bone_started = time.perf_counter()
@@ -1244,11 +1250,11 @@ class VmdSceneCollector:
             motion_scale=motion_scale,
             bone_bind_poses=bone_bind_poses,
             input_routes=authored_routes,
-            dense_sample=dense_control_rig_export or dense_mode_c_export,
-            force_dense_sample=dense_mode_c_export,
+            dense_sample=dense_control_rig_export or bake_timeline_export,
+            force_dense_sample=bake_timeline_export,
             time_converter=maya_time_to_vmd,
             rotation_interpolation=rotation_interpolation,
-            dense_frame_samples=mode_c_dense_frames,
+            dense_frame_samples=bake_timeline_dense_frames,
             preserve_raw_bone_transforms=preserve_raw_bone_transforms,
             raw_bone_transforms=raw_bone_transforms,
             bone_channel_sampler=self._bone_channel_sampler,
@@ -1267,11 +1273,11 @@ class VmdSceneCollector:
             end_frame,
             time_converter=maya_time_to_vmd,
             target_model=target_model,
-            dense_sample=dense_mode_c_export,
-            dense_frame_samples=mode_c_dense_frames,
-            timeline_evaluation=mode == "C",
+            dense_sample=bake_timeline_export,
+            dense_frame_samples=bake_timeline_dense_frames,
+            timeline_evaluation=bake_timeline_export,
             morph_channel_sampler=(
-                self._bone_channel_sampler if mode == "C" else None
+                self._bone_channel_sampler if bake_timeline_export else None
             ),
         )
         self._diagnostics["morph_collection"] = {
@@ -1280,7 +1286,7 @@ class VmdSceneCollector:
         }
 
         camera_started = time.perf_counter()
-        camera_frames = [] if mode == "C" else self.collect_camera_frames(
+        camera_frames = [] if bake_timeline_export else self.collect_camera_frames(
             cameras,
             start_frame,
             end_frame,
@@ -1295,7 +1301,7 @@ class VmdSceneCollector:
         }
 
         light_started = time.perf_counter()
-        light_frames = [] if mode == "C" else self.collect_light_frames(
+        light_frames = [] if bake_timeline_export else self.collect_light_frames(
             lights,
             start_frame,
             end_frame,
@@ -1316,7 +1322,7 @@ class VmdSceneCollector:
             end_frame,
             time_converter=maya_time_to_vmd,
             # IK show/hide is a step track, not a numeric pose track.
-            # Keep keyed/baseline semantics even when Mode C bakes the
+            # Keep keyed/baseline semantics even when Bake Timeline bakes the
             # other tracks at every frame.
             dense_sample=False,
             dense_frame_samples=None,
@@ -1344,7 +1350,7 @@ class VmdSceneCollector:
             "ik_show_hide_frames": ik_frames,
         }
 
-    def _mode_c_dense_frame_samples(
+    def _bake_timeline_dense_frame_samples(
         self,
         joints: Sequence[str],
         blend_shapes: Sequence[str],
@@ -1355,7 +1361,7 @@ class VmdSceneCollector:
         start_frame: Optional[float],
         end_frame: Optional[float],
     ) -> Optional[list[int]]:
-        """Build one Maya-time sample range shared by Mode C tracks."""
+        """Build one Maya-time sample range shared by Bake Timeline tracks."""
         keyed_times = []
         for joint in joints:
             long_name = (cmds.ls(joint, long=True) or [joint])[0]
@@ -1396,7 +1402,7 @@ class VmdSceneCollector:
         return _dense_frame_samples(keyed_times, start_frame, end_frame)
 
     @staticmethod
-    def _mode_c_protected_ik_frames(
+    def _bake_timeline_protected_ik_frames(
         target_model: Optional[str],
         start_frame: Optional[float],
         end_frame: Optional[float],
@@ -1444,7 +1450,7 @@ class VmdSceneCollector:
         """Collect keyed or one-frame-sampled local joint transforms.
 
         ``dense_sample`` is retained for the baked control-rig route, where a
-        rotation-time curve may intentionally keep sparse VMD keys.  Mode C
+        rotation-time curve may intentionally keep sparse VMD keys.  Bake Timeline
         uses ``force_dense_sample`` so its numeric pose export is not
         accidentally changed back to sparse collection by raw interpolation
         metadata.  ``preserve_raw_bone_transforms`` is an explicit import
@@ -1531,7 +1537,7 @@ class VmdSceneCollector:
                     route = input_routes.get(long_name, {})
                     all_source_frames = keyed_times_by_joint.get(joint, ())
                     physics_excluded = (
-                        long_name in self._mode_c_physics_output_excluded_targets
+                        long_name in self._bake_timeline_physics_output_excluded_targets
                     )
                     if physics_excluded:
                         # Never fall through to the visible, post-physics
@@ -1586,7 +1592,7 @@ class VmdSceneCollector:
                         len(all_source_frames) == 1
                         and len(source_frames) == 1
                     ):
-                        single_kind = _mode_c_single_key_bone_route(joint, route)
+                        single_kind = _bake_timeline_single_key_bone_route(joint, route)
                         if single_kind:
                             single_key_joints.add(joint)
                             single_key_kinds[joint] = single_kind
@@ -1601,7 +1607,7 @@ class VmdSceneCollector:
                     )
                     and joint not in single_key_joints
                     and str((cmds.ls(joint, long=True) or [joint])[0])
-                    not in self._mode_c_physics_output_excluded_targets
+                    not in self._bake_timeline_physics_output_excluded_targets
                     for joint in joints
                 )
             ):
@@ -1609,10 +1615,10 @@ class VmdSceneCollector:
                     "available": False,
                     "used": False,
                     "fatal": True,
-                    "fallback_reason": "Mode C native sampler was not provided",
+                    "fallback_reason": "Bake Timeline native sampler was not provided",
                 }
                 self._emit_diagnostics()
-                raise RuntimeError("Mode C native bone sampling is unavailable")
+                raise RuntimeError("Bake Timeline native bone sampling is unavailable")
             if (
                 force_dense_sample
                 and dense_frames
@@ -1629,7 +1635,7 @@ class VmdSceneCollector:
                     )
                     and joint not in single_key_joints
                     and str((cmds.ls(joint, long=True) or [joint])[0])
-                    not in self._mode_c_physics_output_excluded_targets
+                    not in self._bake_timeline_physics_output_excluded_targets
                 ]
                 if not native_joints:
                     self._diagnostics["native_sampler"] = {
@@ -1782,7 +1788,7 @@ class VmdSceneCollector:
                         if not isinstance(exc, Exception):
                             raise
                         raise RuntimeError(
-                            f"Mode C native bone sampling failed: {exc}"
+                            f"Bake Timeline native bone sampling failed: {exc}"
                         ) from exc
             elif bone_channel_sampler is not None:
                 available = getattr(bone_channel_sampler, "available", False)
@@ -1803,7 +1809,7 @@ class VmdSceneCollector:
 
         try:
             static_sample = (
-                _mode_c_earliest_integer_sample(
+                _bake_timeline_earliest_integer_sample(
                     dense_frames,
                     start_frame,
                     end_frame,
@@ -1823,7 +1829,7 @@ class VmdSceneCollector:
                         not route
                         and not all_joint_keyed
                         and long_name
-                        not in self._mode_c_physics_output_excluded_targets
+                        not in self._bake_timeline_physics_output_excluded_targets
                         and _incoming_connection_state(long_name, _BONE_EXPORT_ATTRS)
                         == "none"
                     ):
@@ -1863,7 +1869,7 @@ class VmdSceneCollector:
                     )
                     self._emit_diagnostics()
                     raise RuntimeError(
-                        f"Mode C native bone value failed for {joint}.{attr}"
+                        f"Bake Timeline native bone value failed for {joint}.{attr}"
                     ) from exc
             return _routed_plug_float(joint, attr, frame_number, route)
 
@@ -1873,9 +1879,9 @@ class VmdSceneCollector:
                 bind_pose = _resolve_bind_pose(bone_bind_poses, bone_name, joint)
                 long_names = cmds.ls(joint, long=True) or [joint]
                 long_name = str(long_names[0])
-                if long_name in self._mode_c_physics_output_excluded_targets:
+                if long_name in self._bake_timeline_physics_output_excluded_targets:
                     # The physics solver's final output is intentionally outside
-                    # standard Mode C.  An incomplete pre-physics route cannot
+                    # standard Bake Timeline.  An incomplete pre-physics route cannot
                     # safely represent any unclaimed channels.
                     continue
                 route = input_routes.get(long_name, {})
@@ -1970,7 +1976,7 @@ class VmdSceneCollector:
                         if not isinstance(exc, Exception):
                             raise
                         raise RuntimeError(
-                            f"Mode C native bone track failed for {joint}"
+                            f"Bake Timeline native bone track failed for {joint}"
                         ) from exc
                     native_bulk_track_count += 1
                     native_bulk_track_frame_count += len(keyed_frames)
@@ -2417,7 +2423,7 @@ class VmdSceneCollector:
         joints: Sequence[str],
         target_model: Optional[str] = None,
         *,
-        standard_mode_c: bool = False,
+        strict_bake_timeline: bool = False,
     ) -> dict[str, dict[str, tuple[str, str]]]:
         """Resolve authored channels that bypass the visible joint transform.
 
@@ -2475,7 +2481,7 @@ class VmdSceneCollector:
                 joints=joints,
                 target_model=target_model,
                 routes=routes,
-                standard_mode_c=standard_mode_c,
+                strict_bake_timeline=strict_bake_timeline,
             )
             self._merge_redirected_authoring_proxy_routes(joints, routes)
             return routes
@@ -2512,7 +2518,7 @@ class VmdSceneCollector:
             joints=joints,
             target_model=target_model,
             routes=routes,
-            standard_mode_c=standard_mode_c,
+            strict_bake_timeline=strict_bake_timeline,
         )
         self._merge_redirected_authoring_proxy_routes(joints, routes)
         return routes
@@ -2548,7 +2554,7 @@ class VmdSceneCollector:
         joints: Sequence[str],
         target_model: str,
         routes: dict[str, dict[str, tuple[str, str]]],
-        standard_mode_c: bool = False,
+        strict_bake_timeline: bool = False,
     ) -> None:
         """Add owned physics-driver pre-inputs without replacing authored routes.
 
@@ -2557,7 +2563,7 @@ class VmdSceneCollector:
         the driver's ``inPre*`` plugs, so only a unique, model-owned driver
         with a validated target and an incoming non-physics source is eligible.
         Missing or ambiguous graph pieces are skipped fail-closed for legacy
-        callers.  Standard Mode C uses the same graph boundary but raises on
+        callers.  Standard Bake Timeline uses the same graph boundary but raises on
         ownership ambiguity so a physics final output cannot be exported by
         guessing.
         """
@@ -2580,7 +2586,7 @@ class VmdSceneCollector:
         )
         owned_solvers = _physics_solvers_owned_by_model(
             root_path,
-            strict=standard_mode_c,
+            strict=strict_bake_timeline,
             solvers=scene_solvers,
         )
         owned_drivers = []
@@ -2594,45 +2600,45 @@ class VmdSceneCollector:
                     owned_drivers.append(driver)
 
         for driver in sorted(owned_drivers):
-            if standard_mode_c:
+            if strict_bake_timeline:
                 scene_owners = driver_owners.get(driver, ())
                 selected_owners = sorted(selected_driver_owners.get(driver, ()))
                 if scene_owners != selected_owners or len(scene_owners) != 1:
                     raise ValueError(
-                        "Mode C physics driver must belong to exactly one "
+                        "Bake Timeline physics driver must belong to exactly one "
                         f"selected solver; driver={driver}, "
                         f"solvers={scene_owners}"
                     )
             target_connections = _physics_driver_target_connections(driver)
-            if standard_mode_c and len(target_connections) != 1:
+            if strict_bake_timeline and len(target_connections) != 1:
                 raise ValueError(
-                    "Mode C physics ownership requires exactly one target "
+                    "Bake Timeline physics ownership requires exactly one target "
                     f"connection for {driver}; found {len(target_connections)}"
                 )
             if len(target_connections) != 1:
                 continue
             target_joint = target_connections[0]
             target_path = _canonical_dag_path(target_joint)
-            if standard_mode_c and (
+            if strict_bake_timeline and (
                 not target_path
                 or not _dag_path_is_under_root(target_path, root_path)
             ):
                 raise ValueError(
-                    "Mode C physics ownership target is outside the selected "
+                    "Bake Timeline physics ownership target is outside the selected "
                     f"model: {driver} -> {target_joint}"
                 )
             if not target_path or target_path not in joints_by_path:
                 continue
             if not _dag_path_is_under_root(target_path, root_path):
                 continue
-            if standard_mode_c:
+            if strict_bake_timeline:
                 bone_index = _physics_driver_bone_index(
                     driver,
                     strict=True,
                 )
                 if bone_index is None:
                     raise ValueError(
-                        "Mode C physics ownership requires a valid non-negative "
+                        "Bake Timeline physics ownership requires a valid non-negative "
                         f"bone index for {driver}"
                     )
             else:
@@ -2640,7 +2646,7 @@ class VmdSceneCollector:
                 if bone_index is None:
                     continue
             pre_inputs_exist = _physics_driver_pre_inputs_exist(driver)
-            if not standard_mode_c and not pre_inputs_exist:
+            if not strict_bake_timeline and not pre_inputs_exist:
                 continue
             candidates.setdefault(target_path, []).append(
                 (driver, bone_index, pre_inputs_exist)
@@ -2658,21 +2664,21 @@ class VmdSceneCollector:
             for index, targets in used_indices.items()
             if len(set(targets)) != 1
         }
-        if standard_mode_c and ambiguous_targets:
+        if strict_bake_timeline and ambiguous_targets:
             target = sorted(ambiguous_targets)[0]
             drivers = sorted(
                 driver
                 for driver, _index, _pre_inputs in candidates[target]
             )
             raise ValueError(
-                "Mode C physics ownership has duplicate drivers for target "
+                "Bake Timeline physics ownership has duplicate drivers for target "
                 f"{target}: {drivers}"
             )
-        if standard_mode_c and ambiguous_indices:
+        if strict_bake_timeline and ambiguous_indices:
             index = sorted(ambiguous_indices)[0]
             targets = sorted(set(used_indices[index]))
             raise ValueError(
-                "Mode C physics ownership has duplicate bone index "
+                "Bake Timeline physics ownership has duplicate bone index "
                 f"{index} across targets: {targets}"
             )
         for target_path, values in candidates.items():
@@ -2681,7 +2687,7 @@ class VmdSceneCollector:
             driver, bone_index, pre_inputs_exist = values[0]
             if bone_index in ambiguous_indices:
                 continue
-            if standard_mode_c:
+            if strict_bake_timeline:
                 existing_route = dict(routes.get(target_path, {}))
                 completed_route = dict(existing_route)
                 missing_channels = []
@@ -2707,7 +2713,7 @@ class VmdSceneCollector:
                     # Do not leave a partial route that could be mistaken for
                     # a safe source by a later collector pass.
                     routes.pop(target_path, None)
-                    self._mode_c_physics_output_excluded_targets.add(target_path)
+                    self._bake_timeline_physics_output_excluded_targets.add(target_path)
                     self._record_track_selection(
                         "bone",
                         self._mmd_bone_name(joints_by_path[target_path]),
@@ -2722,7 +2728,7 @@ class VmdSceneCollector:
                     "bone",
                     self._mmd_bone_name(joints_by_path[target_path]),
                     "physics_output_excluded",
-                    "standard_mode_c_owned_physics_final_output",
+                    "strict_bake_timeline_owned_physics_final_output",
                     0,
                     0,
                 )
@@ -2770,8 +2776,8 @@ class VmdSceneCollector:
         into an export.
         """
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
-        standard_dense_mode = bool(dense_sample and timeline_evaluation)
-        if standard_dense_mode and dense_frame_samples is None:
+        bake_timeline_dense_sampling = bool(dense_sample and timeline_evaluation)
+        if bake_timeline_dense_sampling and dense_frame_samples is None:
             dense_frame_samples = _dense_frame_samples((), start_frame, end_frame)
         frames = [] if frame_sink is None else None
         channels = []
@@ -2780,7 +2786,7 @@ class VmdSceneCollector:
         keyless_dependency_channels = set()
         static_keyless_channels = set()
         static_sample = (
-            _mode_c_earliest_integer_sample(
+            _bake_timeline_earliest_integer_sample(
                 dense_frame_samples,
                 start_frame,
                 end_frame,
@@ -2794,7 +2800,7 @@ class VmdSceneCollector:
                 source_frames = _key_times(blend_shape, (attr,))
                 incoming_state = None
                 if not source_frames:
-                    if standard_dense_mode:
+                    if bake_timeline_dense_sampling:
                         incoming_state = _incoming_connection_state(
                             blend_shape,
                             (attr,),
@@ -2807,7 +2813,7 @@ class VmdSceneCollector:
                             else "some"
                         )
                 keyless_dependency = bool(
-                    standard_dense_mode
+                    bake_timeline_dense_sampling
                     and not source_frames
                     and incoming_state == "some"
                     and dense_frame_samples
@@ -2853,7 +2859,7 @@ class VmdSceneCollector:
                     if provider:
                         metadata_by_node.setdefault(provider, []).append(entry)
 
-                if standard_dense_mode:
+                if bake_timeline_dense_sampling:
                     duplicate_nodes = sorted(
                         node
                         for node, entries in metadata_by_node.items()
@@ -2862,7 +2868,7 @@ class VmdSceneCollector:
                     if duplicate_nodes:
                         node = duplicate_nodes[0]
                         raise ValueError(
-                            "Mode C morph metadata has conflicting provider ownership "
+                            "Bake Timeline morph metadata has conflicting provider ownership "
                             f"for {node!r}"
                         )
                     duplicate_indices = sorted(
@@ -2877,7 +2883,7 @@ class VmdSceneCollector:
                             for entry in metadata_by_index[index]
                         )
                         raise ValueError(
-                            "Mode C morph metadata has duplicate controller index "
+                            "Bake Timeline morph metadata has duplicate controller index "
                             f"{index}: {providers}"
                         )
                     duplicate_names = sorted(
@@ -2892,7 +2898,7 @@ class VmdSceneCollector:
                             for entry in metadata_by_name[name]
                         )
                         raise ValueError(
-                            "Mode C morph metadata has duplicate controller name "
+                            "Bake Timeline morph metadata has duplicate controller name "
                             f"{name!r}: {providers}"
                         )
 
@@ -2904,7 +2910,7 @@ class VmdSceneCollector:
                         continue
                     attr = f"inputWeight[{index}]"
                     source_frames = _key_times(controller, (attr,))
-                    if source_frames or standard_dense_mode:
+                    if source_frames or bake_timeline_dense_sampling:
                         channels.append((controller, attr, str(entry.name), source_frames))
                         controller_nodes.add(controller)
                         controller_channel_morph_types[(controller, attr)] = str(
@@ -2930,7 +2936,7 @@ class VmdSceneCollector:
             ]
         ]
 
-        if standard_dense_mode:
+        if bake_timeline_dense_sampling:
             output_providers = {}
             dropped_providers = set()
             for node, attr, morph_name, _source_frames, _direct_single in channels:
@@ -2957,7 +2963,7 @@ class VmdSceneCollector:
                     or len(non_controller_providers) != 1
                 ):
                     raise ValueError(
-                        "Mode C morph output has duplicate providers for "
+                        "Bake Timeline morph output has duplicate providers for "
                         f"{morph_name!r}: {unique_providers}"
                     )
                 controller_provider = controller_providers[0]
@@ -2967,7 +2973,7 @@ class VmdSceneCollector:
                 )
                 if controller_type != "vertex":
                     raise ValueError(
-                        "Mode C morph output has ambiguous non-vertex controller "
+                        "Bake Timeline morph output has ambiguous non-vertex controller "
                         f"provider for {morph_name!r}: {unique_providers}"
                     )
                 dropped_providers.add(
@@ -2985,7 +2991,7 @@ class VmdSceneCollector:
                 ]
 
         direct_multi_key_candidates: dict[str, list[tuple[str, int]]] = {}
-        if standard_dense_mode:
+        if bake_timeline_dense_sampling:
             for node, attr, morph_name, ranged_source_frames, direct_single in channels:
                 if direct_single:
                     continue
@@ -3108,7 +3114,7 @@ class VmdSceneCollector:
         native_morph_samples = None
         try:
             if timeline_evaluation and channels:
-                # One shared frame-major pass.  Streaming Mode C deliberately
+                # One shared frame-major pass.  Streaming Bake Timeline deliberately
                 # avoids a dense-frame set per channel.
                 if frame_sink is not None and dense_sample and dense_frame_samples is not None:
                     sample_times = set(dense_frame_samples)
@@ -3184,7 +3190,7 @@ class VmdSceneCollector:
                             )
                 else:
                     # Retained for non-production legacy callers. Standard
-                    # streaming Mode C always supplies the native sampler.
+                    # streaming Bake Timeline always supplies the native sampler.
                     with _MayaTimelineReader() as timeline_reader:
                         for frame_number in sample_times:
                             timeline_reader.set_frame(frame_number)
@@ -3976,13 +3982,13 @@ class _MayaTimelineReader:
         try:
             playing = bool(cmds.play(query=True, state=True))
         except Exception as exc:
-            raise RuntimeError("Mode C Timeline playback state query failed") from exc
+            raise RuntimeError("Bake Timeline playback state query failed") from exc
         if playing:
-            raise RuntimeError("Mode C Timeline sampling cannot run during playback")
+            raise RuntimeError("Bake Timeline sampling cannot run during playback")
         try:
             self._entry_time = float(cmds.currentTime(query=True))
         except Exception as exc:
-            raise RuntimeError("Mode C Timeline entry time query failed") from exc
+            raise RuntimeError("Bake Timeline entry time query failed") from exc
         self._sample_time = self._entry_time
         return self
 
@@ -3994,7 +4000,7 @@ class _MayaTimelineReader:
             and sample_time < self._sample_time
         ):
             raise RuntimeError(
-                "Mode C Timeline samples must be evaluated in ascending order"
+                "Bake Timeline samples must be evaluated in ascending order"
             )
         if sample_time == self._sample_time:
             self._has_sampled = True
@@ -4003,7 +4009,7 @@ class _MayaTimelineReader:
             cmds.currentTime(sample_time, edit=True)
         except Exception as exc:
             raise RuntimeError(
-                f"Mode C Timeline evaluation failed at frame {sample_time:g}"
+                f"Bake Timeline evaluation failed at frame {sample_time:g}"
             ) from exc
         self._sample_time = sample_time
         self._has_sampled = True
@@ -4014,7 +4020,7 @@ class _MayaTimelineReader:
         try:
             cmds.currentTime(self._entry_time, edit=True)
         except Exception as exc:
-            raise RuntimeError("Mode C Timeline time restoration failed") from exc
+            raise RuntimeError("Bake Timeline time restoration failed") from exc
         return False
 
 
@@ -4163,7 +4169,7 @@ def _dense_frame_samples(
     start_frame: Optional[float],
     end_frame: Optional[float],
 ) -> Optional[list[int]]:
-    """Return one-frame integer samples for a Mode C animation range."""
+    """Return one-frame integer samples for a Bake Timeline animation range."""
     if start_frame is not None and end_frame is not None:
         try:
             first = int(math.ceil(float(start_frame)))
@@ -4189,12 +4195,12 @@ def _dense_frame_samples(
     return list(range(first, last + 1))
 
 
-def _mode_c_earliest_integer_sample(
+def _bake_timeline_earliest_integer_sample(
     dense_frame_samples: Optional[Sequence[float]],
     start_frame: Optional[float],
     end_frame: Optional[float],
 ) -> Optional[float]:
-    """Resolve one requested-range integer sample for keyless Mode C tracks."""
+    """Resolve one requested-range integer sample for keyless Bake Timeline tracks."""
 
     if start_frame is None or end_frame is None:
         return None
@@ -4725,7 +4731,7 @@ def _physics_solvers_owned_by_model(
             conflicting = bool(roots and registries and not root_registry_agrees)
             if ambiguous or conflicting:
                 raise ValueError(
-                    "Mode C physics solver ownership is ambiguous for "
+                    "Bake Timeline physics solver ownership is ambiguous for "
                     f"{solver}: roots={list(roots)!r}, "
                     f"registries={list(registries)!r}"
                 )

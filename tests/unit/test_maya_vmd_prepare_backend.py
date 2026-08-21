@@ -1,4 +1,4 @@
-"""Unit coverage for the Maya-owned Mode C preparation adapter."""
+"""Unit coverage for the Maya-owned Bake Timeline preparation adapter."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ class _FakeCmds:
             "|camera": "uuid-camera",
             "|camera|shape": "uuid-camera-shape",
             "|consumer": "uuid-consumer",
-            "modeCBlendShape": "uuid-blend",
+            "bakeTimelineBlendShape": "uuid-blend",
             "|model|sourceShape": "uuid-source-shape",
             "|rotationTime": "uuid-rotation-time",
             "|time1": "uuid-time",
@@ -35,7 +35,7 @@ class _FakeCmds:
             "|camera": "transform",
             "|camera|shape": "camera",
             "|consumer": "network",
-            "modeCBlendShape": "blendShape",
+            "bakeTimelineBlendShape": "blendShape",
             "|model|sourceShape": "mesh",
             "|rotationTime": "network",
             "|time1": "time",
@@ -48,7 +48,7 @@ class _FakeCmds:
             "|camera": [],
             "|camera|shape": [],
             "|consumer": [],
-            "modeCBlendShape": [],
+            "bakeTimelineBlendShape": [],
             "|model|sourceShape": [],
             "|rotationTime": [],
             "|time1": [],
@@ -61,7 +61,7 @@ class _FakeCmds:
             "|camera": [],
             "|camera|shape": [],
             "|consumer": [],
-            "modeCBlendShape": [],
+            "bakeTimelineBlendShape": [],
             "|model|sourceShape": [],
             "|rotationTime": [],
             "|time1": [],
@@ -190,7 +190,7 @@ def _request(**options):
     values = {
         "current_model_root": "|model",
         "target_model": "|model",
-        "mode": "C",
+        "export_strategy": "bake_timeline",
         "frame_range": (0, 10),
     }
     values.update(options)
@@ -210,11 +210,11 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
             mobject_resolver=lambda node: self.mobjects.setdefault(node, object()),
         )
 
-    def test_requires_mode_c_and_explicit_current_model_projection(self):
+    def test_requires_bake_timeline_and_explicit_current_model_projection(self):
         with self.assertRaises(PrepareVmdExportError):
-            self.backend.discover(_request(mode="A"))
+            self.backend.discover(_request(export_strategy="preserve_keys"))
         with self.assertRaises(PrepareVmdExportError):
-            self.backend.discover({"options": {"mode": "C", "target_model": "|model"}})
+            self.backend.discover({"options": {"export_strategy": "bake_timeline", "target_model": "|model"}})
         with self.assertRaises(PrepareVmdExportError):
             self.backend.discover(_request(target_model="|camera"))
 
@@ -251,33 +251,33 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
 
     def test_nested_blendshape_topology_preserves_full_attribute_path(self):
         destination = (
-            "modeCBlendShape.inputTarget[0].inputTargetGroup[0]."
+            "bakeTimelineBlendShape.inputTarget[0].inputTargetGroup[0]."
             "inputTargetItem[6000].inputGeomTarget"
         )
-        self.cmds.connections["modeCBlendShape"] = [
+        self.cmds.connections["bakeTimelineBlendShape"] = [
             destination,
             "sourceShape.worldMesh[0]",
         ]
-        self.cmds.incoming["modeCBlendShape"] = ["sourceShape.worldMesh[0]"]
+        self.cmds.incoming["bakeTimelineBlendShape"] = ["sourceShape.worldMesh[0]"]
 
-        first = self.backend.discover(_request(blend_shapes=["modeCBlendShape"]))
+        first = self.backend.discover(_request(blend_shapes=["bakeTimelineBlendShape"]))
 
         self.assertIn("uuid-source-shape", first.route.dependency_uuids)
         self.assertEqual(
             self.backend._split_plug(destination),
             (
-                "modeCBlendShape",
+                "bakeTimelineBlendShape",
                 "inputTarget[0].inputTargetGroup[0]."
                 "inputTargetItem[6000].inputGeomTarget",
             ),
         )
 
-        self.cmds.connections["modeCBlendShape"][0] = destination.replace(
+        self.cmds.connections["bakeTimelineBlendShape"][0] = destination.replace(
             "inputTargetItem[6000]",
             "inputTargetItem[6001]",
         )
         changed = self.backend.discover(
-            _request(blend_shapes=["modeCBlendShape"])
+            _request(blend_shapes=["bakeTimelineBlendShape"])
         )
 
         self.assertNotEqual(
@@ -322,7 +322,7 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
             changed.dependency_closure_fingerprint,
         )
 
-    def test_arm_streams_once_with_current_model_mode_c_options(self):
+    def test_arm_streams_once_with_current_model_bake_timeline_options(self):
         discovery = self.backend.discover(_request())
         self.backend.arm(_request(), discovery)
         self.assertTrue(self.service.watches[0].dependencies)
@@ -333,7 +333,7 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         self.assertEqual(len(self.collector.stream_calls), 1)
         options = self.collector.stream_calls[0][0]
         self.assertEqual(options["target_model"], "|model")
-        self.assertEqual(options["vmd_mode"], "C")
+        self.assertEqual(options["export_strategy"], "bake_timeline")
         self.assertFalse(options["preserve_raw_bone_transforms"])
         diagnostics = self.backend.diagnostics
         self.assertIn("dependency_discovery", diagnostics)

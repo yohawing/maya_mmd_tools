@@ -117,7 +117,7 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
         joints=None,
         *,
         append=None,
-        standard_mode_c=False,
+        strict_bake_timeline=False,
     ):
         collector = VmdSceneCollector()
         with mock.patch.object(collector_module, "cmds", cmds), mock.patch.object(
@@ -134,14 +134,14 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
             routes = collector._scene_authored_input_routes(
                 joints or ["|model|bone"],
                 "|model",
-                standard_mode_c=standard_mode_c,
+                strict_bake_timeline=strict_bake_timeline,
             )
         return collector, routes
 
-    def test_standard_mode_c_records_owned_output_exclusion_and_ignores_unowned(self):
+    def test_strict_bake_timeline_records_owned_output_exclusion_and_ignores_unowned(self):
         cmds = _PhysicsCmds()
         cmds.driver_sources["|model|bone.translateY"] = ["|blend_translate.output"]
-        collector, routes = self._collect_routes(cmds, standard_mode_c=True)
+        collector, routes = self._collect_routes(cmds, strict_bake_timeline=True)
 
         self.assertEqual(
             routes["|model|bone"]["translateX"],
@@ -173,13 +173,13 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
                 "section": "bone",
                 "name": "bone",
                 "decision": "physics_output_excluded",
-                "reason": "standard_mode_c_owned_physics_final_output",
+                "reason": "strict_bake_timeline_owned_physics_final_output",
                 "source_key_count": 0,
                 "planned_key_count": 0,
             },
         )
 
-    def test_standard_mode_c_duplicate_target_raises_but_legacy_skips(self):
+    def test_strict_bake_timeline_duplicate_target_raises_but_legacy_skips(self):
         cmds = _PhysicsCmds()
         cmds.solver_drivers["|solver.outBoneMatrices"] = [
             "|driver",
@@ -190,9 +190,9 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
         _collector, routes = self._collect_routes(cmds)
         self.assertNotIn("|model|bone", routes)
         with self.assertRaisesRegex(ValueError, "duplicate drivers for target"):
-            self._collect_routes(cmds, standard_mode_c=True)
+            self._collect_routes(cmds, strict_bake_timeline=True)
 
-    def test_standard_mode_c_selected_ownership_ambiguity_raises_but_legacy_skips(self):
+    def test_strict_bake_timeline_selected_ownership_ambiguity_raises_but_legacy_skips(self):
         cases = (
             ("roots", ["|model", "|other_model"], []),
             ("registries", [], ["|registry", "|other_registry"]),
@@ -210,14 +210,14 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
                     _collector, routes = self._collect_routes(cmds)
                     self.assertNotIn("|model|bone", routes)
                     with self.assertRaisesRegex(ValueError, "ownership is ambiguous"):
-                        self._collect_routes(cmds, standard_mode_c=True)
+                        self._collect_routes(cmds, strict_bake_timeline=True)
 
-    def test_standard_mode_c_unrelated_ambiguous_solver_is_ignored(self):
+    def test_strict_bake_timeline_unrelated_ambiguous_solver_is_ignored(self):
         cmds = _PhysicsCmds()
         cmds.types["|other_model2"] = "transform"
         cmds.solver_roots["|other_solver"] = ["|other_model", "|other_model2"]
 
-        collector, routes = self._collect_routes(cmds, standard_mode_c=True)
+        collector, routes = self._collect_routes(cmds, strict_bake_timeline=True)
         self.assertIn("|model|bone", routes)
         self.assertEqual(
             collector.diagnostics["track_selection"]["counts"][
@@ -226,17 +226,17 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
             1,
         )
 
-    def test_standard_mode_c_shared_driver_across_solvers_raises(self):
+    def test_strict_bake_timeline_shared_driver_across_solvers_raises(self):
         cmds = _PhysicsCmds()
         cmds.solver_drivers["|other_solver.outBoneMatrices"] = ["|driver"]
 
         with self.assertRaisesRegex(ValueError, "exactly one selected solver"):
-            self._collect_routes(cmds, standard_mode_c=True)
+            self._collect_routes(cmds, strict_bake_timeline=True)
 
     def test_physics_solver_driver_inventory_queries_each_output_once(self):
         cmds = _PhysicsCmds()
 
-        self._collect_routes(cmds, standard_mode_c=True)
+        self._collect_routes(cmds, strict_bake_timeline=True)
 
         expected = {
             f"{solver}.{output}": 1
@@ -245,28 +245,28 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
         }
         self.assertEqual(cmds.solver_output_query_counts, expected)
 
-    def test_standard_mode_c_subset_omits_owned_target_without_evidence(self):
+    def test_strict_bake_timeline_subset_omits_owned_target_without_evidence(self):
         cmds = _PhysicsCmds()
         cmds.driver_targets["|driver.mmd_target_joint_message"] = ["|model|other"]
 
         collector, routes = self._collect_routes(
             cmds,
             joints=["|model|bone"],
-            standard_mode_c=True,
+            strict_bake_timeline=True,
         )
         self.assertNotIn("|model|other", routes)
         self.assertNotIn("track_selection", collector.diagnostics)
 
-    def test_standard_mode_c_target_outside_root_raises(self):
+    def test_strict_bake_timeline_target_outside_root_raises(self):
         cmds = _PhysicsCmds()
         cmds.driver_targets["|driver.mmd_target_joint_message"] = [
             "|other_model|bone"
         ]
 
         with self.assertRaisesRegex(ValueError, "outside the selected model"):
-            self._collect_routes(cmds, standard_mode_c=True)
+            self._collect_routes(cmds, strict_bake_timeline=True)
 
-    def test_collect_mode_c_raw_preservation_skips_strict_physics_ownership(self):
+    def test_collect_bake_timeline_raw_preservation_skips_strict_physics_ownership(self):
         raw_provenance = {
             "raw_bone_interpolation_complete": True,
             "raw_bone_transform_complete": True,
@@ -296,7 +296,7 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
             collector._resolve_tagged_track = lambda *_args: []
             collector._control_rig_dense_export = lambda _target: False
             collector._rotation_time_curve_interpolation = lambda _target: {}
-            collector._mode_c_dense_frame_samples = lambda *_args: []
+            collector._bake_timeline_dense_frame_samples = lambda *_args: []
             collector.collect_bone_frames = mock.Mock(return_value=[])
             collector.collect_morph_frames = mock.Mock(return_value=[])
             collector.collect_camera_frames = mock.Mock(return_value=[])
@@ -332,7 +332,7 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
                     {
                         "target_model": "|model",
                         "joints": ["|model|bone"],
-                        "vmd_mode": "C",
+                        "export_strategy": "bake_timeline",
                         "preserve_raw_bone_transforms": preserve_raw,
                     }
                 )
@@ -342,7 +342,7 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
         result = collect_with_mode(True)
         self.assertEqual(result["bone_frames"], [])
 
-    def test_standard_mode_c_multiple_target_connections_raise(self):
+    def test_strict_bake_timeline_multiple_target_connections_raise(self):
         cmds = _PhysicsCmds()
         cmds.driver_targets["|driver.mmd_target_joint_message"] = [
             "|model|bone",
@@ -350,9 +350,9 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(ValueError, "exactly one target connection"):
-            self._collect_routes(cmds, standard_mode_c=True)
+            self._collect_routes(cmds, strict_bake_timeline=True)
 
-    def test_standard_mode_c_duplicate_bone_index_across_targets_raise(self):
+    def test_strict_bake_timeline_duplicate_bone_index_across_targets_raise(self):
         cmds = _PhysicsCmds()
         cmds.solver_drivers["|solver.outBoneMatrices"] = ["|driver", "|other_driver"]
         cmds.solver_drivers["|other_solver.outBoneMatrices"] = []
@@ -365,10 +365,10 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
             self._collect_routes(
                 cmds,
                 joints=["|model|bone", "|model|other"],
-                standard_mode_c=True,
+                strict_bake_timeline=True,
             )
 
-    def test_standard_mode_c_missing_fractional_and_negative_index_raise(self):
+    def test_strict_bake_timeline_missing_fractional_and_negative_index_raise(self):
         cases = (
             ("missing", None),
             ("fractional", 4.5),
@@ -382,9 +382,9 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
                 else:
                     cmds.values["|driver.inBoneIndex"] = value
                 with self.assertRaisesRegex(ValueError, "valid non-negative bone index"):
-                    self._collect_routes(cmds, standard_mode_c=True)
+                    self._collect_routes(cmds, strict_bake_timeline=True)
 
-    def test_standard_mode_c_append_route_keeps_priority(self):
+    def test_strict_bake_timeline_append_route_keeps_priority(self):
         cmds = _PhysicsCmds()
         append = {
             "|model|bone": {
@@ -396,7 +396,7 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
         collector, routes = self._collect_routes(
             cmds,
             append=append,
-            standard_mode_c=True,
+            strict_bake_timeline=True,
         )
         self.assertEqual(
             routes["|model|bone"]["translateX"],
@@ -413,11 +413,11 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
             1,
         )
 
-    def test_standard_mode_c_static_physics_pre_inputs_route_all_channels(self):
+    def test_strict_bake_timeline_static_physics_pre_inputs_route_all_channels(self):
         cmds = _PhysicsCmds()
         cmds.driver_sources.clear()
 
-        _collector, routes = self._collect_routes(cmds, standard_mode_c=True)
+        _collector, routes = self._collect_routes(cmds, strict_bake_timeline=True)
 
         self.assertEqual(
             routes["|model|bone"],
@@ -431,7 +431,7 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
             },
         )
 
-    def test_standard_mode_c_existing_route_covers_missing_pre_input(self):
+    def test_strict_bake_timeline_existing_route_covers_missing_pre_input(self):
         cmds = _PhysicsCmds()
         cmds.attributes.remove(("|driver", "inPreRotateZ"))
         append = {
@@ -444,38 +444,38 @@ class PhysicsAuthoredRouteTests(unittest.TestCase):
         collector, routes = self._collect_routes(
             cmds,
             append=append,
-            standard_mode_c=True,
+            strict_bake_timeline=True,
         )
 
         self.assertNotIn(
             "|model|bone",
-            collector._mode_c_physics_output_excluded_targets,
+            collector._bake_timeline_physics_output_excluded_targets,
         )
         self.assertEqual(routes["|model|bone"]["rotateZ"], ("|append", "inputRotateZ"))
         self.assertEqual(len(routes["|model|bone"]), 6)
 
-    def test_standard_mode_c_joint_authored_source_covers_missing_pre_input(self):
+    def test_strict_bake_timeline_joint_authored_source_covers_missing_pre_input(self):
         cmds = _PhysicsCmds()
         cmds.attributes.remove(("|driver", "inPreTranslateZ"))
         cmds.driver_sources["|model|bone.translateZ"] = ["|curve.output"]
 
-        collector, routes = self._collect_routes(cmds, standard_mode_c=True)
+        collector, routes = self._collect_routes(cmds, strict_bake_timeline=True)
 
         self.assertNotIn(
             "|model|bone",
-            collector._mode_c_physics_output_excluded_targets,
+            collector._bake_timeline_physics_output_excluded_targets,
         )
         self.assertEqual(routes["|model|bone"]["translateZ"], ("|curve", "output"))
         self.assertEqual(len(routes["|model|bone"]), 6)
 
-    def test_standard_mode_c_incomplete_physics_pre_inputs_are_excluded(self):
+    def test_strict_bake_timeline_incomplete_physics_pre_inputs_are_excluded(self):
         cmds = _PhysicsCmds()
         cmds.attributes.remove(("|driver", "inPreRotateZ"))
 
-        collector, routes = self._collect_routes(cmds, standard_mode_c=True)
+        collector, routes = self._collect_routes(cmds, strict_bake_timeline=True)
 
         self.assertNotIn("|model|bone", routes)
-        self.assertEqual(collector._mode_c_physics_output_excluded_targets, {"|model|bone"})
+        self.assertEqual(collector._bake_timeline_physics_output_excluded_targets, {"|model|bone"})
         evidence = collector.diagnostics["track_selection"]["evidence"]
         self.assertEqual(evidence[0]["decision"], "physics_output_excluded")
         self.assertEqual(evidence[0]["reason"], "incomplete_pre_physics_route")

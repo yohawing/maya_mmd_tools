@@ -221,7 +221,7 @@ class TestScenePreflight(unittest.TestCase):
             {
                 "file_path": "motion.vmd",
                 "export_format": "vmd",
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "target_model": "ns:model_ROOT",
                 "frame_range": (0, 120),
                 "frame_step": 1,
@@ -303,7 +303,7 @@ class TestExportWorkflowService(unittest.TestCase):
             "motion.vmd",
             {
                 "export_format": "vmd",
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "current_model_root": "model_ROOT",
                 "require_current_model": True,
                 "require_target": True,
@@ -373,7 +373,7 @@ class TestExportWorkflowService(unittest.TestCase):
             "motion.vmd",
             {
                 "export_format": "vmd",
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "current_model_root": "model_ROOT",
                 "require_current_model": True,
                 "require_target": True,
@@ -423,7 +423,7 @@ class TestExportWorkflowService(unittest.TestCase):
                 "motion.vmd",
                 {
                     "export_format": "vmd",
-                    "vmd_mode": "C",
+                    "export_strategy": "bake_timeline",
                     "require_target": True,
                     "target_model": "stale_ROOT",
                 },
@@ -522,7 +522,7 @@ class TestExportWorkflowService(unittest.TestCase):
                     "motion.vmd",
                     {
                         "export_format": "vmd",
-                        "vmd_mode": "A",
+                        "export_strategy": "preserve_keys",
                         "require_target": True,
                         "require_current_model": True,
                         "current_model_root": current_model_root,
@@ -628,7 +628,7 @@ class TestExportWorkflowService(unittest.TestCase):
                 str(Path(directory) / "motion.vmd"),
                 {
                     "export_format": "vmd",
-                    "vmd_mode": "A",
+                    "export_strategy": "preserve_keys",
                     "target_model": "model_ROOT",
                 },
             )
@@ -638,15 +638,15 @@ class TestExportWorkflowService(unittest.TestCase):
 
         self.assertEqual(validation.state, STATE_READY)
         self.assertEqual(result.state, STATE_SUCCEEDED)
-        self.assertEqual(result.action_result.validation_report.mode, "A")
+        self.assertEqual(result.action_result.validation_report.mode, "preserve_keys")
 
-    def test_vmd_workflow_default_mode_requires_prepared_token(self):
+    def test_vmd_workflow_default_bake_timeline_requires_prepared_token(self):
         observed = []
         exporter = _RecordingVmdExporter()
 
         def collector(options):
             observed.append(dict(options))
-            return {"model_name": "ModeCFixture", "bone_frames": []}
+            return {"model_name": "BakeTimelineFixture", "bone_frames": []}
 
         vmd_action = ExportVmdAction(
             exporter=exporter,
@@ -699,9 +699,9 @@ class TestExportWorkflowService(unittest.TestCase):
                 "bone_frames": [],
             }
 
-        def validator(_payload, mode, raw_provenance=None, **_kwargs):
+        def validator(_payload, export_strategy, raw_provenance=None, **_kwargs):
             observed.append(raw_provenance)
-            return ExportValidationReport("vmd", (), mode=mode)
+            return ExportValidationReport("vmd", (), mode=export_strategy)
 
         vmd_action = ExportVmdAction(
             exporter=VmdExporter(native_exporter=None),
@@ -719,7 +719,7 @@ class TestExportWorkflowService(unittest.TestCase):
             "motion.vmd",
             {
                 "export_format": "vmd",
-                "vmd_mode": "A",
+                "export_strategy": "preserve_keys",
                 "target_model": "model_ROOT",
                 "raw_provenance": explicit_provenance,
             },

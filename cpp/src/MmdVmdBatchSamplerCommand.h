@@ -5,7 +5,7 @@
 #include <maya/MSyntax.h>
 
 /**
- * Read-only, frame-major scalar sampler used by the Mode C prepare path.
+ * Read-only, frame-major scalar sampler used by the Bake Timeline prepare path.
  *
  * The command accepts a versioned JSON request through ``-payload`` and
  * returns one MDoubleArray.  The first six doubles are the fixed protocol

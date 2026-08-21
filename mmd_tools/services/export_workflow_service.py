@@ -17,6 +17,7 @@ from ..validation.export_validator import (
 )
 from ..validation.scene_preflight import ScenePreflight
 from ..validation.snapshot import ExportValidationSnapshot
+from ..validation.vmd_validator import VMD_EXPORT_BAKE_TIMELINE
 
 
 STATE_EDITING = "Editing"
@@ -69,7 +70,7 @@ def _combine_reports(
     second: Optional[ExportValidationReport],
     *,
     export_format: Optional[str],
-    mode: str,
+    export_strategy: str,
 ) -> ExportValidationReport:
     """Merge scene, payload, and output issues into one stable report."""
     if second is None or not second.issues:
@@ -77,13 +78,13 @@ def _combine_reports(
     return ExportValidationReport(
         export_format,
         tuple(first.issues) + tuple(second.issues),
-        mode=mode,
+        mode=export_strategy,
     )
 
 
 def _collect_failure_report(
     export_format: Optional[str],
-    mode: str,
+    export_strategy: str,
     error: Exception,
 ) -> ExportValidationReport:
     """Normalize collector failures without hiding a lower-level report."""
@@ -106,7 +107,7 @@ def _collect_failure_report(
     return ExportValidationReport(
         export_format,
         issues,
-        mode=mode,
+        mode=export_strategy,
     )
 
 
@@ -133,7 +134,7 @@ class ExportWorkflowService:
         self.scene_preflight = scene_preflight or ScenePreflight(scene_service=scene_service)
 
     def prepare_vmd(self, request: ExportWorkflowRequest) -> Any:
-        """Prepare one reusable Mode C payload through the public workflow."""
+        """Prepare one reusable Bake Timeline payload through the public workflow."""
         if self.prepare_vmd_action is None:
             raise PrepareVmdExportError("prepared VMD export action is not configured")
         options = self._options(request)
@@ -159,7 +160,7 @@ class ExportWorkflowService:
         return execute(prepared_request)
 
     def invalidate_prepared_vmd(self, token: Any = None) -> bool:
-        """Discard a prepared Mode C approval through its owning action.
+        """Discard a prepared Bake Timeline approval through its owning action.
 
         The workflow deliberately does not keep a second token/cache.  The
         action owns the active token and Maya revision watch; this seam merely
@@ -245,12 +246,12 @@ class ExportWorkflowService:
         self,
         request: ExportWorkflowRequest,
         options: Mapping[str, Any],
-        mode: str = "C",
+        export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
     ) -> Any:
-        """Collect and normalize non-Mode-C VMD payload through the action."""
-        if str(mode or "").upper() == "C":
+        """Collect and normalize non-Bake-Timeline VMD payload through the action."""
+        if str(export_strategy or "").lower() == VMD_EXPORT_BAKE_TIMELINE:
             raise PrepareVmdExportError(
-                "Mode C VMD export requires a prepared VMD export token"
+                "Bake Timeline VMD export requires a prepared VMD export token"
             )
         animation_data = request.animation_data
         if animation_data is None:
@@ -260,7 +261,7 @@ class ExportWorkflowService:
             if collector is None:
                 raise ValueError("VMD export requires animation_data or a collector")
             collector_options = dict(options)
-            collector_options.setdefault("vmd_mode", mode)
+            collector_options.setdefault("export_strategy", export_strategy)
             animation_data = collector(collector_options)
         converter = getattr(self.vmd_action, "_to_vmd_data", None)
         if callable(converter):
@@ -280,7 +281,7 @@ class ExportWorkflowService:
         report = scene_result.report
         metadata = dict(scene_result.metadata)
         export_format = metadata.get("format")
-        mode = metadata.get("mode") or "model"
+        export_strategy = metadata.get("export_strategy") or "model"
         if report.is_blocking:
             self._emit_progress(progress_callback, "report_ready")
             return ExportWorkflowResult(STATE_BLOCKED, report, metadata)
@@ -302,15 +303,15 @@ class ExportWorkflowService:
                         target_identity=metadata.get("target_identity"),
                     )
             elif export_format == "vmd":
-                prepared_mode_c = (
-                    str(mode or "").upper() == "C"
+                prepared_bake_timeline = (
+                    str(export_strategy or "").lower() == VMD_EXPORT_BAKE_TIMELINE
                     and request.prepared_vmd_token is not None
                 )
-                if str(mode or "").upper() == "C" and request.prepared_vmd_token is None:
+                if str(export_strategy or "").lower() == VMD_EXPORT_BAKE_TIMELINE and request.prepared_vmd_token is None:
                     raise PrepareVmdExportError(
-                        "Mode C VMD export requires a prepared VMD export token"
+                        "Bake Timeline VMD export requires a prepared VMD export token"
                     )
-                if prepared_mode_c:
+                if prepared_bake_timeline:
                     self._emit_progress(progress_callback, "prepared_artifact_validation")
                     if self.prepare_vmd_action is None:
                         raise PrepareVmdExportError(
@@ -326,7 +327,7 @@ class ExportWorkflowService:
                         report,
                         request.prepared_vmd_token.combined_validation_report,
                         export_format=export_format,
-                        mode=mode,
+                        export_strategy=export_strategy,
                     )
                     self._emit_progress(progress_callback, "report_ready")
                     return ExportWorkflowResult(
@@ -336,16 +337,16 @@ class ExportWorkflowService:
                     )
                 self._emit_progress(progress_callback, "payload_collection")
                 if request.prepared_vmd_token is not None:
-                    # A token is only valid for Mode C.  Keep this explicit so
+                    # A token is only valid for Bake Timeline. Keep this explicit so
                     # a caller cannot smuggle a prepared artifact into a
-                    # legacy Mode A/B request.
+                    # preserve-keys request.
                     raise PrepareVmdExportError(
-                        "prepared VMD export token requires Mode C"
+                        "prepared VMD export token requires Bake Timeline"
                     )
                 payload = self._collect_vmd(
                     request,
                     self._target_options(options, metadata),
-                    mode=mode,
+                    export_strategy=export_strategy,
                 )
                 raw_provenance = getattr(payload, "raw_provenance", None)
                 if options.get("raw_provenance") is None and raw_provenance is not None:
@@ -354,18 +355,18 @@ class ExportWorkflowService:
                 if validator is None:
                     raise ValueError("VMD action does not expose a validator")
                 self._emit_progress(progress_callback, "payload_validation")
-                payload_report = self.vmd_action._validate(payload, mode, options)
+                payload_report = self.vmd_action._validate(payload, export_strategy, options)
                 snapshot = None
             else:
                 self._emit_progress(progress_callback, "report_ready")
                 return ExportWorkflowResult(STATE_BLOCKED, report, metadata)
         except Exception as exc:
-            failure_report = _collect_failure_report(export_format, mode, exc)
+            failure_report = _collect_failure_report(export_format, export_strategy, exc)
             report = _combine_reports(
                 report,
                 failure_report,
                 export_format=export_format,
-                mode=mode,
+                export_strategy=export_strategy,
             )
             self._emit_progress(progress_callback, "report_ready")
             return ExportWorkflowResult(STATE_BLOCKED, report, metadata, error=exc)
@@ -374,7 +375,7 @@ class ExportWorkflowService:
             report,
             payload_report,
             export_format=export_format,
-            mode=mode,
+            export_strategy=export_strategy,
         )
         state = STATE_BLOCKED if report.is_blocking else STATE_READY
         self._emit_progress(progress_callback, "report_ready")
@@ -404,14 +405,14 @@ class ExportWorkflowService:
         if acknowledge_warnings:
             options["ack_warnings"] = True
         export_format = validation.metadata.get("format")
-        prepared_mode_c = (
+        prepared_bake_timeline = (
             export_format == "vmd"
-            and str(validation.metadata.get("mode") or "").upper() == "C"
+            and str(validation.metadata.get("export_strategy") or "").lower() == VMD_EXPORT_BAKE_TIMELINE
             and request.prepared_vmd_token is not None
         )
         self._emit_progress(
             progress_callback,
-            "prepared_artifact_publish" if prepared_mode_c else "writer",
+            "prepared_artifact_publish" if prepared_bake_timeline else "writer",
         )
         try:
             if export_format == "pmx":
@@ -420,7 +421,7 @@ class ExportWorkflowService:
                 action_result = self.model_action.execute(
                     ExportModelRequest(request.file_path, options)
                 )
-            elif prepared_mode_c:
+            elif prepared_bake_timeline:
                 token = request.prepared_vmd_token
                 report_artifacts = None
                 write_report = getattr(self.vmd_action, "_write_requested_report", None)
@@ -429,7 +430,7 @@ class ExportWorkflowService:
                         ExportVmdRequest(request.file_path, options),
                         validation.report,
                         token.staged_artifact.sha256,
-                        "C",
+                        VMD_EXPORT_BAKE_TIMELINE,
                     )
                 action_result = publish_prepared_vmd_artifact(
                     token.staged_artifact,
@@ -459,7 +460,7 @@ class ExportWorkflowService:
                 error=exc,
             )
 
-        if prepared_mode_c:
+        if prepared_bake_timeline:
             # The prepared token's combined report was already included by
             # validate(); appending it again would duplicate every issue.
             report = validation.report
@@ -468,7 +469,7 @@ class ExportWorkflowService:
                 validation.report,
                 getattr(action_result, "validation_report", None),
                 export_format=export_format,
-                mode=validation.metadata.get("mode") or "model",
+                export_strategy=validation.metadata.get("export_strategy") or "model",
             )
         succeeded = bool(getattr(action_result, "succeeded", False)) and getattr(action_result, "error", None) is None
         return ExportWorkflowResult(

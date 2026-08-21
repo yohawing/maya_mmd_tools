@@ -213,7 +213,7 @@
     "facial_display_frame_morph_only": "表情枠にはモーフのみ追加できます",
     "import_success": "インポートが完了しました",
     "export_success": "エクスポートが完了しました",
-    "prepare_mode_c_complete": "VMD書き出しデータの準備が完了しました",
+    "prepare_bake_timeline_complete": "VMDベイク書き出しの準備が完了しました",
     "export_mmd_asset": "MMDアセットをエクスポート",
     "error_file_not_found": "ファイルが見つかりません",
     "error_invalid_file": "無効なファイル形式です",
@@ -368,7 +368,7 @@
     "humanik_source_tooltip": "SOURCEにはキャラクタライズ済みのMMDモデル、またはシーン内でキャラクタ定義済みのHumanIKキャラクターを指定できます。"
   },
   "options": {
-    "vmd_preserve_imported": "読み込んだ未編集ボーンキーを保持",
+    "vmd_preserve_keys": "読み込んだ未編集ボーンキーを保持",
     "vmd_export_timeline": "現在のタイムラインをVMD化",
     "none": "なし",
     "import_mesh": "メッシュをインポート",
@@ -506,7 +506,7 @@
     "motion_scale": "モーション倍率:",
     "reduce_quality": "削減品質:",
     "format": "フォーマット:",
-    "vmd_mode": "書き出し方式",
+    "export_strategy": "書き出し方式",
     "range": "範囲",
     "start": "開始",
     "end": "終了",
@@ -841,7 +841,7 @@
     "animation": {
       "label": "アニメーション",
       "impact": "エクスポートされるモーションが壊れる、曖昧になる、または元のアニメーション情報を失います。",
-      "remediation": "VMDフレームデータを修正するか、対応するMode A/Cのエクスポート経路を使用してください。"
+      "remediation": "VMDフレームデータを修正するか、対応する書き出し方式を選択してください。"
     },
     "physics": {
       "label": "物理",
@@ -887,7 +887,7 @@
       "remediation": "報告された例外と出力パスを確認し、原因を修正してから検証またはエクスポートを再実行してください。",
       "action": "エクスポート処理の失敗を確認"
     },
-    "vmd_mode_c_raw_loss": {
+    "vmd_bake_timeline_raw_loss": {
       "title": "現在のタイムライン書き出しによる元アニメーション情報の損失",
       "impact": "密なベイクにより、読み込んだボーンキーと補間バイト列が置き換えられます。",
       "remediation": "未編集のボーンモーションは「読み込んだ未編集ボーンキーを保持」を選ぶか、この損失を承認してから現在のタイムラインを書き出してください。",

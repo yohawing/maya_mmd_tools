@@ -1,6 +1,6 @@
 """Publish a verified private VMD stage without invoking the VMD writer.
 
-Mode C preparation already pays the expensive encode and output verification
+Bake Timeline preparation already pays the expensive encode and output verification
 cost.  This action is deliberately a small file boundary: it re-checks the
 receipt, streams the private stage into a sibling temporary file, verifies the
 bytes that were copied, and only then atomically replaces the requested path.

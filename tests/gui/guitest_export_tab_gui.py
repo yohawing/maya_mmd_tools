@@ -1,7 +1,7 @@
 """ExportTab の実 Maya GUI 契約テスト。
 
 実際の Maya GUI が提供する Qt アプリケーション上で ExportTab を生成し、
-形式別の mode UI と Validation Console の catalog 表示を検証する。
+形式別の書き出し方式UIとValidation Consoleのcatalog表示を検証する。
 """
 
 import json
@@ -22,7 +22,7 @@ from mmd_tools.validation.export_validator import (
 )
 from mmd_tools.validation.issue_catalog import get_issue_catalog_entry
 from mmd_tools.ui.translations import UITranslator
-from mmd_tools.validation.vmd_validator import VMD_MODE_C, validate_vmd_data
+from mmd_tools.validation.vmd_validator import VMD_EXPORT_BAKE_TIMELINE, validate_vmd_data
 from tests.common.ui_action_coverage import (
     ActionInvocationSpy,
     QtSignalInvocationSpy,
@@ -72,7 +72,7 @@ class _WarningWorkflow:
         return ExportWorkflowResult(
             STATE_SUCCEEDED,
             self.report,
-            {"output_path": "mode-c-warning.vmd"},
+            {"output_path": "bake-timeline-warning.vmd"},
         )
 
 
@@ -172,7 +172,7 @@ class TestExportTabGUI(GuiTestBase):
             request = tab.build_request("model_ROOT")
             self.assertEqual(request.options["export_format"], "vmd")
             self.assertEqual(request.options["current_model_root"], "model_ROOT")
-            self.assertEqual(request.options["vmd_mode"], "A")
+            self.assertEqual(request.options["export_strategy"], "preserve_keys")
             self.assertEqual(request.options["frame_range"], (12, 42))
             _emit_witness(
                 "export.pane_selector",
@@ -266,7 +266,7 @@ class TestExportTabGUI(GuiTestBase):
                         observed,
                     ),
                 ),
-                mode="A",
+                mode="preserve_keys",
             )
             evidence = {
                 "fixture": "gui_validation_console",
@@ -376,7 +376,7 @@ class TestExportTabGUI(GuiTestBase):
 
             report = validate_vmd_data(
                 VmdData(),
-                VMD_MODE_C,
+                VMD_EXPORT_BAKE_TIMELINE,
                 raw_provenance={
                     "raw_bone_interpolation": [
                         {
@@ -442,12 +442,12 @@ class TestExportTabGUI(GuiTestBase):
             self._delete_tab(tab)
             translator.set_language(previous_language)
 
-    def test_mode_c_warning_is_acknowledged_before_successful_export_route(self):
+    def test_bake_timeline_warning_is_acknowledged_before_successful_export_route(self):
         """Real Maya widgets show the warning and route an explicit ack to export."""
         tab = self._create_visible_tab()
         report = validate_vmd_data(
             VmdData(),
-            VMD_MODE_C,
+            VMD_EXPORT_BAKE_TIMELINE,
             raw_provenance={
                 "raw_bone_interpolation_complete": True,
                 "raw_bone_interpolation": [
@@ -464,13 +464,13 @@ class TestExportTabGUI(GuiTestBase):
         presenter = ExportPresenter(tab, app_state, workflow_service=workflow)
         try:
             tab.pane_tabs.setCurrentIndex(1)
-            tab.validation_console.set_report(report, {"fixture": "mode-c-raw-loss"})
+            tab.validation_console.set_report(report, {"fixture": "bake-timeline-raw-loss"})
             QApplication.processEvents()
 
             console = tab.validation_console
             self.assertTrue(report.requires_warning_ack)
             self.assertTrue(console.acknowledge_check.isEnabled())
-            self.assertIn("[WARNING] VMD_MODE_C_RAW_LOSS", console.issue_list.item(0).text())
+            self.assertIn("[WARNING] VMD_BAKE_TIMELINE_RAW_LOSS", console.issue_list.item(0).text())
             ack_spy = QtSignalInvocationSpy(
                 "ValidationConsole.acknowledge_changed",
                 console.acknowledge_check.toggled,
@@ -527,7 +527,7 @@ class TestExportTabGUI(GuiTestBase):
             output_spy.stop()
             model_report = ExportValidationReport(
                 "pmx",
-                (ExportValidationIssue("VMD_MODE_C_RAW_LOSS", "warning", False, "mode", "model"),),
+                (ExportValidationIssue("VMD_BAKE_TIMELINE_RAW_LOSS", "warning", False, "export_strategy", "model"),),
                 mode="model",
             )
             tab.validation_console.set_report(model_report)
@@ -550,8 +550,8 @@ class TestExportTabGUI(GuiTestBase):
             tab.output_path_edit.setText("motion.pmx")
             motion_report = ExportValidationReport(
                 "vmd",
-                (ExportValidationIssue("VMD_MODE_C_RAW_LOSS", "warning", False, "mode", "motion"),),
-                mode="C",
+                (ExportValidationIssue("VMD_BAKE_TIMELINE_RAW_LOSS", "warning", False, "export_strategy", "motion"),),
+                mode="bake_timeline",
             )
             tab.validation_console.set_report(motion_report)
             tab.validation_console.acknowledge_check.setChecked(True)
@@ -576,8 +576,8 @@ class TestExportTabGUI(GuiTestBase):
         try:
             report = ExportValidationReport(
                 "vmd",
-                (ExportValidationIssue("VMD_MODE_C_RAW_LOSS", "warning", False, "mode", "x"),),
-                mode="C",
+                (ExportValidationIssue("VMD_BAKE_TIMELINE_RAW_LOSS", "warning", False, "export_strategy", "x"),),
+                mode="bake_timeline",
             )
             tab.validation_console.set_report(report)
             tab.pane_tabs.setCurrentIndex(1)

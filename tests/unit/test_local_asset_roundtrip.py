@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools.local_asset_roundtrip import (
-    VMD_MODE_C_POSE_TOLERANCE,
+    VMD_EXPORT_BAKE_TIMELINE_POSE_TOLERANCE,
     _metric_snapshot,
     _classify_failure,
     _allowed_warning_codes,
@@ -21,9 +21,9 @@ from tools.local_asset_roundtrip import (
     _load_manifest,
     _motion_evaluation_frames,
     _motion_phase_evidence,
-    _mode_c_track_boundary_diff,
+    _bake_timeline_track_boundary_diff,
     _prepare_diagnostics_sink,
-    _prepare_vmd_mode_c,
+    _prepare_vmd_bake_timeline,
     _run_prepared_vmd_exports,
     _import_options,
     _import_model_action,
@@ -38,16 +38,16 @@ from tools.local_asset_roundtrip import (
     _select_cases,
     _summary_markdown,
     _worker_failure_classification,
-    _vmd_mode_c_semantic_diff,
+    _vmd_bake_timeline_semantic_diff,
     _vmd_edit_track_witness,
     _vmd_payload,
     _vmd_payload_diff,
 )
 
 
-def test_mode_c_pose_tolerance_covers_vmd_ccd_reconstruction_only():
-    assert 0.0099 < VMD_MODE_C_POSE_TOLERANCE
-    assert 0.0101 > VMD_MODE_C_POSE_TOLERANCE
+def test_bake_timeline_pose_tolerance_covers_vmd_ccd_reconstruction_only():
+    assert 0.0099 < VMD_EXPORT_BAKE_TIMELINE_POSE_TOLERANCE
+    assert 0.0101 > VMD_EXPORT_BAKE_TIMELINE_POSE_TOLERANCE
 
 
 def test_metric_snapshot_exposes_rss_on_windows():
@@ -193,11 +193,11 @@ def test_dense_warm_samples_use_distinct_outputs_and_the_prepared_source_target(
     )
     monkeypatch.setattr(
         "tools.local_asset_roundtrip._allowed_warning_codes",
-        lambda validation, export_format: (["VMD_MODE_C_RAW_LOSS"], []),
+        lambda validation, export_format: (["VMD_BAKE_TIMELINE_RAW_LOSS"], []),
     )
     monkeypatch.setattr(
         "tools.local_asset_roundtrip._assert_execute_warnings",
-        lambda result, export_format: ["VMD_MODE_C_RAW_LOSS"],
+        lambda result, export_format: ["VMD_BAKE_TIMELINE_RAW_LOSS"],
     )
 
     prepared_token = SimpleNamespace(cache_id="prepared-token")
@@ -231,7 +231,7 @@ def test_dense_warm_samples_use_distinct_outputs_and_the_prepared_source_target(
     assert all((tmp_path / f"warm-export-{index:02d}.json").is_file() for index in range(1, 4))
 
 
-def test_mode_c_prepare_is_called_once_and_publishes_timing_evidence(monkeypatch):
+def test_bake_timeline_prepare_is_called_once_and_publishes_timing_evidence(monkeypatch):
     calls = []
     token = SimpleNamespace(
         cache_id="cache",
@@ -263,14 +263,14 @@ def test_mode_c_prepare_is_called_once_and_publishes_timing_evidence(monkeypatch
             return _Preparation()
 
     context = SimpleNamespace(
-        phases=[{"name": "prepare_mode_c", "wall_sec": 12.5, "status": "passed"}],
+        phases=[{"name": "prepare_bake_timeline", "wall_sec": 12.5, "status": "passed"}],
     )
     monkeypatch.setattr(
         "tools.local_asset_roundtrip._phase",
         lambda worker_context, name, function: function(),
     )
 
-    actual, evidence = _prepare_vmd_mode_c(_Workflow(), {"mode": "C"}, context)
+    actual, evidence = _prepare_vmd_bake_timeline(_Workflow(), {"export_strategy": "bake_timeline"}, context)
 
     assert actual is token
     assert len(calls) == 1
@@ -279,7 +279,7 @@ def test_mode_c_prepare_is_called_once_and_publishes_timing_evidence(monkeypatch
     assert evidence["diagnostics"]["phase_timing"]["total"] == 0.25
 
 
-def test_mode_c_prepare_failure_is_non_pass_and_has_no_collector_fallback(monkeypatch):
+def test_bake_timeline_prepare_failure_is_non_pass_and_has_no_collector_fallback(monkeypatch):
     calls = []
 
     class _Workflow:
@@ -304,7 +304,7 @@ def test_mode_c_prepare_failure_is_non_pass_and_has_no_collector_fallback(monkey
     )
 
     with pytest.raises(RuntimeError, match="preparation failed"):
-        _prepare_vmd_mode_c(_Workflow(), {"mode": "C"}, context)
+        _prepare_vmd_bake_timeline(_Workflow(), {"export_strategy": "bake_timeline"}, context)
     assert [kind for kind, _request in calls] == ["prepare"]
 
 
@@ -357,7 +357,7 @@ def test_motion_phase_evidence_reports_boundaries_and_edit_to_first_file():
         phases=[
             {"name": "motion_adjustment", "wall_sec": 2.0},
             {"name": "edited_motion_oracle", "wall_sec": 3.0},
-            {"name": "prepare_mode_c", "wall_sec": 4.0},
+            {"name": "prepare_bake_timeline", "wall_sec": 4.0},
             {"name": "export_validation", "wall_sec": 5.0},
             {"name": "export_write", "wall_sec": 6.0},
             {"name": "exported_parse", "wall_sec": 7.0},
@@ -365,11 +365,11 @@ def test_motion_phase_evidence_reports_boundaries_and_edit_to_first_file():
     )
     evidence = _motion_phase_evidence(
         context,
-        {"phase_timing": {"name": "prepare_mode_c", "wall_sec": 4.0}},
+        {"phase_timing": {"name": "prepare_bake_timeline", "wall_sec": 4.0}},
         context.phases[3:5],
     )
 
-    assert evidence["prepare_mode_c"]["wall_sec"] == 4.0
+    assert evidence["prepare_bake_timeline"]["wall_sec"] == 4.0
     assert evidence["cold_validate"]["wall_sec"] == 5.0
     assert evidence["cold_export"]["wall_sec"] == 6.0
     assert evidence["edit_to_first_file"]["wall_sec"] == 20.0
@@ -381,7 +381,7 @@ def test_prepare_diagnostics_sink_publishes_atomic_live_snapshot(tmp_path):
     sink = _prepare_diagnostics_sink(path, "dense")
 
     started = json.loads(path.read_text(encoding="utf-8"))
-    assert started["phase"] == "prepare_mode_c"
+    assert started["phase"] == "prepare_bake_timeline"
     assert started["snapshot"]["status"] == "started"
 
     sink({"native_sampler": {"status": "sampling_chunk", "chunk_index": 2}})
@@ -502,14 +502,14 @@ def test_worker_fails_closed_when_warm_samples_are_skipped(monkeypatch, tmp_path
     assert document["runs"][0]["failure_classification"] == "performance_timeout"
 
 
-def test_mode_c_semantics_allows_dense_key_inflation_but_requires_tracks():
+def test_bake_timeline_semantics_allows_dense_key_inflation_but_requires_tracks():
     source = {"bone": [{"name": "センター", "frame": 0}], "morph": [], "camera": [], "light": [], "shadow": [], "ik": []}
     exported = {"bone": [{"name": "センター", "frame": 0}, {"name": "センター", "frame": 1}], "morph": [], "camera": [], "light": [], "shadow": [], "ik": []}
-    assert _vmd_mode_c_semantic_diff(source, exported) == []
-    assert _vmd_mode_c_semantic_diff(source, {**exported, "bone": []})
+    assert _vmd_bake_timeline_semantic_diff(source, exported) == []
+    assert _vmd_bake_timeline_semantic_diff(source, {**exported, "bone": []})
 
 
-def test_mode_c_track_boundaries_exclude_only_model_unmatched_source_tracks():
+def test_bake_timeline_track_boundaries_exclude_only_model_unmatched_source_tracks():
     center = _bone()
     center.bone_name = "センター"
     unmatched = _bone()
@@ -518,7 +518,7 @@ def test_mode_c_track_boundaries_exclude_only_model_unmatched_source_tracks():
     prepared = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
     exported = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
 
-    failures = _mode_c_track_boundary_diff(
+    failures = _bake_timeline_track_boundary_diff(
         source,
         prepared,
         exported,
@@ -528,7 +528,7 @@ def test_mode_c_track_boundaries_exclude_only_model_unmatched_source_tracks():
     assert failures == {"source_to_prepared": [], "prepared_to_export": []}
 
 
-def test_mode_c_track_boundaries_reject_supported_physics_track_lost_in_prepare():
+def test_bake_timeline_track_boundaries_reject_supported_physics_track_lost_in_prepare():
     center = _bone()
     center.bone_name = "センター"
     physics = _bone()
@@ -536,7 +536,7 @@ def test_mode_c_track_boundaries_reject_supported_physics_track_lost_in_prepare(
     source = _vmd_payload(_empty_vmd_data(bone_frames=[center, physics]))
     prepared = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
 
-    failures = _mode_c_track_boundary_diff(
+    failures = _bake_timeline_track_boundary_diff(
         source,
         prepared,
         prepared,
@@ -549,14 +549,14 @@ def test_mode_c_track_boundaries_reject_supported_physics_track_lost_in_prepare(
     assert failures["prepared_to_export"] == []
 
 
-def test_mode_c_track_boundaries_reject_prepared_authored_track_lost_by_writer():
+def test_bake_timeline_track_boundaries_reject_prepared_authored_track_lost_by_writer():
     authored = _bone()
     authored.bone_name = "センター"
     source = _vmd_payload(_empty_vmd_data(bone_frames=[authored]))
     prepared = _vmd_payload(_empty_vmd_data(bone_frames=[authored]))
     exported = _vmd_payload(_empty_vmd_data())
 
-    failures = _mode_c_track_boundary_diff(
+    failures = _bake_timeline_track_boundary_diff(
         source,
         prepared,
         exported,
@@ -569,7 +569,7 @@ def test_mode_c_track_boundaries_reject_prepared_authored_track_lost_by_writer()
     ]
 
 
-def _dense_mode_c_payload():
+def _dense_bake_timeline_payload():
     return {
         "model_name": "model",
         "bone": [
@@ -593,10 +593,10 @@ def _dense_mode_c_payload():
     }
 
 
-def test_mode_c_track_boundaries_accept_identical_dense_prepared_payload():
-    payload = _dense_mode_c_payload()
+def test_bake_timeline_track_boundaries_accept_identical_dense_prepared_payload():
+    payload = _dense_bake_timeline_payload()
 
-    failures = _mode_c_track_boundary_diff(
+    failures = _bake_timeline_track_boundary_diff(
         payload,
         payload,
         payload,
@@ -616,17 +616,17 @@ def test_mode_c_track_boundaries_accept_identical_dense_prepared_payload():
         ("morph", 1, "value", 0.25, "morph[1].value differs"),
     ],
 )
-def test_mode_c_track_boundaries_reject_writer_value_changes_with_same_tracks(
+def test_bake_timeline_track_boundaries_reject_writer_value_changes_with_same_tracks(
     section, index, field, replacement, expected_failure
 ):
-    prepared = _dense_mode_c_payload()
+    prepared = _dense_bake_timeline_payload()
     exported = {
         **prepared,
         section: [dict(item) for item in prepared[section]],
     }
     exported[section][index][field] = replacement
 
-    failures = _mode_c_track_boundary_diff(
+    failures = _bake_timeline_track_boundary_diff(
         prepared,
         prepared,
         exported,
@@ -637,14 +637,14 @@ def test_mode_c_track_boundaries_reject_writer_value_changes_with_same_tracks(
     assert expected_failure in failures["prepared_to_export"]
 
 
-def test_mode_c_track_boundaries_reject_writer_count_change_with_same_track_name():
-    prepared = _dense_mode_c_payload()
+def test_bake_timeline_track_boundaries_reject_writer_count_change_with_same_track_name():
+    prepared = _dense_bake_timeline_payload()
     exported = {
         **prepared,
         "bone": [dict(item) for item in prepared["bone"][:-1]],
     }
 
-    failures = _mode_c_track_boundary_diff(
+    failures = _bake_timeline_track_boundary_diff(
         prepared,
         prepared,
         exported,
@@ -657,7 +657,7 @@ def test_mode_c_track_boundaries_reject_writer_count_change_with_same_track_name
     ]
 
 
-def test_mode_c_ik_semantics_canonicalizes_state_order_only():
+def test_bake_timeline_ik_semantics_canonicalizes_state_order_only():
     source = {
         "bone": [],
         "morph": [],
@@ -671,7 +671,7 @@ def test_mode_c_ik_semantics_canonicalizes_state_order_only():
         "ik": [{"frame": 0, "visible": 1, "states": [["左足IK", True], ["右足IK", False]]}],
     }
 
-    assert _vmd_mode_c_semantic_diff(source, reordered) == []
+    assert _vmd_bake_timeline_semantic_diff(source, reordered) == []
 
 
 @pytest.mark.parametrize(
@@ -684,13 +684,13 @@ def test_mode_c_ik_semantics_canonicalizes_state_order_only():
         ({"states": [["左足IK", 1], ["左足IK", 0]]}, "duplicate IK state name"),
     ],
 )
-def test_mode_c_ik_semantics_rejects_non_order_changes(change, expected_fragment):
+def test_bake_timeline_ik_semantics_rejects_non_order_changes(change, expected_fragment):
     source_item = {"frame": 0, "visible": 1, "states": [["左足IK", 1], ["右足IK", 0]]}
     actual_item = {**source_item, **change}
     source = {"bone": [], "morph": [], "camera": [], "light": [], "shadow": [], "ik": [source_item]}
     actual = {**source, "ik": [actual_item]}
 
-    failures = _vmd_mode_c_semantic_diff(source, actual)
+    failures = _vmd_bake_timeline_semantic_diff(source, actual)
 
     assert any(expected_fragment in failure for failure in failures)
 
@@ -990,7 +990,7 @@ def test_export_request_matches_export_tab_shape_and_disables_raw_mode(tmp_path)
     assert options["require_current_model"] is True
     assert options["current_model_root"] == "|mmd_root"
     assert options["authoring_semantics"] == "auto"
-    assert options["vmd_mode"] == "C"
+    assert options["export_strategy"] == "bake_timeline"
     assert "preserve_raw_bone_transforms" not in options
 
 
@@ -1035,15 +1035,15 @@ def test_manifest_requires_schema_hashes_oracle_frames_and_adjustment(tmp_path):
         _load_manifest(manifest)
 
 
-def test_only_mode_c_raw_loss_warning_is_acknowledgeable():
+def test_only_bake_timeline_raw_loss_warning_is_acknowledgeable():
     allowed = SimpleNamespace(
         report=SimpleNamespace(
             issues=[
-                SimpleNamespace(code="VMD_MODE_C_RAW_LOSS", severity="warning"),
+                SimpleNamespace(code="VMD_BAKE_TIMELINE_RAW_LOSS", severity="warning"),
                 SimpleNamespace(code="OTHER_WARNING", severity="warning"),
             ]
         )
     )
-    assert _allowed_warning_codes(allowed, "vmd") == (["VMD_MODE_C_RAW_LOSS"], ["OTHER_WARNING"])
+    assert _allowed_warning_codes(allowed, "vmd") == (["VMD_BAKE_TIMELINE_RAW_LOSS"], ["OTHER_WARNING"])
     with pytest.raises(RuntimeError, match="unexpected execute warnings"):
         _assert_execute_warnings(allowed, "pmx")

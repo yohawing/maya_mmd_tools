@@ -1,4 +1,4 @@
-"""Maya-independent structural validation for VMD Mode A/C export."""
+"""Maya-independent structural validation for VMD export strategies."""
 
 import hashlib
 import math
@@ -10,9 +10,9 @@ from ..core.vmd_data import VmdData
 from .export_validator import ExportValidationIssue, ExportValidationReport
 
 
-VMD_MODE_A = "A"
-VMD_MODE_C = "C"
-VMD_MODES = frozenset({VMD_MODE_A, VMD_MODE_C})
+VMD_EXPORT_PRESERVE_KEYS = "preserve_keys"
+VMD_EXPORT_BAKE_TIMELINE = "bake_timeline"
+VMD_EXPORT_STRATEGIES = frozenset({VMD_EXPORT_PRESERVE_KEYS, VMD_EXPORT_BAKE_TIMELINE})
 _CURRENT_MODEL_BONE_SCOPE = "current_model_bone_names"
 _INVALID_BONE_SCOPE = object()
 
@@ -342,36 +342,43 @@ def _raw_bone_transform_mismatch(
 
 def validate_vmd_data(
     vmd_data: VmdData,
-    mode: str = VMD_MODE_C,
+    export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
     *,
     raw_provenance: Optional[Any] = None,
     frame_range: Optional[Tuple[int, int]] = None,
     require_raw_provenance: bool = True,
 ) -> ExportValidationReport:
-    """Validate a normalized VMD payload for Mode A or Mode C.
+    """Validate a normalized VMD payload for the selected export strategy.
 
-    Mode A requires caller-provided raw provenance so an imported motion is
-    never silently presented as a raw round-trip.  Mode C validates evaluated
-    frame payloads and does not require provenance.
+    Preserving imported keys requires caller-provided raw provenance so an
+    imported motion is never silently presented as a raw round-trip.  Baking
+    the timeline validates evaluated frame payloads and does not require
+    provenance.
     """
-    mode = str(mode or "").upper()
+    export_strategy = str(export_strategy or "").lower()
     issues = []
-    if mode not in VMD_MODES:
-        issues.append(_issue("VMD_MODE_UNSUPPORTED", "mode", f"VMD mode {mode!r} is not supported"))
-    if mode == VMD_MODE_A and require_raw_provenance and raw_provenance is None:
+    if export_strategy not in VMD_EXPORT_STRATEGIES:
+        issues.append(
+            _issue(
+                "VMD_EXPORT_STRATEGY_UNSUPPORTED",
+                "export_strategy",
+                f"VMD export strategy {export_strategy!r} is not supported",
+            )
+        )
+    if export_strategy == VMD_EXPORT_PRESERVE_KEYS and require_raw_provenance and raw_provenance is None:
         issues.append(
             _issue(
                 "VMD_RAW_PROVENANCE_MISSING",
                 "raw_provenance",
-                "VMD Mode A requires imported raw key/interpolation provenance",
+                "Preserve Keys requires imported raw key/interpolation provenance",
             )
         )
     if not isinstance(vmd_data, VmdData):
         issues.append(_issue("OUTPUT_PARSE_FAILED", "animation_data", "VMD animation data must be VmdData"))
-        return ExportValidationReport("vmd", tuple(issues), mode=mode)
+        return ExportValidationReport("vmd", tuple(issues), mode=export_strategy)
 
     if (
-        mode == VMD_MODE_C
+        export_strategy == VMD_EXPORT_BAKE_TIMELINE
         and isinstance(raw_provenance, Mapping)
         and isinstance(raw_provenance.get("raw_bone_interpolation"), list)
         and raw_provenance["raw_bone_interpolation"]
@@ -379,9 +386,9 @@ def validate_vmd_data(
     ):
         issues.append(
             _info(
-                "VMD_MODE_C_RAW_LOSS",
-                "mode",
-                "VMD Mode C dense bake does not preserve imported raw bone keys or interpolation bytes",
+                "VMD_BAKE_TIMELINE_RAW_LOSS",
+                "export_strategy",
+                "Bake Timeline does not preserve imported raw bone keys or interpolation bytes",
             )
         )
 
@@ -409,7 +416,7 @@ def validate_vmd_data(
         if not math.isfinite(norm) or norm <= 1e-12:
             issues.append(_issue("VMD_QUATERNION_INVALID", f"{path}.rotation", "VMD quaternion must not be zero"))
 
-    if mode == VMD_MODE_A:
+    if export_strategy == VMD_EXPORT_PRESERVE_KEYS:
         raw_frame_range = (start, end) if start is not None and end is not None else None
         has_raw_records, expected_raw_records = _raw_bone_provenance_records(
             raw_provenance,
@@ -421,7 +428,7 @@ def validate_vmd_data(
                     _issue(
                         "VMD_RAW_PROVENANCE_MISMATCH",
                         "raw_provenance.raw_bone_interpolation",
-                        "VMD Mode A raw bone provenance is incomplete or malformed",
+                        "Preserve Keys raw bone provenance is incomplete or malformed",
                     )
                 )
             else:
@@ -434,7 +441,7 @@ def validate_vmd_data(
                         _issue(
                             "VMD_RAW_PROVENANCE_MISMATCH",
                             "raw_provenance.raw_bone_interpolation",
-                            "VMD Mode A raw bone key/interpolation mismatch: "
+                            "Preserve Keys raw bone key/interpolation mismatch: "
                             f"missing={missing}, extra={extra}, changed={changed}, duplicate={duplicate}",
                         )
                     )
@@ -448,7 +455,7 @@ def validate_vmd_data(
                     _issue(
                         "VMD_RAW_PROVENANCE_MISMATCH",
                         "raw_provenance.raw_bone_interpolation",
-                        "VMD Mode A raw bone transform provenance is incomplete or malformed",
+                        "Preserve Keys raw bone transform provenance is incomplete or malformed",
                     )
                 )
             else:
@@ -461,7 +468,7 @@ def validate_vmd_data(
                         _issue(
                             "VMD_RAW_PROVENANCE_MISMATCH",
                             "raw_provenance.raw_bone_interpolation",
-                            "VMD Mode A raw bone position/rotation mismatch: "
+                            "Preserve Keys raw bone position/rotation mismatch: "
                             f"missing={missing}, extra={extra}, changed={changed}, duplicate={duplicate}",
                         )
                     )
@@ -567,7 +574,7 @@ def validate_vmd_data(
                         )
                     )
 
-    return ExportValidationReport("vmd", tuple(issues), mode=mode)
+    return ExportValidationReport("vmd", tuple(issues), mode=export_strategy)
 
 
 def _bounded_int(
@@ -602,7 +609,7 @@ def _frame_sections(vmd_data: VmdData) -> Iterable[Tuple[str, Iterable[Any]]]:
 
 def verify_vmd_output(
     file_path: str,
-    mode: str = VMD_MODE_C,
+    export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
     *,
     expected_counts: Optional[Mapping[str, int]] = None,
 ) -> ExportValidationReport:
@@ -619,11 +626,11 @@ def verify_vmd_output(
                     f"VMD output could not be parsed: {type(exc).__name__}",
                 ),
             ),
-            mode=str(mode or "").upper(),
+            mode=str(export_strategy or "").lower(),
         )
     report = validate_vmd_data(
         vmd_data,
-        mode=mode,
+        export_strategy=export_strategy,
         require_raw_provenance=False,
     )
     section_names = {
@@ -716,7 +723,7 @@ def _stream_finite(
 
 def verify_vmd_output_streaming(
     file_path: str,
-    mode: str = VMD_MODE_C,
+    export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
     *,
     expected_counts: Optional[Mapping[str, int]] = None,
     expected_bounds: Optional[Mapping[str, Any]] = None,
@@ -734,7 +741,7 @@ def verify_vmd_output_streaming(
     present to have a complete count and complete records.  The stream writer
     emits all six canonical count fields, including an empty IK section.
     """
-    normalized_mode = str(mode or "").upper()
+    normalized_strategy = str(export_strategy or "").lower()
     issues: List[ExportValidationIssue] = []
     metadata_names = frozenset(_STREAM_METADATA_NAMES.values())
     canonical_counts: Optional[Dict[str, int]] = None
@@ -796,26 +803,26 @@ def verify_vmd_output_streaming(
             frame_range_issue.path,
             frame_range_issue.message,
         )
-    if normalized_mode not in VMD_MODES:
+    if normalized_strategy not in VMD_EXPORT_STRATEGIES:
         _stream_issue(
             issues,
-            "VMD_MODE_UNSUPPORTED",
-            "mode",
-            "VMD mode {!r} is not supported".format(normalized_mode),
+            "VMD_EXPORT_STRATEGY_UNSUPPORTED",
+            "export_strategy",
+            "VMD export strategy {!r} is not supported".format(normalized_strategy),
         )
 
     output_path = Path(file_path)
     if not output_path.is_file():
         _stream_issue(issues, "OUTPUT_FILE_MISSING", "output", "temporary output file does not exist")
-        return ExportValidationReport("vmd", tuple(issues), mode=normalized_mode)
+        return ExportValidationReport("vmd", tuple(issues), mode=normalized_strategy)
     try:
         file_size = output_path.stat().st_size
     except OSError:
         _stream_issue(issues, "OUTPUT_PARSE_FAILED", "output", "VMD output size could not be read")
-        return ExportValidationReport("vmd", tuple(issues), mode=normalized_mode)
+        return ExportValidationReport("vmd", tuple(issues), mode=normalized_strategy)
     if file_size == 0:
         _stream_issue(issues, "OUTPUT_FILE_EMPTY", "output", "temporary output file is empty")
-        return ExportValidationReport("vmd", tuple(issues), mode=normalized_mode)
+        return ExportValidationReport("vmd", tuple(issues), mode=normalized_strategy)
 
     digest = hashlib.sha256()
     bytes_read = 0
@@ -1043,12 +1050,12 @@ def verify_vmd_output_streaming(
             "VMD output could not be read: {}".format(type(exc).__name__),
         )
 
-    if raw_loss_warning_required and not ack_warnings and normalized_mode == VMD_MODE_C:
+    if raw_loss_warning_required and not ack_warnings and normalized_strategy == VMD_EXPORT_BAKE_TIMELINE:
         _stream_info(
             issues,
-            "VMD_MODE_C_RAW_LOSS",
-            "mode",
-            "VMD Mode C dense bake does not preserve imported raw bone keys or interpolation bytes",
+            "VMD_BAKE_TIMELINE_RAW_LOSS",
+            "export_strategy",
+            "Bake Timeline does not preserve imported raw bone keys or interpolation bytes",
         )
 
     for section, _ in _STREAM_SECTIONS:
@@ -1103,13 +1110,13 @@ def verify_vmd_output_streaming(
                 "output.size",
                 "VMD output size {} does not match expected {}".format(bytes_read, normalized_size),
             )
-    return ExportValidationReport("vmd", tuple(issues), mode=normalized_mode)
+    return ExportValidationReport("vmd", tuple(issues), mode=normalized_strategy)
 
 
 __all__ = [
-    "VMD_MODE_A",
-    "VMD_MODE_C",
-    "VMD_MODES",
+    "VMD_EXPORT_PRESERVE_KEYS",
+    "VMD_EXPORT_BAKE_TIMELINE",
+    "VMD_EXPORT_STRATEGIES",
     "validate_vmd_data",
     "verify_vmd_output",
     "verify_vmd_output_streaming",

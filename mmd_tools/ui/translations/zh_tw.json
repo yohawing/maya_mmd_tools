@@ -211,7 +211,7 @@
     "morph_create_impulse_unsupported": "無法建立 PMX 2.1 衝量變形",
     "select_vmd_target_model": "請選擇目標模型，或選擇 Camera Motion。",
     "export_success": "匯出完成",
-    "prepare_mode_c_complete": "VMD 匯出資料準備完成",
+    "prepare_bake_timeline_complete": "VMD 時間軸烘焙準備完成",
     "error_file_not_found": "找不到檔案",
     "error_invalid_file": "無效的檔案格式",
     "error_no_selection": "未選擇任何物件",
@@ -270,7 +270,7 @@
     "humanik_source_tooltip": "可將已角色化的 MMD 模型或場景中已定義的 HumanIK 角色指定為重定向 SOURCE。"
   },
   "options": {
-    "vmd_preserve_imported": "保留未編輯的匯入骨骼關鍵影格",
+    "vmd_preserve_keys": "保留未編輯的匯入骨骼關鍵影格",
     "vmd_export_timeline": "匯出目前時間軸",
     "none": "無",
     "import_mesh": "匯入網格",
@@ -388,7 +388,7 @@
     "enable_physics": "啟用物理"
   },
   "fields": {
-    "vmd_mode": "匯出方式",
+    "export_strategy": "匯出策略",
     "display_frame_name_jp": "日文名稱:",
     "display_frame_name_en": "英文名稱:",
     "special_display_frame": "特殊框（Root／表情）",

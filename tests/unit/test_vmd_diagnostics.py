@@ -93,7 +93,7 @@ class VmdDiagnosticsTests(unittest.TestCase):
             side_effect=lambda values, _bind, _scale: tuple(values),
         ):
             collector._mmd_bone_name = lambda joint: str(joint)
-            with self.assertRaisesRegex(RuntimeError, "Mode C native bone sampling failed"):
+            with self.assertRaisesRegex(RuntimeError, "Bake Timeline native bone sampling failed"):
                 collector.collect_bone_frames(
                     ["joint"],
                     input_routes={"joint": {"rotateX": ("|driver", "inPreRotateX")}},

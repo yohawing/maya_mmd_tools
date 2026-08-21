@@ -27,7 +27,13 @@ from .output_verifier import verify_model_output
 from .report_artifacts import ValidationReportArtifactPaths, write_validation_report_artifacts
 from .snapshot import ExportValidationSnapshot, fingerprint_payload
 from .scene_preflight import ScenePreflight, ScenePreflightResult
-from .vmd_validator import VMD_MODE_A, VMD_MODE_C, validate_vmd_data, verify_vmd_output
+from .vmd_validator import (
+    VMD_EXPORT_BAKE_TIMELINE,
+    VMD_EXPORT_PRESERVE_KEYS,
+    VMD_EXPORT_STRATEGIES,
+    validate_vmd_data,
+    verify_vmd_output,
+)
 
 __all__ = [
     "BoneValidator",
@@ -42,8 +48,9 @@ __all__ = [
     "IssueCatalogEntry",
     "UnknownValidationIssueError",
     "ValidationReportArtifactPaths",
-    "VMD_MODE_A",
-    "VMD_MODE_C",
+    "VMD_EXPORT_BAKE_TIMELINE",
+    "VMD_EXPORT_PRESERVE_KEYS",
+    "VMD_EXPORT_STRATEGIES",
     "get_issue_catalog_entry",
     "fingerprint_payload",
     "validate_export_model",

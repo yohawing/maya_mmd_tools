@@ -43,7 +43,7 @@ class VmdData:
         self.shadow_frames = []
         self.ik_show_hide_frames = []
         self.source_file = None
-        # Optional scene-only authority used by development Mode A export.
+        # Optional scene-only authority used by Preserve Keys export.
         # It is not serialized into the VMD binary itself.
         self.raw_provenance = None
 

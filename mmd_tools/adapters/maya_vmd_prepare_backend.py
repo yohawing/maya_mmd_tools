@@ -1,9 +1,9 @@
-"""Maya-owned preparation boundary for user-path Mode C VMD exports.
+"""Maya-owned preparation boundary for user-path Bake Timeline VMD exports.
 
 The public prepare action is intentionally Maya independent.  This adapter
 supplies the small host-side seam it needs: resolve the Current Model, build a
 conservative dependency closure, arm a :class:`SceneRevisionService` watch,
-and stream one Mode C payload.  Maya modules are imported lazily so importing
+and stream one Bake Timeline payload.  Maya modules are imported lazily so importing
 the package remains safe in unit-test and tooling processes.
 """
 
@@ -17,7 +17,6 @@ from typing import Any, Optional
 
 from ..actions.prepare_vmd_export_action import (
     PrepareVmdExportError,
-    VMD_MODE_C,
     VmdExportDiscovery,
 )
 from ..core.constants import ATTR_MMD_MODEL_NAME
@@ -26,6 +25,7 @@ from ..validation.snapshot import fingerprint_payload
 
 _CAMERA_MARKER = "mmd_camera"
 _LIGHT_MARKER = "mmd_light"
+_BAKE_TIMELINE_EXPORT_STRATEGY = "bake_timeline"
 
 
 @dataclass(frozen=True)
@@ -79,8 +79,7 @@ def _request_options(request: Any) -> dict[str, Any]:
     for name in (
         "current_model_root",
         "target_model",
-        "mode",
-        "vmd_mode",
+        "export_strategy",
         "scene_session_id",
         "frame_range",
         "frame_start",
@@ -122,7 +121,7 @@ def _copy_diagnostics(value: Any) -> Any:
 
 
 class MayaVmdPrepareBackend:
-    """Discover, watch, and collect one Current Model-scoped Mode C route.
+    """Discover, watch, and collect one Current Model-scoped Bake Timeline route.
 
     ``revision_service`` is injected in tests and in application wiring.  If
     omitted it is created lazily as a normal ``SceneRevisionService``; that
@@ -238,7 +237,7 @@ class MayaVmdPrepareBackend:
             raise PrepareVmdExportError("revision service does not expose arm(dependencies)")
         try:
             # Keep Maya's global time driver in the discovery fingerprint, but
-            # do not watch it as mutable authored scene data. Mode C sampling
+            # do not watch it as mutable authored scene data. Bake Timeline sampling
             # deliberately advances and restores currentTime; watching the
             # time node would invalidate the preparation because of its own
             # controlled Timeline evaluation. Connection/topology changes to
@@ -303,7 +302,7 @@ class MayaVmdPrepareBackend:
         return collector is None or callable(getattr(collector, "collect_to_sink", None))
 
     def collect_to_sink(self, request: Any, sink: Any) -> Mapping[str, Any]:
-        """Collect Mode C directly into a VMD stream sink.
+        """Collect Bake Timeline directly into a VMD stream sink.
 
         This path deliberately does not invoke the dictionary collector's
         converter or construct ``VmdData``.  The returned bounded metadata is
@@ -378,8 +377,7 @@ class MayaVmdPrepareBackend:
             {
                 "target_model": target_model,
                 "model_name": self._active_route.model_name,
-                "vmd_mode": VMD_MODE_C,
-                "mode": VMD_MODE_C,
+                "export_strategy": _BAKE_TIMELINE_EXPORT_STRATEGY,
                 "preserve_raw_bone_transforms": False,
             }
         )
@@ -420,9 +418,11 @@ class MayaVmdPrepareBackend:
 
     def _validated_options(self, request: Any) -> dict[str, Any]:
         options = _request_options(request)
-        mode = str(_field(options, "mode", "vmd_mode") or "").upper()
-        if mode != VMD_MODE_C:
-            raise PrepareVmdExportError("Maya VMD preparation supports Mode C only")
+        export_strategy = str(_field(options, "export_strategy") or "").lower()
+        if export_strategy != _BAKE_TIMELINE_EXPORT_STRATEGY:
+            raise PrepareVmdExportError(
+                "Maya VMD preparation supports Bake Timeline only"
+            )
         if not options.get("current_model_root"):
             raise PrepareVmdExportError("current_model_root is required for VMD preparation")
         if not options.get("target_model"):
@@ -459,8 +459,7 @@ class MayaVmdPrepareBackend:
         result.update(
             {
                 "target_model": target_model,
-                "vmd_mode": VMD_MODE_C,
-                "mode": VMD_MODE_C,
+                "export_strategy": _BAKE_TIMELINE_EXPORT_STRATEGY,
                 "preserve_raw_bone_transforms": False,
             }
         )

@@ -439,7 +439,7 @@ MStatus initializePlugin(MObject obj)
         sCppRegisteredMmdAuthoringMaterialOutlineCommand = true;
     }
 
-    // Optional native Mode C sampling capability.  The Python semantic
+    // Optional native Bake Timeline sampling capability.  The Python semantic
     // sampler remains available when another plugin owns this command name
     // or the native registration is unavailable.
     status = plugin.registerCommand("mmdVmdBatchSample",

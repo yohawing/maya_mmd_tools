@@ -1,4 +1,4 @@
-"""Atomic publication tests for prepared Mode C VMD artifacts."""
+"""Atomic publication tests for prepared Bake Timeline VMD artifacts."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def _receipt(directory: Path, content: bytes) -> PreparedVmdArtifactReceipt:
         size=len(content),
         section_counts={"bone_frames": 0},
         frame_bounds=None,
-        output_validation_report=ExportValidationReport("vmd", (), mode="C"),
+        output_validation_report=ExportValidationReport("vmd", (), mode="bake_timeline"),
     )
 
 

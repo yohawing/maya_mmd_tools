@@ -1,4 +1,4 @@
-"""VMD Mode A/C validation and atomic export fail-path contracts."""
+"""VMD Preserve Keys/Bake Timeline validation and atomic export fail-path contracts."""
 
 import hashlib
 import math
@@ -18,8 +18,8 @@ from mmd_tools.validation.export_validator import (
     ExportValidationReport,
 )
 from mmd_tools.validation.vmd_validator import (
-    VMD_MODE_A,
-    VMD_MODE_C,
+    VMD_EXPORT_PRESERVE_KEYS,
+    VMD_EXPORT_BAKE_TIMELINE,
     validate_vmd_data,
     verify_vmd_output,
     verify_vmd_output_streaming,
@@ -57,17 +57,17 @@ def _write_full_stream_fixture(path: Path) -> bytes:
 class TestVmdValidator(unittest.TestCase):
     """VMD payload issue codes remain deterministic and fail closed."""
 
-    def test_empty_mode_c_payload_is_ready(self):
-        report = validate_vmd_data(VmdData(), VMD_MODE_C)
+    def test_empty_bake_timeline_payload_is_ready(self):
+        report = validate_vmd_data(VmdData(), VMD_EXPORT_BAKE_TIMELINE)
 
         self.assertTrue(report.valid)
-        self.assertEqual(report.mode, VMD_MODE_C)
+        self.assertEqual(report.mode, VMD_EXPORT_BAKE_TIMELINE)
         self.assertEqual(report.to_dict()["status"], "ready")
 
-    def test_mode_c_reports_raw_loss_as_information_without_acknowledgement(self):
+    def test_bake_timeline_reports_raw_loss_as_information_without_acknowledgement(self):
         report = validate_vmd_data(
             VmdData(),
-            VMD_MODE_C,
+            VMD_EXPORT_BAKE_TIMELINE,
             raw_provenance={
                 "raw_bone_interpolation_complete": True,
                 "raw_bone_interpolation": [
@@ -83,14 +83,14 @@ class TestVmdValidator(unittest.TestCase):
         self.assertTrue(report.valid)
         self.assertFalse(report.requires_warning_ack)
         self.assertEqual(report.to_dict()["status"], "ready")
-        self.assertEqual(report.issues[0].code, "VMD_MODE_C_RAW_LOSS")
+        self.assertEqual(report.issues[0].code, "VMD_BAKE_TIMELINE_RAW_LOSS")
         self.assertEqual(report.issues[0].severity, "info")
         self.assertFalse(report.issues[0].blocking)
 
-    def test_mode_c_does_not_warn_when_raw_transforms_are_complete(self):
+    def test_bake_timeline_does_not_warn_when_raw_transforms_are_complete(self):
         report = validate_vmd_data(
             VmdData(),
-            VMD_MODE_C,
+            VMD_EXPORT_BAKE_TIMELINE,
             raw_provenance={
                 "raw_bone_interpolation_complete": True,
                 "raw_bone_transform_complete": True,
@@ -110,18 +110,18 @@ class TestVmdValidator(unittest.TestCase):
         self.assertFalse(report.requires_warning_ack)
         self.assertEqual(report.issues, ())
 
-    def test_mode_a_requires_raw_provenance(self):
-        report = validate_vmd_data(VmdData(), VMD_MODE_A)
+    def test_preserve_keys_requires_raw_provenance(self):
+        report = validate_vmd_data(VmdData(), VMD_EXPORT_PRESERVE_KEYS)
 
         self.assertTrue(report.is_blocking)
         self.assertEqual([issue.code for issue in report.issues], ["VMD_RAW_PROVENANCE_MISSING"])
 
-    def test_mode_a_rejects_raw_key_set_mismatch(self):
+    def test_preserve_keys_rejects_raw_key_set_mismatch(self):
         data = VmdData()
         data.bone_frames.append(_valid_bone_frame())
         report = validate_vmd_data(
             data,
-            VMD_MODE_A,
+            VMD_EXPORT_PRESERVE_KEYS,
             raw_provenance={
                 "raw_bone_interpolation_complete": True,
                 "raw_bone_key_count": 1,
@@ -137,7 +137,7 @@ class TestVmdValidator(unittest.TestCase):
 
         self.assertIn("VMD_RAW_PROVENANCE_MISMATCH", [issue.code for issue in report.issues])
 
-    def test_mode_a_scopes_raw_records_to_current_model_bones(self):
+    def test_preserve_keys_scopes_raw_records_to_current_model_bones(self):
         data = VmdData()
         data.bone_frames.append(_valid_bone_frame())
         unsupported = {
@@ -159,12 +159,12 @@ class TestVmdValidator(unittest.TestCase):
             "current_model_bone_names": ["センター"],
         }
 
-        report = validate_vmd_data(data, VMD_MODE_A, raw_provenance=raw_provenance)
+        report = validate_vmd_data(data, VMD_EXPORT_PRESERVE_KEYS, raw_provenance=raw_provenance)
 
         self.assertTrue(report.valid, report.summary)
         self.assertEqual(raw_provenance["raw_bone_interpolation"].count(unsupported), 1)
 
-    def test_mode_a_scoped_raw_interpolation_change_still_blocks(self):
+    def test_preserve_keys_scoped_raw_interpolation_change_still_blocks(self):
         data = VmdData()
         data.bone_frames.append(_valid_bone_frame())
         raw_provenance = {
@@ -185,12 +185,12 @@ class TestVmdValidator(unittest.TestCase):
             "current_model_bone_names": ["センター"],
         }
 
-        report = validate_vmd_data(data, VMD_MODE_A, raw_provenance=raw_provenance)
+        report = validate_vmd_data(data, VMD_EXPORT_PRESERVE_KEYS, raw_provenance=raw_provenance)
 
         self.assertTrue(report.is_blocking)
         self.assertIn("changed=1", report.summary)
 
-    def test_mode_a_scoped_raw_transforms_ignore_unsupported_and_block_supported_changes(self):
+    def test_preserve_keys_scoped_raw_transforms_ignore_unsupported_and_block_supported_changes(self):
         supported_raw = {
             "bone_name": "センター",
             "frame_number": 0,
@@ -219,7 +219,7 @@ class TestVmdValidator(unittest.TestCase):
         matching.bone_frames.append(matching_frame)
         matching_report = validate_vmd_data(
             matching,
-            VMD_MODE_A,
+            VMD_EXPORT_PRESERVE_KEYS,
             raw_provenance=raw_provenance,
         )
         self.assertTrue(matching_report.valid, matching_report.summary)
@@ -230,7 +230,7 @@ class TestVmdValidator(unittest.TestCase):
         changed.bone_frames.append(changed_frame)
         changed_report = validate_vmd_data(
             changed,
-            VMD_MODE_A,
+            VMD_EXPORT_PRESERVE_KEYS,
             raw_provenance=raw_provenance,
         )
         self.assertTrue(changed_report.is_blocking)
@@ -238,13 +238,13 @@ class TestVmdValidator(unittest.TestCase):
 
         missing_report = validate_vmd_data(
             VmdData(),
-            VMD_MODE_A,
+            VMD_EXPORT_PRESERVE_KEYS,
             raw_provenance=raw_provenance,
         )
         self.assertTrue(missing_report.is_blocking)
         self.assertIn("missing=1", missing_report.summary)
 
-    def test_mode_a_missing_supported_raw_record_still_blocks_with_scoped_provenance(self):
+    def test_preserve_keys_missing_supported_raw_record_still_blocks_with_scoped_provenance(self):
         data = VmdData()
         raw_provenance = {
             "raw_bone_interpolation_complete": True,
@@ -264,17 +264,17 @@ class TestVmdValidator(unittest.TestCase):
             "current_model_bone_names": ["センター"],
         }
 
-        report = validate_vmd_data(data, VMD_MODE_A, raw_provenance=raw_provenance)
+        report = validate_vmd_data(data, VMD_EXPORT_PRESERVE_KEYS, raw_provenance=raw_provenance)
 
         self.assertTrue(report.is_blocking)
         self.assertIn("missing=1", report.summary)
 
-    def test_mode_a_rejects_raw_interpolation_payload_change(self):
+    def test_preserve_keys_rejects_raw_interpolation_payload_change(self):
         data = VmdData()
         data.bone_frames.append(_valid_bone_frame())
         report = validate_vmd_data(
             data,
-            VMD_MODE_A,
+            VMD_EXPORT_PRESERVE_KEYS,
             raw_provenance={
                 "raw_bone_interpolation_complete": True,
                 "raw_bone_key_count": 1,
@@ -290,12 +290,12 @@ class TestVmdValidator(unittest.TestCase):
 
         self.assertIn("VMD_RAW_PROVENANCE_MISMATCH", [issue.code for issue in report.issues])
 
-    def test_mode_a_rejects_raw_position_or_rotation_payload_change(self):
+    def test_preserve_keys_rejects_raw_position_or_rotation_payload_change(self):
         data = VmdData()
         data.bone_frames.append(_valid_bone_frame())
         report = validate_vmd_data(
             data,
-            VMD_MODE_A,
+            VMD_EXPORT_PRESERVE_KEYS,
             raw_provenance={
                 "raw_bone_interpolation_complete": True,
                 "raw_bone_transform_complete": True,
@@ -314,14 +314,14 @@ class TestVmdValidator(unittest.TestCase):
 
         self.assertIn("VMD_RAW_PROVENANCE_MISMATCH", [issue.code for issue in report.issues])
 
-    def test_mode_a_scopes_raw_comparison_to_requested_frame_range(self):
+    def test_preserve_keys_scopes_raw_comparison_to_requested_frame_range(self):
         data = VmdData()
         frame = _valid_bone_frame()
         frame.frame_number = 10
         data.bone_frames.append(frame)
         report = validate_vmd_data(
             data,
-            VMD_MODE_A,
+            VMD_EXPORT_PRESERVE_KEYS,
             frame_range=(10, 10),
             raw_provenance={
                 "raw_bone_interpolation_complete": True,
@@ -351,7 +351,7 @@ class TestVmdValidator(unittest.TestCase):
         frame.interpolation = b"short"
         data.bone_frames.append(frame)
 
-        report = validate_vmd_data(data, VMD_MODE_C, frame_range=(0, 10))
+        report = validate_vmd_data(data, VMD_EXPORT_BAKE_TIMELINE, frame_range=(0, 10))
         codes = [issue.code for issue in report.issues]
 
         self.assertEqual(
@@ -366,11 +366,11 @@ class TestVmdValidator(unittest.TestCase):
         )
         self.assertEqual(report.issues[0].path, "bone_frames[0].frame_number")
 
-    def test_unsupported_mode_is_blocking(self):
+    def test_unsupported_export_strategy_is_blocking(self):
         report = validate_vmd_data(VmdData(), "B")
 
         self.assertTrue(report.is_blocking)
-        self.assertEqual(report.issues[0].code, "VMD_MODE_UNSUPPORTED")
+        self.assertEqual(report.issues[0].code, "VMD_EXPORT_STRATEGY_UNSUPPORTED")
 
     def test_verify_output_parses_vmd_written_by_writer(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -379,7 +379,7 @@ class TestVmdValidator(unittest.TestCase):
             data.bone_frames.append(_valid_bone_frame())
             data.write_file(path)
 
-            report = verify_vmd_output(str(path), VMD_MODE_C)
+            report = verify_vmd_output(str(path), VMD_EXPORT_BAKE_TIMELINE)
 
         self.assertTrue(report.valid)
         self.assertEqual(report.export_format, "vmd")
@@ -391,7 +391,7 @@ class TestVmdValidator(unittest.TestCase):
 
             report = verify_vmd_output(
                 str(path),
-                VMD_MODE_C,
+                VMD_EXPORT_BAKE_TIMELINE,
                 expected_counts={"bone_frames": 1},
             )
 
@@ -414,13 +414,13 @@ class TestVmdValidator(unittest.TestCase):
 
             streaming = verify_vmd_output_streaming(
                 str(path),
-                VMD_MODE_C,
+                VMD_EXPORT_BAKE_TIMELINE,
                 expected_counts=summary.counts,
                 expected_bounds=summary.frame_bounds,
                 expected_sha256=summary.sha256,
                 expected_size=summary.size,
             )
-            legacy = verify_vmd_output(str(path), VMD_MODE_C)
+            legacy = verify_vmd_output(str(path), VMD_EXPORT_BAKE_TIMELINE)
 
         self.assertTrue(streaming.valid, streaming.issues)
         self.assertEqual(streaming.issues, legacy.issues)
@@ -434,7 +434,7 @@ class TestVmdValidator(unittest.TestCase):
 
             report = verify_vmd_output_streaming(
                 str(path),
-                VMD_MODE_C,
+                VMD_EXPORT_BAKE_TIMELINE,
                 expected_bounds=(8, 8),
             )
 
@@ -463,7 +463,7 @@ class TestVmdValidator(unittest.TestCase):
                 with self.subTest(metadata=metadata):
                     report = verify_vmd_output_streaming(
                         str(path),
-                        VMD_MODE_C,
+                        VMD_EXPORT_BAKE_TIMELINE,
                         **metadata,
                     )
                     self.assertFalse(report.valid)
@@ -496,7 +496,7 @@ class TestVmdValidator(unittest.TestCase):
 
                     report = verify_vmd_output_streaming(
                         str(path),
-                        VMD_MODE_C,
+                        VMD_EXPORT_BAKE_TIMELINE,
                         expected_frame_range=(10, 10),
                     )
 
@@ -514,7 +514,7 @@ class TestVmdValidator(unittest.TestCase):
 
             report = verify_vmd_output_streaming(
                 str(path),
-                VMD_MODE_C,
+                VMD_EXPORT_BAKE_TIMELINE,
                 expected_frame_range=(10, 10),
             )
 
@@ -541,7 +541,7 @@ class TestVmdValidator(unittest.TestCase):
                 with self.subTest(frame_range=frame_range):
                     report = verify_vmd_output_streaming(
                         str(path),
-                        VMD_MODE_C,
+                        VMD_EXPORT_BAKE_TIMELINE,
                         expected_frame_range=frame_range,
                     )
                     self.assertFalse(report.valid)
@@ -557,7 +557,7 @@ class TestVmdValidator(unittest.TestCase):
             for index, end in enumerate(record_ends):
                 candidate = Path(directory) / "truncated-{}.vmd".format(index)
                 candidate.write_bytes(source[:end])
-                report = verify_vmd_output_streaming(str(candidate), VMD_MODE_C)
+                report = verify_vmd_output_streaming(str(candidate), VMD_EXPORT_BAKE_TIMELINE)
                 self.assertFalse(report.valid)
                 self.assertIn("OUTPUT_PARSE_FAILED", [issue.code for issue in report.issues])
 
@@ -572,7 +572,7 @@ class TestVmdValidator(unittest.TestCase):
 
             report = verify_vmd_output_streaming(
                 str(path),
-                VMD_MODE_C,
+                VMD_EXPORT_BAKE_TIMELINE,
                 expected_counts=summary.counts,
             )
 
@@ -598,7 +598,7 @@ class TestVmdValidator(unittest.TestCase):
                 data = bytearray(source)
                 data[offset : offset + len(payload)] = payload
                 candidate.write_bytes(data)
-                report = verify_vmd_output_streaming(str(candidate), VMD_MODE_C)
+                report = verify_vmd_output_streaming(str(candidate), VMD_EXPORT_BAKE_TIMELINE)
                 self.assertFalse(report.valid, "corruption {} produced {}".format(index, report.issues))
                 self.assertIn(code, [issue.code for issue in report.issues])
 
@@ -613,7 +613,7 @@ class TestVmdValidator(unittest.TestCase):
 
             report = verify_vmd_output_streaming(
                 str(path),
-                VMD_MODE_C,
+                VMD_EXPORT_BAKE_TIMELINE,
                 expected_counts=expected_counts,
                 expected_sha256="0" * 64,
                 expected_size=0,
@@ -632,7 +632,7 @@ class TestVmdValidator(unittest.TestCase):
                 writer.write_morph({"morph_name": "", "frame": frame, "value": 0.0})
             writer.finish()
 
-            report = verify_vmd_output_streaming(str(path), VMD_MODE_C)
+            report = verify_vmd_output_streaming(str(path), VMD_EXPORT_BAKE_TIMELINE)
 
         self.assertFalse(report.valid)
         self.assertLessEqual(len(report.issues), 100)
@@ -669,41 +669,41 @@ class _TransformingVmdExporter(_WritingVmdExporter):
 class TestExportVmdValidationGate(unittest.TestCase):
     """The action protects the writer boundary and existing target file."""
 
-    def test_mode_c_validator_receives_vmd_range_converted_from_maya_time(self):
+    def test_bake_timeline_validator_receives_vmd_range_converted_from_maya_time(self):
         observed = []
 
-        def validator(_data, mode, *, frame_range=None):
-            observed.append((mode, frame_range))
-            return ExportValidationReport("vmd", (), mode=mode)
+        def validator(_data, export_strategy, *, frame_range=None):
+            observed.append((export_strategy, frame_range))
+            return ExportValidationReport("vmd", (), mode=export_strategy)
 
         action = ExportVmdAction(validator=validator)
         with mock.patch(
             "mmd_tools.actions.export_vmd_action._scene_maya_time_to_vmd_frame",
             return_value=lambda value: float(value) * 30.0 / 24.0,
         ) as converter:
-            action._validate(VmdData(), VMD_MODE_C, {"frame_range": (0, 10)})
-            action._validate(VmdData(), VMD_MODE_C, {"frame_range": (-1.0, 10.5)})
+            action._validate(VmdData(), VMD_EXPORT_BAKE_TIMELINE, {"frame_range": (0, 10)})
+            action._validate(VmdData(), VMD_EXPORT_BAKE_TIMELINE, {"frame_range": (-1.0, 10.5)})
 
-        self.assertEqual(observed[0], (VMD_MODE_C, (0, 12)))
-        self.assertEqual(observed[1], (VMD_MODE_C, (-1, 13)))
+        self.assertEqual(observed[0], (VMD_EXPORT_BAKE_TIMELINE, (0, 12)))
+        self.assertEqual(observed[1], (VMD_EXPORT_BAKE_TIMELINE, (-1, 13)))
         self.assertEqual(converter.call_count, 2)
 
-    def test_mode_c_ntsc_range_is_unchanged_and_mode_a_is_not_converted(self):
+    def test_bake_timeline_ntsc_range_is_unchanged_and_preserve_keys_is_not_converted(self):
         observed = []
 
-        def validator(_data, mode, *, frame_range=None):
-            observed.append((mode, frame_range))
-            return ExportValidationReport("vmd", (), mode=mode)
+        def validator(_data, export_strategy, *, frame_range=None):
+            observed.append((export_strategy, frame_range))
+            return ExportValidationReport("vmd", (), mode=export_strategy)
 
         action = ExportVmdAction(validator=validator)
         with mock.patch(
             "mmd_tools.actions.export_vmd_action._scene_maya_time_to_vmd_frame",
             return_value=lambda value: float(value),
         ) as converter:
-            action._validate(VmdData(), VMD_MODE_C, {"frame_range": (0, 10)})
-            action._validate(VmdData(), VMD_MODE_A, {"frame_range": (0, 10)})
+            action._validate(VmdData(), VMD_EXPORT_BAKE_TIMELINE, {"frame_range": (0, 10)})
+            action._validate(VmdData(), VMD_EXPORT_PRESERVE_KEYS, {"frame_range": (0, 10)})
 
-        self.assertEqual(observed, [(VMD_MODE_C, (0, 10)), (VMD_MODE_A, (0, 10))])
+        self.assertEqual(observed, [(VMD_EXPORT_BAKE_TIMELINE, (0, 10)), (VMD_EXPORT_PRESERVE_KEYS, (0, 10))])
         self.assertEqual(converter.call_count, 1)
 
     def test_fatal_payload_does_not_call_writer_or_change_target(self):
@@ -730,9 +730,9 @@ class TestExportVmdValidationGate(unittest.TestCase):
         exporter = _TransformingVmdExporter()
         validated = []
 
-        def validator(data, mode, **_kwargs):
+        def validator(data, export_strategy, **_kwargs):
             validated.append(data)
-            return ExportValidationReport("vmd", (), mode=mode)
+            return ExportValidationReport("vmd", (), mode=export_strategy)
 
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "motion.vmd"
@@ -765,23 +765,23 @@ class TestExportVmdValidationGate(unittest.TestCase):
             self.assertEqual(target.read_bytes(), before)
             self.assertTrue(exporter.calls)
 
-    def test_mode_a_with_raw_provenance_can_export(self):
+    def test_preserve_keys_with_raw_provenance_can_export(self):
         exporter = _WritingVmdExporter()
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "motion.vmd"
             result = ExportVmdAction(exporter=exporter).execute(
                 ExportVmdRequest(
                     str(target),
-                    {"vmd_mode": VMD_MODE_A, "raw_provenance": {"source": "import"}},
+                    {"export_strategy": VMD_EXPORT_PRESERVE_KEYS, "raw_provenance": {"source": "import"}},
                     animation_data=VmdData(),
                 )
             )
 
             self.assertTrue(result.succeeded)
-        self.assertEqual(result.validation_report.mode, VMD_MODE_A)
+        self.assertEqual(result.validation_report.mode, VMD_EXPORT_PRESERVE_KEYS)
         self.assertIsNotNone(result.payload_fingerprint)
 
-    def test_mode_c_raw_loss_information_does_not_require_ack_before_writer(self):
+    def test_bake_timeline_raw_loss_information_does_not_require_ack_before_writer(self):
         exporter = _WritingVmdExporter()
         raw_provenance = {
             "raw_bone_interpolation_complete": True,
@@ -795,14 +795,14 @@ class TestExportVmdValidationGate(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "mode-c-warning.vmd"
+            target = Path(directory) / "bake-timeline-warning.vmd"
             first = ExportVmdAction(
                 exporter=exporter,
                 output_verifier=None,
             ).execute(
                 ExportVmdRequest(
                     str(target),
-                    {"vmd_mode": VMD_MODE_C, "raw_provenance": raw_provenance},
+                    {"export_strategy": VMD_EXPORT_BAKE_TIMELINE, "raw_provenance": raw_provenance},
                     animation_data=VmdData(),
                 )
             )
@@ -813,7 +813,7 @@ class TestExportVmdValidationGate(unittest.TestCase):
                 ExportVmdRequest(
                     str(target),
                     {
-                        "vmd_mode": VMD_MODE_C,
+                        "export_strategy": VMD_EXPORT_BAKE_TIMELINE,
                         "raw_provenance": raw_provenance,
                         "ack_warnings": True,
                     },
@@ -823,30 +823,30 @@ class TestExportVmdValidationGate(unittest.TestCase):
 
         self.assertTrue(first.succeeded, first.error)
         self.assertIsNone(first.error)
-        self.assertEqual(first.validation_report.issues[0].code, "VMD_MODE_C_RAW_LOSS")
+        self.assertEqual(first.validation_report.issues[0].code, "VMD_BAKE_TIMELINE_RAW_LOSS")
         self.assertEqual(first.validation_report.issues[0].severity, "info")
         self.assertTrue(second.succeeded, second.error)
         self.assertEqual(len(exporter.calls), 2)
 
-    def test_streaming_mode_c_raw_loss_is_informational_without_ack(self):
+    def test_streaming_bake_timeline_raw_loss_is_informational_without_ack(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "mode-c-stream.vmd"
+            path = Path(directory) / "bake-timeline-stream.vmd"
             writer = VmdStreamWriter(path, "モデル")
             writer.finish()
 
             report = verify_vmd_output_streaming(
                 str(path),
-                VMD_MODE_C,
+                VMD_EXPORT_BAKE_TIMELINE,
                 raw_loss_warning_required=True,
                 ack_warnings=False,
             )
 
         self.assertTrue(report.valid, report.summary)
         self.assertFalse(report.requires_warning_ack)
-        self.assertEqual(report.issues[0].code, "VMD_MODE_C_RAW_LOSS")
+        self.assertEqual(report.issues[0].code, "VMD_BAKE_TIMELINE_RAW_LOSS")
         self.assertEqual(report.issues[0].severity, "info")
 
-    def test_collector_raw_provenance_flows_into_mode_a_validation(self):
+    def test_collector_raw_provenance_flows_into_preserve_keys_validation(self):
         def collector(_options):
             return {
                 "model_name": "ImportedMotion",
@@ -859,10 +859,10 @@ class TestExportVmdValidationGate(unittest.TestCase):
             result = ExportVmdAction(
                 exporter=VmdExporter(native_exporter=None),
                 collector=collector,
-            ).execute(ExportVmdRequest(str(target), {"vmd_mode": VMD_MODE_A}))
+            ).execute(ExportVmdRequest(str(target), {"export_strategy": VMD_EXPORT_PRESERVE_KEYS}))
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(result.validation_report.mode, VMD_MODE_A)
+        self.assertEqual(result.validation_report.mode, VMD_EXPORT_PRESERVE_KEYS)
 
     def test_reusing_request_does_not_retain_collector_provenance(self):
         payloads = iter(
@@ -883,7 +883,7 @@ class TestExportVmdValidationGate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             request = ExportVmdRequest(
                 str(Path(directory) / "motion.vmd"),
-                {"vmd_mode": VMD_MODE_A},
+                {"export_strategy": VMD_EXPORT_PRESERVE_KEYS},
             )
             first = action.execute(request)
             second = action.execute(request)
@@ -896,11 +896,11 @@ class TestExportVmdValidationGate(unittest.TestCase):
     def test_warning_requires_ack_before_writer_and_ack_allows_export(self):
         exporter = _WritingVmdExporter()
 
-        def warning_validator(data, mode, **_kwargs):
+        def warning_validator(data, export_strategy, **_kwargs):
             return ExportValidationReport(
                 "vmd",
                 (ExportValidationIssue("VMD_FRAME_RANGE", "warning", False, "frame_range", "ack me"),),
-                mode=mode,
+                mode=export_strategy,
             )
 
         with tempfile.TemporaryDirectory() as directory:

@@ -119,17 +119,17 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertAlmostEqual(ry, 0.0, places=5)
         self.assertAlmostEqual(rz, 0.0, places=5)
 
-    def test_export_vmd_action_uses_prepared_mode_c_payload(self):
+    def test_export_vmd_action_uses_prepared_bake_timeline_payload(self):
         root, _joint = self._make_keyed_joint_scene()
         output_path = self.get_temp_filename("action_keyed_joint_export.vmd")
 
-        result = self._export_prepared_mode_c(
+        result = self._export_prepared_bake_timeline(
             output_path,
             {
                 "target_model": root,
                 "current_model_root": root,
                 "export_format": "vmd",
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "frame_range": (0, 10),
             },
         )
@@ -143,7 +143,7 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertEqual(len(sampled_frames), 11)
         self.assertEqual(sampled_frames[-1], 12)
 
-    def test_mode_c_frame_range_matches_maya_numeric_oracle(self):
+    def test_bake_timeline_frame_range_matches_maya_numeric_oracle(self):
         cmds.currentUnit(time="ntsc")
         root, joint = self._make_keyed_joint_scene(
             keyed_pose=(2.0, 1.0, 2.0),
@@ -152,16 +152,16 @@ class TestVmdSceneCollector(MayaTestBase):
         blend_shape = self._make_keyed_blendshape(root)
         camera = self._make_keyed_camera()
         light = self._make_keyed_light()
-        output_path = self.get_temp_filename("mode_c_numeric_oracle.vmd")
+        output_path = self.get_temp_filename("bake_timeline_numeric_oracle.vmd")
         cmds.currentTime(7, edit=True)
 
-        result = self._export_prepared_mode_c(
+        result = self._export_prepared_bake_timeline(
             output_path,
             {
                 "target_model": root,
                 "current_model_root": root,
                 "export_format": "vmd",
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "frame_range": (0, 2),
                 "blend_shapes": [blend_shape],
                 "cameras": [camera],
@@ -237,7 +237,7 @@ class TestVmdSceneCollector(MayaTestBase):
                 options={
                     "target_model": root,
                     "export_format": "vmd",
-                    "vmd_mode": "A",
+                    "export_strategy": "preserve_keys",
                 },
             )
         )
@@ -263,7 +263,7 @@ class TestVmdSceneCollector(MayaTestBase):
             self.assertEqual(frame.position, source_transforms[key][0])
             self.assertEqual(frame.rotation, source_transforms[key][1])
 
-    def test_mode_a_blocks_imported_fixture_after_bone_transform_edit(self):
+    def test_preserve_keys_blocks_imported_fixture_after_bone_transform_edit(self):
         pmx_path = self.fixture_provider.get_pmx_file("mmt_test_model")
         vmd_path = self.fixture_provider.get_vmd_file("mmt_test_model_test_motion")
 
@@ -304,7 +304,7 @@ class TestVmdSceneCollector(MayaTestBase):
             original_translate_x,
         )
 
-        output_path = self.get_temp_filename("edited_fixture_mode_a.vmd")
+        output_path = self.get_temp_filename("edited_fixture_preserve_keys.vmd")
         original_output = b"pre-existing VMD output"
         with open(output_path, "wb") as handle:
             handle.write(original_output)
@@ -316,7 +316,7 @@ class TestVmdSceneCollector(MayaTestBase):
                 options={
                     "target_model": root,
                     "export_format": "vmd",
-                    "vmd_mode": "A",
+                    "export_strategy": "preserve_keys",
                 },
             )
         )
@@ -334,18 +334,18 @@ class TestVmdSceneCollector(MayaTestBase):
         with open(output_path, "rb") as handle:
             self.assertEqual(handle.read(), original_output)
 
-    def test_mode_c_imported_fixture_fresh_import_matches_exported_bone_payload(self):
-        self._assert_mode_c_fresh_import_bone_payload(
+    def test_bake_timeline_imported_fixture_fresh_import_matches_exported_bone_payload(self):
+        self._assert_bake_timeline_fresh_import_bone_payload(
             "mmt_test_model",
             "mmt_test_model_test_motion",
-            "mode_c_mmt_fixture_export.vmd",
+            "bake_timeline_mmt_fixture_export.vmd",
         )
 
-    def test_mode_c_one_bone_fixture_fresh_import_matches_exported_bone_payload(self):
-        self._assert_mode_c_fresh_import_bone_payload(
+    def test_bake_timeline_one_bone_fixture_fresh_import_matches_exported_bone_payload(self):
+        self._assert_bake_timeline_fresh_import_bone_payload(
             "test_1bone_cube",
             "test_1bone_cube_motion",
-            "mode_c_one_bone_fixture_export.vmd",
+            "bake_timeline_one_bone_fixture_export.vmd",
         )
 
     def test_roundtrip_tagged_camera_and_light_to_vmd_frames(self):
@@ -409,7 +409,7 @@ class TestVmdSceneCollector(MayaTestBase):
             cmds.setKeyframe(blend_shape, attribute="weight[0]", time=5, value=0.5)
             return (cmds.ls(root, long=True) or [root])[0]
 
-    def _assert_mode_c_fresh_import_bone_payload(
+    def _assert_bake_timeline_fresh_import_bone_payload(
         self,
         pmx_fixture_name,
         vmd_fixture_name,
@@ -435,15 +435,15 @@ class TestVmdSceneCollector(MayaTestBase):
         )
 
         output_path = self.get_temp_filename(output_file_name)
-        result = self._export_prepared_mode_c(
+        result = self._export_prepared_bake_timeline(
             output_path,
             {
                 "target_model": source_root,
                 "current_model_root": source_root,
                 "export_format": "vmd",
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "frame_range": frame_range,
-                # Mode C deliberately discards imported raw bone keys;
+                # Bake Timeline deliberately discards imported raw bone keys;
                 # this integration fixture explicitly accepts that loss.
                 "ack_warnings": True,
             },
@@ -451,7 +451,7 @@ class TestVmdSceneCollector(MayaTestBase):
 
         self.assertTrue(result.succeeded, result.error)
         exported = VmdData().parse_file(output_path)
-        self.assertGreater(len(exported.bone_frames), 0, "Mode C export has no bone frames")
+        self.assertGreater(len(exported.bone_frames), 0, "Bake Timeline export has no bone frames")
         self.assertEqual(
             sorted({frame.frame_number for frame in exported.bone_frames}),
             expected_frame_numbers,
@@ -481,12 +481,12 @@ class TestVmdSceneCollector(MayaTestBase):
             "Fresh exported VMD import failed",
         )
 
-        collected = self._prepare_mode_c_payload(
+        collected = self._prepare_bake_timeline_payload(
             output_path,
             {
                 "target_model": fresh_root,
                 "current_model_root": fresh_root,
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "frame_range": frame_range,
             },
         )
@@ -509,7 +509,7 @@ class TestVmdSceneCollector(MayaTestBase):
                 msg=f"Quaternion mismatch for {key}",
             )
 
-    def _export_prepared_mode_c(self, output_path, options):
+    def _export_prepared_bake_timeline(self, output_path, options):
         """Prepare through the production Maya boundary, then publish its stage."""
         request = ExportVmdRequest(file_path=output_path, options=dict(options))
         prepare_action = create_maya_vmd_prepare_action()
@@ -527,7 +527,7 @@ class TestVmdSceneCollector(MayaTestBase):
         finally:
             prepare_action.invalidate(token)
 
-    def _prepare_mode_c_payload(self, output_path, options):
+    def _prepare_bake_timeline_payload(self, output_path, options):
         """Parse one validated private stage before invalidating its receipt."""
         request = ExportVmdRequest(file_path=output_path, options=dict(options))
         prepare_action = create_maya_vmd_prepare_action()
@@ -541,11 +541,11 @@ class TestVmdSceneCollector(MayaTestBase):
             prepare_action.invalidate(token)
 
     def _make_keyed_blendshape(self, root):
-        base, _base_shape = cmds.polyCube(name="mode_c_base")
-        target, _target_shape = cmds.polyCube(name="mode_c_target")
+        base, _base_shape = cmds.polyCube(name="bake_timeline_base")
+        target, _target_shape = cmds.polyCube(name="bake_timeline_target")
         cmds.parent(base, root)
         cmds.parent(target, root)
-        blend_shape = cmds.blendShape(target, base, name="modeCBlendShape")[0]
+        blend_shape = cmds.blendShape(target, base, name="bakeTimelineBlendShape")[0]
         cmds.addAttr(
             blend_shape,
             longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,

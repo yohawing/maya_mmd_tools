@@ -1,7 +1,7 @@
-"""Python gateway for the native Mode C Timeline scalar sampler.
+"""Python gateway for the native Bake Timeline scalar sampler.
 
 The gateway owns the strict wire protocol and conservative route
-classification.  Mode C has one production policy: Maya Timeline evaluation.
+classification.  Bake Timeline has one production policy: Maya Timeline evaluation.
 Native command, protocol, and value failures are surfaced to the collector;
 there is no alternate evaluator fallback for dense bone sampling.  Constant,
 unconnected pre-physics inputs are read once in Python so a Maya session that
@@ -1420,7 +1420,7 @@ def _sample_direct_spool(
         float(static_physics_values.get(physical_index, 0.0))
         for physical_index in range(output_channel_count)
     ]
-    spool_fd, spool_path = tempfile.mkstemp(prefix="mmd_mode_c_direct_", suffix=".bin")
+    spool_fd, spool_path = tempfile.mkstemp(prefix="mmd_bake_timeline_direct_", suffix=".bin")
     spool_file = None
     mapping = None
     started = time.perf_counter()
@@ -1796,7 +1796,7 @@ class NativeVmdBatchSampler:
         self._publish_diagnostics()
         try:
             spool_fd, spool_path = tempfile.mkstemp(
-                prefix="mmd_mode_c_",
+                prefix="mmd_bake_timeline_",
                 suffix=".bin",
             )
             spool_file = os.fdopen(spool_fd, "w+b")
@@ -2139,7 +2139,7 @@ class NativeVmdBatchSampler:
     ) -> NativeDenseBoneSamples:
         """Sample named scalar plugs through the C++ direct-spool path.
 
-        This is the production Mode C Morph boundary.  It never falls back to
+        This is the production Bake Timeline Morph boundary.  It never falls back to
         Python Timeline evaluation; an unavailable or stale native plug-in is
         a fatal, actionable export error.
         """

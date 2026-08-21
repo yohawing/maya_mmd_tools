@@ -34,9 +34,9 @@ DEFAULT_MANIFEST = BUILD_ROOT / "reports" / "local_asset_roundtrip" / "represent
 DEFAULT_OUT_DIR = BUILD_ROOT / "reports" / "local_asset_roundtrip"
 MANIFEST_SCHEMA_VERSION = 2
 FLOAT_TOLERANCE = 1.0e-4
-VMD_MODE_C_POSE_TOLERANCE = 1.0e-2
+VMD_EXPORT_BAKE_TIMELINE_POSE_TOLERANCE = 1.0e-2
 DEFAULT_EXPORT_WRITE_BUDGET_SEC = 60.0
-EXPECTED_VMD_WARNING = "VMD_MODE_C_RAW_LOSS"
+EXPECTED_BAKE_TIMELINE_WARNING = "VMD_BAKE_TIMELINE_RAW_LOSS"
 FAILURE_CLASSIFICATIONS = (
     "import_failed",
     "edit_failed",
@@ -294,7 +294,7 @@ def _allowed_warning_codes(validation: Any, export_format: str) -> tuple[list[st
         for issue in issues
         if str(getattr(issue, "severity", "")).casefold() == "warning"
     ]
-    allowed = EXPECTED_VMD_WARNING if str(export_format).casefold() == "vmd" else None
+    allowed = EXPECTED_BAKE_TIMELINE_WARNING if str(export_format).casefold() == "vmd" else None
     return (
         [code for code in warning_codes if allowed is not None and code == allowed],
         [code for code in warning_codes if code != allowed],
@@ -593,10 +593,10 @@ def _vmd_ik_semantic_diff(
     return failures
 
 
-def _vmd_mode_c_semantic_diff(
+def _vmd_bake_timeline_semantic_diff(
     expected: Mapping[str, Any], actual: Mapping[str, Any]
 ) -> list[str]:
-    """Compare Mode C track semantics without requiring sparse/raw key parity."""
+    """Compare Bake Timeline track semantics without requiring sparse/raw key parity."""
 
     failures: list[str] = []
     for section in ("bone", "morph"):
@@ -635,13 +635,13 @@ def _required_source_vmd_payload(
     return payload
 
 
-def _mode_c_track_boundary_diff(
+def _bake_timeline_track_boundary_diff(
     source_payload: Mapping[str, Any],
     prepared_payload: Mapping[str, Any],
     exported_payload: Mapping[str, Any],
     required_track_names: Mapping[str, Iterable[str]],
 ) -> dict[str, list[str]]:
-    """Classify Mode C required-track loss at prepare and writer boundaries.
+    """Classify Bake Timeline required-track loss at prepare and writer boundaries.
 
     The raw source remains authoritative for model-resolved input tracks, but
     tracks that cannot resolve to the paired model are explicitly excluded.
@@ -653,7 +653,7 @@ def _mode_c_track_boundary_diff(
 
     required_source = _required_source_vmd_payload(source_payload, required_track_names)
     return {
-        "source_to_prepared": _vmd_mode_c_semantic_diff(
+        "source_to_prepared": _vmd_bake_timeline_semantic_diff(
             required_source,
             prepared_payload,
         ),
@@ -1527,7 +1527,7 @@ def _apply_motion_adjustment(
             "delta_degrees": bone_delta,
         },
         "morph": morph_witness,
-        "mode": "C",
+        "export_strategy": "bake_timeline",
         "preserve_raw_bone_transforms": False,
     }
 
@@ -1679,7 +1679,7 @@ def _export_request(
     if model_name is not None:
         options["model_name"] = model_name
     if export_format == "vmd":
-        options["vmd_mode"] = "C"
+        options["export_strategy"] = "bake_timeline"
     return ExportWorkflowRequest(
         str(output),
         options,
@@ -1872,7 +1872,7 @@ def _run_warm_vmd_export_samples(
 
     Dense correctness is intentionally exercised once.  Warm samples measure
     only the public validation/execute export path from that same edited scene
-    and prepared Mode C token; they do not repeat import, edit, parse, or
+    and prepared Bake Timeline token; they do not repeat import, edit, parse, or
     semantic oracle work.  The caller must invoke this before the fresh-import
     boundary invalidates the token's scene ownership.
     """
@@ -2009,7 +2009,7 @@ def _prepare_diagnostics_sink(path: Path, case_name: str) -> Callable[[Any], Non
             {
                 "schema_version": 1,
                 "case": str(case_name),
-                "phase": "prepare_mode_c",
+                "phase": "prepare_bake_timeline",
                 "updated_at": time.time(),
                 "snapshot": snapshot,
             },
@@ -2019,19 +2019,19 @@ def _prepare_diagnostics_sink(path: Path, case_name: str) -> Callable[[Any], Non
     return publish
 
 
-def _prepare_vmd_mode_c(
+def _prepare_vmd_bake_timeline(
     workflow: Any,
     request: Any,
     context: _WorkerContext,
 ) -> tuple[Any, dict[str, Any]]:
-    """Prepare a reusable Mode C payload through the public workflow.
+    """Prepare a reusable Bake Timeline payload through the public workflow.
 
     The runner deliberately has no collector fallback here.  A missing,
     partial, or token-less preparation is a failed user-path gate even when a
     legacy direct collector could produce an output.
     """
 
-    preparation = _phase(context, "prepare_mode_c", lambda: workflow.prepare_vmd(request))
+    preparation = _phase(context, "prepare_bake_timeline", lambda: workflow.prepare_vmd(request))
     token = getattr(preparation, "token", None)
     succeeded = bool(getattr(preparation, "succeeded", False))
     evidence = {
@@ -2053,7 +2053,7 @@ def _prepare_vmd_mode_c(
         evidence["diagnostics"] = diagnostics
     phase_entries = [
         item for item in getattr(context, "phases", ())
-        if str(item.get("name")) == "prepare_mode_c"
+        if str(item.get("name")) == "prepare_bake_timeline"
     ]
     if phase_entries:
         evidence["phase_timing"] = dict(phase_entries[-1])
@@ -2062,7 +2062,7 @@ def _prepare_vmd_mode_c(
         evidence["error"] = f"{type(error).__name__}: {error}"
     if not succeeded or token is None:
         raise RuntimeError(
-            "VMD Mode C preparation failed: "
+            "VMD Bake Timeline preparation failed: "
             f"status={evidence['status']!r} error={evidence['error']!r} "
             f"token_published={evidence['token_published']}"
         )
@@ -2132,7 +2132,7 @@ def _run_prepared_vmd_exports(
         )
         exported_payload = _vmd_payload(exported_data)
         adjustment["exported_tracks"] = _vmd_edit_track_witness(exported_payload, adjustment)
-        track_boundary_failures = _mode_c_track_boundary_diff(
+        track_boundary_failures = _bake_timeline_track_boundary_diff(
             source_payload,
             prepared_payload,
             exported_payload,
@@ -2232,7 +2232,7 @@ def _motion_phase_evidence(
         6,
     )
     return {
-        "prepare_mode_c": dict(preparation_evidence.get("phase_timing", {})),
+        "prepare_bake_timeline": dict(preparation_evidence.get("phase_timing", {})),
         "cold_validate": first_phase_entry("export_validation", cold_phase_timing),
         "cold_export": first_phase_entry("export_write", cold_phase_timing),
         "edit_to_first_file": {
@@ -2252,7 +2252,7 @@ def _run_vmd_case(
     *,
     warm_runs: int = 0,
 ) -> dict[str, Any]:
-    """Run PMX+VMD Action import, Mode C edit/export, and fresh pose parity."""
+    """Run PMX+VMD Action import, Bake Timeline edit/export, and fresh pose parity."""
 
     from mmd_tools.core.vmd_data import VmdData
     from mmd_tools.services.export_workflow_service import ExportWorkflowService
@@ -2341,7 +2341,7 @@ def _run_vmd_case(
             diagnostics_sink=diagnostics_sink,
         ),
     )
-    prepared_token, preparation_evidence = _prepare_vmd_mode_c(workflow, request, context)
+    prepared_token, preparation_evidence = _prepare_vmd_bake_timeline(workflow, request, context)
     preparation_evidence["diagnostics_path"] = str(diagnostics_path)
     # Every public Validate/Execute request, including the cold export below,
     # must carry the same edited-scene preparation token.
@@ -2431,7 +2431,7 @@ def _run_vmd_case(
             edited_oracle,
             fresh_oracle,
             pose=True,
-            pose_tolerance=VMD_MODE_C_POSE_TOLERANCE,
+            pose_tolerance=VMD_EXPORT_BAKE_TIMELINE_POSE_TOLERANCE,
             mesh=False,
             materials=False,
             morphs=False,
@@ -2498,7 +2498,7 @@ def _run_vmd_case(
             "key_frames": True,
             "ik_states": True,
             "raw_interpolation": False,
-            "mode_c_dense_semantics": True,
+            "bake_timeline_dense_semantics": True,
             "fresh_pose": True,
             "fresh_camera_light": source_camera_oracle is not None,
             "track_boundary_failures": track_boundary_failures,

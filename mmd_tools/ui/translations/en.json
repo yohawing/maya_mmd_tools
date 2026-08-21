@@ -213,7 +213,7 @@
     "facial_display_frame_morph_only": "The Facial display frame can contain only morphs",
     "import_success": "Import completed successfully",
     "export_success": "Export completed successfully",
-    "prepare_mode_c_complete": "VMD export data preparation complete",
+    "prepare_bake_timeline_complete": "VMD Bake Timeline preparation complete",
     "export_mmd_asset": "Export MMD asset",
     "error_file_not_found": "File not found",
     "error_invalid_file": "Invalid file format",
@@ -368,7 +368,7 @@
     "humanik_source_tooltip": "Select a characterized MMD model, or a HumanIK character already defined in the scene, as the retarget SOURCE."
   },
   "options": {
-    "vmd_preserve_imported": "Preserve unedited imported bone keys",
+    "vmd_preserve_keys": "Preserve unedited imported bone keys",
     "vmd_export_timeline": "Export the current timeline",
     "none": "None",
     "import_mesh": "Import Mesh",
@@ -506,7 +506,7 @@
     "motion_scale": "Motion Scale:",
     "reduce_quality": "Reduce Quality:",
     "format": "Format:",
-    "vmd_mode": "Export method",
+    "export_strategy": "Export strategy",
     "range": "Range",
     "start": "Start",
     "end": "End",
@@ -841,7 +841,7 @@
     "animation": {
       "label": "Animation",
       "impact": "The exported motion would be malformed, ambiguous, or lose raw animation provenance.",
-      "remediation": "Repair the VMD frame payload or use the supported Mode A/C export route."
+      "remediation": "Repair the VMD frame payload or use a supported VMD export strategy."
     },
     "physics": {
       "label": "Physics",
@@ -887,7 +887,7 @@
       "remediation": "Review the reported exception and output path, correct the underlying problem, and retry validation or export.",
       "action": "Review export workflow failure"
     },
-    "vmd_mode_c_raw_loss": {
+    "vmd_bake_timeline_raw_loss": {
       "title": "Raw animation loss when exporting the current timeline",
       "impact": "Dense baking will replace imported raw bone keys and interpolation bytes.",
       "remediation": "For unedited bone motion, choose Preserve unedited imported bone keys, or acknowledge this loss before exporting the current timeline.",

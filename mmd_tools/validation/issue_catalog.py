@@ -181,8 +181,8 @@ _KNOWN_ISSUE_CODES = (
     "VMD_FRAME_COUNT_MISMATCH",
     "VMD_FRAME_RANGE",
     "VMD_IK_FLAG_RANGE",
-    "VMD_MODE_UNSUPPORTED",
-    "VMD_MODE_C_RAW_LOSS",
+    "VMD_EXPORT_STRATEGY_UNSUPPORTED",
+    "VMD_BAKE_TIMELINE_RAW_LOSS",
     "VMD_NAME_EMPTY",
     "VMD_NON_FINITE_NUMBER",
     "VMD_PERSPECTIVE_RANGE",
@@ -230,9 +230,9 @@ _CATEGORY_TEXT = {
         "remediation": "Inspect the writer output and fix the export path before replacing the target file.",
     },
     "animation": {
-        "expected": "VMD frame names, ranges, interpolation payloads, and numeric values must match the selected mode.",
+        "expected": "VMD frame names, ranges, interpolation payloads, and numeric values must match the selected export strategy.",
         "impact": "The exported motion would be malformed, ambiguous, or lose raw animation provenance.",
-        "remediation": "Repair the VMD frame payload or use the supported Mode A/C export route.",
+        "remediation": "Repair the VMD frame payload or use a supported VMD export strategy.",
     },
     "physics": {
         "expected": "Rigid-body and joint entries must use valid supported references and fields.",
@@ -246,7 +246,7 @@ _CATEGORY_TEXT = {
     },
 }
 
-_WARNING_LOSS_POLICIES = frozenset({"VMD_MODE_C_RAW_LOSS"})
+_WARNING_LOSS_POLICIES = frozenset({"VMD_BAKE_TIMELINE_RAW_LOSS"})
 
 
 def _category_for_code(code: str) -> str:

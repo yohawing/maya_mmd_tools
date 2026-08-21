@@ -33,6 +33,10 @@ from ...services.export_workflow_service import (
     STATE_EDITING,
     STATE_PREPARED,
 )
+from ...validation.vmd_validator import (
+    VMD_EXPORT_BAKE_TIMELINE,
+    VMD_EXPORT_PRESERVE_KEYS,
+)
 
 
 class _ExportPage(QWidget):
@@ -237,7 +241,7 @@ class _ExportPage(QWidget):
         if self.pane == self.owner.MODEL_PANE:
             options["apply_scale"] = self.apply_scale_check.isChecked()
         else:
-            options["vmd_mode"] = self._motion_mode()
+            options["export_strategy"] = self._export_strategy()
             if self.frame_range_check.isChecked():
                 options["frame_range"] = (
                     self.frame_start_spin.value(),
@@ -300,7 +304,7 @@ class _ExportPage(QWidget):
         self.validation_console.clear_report()
 
     def set_prepared(self, preparation) -> None:
-        """Show a successful Mode C preparation without fabricating a report."""
+        """Show a successful Bake Timeline preparation without fabricating a report."""
         del preparation
         self._state = STATE_PREPARED
         self.state_label.setText(self._state)
@@ -312,17 +316,24 @@ class _ExportPage(QWidget):
         self.frame_start_spin.setEnabled(enabled)
         self.frame_end_spin.setEnabled(enabled)
 
-    def _motion_mode(self) -> str:
-        """Return the stable internal export strategy for the localized choice."""
+    def _export_strategy(self) -> str:
+        """Return the stable export strategy for the localized choice."""
 
         if self.pane != self.owner.MOTION_PANE:
             return ""
-        return "C" if self.bake_export_check.isChecked() else "A"
+        return (
+            VMD_EXPORT_BAKE_TIMELINE
+            if self.bake_export_check.isChecked()
+            else VMD_EXPORT_PRESERVE_KEYS
+        )
 
-    def set_motion_mode(self, mode: str) -> None:
-        """Select an internal export strategy without exposing its code as UI copy."""
+    def set_export_strategy(self, export_strategy: str) -> None:
+        """Select an export strategy without exposing internal codes as UI copy."""
 
-        self.bake_export_check.setChecked(str(mode or "C").upper() != "A")
+        self.bake_export_check.setChecked(
+            str(export_strategy or VMD_EXPORT_BAKE_TIMELINE).lower()
+            == VMD_EXPORT_BAKE_TIMELINE
+        )
 
     def retranslate(self) -> None:
         self.settings_group.setTitle(self.owner.tr("export", "settings"))
@@ -514,8 +525,11 @@ class ExportTab(BaseTab):
         model.apply_scale_check.setChecked(
             bool(getter(settings_keys.EXPORT_GENERAL_APPLY_SCALE, True))
         )
-        mode = str(getter(settings_keys.EXPORT_MOTION_MODE, "C") or "C").upper()
-        motion.set_motion_mode(mode)
+        export_strategy = str(
+            getter(settings_keys.EXPORT_MOTION_STRATEGY, VMD_EXPORT_BAKE_TIMELINE)
+            or VMD_EXPORT_BAKE_TIMELINE
+        ).lower()
+        motion.set_export_strategy(export_strategy)
         motion.frame_range_check.setChecked(
             bool(getter(settings_keys.EXPORT_MOTION_USE_FRAME_RANGE, False))
         )
@@ -539,7 +553,7 @@ class ExportTab(BaseTab):
         model = self._pages[self.MODEL_PANE]
         motion = self._pages[self.MOTION_PANE]
         setter(settings_keys.EXPORT_GENERAL_APPLY_SCALE, model.apply_scale_check.isChecked())
-        setter(settings_keys.EXPORT_MOTION_MODE, motion._motion_mode())
+        setter(settings_keys.EXPORT_MOTION_STRATEGY, motion._export_strategy())
         setter(
             settings_keys.EXPORT_MOTION_USE_FRAME_RANGE,
             motion.frame_range_check.isChecked(),
@@ -555,7 +569,7 @@ class ExportTab(BaseTab):
         self._active_page().set_result(result)
 
     def set_prepared(self, preparation) -> None:
-        """Show the Motion page's reusable Mode C payload state."""
+        """Show the Motion page's reusable Bake Timeline payload state."""
         self._pages[self.MOTION_PANE].set_prepared(preparation)
 
     def set_state(self, state: str) -> None:

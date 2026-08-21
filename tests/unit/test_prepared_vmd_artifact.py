@@ -1,4 +1,4 @@
-"""Unit contracts for private verified Mode C VMD stages."""
+"""Unit contracts for private verified Bake Timeline VMD stages."""
 
 from pathlib import Path
 import unittest
@@ -22,7 +22,7 @@ class _StreamingVerifier:
             return ExportValidationReport("vmd", (issue,), mode=mode)
         if kwargs.get("raw_loss_warning_required") and not kwargs.get("ack_warnings"):
             issue = ExportValidationIssue(
-                "VMD_MODE_C_RAW_LOSS", "warning", False, "mode", "review"
+                "VMD_BAKE_TIMELINE_RAW_LOSS", "warning", False, "export_strategy", "review"
             )
             return ExportValidationReport("vmd", (issue,), mode=mode)
         return ExportValidationReport("vmd", (), mode=mode)

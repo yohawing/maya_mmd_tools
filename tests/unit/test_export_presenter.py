@@ -100,7 +100,7 @@ class _View:
 
     def build_request(self, current_model_root=None):
         self.roots.append(current_model_root)
-        mode = "C" if self.current_export_format == "vmd" else "model"
+        export_strategy = "bake_timeline" if self.current_export_format == "vmd" else "model"
         return type(
             "Request",
             (),
@@ -108,7 +108,7 @@ class _View:
                 "file_path": f"asset.{self.current_export_format}",
                 "options": {
                     "export_format": self.current_export_format,
-                    "vmd_mode": mode,
+                    "export_strategy": export_strategy,
                 },
             },
         )()
@@ -188,10 +188,10 @@ class _Workflow:
             progress_callback("payload_validation")
             progress_callback("report_ready")
         export_format = request.options.get("export_format", "pmx")
-        mode = "C" if export_format == "vmd" else "model"
+        export_strategy = "bake_timeline" if export_format == "vmd" else "model"
         return ExportWorkflowResult(
             STATE_READY,
-            ExportValidationReport(export_format, (), mode=mode),
+            ExportValidationReport(export_format, (), mode=export_strategy),
             {},
         )
 
@@ -204,10 +204,10 @@ class _Workflow:
             progress_callback("report_ready")
             progress_callback("writer")
         export_format = request.options.get("export_format", "pmx")
-        mode = "C" if export_format == "vmd" else "model"
+        export_strategy = "bake_timeline" if export_format == "vmd" else "model"
         return ExportWorkflowResult(
             STATE_SUCCEEDED,
-            ExportValidationReport(export_format, (), mode=mode),
+            ExportValidationReport(export_format, (), mode=export_strategy),
             {},
         )
 
@@ -240,7 +240,7 @@ class _PreparePreflightBlockedWorkflow(_Workflow):
                     "export output path is required",
                 ),
             ),
-            mode="C",
+            mode="bake_timeline",
         )
         return PrepareVmdExportResult(
             status="failed",
@@ -253,14 +253,14 @@ class _PrepareWarningWorkflow(_Workflow):
     def prepare_vmd(self, request):
         self.prepared.append(request)
         issue = ExportValidationIssue(
-            "VMD_MODE_C_RAW_LOSS",
+            "VMD_BAKE_TIMELINE_RAW_LOSS",
             "warning",
             False,
-            "mode",
+            "export_strategy",
             "review raw interpolation loss",
         )
         token = SimpleNamespace(
-            validation_report=ExportValidationReport("vmd", (issue,), mode="C")
+            validation_report=ExportValidationReport("vmd", (issue,), mode="bake_timeline")
         )
         return PrepareVmdExportResult(status="published", token=token)
 
@@ -315,7 +315,7 @@ class TestExportPresenter(unittest.TestCase):
         self.assertEqual(app_state.progress[0][0], "begin")
         self.assertEqual(app_state.progress[-1][0], "end")
 
-    def test_prepare_attaches_token_to_mode_c_validate_and_export_then_consumes_it(self):
+    def test_prepare_attaches_token_to_bake_timeline_validate_and_export_then_consumes_it(self):
         view = _View("vmd")
         app_state = _AppState()
         workflow = _Workflow()
@@ -334,8 +334,8 @@ class TestExportPresenter(unittest.TestCase):
         self.assertIsNone(presenter.prepared_vmd_token)
         self.assertEqual(workflow.invalidated, [preparation.token])
 
-    def test_mode_c_validate_prepares_inline_before_validating(self):
-        """The single Animation validation action owns the Mode C preparation."""
+    def test_bake_timeline_validate_prepares_inline_before_validating(self):
+        """The single Animation validation action owns the Bake Timeline preparation."""
         view = _View("vmd")
         app_state = _AppState()
         workflow = _Workflow()
@@ -367,7 +367,7 @@ class TestExportPresenter(unittest.TestCase):
         self.assertTrue(view.validation_console.report.requires_warning_ack)
         self.assertEqual(
             view.validation_console.report.issues[0].code,
-            "VMD_MODE_C_RAW_LOSS",
+            "VMD_BAKE_TIMELINE_RAW_LOSS",
         )
 
     def test_prepare_failure_publishes_blocking_result_and_keeps_no_token(self):
@@ -550,7 +550,7 @@ class TestExportPresenter(unittest.TestCase):
         self.assertEqual(view.operation_states, [True, False])
         self.assertEqual(app_state.progress[-1][0], "end")
         self.assertEqual(result.report.export_format, "vmd")
-        self.assertEqual(result.report.mode, "C")
+        self.assertEqual(result.report.mode, "bake_timeline")
         self.assertTrue(result.report.issues[0].blocking)
         self.assertEqual(result.report.issues[0].severity, "fatal")
         self.assertEqual(result.report.issues[0].path, "export.motion")
@@ -567,7 +567,7 @@ class TestExportPresenter(unittest.TestCase):
         )
         if app is not None:
             self.assertEqual(view.validation_console.issue_list.count(), 1)
-            self.assertIn("vmd / C", view.validation_console.summary_label.text())
+            self.assertIn("vmd / bake_timeline", view.validation_console.summary_label.text())
             self.assertIn(
                 "EXPORT_WORKFLOW_EXCEPTION",
                 view.validation_console.detail_text.toPlainText(),

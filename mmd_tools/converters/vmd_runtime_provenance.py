@@ -59,7 +59,7 @@ def build_raw_bone_interpolation_provenance(
     The records remain keyed by the original VMD bone name and frame number.
     Interpolation and transform completeness are tracked independently so
     older interpolation-only metadata remains readable while a partial raw
-    transform cannot pass a new Mode A payload gate.
+    transform cannot pass a new Preserve Keys payload gate.
     """
     if frames is None:
         return {
@@ -100,7 +100,7 @@ def build_raw_bone_interpolation_provenance(
             # Maya animation curves also collapse repeated keys at the same
             # bone/frame.  Preserve the last VMD record, matching the import
             # result, instead of making an otherwise usable motion impossible
-            # to export in Mode A.
+            # to export with Preserve Keys.
             duplicate_key_count += 1
         record = {
             "bone_name": name,

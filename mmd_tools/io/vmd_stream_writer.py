@@ -1,6 +1,6 @@
 """Incremental, native-compatible VMD byte writer.
 
-The Mode C prepare path must not build a Python object graph containing every
+The Bake Timeline prepare path must not build a Python object graph containing every
 sampled frame.  :class:`VmdStreamWriter` accepts one frame at a time, writes it
 immediately, and keeps only section counters and frame bounds in memory.  The
 on-disk layout intentionally mirrors ``mmd-anim-format``'s VMD writer rather

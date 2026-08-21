@@ -1,4 +1,4 @@
-"""Prepare one immutable Mode C VMD export snapshot.
+"""Prepare one immutable Bake Timeline VMD export snapshot.
 
 The preparation boundary is deliberately small and Maya-independent.  A Maya
 adapter owns target discovery, scene collection, and revision watching; this
@@ -18,7 +18,7 @@ from typing import Any, Optional, Protocol, Tuple
 
 from ..validation.snapshot import fingerprint_payload
 from ..validation.export_validator import ExportValidationReport
-from ..validation.vmd_validator import VMD_MODE_C, verify_vmd_output_streaming
+from ..validation.vmd_validator import VMD_EXPORT_BAKE_TIMELINE, verify_vmd_output_streaming
 from .prepared_vmd_artifact import (
     PreparedVmdArtifactReceipt,
     PreparedVmdStageSession,
@@ -49,7 +49,7 @@ _IGNORED_REQUEST_KEYS = frozenset(
 
 
 class PrepareVmdExportError(ValueError):
-    """Raised when a safe Mode C preparation cannot be published."""
+    """Raised when a safe Bake Timeline preparation cannot be published."""
 
 
 class PrepareVmdExportRaceError(PrepareVmdExportError):
@@ -91,7 +91,7 @@ class PrepareVmdExportRequest:
     target_uuid: Optional[str] = None
     target_identity: Optional[str] = None
     scene_session_id: Optional[str] = None
-    mode: str = VMD_MODE_C
+    export_strategy: str = VMD_EXPORT_BAKE_TIMELINE
     frame_range: Tuple[float, float] = (0.0, 0.0)
     frame_step: float = 1.0
     scale: float = 1.0
@@ -105,7 +105,7 @@ class PrepareVmdExportRequest:
             "target_uuid": self.target_uuid,
             "target_identity": self.target_identity,
             "scene_session_id": self.scene_session_id,
-            "mode": self.mode,
+            "export_strategy": self.export_strategy,
             "frame_range": tuple(self.frame_range),
             "frame_step": self.frame_step,
             "scale": self.scale,
@@ -130,7 +130,7 @@ class VmdExportDiscovery:
 
 @dataclass(frozen=True)
 class PreparedVmdExportToken:
-    """Opaque immutable receipt handle for one safely staged Mode C export."""
+    """Opaque immutable receipt handle for one safely staged Bake Timeline export."""
 
     schema_version: int
     cache_id: str
@@ -138,7 +138,7 @@ class PreparedVmdExportToken:
     revision: str
     target_uuid: str
     target_identity: str
-    mode: str
+    export_strategy: str
     frame_range: Tuple[float, float]
     frame_step: float
     semantic_options_fingerprint: str
@@ -243,7 +243,7 @@ def request_fingerprint(request: Any) -> str:
             "target_uuid",
             "target_identity",
             "scene_session_id",
-            "mode",
+            "export_strategy",
             "frame_range",
             "frame_step",
             "scale",
@@ -345,9 +345,11 @@ def _normalize_discovery(value: Any, request: Any) -> VmdExportDiscovery:
 
 
 def _normalize_frame_options(request: Any) -> Tuple[Tuple[float, float], float, float, str]:
-    mode = str(_read_field(request, "mode", "vmd_mode") or VMD_MODE_C).upper()
-    if mode != VMD_MODE_C:
-        raise PrepareVmdExportError("prepared VMD export supports Mode C only")
+    export_strategy = str(
+        _read_field(request, "export_strategy") or VMD_EXPORT_BAKE_TIMELINE
+    ).lower()
+    if export_strategy != VMD_EXPORT_BAKE_TIMELINE:
+        raise PrepareVmdExportError("prepared VMD export supports Bake Timeline only")
     frame_range = _read_field(request, "frame_range")
     if frame_range is None:
         start = _read_field(request, "frame_start")
@@ -370,7 +372,7 @@ def _normalize_frame_options(request: Any) -> Tuple[Tuple[float, float], float, 
         raise PrepareVmdExportError("frame range, frame step, and scale must be finite")
     if normalized_range[0] > normalized_range[1] or frame_step <= 0.0:
         raise PrepareVmdExportError("frame range must be ordered and frame_step must be positive")
-    return normalized_range, frame_step, scale, mode
+    return normalized_range, frame_step, scale, export_strategy
 
 
 def _canonical_value(value: Any) -> Any:
@@ -433,7 +435,7 @@ def _arm_revision_provider(provider: Any, request: Any, discovery: VmdExportDisc
 
 
 class PrepareVmdExportAction:
-    """Prepare one Mode C payload through injected production boundaries."""
+    """Prepare one Bake Timeline payload through injected production boundaries."""
 
     def __init__(
         self,
@@ -587,7 +589,7 @@ class PrepareVmdExportAction:
         self.invalidate()
         try:
             fingerprint_begin = time.perf_counter()
-            frame_range, frame_step, scale, mode = _normalize_frame_options(request)
+            frame_range, frame_step, scale, export_strategy = _normalize_frame_options(request)
             options_fingerprint = request_fingerprint(request)
             timed("request_fingerprint", fingerprint_begin)
 
@@ -614,7 +616,7 @@ class PrepareVmdExportAction:
             model_name = first.model_name or str(_read_field(request, "model_name") or "")
             stream_session = PreparedVmdStageSession(
                 model_name,
-                mode=VMD_MODE_C,
+                export_strategy=VMD_EXPORT_BAKE_TIMELINE,
                 output_verifier=verify_vmd_output_streaming,
             )
             self._pending_stage_session = stream_session
@@ -678,7 +680,7 @@ class PrepareVmdExportAction:
                 revision=revision_after,
                 target_uuid=first.target_uuid,
                 target_identity=first.target_identity,
-                mode=mode,
+                export_strategy=export_strategy,
                 frame_range=frame_range,
                 frame_step=frame_step,
                 semantic_options_fingerprint=options_fingerprint,
@@ -764,7 +766,7 @@ class PrepareVmdExportAction:
             stale("token is not active")
 
         try:
-            frame_range, frame_step, _scale, mode = _normalize_frame_options(request)
+            frame_range, frame_step, _scale, export_strategy = _normalize_frame_options(request)
             discovery = _normalize_discovery(self._backend.discover(request), request)
             revision = _require_identity(
                 _revision_method(self._revision_provider, request, discovery),
@@ -787,8 +789,8 @@ class PrepareVmdExportAction:
             stale("dependency closure does not match")
         if token.revision != revision:
             stale("scene revision does not match")
-        if token.mode != mode:
-            stale("mode does not match")
+        if token.export_strategy != export_strategy:
+            stale("export strategy does not match")
         if tuple(token.frame_range) != frame_range:
             stale("frame range does not match")
         if token.frame_step != frame_step:
@@ -809,7 +811,7 @@ class PrepareVmdExportAction:
 
 def _cache_id(*parts: str) -> str:
     value = "|".join(parts).encode("utf-8")
-    return f"vmd-c-cache:{hashlib.sha256(value).hexdigest()}"
+    return f"vmd-bake-timeline-cache:{hashlib.sha256(value).hexdigest()}"
 
 
 __all__ = [

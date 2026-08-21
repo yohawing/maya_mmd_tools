@@ -18,6 +18,7 @@ from ...validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
 )
+from ...validation.vmd_validator import VMD_EXPORT_BAKE_TIMELINE
 from ..translations import UITranslator
 
 
@@ -44,7 +45,7 @@ class ExportPresenter(QObject):
         self._prepared_vmd_token = None
         if workflow_service is None:
             # Construction is Maya-import safe; the adapter loads maya.cmds
-            # only when the user actually requests a Mode C preparation.
+            # only when the user actually requests a Bake Timeline preparation.
             workflow_service = ExportWorkflowService(
                 scene_service=getattr(app_state, "scene_model_service", None),
                 prepare_vmd_action=create_maya_vmd_prepare_action(),
@@ -79,7 +80,7 @@ class ExportPresenter(QObject):
         self.view.invalidate_all_panes()
 
     def _on_motion_semantic_changed(self):
-        """A timeline or Mode change makes the prepared payload unusable."""
+        """A timeline or strategy change makes the prepared payload unusable."""
         self._clear_prepared_token()
 
     def _clear_prepared_token(self):
@@ -104,7 +105,7 @@ class ExportPresenter(QObject):
         return self._prepared_vmd_token
 
     def prepare(self):
-        """Bake/collect the reusable Mode C payload before validation or export."""
+        """Bake/collect the reusable timeline payload before validation or export."""
         self._clear_prepared_token()
         self.view.set_state(STATE_PREPARING)
         request = None
@@ -122,9 +123,9 @@ class ExportPresenter(QObject):
             )
             export_format = self._request_export_format(request, export_format)
             options = getattr(request, "options", None) or {}
-            mode = str(options.get("vmd_mode") or "").upper()
-            if export_format != "vmd" or mode != "C":
-                raise ValueError("Prepare is available only for VMD Mode C")
+            export_strategy = str(options.get("export_strategy") or "").lower()
+            if export_format != "vmd" or export_strategy != VMD_EXPORT_BAKE_TIMELINE:
+                raise ValueError("Prepare is available only for VMD Bake Timeline")
             self._update_progress(token, export_format, "timeline_bake")
             preparation = self.workflow_service.prepare_vmd(request)
             self._update_progress(token, export_format, "prepared_payload")
@@ -166,9 +167,9 @@ class ExportPresenter(QObject):
                 )
             self.app_state.emit_status(
                 UITranslator.instance().translate(
-                    "prepare_mode_c_complete",
+                    "prepare_bake_timeline_complete",
                     "messages",
-                    default="VMD Mode C preparation complete",
+                    default="VMD Bake Timeline preparation complete",
                 )
             )
             return preparation
@@ -189,7 +190,7 @@ class ExportPresenter(QObject):
         return None
 
     def validate(self):
-        """Validate without writing; Mode C first prepares its payload inline."""
+        """Validate without writing; Bake Timeline first prepares its payload inline."""
         self.view.set_state(STATE_VALIDATING)
         request = None
         export_format = self._view_export_format()
@@ -204,8 +205,12 @@ class ExportPresenter(QObject):
             )
             export_format = self._request_export_format(request, export_format)
             options = getattr(request, "options", None) or {}
-            mode = str(options.get("vmd_mode") or "").upper()
-            if export_format == "vmd" and mode == "C" and self._prepared_vmd_token is None:
+            export_strategy = str(options.get("export_strategy") or "").lower()
+            if (
+                export_format == "vmd"
+                and export_strategy == VMD_EXPORT_BAKE_TIMELINE
+                and self._prepared_vmd_token is None
+            ):
                 self._clear_prepared_token()
                 self._update_progress(token, export_format, "timeline_bake")
                 preparation = self.workflow_service.prepare_vmd(request)
@@ -289,11 +294,11 @@ class ExportPresenter(QObject):
         return result
 
     def _attach_prepared_token(self, request, export_format):
-        """Attach a prepared token only to a VMD Mode C request."""
+        """Attach a prepared token only to a VMD Bake Timeline request."""
         if str(export_format or "").lower() != "vmd":
             return request
         options = getattr(request, "options", None) or {}
-        if str(options.get("vmd_mode") or "").upper() != "C":
+        if str(options.get("export_strategy") or "").lower() != VMD_EXPORT_BAKE_TIMELINE:
             return request
         if self._prepared_vmd_token is None:
             return request
@@ -327,7 +332,7 @@ class ExportPresenter(QObject):
         key = f"{self._format_key(export_format)}_{stage}"
         fallback = {
             "scene_preflight": "Checking scene",
-            "timeline_bake": "Evaluating and preparing Mode C motion",
+            "timeline_bake": "Evaluating and preparing Bake Timeline motion",
             "payload_collection": "Collecting export data",
             "payload_validation": "Validating export data",
             "prepared_payload": "Prepared motion payload",
@@ -352,7 +357,11 @@ class ExportPresenter(QObject):
         )
         export_format = str(export_format or "").lower() or None
         is_motion = export_format == "vmd"
-        mode = str(options.get("vmd_mode") or "C") if is_motion else "model"
+        export_strategy = (
+            str(options.get("export_strategy") or VMD_EXPORT_BAKE_TIMELINE).lower()
+            if is_motion
+            else "model"
+        )
         issue = ExportValidationIssue(
             "EXPORT_WORKFLOW_EXCEPTION",
             "fatal",
@@ -365,7 +374,7 @@ class ExportPresenter(QObject):
             ExportValidationReport(
                 export_format,
                 (issue,),
-                mode=mode,
+                mode=export_strategy,
             ),
             {"output_path": getattr(request, "file_path", None)},
             error=error,

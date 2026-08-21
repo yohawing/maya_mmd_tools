@@ -1,4 +1,4 @@
-"""Unit contracts for the optional native Mode C batch sampler."""
+"""Unit contracts for the optional native Bake Timeline batch sampler."""
 
 from __future__ import annotations
 
@@ -103,7 +103,7 @@ class _FakeCmds:
 
 
 class _LegacyDirectSpoolCmds(_FakeCmds):
-    """Simulate a loaded pre-Mode-C MLL that rejects only direct mode."""
+    """Simulate a loaded pre-Bake-Timeline MLL that rejects only direct mode."""
 
     def mmdVmdBatchSample(self, payload=None):
         request = json.loads(payload)
@@ -1075,7 +1075,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
 
         native = _Native()
         collector = VmdSceneCollector(bone_channel_sampler=native)
-        collector._mode_c_physics_output_excluded_targets = {"sparse"}
+        collector._bake_timeline_physics_output_excluded_targets = {"sparse"}
         raw = {
             ("dense", 0): ((99.0, 99.0, 99.0), (0.0, 0.0, 0.0, 1.0)),
             ("dense", 1): ((99.0, 99.0, 99.0), (0.0, 0.0, 0.0, 1.0)),
@@ -1162,7 +1162,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             side_effect=lambda values, _bind, _scale: tuple(values),
         ):
             collector._mmd_bone_name = lambda joint: str(joint)
-            with self.assertRaisesRegex(RuntimeError, "Mode C native bone sampling failed"):
+            with self.assertRaisesRegex(RuntimeError, "Bake Timeline native bone sampling failed"):
                 collector.collect_bone_frames(
                     ["joint"],
                     input_routes={},
@@ -1223,7 +1223,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             side_effect=lambda values, _bind, _scale: tuple(values),
         ):
             collector._mmd_bone_name = lambda joint: str(joint)
-            with self.assertRaisesRegex(RuntimeError, "Mode C native bone value failed"):
+            with self.assertRaisesRegex(RuntimeError, "Bake Timeline native bone value failed"):
                 collector.collect_bone_frames(
                     ["joint"],
                     input_routes={},
@@ -1272,7 +1272,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             collector_module, "_build_rotation_export_context", return_value={}
         ), mock.patch.object(
             collector_module,
-            "_mode_c_earliest_integer_sample",
+            "_bake_timeline_earliest_integer_sample",
             side_effect=KeyboardInterrupt(),
         ):
             collector._mmd_bone_name = lambda joint: str(joint)

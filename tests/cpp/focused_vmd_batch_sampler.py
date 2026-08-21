@@ -754,10 +754,10 @@ def main() -> int:
             "collector current time preservation",
         )
 
-        # Exercise all non-bone Mode C tracks without Prepare/ExportWorkflow.
+        # Exercise all non-bone Bake Timeline tracks without Prepare/ExportWorkflow.
         # The independent oracle uses only currentTime + current-frame getAttr.
         cmds.currentUnit(time="ntsc")
-        model_root = cmds.group(empty=True, name="focused_vmd_mode_c_root")
+        model_root = cmds.group(empty=True, name="focused_vmd_bake_timeline_root")
         cmds.parent(joint, model_root)
 
         base_mesh, _base_shape = cmds.polyCube(name="focused_vmd_morph_base")
@@ -767,7 +767,7 @@ def main() -> int:
         blend_shape = cmds.blendShape(
             target_mesh,
             base_mesh,
-            name="focused_vmd_mode_c_blendShape",
+            name="focused_vmd_bake_timeline_blendShape",
         )[0]
         cmds.addAttr(
             blend_shape,
@@ -782,7 +782,7 @@ def main() -> int:
         cmds.setKeyframe(blend_shape, attribute="weight[0]", time=0.0, value=0.0)
         cmds.setKeyframe(blend_shape, attribute="weight[0]", time=2.0, value=1.0)
 
-        camera, _camera_shape = cmds.camera(name="focused_vmd_mode_c_camera")
+        camera, _camera_shape = cmds.camera(name="focused_vmd_bake_timeline_camera")
         for attr, attr_type in (
             ("mmd_camera_distance", "double"),
             ("mmd_camera_viewing_angle", "double"),
@@ -804,7 +804,7 @@ def main() -> int:
             cmds.setKeyframe(camera, attribute=attr, time=0.0, value=start_value)
             cmds.setKeyframe(camera, attribute=attr, time=2.0, value=end_value)
 
-        light = cmds.group(empty=True, name="focused_vmd_mode_c_light")
+        light = cmds.group(empty=True, name="focused_vmd_bake_timeline_light")
         cmds.addAttr(
             light,
             longName="mmd_light_color",
@@ -826,7 +826,7 @@ def main() -> int:
             cmds.setKeyframe(light, attribute=attr, time=0.0, value=values[0])
             cmds.setKeyframe(light, attribute=attr, time=2.0, value=values[1])
 
-        ik_solver = cmds.createNode("mmdCcdIk", name="focused_vmd_mode_c_ik")
+        ik_solver = cmds.createNode("mmdCcdIk", name="focused_vmd_bake_timeline_ik")
         cmds.addAttr(ik_solver, longName="mmd_ik_bone_name", dataType="string")
         cmds.setAttr(
             f"{ik_solver}.mmd_ik_bone_name", "left leg IK", type="string"
@@ -846,24 +846,24 @@ def main() -> int:
             ik_solver,
             collector_frames,
         )
-        mode_c_collector = VmdSceneCollector(
+        bake_timeline_collector = VmdSceneCollector(
             bone_channel_sampler=NativeVmdBatchSampler(cmds)
         )
-        collected = mode_c_collector.collect(
+        collected = bake_timeline_collector.collect(
             {
                 "target_model": model_root,
                 "joints": [joint],
                 "blend_shapes": [blend_shape],
                 "cameras": [camera],
                 "lights": [light],
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "frame_range": (0.0, 2.0),
             }
         )
         _assert_close(
             float(cmds.currentTime(query=True)),
             entry_time,
-            "Mode C non-bone current time preservation",
+            "Bake Timeline non-bone current time preservation",
         )
         expected_counts = {
             "morph_frames": 3,
@@ -879,7 +879,7 @@ def main() -> int:
         ):
             if len(collected[section]) != expected_counts[section]:
                 raise RuntimeError(
-                    f"Mode C {section} count mismatch: {len(collected[section])}"
+                    f"Bake Timeline {section} count mismatch: {len(collected[section])}"
                 )
             _assert_sorted_frames(collected[section], section)
 
@@ -887,7 +887,7 @@ def main() -> int:
             _assert_close(
                 float(row["weight"]),
                 nonbone_oracle["morph"][int(row["frame_number"])],
-                f"Mode C morph frame {row['frame_number']}",
+                f"Bake Timeline morph frame {row['frame_number']}",
             )
         for row in collected["camera_frames"]:
             expected = nonbone_oracle["camera"][int(row["frame_number"])]
@@ -898,16 +898,16 @@ def main() -> int:
                     _assert_close(
                         float(actual),
                         float(source),
-                        f"Mode C camera {field}[{component}]",
+                        f"Bake Timeline camera {field}[{component}]",
                     )
             _assert_close(
                 float(row["distance"]),
                 float(expected["distance"]),
-                "Mode C camera distance",
+                "Bake Timeline camera distance",
             )
             for field in ("viewing_angle", "perspective"):
                 if int(row[field]) != int(expected[field]):
-                    raise RuntimeError(f"Mode C camera {field} mismatch")
+                    raise RuntimeError(f"Bake Timeline camera {field} mismatch")
         for row in collected["light_frames"]:
             expected = nonbone_oracle["light"][int(row["frame_number"])]
             for field in ("color", "position"):
@@ -917,35 +917,35 @@ def main() -> int:
                     _assert_close(
                         float(actual),
                         float(source),
-                        f"Mode C light {field}[{component}]",
+                        f"Bake Timeline light {field}[{component}]",
                     )
-        unsupported_sections = mode_c_collector.diagnostics.get(
-            "unsupported_mode_c_sections", {}
+        unsupported_sections = bake_timeline_collector.diagnostics.get(
+            "unsupported_bake_timeline_sections", {}
         )
         if unsupported_sections != {"cameras": 1, "lights": 1}:
             raise RuntimeError(
-                f"Mode C unsupported section evidence mismatch: {unsupported_sections!r}"
+                f"Bake Timeline unsupported section evidence mismatch: {unsupported_sections!r}"
             )
-        native_morph = mode_c_collector.diagnostics.get(
+        native_morph = bake_timeline_collector.diagnostics.get(
             "native_morph_sampler", {}
         )
         if native_morph.get("strategy_counts", {}).get("direct_curve") != 1:
             raise RuntimeError(
-                f"Mode C Morph did not use direct curve: {native_morph!r}"
+                f"Bake Timeline Morph did not use direct curve: {native_morph!r}"
             )
         _assert_close(
             float(native_morph.get("set_current_time_wall_sec", -1.0)),
             0.0,
-            "Mode C direct Morph Timeline wall",
+            "Bake Timeline direct Morph Timeline wall",
         )
         for row in collected["ik_show_hide_frames"]:
             frame_number = int(row["frame_number"])
             expected_state = nonbone_oracle["ik"][frame_number]
             if row["ik_states"] != [("left leg IK", expected_state)]:
                 raise RuntimeError(
-                    f"Mode C IK frame {frame_number} mismatch: {row!r}"
+                    f"Bake Timeline IK frame {frame_number} mismatch: {row!r}"
                 )
-        print("OK: Mode C native Morph/IK parity; camera/light unsupported")
+        print("OK: Bake Timeline native Morph/IK parity; camera/light unsupported")
 
         _must_fail(
             cmds,
