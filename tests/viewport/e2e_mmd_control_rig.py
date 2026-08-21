@@ -614,6 +614,7 @@ def run_e2e_check(
     auto_bake_only: bool = False,
     cpp_config: str = "Debug",
     ffi_path: str | None = None,
+    auto_frame_range: tuple[int, int] | None = None,
 ) -> None:
     """Execute the complete control-rig workflow in a live Maya GUI.
 
@@ -655,6 +656,10 @@ def run_e2e_check(
             "scope": "auto_bake_export" if auto_bake_only else "full_control_rig_roundtrip",
         },
         "cppConfig": str(cpp_config),
+        "autoFrameRange": {
+            "requested": list(auto_frame_range) if auto_frame_range else None,
+            "actual": None,
+        },
         "ffiRuntime": {
             "requestedPath": str(ffi_path) if ffi_path else None,
             "configuredPath": None,
@@ -1260,17 +1265,54 @@ def run_e2e_check(
             float(cmds.playbackOptions(query=True, minTime=True)),
             float(cmds.playbackOptions(query=True, maxTime=True)),
         )
+        if auto_bake_only and auto_frame_range is not None:
+            requested_start, requested_end = auto_frame_range
+            if requested_start < 0 or requested_end < requested_start:
+                raise ValueError(
+                    "automatic Bake Timeline frame range must be ordered and non-negative"
+                )
+            cmds.playbackOptions(
+                minTime=int(requested_start),
+                maxTime=int(requested_end),
+                animationStartTime=int(requested_start),
+                animationEndTime=int(requested_end),
+            )
+            timeline_range = (float(requested_start), float(requested_end))
+        auto_start = int(round(timeline_range[0]))
+        auto_end = int(round(timeline_range[1]))
+        auto_compare_frames = (
+            tuple(
+                sorted(
+                    {
+                        auto_start,
+                        auto_end,
+                        auto_start + (auto_end - auto_start) // 4,
+                        auto_start + (auto_end - auto_start) // 2,
+                        auto_start + (auto_end - auto_start) * 3 // 4,
+                    }
+                )
+            )
+            if auto_bake_only
+            else ROUNDTRIP_FRAMES
+        )
+        report["autoFrameRange"]["actual"] = list(timeline_range)
         auto_source_world = {}
         auto_source_ik = {}
         auto_sentinel_indices = {}
+        auto_sentinel_names = {}
+        auto_curve_snapshot_before = {}
+        auto_curve_snapshot_after = {}
+        auto_preview_payload = {}
+        auto_post_preview_payload = {}
         if auto_bake_only:
             authored_controls = {
                 "center": str(rig.controls["center"]),
                 "left_arm": str(rig.controls["left_arm"]),
             }
             for key_time, center_x, arm_rotation in (
-                (timeline_range[0], 0.0, (0.0, 0.0, 0.0)),
-                (timeline_range[1], 1.25, (18.0, -7.0, 11.0)),
+                (auto_start, 0.0, (0.0, 0.0, 0.0)),
+                (auto_end, 1.25, (18.0, -7.0, 11.0)),
+                (auto_end + 5, 9.0, (65.0, -25.0, 37.0)),
             ):
                 cmds.setKeyframe(
                     authored_controls["center"],
@@ -1297,14 +1339,119 @@ def run_e2e_check(
                 auto_sentinel_indices[role] = str(
                     int(cmds.getAttr(f"{joint}.mmd_bone_index"))
                 )
-            auto_source_world = _joint_worlds(cmds, ROUNDTRIP_FRAMES)
-            auto_source_ik = _ik_states(cmds, ROUNDTRIP_FRAMES)
+                auto_sentinel_names[role] = str(
+                    cmds.getAttr(f"{joint}.mmd_bone_name")
+                )
+
+            def _control_curve_snapshot() -> dict[str, Any]:
+                snapshot: dict[str, Any] = {}
+                for role, control in authored_controls.items():
+                    curves = sorted(
+                        {
+                            str(curve)
+                            for curve in (
+                                cmds.keyframe(
+                                    control,
+                                    query=True,
+                                    name=True,
+                                )
+                                or []
+                            )
+                        }
+                    )
+                    snapshot[role] = {
+                        str(curve): {
+                            "times": [
+                                float(value)
+                                for value in (
+                                    cmds.keyframe(
+                                        curve,
+                                        query=True,
+                                        timeChange=True,
+                                    )
+                                    or []
+                                )
+                            ],
+                            "values": [
+                                float(value)
+                                for value in (
+                                    cmds.keyframe(
+                                        curve,
+                                        query=True,
+                                        valueChange=True,
+                                    )
+                                    or []
+                                )
+                            ],
+                        }
+                        for curve in curves
+                    }
+                return snapshot
+
+            def _vmd_sentinel_payload(vmd_data: Any) -> dict[str, Any]:
+                payload = {}
+                for role, bone_name in auto_sentinel_names.items():
+                    matches = [
+                        frame
+                        for frame in getattr(vmd_data, "bone_frames", []) or []
+                        if str(getattr(frame, "bone_name", "")) == bone_name
+                        and int(frame.frame_number) == auto_end
+                    ]
+                    payload[role] = [
+                        {
+                            "boneName": str(frame.bone_name),
+                            "frame": int(frame.frame_number),
+                            "position": [float(value) for value in frame.position],
+                            "rotation": [float(value) for value in frame.rotation],
+                        }
+                        for frame in matches
+                    ]
+                return payload
+
+            def _compare_control_curve_snapshots(
+                before: Mapping[str, Any], after: Mapping[str, Any]
+            ) -> dict[str, Any]:
+                mismatches = []
+                max_value_error = 0.0
+                if set(before) != set(after):
+                    mismatches.append("control roles changed")
+                for role in sorted(set(before) | set(after)):
+                    before_curves = before.get(role, {})
+                    after_curves = after.get(role, {})
+                    if set(before_curves) != set(after_curves):
+                        mismatches.append(f"{role}: animCurve set changed")
+                    for curve in sorted(set(before_curves) | set(after_curves)):
+                        before_curve = before_curves.get(curve, {})
+                        after_curve = after_curves.get(curve, {})
+                        if before_curve.get("times") != after_curve.get("times"):
+                            mismatches.append(f"{curve}: key times changed")
+                        before_values = before_curve.get("values", [])
+                        after_values = after_curve.get("values", [])
+                        if len(before_values) != len(after_values):
+                            mismatches.append(f"{curve}: key count changed")
+                            continue
+                        for before_value, after_value in zip(before_values, after_values):
+                            max_value_error = max(
+                                max_value_error,
+                                abs(float(before_value) - float(after_value)),
+                            )
+                return {
+                    "pass": not mismatches and max_value_error <= MOVE_EPSILON,
+                    "maxValueError": max_value_error,
+                    "mismatches": mismatches,
+                }
+
+            auto_curve_snapshot_before = _control_curve_snapshot()
+            if not any(auto_curve_snapshot_before.values()):
+                raise RuntimeError("automatic export sentinel controls have no animCurves")
+            auto_source_world = _joint_worlds(cmds, auto_compare_frames)
+            auto_source_ik = _ik_states(cmds, auto_compare_frames)
             sentinel_effect = {
                 role: max(
                     abs(last - first)
                     for first, last in zip(
-                        auto_source_world[str(ROUNDTRIP_FRAMES[0])][index],
-                        auto_source_world[str(ROUNDTRIP_FRAMES[-1])][index],
+                        auto_source_world[str(auto_start)][index],
+                        auto_source_world[str(auto_end)][index],
                     )
                 )
                 for role, index in auto_sentinel_indices.items()
@@ -1313,6 +1460,24 @@ def run_e2e_check(
                 raise RuntimeError(
                     f"automatic export sentinel edits had no world-space effect: {sentinel_effect}"
                 )
+        else:
+            # Keep the legacy full E2E route's diagnostics shape without
+            # enabling focused sentinel assertions or frame-range edits.
+            authored_controls = {
+                "center": str(rig.controls["center"]),
+                "left_arm": str(rig.controls["left_arm"]),
+            }
+
+            def _control_curve_snapshot() -> dict[str, Any]:
+                return {}
+
+            def _vmd_sentinel_payload(_vmd_data: Any) -> dict[str, Any]:
+                return {}
+
+            def _compare_control_curve_snapshots(
+                _before: Mapping[str, Any], _after: Mapping[str, Any]
+            ) -> dict[str, Any]:
+                return {"pass": True, "maxValueError": 0.0, "mismatches": []}
         auto_options = {
             "export_format": "vmd",
             "export_strategy": "bake_timeline",
@@ -1325,11 +1490,16 @@ def run_e2e_check(
         }
         auto_request = ExportWorkflowRequest(str(auto_output), auto_options)
         auto_action = None
+        preview_token = None
         auto_token = None
         auto_gate = {
             "status": "running",
             "outputPath": str(auto_output),
             "frameRange": list(timeline_range),
+            "requestedFrameRange": list(auto_frame_range) if auto_frame_range else list(timeline_range),
+            "actualFrameRange": list(timeline_range),
+            "representativeFrames": list(auto_compare_frames),
+            "progressCallback": False,
         }
         report["autoBakeExport"] = auto_gate
         if auto_bake_only:
@@ -1373,21 +1543,30 @@ def run_e2e_check(
         try:
             auto_action = create_maya_vmd_prepare_action()
             auto_service = ExportWorkflowService(prepare_vmd_action=auto_action)
-            prepared = auto_service.prepare_vmd(auto_request)
-            if not prepared.succeeded or prepared.token is None:
-                raise RuntimeError(f"automatic Bake Timeline prepare failed: {prepared.error}")
-            auto_token = prepared.token
-            staged_path = Path(auto_token.staged_artifact.file_path)
-            staged_vmd = VmdData().parse_file(str(staged_path))
-            auto_gate.update(
-                {
-                    "stagedPath": str(staged_path),
-                    "stagedBoneFrames": len(staged_vmd.bone_frames),
-                    "stagedParsePass": bool(staged_vmd.bone_frames),
-                }
-            )
-            if not staged_vmd.bone_frames:
-                raise RuntimeError("automatic Bake Timeline staged VMD contains no bone frames")
+            preview = auto_service.prepare_vmd(auto_request)
+            if not preview.succeeded or preview.token is None:
+                raise RuntimeError(
+                    f"automatic Bake Timeline preview prepare failed: {preview.error}"
+                )
+            preview_token = preview.token
+            preview_path = Path(preview_token.staged_artifact.file_path)
+            preview_vmd = VmdData().parse_file(str(preview_path))
+            auto_preview_payload = _vmd_sentinel_payload(preview_vmd)
+            auto_gate["previewToken"] = {
+                "stagedPath": str(preview_path),
+                "stagedBoneFrames": len(preview_vmd.bone_frames),
+                "stagedParsePass": bool(preview_vmd.bone_frames),
+                "diagnostics": auto_action.diagnostics_copy,
+            }
+            if not preview_vmd.bone_frames:
+                raise RuntimeError("automatic Bake Timeline preview contains no bone frames")
+            if any(
+                int(frame.frame_number) > auto_end
+                for frame in preview_vmd.bone_frames
+            ):
+                raise RuntimeError(
+                    "automatic Bake Timeline preview included an out-of-range bone frame"
+                )
 
             restored_metadata = read_mmd_control_rig_metadata(root)
             auto_gate["restoredState"] = (
@@ -1409,6 +1588,145 @@ def run_e2e_check(
                     "automatic Bake Timeline did not restore EDIT/CONTROL_OWNED: "
                     f"{restored_metadata}"
                 )
+
+            preview_validation = auto_service.validate(
+                ExportWorkflowRequest(
+                    str(auto_output),
+                    dict(auto_options),
+                    prepared_vmd_token=preview_token,
+                )
+            )
+            preview_validation_pass = bool(
+                preview_validation.error is None
+                and not preview_validation.report.is_blocking
+            )
+            auto_gate["previewToken"]["validationPass"] = preview_validation_pass
+            if not preview_validation_pass:
+                raise RuntimeError(
+                    "automatic Bake Timeline preview token validation failed: "
+                    f"{preview_validation.error or preview_validation.report.summary}"
+                )
+
+            # Exercise the UI-shaped gap between preview and a fresh prepare.
+            # The idle pump makes queued Maya callbacks observable before the
+            # post-preview sentinel edit, while the fresh prepare intentionally
+            # has no progress callback.
+            idle_pump_passes = 0
+            try:
+                import maya.utils as maya_utils
+            except Exception:
+                maya_utils = None
+            for _ in range(6 if auto_bake_only else 0):
+                cmds.refresh()
+                if maya_utils is not None:
+                    maya_utils.processIdleEvents()
+                try:
+                    cmds.flushIdleQueue()
+                except Exception:
+                    pass
+                idle_pump_passes += 1
+            auto_gate["previewToken"]["idlePumpPasses"] = idle_pump_passes
+
+            post_preview_center_value = (
+                2.5
+                if auto_bake_only
+                else float(
+                    cmds.getAttr(
+                        f"{authored_controls['center']}.translateX",
+                        time=auto_end,
+                    )
+                )
+            )
+            post_preview_arm_values = (
+                (30.0, -11.0, 15.0)
+                if auto_bake_only
+                else tuple(
+                    float(
+                        cmds.getAttr(
+                            f"{authored_controls['left_arm']}.rotate{axis}",
+                            time=auto_end,
+                        )
+                    )
+                    for axis in "XYZ"
+                )
+            )
+            cmds.setKeyframe(
+                authored_controls["center"],
+                attribute="translateX",
+                time=auto_end,
+                value=post_preview_center_value,
+            )
+            for axis, value in zip("XYZ", post_preview_arm_values):
+                cmds.setKeyframe(
+                    authored_controls["left_arm"],
+                    attribute=f"rotate{axis}",
+                    time=auto_end,
+                    value=value,
+                )
+            cmds.dgdirty(allPlugs=True)
+            cmds.refresh(force=True)
+            auto_curve_snapshot_before = _control_curve_snapshot()
+            auto_source_world = _joint_worlds(cmds, auto_compare_frames)
+            auto_source_ik = _ik_states(cmds, auto_compare_frames)
+            auto_post_preview_payload = dict(auto_preview_payload)
+
+            prepared = (
+                auto_service.prepare_vmd(auto_request)
+                if auto_bake_only
+                else preview
+            )
+            if not prepared.succeeded or prepared.token is None:
+                raise RuntimeError(
+                    f"automatic Bake Timeline fresh prepare failed: {prepared.error}"
+                )
+            auto_token = prepared.token
+            old_token_validation = (
+                auto_service.validate(
+                    ExportWorkflowRequest(
+                        str(auto_output),
+                        dict(auto_options),
+                        prepared_vmd_token=preview_token,
+                    )
+                )
+                if auto_bake_only
+                else None
+            )
+            old_token_rejected = (
+                bool(old_token_validation and old_token_validation.error is not None)
+                if auto_bake_only
+                else True
+            )
+            auto_gate["previewToken"].update(
+                {
+                    "supersededByFreshPrepare": bool(
+                        auto_bake_only and auto_action.active_token is auto_token
+                    ),
+                    "oldTokenRejected": old_token_rejected,
+                    "oldTokenError": str(old_token_validation.error)
+                    if old_token_validation is not None
+                    and old_token_validation.error is not None
+                    else None,
+                }
+            )
+            if auto_bake_only and (
+                not old_token_rejected or auto_action.active_token is not auto_token
+            ):
+                raise RuntimeError(
+                    "fresh prepare did not supersede the earlier preview token atomically"
+                )
+
+            auto_gate["prepareDiagnostics"] = auto_action.diagnostics_copy
+            staged_path = Path(auto_token.staged_artifact.file_path)
+            staged_vmd = VmdData().parse_file(str(staged_path))
+            auto_gate.update(
+                {
+                    "stagedPath": str(staged_path),
+                    "stagedBoneFrames": len(staged_vmd.bone_frames),
+                    "stagedParsePass": bool(staged_vmd.bone_frames),
+                }
+            )
+            if not staged_vmd.bone_frames:
+                raise RuntimeError("automatic Bake Timeline staged VMD contains no bone frames")
             if unrelated_layer is not None and unrelated_node is not None:
                 unrelated_attributes = cmds.animLayer(
                     unrelated_layer,
@@ -1452,10 +1770,51 @@ def run_e2e_check(
                 )
             )
             published_vmd = VmdData().parse_file(str(auto_output))
+            curve_restoration_pass = True
+            sentinel_payload_changed = {}
+            if auto_bake_only:
+                auto_post_preview_payload = _vmd_sentinel_payload(published_vmd)
+                for role in auto_sentinel_names:
+                    before_rows = auto_preview_payload.get(role, [])
+                    after_rows = auto_post_preview_payload.get(role, [])
+                    before = before_rows[0] if before_rows else None
+                    after = after_rows[0] if after_rows else None
+                    sentinel_payload_changed[role] = bool(
+                        before
+                        and after
+                        and any(
+                            abs(left - right) > MOVE_EPSILON
+                            for left, right in zip(
+                                before["position"] + before["rotation"],
+                                after["position"] + after["rotation"],
+                            )
+                        )
+                    )
+                auto_curve_snapshot_after = _control_curve_snapshot()
+                curve_restoration = _compare_control_curve_snapshots(
+                    auto_curve_snapshot_before,
+                    auto_curve_snapshot_after,
+                )
+                curve_restoration_pass = bool(curve_restoration["pass"])
+                auto_gate["controlCurves"] = {
+                    "before": auto_curve_snapshot_before,
+                    "after": auto_curve_snapshot_after,
+                    **curve_restoration,
+                    "restorationPass": curve_restoration_pass,
+                }
+                auto_gate["postPreviewSentinels"] = {
+                    "previewPayload": auto_preview_payload,
+                    "publishedPayload": auto_post_preview_payload,
+                    "payloadChanged": sentinel_payload_changed,
+                }
             published_pass = bool(
                 published.succeeded
                 and auto_output.is_file()
                 and published_vmd.bone_frames
+                and (
+                    not auto_bake_only
+                    or (all(sentinel_payload_changed.values()) and curve_restoration_pass)
+                )
             )
             auto_gate.update(
                 {
@@ -1504,8 +1863,8 @@ def run_e2e_check(
                 options={"target_model": str(fresh_root), "pmx_path": str(model_path)},
             ):
                 raise RuntimeError("fresh VMD import failed for automatic export parity")
-            fresh_world = _joint_worlds(cmds, ROUNDTRIP_FRAMES)
-            fresh_ik = _ik_states(cmds, ROUNDTRIP_FRAMES)
+            fresh_world = _joint_worlds(cmds, auto_compare_frames)
+            fresh_ik = _ik_states(cmds, auto_compare_frames)
             if set(auto_source_world) != set(fresh_world):
                 raise RuntimeError(
                     "automatic export parity frame set changed after fresh import"
@@ -1564,7 +1923,7 @@ def run_e2e_check(
                 and auto_source_ik == fresh_ik
             )
             auto_gate["authoredRoundtrip"] = {
-                "frames": list(ROUNDTRIP_FRAMES),
+                "frames": list(auto_compare_frames),
                 "matrixErrorMetric": "max_abs_element",
                 "nonSolverOwned": non_solver,
                 "solverOwned": error_summary["solverOwned"],
@@ -1850,17 +2209,37 @@ def main() -> int:
         default=None,
         help="Explicit mmd_runtime_ffi.dll path used inside the Maya process",
     )
+    parser.add_argument(
+        "--auto-frame-range",
+        nargs=2,
+        type=int,
+        metavar=("START", "END"),
+        default=None,
+        help="Inclusive Control Rig Bake Timeline range (requires --auto-bake-only)",
+    )
     parser.add_argument("--out-dir", default=str(_PROJECT_ROOT / "build" / "e2e"))
     args = parser.parse_args()
 
     out_dir = _repo_path(args.out_dir)
     ffi_path = _repo_path(args.ffi_path) if args.ffi_path else None
+    if args.auto_frame_range is not None and not args.auto_bake_only:
+        parser.error("--auto-frame-range requires --auto-bake-only")
+    auto_frame_range = (
+        (int(args.auto_frame_range[0]), int(args.auto_frame_range[1]))
+        if args.auto_frame_range is not None
+        else None
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     mode_suffix = "" if args.evaluation_mode == "default" else f"_{args.evaluation_mode}"
     route_suffix = "_create_on_import" if args.create_on_import else ""
     focused_suffix = "_auto_bake_only" if args.auto_bake_only else ""
+    frame_suffix = (
+        f"_frames_{auto_frame_range[0]}_{auto_frame_range[1]}"
+        if auto_frame_range
+        else ""
+    )
     config_suffix = "" if args.cpp_config == "Debug" else f"_{args.cpp_config.lower()}"
-    output_suffix = f"{mode_suffix}{route_suffix}{focused_suffix}{config_suffix}"
+    output_suffix = f"{mode_suffix}{route_suffix}{focused_suffix}{frame_suffix}{config_suffix}"
     report_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.json"
     log_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.log"
     scene_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.ma"
@@ -1872,6 +2251,7 @@ def main() -> int:
         model_posix = model_path.as_posix()
         motion_posix = motion_path.as_posix()
         ffi_command_arg = repr(ffi_path.as_posix() if ffi_path else None)
+        auto_frame_command_arg = repr(auto_frame_range)
         command = (
             "import sys\n"
             "from pathlib import Path\n"
@@ -1879,7 +2259,7 @@ def main() -> int:
             "if str(project_root) not in sys.path:\n"
             "    sys.path.insert(0, str(project_root))\n"
             "from tests.viewport.e2e_mmd_control_rig import run_e2e_check\n"
-            f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}', r'{motion_posix}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{exported_vmd_path.as_posix()}', r'{args.evaluation_mode}', {bool(args.create_on_import)!r}, {bool(args.auto_bake_only)!r}, r'{args.cpp_config}', {ffi_command_arg})\n"
+            f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}', r'{motion_posix}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{exported_vmd_path.as_posix()}', r'{args.evaluation_mode}', {bool(args.create_on_import)!r}, {bool(args.auto_bake_only)!r}, r'{args.cpp_config}', {ffi_command_arg}, {auto_frame_command_arg})\n"
         )
         report = run_maya_e2e(
             project_root=_PROJECT_ROOT,
@@ -1922,6 +2302,7 @@ def main() -> int:
             "autoBakeOnly": bool(args.auto_bake_only),
             "cppConfig": args.cpp_config,
             "ffiPath": str(ffi_path) if ffi_path else None,
+            "autoFrameRange": list(auto_frame_range) if auto_frame_range else None,
             "error": str(exc),
         }
         _write_maya_report(report_path, blocked)
