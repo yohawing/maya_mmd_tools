@@ -194,27 +194,32 @@ class ExportPresenter(QObject):
         self.view.set_state(STATE_VALIDATING)
         request = None
         export_format = self._view_export_format()
-        token = None
+        progress_token = None
+        prepared_token = None
+        failure = None
         operation_enabled = False
         try:
             operation_enabled = True
             self.view.set_operation_active(True)
-            token = self.app_state.begin_progress(self._progress_label(export_format, "scene_preflight"))
+            progress_token = self.app_state.begin_progress(
+                self._progress_label(export_format, "scene_preflight")
+            )
             request = self.view.build_request(
                 getattr(self.app_state, "current_model_root", None)
             )
             export_format = self._request_export_format(request, export_format)
             options = getattr(request, "options", None) or {}
             export_strategy = str(options.get("export_strategy") or "").lower()
-            if (
-                export_format == "vmd"
-                and export_strategy == VMD_EXPORT_BAKE_TIMELINE
-                and self._prepared_vmd_token is None
-            ):
+            is_bake_timeline = (
+                export_format == "vmd" and export_strategy == VMD_EXPORT_BAKE_TIMELINE
+            )
+            if is_bake_timeline:
+                # A prepared scene watch cannot safely cross a Qt event-loop
+                # boundary.  Always create the token in this call, then keep
+                # the prepare -> validate section free of UI/progress hooks.
                 self._clear_prepared_token()
-                self._update_progress(token, export_format, "timeline_bake")
+                self._update_progress(progress_token, export_format, "timeline_bake")
                 preparation = self.workflow_service.prepare_vmd(request)
-                self._update_progress(token, export_format, "prepared_payload")
                 if not getattr(preparation, "succeeded", False):
                     preparation_report = getattr(preparation, "report", None)
                     if isinstance(preparation_report, ExportValidationReport):
@@ -229,27 +234,33 @@ class ExportPresenter(QObject):
                         return result
                     error = getattr(preparation, "error", None)
                     raise RuntimeError(error or "VMD preparation did not publish a token")
-                self._prepared_vmd_token = preparation.token
-                set_prepared = getattr(self.view, "set_prepared", None)
-                if callable(set_prepared):
-                    set_prepared(preparation)
-            request = self._attach_prepared_token(request, export_format)
+                prepared_token = preparation.token
+                request = self._attach_prepared_token(request, export_format, prepared_token)
+            else:
+                request = self._attach_prepared_token(request, export_format)
             result = self.workflow_service.validate(
                 request,
-                progress_callback=lambda stage: self._update_progress(
-                    token, export_format, stage
+                # For Bake Timeline, the token must be consumed before any
+                # observer can pump Qt events or invalidate its scene watch.
+                progress_callback=None if is_bake_timeline else lambda stage: self._update_progress(
+                    progress_token, export_format, stage
                 ),
             )
         except Exception as exc:
             logger.error("Export validation failed before result creation: %s", exc, exc_info=True)
-            return self._publish_failure("Export validation failed", exc, request)
+            failure = exc
         finally:
             try:
+                if prepared_token is not None:
+                    self._invalidate_token(prepared_token)
+                    prepared_token = None
+            finally:
                 if operation_enabled:
                     self.view.set_operation_active(False)
-            finally:
-                if token is not None:
-                    self.app_state.end_progress(token)
+                if progress_token is not None:
+                    self.app_state.end_progress(progress_token)
+        if failure is not None:
+            return self._publish_failure("Export validation failed", failure, request)
         self.view.set_result(result)
         self._emit_status(result)
         return result
@@ -259,59 +270,109 @@ class ExportPresenter(QObject):
         self.view.set_state(STATE_EXPORTING)
         request = None
         export_format = self._view_export_format()
-        token = None
+        progress_token = None
+        prepared_token = None
+        failure = None
         operation_enabled = False
         try:
             operation_enabled = True
             self.view.set_operation_active(True)
-            token = self.app_state.begin_progress(self._progress_label(export_format, "scene_preflight"))
+            progress_token = self.app_state.begin_progress(
+                self._progress_label(export_format, "scene_preflight")
+            )
             request = self.view.build_request(
                 getattr(self.app_state, "current_model_root", None)
             )
             export_format = self._request_export_format(request, export_format)
-            request = self._attach_prepared_token(request, export_format)
+            options = getattr(request, "options", None) or {}
+            export_strategy = str(options.get("export_strategy") or "").lower()
+            is_bake_timeline = (
+                export_format == "vmd" and export_strategy == VMD_EXPORT_BAKE_TIMELINE
+            )
+            if is_bake_timeline:
+                # Never reuse a token that was published by an earlier UI
+                # action.  The token stays live only for this synchronous
+                # prepare -> execute critical section.
+                self._clear_prepared_token()
+                self._update_progress(progress_token, export_format, "timeline_bake")
+                preparation = self.workflow_service.prepare_vmd(request)
+                if not getattr(preparation, "succeeded", False):
+                    preparation_report = getattr(preparation, "report", None)
+                    if isinstance(preparation_report, ExportValidationReport):
+                        result = ExportWorkflowResult(
+                            STATE_BLOCKED,
+                            preparation_report,
+                            {"output_path": getattr(request, "file_path", None)},
+                            error=getattr(preparation, "error", None),
+                        )
+                        self.view.set_result(result)
+                        self._emit_status(result)
+                        return result
+                    error = getattr(preparation, "error", None)
+                    raise RuntimeError(error or "VMD preparation did not publish a token")
+                prepared_token = preparation.token
+                request = self._attach_prepared_token(request, export_format, prepared_token)
+            else:
+                request = self._attach_prepared_token(request, export_format)
             result = self.workflow_service.execute(
                 request,
                 acknowledge_warnings=self.view.validation_console.warnings_acknowledged,
-                progress_callback=lambda stage: self._update_progress(
-                    token, export_format, stage
+                # execute() revalidates before publishing.  No progress/UI
+                # callback may run between token publication and that check.
+                progress_callback=None if is_bake_timeline else lambda stage: self._update_progress(
+                    progress_token, export_format, stage
                 ),
             )
         except Exception as exc:
             logger.error("Export workflow failed before result creation: %s", exc, exc_info=True)
-            return self._publish_failure("Export failed", exc, request)
+            failure = exc
         finally:
             try:
+                if prepared_token is not None:
+                    self._invalidate_token(prepared_token)
+                    prepared_token = None
+            finally:
                 if operation_enabled:
                     self.view.set_operation_active(False)
-            finally:
-                if token is not None:
-                    self.app_state.end_progress(token)
+                if progress_token is not None:
+                    self.app_state.end_progress(progress_token)
+        if failure is not None:
+            return self._publish_failure("Export failed", failure, request)
         self.view.set_result(result)
         self._emit_status(result)
-        if result.succeeded and request is not None and getattr(request, "prepared_vmd_token", None) is not None:
-            self._clear_prepared_token()
         return result
 
-    def _attach_prepared_token(self, request, export_format):
+    def _attach_prepared_token(self, request, export_format, prepared_token=None):
         """Attach a prepared token only to a VMD Bake Timeline request."""
         if str(export_format or "").lower() != "vmd":
             return request
         options = getattr(request, "options", None) or {}
         if str(options.get("export_strategy") or "").lower() != VMD_EXPORT_BAKE_TIMELINE:
             return request
-        if self._prepared_vmd_token is None:
+        if prepared_token is None:
+            prepared_token = self._prepared_vmd_token
+        if prepared_token is None:
             return request
         if hasattr(request, "prepared_vmd_token"):
-            request.prepared_vmd_token = self._prepared_vmd_token
+            request.prepared_vmd_token = prepared_token
             return request
         return ExportWorkflowRequest(
             file_path=request.file_path,
             options=dict(options),
             model_data=getattr(request, "model_data", None),
             animation_data=getattr(request, "animation_data", None),
-            prepared_vmd_token=self._prepared_vmd_token,
+            prepared_vmd_token=prepared_token,
         )
+
+    def _invalidate_token(self, token):
+        """Invalidate a synchronous Bake Timeline token before UI teardown."""
+        invalidate = getattr(self.workflow_service, "invalidate_prepared_vmd", None)
+        if not callable(invalidate):
+            return
+        try:
+            invalidate(token)
+        except Exception:
+            logger.error("Failed to invalidate prepared VMD token", exc_info=True)
 
     def _view_export_format(self):
         """Read the active page format before a request is built."""
