@@ -933,6 +933,16 @@ class VmdSceneCollector:
         self._diagnostics = {}
         self._source_omission_identities = set()
         try:
+            options = options or {}
+            export_strategy = str(
+                options.get("export_strategy", "preserve_keys")
+                or "preserve_keys"
+            ).lower()
+            if export_strategy == "bake_timeline":
+                raise ValueError(
+                    "collect() does not support Bake Timeline Mode C; "
+                    "use collect_to_sink() with the prepared export workflow"
+                )
             result = self._collect_impl(options)
             self._diagnostics["status"] = "completed"
             return result
@@ -953,8 +963,8 @@ class VmdSceneCollector:
     ) -> dict[str, Any]:
         """Stream standard Bake Timeline sections into a VMD writer-compatible sink.
 
-        The legacy ``collect`` API intentionally remains object-graph based.
-        This internal path shares the same planners and per-track collectors,
+        The object-graph ``collect`` API is limited to preserve-keys export.
+        This path owns Bake Timeline planning and shares the per-track collectors,
         but keeps only one bone track (and one aggregate morph candidate
         spool) alive at a time.  ``sink.finish`` is owned by the caller so the
         caller can validate and promote the private stage atomically.
@@ -1151,7 +1161,8 @@ class VmdSceneCollector:
             options: Optional mapping. Supported keys are ``target_model`` /
                 ``model_root``, ``joints``, ``blend_shapes``, ``cameras``,
                 ``lights``, ``start_frame`` / ``end_frame`` or ``frame_range``,
-                ``export_strategy``, ``model_name``, ``motion_scale``, and
+                ``export_strategy`` (``preserve_keys`` only), ``model_name``,
+                ``motion_scale``, and
                 ``bone_bind_poses``. Automatic joint and blendShape discovery
                 is scoped to the selected model root; camera/light discovery
                 remains scene-level. Explicit node lists remain authoritative.
@@ -1177,16 +1188,8 @@ class VmdSceneCollector:
             options.get("export_strategy", "preserve_keys")
             or "preserve_keys"
         ).lower()
-        if export_strategy not in {"preserve_keys", "bake_timeline"}:
+        if export_strategy != "preserve_keys":
             raise ValueError(f"unsupported VMD export strategy: {export_strategy!r}")
-        bake_timeline_export = export_strategy == "bake_timeline"
-        if bake_timeline_export:
-            self._diagnostics["unsupported_bake_timeline_sections"] = {
-                "cameras": len(cameras),
-                "lights": len(lights),
-            }
-            cameras = []
-            lights = []
         preserve_raw_bone_transforms = bool(
             options.get("preserve_raw_bone_transforms", False)
         )
@@ -1198,37 +1201,12 @@ class VmdSceneCollector:
             joints,
             target_model,
         )
-        if not bake_timeline_export or preserve_raw_bone_transforms:
-            for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
-                rotation_interpolation.setdefault(bone_name, {}).update(values)
+        for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
+            rotation_interpolation.setdefault(bone_name, {}).update(values)
         raw_bone_transforms = _raw_vmd_bone_transforms(raw_provenance)
-        preserve_keys_export = export_strategy == "preserve_keys" or bool(
-            bake_timeline_export
-            and preserve_raw_bone_transforms
-            and raw_provenance
-            and raw_bone_transforms
-            and raw_provenance.get("raw_bone_interpolation_complete")
-            and raw_provenance.get("raw_bone_transform_complete")
-        )
-        bake_timeline_export = bake_timeline_export and not preserve_keys_export
         authored_routes = self._scene_authored_input_routes(
             joints,
             target_model,
-            strict_bake_timeline=bake_timeline_export,
-        )
-        bake_timeline_dense_frames = (
-            self._bake_timeline_dense_frame_samples(
-                joints,
-                blend_shapes,
-                cameras,
-                lights,
-                target_model,
-                authored_routes,
-                start_frame,
-                end_frame,
-            )
-            if bake_timeline_export
-            else None
         )
 
         self._diagnostics["route_provenance_dense_planning"] = {
@@ -1239,7 +1217,7 @@ class VmdSceneCollector:
             "light_count": len(lights),
             "authored_route_count": len(authored_routes),
             "raw_provenance": bool(raw_provenance),
-            "dense_frame_count": len(bake_timeline_dense_frames or ()),
+            "dense_frame_count": 0,
         }
 
         bone_started = time.perf_counter()
@@ -1250,11 +1228,11 @@ class VmdSceneCollector:
             motion_scale=motion_scale,
             bone_bind_poses=bone_bind_poses,
             input_routes=authored_routes,
-            dense_sample=dense_control_rig_export or bake_timeline_export,
-            force_dense_sample=bake_timeline_export,
+            dense_sample=dense_control_rig_export,
+            force_dense_sample=False,
             time_converter=maya_time_to_vmd,
             rotation_interpolation=rotation_interpolation,
-            dense_frame_samples=bake_timeline_dense_frames,
+            dense_frame_samples=None,
             preserve_raw_bone_transforms=preserve_raw_bone_transforms,
             raw_bone_transforms=raw_bone_transforms,
             bone_channel_sampler=self._bone_channel_sampler,
@@ -1273,12 +1251,10 @@ class VmdSceneCollector:
             end_frame,
             time_converter=maya_time_to_vmd,
             target_model=target_model,
-            dense_sample=bake_timeline_export,
-            dense_frame_samples=bake_timeline_dense_frames,
-            timeline_evaluation=bake_timeline_export,
-            morph_channel_sampler=(
-                self._bone_channel_sampler if bake_timeline_export else None
-            ),
+            dense_sample=False,
+            dense_frame_samples=None,
+            timeline_evaluation=False,
+            morph_channel_sampler=None,
         )
         self._diagnostics["morph_collection"] = {
             "wall_sec": round(time.perf_counter() - morph_started, 6),
@@ -1286,7 +1262,7 @@ class VmdSceneCollector:
         }
 
         camera_started = time.perf_counter()
-        camera_frames = [] if bake_timeline_export else self.collect_camera_frames(
+        camera_frames = self.collect_camera_frames(
             cameras,
             start_frame,
             end_frame,
@@ -1301,7 +1277,7 @@ class VmdSceneCollector:
         }
 
         light_started = time.perf_counter()
-        light_frames = [] if bake_timeline_export else self.collect_light_frames(
+        light_frames = self.collect_light_frames(
             lights,
             start_frame,
             end_frame,
@@ -2211,6 +2187,17 @@ class VmdSceneCollector:
                         )
                         if not is_default:
                             emit_stream_payload(constant_first, reduce=False)
+                    elif direct_multi_key and constant_varied:
+                        self._record_track_selection(
+                            "bone",
+                            bone_name,
+                            "authored_sampled",
+                            "multiple_source_keys",
+                            len(sparse_frames),
+                            len(dense_frames or ()) if dense_sample else len(sparse_frames),
+                        )
+                        if reducer is not None:
+                            reducer.finish()
                     elif reducer is not None:
                         reducer.finish()
         finally:

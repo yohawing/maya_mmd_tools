@@ -287,6 +287,31 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         return Sampler()
 
+    def _collect_to_sink(self, options, sampler=None, diagnostics_sink=None):
+        """Collect Mode C through the streaming contract used in production."""
+
+        class Sink:
+            def __init__(self):
+                self.frames = []
+
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, section, frame):
+                self.frames.append((section, frame))
+
+        collector = VmdSceneCollector(
+            diagnostics_sink=diagnostics_sink,
+            bone_channel_sampler=sampler,
+        )
+        sink = Sink()
+        result = collector.collect_to_sink(options, sink)
+        return collector, result, sink
+
+    def test_collect_rejects_bake_timeline_and_directs_callers_to_streaming(self):
+        with self.assertRaisesRegex(ValueError, "collect_to_sink.*prepared"):
+            VmdSceneCollector().collect({"export_strategy": "bake_timeline"})
+
     def test_bake_timeline_collect_to_sink_keeps_canonical_sections_and_never_finishes(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
@@ -362,11 +387,12 @@ class TestVmdSceneCollector(unittest.TestCase):
                 object(),
             )
 
-    def test_bake_timeline_collect_to_sink_matches_morph_dense_semantics(self):
+    def test_bake_timeline_stream_morph_exact_constant_semantics(self):
         self.cmds.node_types.update({"model_root": "transform", "face_bs": "blendShape"})
         self.cmds.blendshape_weights["face_bs"] = 1
         self.cmds.aliases["face_bs.weight[0]"] = "笑い"
         self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.2, 2.0: 0.2}
+        self.cmds.attrs[("face_bs", "weight[0]")] = 0.2
 
         class Sink:
             def __init__(self):
@@ -384,11 +410,17 @@ class TestVmdSceneCollector(unittest.TestCase):
             "export_strategy": "bake_timeline",
             "frame_range": (0, 2),
         }
-        legacy = VmdSceneCollector().collect(options)["morph_frames"]
         sink = Sink()
-        VmdSceneCollector().collect_to_sink(options, sink)
+        result = VmdSceneCollector().collect_to_sink(options, sink)
         streamed = [frame for section, frame in sink.frames if section == "morphs"]
-        self.assertEqual(streamed, legacy)
+        self.assertEqual(
+            [(frame["frame_number"], frame["weight"]) for frame in streamed],
+            [(0, 0.2)],
+        )
+        self.assertEqual(
+            result["diagnostics"]["track_selection"]["counts"]["constant_one_key"],
+            1,
+        )
 
     def test_bake_timeline_stream_uses_native_morphs_and_omits_camera_light(self):
         self.cmds.node_types.update(
@@ -439,7 +471,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             3,
         )
 
-    def test_bake_timeline_stream_morph_post_conversion_first_win_matches_legacy(self):
+    def test_bake_timeline_stream_morph_post_conversion_first_win(self):
         self.cmds.node_types.update(
             {"model_root": "transform", "face_bs": "blendShape", "driver": "network"}
         )
@@ -475,20 +507,19 @@ class TestVmdSceneCollector(unittest.TestCase):
             "export_strategy": "bake_timeline",
             "frame_range": (0, 2),
         }
-        legacy_collector = VmdSceneCollector()
-        legacy = legacy_collector.collect(options)
         sink = Sink()
         streamed_collector = VmdSceneCollector()
         streamed_collector.collect_to_sink(options, sink)
         streamed_frames = [frame for section, frame in sink.frames if section == "morphs"]
 
-        self.assertEqual(streamed_frames, legacy["morph_frames"])
-        self.assertEqual(
-            streamed_collector.diagnostics["track_selection"],
-            legacy_collector.diagnostics["track_selection"],
-        )
         self.assertEqual([frame["frame_number"] for frame in streamed_frames], [0, 1])
         self.assertEqual([frame["weight"] for frame in streamed_frames], [0.1, 0.3])
+        self.assertEqual(
+            streamed_collector.diagnostics["track_selection"]["counts"][
+                "authored_sampled"
+            ],
+            1,
+        )
 
     def test_bake_timeline_stream_morph_dedups_before_exact_constant_classification(self):
         self.cmds.node_types.update({"model_root": "transform", "face_bs": "blendShape"})
@@ -518,31 +549,15 @@ class TestVmdSceneCollector(unittest.TestCase):
             "export_strategy": "bake_timeline",
             "frame_range": (0, 2),
         }
-        legacy_collector = VmdSceneCollector()
-        legacy = legacy_collector.collect(options)
         sink = Sink()
         streamed_collector = VmdSceneCollector()
         streamed = streamed_collector.collect_to_sink(options, sink)
 
         self.assertEqual(
             [frame for section, frame in sink.frames if section == "morphs"],
-            legacy["morph_frames"],
+            [],
         )
-        self.assertEqual(legacy["morph_frames"], [])
-        streamed_selection = streamed["diagnostics"]["track_selection"]
-        legacy_selection = legacy_collector.diagnostics["track_selection"]
-        for key in (
-            "counts",
-            "counts_by_section",
-            "key_counts",
-            "evidence_omitted_count",
-            "source_omission_identity",
-        ):
-            self.assertEqual(streamed_selection[key], legacy_selection[key])
-        self.assertEqual(
-            sorted(streamed_selection["evidence"], key=lambda row: row["name"]),
-            sorted(legacy_selection["evidence"], key=lambda row: row["name"]),
-        )
+        self.assertEqual(streamed["diagnostics"]["section_counts"]["morphs"], 0)
 
     def test_bake_timeline_stream_native_samples_close_once_on_sink_failures(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
@@ -693,8 +708,6 @@ class TestVmdSceneCollector(unittest.TestCase):
             "export_strategy": "bake_timeline",
             "frame_range": (0, 2),
         }
-        legacy_collector = VmdSceneCollector()
-        legacy = legacy_collector.collect(options)
         spool = CountingSpool()
         sink = Sink()
         streamed_collector = VmdSceneCollector()
@@ -703,14 +716,6 @@ class TestVmdSceneCollector(unittest.TestCase):
         ):
             streamed = streamed_collector.collect_to_sink(options, sink)
 
-        legacy_frames = [
-            (
-                frame["morph_name"],
-                frame["frame_number"],
-                frame["weight"],
-            )
-            for frame in legacy["morph_frames"]
-        ]
         streamed_frames = [
             (
                 frame["morph_name"],
@@ -722,22 +727,17 @@ class TestVmdSceneCollector(unittest.TestCase):
         ]
         self.assertEqual(
             sorted(streamed_frames),
-            sorted(legacy_frames),
+            [
+                ("怒り", 0, 0.2),
+                ("怒り", 1, 0.4),
+                ("怒り", 2, 0.6),
+                ("笑い", 0, 0.0),
+                ("笑い", 1, 1.0),
+                ("笑い", 2, 0.0),
+            ],
         )
         streamed_selection = streamed["diagnostics"]["track_selection"]
-        legacy_selection = legacy_collector.diagnostics["track_selection"]
-        for key in (
-            "counts",
-            "counts_by_section",
-            "key_counts",
-            "evidence_omitted_count",
-            "source_omission_identity",
-        ):
-            self.assertEqual(streamed_selection[key], legacy_selection[key])
-        self.assertEqual(
-            sorted(streamed_selection["evidence"], key=lambda row: row["name"]),
-            sorted(legacy_selection["evidence"], key=lambda row: row["name"]),
-        )
+        self.assertEqual(streamed_selection["counts"]["authored_sampled"], 2)
         self.assertTrue(spool.closed)
         self.assertLessEqual(spool.read_attempts, 2 * (record_count + 1))
 
@@ -1045,14 +1045,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             "export_strategy": "bake_timeline",
             "frame_range": (0, 2),
         }
-        legacy = VmdSceneCollector(
-            bone_channel_sampler=self._timeline_sampler()
-        ).collect(options)["bone_frames"]
-        expected = sorted(
-            (frame["bone_name"], frame["frame_number"], frame["position"])
-            for frame in legacy
-        )
-
+        expected = None
         for reduction_enabled in (True, False):
             with self.subTest(reduction_enabled=reduction_enabled):
                 sink = Sink()
@@ -1070,6 +1063,8 @@ class TestVmdSceneCollector(unittest.TestCase):
                     for frame in sink.frames
                 )
 
+                if expected is None:
+                    expected = actual
                 self.assertEqual(actual, expected)
                 identities = [
                     (frame["bone_name"], frame["frame_number"])
@@ -1115,14 +1110,14 @@ class TestVmdSceneCollector(unittest.TestCase):
             1,
         )
 
-    def test_bake_timeline_requires_timeline_native_sampler(self):
+    def test_bake_timeline_stream_requires_timeline_native_sampler(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
         self.cmds.keys[("center_joint", "translateX")] = {0.0: 0.0, 2.0: 1.0}
 
         with self.assertRaisesRegex(RuntimeError, "native bone sampling"):
-            VmdSceneCollector().collect(
+            self._collect_to_sink(
                 {
                     "target_model": "model_root",
                     "export_strategy": "bake_timeline",
@@ -1175,19 +1170,28 @@ class TestVmdSceneCollector(unittest.TestCase):
         for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
             self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0, 2.0: 1.0}
 
-        result = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler()).collect(
+        _collector, _result, sink = self._collect_to_sink(
             {
                 "target_model": "model_root",
                 "export_strategy": "bake_timeline",
                 "frame_range": (0, 2),
-            }
+                "bake_timeline_exact_run_reduction": False,
+            },
+            self._timeline_sampler(),
         )
 
         self.assertEqual(
-            [frame["frame_number"] for frame in result["bone_frames"]],
+            [
+                frame["frame_number"]
+                for section, frame in sink.frames
+                if section == "bones"
+            ],
             [0, 1, 2],
         )
-        self.assertNotIn("interpolation", result["bone_frames"][0])
+        self.assertNotIn(
+            "interpolation",
+            next(frame for section, frame in sink.frames if section == "bones"),
+        )
 
     def test_bake_timeline_direct_single_key_bones_avoid_native_sampling(self):
         self.cmds.node_types.update(
@@ -1203,13 +1207,20 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.cmds.keys[("default_joint", "translateX")] = {0.0: 0.0}
         self.cmds.keys[("offset_joint", "translateX")] = {0.0: 1.0}
 
-        collector = VmdSceneCollector()
-        result = collector.collect(
-            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 2)}
+        collector, _result, sink = self._collect_to_sink(
+            {
+                "target_model": "model_root",
+                "export_strategy": "bake_timeline",
+                "frame_range": (0, 2),
+            }
         )
 
         self.assertEqual(
-            [(frame["bone_name"], frame["frame_number"]) for frame in result["bone_frames"]],
+            [
+                (frame["bone_name"], frame["frame_number"])
+                for section, frame in sink.frames
+                if section == "bones"
+            ],
             [("offset", 0)],
         )
         selection = collector.diagnostics["track_selection"]
@@ -1937,62 +1948,6 @@ class TestVmdSceneCollector(unittest.TestCase):
             )
         self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
 
-    def test_bake_timeline_bone_with_out_of_range_second_key_remains_dense(self):
-        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
-        self.cmds.children["model_root"] = ["center_joint"]
-        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
-        self.cmds.keys[("center_joint", "translateX")] = {0.0: 0.0, 20.0: 1.0}
-
-        collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
-        result = collector.collect(
-            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 10)}
-        )
-
-        self.assertEqual([frame["frame_number"] for frame in result["bone_frames"]], list(range(11)))
-        selection = collector.diagnostics["track_selection"]
-        self.assertEqual(selection["counts"]["authored_sampled"], 1)
-        self.assertEqual(selection["counts"]["constant_one_key"], 0)
-        self.assertEqual(selection["counts"]["omitted_default"], 0)
-
-    def test_bake_timeline_bone_with_non_anim_curve_source_remains_dense(self):
-        self.cmds.node_types.update(
-            {"model_root": "transform", "center_joint": "joint", "constraint": "parentConstraint"}
-        )
-        self.cmds.children["model_root"] = ["center_joint"]
-        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
-        self.cmds.keys[("center_joint", "translateX")] = {0.0: 0.0}
-        self.cmds.connections[("center_joint", "translateX", True, False)] = ["constraint.output"]
-
-        collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
-        result = collector.collect(
-            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 2)}
-        )
-
-        self.assertEqual([frame["frame_number"] for frame in result["bone_frames"]], [0, 1, 2])
-        selection = collector.diagnostics["track_selection"]
-        self.assertEqual(selection["counts"]["authored_sampled"], 1)
-        self.assertEqual(selection["counts"]["constant_one_key"], 0)
-        self.assertEqual(selection["counts"]["omitted_default"], 0)
-
-    def test_bake_timeline_direct_constant_multi_key_bone_collapses_after_dense_sampling(self):
-        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
-        self.cmds.children["model_root"] = ["center_joint"]
-        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
-        self.cmds.keys[("center_joint", "translateX")] = {0.0: 0.5, 2.0: 0.5}
-        self.cmds.attrs[("center_joint", "translateX")] = 0.5
-
-        collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
-        result = collector.collect(
-            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 2)}
-        )
-
-        self.assertEqual([frame["frame_number"] for frame in result["bone_frames"]], [0])
-        evidence = collector.diagnostics["track_selection"]["evidence"]
-        self.assertEqual(evidence[0]["decision"], "constant_one_key")
-        self.assertEqual(evidence[0]["reason"], "dense_exact_constant")
-        self.assertEqual(evidence[0]["source_key_count"], 2)
-        self.assertEqual(evidence[0]["planned_key_count"], 1)
-
     def test_bake_timeline_direct_nonconstant_multi_key_bone_stays_dense(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
@@ -2003,13 +1958,23 @@ class TestVmdSceneCollector(unittest.TestCase):
             2.0: 1.0000000001,
         }
 
-        collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
-        result = collector.collect(
-            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 2)}
+        collector, _result, sink = self._collect_to_sink(
+            {
+                "target_model": "model_root",
+                "export_strategy": "bake_timeline",
+                "frame_range": (0, 2),
+                "bake_timeline_exact_run_reduction": False,
+            },
+            self._timeline_sampler(),
         )
 
         self.assertEqual(
-            [frame["frame_number"] for frame in result["bone_frames"]], [0, 1, 2]
+            [
+                frame["frame_number"]
+                for section, frame in sink.frames
+                if section == "bones"
+            ],
+            [0, 1, 2],
         )
         self.assertEqual(
             collector.diagnostics["track_selection"]["counts"]["authored_sampled"], 1
@@ -2047,36 +2012,6 @@ class TestVmdSceneCollector(unittest.TestCase):
             collector.diagnostics["track_selection"]["counts"]["dependency_baked"], 1
         )
 
-    def test_bake_timeline_bone_constant_multi_key_duplicate_providers_stay_dense(self):
-        self.cmds.node_types.update(
-            {
-                "model_root": "transform",
-                "left_joint": "joint",
-                "right_joint": "joint",
-            }
-        )
-        self.cmds.children["model_root"] = ["left_joint", "right_joint"]
-        self.cmds.attrs[("left_joint", ATTR_MMD_BONE_NAME)] = "shared"
-        self.cmds.attrs[("right_joint", ATTR_MMD_BONE_NAME)] = "shared"
-        for joint in ("left_joint", "right_joint"):
-            self.cmds.keys[(joint, "translateX")] = {0.0: 0.5, 2.0: 0.5}
-            self.cmds.attrs[(joint, "translateX")] = 0.5
-
-        collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
-        result = collector.collect(
-            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 2)}
-        )
-
-        self.assertEqual(
-            [frame["frame_number"] for frame in result["bone_frames"]], [0, 1, 2]
-        )
-        self.assertEqual(
-            collector.diagnostics["track_selection"]["counts"]["constant_one_key"], 0
-        )
-        selection = collector.diagnostics["track_selection"]
-        self.assertEqual(selection["counts"]["authored_sampled"], 1)
-        self.assertEqual(len(selection["evidence"]), 1)
-
     def test_bake_timeline_direct_single_key_bone_excludes_only_that_native_track(self):
         self.cmds.node_types.update(
             {"model_root": "transform", "single_joint": "joint", "dense_joint": "joint"}
@@ -2095,13 +2030,22 @@ class TestVmdSceneCollector(unittest.TestCase):
             return sample(frames, joints, routes)
 
         sampler.sample_dense_bone_channels = capture
-        result = VmdSceneCollector(bone_channel_sampler=sampler).collect(
-            {"target_model": "model_root", "export_strategy": "bake_timeline", "frame_range": (0, 2)}
+        _collector, _result, sink = self._collect_to_sink(
+            {
+                "target_model": "model_root",
+                "export_strategy": "bake_timeline",
+                "frame_range": (0, 2),
+            },
+            sampler,
         )
 
         self.assertEqual(sampled_joints, ["dense_joint"])
         self.assertEqual(
-            [(frame["bone_name"], frame["frame_number"]) for frame in result["bone_frames"]],
+            [
+                (frame["bone_name"], frame["frame_number"])
+                for section, frame in sink.frames
+                if section == "bones"
+            ],
             [("dense", 0), ("dense", 1), ("dense", 2)],
         )
 
@@ -2539,14 +2483,19 @@ class TestVmdSceneCollector(unittest.TestCase):
             "constraint.output"
         ]
 
-        frames = VmdSceneCollector().collect(
+        _collector, _result, sink = self._collect_to_sink(
             {
                 "target_model": "model_root",
                 "blend_shapes": ["face_bs"],
                 "export_strategy": "bake_timeline",
                 "frame_range": (0, 2),
-            }
-        )["morph_frames"]
+                "bake_timeline_exact_run_reduction": False,
+            },
+            self._timeline_sampler(),
+        )
+        frames = [
+            frame for section, frame in sink.frames if section == "morphs"
+        ]
 
         self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
 
@@ -3057,26 +3006,28 @@ class TestVmdSceneCollector(unittest.TestCase):
             "export_strategy": "bake_timeline",
             "frame_range": (0, 2),
         }
-        plain = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler()).collect(options)
         captured = []
-        instrumented = VmdSceneCollector(
-            diagnostics_sink=captured.append,
-            bone_channel_sampler=self._timeline_sampler(),
+        _plain_collector, plain, plain_sink = self._collect_to_sink(
+            options,
+            self._timeline_sampler(),
         )
-        with_sink = instrumented.collect(options)
+        instrumented, with_sink, instrumented_sink = self._collect_to_sink(
+            options,
+            self._timeline_sampler(),
+            captured.append,
+        )
 
-        self.assertEqual(plain, with_sink)
+        self.assertEqual(plain["section_counts"], with_sink["section_counts"])
+        self.assertEqual(plain_sink.frames, instrumented_sink.frames)
         self.assertGreaterEqual(len(captured), 2)
         diagnostics = instrumented.diagnostics
         self.assertEqual(diagnostics["status"], "completed")
         self.assertEqual(diagnostics["route_provenance_dense_planning"]["dense_frame_count"], 3)
-        self.assertEqual(diagnostics["bone_collection"]["joint_count"], 1)
-        self.assertEqual(diagnostics["bone_collection"]["frame_count"], 3)
-        self.assertEqual(diagnostics["bone_collection"]["estimated_scalar_bone_reads"], 18)
-        self.assertEqual(diagnostics["morph_collection"]["frame_count"], 0)
-        self.assertEqual(diagnostics["camera_collection"]["frame_count"], 0)
-        self.assertEqual(diagnostics["light_collection"]["frame_count"], 0)
-        self.assertEqual(diagnostics["ik_collection"]["frame_count"], 0)
+        self.assertEqual(diagnostics["section_counts"]["bones"], 3)
+        self.assertEqual(diagnostics["section_counts"]["morphs"], 0)
+        self.assertEqual(diagnostics["section_counts"]["cameras"], 0)
+        self.assertEqual(diagnostics["section_counts"]["lights"], 0)
+        self.assertEqual(diagnostics["section_counts"]["ik"], 0)
         self.assertGreaterEqual(diagnostics["total"]["wall_sec"], 0.0)
 
     def test_uses_complete_raw_interpolation_provenance_from_model_root(self):
@@ -3126,82 +3077,6 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertIs(scoped["raw_bone_interpolation"], raw_records)
         self.assertNotIn("current_model_bone_names", raw_provenance)
 
-    def test_bake_timeline_preserves_sparse_keys_with_complete_raw_transform_provenance(self):
-        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
-        self.cmds.children["model_root"] = ["center_joint"]
-        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
-        raw_records = [
-            {
-                "bone_name": "センター",
-                "frame_number": frame,
-                "position": [0.0, 0.0, 0.0],
-                "rotation": [0.0, 0.0, 0.0, 1.0],
-                "interpolation": [7] * 64,
-            }
-            for frame in (0, 2)
-        ]
-        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
-            {
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_transform_complete": True,
-                "raw_bone_key_count": len(raw_records),
-                "raw_bone_interpolation": raw_records,
-            }
-        )
-        for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
-            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0, 2.0: 0.0}
-
-        result = VmdSceneCollector().collect(
-            {
-                "target_model": "model_root",
-                "export_strategy": "bake_timeline",
-                "frame_range": (0, 2),
-                "preserve_raw_bone_transforms": True,
-            }
-        )
-
-        self.assertEqual([frame["frame_number"] for frame in result["bone_frames"]], [0, 2])
-        self.assertEqual(result["bone_frames"][0]["interpolation"], bytes([7]) * 64)
-
-    def test_bake_timeline_dense_bakes_when_raw_provenance_is_not_opted_in(self):
-        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
-        self.cmds.children["model_root"] = ["center_joint"]
-        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
-        raw_records = [
-            {
-                "bone_name": "センター",
-                "frame_number": frame,
-                "position": [0.0, 0.0, 0.0],
-                "rotation": [0.0, 0.0, 0.0, 1.0],
-                "interpolation": [7] * 64,
-            }
-            for frame in (0, 2)
-        ]
-        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
-            {
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_transform_complete": True,
-                "raw_bone_key_count": len(raw_records),
-                "raw_bone_interpolation": raw_records,
-            }
-        )
-        for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
-            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0, 2.0: 0.0}
-
-        result = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler()).collect(
-            {
-                "target_model": "model_root",
-                "export_strategy": "bake_timeline",
-                "frame_range": (0, 2),
-                "preserve_raw_bone_transforms": False,
-            }
-        )
-
-        self.assertEqual(
-            [frame["frame_number"] for frame in result["bone_frames"]],
-            [],
-        )
-
     def test_explicit_raw_roundtrip_preserves_transform_values(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
@@ -3234,7 +3109,6 @@ class TestVmdSceneCollector(unittest.TestCase):
         result = VmdSceneCollector().collect(
             {
                 "target_model": "model_root",
-                "export_strategy": "bake_timeline",
                 "preserve_raw_bone_transforms": True,
             }
         )
@@ -3608,7 +3482,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         original_collect = collector_module.collect_ik_nodes_by_bone_name
         collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {"左足ＩＫ": "ik_solver"}
         try:
-            result = VmdSceneCollector().collect(
+            _collector, _result, sink = self._collect_to_sink(
                 {
                     "target_model": "model_root",
                     "start_frame": 10.0,
@@ -3620,7 +3494,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             collector_module.collect_ik_nodes_by_bone_name = original_collect
 
         self.assertEqual(
-            result["ik_show_hide_frames"],
+            [frame for section, frame in sink.frames if section == "ik"],
             [
                 {
                     "frame_number": 10,
@@ -3718,20 +3592,23 @@ class TestVmdSceneCollector(unittest.TestCase):
             [[("左足ＩＫ", False)]] * 3,
         )
 
-    def test_collects_ik_baseline_before_later_enabled_key(self):
+    def test_bake_timeline_stream_collects_ik_baseline_before_later_enabled_key(self):
         self.cmds.attrs[("ik_solver", "enabled")] = False
         self.cmds.keys[("ik_solver", "enabled")] = {20.0: 1.0}
         original_collect = collector_module.collect_ik_nodes_by_bone_name
         collector_module.collect_ik_nodes_by_bone_name = lambda **_kwargs: {"左足ＩＫ": "ik_solver"}
         try:
-            result = VmdSceneCollector().collect(
-                {"target_model": "model_root", "export_strategy": "bake_timeline"}
+            _collector, _result, sink = self._collect_to_sink(
+                {
+                    "target_model": "model_root",
+                    "export_strategy": "bake_timeline",
+                }
             )
         finally:
             collector_module.collect_ik_nodes_by_bone_name = original_collect
 
         self.assertEqual(
-            result["ik_show_hide_frames"],
+            [frame for section, frame in sink.frames if section == "ik"],
             [
                 {
                     "frame_number": 0,
@@ -3746,7 +3623,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             ],
         )
 
-    def test_bake_timeline_keeps_keyed_ik_sparse_when_other_tracks_are_dense(self):
+    def test_bake_timeline_stream_keeps_keyed_ik_sparse_when_other_tracks_are_dense(self):
         self.cmds.attrs[("ik_solver", "enabled")] = False
         self.cmds.keys[("ik_solver", "enabled")] = {0.0: 0.0}
         self.cmds.node_types["center_joint"] = "joint"
@@ -3765,7 +3642,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             "左足ＩＫ": "ik_solver",
         }
         try:
-            result = VmdSceneCollector().collect(
+            _collector, _result, sink = self._collect_to_sink(
                 {
                     "target_model": "model_root",
                     "export_strategy": "bake_timeline",
@@ -3776,7 +3653,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             collector_module.collect_ik_nodes_by_bone_name = original_collect
 
         self.assertEqual(
-            result["ik_show_hide_frames"],
+            [frame for section, frame in sink.frames if section == "ik"],
             [
                 {
                     "frame_number": 0,
