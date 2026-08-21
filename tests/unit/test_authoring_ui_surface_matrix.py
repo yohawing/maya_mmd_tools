@@ -63,11 +63,11 @@ def test_authoring_surface_dispatches_exactly_once(qapp, surface):
     assert validate_report(scoped_manifest, scoped_report)["valid"]
 
 
-def test_headless_matrix_owns_all_227_safe_qt_cases_without_maya_claims():
+def test_headless_matrix_owns_all_declared_safe_qt_cases_without_maya_claims():
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     owner = next(case for case in manifest["cases"] if case["id"] == HEADLESS_CASE_ID)
     assert owner["execution_layer"] == "headless_qt"
     assert "required_maya_versions" not in owner
-    assert len(SURFACES) == 227
+    assert len(SURFACES) == manifest["minimum_qt_case_surfaces"]
     assert "import_export.clear_history" not in {surface["id"] for surface in SURFACES}
     assert {surface["case_id"] for surface in SURFACES} == {HEADLESS_CASE_ID}

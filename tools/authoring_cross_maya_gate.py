@@ -123,6 +123,17 @@ class CrossMayaGateError(RuntimeError):
     """Raised when selection or evidence cannot prove the matrix contract."""
 
 
+def expected_surface_count(matrix: Mapping[str, Any]) -> int:
+    """Return the positive Qt-surface count declared by the matrix contract."""
+    trace = matrix.get("surface_trace")
+    count = trace.get("expected_surface_count") if isinstance(trace, Mapping) else None
+    if type(count) is not int or count <= 0:
+        raise CrossMayaGateError(
+            "surface trace expected_surface_count must be a positive integer"
+        )
+    return count
+
+
 def load_json(path: Path) -> Mapping[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -188,8 +199,7 @@ def load_matrix(root: Path, path: Optional[Path] = None) -> Mapping[str, Any]:
     cases_by_id = {case["id"]: case for case in cases}
 
     trace = matrix.get("surface_trace")
-    if not isinstance(trace, Mapping) or trace.get("expected_surface_count") != 229:
-        raise CrossMayaGateError("surface trace must require exactly 229 Qt cases")
+    surface_count = expected_surface_count(matrix)
     selector = trace.get("source_selector")
     if selector != {"disposition": "qt_case"}:
         raise CrossMayaGateError("surface trace selector must be the Qt-case inventory")
@@ -197,14 +207,16 @@ def load_matrix(root: Path, path: Optional[Path] = None) -> Mapping[str, Any]:
     owner = trace.get("version_independent_owner")
     owner_cases = [case for case in ui.get("cases", ()) if case.get("id") == owner]
     if (
-        len(surfaces) != 229
+        len(surfaces) != surface_count
         or len(owner_cases) != 1
         or owner_cases[0].get("execution_layer") != "headless_qt"
         or "required_maya_versions" in owner_cases[0]
         or any(surface.get("case_id") != owner for surface in surfaces)
         or any(not surface.get("expected_handler") for surface in surfaces)
     ):
-        raise CrossMayaGateError("229-surface headless owner trace is incomplete")
+        raise CrossMayaGateError(
+            "{}-surface headless owner trace is incomplete".format(surface_count)
+        )
     tab_ids = {tab.get("id") for tab in ui.get("tabs", ())}
     tab_representatives = trace.get("tab_representatives")
     headless_only = trace.get("headless_only_tabs")
@@ -383,7 +395,8 @@ def validate_gui_timing_report(
 def expected_headless_test_identities(
     root: Path, matrix: Mapping[str, Any]
 ) -> tuple[tuple[str, str], ...]:
-    """Derive the exact 229 parametrized tests plus their owner contract test."""
+    """Derive the exact surface tests plus their owner contract test."""
+    surface_count = expected_surface_count(matrix)
     sources = matrix.get("source_manifests")
     if not isinstance(sources, Mapping):
         raise CrossMayaGateError("matrix has no source manifests for headless identities")
@@ -395,18 +408,23 @@ def expected_headless_test_identities(
     ]
     surface_ids = [surface.get("id") for surface in surfaces]
     if (
-        len(surface_ids) != 229
+        len(surface_ids) != surface_count
         or any(not isinstance(surface_id, str) or not surface_id for surface_id in surface_ids)
-        or len(set(surface_ids)) != 229
+        or len(set(surface_ids)) != surface_count
     ):
-        raise CrossMayaGateError("headless identity source is not exactly 229 unique Qt cases")
+        raise CrossMayaGateError(
+            "headless identity source is not exactly {} unique Qt cases".format(surface_count)
+        )
     classname = "tests.unit.test_authoring_ui_surface_matrix"
     identities = [
         (classname, "test_authoring_surface_dispatches_exactly_once[{}]".format(surface_id))
         for surface_id in surface_ids
     ]
     identities.append(
-        (classname, "test_headless_matrix_owns_all_229_safe_qt_cases_without_maya_claims")
+        (
+            classname,
+            "test_headless_matrix_owns_all_declared_safe_qt_cases_without_maya_claims",
+        )
     )
     return tuple(identities)
 
@@ -414,7 +432,7 @@ def expected_headless_test_identities(
 def validate_headless_junit(
     path: Path, root: Path, matrix: Mapping[str, Any]
 ) -> Mapping[str, Any]:
-    """Require exact JUnit identities and PASS status for all 230 headless tests."""
+    """Require exact JUnit identities and PASS status for all headless tests."""
     try:
         document = ET.parse(str(path))
     except (OSError, ET.ParseError) as exc:
@@ -425,6 +443,7 @@ def validate_headless_junit(
         raise CrossMayaGateError("headless JUnit must contain exactly one test suite")
     suite = suites[0]
     expected = expected_headless_test_identities(root, matrix)
+    total_count = len(expected)
     expected_set = set(expected)
     expected_counts = {
         "tests": str(len(expected)),
@@ -433,13 +452,19 @@ def validate_headless_junit(
         "skipped": "0",
     }
     if any(suite.get(key) != value for key, value in expected_counts.items()):
-        raise CrossMayaGateError("headless JUnit counts are not exactly 230 PASS")
+        raise CrossMayaGateError(
+            "headless JUnit counts are not exactly {} PASS".format(total_count)
+        )
     testcases = [
         element for element in suite if element.tag.rsplit("}", 1)[-1] == "testcase"
     ]
     observed = [(case.get("classname"), case.get("name")) for case in testcases]
     if len(observed) != len(expected) or len(set(observed)) != len(expected) or set(observed) != expected_set:
-        raise CrossMayaGateError("headless JUnit test identities are not the exact 230-test contract")
+        raise CrossMayaGateError(
+            "headless JUnit test identities are not the exact {}-test contract".format(
+                total_count
+            )
+        )
     forbidden = {"failure", "error", "skipped"}
     if any(
         child.tag.rsplit("}", 1)[-1] in forbidden
