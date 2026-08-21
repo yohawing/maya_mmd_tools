@@ -6,6 +6,7 @@ from mmd_tools.core.mmd_control_rig_motion import (
     _connect_ik_control_visibility,
     _classify_route,
     _consistent_rotation_group_basis,
+    _dense_sample_times,
     ROUTE_SAMPLED,
     ROUTE_SAME_BASIS,
     _rotation_channel_groups,
@@ -54,6 +55,24 @@ def _ik_link_rows():
 
 class MmdControlRigMotionRoutingTest(unittest.TestCase):
     """Keep optional twist Append routes complete and fail closed when partial."""
+
+    def test_dense_sample_times_clips_requested_range_but_manual_mode_is_unchanged(self):
+        source_times = (-12.0, 0.0, 120.0, 132.0)
+
+        self.assertEqual(
+            _dense_sample_times(source_times, (0, 120)),
+            [float(frame) for frame in range(121)],
+        )
+        self.assertEqual(
+            _dense_sample_times(source_times),
+            [float(frame) for frame in range(-12, 133)],
+        )
+
+    def test_dense_sample_times_keeps_fractional_requested_endpoints(self):
+        self.assertEqual(
+            _dense_sample_times((-2.0, 7.0), (0.25, 2.75)),
+            [0.25, 1.0, 2.0, 2.75],
+        )
 
     def test_twist_append_complete_xyz_is_one_rotation_group(self):
         groups = _rotation_channel_groups(_twist_rows())

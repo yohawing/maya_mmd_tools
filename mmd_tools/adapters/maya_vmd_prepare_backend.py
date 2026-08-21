@@ -231,6 +231,7 @@ class MayaVmdPrepareBackend:
         :meth:`restore_after_collection`; all other rig states are untouched.
         """
 
+        options = self._validated_options(request)
         target_model, metadata = self._control_rig_metadata_for_request(request)
         cmds = self._cmds_api()
         from ..core.mmd_control_rig_motion import bake_mmd_control_rig
@@ -247,7 +248,16 @@ class MayaVmdPrepareBackend:
             original_owner=owner,
         )
         try:
-            baked = bake_mmd_control_rig(target_model, cmds_module=cmds)
+            frame_range = options.get("frame_range")
+            if frame_range is None and (
+                options.get("frame_start") is not None
+                and options.get("frame_end") is not None
+            ):
+                frame_range = (options["frame_start"], options["frame_end"])
+            bake_kwargs = {"cmds_module": cmds}
+            if frame_range is not None:
+                bake_kwargs["frame_range"] = frame_range
+            baked = bake_mmd_control_rig(target_model, **bake_kwargs)
         except Exception as exc:
             error = PrepareVmdExportError(
                 "automatic Control Rig bake failed before VMD preparation"
