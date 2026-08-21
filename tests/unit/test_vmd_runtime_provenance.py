@@ -10,12 +10,14 @@ from unittest.mock import patch
 from mmd_tools.converters.vmd_runtime_provenance import (
     _scene_provenance_json,
     build_raw_bone_interpolation_provenance,
+    build_raw_ik_provenance,
     build_raw_vmd_source_provenance,
     build_runtime_registration_provenance,
     materialize_raw_bone_source_provenance,
     store_runtime_registration_provenance,
 )
 from mmd_tools.core.vmd_data import VmdData
+from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
 
 
 class TestVmdRuntimeProvenance(unittest.TestCase):
@@ -181,6 +183,39 @@ class TestVmdRuntimeProvenance(unittest.TestCase):
         self.assertEqual(result["raw_bone_interpolation"][0]["interpolation"], [20] * 64)
         self.assertEqual(result["raw_bone_interpolation"][0]["position"], [1.0, 2.0, 3.0])
 
+    def test_serializes_exact_raw_ik_authority(self):
+        result = build_raw_ik_provenance(
+            [
+                {
+                    "frame_number": 12,
+                    "visible": 0,
+                    "ik_states": [("左足ＩＫ", 0), ("右足ＩＫ", 1)],
+                },
+                {
+                    "frame_number": 3,
+                    "visible": 1,
+                    "ik_states": [],
+                },
+            ]
+        )
+
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["key_count"], 2)
+        self.assertEqual(result["records"][0]["frame_number"], 12)
+        self.assertEqual(
+            result["records"][0]["ik_states"],
+            [["左足ＩＫ", 0], ["右足ＩＫ", 1]],
+        )
+
+    def test_malformed_raw_ik_authority_is_incomplete(self):
+        result = build_raw_ik_provenance(
+            [{"frame_number": 0, "visible": 1, "ik_states": [("左足ＩＫ", 2)]}]
+        )
+
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["key_count"], 0)
+        self.assertEqual(result["source_key_count"], 1)
+
     def test_legacy_profile_keeps_raw_source_authority_without_runtime_identity(self):
         result = build_raw_vmd_source_provenance(
             vmd_bytes=b"vmd",
@@ -268,6 +303,43 @@ class TestVmdRuntimeProvenance(unittest.TestCase):
         compact = json.loads(_scene_provenance_json(payload))
 
         self.assertIsNone(materialize_raw_bone_source_provenance(compact))
+
+    @patch("mmd_tools.converters.vmd_runtime_provenance._MAX_EMBEDDED_PROVENANCE_BYTES", 1)
+    def test_external_provenance_materializes_exact_ik_after_identity_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "source.vmd"
+            source = VmdData().parse_file("tests/data/mmt_test_model_test_motion.vmd")
+            ik_frame = VmdIKShowHideFrame()
+            ik_frame.frame_number = 9
+            ik_frame.visible = 0
+            ik_frame.ik_states = [("左足ＩＫ", 0), ("右足ＩＫ", 1)]
+            ik_frame.ik_count = len(ik_frame.ik_states)
+            source.ik_show_hide_frames = [ik_frame]
+            source.write_file(str(source_path))
+            source_bytes = source_path.read_bytes()
+            parsed = VmdData().parse_file(str(source_path))
+            payload = build_runtime_registration_provenance(
+                vmd_bytes=source_bytes,
+                pmx_bytes=b"pmx",
+                vmd_source_path=str(source_path),
+                pmx_source_path="model.pmx",
+                runtime_library_path=None,
+                runtime_abi_version=0,
+                runtime_feature_flags=0,
+                raw_bone_frames=parsed.bone_frames,
+                raw_ik_frames=parsed.ik_show_hide_frames,
+            )
+
+            compact = json.loads(_scene_provenance_json(payload))
+            restored = materialize_raw_bone_source_provenance(compact)
+
+        self.assertEqual(compact["raw_ik_storage"], "source_vmd_reference")
+        self.assertEqual(restored["raw_ik_key_count"], 1)
+        self.assertEqual(restored["raw_ik_frames"][0]["frame_number"], 9)
+        self.assertEqual(
+            restored["raw_ik_frames"][0]["ik_states"],
+            [["左足ＩＫ", 0], ["右足ＩＫ", 1]],
+        )
 
 
 if __name__ == "__main__":

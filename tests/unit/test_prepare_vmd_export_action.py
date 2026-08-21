@@ -62,6 +62,15 @@ class _Backend:
         self.close_calls += 1
 
 
+class _ClassifiedIkFailureBackend(_Backend):
+    def collect_to_sink(self, request, sink):
+        del request, sink
+        error = ValueError("source IK has no owned scene representation")
+        error.validation_issue_code = "VMD_IK_SCENE_REPRESENTATION_MISSING"
+        error.validation_issue_path = "ik_show_hide_frames"
+        raise error
+
+
 class _Revisions:
     def __init__(self, revisions):
         self.revisions = iter(revisions)
@@ -316,6 +325,23 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         self.assertFalse(result.succeeded)
         self.assertIsNone(result.token)
         self.assertEqual(backend.lifecycle_events, ["prepare", "restore"])
+
+    def test_classified_ik_collection_failure_returns_catalog_backed_report(self):
+        backend = _ClassifiedIkFailureBackend([_discovery()])
+        action = PrepareVmdExportAction(
+            _PreparationBoundary(backend, _Revisions(["revision-1"]))
+        )
+
+        result = action.execute(_request())
+
+        self.assertFalse(result.succeeded)
+        self.assertIsNotNone(result.report)
+        self.assertEqual(
+            [issue.code for issue in result.report.issues],
+            ["VMD_IK_SCENE_REPRESENTATION_MISSING"],
+        )
+        self.assertTrue(result.report.is_blocking)
+        self.assertEqual(result.report.mode, "bake_timeline")
 
     def test_temporary_control_rig_restore_failure_is_fail_closed(self):
         backend = _TemporaryBakeBackend(

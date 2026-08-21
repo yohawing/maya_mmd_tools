@@ -98,6 +98,13 @@ _LIGHT_COLOR_ATTRS = ("mmd_light_colorR", "mmd_light_colorG", "mmd_light_colorB"
 _LIGHT_SHAPE_COLOR_ATTRS = ("colorR", "colorG", "colorB")
 _ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
 _MMD_CAMERA_AIM_ROLL_RIG_TYPE = "mmd_aim_roll"
+
+
+class VmdIkSceneRepresentationMissingError(ValueError):
+    """Source IK exists but Bake Timeline has no scene-owned IK authority."""
+
+    validation_issue_code = "VMD_IK_SCENE_REPRESENTATION_MISSING"
+    validation_issue_path = "ik_show_hide_frames"
 _TRANSFORM_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 _CAMERA_SHAPE_EXPORT_ATTRS = ("focalLength", "orthographic", "orthographicWidth")
 _CURRENT_MODEL_BONE_SCOPE = "current_model_bone_names"
@@ -750,6 +757,72 @@ def _read_vmd_import_provenance(target_model: Optional[str]) -> Optional[dict[st
     return provenance
 
 
+def _read_raw_vmd_ik_authority(
+    target_model: Optional[str],
+) -> Optional[list[dict[str, Any]]]:
+    """Read exact source property/IK records, failing closed when declared."""
+
+    if not target_model:
+        return None
+    try:
+        if not cmds.attributeQuery(
+            ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
+            node=target_model,
+            exists=True,
+        ):
+            return None
+        raw = cmds.getAttr(f"{target_model}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}")
+        provenance = json.loads(raw or "")
+    except (TypeError, ValueError, RuntimeError):
+        return None
+    if not isinstance(provenance, dict) or "raw_ik_key_count" not in provenance:
+        return None
+    try:
+        expected_count = int(provenance["raw_ik_key_count"])
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Source VMD IK provenance has an invalid frame count") from exc
+    if expected_count < 0 or provenance.get("raw_ik_complete") is not True:
+        raise ValueError("Source VMD IK provenance is incomplete")
+    if not isinstance(provenance.get("raw_ik_frames"), list):
+        from .vmd_runtime_provenance import materialize_raw_bone_source_provenance
+
+        provenance = materialize_raw_bone_source_provenance(provenance)
+    if not isinstance(provenance, dict):
+        raise ValueError("Source VMD IK provenance identity verification failed")
+    records = provenance.get("raw_ik_frames")
+    if not isinstance(records, list) or len(records) != expected_count:
+        raise ValueError("Source VMD IK provenance frame count does not match")
+
+    decoded = []
+    for record in records:
+        try:
+            frame_number = int(record["frame_number"])
+            visible = int(record["visible"])
+            states = list(record["ik_states"])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Source VMD IK provenance contains an invalid frame") from exc
+        if frame_number < 0 or visible not in (0, 1):
+            raise ValueError("Source VMD IK provenance contains an invalid frame")
+        normalized_states = []
+        for state in states:
+            try:
+                name, enabled = state
+                enabled = int(enabled)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("Source VMD IK provenance contains an invalid state") from exc
+            if enabled not in (0, 1):
+                raise ValueError("Source VMD IK provenance contains an invalid state")
+            normalized_states.append((str(name), enabled))
+        decoded.append(
+            {
+                "frame_number": frame_number,
+                "visible": visible,
+                "ik_states": normalized_states,
+            }
+        )
+    return decoded
+
+
 def _close_native_samples(native_samples: Any) -> None:
     """Close native sample storage without requiring legacy test fakes to do so."""
 
@@ -802,17 +875,21 @@ def _read_bake_timeline_raw_loss_marker(target_model: Optional[str]) -> Optional
     # contain millions of raw records.  A complete interpolation payload is
     # enough to require the existing acknowledgement warning in Bake Timeline.
     text = str(raw or "")
-    if not re.search(
+    has_raw_bones = bool(re.search(
         r'"raw_bone_interpolation_complete"\s*:\s*true\b',
         text,
         flags=re.IGNORECASE,
-    ):
+    ))
+    ik_match = re.search(r'"raw_ik_key_count"\s*:\s*(\d+)\b', text)
+    raw_ik_key_count = int(ik_match.group(1)) if ik_match else 0
+    if not has_raw_bones and raw_ik_key_count <= 0:
         return None
     return {
         "warning_code": "VMD_BAKE_TIMELINE_RAW_LOSS",
         "raw_loss_warning_required": False,
         "required": False,
         "informational": True,
+        "raw_ik_key_count": raw_ik_key_count,
     }
 
 
@@ -1028,6 +1105,15 @@ class VmdSceneCollector:
             self._control_rig_dense_export(target_model)
             rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
             raw_marker = _read_bake_timeline_raw_loss_marker(target_model)
+            if (
+                raw_marker
+                and raw_marker.get("raw_ik_key_count", 0) > 0
+                and not collect_ik_nodes_by_bone_name(target_model=target_model)
+            ):
+                raise VmdIkSceneRepresentationMissingError(
+                    "Bake Timeline cannot export source VMD IK frames because "
+                    "the current model has no owned IK scene representation"
+                )
             authored_routes = self._scene_authored_input_routes(
                 joints,
                 target_model,
@@ -1292,18 +1378,36 @@ class VmdSceneCollector:
         }
 
         ik_started = time.perf_counter()
-        ik_frames = self.collect_ik_show_hide_frames(
-            target_model,
-            start_frame,
-            end_frame,
-            time_converter=maya_time_to_vmd,
-            # IK show/hide is a step track, not a numeric pose track.
-            # Keep keyed/baseline semantics even when Bake Timeline bakes the
-            # other tracks at every frame.
-            dense_sample=False,
-            dense_frame_samples=None,
-            timeline_evaluation=False,
-        )
+        raw_ik_frames = _read_raw_vmd_ik_authority(target_model)
+        if raw_ik_frames is not None:
+            start_vmd = (
+                _vmd_frame_number(start_frame, maya_time_to_vmd)
+                if start_frame is not None
+                else None
+            )
+            end_vmd = (
+                _vmd_frame_number(end_frame, maya_time_to_vmd)
+                if end_frame is not None
+                else None
+            )
+            ik_frames = [
+                frame
+                for frame in raw_ik_frames
+                if (start_vmd is None or frame["frame_number"] >= start_vmd)
+                and (end_vmd is None or frame["frame_number"] <= end_vmd)
+            ]
+        else:
+            ik_frames = self.collect_ik_show_hide_frames(
+                target_model,
+                start_frame,
+                end_frame,
+                time_converter=maya_time_to_vmd,
+                # IK show/hide is a step track, not a numeric pose track.
+                # Keep keyed/baseline semantics for legacy scene authority.
+                dense_sample=False,
+                dense_frame_samples=None,
+                timeline_evaluation=False,
+            )
         self._diagnostics["ik_collection"] = {
             "wall_sec": round(time.perf_counter() - ik_started, 6),
             "frame_count": len(ik_frames),

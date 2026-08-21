@@ -3146,6 +3146,87 @@ class TestVmdSceneCollector(unittest.TestCase):
 
         self.assertIsNone(result["raw_provenance"])
 
+    def test_preserve_keys_uses_exact_raw_ik_authority_without_scene_nodes(self):
+        self.cmds.node_types["model_root"] = "transform"
+        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
+            {
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_key_count": 0,
+                "raw_bone_interpolation": [],
+                "raw_ik_complete": True,
+                "raw_ik_key_count": 2,
+                "raw_ik_frames": [
+                    {
+                        "frame_number": 12,
+                        "visible": 0,
+                        "ik_states": [["左足ＩＫ", 0], ["右足ＩＫ", 1]],
+                    },
+                    {"frame_number": 3, "visible": 1, "ik_states": []},
+                ],
+            }
+        )
+
+        with mock.patch.object(
+            collector_module,
+            "collect_ik_nodes_by_bone_name",
+            return_value={},
+        ):
+            result = VmdSceneCollector().collect({"target_model": "model_root"})
+
+        self.assertEqual(
+            result["ik_show_hide_frames"],
+            [
+                {
+                    "frame_number": 12,
+                    "visible": 0,
+                    "ik_states": [("左足ＩＫ", 0), ("右足ＩＫ", 1)],
+                },
+                {"frame_number": 3, "visible": 1, "ik_states": []},
+            ],
+        )
+
+    def test_preserve_keys_rejects_declared_raw_ik_count_mismatch(self):
+        self.cmds.node_types["model_root"] = "transform"
+        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
+            {
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_key_count": 0,
+                "raw_bone_interpolation": [],
+                "raw_ik_complete": True,
+                "raw_ik_key_count": 2,
+                "raw_ik_frames": [
+                    {"frame_number": 3, "visible": 1, "ik_states": []}
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "IK provenance frame count"):
+            VmdSceneCollector().collect({"target_model": "model_root"})
+
+    def test_bake_timeline_blocks_source_ik_without_owned_scene_route(self):
+        self.cmds.node_types["model_root"] = "transform"
+        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
+            {
+                "raw_bone_interpolation_complete": True,
+                "raw_ik_complete": True,
+                "raw_ik_key_count": 1,
+            }
+        )
+
+        with mock.patch.object(
+            collector_module,
+            "collect_ik_nodes_by_bone_name",
+            return_value={},
+        ), self.assertRaisesRegex(ValueError, "no owned IK scene representation"):
+            self._collect_to_sink(
+                {
+                    "target_model": "model_root",
+                    "export_strategy": "bake_timeline",
+                    "frame_range": (0, 1),
+                },
+                self._timeline_sampler(),
+            )
+
     def test_auto_discovery_is_scoped_to_namespaced_model_root(self):
         root = "|hero:model_ROOT"
         mesh_group = "|hero:model_ROOT|hero:Geometry"

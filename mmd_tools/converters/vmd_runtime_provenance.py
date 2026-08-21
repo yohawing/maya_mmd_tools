@@ -131,6 +131,64 @@ def build_raw_bone_interpolation_provenance(
     }
 
 
+def build_raw_ik_provenance(frames: Optional[Iterable[Any]]) -> Dict[str, Any]:
+    """Serialize the source VMD property/IK section without scene reduction."""
+
+    if frames is None:
+        return {
+            "available": False,
+            "complete": False,
+            "key_count": 0,
+            "records": [],
+        }
+
+    records = []
+    complete = True
+    source_key_count = 0
+    for frame in frames:
+        source_key_count += 1
+        try:
+            frame_number = int(_frame_value(frame, "frame_number"))
+            visible = int(_frame_value(frame, "visible"))
+            states = list(_frame_value(frame, "ik_states", ()))
+        except (TypeError, ValueError, OverflowError):
+            complete = False
+            continue
+        if frame_number < 0 or visible not in (0, 1):
+            complete = False
+            continue
+        normalized_states = []
+        malformed = False
+        for state in states:
+            try:
+                name, enabled = state
+                enabled = int(enabled)
+            except (TypeError, ValueError, OverflowError):
+                malformed = True
+                break
+            if enabled not in (0, 1):
+                malformed = True
+                break
+            normalized_states.append([str(name), enabled])
+        if malformed:
+            complete = False
+            continue
+        records.append(
+            {
+                "frame_number": frame_number,
+                "visible": visible,
+                "ik_states": normalized_states,
+            }
+        )
+    return {
+        "available": True,
+        "complete": complete,
+        "key_count": len(records),
+        "source_key_count": source_key_count,
+        "records": records,
+    }
+
+
 def build_runtime_registration_provenance(
     *,
     vmd_bytes: bytes,
@@ -141,6 +199,7 @@ def build_runtime_registration_provenance(
     runtime_abi_version: int,
     runtime_feature_flags: int,
     raw_bone_frames: Optional[Iterable[Any]] = None,
+    raw_ik_frames: Optional[Iterable[Any]] = None,
 ) -> Dict[str, Any]:
     """Return the model-paired registered import provenance payload.
 
@@ -173,6 +232,16 @@ def build_runtime_registration_provenance(
                 "raw_bone_ignored_key_count": raw_provenance["ignored_key_count"],
             }
         )
+    if raw_ik_frames is not None:
+        raw_ik = build_raw_ik_provenance(raw_ik_frames)
+        payload.update(
+            {
+                "raw_ik_frames": raw_ik["records"],
+                "raw_ik_complete": raw_ik["complete"],
+                "raw_ik_key_count": raw_ik["key_count"],
+                "raw_ik_source_key_count": raw_ik["source_key_count"],
+            }
+        )
     return payload
 
 
@@ -183,6 +252,7 @@ def build_raw_vmd_source_provenance(
     vmd_source_path: Optional[str],
     pmx_source_path: Optional[str],
     raw_bone_frames: Optional[Iterable[Any]],
+    raw_ik_frames: Optional[Iterable[Any]] = None,
 ) -> Dict[str, Any]:
     """Build fail-closed raw provenance for non-runtime VMD import paths."""
     payload = build_runtime_registration_provenance(
@@ -194,6 +264,7 @@ def build_raw_vmd_source_provenance(
         runtime_abi_version=0,
         runtime_feature_flags=0,
         raw_bone_frames=raw_bone_frames,
+        raw_ik_frames=raw_ik_frames,
     )
     payload.update(
         {
@@ -226,7 +297,10 @@ def _scene_provenance_json(payload: Mapping[str, Any]) -> Optional[str]:
         return None
     compact = dict(payload)
     compact.pop("raw_bone_interpolation", None)
+    compact.pop("raw_ik_frames", None)
     compact["raw_bone_interpolation_storage"] = _SOURCE_VMD_STORAGE
+    if payload.get("raw_ik_complete") is True:
+        compact["raw_ik_storage"] = _SOURCE_VMD_STORAGE
     return json.dumps(
         compact,
         ensure_ascii=False,
@@ -240,9 +314,17 @@ def materialize_raw_bone_source_provenance(
 ) -> Optional[Dict[str, Any]]:
     """Reload externally stored raw bone authority after identity verification."""
 
-    if isinstance(payload.get("raw_bone_interpolation"), list):
+    has_embedded_bones = isinstance(payload.get("raw_bone_interpolation"), list)
+    has_embedded_ik = isinstance(payload.get("raw_ik_frames"), list)
+    needs_external_bones = not has_embedded_bones
+    needs_external_ik = (
+        payload.get("raw_ik_storage") == _SOURCE_VMD_STORAGE and not has_embedded_ik
+    )
+    if has_embedded_bones and not needs_external_ik:
         return dict(payload)
-    if payload.get("raw_bone_interpolation_storage") != _SOURCE_VMD_STORAGE:
+    if needs_external_bones and (
+        payload.get("raw_bone_interpolation_storage") != _SOURCE_VMD_STORAGE
+    ):
         return None
     source_path = Path(str(payload.get("raw_vmd_path") or ""))
     expected_sha256 = str(payload.get("raw_vmd_sha256") or "")
@@ -257,23 +339,41 @@ def materialize_raw_bone_source_provenance(
         source = VmdData().parse_file(str(source_path))
         raw = build_raw_bone_interpolation_provenance(source.bone_frames)
         expected_count = int(payload.get("raw_bone_key_count", -1))
+        raw_ik = build_raw_ik_provenance(source.ik_show_hide_frames)
+        expected_ik_count = int(payload.get("raw_ik_key_count", -1))
     except Exception:
         return None
     if (
-        not raw["complete"]
-        or not raw["transform_complete"]
-        or raw["key_count"] != expected_count
+        needs_external_bones
+        and (
+            not raw["complete"]
+            or not raw["transform_complete"]
+            or raw["key_count"] != expected_count
+        )
+    ):
+        return None
+    if needs_external_ik and (
+        not raw_ik["complete"] or raw_ik["key_count"] != expected_ik_count
     ):
         return None
     materialized = dict(payload)
-    materialized.update(
-        {
-            "raw_bone_interpolation": raw["records"],
-            "raw_bone_interpolation_complete": True,
-            "raw_bone_transform_complete": True,
-            "raw_bone_key_count": raw["key_count"],
-        }
-    )
+    if needs_external_bones:
+        materialized.update(
+            {
+                "raw_bone_interpolation": raw["records"],
+                "raw_bone_interpolation_complete": True,
+                "raw_bone_transform_complete": True,
+                "raw_bone_key_count": raw["key_count"],
+            }
+        )
+    if needs_external_ik:
+        materialized.update(
+            {
+                "raw_ik_frames": raw_ik["records"],
+                "raw_ik_complete": True,
+                "raw_ik_key_count": raw_ik["key_count"],
+            }
+        )
     return materialized
 
 

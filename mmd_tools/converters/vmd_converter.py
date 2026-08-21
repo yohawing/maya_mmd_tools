@@ -641,6 +641,10 @@ class VmdConverter:
                     pmx_path=sparse_pmx_path,
                     vmd_source_path=getattr(vmd_data, "source_file", None),
                     source_bone_frames=getattr(vmd_data, "bone_frames", None) or (),
+                    source_ik_frames=getattr(
+                        vmd_data, "ik_show_hide_frames", None
+                    )
+                    or (),
                     profile=profile,
                 )
         control_rig_transaction = None
@@ -807,6 +811,9 @@ class VmdConverter:
                 vmd_source_path=getattr(import_context.vmd_data, "source_file", None),
                 pmx_source_path=pmx_path,
                 raw_bone_frames=getattr(import_context.vmd_data, "bone_frames", None),
+                raw_ik_frames=getattr(
+                    import_context.vmd_data, "ik_show_hide_frames", None
+                ),
             )
             raw_source_provenance["target_model"] = str(import_context.target_model or "")
             _emit_progress(55)
@@ -2587,6 +2594,7 @@ class VmdConverter:
         vmd_source_path: Optional[str],
         profile: Optional[Dict[str, Any]],
         source_bone_frames=(),
+        source_ik_frames=(),
     ) -> Tuple[tuple, Dict[str, Any]]:
         """Build model-paired compiled sparse keys before scene mutation.
 
@@ -2665,6 +2673,7 @@ class VmdConverter:
                 ),
                 runtime_feature_flags=int(get_runtime_feature_flags()),
                 raw_bone_frames=source_bone_frames,
+                raw_ik_frames=source_ik_frames,
             )
             registration_profile.update(
                 {
@@ -2835,6 +2844,7 @@ class VmdConverter:
             runtime_abi_version=runtime_abi_version,
             runtime_feature_flags=int(get_runtime_feature_flags()) if HAS_MMD_RUNTIME else 0,
             raw_bone_frames=getattr(vmd_data, "bone_frames", None),
+            raw_ik_frames=getattr(vmd_data, "ik_show_hide_frames", None),
         )
         registration_profile["target_model"] = str(target_model or "")
         if isinstance(profile, dict):

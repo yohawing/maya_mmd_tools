@@ -263,6 +263,29 @@ class _PreparePreflightBlockedWorkflow(_Workflow):
         )
 
 
+class _PrepareIkBlockedWorkflow(_Workflow):
+    def prepare_vmd(self, request):
+        self.prepared.append(request)
+        report = ExportValidationReport(
+            "vmd",
+            (
+                ExportValidationIssue(
+                    "VMD_IK_SCENE_REPRESENTATION_MISSING",
+                    "fatal",
+                    True,
+                    "ik_show_hide_frames",
+                    "source IK has no owned scene representation",
+                ),
+            ),
+            mode="bake_timeline",
+        )
+        return PrepareVmdExportResult(
+            status="failed",
+            error=ValueError("source IK has no owned scene representation"),
+            failure_report=report,
+        )
+
+
 class _PrepareWarningWorkflow(_Workflow):
     def prepare_vmd(self, request):
         self.prepared.append(request)
@@ -512,6 +535,28 @@ class TestExportPresenter(unittest.TestCase):
             translator.set_language(previous_language)
         self.assertIn("タイトル: 出力先が正しく指定されていません", rendered)
         self.assertIn("対処方法: 出力先のファイルを選択", rendered)
+
+    def test_ik_representation_failure_blocks_validate_and_export(self):
+        for operation_name in ("validate", "export"):
+            with self.subTest(operation=operation_name):
+                view = _View("vmd")
+                workflow = _PrepareIkBlockedWorkflow()
+                presenter = ExportPresenter(
+                    view,
+                    _AppState(),
+                    workflow_service=workflow,
+                )
+
+                result = getattr(presenter, operation_name)()
+
+                self.assertEqual(result.state, STATE_BLOCKED)
+                self.assertEqual(
+                    [issue.code for issue in result.report.issues],
+                    ["VMD_IK_SCENE_REPRESENTATION_MISSING"],
+                )
+                self.assertNotIn("EXPORT_WORKFLOW_EXCEPTION", str(result.report))
+                self.assertEqual(workflow.validated, [])
+                self.assertEqual(workflow.executed, [])
 
     def test_failed_reprepare_discards_the_previous_token(self):
         view = _View("vmd")
