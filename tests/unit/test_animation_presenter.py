@@ -2312,6 +2312,283 @@ class TestToolsSection(unittest.TestCase):
             {"|controls|center_CTRL": (0.0, 0.0, 0.0)},
         )
 
+    def test_mmd_owned_reset_resolves_bone_and_ik_role_authoring_routes(self):
+        presenter, _, _, _ = self._make()
+
+        class FakeCmds:
+            @staticmethod
+            def ls(node=None, long=False, **_kwargs):
+                return [node] if node and long else []
+
+            @staticmethod
+            def objExists(plug):
+                return plug == "solver.inputRotate[2]" or plug.startswith(
+                    "solver.inputRotate[2].inputRotateElement"
+                )
+
+        direct = SimpleNamespace(
+            joint="|model|center",
+            blocked=False,
+            input_kind="direct_channel",
+            authored_plugs=("|model|center.translate", "|model|center.rotate"),
+        )
+        solver_output = SimpleNamespace(
+            joint="|model|knee",
+            blocked=True,
+            input_kind="solver_output",
+            authored_plugs=(),
+            incoming=(
+                SimpleNamespace(
+                    source_node_type="mmdCcdIk",
+                    source_plug="solver.outputRotate[2]",
+                    destination_plug="|model|knee.rotate",
+                ),
+            ),
+        )
+        ik_children = tuple(
+            f"solver.inputRotate[2].inputRotateElement{axis}" for axis in "XYZ"
+        )
+        ik_input = SimpleNamespace(
+            joint="|model|knee",
+            blocked=False,
+            input_kind="ik_link_input",
+            authored_plugs=ik_children,
+        )
+        spec = SimpleNamespace(
+            bones=(direct, solver_output),
+            roles=(SimpleNamespace(binding=ik_input),),
+        )
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value={"owner": "MMD_OWNED"},
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig",
+            return_value=spec,
+        ):
+            routes = presenter._rest_pose_authored_plugs(
+                "|model",
+                ["|model|center", "|model|knee"],
+                FakeCmds(),
+            )
+
+        self.assertEqual(
+            routes,
+            {
+                "|model|center": (
+                    "|model|center.translate",
+                    "|model|center.rotate",
+                ),
+                "|model|knee": ik_children,
+            },
+        )
+
+    def test_solver_output_joint_routes_to_chain_bone_slot_input(self):
+        presenter, _, _, _ = self._make()
+
+        class FakeCmds:
+            @staticmethod
+            def ls(node=None, long=False, **_kwargs):
+                return [node] if node and long else []
+
+            @staticmethod
+            def objExists(plug):
+                return plug == "solver.inputRotate[8]" or plug.startswith(
+                    "solver.inputRotate[8].inputRotateElement"
+                )
+
+            @staticmethod
+            def getAttr(plug):
+                if plug == "solver.chainJson":
+                    return '{"links":[{"bone_slot":8}]}'
+                raise KeyError(plug)
+
+        direct = SimpleNamespace(
+            joint="|model|center",
+            blocked=False,
+            input_kind="direct_channel",
+            authored_plugs=("|model|center.translate", "|model|center.rotate"),
+        )
+        derived_ankle = SimpleNamespace(
+            joint="|model|right_ankle",
+            blocked=True,
+            input_kind="solver_output",
+            authored_plugs=(),
+            incoming=(
+                SimpleNamespace(
+                    source_node_type="mmdCcdIk",
+                    source_plug="solver.outputRotate[0]",
+                    destination_plug="|model|right_ankle.rotate",
+                ),
+            ),
+        )
+        spec = SimpleNamespace(bones=(direct, derived_ankle), roles=())
+        targets = ["|model|center", "|model|right_ankle"]
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value={"owner": "MMD_OWNED"},
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig",
+            return_value=spec,
+        ):
+            routes = presenter._rest_pose_authored_plugs(
+                "|model",
+                targets,
+                FakeCmds(),
+            )
+
+        self.assertEqual(
+            routes,
+            {
+                "|model|center": (
+                    "|model|center.translate",
+                    "|model|center.rotate",
+                ),
+                "|model|right_ankle": tuple(
+                    f"solver.inputRotate[8].inputRotateElement{axis}"
+                    for axis in "XYZ"
+                ),
+            },
+        )
+
+    def test_solver_output_prefers_bone_morph_role_over_inferred_input(self):
+        presenter, _, _, _ = self._make()
+
+        class FakeCmds:
+            @staticmethod
+            def ls(node=None, long=False, **_kwargs):
+                return [node] if node and long else []
+
+            @staticmethod
+            def objExists(plug):
+                return plug == "solver.inputRotate[3]" or plug.startswith(
+                    "solver.inputRotate[3].inputRotateElement"
+                )
+
+        knee = SimpleNamespace(
+            joint="|model|right_knee",
+            blocked=True,
+            input_kind="solver_output",
+            authored_plugs=(),
+            incoming=(
+                SimpleNamespace(
+                    source_node_type="mmdCcdIk",
+                    source_plug="solver.outputRotate[3]",
+                    destination_plug="|model|right_knee.rotate",
+                ),
+            ),
+        )
+        role = SimpleNamespace(
+            joint="|model|right_knee",
+            blocked=False,
+            input_kind="ik_link_input",
+            authored_plugs=("rightKneeBoneMorphAccum.baseRotate",),
+        )
+        spec = SimpleNamespace(
+            bones=(knee,),
+            roles=(SimpleNamespace(binding=role),),
+        )
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value={"owner": "MMD_OWNED"},
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig",
+            return_value=spec,
+        ):
+            routes = presenter._rest_pose_authored_plugs(
+                "|model",
+                ["|model|right_knee"],
+                FakeCmds(),
+            )
+
+        self.assertEqual(
+            routes,
+            {"|model|right_knee": ("rightKneeBoneMorphAccum.baseRotate",)},
+        )
+
+    def test_solver_output_route_ambiguity_and_missing_input_fail_closed(self):
+        presenter, _, _, _ = self._make()
+
+        class FakeCmds:
+            input_exists = True
+            chain_json = '{"links":[{"bone_slot":8}]}'
+
+            @staticmethod
+            def ls(node=None, long=False, **_kwargs):
+                return [node] if node and long else []
+
+            def objExists(self, plug):
+                return self.input_exists and (
+                    plug == "solver.inputRotate[8]"
+                    or plug.startswith("solver.inputRotate[8].inputRotateElement")
+                )
+
+            def getAttr(self, plug):
+                if plug == "solver.chainJson":
+                    return self.chain_json
+                raise KeyError(plug)
+
+        row = SimpleNamespace(
+            source_node_type="mmdCcdIk",
+            source_plug="solver.outputRotate[0]",
+            destination_plug="|model|right_ankle.rotate",
+        )
+        binding = SimpleNamespace(
+            joint="|model|right_ankle",
+            blocked=True,
+            input_kind="solver_output",
+            authored_plugs=(),
+            incoming=(row, row),
+        )
+        spec = SimpleNamespace(bones=(binding,), roles=())
+        cmds = FakeCmds()
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value={"owner": "MMD_OWNED"},
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig",
+            return_value=spec,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "route is ambiguous"):
+                presenter._rest_pose_authored_plugs(
+                    "|model",
+                    ["|model|right_ankle"],
+                    cmds,
+                )
+
+            binding.incoming = (row,)
+            cmds.input_exists = False
+            with self.assertRaisesRegex(RuntimeError, "input is unavailable"):
+                presenter._rest_pose_authored_plugs(
+                    "|model",
+                    ["|model|right_ankle"],
+                    cmds,
+                )
+
+            cmds.input_exists = True
+            cmds.chain_json = "{}"
+            with self.assertRaisesRegex(RuntimeError, "chain metadata is unavailable"):
+                presenter._rest_pose_authored_plugs(
+                    "|model",
+                    ["|model|right_ankle"],
+                    cmds,
+                )
+
+            cmds.chain_json = '{"links":[{"bone_slot":"8"}]}'
+            with self.assertRaisesRegex(RuntimeError, "chain metadata is unavailable"):
+                presenter._rest_pose_authored_plugs(
+                    "|model",
+                    ["|model|right_ankle"],
+                    cmds,
+                )
+
+            cmds.chain_json = '{"links":[{"bone_slot":8},{"bone_slot":8}]}'
+            with self.assertRaisesRegex(RuntimeError, "chain metadata is unavailable"):
+                presenter._rest_pose_authored_plugs(
+                    "|model",
+                    ["|model|right_ankle"],
+                    cmds,
+                )
+
     def test_reset_pose_has_no_shared_mode_state(self):
         presenter, view, _, adapter = self._make()
         self.assertFalse(hasattr(presenter, "rest_pose_manager"))

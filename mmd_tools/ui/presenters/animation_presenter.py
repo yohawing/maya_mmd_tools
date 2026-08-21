@@ -2376,12 +2376,27 @@ class AnimationPresenter:
             roots = cmds.ls(root, uuid=True) if root else []
             if not root or len(roots) != 1:
                 raise RuntimeError("MMD model UUID is unavailable")
+            authored_plugs_by_target = self._rest_pose_authored_plugs(
+                root,
+                targets,
+                cmds,
+            )
+            if authored_plugs_by_target is not None:
+                routed_targets = []
+                for target in targets:
+                    paths = cmds.ls(target, long=True) or []
+                    if len(paths) == 1 and str(paths[0]) in authored_plugs_by_target:
+                        routed_targets.append(str(paths[0]))
+                if not routed_targets:
+                    raise RuntimeError("Reset Pose has no authored semantic targets")
+                targets = routed_targets
             transaction = ResetPoseTransaction(
                 self.maya_adapter,
                 model_root=root,
                 model_uuid=str(roots[0]),
                 targets=targets,
                 bind_translations=bind_translations,
+                authored_plugs_by_target=authored_plugs_by_target,
                 scope_roots=self._rest_pose_scope_roots(root, cmds),
             )
             count = transaction.apply()
@@ -2450,6 +2465,147 @@ class AnimationPresenter:
         except Exception:
             logger.debug("Rest Pose target resolution failed", exc_info=True)
             return [], {}
+
+    @staticmethod
+    def _rest_pose_authored_plugs(
+        root: str,
+        targets: list[str],
+        cmds,
+    ) -> dict[str, tuple[str, ...]] | None:
+        """Resolve MMD-owned semantic joints to their safe authoring inputs."""
+
+        from ...core.mmd_control_rig_analyzer import (
+            INPUT_SOLVER_OUTPUT,
+            analyze_mmd_control_rig,
+        )
+        from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+        metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds) or {}
+        owner = str(metadata.get("owner") or "MMD_OWNED")
+        if owner == "CONTROL_OWNED":
+            return None
+        if owner != "MMD_OWNED":
+            raise RuntimeError(f"unsupported Reset Pose owner: {owner}")
+        spec = analyze_mmd_control_rig(root, cmds_module=cmds)
+        bindings = {str(binding.joint): binding for binding in spec.bones}
+        role_bindings = {}
+        for role in spec.roles:
+            binding = role.binding
+            if binding is None or binding.blocked or not binding.authored_plugs:
+                continue
+            role_bindings.setdefault(str(binding.joint), []).append(binding)
+        result = {}
+        for target in targets:
+            paths = cmds.ls(target, long=True) or []
+            if len(paths) != 1:
+                raise RuntimeError(f"ambiguous Reset Pose target: {target}")
+            resolved = str(paths[0])
+            binding = bindings.get(resolved)
+            candidates = []
+            if binding is not None and not binding.blocked and binding.authored_plugs:
+                candidates.append(tuple(str(plug) for plug in binding.authored_plugs))
+            candidates.extend(
+                tuple(str(plug) for plug in role_binding.authored_plugs)
+                for role_binding in role_bindings.get(resolved, ())
+            )
+            if (
+                not candidates
+                and binding is not None
+                and binding.input_kind == INPUT_SOLVER_OUTPUT
+            ):
+                candidates.append(
+                    AnimationPresenter._rest_pose_solver_input_route(
+                        binding,
+                        resolved,
+                        cmds,
+                    )
+                )
+            routes = tuple(dict.fromkeys(candidates))
+            if len(routes) != 1:
+                raise RuntimeError(
+                    f"Reset Pose authoring route is unavailable: {resolved}"
+                )
+            result[resolved] = routes[0]
+        return result
+
+    @staticmethod
+    def _rest_pose_solver_input_route(
+        binding,
+        target: str,
+        cmds,
+    ) -> tuple[str, ...]:
+        """Map one CCD output index through chain metadata to its bone-slot input."""
+
+        rows = [
+            row
+            for row in binding.incoming
+            if str(row.source_node_type) == "mmdCcdIk"
+        ]
+        if len(rows) != 1:
+            raise RuntimeError(
+                f"Reset Pose solver output route is ambiguous: {target}"
+            )
+        row = rows[0]
+        if str(row.destination_plug) != f"{target}.rotate":
+            raise RuntimeError(
+                f"Reset Pose solver output destination is unsupported: {target}"
+            )
+        source = str(row.source_plug)
+        node, separator, attribute = source.rpartition(".")
+        prefix = "outputRotate["
+        if (
+            not separator
+            or not node
+            or not attribute.startswith(prefix)
+            or not attribute.endswith("]")
+        ):
+            raise RuntimeError(
+                f"Reset Pose solver output index is unavailable: {target}"
+            )
+        index = attribute[len(prefix) : -1]
+        if not index.isdigit():
+            raise RuntimeError(
+                f"Reset Pose solver output index is unavailable: {target}"
+            )
+        try:
+            chain = json.loads(cmds.getAttr(f"{node}.chainJson"))
+            links = chain["links"]
+            if not isinstance(links, list):
+                raise TypeError("links must be a list")
+            slots = []
+            for link in links:
+                if not isinstance(link, dict):
+                    raise TypeError("link must be an object")
+                slot = link["bone_slot"]
+                if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0:
+                    raise ValueError("bone_slot must be a non-negative integer")
+                slots.append(slot)
+            if len(set(slots)) != len(slots):
+                raise ValueError("bone_slot values must be unique")
+            slot = slots[int(index)]
+        except (
+            KeyError,
+            IndexError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise RuntimeError(
+                f"Reset Pose solver chain metadata is unavailable: {target}"
+            ) from exc
+        compound = f"{node}.inputRotate[{slot}]"
+        children = tuple(
+            f"{compound}.inputRotateElement{axis}" for axis in "XYZ"
+        )
+        exists = getattr(cmds, "objExists", None)
+        if not callable(exists) or not exists(compound) or not all(
+            exists(child) for child in children
+        ):
+            raise RuntimeError(
+                f"Reset Pose solver input is unavailable: {target}"
+            )
+        return children
 
     def _selected_or_all_reset_targets(self, targets: list[str], cmds) -> list[str]:
         """Use a valid model-owned selection, otherwise the complete model."""
