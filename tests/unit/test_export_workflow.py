@@ -12,6 +12,7 @@ from mmd_tools.services.export_workflow_service import (  # noqa: E402
     ExportWorkflowRequest,
     ExportWorkflowService,
     STATE_BLOCKED,
+    STATE_FAILED,
     STATE_READY,
     STATE_SUCCEEDED,
 )
@@ -307,6 +308,134 @@ class _FakeModelAction:
 
 class TestExportWorkflowService(unittest.TestCase):
     """UI and headless callers share one validation/action boundary."""
+
+    def test_writer_exception_adds_one_cataloged_blocking_output_issue(self):
+        payload = _valid_model_data()
+        action = _FakeModelAction(payload)
+        writer_error = PermissionError("destination is locked")
+
+        def fail_write(_request):
+            raise writer_error
+
+        action.execute = fail_write
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            model_action=action,
+            vmd_action=object(),
+        )
+
+        result = service.execute(
+            ExportWorkflowRequest(
+                "locked.pmx",
+                {"export_format": "pmx", "target_model": "model_ROOT"},
+            )
+        )
+
+        self.assertEqual(result.state, STATE_FAILED)
+        self.assertIs(result.error, writer_error)
+        self.assertEqual(
+            [issue.code for issue in result.report.issues],
+            ["OUTPUT_WRITE_FAILED"],
+        )
+        self.assertTrue(result.report.is_blocking)
+        self.assertEqual(
+            result.report.to_canonical_dict()["issues"][0]["category"],
+            "output",
+        )
+        self.assertIn("writable output path", result.report.issues[0].message)
+
+    def test_action_failure_does_not_duplicate_existing_blocking_output_issue(self):
+        payload = _valid_model_data()
+        action = _FakeModelAction(payload)
+        writer_error = FileNotFoundError("path is too long")
+        failure_report = ExportValidationReport(
+            "pmx",
+            (
+                ExportValidationIssue(
+                    "OUTPUT_FILE_MISSING",
+                    "fatal",
+                    True,
+                    "output",
+                    "temporary output file does not exist",
+                ),
+            ),
+        )
+
+        def fail_result(_request):
+            return type(
+                "Result",
+                (),
+                {
+                    "succeeded": False,
+                    "error": writer_error,
+                    "validation_report": failure_report,
+                },
+            )()
+
+        action.execute = fail_result
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            model_action=action,
+            vmd_action=object(),
+        )
+
+        result = service.execute(
+            ExportWorkflowRequest(
+                "long-path.pmx",
+                {"export_format": "pmx", "target_model": "model_ROOT"},
+            )
+        )
+
+        self.assertEqual(result.state, STATE_FAILED)
+        self.assertEqual(
+            [issue.code for issue in result.report.issues],
+            ["OUTPUT_FILE_MISSING"],
+        )
+
+    def test_action_failure_with_ready_report_adds_output_issue(self):
+        payload = _valid_model_data()
+        action = _FakeModelAction(payload)
+        writer_error = FileNotFoundError("path is too long")
+
+        def fail_result(_request):
+            return type(
+                "Result",
+                (),
+                {
+                    "succeeded": False,
+                    "error": writer_error,
+                    "validation_report": ExportValidationReport("pmx", ()),
+                },
+            )()
+
+        action.execute = fail_result
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            model_action=action,
+            vmd_action=object(),
+        )
+
+        result = service.execute(
+            ExportWorkflowRequest(
+                "long-path.pmx",
+                {"export_format": "pmx", "target_model": "model_ROOT"},
+            )
+        )
+
+        self.assertEqual(result.state, STATE_FAILED)
+        self.assertEqual(
+            [issue.code for issue in result.report.issues],
+            ["OUTPUT_WRITE_FAILED"],
+        )
 
     def test_control_rig_owner_preflight_allows_action_owned_temporary_bake(self):
         backend = _VmdPrepareBackend()

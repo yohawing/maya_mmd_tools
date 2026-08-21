@@ -111,6 +111,41 @@ def _collect_failure_report(
     )
 
 
+def _report_output_failure(
+    report: ExportValidationReport,
+    error: Exception,
+    *,
+    export_format: Optional[str],
+    export_strategy: str,
+) -> ExportValidationReport:
+    """Expose an otherwise unreported output failure in the Validation Console."""
+    if report.is_blocking or any(issue.code == "OUTPUT_WRITE_FAILED" for issue in report.issues):
+        return report
+    failure_report = ExportValidationReport(
+        export_format,
+        (
+            ExportValidationIssue(
+                "OUTPUT_WRITE_FAILED",
+                "fatal",
+                True,
+                "file_path",
+                (
+                    "export output could not be written: "
+                    f"{type(error).__name__}: {error}. "
+                    "Choose a writable output path and verify its permissions and length."
+                ),
+            ),
+        ),
+        mode=export_strategy,
+    )
+    return _combine_reports(
+        report,
+        failure_report,
+        export_format=export_format,
+        export_strategy=export_strategy,
+    )
+
+
 def _scene_report_for_prepared_control_rig(
     report: ExportValidationReport,
     options: Mapping[str, Any],
@@ -516,9 +551,15 @@ class ExportWorkflowService:
                     )
                 )
         except Exception as exc:
+            report = _report_output_failure(
+                validation.report,
+                exc,
+                export_format=export_format,
+                export_strategy=validation.metadata.get("export_strategy") or "model",
+            )
             return ExportWorkflowResult(
                 STATE_FAILED,
-                validation.report,
+                report,
                 validation.metadata,
                 payload=validation.payload,
                 snapshot=validation.snapshot,
@@ -537,6 +578,14 @@ class ExportWorkflowService:
                 export_strategy=validation.metadata.get("export_strategy") or "model",
             )
         succeeded = bool(getattr(action_result, "succeeded", False)) and getattr(action_result, "error", None) is None
+        action_error = getattr(action_result, "error", None)
+        if not succeeded and action_error is not None:
+            report = _report_output_failure(
+                report,
+                action_error,
+                export_format=export_format,
+                export_strategy=validation.metadata.get("export_strategy") or "model",
+            )
         return ExportWorkflowResult(
             STATE_SUCCEEDED if succeeded else STATE_FAILED,
             report,
@@ -544,7 +593,7 @@ class ExportWorkflowService:
             payload=validation.payload,
             snapshot=validation.snapshot,
             action_result=action_result,
-            error=getattr(action_result, "error", None),
+            error=action_error,
         )
 
 
