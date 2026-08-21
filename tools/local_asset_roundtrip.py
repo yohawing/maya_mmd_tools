@@ -26,7 +26,7 @@ import threading
 import time
 import traceback
 from ctypes import wintypes
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_ROOT = (ROOT / "build").resolve()
@@ -635,11 +635,56 @@ def _required_source_vmd_payload(
     return payload
 
 
+def _bake_timeline_identity(section: Any, name: Any) -> tuple[str, str]:
+    """Return the canonical identity used by collector omission diagnostics."""
+
+    return (
+        str(section or "").strip().lower(),
+        " ".join(str(name or "").strip().casefold().split()),
+    )
+
+
+def _bake_timeline_payload_identities(
+    payload: Mapping[str, Any],
+) -> set[tuple[str, str]]:
+    return {
+        _bake_timeline_identity(section, item.get("name"))
+        for section in ("bone", "morph")
+        for item in payload.get(section, ())
+        if isinstance(item, Mapping)
+    }
+
+
+def _committed_source_omissions(
+    commitment: Mapping[str, Any],
+    missing: set[tuple[str, str]],
+) -> tuple[set[tuple[str, str]], Optional[str]]:
+    """Accept omissions only when their exact count and fingerprint were prepared."""
+
+    count = commitment.get("count")
+    fingerprint = commitment.get("fingerprint")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return set(), "source omission commitment count is invalid"
+    if not isinstance(fingerprint, str):
+        return set(), "source omission commitment fingerprint is invalid"
+    identities = [list(identity) for identity in sorted(missing)]
+    from mmd_tools.validation.snapshot import fingerprint_payload
+
+    expected_fingerprint = fingerprint_payload(identities)
+    if count != len(identities) or fingerprint != expected_fingerprint:
+        return set(), (
+            "source omission commitment does not exactly match missing identities: "
+            f"expected_count={len(identities)} expected_fingerprint={expected_fingerprint}"
+        )
+    return set(missing), None
+
+
 def _bake_timeline_track_boundary_diff(
     source_payload: Mapping[str, Any],
     prepared_payload: Mapping[str, Any],
     exported_payload: Mapping[str, Any],
     required_track_names: Mapping[str, Iterable[str]],
+    source_omission_commitment: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, list[str]]:
     """Classify Bake Timeline required-track loss at prepare and writer boundaries.
 
@@ -652,11 +697,32 @@ def _bake_timeline_track_boundary_diff(
     """
 
     required_source = _required_source_vmd_payload(source_payload, required_track_names)
+    source_to_prepared_payload = required_source
+    commitment_error = None
+    if source_omission_commitment is not None:
+        missing = (
+            _bake_timeline_payload_identities(required_source)
+            - _bake_timeline_payload_identities(prepared_payload)
+        )
+        allowed, commitment_error = _committed_source_omissions(
+            source_omission_commitment,
+            missing,
+        )
+        source_to_prepared_payload = dict(required_source)
+        for section in ("bone", "morph"):
+            source_to_prepared_payload[section] = [
+                item
+                for item in required_source.get(section, ())
+                if _bake_timeline_identity(section, item.get("name")) not in allowed
+            ]
+    source_to_prepared = _vmd_bake_timeline_semantic_diff(
+        source_to_prepared_payload,
+        prepared_payload,
+    )
+    if commitment_error is not None:
+        source_to_prepared.insert(0, commitment_error)
     return {
-        "source_to_prepared": _vmd_bake_timeline_semantic_diff(
-            required_source,
-            prepared_payload,
-        ),
+        "source_to_prepared": source_to_prepared,
         "prepared_to_export": _vmd_payload_diff(
             prepared_payload,
             exported_payload,
@@ -664,13 +730,48 @@ def _bake_timeline_track_boundary_diff(
     }
 
 
-def _copy_prepared_vmd_payload(prepared_token: Any) -> dict[str, Any]:
-    """Detach and normalize the token payload while the token is active."""
+def _source_omission_commitment(
+    preparation_evidence: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Read the exact collector omission commitment from Prepare diagnostics."""
 
-    copy_for_export = getattr(prepared_token, "copy_for_export", None)
-    if not callable(copy_for_export):
-        raise TypeError("prepared VMD token does not expose copy_for_export()")
-    return _vmd_payload(copy_for_export())
+    diagnostics = preparation_evidence.get("diagnostics")
+    backend = diagnostics.get("backend") if isinstance(diagnostics, Mapping) else None
+    collector = backend.get("collector") if isinstance(backend, Mapping) else None
+    selection = collector.get("track_selection") if isinstance(collector, Mapping) else None
+    commitment = (
+        selection.get("source_omission_identity")
+        if isinstance(selection, Mapping)
+        else None
+    )
+    if not isinstance(commitment, Mapping):
+        raise RuntimeError("VMD source omission commitment missing from Prepare diagnostics")
+    return dict(commitment)
+
+
+def _copy_prepared_vmd_payload(prepared_token: Any) -> dict[str, Any]:
+    """Parse the verified staged receipt while the token remains active.
+
+    Production tokens are receipt-only and intentionally retain no in-memory
+    ``VmdData`` graph.  This development runner needs a normalized snapshot for
+    its source/prepared/exported comparisons, so it reads the private stage
+    after checking the receipt identity.
+    """
+
+    from mmd_tools.core.vmd_data import VmdData
+
+    receipt = getattr(prepared_token, "staged_artifact", None)
+    if receipt is None:
+        receipt = getattr(prepared_token, "stage_receipt", None)
+    if receipt is None:
+        raise TypeError("prepared VMD token does not expose a staged artifact receipt")
+    validate_identity = getattr(receipt, "validate_identity", None)
+    if callable(validate_identity):
+        validate_identity()
+    file_path = getattr(receipt, "file_path", None)
+    if not file_path:
+        raise TypeError("prepared VMD receipt does not expose file_path")
+    return _vmd_payload(VmdData().parse_file(str(file_path)))
 
 
 def _vmd_edit_track_witness(
@@ -2091,6 +2192,7 @@ def _run_prepared_vmd_exports(
     end_frame: int,
     model_name: str,
     warm_runs: int,
+    preparation_evidence: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Validate/write cold and warm exports under one prepared-token boundary.
 
@@ -2105,6 +2207,11 @@ def _run_prepared_vmd_exports(
     try:
         # Token invalidation happens in ``finally``.  Detach the immutable
         # prepared-scene authority before validation/execute can fail.
+        source_omissions = (
+            _source_omission_commitment(preparation_evidence)
+            if preparation_evidence is not None
+            else None
+        )
         prepared_payload = _copy_prepared_vmd_payload(prepared_token)
         cold_export_phase_start = len(context.phases)
         validation = _phase(context, "export_validation", lambda: workflow.validate(request))
@@ -2137,6 +2244,7 @@ def _run_prepared_vmd_exports(
             prepared_payload,
             exported_payload,
             required_track_names,
+            source_omission_commitment=source_omissions,
         )
         parser_failures = [
             f"{boundary}: {failure}"
@@ -2361,6 +2469,7 @@ def _run_vmd_case(
         end_frame,
         str(getattr(source_data.header, "model_name", "") or ""),
         warm_runs,
+        preparation_evidence,
     )
     validation_evidence = export_result["validation"]
     acknowledged_warnings = export_result["acknowledged_warnings"]

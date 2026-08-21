@@ -84,6 +84,31 @@ def setup_function_signatures(lib: CDLL) -> None:
             POINTER(c_float),
         ],
     )
+    set_sig(
+        lib,
+        "mmd_runtime_export_vmd_from_parts",
+        MmdRuntimeFfiByteBuffer,
+        [
+            POINTER(c_uint8),
+            c_size_t,
+            POINTER(c_uint32),
+            c_size_t,
+            POINTER(c_uint32),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_uint8),
+            c_size_t,
+            POINTER(c_uint32),
+            c_size_t,
+            POINTER(c_uint32),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+        ],
+    )
 
     lib.mmd_runtime_clip_create_from_vmd_bytes_for_model.restype = c_void_p
     lib.mmd_runtime_clip_create_from_vmd_bytes_for_model.argtypes = [c_void_p, POINTER(c_uint8), c_size_t]

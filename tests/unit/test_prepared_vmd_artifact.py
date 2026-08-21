@@ -1,11 +1,14 @@
 """Unit contracts for private verified Bake Timeline VMD stages."""
 
+from array import array
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from mmd_tools.actions.prepared_vmd_artifact import (
     PreparedVmdArtifactError,
     PreparedVmdStageSession,
+    _VmdPartsSink,
 )
 from mmd_tools.validation.export_validator import ExportValidationIssue, ExportValidationReport
 
@@ -29,6 +32,84 @@ class _StreamingVerifier:
 
 
 class PreparedVmdArtifactTests(unittest.TestCase):
+    def test_parts_sink_preserves_raw_cp932_names_interpolation_and_aliases(self):
+        bone_name = "センター".encode("cp932")
+        morph_name = "笑い".encode("cp932")
+        interpolation = bytes(range(64))
+        sink = _VmdPartsSink("モデル")
+        sink.write_frame(
+            "bone",
+            {
+                "bone_name": bone_name,
+                "frame": 4,
+                "position": (1.0, 2.0, 3.0),
+                "rotation": (0.0, 0.0, 0.0, 1.0),
+                "interpolation": interpolation,
+            },
+        )
+        sink.write_frame("morph", {"morph_name": morph_name, "frame": 8, "value": 0.25})
+        sink.write_frame(
+            "properties",
+            {
+                "frame": 8,
+                "visible": 1,
+                "ik_states": [{"bone_name": bone_name, "enabled": True}],
+            },
+        )
+
+        with patch(
+            "mmd_tools.actions.prepared_vmd_artifact.export_vmd_from_parts",
+            return_value=b"native",
+        ) as export:
+            self.assertEqual(sink.finish(), b"native")
+
+        args = export.call_args.args
+        metadata = args[0]
+        for values, typecode in zip(args[1:9], ("I", "I", "f", "f", "B", "I", "I", "f")):
+            self.assertIsInstance(values, array)
+            self.assertEqual(values.typecode, typecode)
+        self.assertEqual(metadata["boneNames"][0]["nameBytes"], list(bone_name))
+        self.assertEqual(metadata["morphNames"][0]["nameBytes"], list(morph_name))
+        self.assertEqual(metadata["propertyFrames"][0]["ikStates"][0]["boneNameBytes"], list(bone_name))
+        self.assertEqual(tuple(map(list, args[1:6])), ([0], [4], [1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0], list(interpolation)))
+        self.assertEqual(tuple(map(list, args[6:9])), ([0], [8], [0.25]))
+
+    def test_parts_sink_rejects_nul_and_invalid_cp932_raw_names(self):
+        sink = _VmdPartsSink("model")
+        with self.assertRaisesRegex(PreparedVmdArtifactError, "NUL"):
+            sink.write_frame("bones", {"bone_name": b"a\x00b", "frame": 0})
+        with self.assertRaisesRegex(PreparedVmdArtifactError, "CP932"):
+            sink.write_frame("bones", {"bone_name": b"\x82", "frame": 0})
+
+    def test_parts_sink_preserves_legacy_byte_boundary_name_truncation(self):
+        sink = _VmdPartsSink("model")
+        sink.write_frame("bones", {"bone_name": "あ" * 8, "frame": 0})
+
+        with patch(
+            "mmd_tools.actions.prepared_vmd_artifact.export_vmd_from_parts",
+            return_value=b"native",
+        ) as export:
+            sink.finish()
+
+        name = export.call_args.args[0]["boneNames"][0]
+        self.assertEqual(name["name"], "あ" * 8)
+        self.assertEqual(name["nameBytes"], [])
+
+    def test_parts_sink_can_explicitly_close_empty_leading_bone_section(self):
+        sink = _VmdPartsSink("model")
+        sink.begin_section("bones")
+        sink.end_section()
+        sink.write_frame("morphs", {"morph_name": "笑い", "frame": 2, "value": 0.25})
+
+        with patch(
+            "mmd_tools.actions.prepared_vmd_artifact.export_vmd_from_parts",
+            return_value=b"native",
+        ) as export:
+            sink.finish()
+
+        self.assertEqual(sink.counts["bones"], 0)
+        self.assertEqual(list(export.call_args.args[6]), [0])
+
     def test_incremental_session_promotes_stream_summary_without_vmd_data(self):
         verifier = _StreamingVerifier()
         with PreparedVmdStageSession(

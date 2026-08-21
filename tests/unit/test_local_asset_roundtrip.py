@@ -35,6 +35,7 @@ from tools.local_asset_roundtrip import (
     _skip_warm_vmd_export_samples,
     _run_worker,
     _compare_motion_morph_witness_values,
+    _copy_prepared_vmd_payload,
     _select_cases,
     _summary_markdown,
     _worker_failure_classification,
@@ -43,6 +44,26 @@ from tools.local_asset_roundtrip import (
     _vmd_payload,
     _vmd_payload_diff,
 )
+
+
+def test_copy_prepared_vmd_payload_reads_verified_stage(monkeypatch, tmp_path):
+    stage = tmp_path / "prepared.vmd"
+    stage.write_bytes(b"vmd")
+    identity_checks = []
+    receipt = SimpleNamespace(
+        file_path=str(stage),
+        validate_identity=lambda: identity_checks.append(True),
+    )
+    parsed = _empty_vmd_data()
+    monkeypatch.setattr(
+        "mmd_tools.core.vmd_data.VmdData.parse_file",
+        lambda _self, path: parsed if path == str(stage) else None,
+    )
+
+    payload = _copy_prepared_vmd_payload(SimpleNamespace(staged_artifact=receipt))
+
+    assert identity_checks == [True]
+    assert payload["model_name"] == "model"
 
 
 def test_bake_timeline_pose_tolerance_covers_vmd_ccd_reconstruction_only():
@@ -327,9 +348,18 @@ def test_prepared_export_boundary_invalidates_once_on_failure(monkeypatch, tmp_p
         export_write_budget_violations=[],
         export_write_budget_sec=60.0,
     )
+    stage = tmp_path / "prepared.vmd"
+    stage.write_bytes(b"vmd")
+    monkeypatch.setattr(
+        "mmd_tools.core.vmd_data.VmdData.parse_file",
+        lambda _self, path: _empty_vmd_data() if path == str(stage) else None,
+    )
     token = SimpleNamespace(
         cache_id="prepared",
-        copy_for_export=lambda: lifecycle.append(("copy", None)) or _empty_vmd_data(),
+        staged_artifact=SimpleNamespace(
+            file_path=str(stage),
+            validate_identity=lambda: lifecycle.append(("copy", None)),
+        ),
     )
 
     with pytest.raises(RuntimeError, match="validation boom"):
@@ -547,6 +577,39 @@ def test_bake_timeline_track_boundaries_reject_supported_physics_track_lost_in_p
         "bone required tracks missing: ['右胸']"
     ]
     assert failures["prepared_to_export"] == []
+
+
+def test_bake_timeline_track_boundaries_accept_only_exact_committed_omissions():
+    from mmd_tools.validation.snapshot import fingerprint_payload
+
+    center = _bone()
+    center.bone_name = "センター"
+    physics = _bone()
+    physics.bone_name = "右胸"
+    source = _vmd_payload(_empty_vmd_data(bone_frames=[center, physics]))
+    prepared = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
+    identities = [["bone", "右胸"]]
+    commitment = {"count": 1, "fingerprint": fingerprint_payload(identities)}
+
+    accepted = _bake_timeline_track_boundary_diff(
+        source,
+        prepared,
+        prepared,
+        {"bone": {"センター", "右胸"}, "morph": set()},
+        source_omission_commitment=commitment,
+    )
+    rejected = _bake_timeline_track_boundary_diff(
+        source,
+        prepared,
+        prepared,
+        {"bone": {"センター", "右胸"}, "morph": set()},
+        source_omission_commitment={"count": 1, "fingerprint": "wrong"},
+    )
+
+    assert accepted["source_to_prepared"] == []
+    assert rejected["source_to_prepared"][0].startswith(
+        "source omission commitment does not exactly match"
+    )
 
 
 def test_bake_timeline_track_boundaries_reject_prepared_authored_track_lost_by_writer():

@@ -50,6 +50,11 @@ from .mmd_anim_runtime import (
     export_pmx_from_parts,
     export_vmd_animation_json,
 )
+from .mmd_anim_runtime_export import (
+    MmdAnimRuntimeExportError,
+    export_vmd_from_parts,
+    is_native_vmd_parts_export_available,
+)
 from .mmd_anim_runtime_parsed_model import MmdParsedModel
 from .native_pmx_parser import is_native_parser_available, parse_pmx_native
 
@@ -65,6 +70,9 @@ __all__ = [
     "get_runtime_feature_flags",
     "export_pmx_from_parts",
     "export_vmd_animation_json",
+    "export_vmd_from_parts",
+    "is_native_vmd_parts_export_available",
+    "MmdAnimRuntimeExportError",
     "export_pmx_model_json",
     "parse_pmx_native",
     "MmdRuntimeModel",
