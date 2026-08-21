@@ -400,6 +400,13 @@ class MayaVmdPrepareBackend:
                 self._diagnostics["native_sampler"] = _copy_diagnostics(
                     native_diagnostics
                 )
+            native_morph_diagnostics = collector_diagnostics.get(
+                "native_morph_sampler"
+            )
+            if native_morph_diagnostics is not None:
+                self._diagnostics["native_morph_sampler"] = _copy_diagnostics(
+                    native_morph_diagnostics
+                )
 
     def close(self) -> None:
         """Close the active watch at scene/application teardown."""

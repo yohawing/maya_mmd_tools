@@ -3,6 +3,7 @@
 import json
 import math
 import unittest
+from array import array
 from io import BytesIO
 from types import SimpleNamespace
 from unittest import mock
@@ -242,13 +243,46 @@ class TestVmdSceneCollector(unittest.TestCase):
         cmds_module = self.cmds
 
         class Samples:
+            @property
+            def diagnostics(self):
+                return {"sample_count": len(scalar_frames)}
+
             def value(self, joint, attr, frame):
                 return float(cmds_module.getAttr(f"{joint}.{attr}", time=frame))
+
+            def scalar_track(self, logical_name):
+                node, attr = scalar_channels[logical_name]
+                return type(
+                    "ScalarTrack",
+                    (),
+                    {
+                        "frames": tuple(scalar_frames),
+                        "values": [
+                            float(cmds_module.getAttr(f"{node}.{attr}", time=frame))
+                            for frame in scalar_frames
+                        ],
+                    },
+                )()
+
+            def close(self):
+                return None
+
+        scalar_frames = ()
+        scalar_channels = {}
 
         class Sampler:
             available = True
 
             def sample_dense_bone_channels(self, _frames, _joints, _routes):
+                return Samples()
+
+            def sample_dense_scalar_channels(self, frames, channels):
+                nonlocal scalar_frames, scalar_channels
+                scalar_frames = tuple(frames)
+                scalar_channels = {
+                    str(logical_name): (str(node), str(attr))
+                    for logical_name, node, attr in channels
+                }
                 return Samples()
 
         return Sampler()
@@ -355,6 +389,55 @@ class TestVmdSceneCollector(unittest.TestCase):
         VmdSceneCollector().collect_to_sink(options, sink)
         streamed = [frame for section, frame in sink.frames if section == "morphs"]
         self.assertEqual(streamed, legacy)
+
+    def test_mode_c_stream_uses_native_morphs_and_omits_camera_light(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "face_bs": "blendShape",
+                "camera_ctrl": "transform",
+                "light_ctrl": "transform",
+            }
+        )
+        self.cmds.blendshape_weights["face_bs"] = 1
+        self.cmds.aliases["face_bs.weight[0]"] = "smile"
+        self.cmds.keys[("face_bs", "weight[0]")] = {0.0: 0.0, 2.0: 1.0}
+
+        class Sink:
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, _section, _frame):
+                return None
+
+        collector = VmdSceneCollector(
+            bone_channel_sampler=self._timeline_sampler()
+        )
+        with mock.patch.object(
+            collector_module,
+            "_MayaTimelineReader",
+            side_effect=AssertionError("Python Timeline path was used"),
+        ):
+            collector.collect_to_sink(
+                {
+                    "target_model": "model_root",
+                    "blend_shapes": ["face_bs"],
+                    "cameras": ["camera_ctrl"],
+                    "lights": ["light_ctrl"],
+                    "vmd_mode": "C",
+                    "frame_range": (0, 2),
+                },
+                Sink(),
+            )
+
+        self.assertEqual(
+            collector.diagnostics["unsupported_mode_c_sections"],
+            {"cameras": 1, "lights": 1},
+        )
+        self.assertEqual(
+            collector.diagnostics["native_morph_sampler"]["sample_count"],
+            3,
+        )
 
     def test_mode_c_stream_morph_post_conversion_first_win_matches_legacy(self):
         self.cmds.node_types.update(
@@ -1237,6 +1320,210 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(evidence[0]["decision"], "dependency_baked")
         self.assertEqual(evidence[0]["reason"], "keyless_routed_dependency")
         self.assertEqual(evidence[0]["source_key_count"], 0)
+
+    def test_mode_c_native_bulk_track_matches_scalar_and_reuses_direct_multi_track(self):
+        self.cmds.node_types["center_joint"] = "joint"
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
+        for attr in (
+            "translateX",
+            "translateY",
+            "translateZ",
+            "rotateX",
+            "rotateY",
+            "rotateZ",
+        ):
+            self.cmds.keys[("center_joint", attr)] = {
+                0.0: 0.0,
+                2.0: 2.0 if attr == "translateX" else 0.0,
+            }
+
+        class ScalarSamples:
+            diagnostics = {"available": True, "used": True}
+
+            def __init__(self, cmds_module, calls):
+                self._cmds = cmds_module
+                self._calls = calls
+
+            def value(self, joint, attr, frame):
+                self._calls.append((joint, attr, float(frame)))
+                return float(self._cmds.getAttr(f"{joint}.{attr}", time=frame))
+
+            def close(self):
+                return None
+
+        class BulkTrack:
+            def __init__(self, cmds_module, joint, frames):
+                self.frames = tuple(float(frame) for frame in frames)
+                self._components = {
+                    attr: array(
+                        "d",
+                        [
+                            float(cmds_module.getAttr(f"{joint}.{attr}", time=frame))
+                            for frame in self.frames
+                        ],
+                    )
+                    for attr in collector_module._BONE_EXPORT_ATTRS
+                }
+
+            def component(self, attr):
+                raise AssertionError("collector must use fixed-order components")
+
+            def _components_for_collector(self):
+                return tuple(
+                    self._components[attr] for attr in collector_module._BONE_EXPORT_ATTRS
+                )
+
+        class BulkSamples:
+            diagnostics = {"available": True, "used": True}
+
+            def __init__(self, cmds_module, calls):
+                self._cmds = cmds_module
+                self._calls = calls
+
+            def bone_track(self, joint, frames=None):
+                self._calls.append((joint, tuple(frames)))
+                return BulkTrack(self._cmds, joint, frames)
+
+            def value(self, _joint, _attr, _frame):
+                raise AssertionError("bulk collector must not use scalar value")
+
+            def close(self):
+                return None
+
+        class ScalarSampler:
+            available = True
+
+            def __init__(self, calls):
+                self._calls = calls
+                self.samples = None
+
+            def sample_dense_bone_channels(self, _frames, _joints, _routes):
+                self.samples = ScalarSamples(self_cmds, self._calls)
+                return self.samples
+
+        class BulkSampler:
+            available = True
+
+            def __init__(self, calls):
+                self._calls = calls
+                self.samples = None
+
+            def sample_dense_bone_channels(self, _frames, _joints, _routes):
+                self.samples = BulkSamples(self_cmds, self._calls)
+                return self.samples
+
+        self_cmds = self.cmds
+        scalar_calls = []
+        bulk_calls = []
+
+        def collect(sampler, output):
+            collector = VmdSceneCollector(bone_channel_sampler=sampler)
+            collector._mmd_bone_name = lambda joint: str(joint)
+            with mock.patch.object(
+                collector_module,
+                "_build_rotation_export_context",
+                return_value={},
+            ), mock.patch.object(
+                collector_module,
+                "_maya_joint_rotate_to_vmd_quaternion",
+                side_effect=lambda _joint, rx, ry, rz, _context: (rx, ry, rz, 1.0),
+            ), mock.patch.object(
+                collector_module,
+                "_resolve_bind_pose",
+                return_value=(0.0, 0.0, 0.0),
+            ), mock.patch.object(
+                collector_module,
+                "_maya_translate_to_vmd_position",
+                side_effect=lambda values, _bind, _scale: tuple(values),
+            ):
+                collector.collect_bone_frames(
+                    ["center_joint"],
+                    dense_sample=True,
+                    force_dense_sample=True,
+                    dense_frame_samples=[0, 1, 2],
+                    time_converter=lambda value: value,
+                    bone_channel_sampler=sampler,
+                    frame_sink=output.append,
+                )
+            return collector
+
+        scalar_collector = collect(ScalarSampler(scalar_calls), [])
+        bulk_rows = []
+        bulk_collector = collect(BulkSampler(bulk_calls), bulk_rows)
+        scalar_rows = []
+        collect(ScalarSampler([]), scalar_rows)
+        self.assertEqual(bulk_rows, scalar_rows)
+        self.assertEqual([row["frame_number"] for row in bulk_rows], [0, 1, 2])
+        self.assertEqual(bulk_calls, [("center_joint", (0, 1, 2))])
+        self.assertEqual(len(scalar_calls), 36)
+        bulk_report = bulk_collector.diagnostics["native_sampler"]
+        self.assertTrue(bulk_report["bulk_track_api"])
+        self.assertEqual(bulk_report["bulk_track_count"], 1)
+        self.assertEqual(bulk_report["bulk_track_frame_count"], 3)
+        self.assertEqual(bulk_report["scalar_native_value_read_count"], 0)
+        scalar_report = scalar_collector.diagnostics["native_sampler"]
+        self.assertFalse(scalar_report["bulk_track_api"])
+        self.assertGreater(scalar_report["scalar_native_value_read_count"], 0)
+
+    def test_mode_c_native_bulk_track_failure_closes_samples(self):
+        self.cmds.node_types["center_joint"] = "joint"
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "center"
+        self.cmds.keys[("center_joint", "translateX")] = {0.0: 0.0, 2.0: 1.0}
+
+        class Samples:
+            diagnostics = {"available": True, "used": True}
+
+            def __init__(self):
+                self.closed = 0
+
+            def value(self, _joint, _attr, _frame):
+                return 0.0
+
+            def bone_track(self, _joint, _frames=None):
+                raise ValueError("bulk track failed")
+
+            def close(self):
+                self.closed += 1
+
+        class Sampler:
+            available = True
+
+            def __init__(self):
+                self.samples = Samples()
+
+            def sample_dense_bone_channels(self, _frames, _joints, _routes):
+                return self.samples
+
+        sampler = Sampler()
+        collector = VmdSceneCollector(bone_channel_sampler=sampler)
+        collector._mmd_bone_name = lambda joint: str(joint)
+        with mock.patch.object(
+            collector_module,
+            "_build_rotation_export_context",
+            return_value={},
+        ), mock.patch.object(
+            collector_module,
+            "_maya_joint_rotate_to_vmd_quaternion",
+            return_value=(0.0, 0.0, 0.0, 1.0),
+        ), mock.patch.object(
+            collector_module,
+            "_resolve_bind_pose",
+            return_value=(0.0, 0.0, 0.0),
+        ), mock.patch.object(
+            collector_module,
+            "_maya_translate_to_vmd_position",
+            return_value=(0.0, 0.0, 0.0),
+        ), self.assertRaisesRegex(RuntimeError, "native bone track failed"):
+            collector.collect_bone_frames(
+                ["center_joint"],
+                dense_sample=True,
+                force_dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+                time_converter=lambda value: value,
+                bone_channel_sampler=sampler,
+            )
+        self.assertEqual(sampler.samples.closed, 1)
+        self.assertTrue(collector.diagnostics["native_sampler"]["fatal"])
 
     def test_mode_c_keyless_incoming_bone_is_dense_dependency(self):
         self._configure_static_bone()

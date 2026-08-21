@@ -1000,6 +1000,10 @@ class VmdSceneCollector:
                 options, "cameras", ATTR_MMD_CAMERA, None
             )
             lights = self._resolve_tagged_track(options, "lights", ATTR_MMD_LIGHT, None)
+            unsupported_cameras = list(cameras)
+            unsupported_lights = list(lights)
+            cameras = []
+            lights = []
             start_frame, end_frame = _resolve_collection_frame_range(options)
             motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
             bone_bind_poses = options.get("bone_bind_poses") or {}
@@ -1077,29 +1081,14 @@ class VmdSceneCollector:
                 exact_run_reduction=exact_run_reduction,
                 protected_vmd_frames=protected_ik_frames,
                 key_reduction_report=key_reduction["sections"]["morphs"],
+                morph_channel_sampler=self._bone_channel_sampler,
             )
             begin_section("cameras")
-            self.collect_camera_frames(
-                cameras,
-                start_frame,
-                end_frame,
-                time_converter=maya_time_to_vmd,
-                dense_sample=True,
-                dense_frame_samples=mode_c_dense_frames,
-                timeline_evaluation=True,
-                frame_sink=lambda frame: emit("cameras", frame),
-            )
             begin_section("lights")
-            self.collect_light_frames(
-                lights,
-                start_frame,
-                end_frame,
-                time_converter=maya_time_to_vmd,
-                dense_sample=True,
-                dense_frame_samples=mode_c_dense_frames,
-                timeline_evaluation=True,
-                frame_sink=lambda frame: emit("lights", frame),
-            )
+            self._diagnostics["unsupported_mode_c_sections"] = {
+                "cameras": len(unsupported_cameras),
+                "lights": len(unsupported_lights),
+            }
             begin_section("shadows")
             begin_section("ik")
             self.collect_ik_show_hide_frames(
@@ -1109,7 +1098,7 @@ class VmdSceneCollector:
                 time_converter=maya_time_to_vmd,
                 dense_sample=False,
                 dense_frame_samples=None,
-                timeline_evaluation=True,
+                timeline_evaluation=False,
                 frame_sink=lambda frame: emit("ik", frame),
             )
             self._diagnostics["section_counts"] = dict(section_counts)
@@ -1184,6 +1173,13 @@ class VmdSceneCollector:
         bone_bind_poses = options.get("bone_bind_poses") or {}
         maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
         mode = str(options.get("vmd_mode", options.get("mode", "")) or "").upper()
+        if mode == "C":
+            self._diagnostics["unsupported_mode_c_sections"] = {
+                "cameras": len(cameras),
+                "lights": len(lights),
+            }
+            cameras = []
+            lights = []
         preserve_raw_bone_transforms = bool(
             options.get("preserve_raw_bone_transforms", False)
         )
@@ -1274,6 +1270,9 @@ class VmdSceneCollector:
             dense_sample=dense_mode_c_export,
             dense_frame_samples=mode_c_dense_frames,
             timeline_evaluation=mode == "C",
+            morph_channel_sampler=(
+                self._bone_channel_sampler if mode == "C" else None
+            ),
         )
         self._diagnostics["morph_collection"] = {
             "wall_sec": round(time.perf_counter() - morph_started, 6),
@@ -1281,14 +1280,14 @@ class VmdSceneCollector:
         }
 
         camera_started = time.perf_counter()
-        camera_frames = self.collect_camera_frames(
+        camera_frames = [] if mode == "C" else self.collect_camera_frames(
             cameras,
             start_frame,
             end_frame,
             time_converter=maya_time_to_vmd,
-            dense_sample=dense_mode_c_export,
-            dense_frame_samples=mode_c_dense_frames,
-            timeline_evaluation=mode == "C",
+            dense_sample=False,
+            dense_frame_samples=None,
+            timeline_evaluation=False,
         )
         self._diagnostics["camera_collection"] = {
             "wall_sec": round(time.perf_counter() - camera_started, 6),
@@ -1296,14 +1295,14 @@ class VmdSceneCollector:
         }
 
         light_started = time.perf_counter()
-        light_frames = self.collect_light_frames(
+        light_frames = [] if mode == "C" else self.collect_light_frames(
             lights,
             start_frame,
             end_frame,
             time_converter=maya_time_to_vmd,
-            dense_sample=dense_mode_c_export,
-            dense_frame_samples=mode_c_dense_frames,
-            timeline_evaluation=mode == "C",
+            dense_sample=False,
+            dense_frame_samples=None,
+            timeline_evaluation=False,
         )
         self._diagnostics["light_collection"] = {
             "wall_sec": round(time.perf_counter() - light_started, 6),
@@ -1321,7 +1320,7 @@ class VmdSceneCollector:
             # other tracks at every frame.
             dense_sample=False,
             dense_frame_samples=None,
-            timeline_evaluation=mode == "C",
+            timeline_evaluation=False,
         )
         self._diagnostics["ik_collection"] = {
             "wall_sec": round(time.perf_counter() - ik_started, 6),
@@ -1461,6 +1460,34 @@ class VmdSceneCollector:
         raw_bone_transforms = raw_bone_transforms or {}
         raw_bone_frames_by_name = _index_raw_bone_transform_frames(raw_bone_transforms)
         native_samples = None
+        native_bulk_track_api = False
+        native_bulk_track_count = 0
+        native_bulk_track_frame_count = 0
+        scalar_native_value_read_count = 0
+
+        def update_native_track_diagnostics() -> None:
+            report = self._diagnostics.get("native_sampler")
+            if not isinstance(report, dict):
+                return
+            report.update(
+                {
+                    "bulk_track_api": native_bulk_track_api,
+                    "bulk_track_count": native_bulk_track_count,
+                    "bulk_track_frame_count": native_bulk_track_frame_count,
+                    "scalar_native_value_read_count": scalar_native_value_read_count,
+                }
+            )
+            if native_samples is not None:
+                sample_diagnostics = getattr(native_samples, "diagnostics", None)
+                if callable(sample_diagnostics):
+                    sample_diagnostics = sample_diagnostics()
+                if isinstance(sample_diagnostics, dict) and (
+                    "python_scalar_unpack_count" in sample_diagnostics
+                ):
+                    report[
+                        "python_scalar_unpack_count"
+                    ] = sample_diagnostics["python_scalar_unpack_count"]
+
         frames = [] if frame_sink is None else None
         dense_frames = (
             list(dense_frame_samples)
@@ -1714,6 +1741,10 @@ class VmdSceneCollector:
                             "available", True
                         )
                         self._diagnostics["native_sampler"].setdefault("used", True)
+                        native_bulk_track_api = callable(
+                            getattr(native_samples, "bone_track", None)
+                        )
+                        update_native_track_diagnostics()
                     except BaseException as exc:
                         if native_samples is not None:
                             try:
@@ -1805,10 +1836,17 @@ class VmdSceneCollector:
                 native_samples = None
             raise
 
-        def read_value(joint, attr, frame_number, route, use_native=True):
-            nonlocal native_samples
+        def read_value(
+            joint,
+            attr,
+            frame_number,
+            route,
+            use_native=True,
+        ):
+            nonlocal native_samples, scalar_native_value_read_count
             if use_native and native_samples is not None:
                 try:
+                    scalar_native_value_read_count += 1
                     return float(native_samples.value(joint, attr, frame_number))
                 except Exception as exc:
                     try:
@@ -1875,6 +1913,67 @@ class VmdSceneCollector:
                     and not preserve_sparse_rotation
                     else sparse_frames
                 )
+                bulk_components = None
+                if (
+                    native_bulk_track_api
+                    and native_samples is not None
+                    and not single_key
+                    and keyed_frames
+                ):
+                    try:
+                        native_track = native_samples.bone_track(joint, keyed_frames)
+                        expected_track_frames = tuple(
+                            float(frame) for frame in keyed_frames
+                        )
+                        if tuple(native_track.frames) != expected_track_frames:
+                            raise RuntimeError(
+                                "native bone track returned unexpected frames"
+                            )
+                        component_accessor = getattr(
+                            native_track,
+                            "_components_for_collector",
+                            None,
+                        )
+                        if callable(component_accessor):
+                            bulk_components = tuple(component_accessor())
+                        else:
+                            bulk_components = tuple(
+                                native_track.component(attr)
+                                for attr in _BONE_EXPORT_ATTRS
+                            )
+                        if (
+                            len(bulk_components) != len(_BONE_EXPORT_ATTRS)
+                            or any(
+                                len(component) != len(expected_track_frames)
+                                for component in bulk_components
+                            )
+                        ):
+                            raise RuntimeError(
+                                "native bone track returned invalid component arrays"
+                            )
+                    except BaseException as exc:
+                        if native_samples is not None:
+                            try:
+                                _close_native_samples(native_samples)
+                            except Exception:
+                                pass
+                        native_samples = None
+                        self._diagnostics.setdefault("native_sampler", {}).update(
+                            {
+                                "used": False,
+                                "fallback_reason": f"{type(exc).__name__}: {exc}",
+                                "fatal": True,
+                            }
+                        )
+                        update_native_track_diagnostics()
+                        self._emit_diagnostics()
+                        if not isinstance(exc, Exception):
+                            raise
+                        raise RuntimeError(
+                            f"Mode C native bone track failed for {joint}"
+                        ) from exc
+                    native_bulk_track_count += 1
+                    native_bulk_track_frame_count += len(keyed_frames)
                 track_frames = [] if frame_sink is not None else None
                 protected_track_frames = set(protected_vmd_frames or ())
                 protected_track_frames.update(
@@ -1909,24 +2008,63 @@ class VmdSceneCollector:
                 constant_signature = None
                 constant_varied = False
 
-                def build_payload(frame_number):
-                    rotation = _maya_joint_rotate_to_vmd_quaternion(
-                        joint,
-                        read_value(joint, "rotateX", frame_number, route, not single_key),
-                        read_value(joint, "rotateY", frame_number, route, not single_key),
-                        read_value(joint, "rotateZ", frame_number, route, not single_key),
-                        rotation_context.get(str(long_names[0])),
-                    )
+                def build_payload(track_index, frame_number):
+                    if bulk_components is None:
+                        rotation = _maya_joint_rotate_to_vmd_quaternion(
+                            joint,
+                            read_value(
+                                joint, "rotateX", frame_number, route, not single_key
+                            ),
+                            read_value(
+                                joint, "rotateY", frame_number, route, not single_key
+                            ),
+                            read_value(
+                                joint, "rotateZ", frame_number, route, not single_key
+                            ),
+                            rotation_context.get(str(long_names[0])),
+                        )
+                        position_values = (
+                            read_value(
+                                joint,
+                                "translateX",
+                                frame_number,
+                                route,
+                                not single_key,
+                            ),
+                            read_value(
+                                joint,
+                                "translateY",
+                                frame_number,
+                                route,
+                                not single_key,
+                            ),
+                            read_value(
+                                joint,
+                                "translateZ",
+                                frame_number,
+                                route,
+                                not single_key,
+                            ),
+                        )
+                    else:
+                        rotation = _maya_joint_rotate_to_vmd_quaternion(
+                            joint,
+                            float(bulk_components[3][track_index]),
+                            float(bulk_components[4][track_index]),
+                            float(bulk_components[5][track_index]),
+                            rotation_context.get(str(long_names[0])),
+                        )
+                        position_values = (
+                            float(bulk_components[0][track_index]),
+                            float(bulk_components[1][track_index]),
+                            float(bulk_components[2][track_index]),
+                        )
                     vmd_frame = _vmd_frame_number(frame_number, time_converter)
                     payload = {
                             "bone_name": bone_name,
                             "frame_number": vmd_frame,
                             "position": _maya_translate_to_vmd_position(
-                                (
-                                    read_value(joint, "translateX", frame_number, route, not single_key),
-                                    read_value(joint, "translateY", frame_number, route, not single_key),
-                                    read_value(joint, "translateZ", frame_number, route, not single_key),
-                                ),
+                                position_values,
                                 bind_pose,
                                 motion_scale,
                             ),
@@ -1953,12 +2091,12 @@ class VmdSceneCollector:
 
                 def iter_payloads():
                     last_vmd_frame = None
-                    for frame_number in keyed_frames:
+                    for track_index, frame_number in enumerate(keyed_frames):
                         vmd_frame = _vmd_frame_number(frame_number, time_converter)
                         if track_frames is not None and vmd_frame == last_vmd_frame:
                             continue
                         last_vmd_frame = vmd_frame
-                        yield frame_number, build_payload(frame_number)
+                        yield frame_number, build_payload(track_index, frame_number)
 
                 for frame_number, payload in iter_payloads():
                     if single_key:
@@ -2014,8 +2152,8 @@ class VmdSceneCollector:
                     else:
                         frames.append(payload)
                 if direct_multi_key and constant_varied:
-                    # Native samples are mmap-backed.  A bounded second read
-                    # preserves protected interiors without buffering a track.
+                    # Reuse the same detached track for the bounded second pass
+                    # so protected interiors retain the original semantics.
                     for _frame_number, payload in iter_payloads():
                         emit_stream_payload(payload)
                 if force_dense_sample and not single_key and not direct_multi_key:
@@ -2070,6 +2208,7 @@ class VmdSceneCollector:
                     elif reducer is not None:
                         reducer.finish()
         finally:
+            update_native_track_diagnostics()
             if native_samples is not None:
                 try:
                     _close_native_samples(native_samples)
@@ -2619,6 +2758,7 @@ class VmdSceneCollector:
         exact_run_reduction: bool = False,
         protected_vmd_frames: Optional[set[int]] = None,
         key_reduction_report: Optional[dict[str, Any]] = None,
+        morph_channel_sampler=None,
     ) -> list[dict]:
         """Collect keyed blendShape and model-owned network morph frames.
 
@@ -2965,6 +3105,7 @@ class VmdSceneCollector:
             }
             emit_reduced(payload)
 
+        native_morph_samples = None
         try:
             if timeline_evaluation and channels:
                 # One shared frame-major pass.  Streaming Mode C deliberately
@@ -2998,9 +3139,33 @@ class VmdSceneCollector:
                             for frame in frames_for_channel
                         }
                     )
-                with _MayaTimelineReader() as timeline_reader:
-                    for frame_number in sample_times:
-                        timeline_reader.set_frame(frame_number)
+                if morph_channel_sampler is not None:
+                    sample_method = getattr(
+                        morph_channel_sampler,
+                        "sample_dense_scalar_channels",
+                        None,
+                    )
+                    if not callable(sample_method):
+                        raise RuntimeError(
+                            "native Morph sampler has no dense scalar method"
+                        )
+                    native_morph_samples = sample_method(
+                        sample_times,
+                        [
+                            (str(morph_name), str(node), str(attr))
+                            for node, attr, morph_name, _source_frames, _direct_single in channels
+                        ],
+                    )
+                    native_tracks = {
+                        str(morph_name): native_morph_samples.scalar_track(
+                            str(morph_name)
+                        )
+                        for _node, _attr, morph_name, _source_frames, _direct_single in channels
+                    }
+                    self._diagnostics["native_morph_sampler"] = dict(
+                        getattr(native_morph_samples, "diagnostics", {}) or {}
+                    )
+                    for frame_index, frame_number in enumerate(sample_times):
                         for node, attr, morph_name, ranged_source_frames, direct_single in channels:
                             if not direct_single and dense_sample and dense_frame_samples is not None:
                                 selected = True
@@ -3013,10 +3178,32 @@ class VmdSceneCollector:
                                 attr,
                                 morph_name,
                                 frame_number,
-                                _current_plug_float(node, attr),
+                                native_tracks[str(morph_name)].values[frame_index],
                                 ranged_source_frames,
                                 direct_single,
                             )
+                else:
+                    # Retained for non-production legacy callers. Standard
+                    # streaming Mode C always supplies the native sampler.
+                    with _MayaTimelineReader() as timeline_reader:
+                        for frame_number in sample_times:
+                            timeline_reader.set_frame(frame_number)
+                            for node, attr, morph_name, ranged_source_frames, direct_single in channels:
+                                if not direct_single and dense_sample and dense_frame_samples is not None:
+                                    selected = True
+                                else:
+                                    selected = frame_number in ranged_source_frames
+                                if not selected:
+                                    continue
+                                append_frame(
+                                    node,
+                                    attr,
+                                    morph_name,
+                                    frame_number,
+                                    _current_plug_float(node, attr),
+                                    ranged_source_frames,
+                                    direct_single,
+                                )
             else:
                 for node, attr, morph_name, ranged_source_frames, direct_single in channels:
                     planned_frames = (
@@ -3041,6 +3228,9 @@ class VmdSceneCollector:
                 candidate_spool.close()
                 candidate_spool = None
             raise
+        finally:
+            if native_morph_samples is not None:
+                _close_native_samples(native_morph_samples)
         if candidate_spool is not None:
             try:
                 candidate_spool.flush()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import struct
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -18,7 +19,9 @@ from mmd_tools.adapters import native_vmd_batch_sampler as sampler_module  # noq
 from mmd_tools.adapters.native_vmd_batch_sampler import (
     NativeVmdBatchSampler,
     NativeVmdBatchSamplerError,
+    NativeDenseBoneTrack,
     build_dense_bone_sample_plan,
+    build_dense_scalar_sample_plan,
     parse_packed_result,
 )
 
@@ -41,13 +44,272 @@ class _FakeCmds:
 
     def mmdVmdBatchSample(self, payload=None):
         self.calls.append(json.loads(payload))
-        channel_count = len(self.calls[-1]["channels"])
-        frame_count = len(self.calls[-1]["frames"])
+        request = self.calls[-1]
+        channel_count = len(request.get("channels", ()))
+        frame_count = len(request["frames"])
         values = [float(index) for index in range(frame_count * channel_count)]
-        return [2.0, frame_count, channel_count, 0.0, float(channel_count), 0.0, *values]
+        if request.get("mode") == "direct_spool":
+            output_count = int(request["output_channel_count"])
+            rows = []
+            for frame_index in range(frame_count):
+                row = [float(value) for value in request["output_defaults"]]
+                for channel_index, output_slot in enumerate(request["output_slots"]):
+                    row[int(output_slot)] = values[frame_index * channel_count + channel_index]
+                rows.extend(row)
+            Path(request["spool_path"]).write_bytes(
+                struct.pack("=" + "d" * len(rows), *rows)
+            )
+            checkpoint_count = (frame_count + sampler_module.MAX_NATIVE_FRAMES - 1) // sampler_module.MAX_NATIVE_FRAMES
+            result = [
+                2.0,
+                frame_count,
+                output_count,
+                0.0,
+                float(channel_count),
+                0.0,
+                0.1 * checkpoint_count,
+                0.2 * checkpoint_count,
+                0.3 * checkpoint_count,
+                1.0,
+                3.0,
+                1.0,
+                3.0,
+                0.0,
+                0.0,
+                1.0,
+                float(checkpoint_count),
+            ]
+            for _checkpoint_index in range(checkpoint_count):
+                result.extend([0.1, 0.2, 0.3, 1.0, 3.0, 1.0, 3.0, 0.0, 0.0, 0.6])
+            return result
+        return [
+            2.0,
+            frame_count,
+            channel_count,
+            0.0,
+            float(channel_count),
+            0.0,
+            0.1,
+            0.2,
+            0.3,
+            1.0,
+            3.0,
+            1.0,
+            3.0,
+            0.0,
+            0.0,
+            *values,
+        ]
+
+
+class _LegacyDirectSpoolCmds(_FakeCmds):
+    """Simulate a loaded pre-Mode-C MLL that rejects only direct mode."""
+
+    def mmdVmdBatchSample(self, payload=None):
+        request = json.loads(payload)
+        if request.get("mode") == "direct_spool":
+            self.calls.append(request)
+            raise RuntimeError(
+                "[mmdVmdBatchSample] payload requires version=2, frames, "
+                "channels, and evaluation_policy=maya_timeline_bake_v1"
+            )
+        return super().mmdVmdBatchSample(payload)
+
+
+class _DirectErrorCmds(_FakeCmds):
+    def mmdVmdBatchSample(self, payload=None):
+        self.calls.append(json.loads(payload))
+        raise RuntimeError("direct spool I/O failed")
 
 
 class NativeVmdBatchSamplerTests(unittest.TestCase):
+    def test_direct_spool_is_one_call_and_cleans_after_close(self):
+        cmds = _FakeCmds()
+        sampler = NativeVmdBatchSampler(cmds)
+        self.assertTrue(sampler.use_direct_spool)
+        samples = sampler.sample_dense_bone_channels(range(3), ["joint"])
+        self.assertEqual(len(cmds.calls), 1)
+        self.assertEqual(cmds.calls[0]["mode"], "direct_spool")
+        self.assertEqual(samples.diagnostics["storage_backend"], "read_only_mmap")
+        self.assertEqual(sampler.last_diagnostics["mode"], "direct_spool")
+        self.assertEqual(samples.chunk_count, 1)
+        self.assertEqual(len(samples.diagnostics["chunk_wall_sec"]), 1)
+        self.assertEqual(samples.diagnostics["python_scalar_unpack_count"], 0)
+        self.assertEqual(
+            [samples.value("joint", "translateX", frame) for frame in range(3)],
+            [0.0, 6.0, 12.0],
+        )
+        spool_path = Path(samples._spool_path)
+        self.assertTrue(spool_path.exists())
+        samples.close()
+        self.assertFalse(spool_path.exists())
+
+    def test_direct_spool_reports_each_120_frame_checkpoint(self):
+        cmds = _FakeCmds()
+        sampler = NativeVmdBatchSampler(cmds, use_direct_spool=True)
+        samples = sampler.sample_dense_bone_channels(range(121), ["joint"])
+        self.assertEqual(samples.chunk_count, 2)
+        for key in (
+            "chunk_wall_sec",
+            "chunk_set_current_time_wall_sec",
+            "chunk_first_timed_mplug_read_wall_sec",
+            "chunk_channel_loop_wall_sec",
+            "chunk_classified_compound_group_count",
+            "chunk_compound_success_group_count",
+            "chunk_compound_fallback_group_count",
+        ):
+            self.assertEqual(len(samples.diagnostics[key]), 2, key)
+        samples.close()
+
+    def test_direct_spool_rejects_checkpoint_runtime_shape_changes(self):
+        ack = [
+            2.0,
+            121.0,
+            6.0,
+            0.0,
+            6.0,
+            0.0,
+            0.1,
+            0.2,
+            0.3,
+            1.0,
+            3.0,
+            1.0,
+            3.0,
+            0.0,
+            0.0,
+            1.0,
+            2.0,
+            0.1,
+            0.2,
+            0.3,
+            1.0,
+            3.0,
+            1.0,
+            3.0,
+            0.0,
+            0.0,
+            0.6,
+            0.1,
+            0.2,
+            0.3,
+            1.0,
+            3.0,
+            0.0,
+            0.0,
+            1.0,
+            3.0,
+            0.6,
+        ]
+        with self.assertRaisesRegex(
+            NativeVmdBatchSamplerError,
+            "differ between checkpoints",
+        ):
+            sampler_module._parse_direct_spool_result(
+                ack,
+                frame_count=121,
+                output_channel_count=6,
+                native_channel_count=6,
+            )
+
+    def test_direct_spool_preserves_python_static_physics_layout(self):
+        class _PhysicsFakeCmds(_FakeCmds):
+            def nodeType(self, node):
+                return "mmdPhysicsBoneDriver" if str(node) == "physics" else "transform"
+
+            def getAttr(self, plug, type=False):
+                if type:
+                    return "double"
+                return 2.5 if str(plug) == "physics.inPreTranslateX" else 0.0
+
+        routes = {
+            "joint": {
+                "translateX": ("physics", "inPreTranslateX"),
+            }
+        }
+        sampler = NativeVmdBatchSampler(_PhysicsFakeCmds(), use_direct_spool=True)
+        samples = sampler.sample_dense_bone_channels(
+            [0, 1], ["joint"], input_routes=routes
+        )
+        self.assertEqual(
+            [samples.value("joint", "translateX", frame) for frame in (0, 1)],
+            [2.5, 2.5],
+        )
+        self.assertEqual(samples.diagnostics["physical_channel_count"], 6)
+        self.assertGreaterEqual(samples.diagnostics["strategy_counts"]["static"], 1)
+        samples.close()
+
+    def test_direct_spool_supports_all_static_physics_routes(self):
+        values = {
+            "inPreTranslateX": 1.0,
+            "inPreTranslateY": 2.0,
+            "inPreTranslateZ": 3.0,
+            "inPreRotateX": 4.0,
+            "inPreRotateY": 5.0,
+            "inPreRotateZ": 6.0,
+        }
+
+        class _AllStaticPhysicsCmds(_FakeCmds):
+            def nodeType(self, node):
+                return "mmdPhysicsBoneDriver" if str(node) == "physics" else "transform"
+
+            def getAttr(self, plug, type=False):
+                if type:
+                    return "double"
+                return values.get(str(plug).rsplit(".", 1)[-1], 0.0)
+
+        routes = {
+            "joint": {
+                attr: ("physics", f"inPre{attr[0].upper() + attr[1:]}")
+                for attr in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+            }
+        }
+        cmds = _AllStaticPhysicsCmds()
+        samples = NativeVmdBatchSampler(cmds).sample_dense_bone_channels(
+            [0, 1], ["joint"], input_routes=routes
+        )
+        self.assertEqual(cmds.calls[0]["channels"], [])
+        self.assertEqual(cmds.calls[0]["output_slots"], [])
+        ordered_defaults = [
+            values[f"inPre{attr[0].upper() + attr[1:]}"]
+            for attr in (
+                "translateX",
+                "translateY",
+                "translateZ",
+                "rotateX",
+                "rotateY",
+                "rotateZ",
+            )
+        ]
+        self.assertEqual(
+            cmds.calls[0]["output_defaults"],
+            ordered_defaults,
+        )
+        for attr in values:
+            logical_attr = attr[5].lower() + attr[6:]
+            self.assertEqual(
+                [samples.value("joint", logical_attr, frame) for frame in (0, 1)],
+                [values[attr], values[attr]],
+            )
+        self.assertEqual(samples.diagnostics["strategy_counts"]["static"], 6)
+        samples.close()
+
+    def test_old_loaded_mll_retries_packed_only_for_capability_error(self):
+        cmds = _LegacyDirectSpoolCmds()
+        sampler = NativeVmdBatchSampler(cmds)
+        samples = sampler.sample_dense_bone_channels([0, 1], ["joint"])
+        self.assertEqual([call.get("mode", "packed") for call in cmds.calls], ["direct_spool", "packed"])
+        self.assertEqual(sampler.last_diagnostics["direct_spool_fallback"], "unsupported_native_sampler_request_mode")
+        self.assertEqual(samples.value("joint", "translateX", 1), 6.0)
+        samples.close()
+
+    def test_direct_spool_does_not_retry_arbitrary_command_error(self):
+        cmds = _DirectErrorCmds()
+        sampler = NativeVmdBatchSampler(cmds)
+        with self.assertRaisesRegex(RuntimeError, "direct spool I/O failed"):
+            sampler.sample_dense_bone_channels([0, 1], ["joint"])
+        self.assertEqual(len(cmds.calls), 1)
+
     def test_plan_is_deterministic_and_deduplicates_physical_plugs(self):
         routes = {
             "joint_a": {"translateX": ("shared", "value")},
@@ -95,23 +357,170 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         self.assertEqual(hints["translateX"], "static")
         self.assertEqual(hints["rotateZ"], "timed_mplug")
 
+    def test_scalar_plan_and_track_support_direct_array_element_curve(self):
+        class _MorphCmds(_FakeCmds):
+            def listConnections(self, plug, **_kwargs):
+                if plug == "morph.inputWeight[0]":
+                    return ["curve.output"]
+                return []
+
+            def nodeType(self, node):
+                return "animCurveTU" if node == "curve" else "network"
+
+        cmds = _MorphCmds()
+        plan = build_dense_scalar_sample_plan(
+            [("smile", "morph", "inputWeight[0]")],
+            [0, 1, 2],
+            cmds,
+        )
+        self.assertEqual(plan.physical_channels[0].hint, "direct_curve")
+        samples = NativeVmdBatchSampler(cmds).sample_dense_scalar_channels(
+            [0, 1, 2],
+            [("smile", "morph", "inputWeight[0]")],
+        )
+        self.assertEqual(cmds.calls[0]["channels"][0]["unit"], "scalar")
+        self.assertEqual(cmds.calls[0]["channels"][0]["hint"], "direct_curve")
+        track = samples.scalar_track("smile")
+        self.assertEqual(track.frames, (0.0, 1.0, 2.0))
+        self.assertEqual(list(track.values), [0.0, 1.0, 2.0])
+        self.assertEqual(samples.diagnostics["python_scalar_unpack_count"], 0)
+        samples.close()
+
     def test_packed_result_validates_header_length_and_finite_values(self):
         plan = build_dense_bone_sample_plan(["joint"], [0, 1])
-        packed = [2.0, 2.0, 6.0, 0.0, 6.0, 0.0]
+        packed = [
+            2.0,
+            2.0,
+            6.0,
+            0.0,
+            6.0,
+            0.0,
+            1.0,
+            2.0,
+            3.0,
+            2.0,
+            6.0,
+            2.0,
+            6.0,
+            0.0,
+            0.0,
+        ]
         packed.extend(float(index) for index in range(12))
-        rows, counts = parse_packed_result(packed, plan)
+        rows, counts, timing = parse_packed_result(packed, plan, require_timing=True)
         self.assertEqual(rows[0], tuple(float(index) for index in range(6)))
         self.assertEqual(counts, {"direct_curve": 0, "static": 6, "timed_mplug": 0})
+        self.assertEqual(
+            timing,
+            {
+                "set_current_time_wall_sec": 1.0,
+                "first_timed_mplug_read_wall_sec": 2.0,
+                "channel_loop_wall_sec": 3.0,
+                "classified_compound_group_count": 2,
+                "classified_compound_covered_channel_count": 6,
+                "compound_success_group_count": 2,
+                "compound_success_covered_channel_count": 6,
+                "compound_fallback_group_count": 0,
+                "compound_fallback_covered_channel_count": 0,
+            },
+        )
         with self.assertRaises(NativeVmdBatchSamplerError):
             parse_packed_result(packed[:-1], plan)
         with self.assertRaises(NativeVmdBatchSamplerError):
-            parse_packed_result([2.0, 2.0, 6.0, 0.0, 6.0, 0.0, *([float("nan")] * 12)], plan)
+            parse_packed_result(
+                [
+                    *packed[:6],
+                    1.0,
+                    2.0,
+                    3.0,
+                    2.0,
+                    6.0,
+                    2.0,
+                    6.0,
+                    0.0,
+                    0.0,
+                    *([float("nan")] * 12),
+                ],
+                plan,
+                require_timing=True,
+            )
         with self.assertRaisesRegex(NativeVmdBatchSamplerError, "unsupported native sampler protocol"):
-            parse_packed_result([1.0, 2.0, 6.0, 0.0, 6.0, 0.0, *([0.0] * 12)], plan)
+            parse_packed_result(
+                [
+                    1.0,
+                    2.0,
+                    6.0,
+                    0.0,
+                    6.0,
+                    0.0,
+                    1.0,
+                    2.0,
+                    3.0,
+                    2.0,
+                    6.0,
+                    2.0,
+                    6.0,
+                    0.0,
+                    0.0,
+                    *([0.0] * 12),
+                ],
+                plan,
+                require_timing=True,
+            )
+        with self.assertRaisesRegex(
+            NativeVmdBatchSamplerError,
+            "missing timing metadata",
+        ):
+            parse_packed_result(
+                [2.0, 2.0, 6.0, 0.0, 6.0, 0.0, *([0.0] * 12)],
+                plan,
+                require_timing=True,
+            )
+        for timing_index in range(6, 9):
+            malformed = list(packed)
+            malformed[timing_index] = float("nan")
+            with self.assertRaisesRegex(
+                NativeVmdBatchSamplerError,
+                "finite and non-negative",
+            ):
+                parse_packed_result(malformed, plan, require_timing=True)
+            malformed[timing_index] = -1.0
+            with self.assertRaisesRegex(
+                NativeVmdBatchSamplerError,
+                "finite and non-negative",
+            ):
+                parse_packed_result(malformed, plan, require_timing=True)
+
+        for count_index in range(9, 15):
+            malformed = list(packed)
+            malformed[count_index] = -1.0
+            with self.assertRaisesRegex(
+                NativeVmdBatchSamplerError,
+                "non-negative exact integer",
+            ):
+                parse_packed_result(malformed, plan, require_timing=True)
+            malformed[count_index] = 1.5
+            with self.assertRaisesRegex(
+                NativeVmdBatchSamplerError,
+                "exact integer",
+            ):
+                parse_packed_result(malformed, plan, require_timing=True)
+
+    def test_wall_v1_timing_extension_remains_parseable_but_not_production_required(self):
+        plan = build_dense_bone_sample_plan(["joint"], [0])
+        packed = [2.0, 1.0, 6.0, 0.0, 6.0, 0.0, 1.0, 2.0, 3.0]
+        packed.extend(float(index) for index in range(6))
+        _rows, _counts, timing = parse_packed_result(packed, plan)
+        self.assertEqual(timing["compound_group_count"], 0)
+        self.assertEqual(timing["compound_covered_channel_count"], 0)
+        with self.assertRaisesRegex(
+            NativeVmdBatchSamplerError,
+            "missing timing metadata",
+        ):
+            parse_packed_result(packed, plan, require_timing=True)
 
     def test_command_payload_and_logical_aliases_are_frame_major(self):
         cmds = _FakeCmds()
-        sampler = NativeVmdBatchSampler(cmds)
+        sampler = NativeVmdBatchSampler(cmds, use_direct_spool=False)
         routes = {
             "joint_a": {"translateX": ("shared", "value")},
             "joint_b": {"translateX": ("shared", "value")},
@@ -120,6 +529,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             [0, 1], ["joint_a", "joint_b"], routes
         )
         self.assertEqual(cmds.calls[0]["version"], 2)
+        self.assertEqual(cmds.calls[0]["timing"], sampler_module._TIMING_PROTOCOL)
         self.assertEqual(
             cmds.calls[0]["evaluation_policy"],
             sampler_module.EVALUATION_POLICY,
@@ -129,6 +539,18 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         self.assertEqual(samples.value("joint_b", "translateX", 1), 11.0)
         self.assertEqual(samples.sample_count, 22)
         self.assertEqual(samples.diagnostics["chunk_count"], 1)
+        self.assertEqual(samples.diagnostics["set_current_time_wall_sec"], 0.1)
+        self.assertEqual(samples.diagnostics["first_timed_mplug_read_wall_sec"], 0.2)
+        self.assertEqual(samples.diagnostics["channel_loop_wall_sec"], 0.3)
+        self.assertEqual(samples.diagnostics["classified_compound_group_count"], 1)
+        self.assertEqual(
+            samples.diagnostics["classified_compound_covered_channel_count"], 3
+        )
+        self.assertEqual(samples.diagnostics["compound_success_group_count"], 1)
+        self.assertEqual(
+            samples.diagnostics["compound_success_covered_channel_count"], 3
+        )
+        self.assertEqual(samples.diagnostics["compound_fallback_group_count"], 0)
         self.assertEqual(samples.plan._frame_indices, {0.0: 0, 1.0: 1})
         self.assertEqual(samples.plan._logical_indices[("joint_b", "translateX")], 0)
         # The hot path must remain dictionary indexed even when repeatedly
@@ -150,7 +572,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                 return 0.0
 
         cmds = _LoadedLegacySampler()
-        sampler = NativeVmdBatchSampler(cmds)
+        sampler = NativeVmdBatchSampler(cmds, use_direct_spool=False)
         samples = sampler.sample_dense_bone_channels(
             [0, 1],
             ["joint"],
@@ -171,7 +593,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         samples.close()
 
     def test_samples_use_read_only_mmap_and_cleanup_is_idempotent(self):
-        samples = NativeVmdBatchSampler(_FakeCmds()).sample_dense_bone_channels(
+        samples = NativeVmdBatchSampler(_FakeCmds(), use_direct_spool=False).sample_dense_bone_channels(
             [0, 1], ["joint"]
         )
         spool_path = Path(samples._spool_path)
@@ -185,6 +607,63 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         self.assertFalse(spool_path.exists())
         with self.assertRaisesRegex(RuntimeError, "samples are closed"):
             samples.value("joint", "translateX", 0)
+
+    def test_bone_track_is_detached_soa_with_alias_and_subset_parity(self):
+        routes = {
+            "joint_a": {"translateX": ("shared", "value")},
+            "joint_b": {"translateX": ("shared", "value")},
+        }
+        samples = NativeVmdBatchSampler(_FakeCmds(), use_direct_spool=False).sample_dense_bone_channels(
+            [0, 1, 2, 3], ["joint_a", "joint_b"], routes
+        )
+        track = samples.bone_track("joint_b", [0, 2, 3])
+        self.assertIsInstance(track, NativeDenseBoneTrack)
+        self.assertEqual(samples.diagnostics["python_scalar_unpack_count"], 0)
+        self.assertEqual(track.frames, (0.0, 2.0, 3.0))
+        self.assertEqual(list(track.translate_x), [0.0, 22.0, 33.0])
+        self.assertEqual(
+            list(track.rotate_z),
+            [
+                samples.value("joint_b", "rotateZ", frame)
+                for frame in track.frames
+            ],
+        )
+        # Named accessors return detached arrays, not mutable mmap-backed views.
+        detached = track.translate_x
+        detached[0] = 999.0
+        self.assertEqual(track.translate_x[0], 0.0)
+        samples.close()
+        self.assertEqual(list(track.translate_x), [0.0, 22.0, 33.0])
+
+    def test_bone_track_validates_joint_frames_and_order(self):
+        samples = NativeVmdBatchSampler(_FakeCmds(), use_direct_spool=False).sample_dense_bone_channels(
+            [0, 1, 2], ["joint"]
+        )
+        with self.assertRaises(KeyError):
+            samples.bone_track("missing", [0, 1])
+        with self.assertRaises(KeyError):
+            samples.bone_track("joint", [0, 4])
+        with self.assertRaises(NativeVmdBatchSamplerError):
+            samples.bone_track("joint", [1, 0])
+        with self.assertRaises(NativeVmdBatchSamplerError):
+            samples.bone_track("joint", [])
+        samples.close()
+        with self.assertRaisesRegex(RuntimeError, "samples are closed"):
+            samples.bone_track("joint")
+
+    def test_bone_track_reads_subset_across_native_chunks(self):
+        samples = NativeVmdBatchSampler(_FakeCmds(), use_direct_spool=False)
+        with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 12):
+            native_samples = samples.sample_dense_bone_channels(
+                [0, 1, 2, 3, 4], ["joint"]
+            )
+        track = native_samples.bone_track("joint", [0, 2, 4])
+        self.assertEqual(track.frames, (0.0, 2.0, 4.0))
+        self.assertEqual(
+            list(track.translate_x),
+            [native_samples.value("joint", "translateX", frame) for frame in track.frames],
+        )
+        native_samples.close()
 
     def test_second_chunk_failure_removes_partial_spool(self):
         class _BrokenSecondChunk(_FakeCmds):
@@ -201,7 +680,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             paths.append(path)
             return fd, path
 
-        sampler = NativeVmdBatchSampler(_BrokenSecondChunk())
+        sampler = NativeVmdBatchSampler(_BrokenSecondChunk(), use_direct_spool=False)
         with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 12), mock.patch.object(
             sampler_module.tempfile, "mkstemp", side_effect=track_mkstemp
         ), self.assertRaises(NativeVmdBatchSamplerError):
@@ -224,7 +703,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             paths.append(path)
             return fd, path
 
-        sampler = NativeVmdBatchSampler(_CancelledSecondChunk())
+        sampler = NativeVmdBatchSampler(_CancelledSecondChunk(), use_direct_spool=False)
         with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 12), mock.patch.object(
             sampler_module.tempfile, "mkstemp", side_effect=track_mkstemp
         ), self.assertRaises(KeyboardInterrupt):
@@ -237,7 +716,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             def mmdVmdBatchSample(self, payload=None):
                 raise RuntimeError("command unavailable")
 
-        sampler = NativeVmdBatchSampler(Broken())
+        sampler = NativeVmdBatchSampler(Broken(), use_direct_spool=False)
         with self.assertRaisesRegex(
             NativeVmdBatchSamplerError,
             "native sampler invocation failed: RuntimeError: command unavailable",
@@ -257,7 +736,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             _cmds.mmdVmdBatchSample = lambda **_payload: []
             return True
 
-        sampler = NativeVmdBatchSampler(cmds)
+        sampler = NativeVmdBatchSampler(cmds, use_direct_spool=False)
         with mock.patch(
             "mmd_tools.core.cpp_plugin_locator.running_maya_major_version",
             return_value="2024",
@@ -292,7 +771,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             pass
 
         candidate = Path("F:/missing/mmd_tools_cpp.mll")
-        sampler = NativeVmdBatchSampler(_NoCommand())
+        sampler = NativeVmdBatchSampler(_NoCommand(), use_direct_spool=False)
         with mock.patch(
             "mmd_tools.core.cpp_plugin_locator.running_maya_major_version",
             return_value="2024",
@@ -313,7 +792,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
             pass
 
         candidate = Path("F:/broken/mmd_tools_cpp.mll")
-        sampler = NativeVmdBatchSampler(_NoCommand())
+        sampler = NativeVmdBatchSampler(_NoCommand(), use_direct_spool=False)
         with mock.patch(
             "mmd_tools.core.cpp_plugin_locator.running_maya_major_version",
             return_value="2024",
@@ -353,11 +832,20 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                     0.0,
                     float(channel_count),
                     0.0,
+                    0.1 * len(self.calls),
+                    0.2 * len(self.calls),
+                    0.3 * len(self.calls),
+                    1.0,
+                    3.0,
+                    1.0,
+                    3.0,
+                    0.0,
+                    0.0,
                     *values,
                 ]
 
         cmds = _ChunkCmds()
-        sampler = NativeVmdBatchSampler(cmds)
+        sampler = NativeVmdBatchSampler(cmds, use_direct_spool=False)
         with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 12):
             samples = sampler.sample_dense_bone_channels(
                 [0, 1, 2, 3, 4], ["joint"]
@@ -376,6 +864,23 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         self.assertEqual(samples.diagnostics["chunk_count"], 3)
         self.assertEqual(samples.diagnostics["max_samples_per_chunk"], 12)
         self.assertEqual(len(samples.diagnostics["chunk_wall_sec"]), 3)
+        self.assertEqual(len(samples.diagnostics["chunk_set_current_time_wall_sec"]), 3)
+        self.assertEqual(samples.diagnostics["classified_compound_group_count"], 1)
+        self.assertEqual(
+            samples.diagnostics["classified_compound_covered_channel_count"], 3
+        )
+        for actual, expected in zip(
+            samples.diagnostics["chunk_set_current_time_wall_sec"],
+            [0.1, 0.2, 0.3],
+        ):
+            self.assertAlmostEqual(actual, expected)
+        self.assertAlmostEqual(
+            samples.diagnostics["set_current_time_wall_sec"], 0.6
+        )
+        self.assertAlmostEqual(
+            samples.diagnostics["first_timed_mplug_read_wall_sec"], 1.2
+        )
+        self.assertAlmostEqual(samples.diagnostics["channel_loop_wall_sec"], 1.8)
         self.assertTrue(
             all(
                 request["evaluation_policy"] == sampler_module.EVALUATION_POLICY
@@ -396,11 +901,20 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                     0.0,
                     float(channel_count),
                     0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
                     *([0.0] * (len(request["frames"]) * channel_count)),
                 ]
 
         cmds = _FrameBoundCmds()
-        sampler = NativeVmdBatchSampler(cmds)
+        sampler = NativeVmdBatchSampler(cmds, use_direct_spool=False)
         with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 100000):
             with mock.patch.object(sampler_module, "MAX_NATIVE_FRAMES", 2):
                 sampler.sample_dense_bone_channels(range(5), ["joint"])
@@ -431,11 +945,20 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                     0.0,
                     float(static_count),
                     float(timed_count),
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
                     *values,
                 ]
 
         cmds = _ChangingCmds()
-        sampler = NativeVmdBatchSampler(cmds)
+        sampler = NativeVmdBatchSampler(cmds, use_direct_spool=False)
         with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 12):
             with self.assertRaisesRegex(
                 NativeVmdBatchSamplerError,
@@ -446,9 +969,60 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         self.assertFalse(sampler.last_diagnostics["used"])
         self.assertIn("strategy counts differ", sampler.last_diagnostics["fallback_reason"])
 
+    def test_chunk_compound_diagnostics_mismatch_is_a_protocol_failure(self):
+        class _ChangingCompoundCmds(_FakeCmds):
+            def mmdVmdBatchSample(self, payload=None):
+                request = json.loads(payload)
+                self.calls.append(request)
+                channel_count = len(request["channels"])
+                values = [0.0] * (len(request["frames"]) * channel_count)
+                group_count = 1.0 if len(self.calls) == 1 else 2.0
+                covered_count = 3.0 if len(self.calls) == 1 else 6.0
+                return [
+                    2.0,
+                    len(request["frames"]),
+                    channel_count,
+                    0.0,
+                    float(channel_count),
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    group_count,
+                    covered_count,
+                    group_count,
+                    covered_count,
+                    0.0,
+                    0.0,
+                    *values,
+                ]
+
+        cmds = _ChangingCompoundCmds()
+        sampler = NativeVmdBatchSampler(cmds, use_direct_spool=False)
+        with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 12):
+            with self.assertRaisesRegex(
+                NativeVmdBatchSamplerError,
+                "compound diagnostics differ between chunks",
+            ):
+                sampler.sample_dense_bone_channels([0, 1, 2, 3], ["joint"])
+        self.assertEqual(sampler.last_diagnostics["classified_compound_group_count"], 1)
+        self.assertEqual(
+            sampler.last_diagnostics["classified_compound_covered_channel_count"], 3
+        )
+        self.assertEqual(
+            sampler.last_diagnostics["chunk_classified_compound_group_count"],
+            [1, 2],
+        )
+        self.assertEqual(
+            sampler.last_diagnostics["chunk_classified_compound_covered_channel_count"],
+            [3, 6],
+        )
+
     def test_diagnostics_sink_flushes_before_each_native_chunk(self):
         events = []
-        sampler = NativeVmdBatchSampler(_FakeCmds(), diagnostics_sink=events.append)
+        sampler = NativeVmdBatchSampler(
+            _FakeCmds(), diagnostics_sink=events.append, use_direct_spool=False
+        )
         with mock.patch.object(sampler_module, "MAX_NATIVE_SAMPLES", 12):
             sampler.sample_dense_bone_channels([0, 1, 2], ["joint"])
         statuses = [event.get("status") for event in events]

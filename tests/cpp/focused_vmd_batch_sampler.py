@@ -6,6 +6,8 @@ import json
 import math
 import os
 from pathlib import Path
+import struct
+import tempfile
 from typing import Any, Iterable, List
 
 
@@ -34,6 +36,7 @@ def _payload(frames: Iterable[float], channels: List[dict[str, str]]) -> str:
         {
             "version": 2,
             "evaluation_policy": "maya_timeline_bake_v1",
+            "timing": "wall_v3",
             "frames": list(frames),
             "channels": channels,
         },
@@ -49,6 +52,34 @@ def _call(cmds: Any, payload: str) -> List[float]:
     if any(not math.isfinite(value) for value in result):
         raise RuntimeError("native sampler returned a non-finite packed value")
     return result
+
+
+def _direct_payload(
+    frames: Iterable[float],
+    channels: List[dict[str, str]],
+    spool_path: str,
+    spool_bytes: int,
+    output_slots: List[int],
+    output_defaults: List[float],
+) -> str:
+    """Serialize one full Prepare-scoped native direct-spool request."""
+    return json.dumps(
+        {
+            "version": 2,
+            "evaluation_policy": "maya_timeline_bake_v1",
+            "timing": "wall_v3",
+            "mode": "direct_spool",
+            "frames": list(frames),
+            "channels": channels,
+            "spool_path": spool_path,
+            "spool_bytes": spool_bytes,
+            "output_channel_count": len(output_defaults),
+            "output_slots": output_slots,
+            "output_defaults": output_defaults,
+        },
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
 
 
 def _must_fail(cmds: Any, payload: str, label: str) -> None:
@@ -271,7 +302,14 @@ def main() -> int:
         )
         if computed_result[:6] != [2.0, 1.0, 1.0, 0.0, 0.0, 1.0]:
             raise RuntimeError(f"computed output was accepted as static: {computed_result[:6]!r}")
-        _assert_close(computed_result[6], 6.0, "computed timed fallback")
+        if len(computed_result) != 15 + 1:
+            raise RuntimeError("timing extension was not returned")
+        for timing_index in range(6, 9):
+            if computed_result[timing_index] < 0.0 or not math.isfinite(computed_result[timing_index]):
+                raise RuntimeError("invalid timing extension")
+        if computed_result[9:15] != [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]:
+            raise RuntimeError("computed output unexpectedly used a compound group")
+        _assert_close(computed_result[15], 6.0, "computed timed fallback")
 
         frames = [0.5, 1.25, 2.0]
         channels = [
@@ -289,8 +327,10 @@ def main() -> int:
 
         if packed[:6] != [2.0, 3.0, 5.0, 3.0, 1.0, 1.0]:
             raise RuntimeError(f"unexpected packed header: {packed[:6]!r}")
-        if len(packed) != 6 + len(frames) * len(channels):
+        if len(packed) != 15 + len(frames) * len(channels):
             raise RuntimeError(f"unexpected packed length: {len(packed)}")
+        if any(packed[index] < 0.0 for index in range(6, 9)):
+            raise RuntimeError("negative timing metadata")
         for frame_index, frame in enumerate(frames):
             expected = [
                 float(cmds.getAttr(f"{node}.rotateX", time=frame)),
@@ -299,15 +339,272 @@ def main() -> int:
                 float(cmds.getAttr(f"{node}.staticValue", time=frame)),
                 float(cmds.getAttr(f"{node}.convertedValue", time=frame)),
             ]
-            offset = 6 + frame_index * len(channels)
+            offset = 15 + frame_index * len(channels)
             for channel_index, value in enumerate(expected):
                 _assert_close(packed[offset + channel_index], value, f"frame {frame} channel {channel_index}")
+
+        # The direct-spool protocol keeps the same Timeline semantics and
+        # frame-major double layout, but resolves the route plan only once.
+        expected_bytes = len(frames) * len(channels) * 8
+        spool_fd, spool_path = tempfile.mkstemp(prefix="mmd_focused_direct_", suffix=".bin")
+        try:
+            os.ftruncate(spool_fd, expected_bytes)
+            os.close(spool_fd)
+            spool_fd = -1
+            direct = _call(
+                cmds,
+                _direct_payload(
+                    frames,
+                    channels,
+                    spool_path,
+                    expected_bytes,
+                    list(range(len(channels))),
+                    [0.0] * len(channels),
+                ),
+            )
+            if len(direct) != 27 or direct[:3] != [2.0, 3.0, 5.0]:
+                raise RuntimeError(f"unexpected direct spool header: {direct!r}")
+            direct_bytes = Path(spool_path).read_bytes()
+            if len(direct_bytes) != expected_bytes:
+                raise RuntimeError("direct spool byte size mismatch")
+            unpacked = struct.unpack("=" + "d" * (len(frames) * len(channels)), direct_bytes)
+            for index, value in enumerate(unpacked):
+                _assert_close(value, packed[15 + index], f"direct spool parity {index}")
+
+            # A Morph-like scalar request made only of direct animCurves must
+            # evaluate MFnAnimCurve at each requested time without advancing
+            # Maya's global Timeline or triggering a DG frame evaluation.
+            curve_frames = [0.25, 1.0, 1.75]
+            curve_bytes = len(curve_frames) * 8
+            curve_fd, curve_path = tempfile.mkstemp(
+                prefix="mmd_focused_direct_curve_", suffix=".bin"
+            )
+            try:
+                os.ftruncate(curve_fd, curve_bytes)
+                os.close(curve_fd)
+                curve_fd = -1
+                curve_entry_time = float(cmds.currentTime(query=True))
+                curve_ack = _call(
+                    cmds,
+                    _direct_payload(
+                        curve_frames,
+                        [
+                            {
+                                "plug": f"{node}.directValue",
+                                "unit": "scalar",
+                                "hint": "direct_curve",
+                            }
+                        ],
+                        curve_path,
+                        curve_bytes,
+                        [0],
+                        [0.0],
+                    ),
+                )
+                if curve_ack[:6] != [2.0, 3.0, 1.0, 1.0, 0.0, 0.0]:
+                    raise RuntimeError(
+                        f"unexpected direct-curve header: {curve_ack[:6]!r}"
+                    )
+                _assert_close(curve_ack[6], 0.0, "direct-curve Timeline wall")
+                _assert_close(
+                    float(cmds.currentTime(query=True)),
+                    curve_entry_time,
+                    "direct-curve current time preservation",
+                )
+                curve_values = struct.unpack(
+                    "=" + "d" * len(curve_frames),
+                    Path(curve_path).read_bytes(),
+                )
+                for frame, value in zip(curve_frames, curve_values):
+                    _assert_close(
+                        value,
+                        float(cmds.getAttr(f"{node}.directValue", time=frame)),
+                        f"direct-curve value {frame}",
+                    )
+            finally:
+                if curve_fd >= 0:
+                    os.close(curve_fd)
+                try:
+                    os.unlink(curve_path)
+                except FileNotFoundError:
+                    pass
+
+            # A fully static physics request has no native channels after the
+            # Python-side compatibility split.  Direct mode still owns the
+            # complete frame-major output through output_defaults.
+            static_frames = [0.0, 1.0]
+            static_defaults = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+            static_expected_bytes = len(static_frames) * len(static_defaults) * 8
+            static_fd, static_path = tempfile.mkstemp(
+                prefix="mmd_focused_direct_static_", suffix=".bin"
+            )
+            try:
+                os.ftruncate(static_fd, static_expected_bytes)
+                os.close(static_fd)
+                static_fd = -1
+                static_ack = _call(
+                    cmds,
+                    _direct_payload(
+                        static_frames,
+                        [],
+                        static_path,
+                        static_expected_bytes,
+                        [],
+                        static_defaults,
+                    ),
+                )
+                if static_ack[:6] != [2.0, 2.0, 6.0, 0.0, 0.0, 0.0]:
+                    raise RuntimeError(
+                        f"unexpected all-static direct header: {static_ack[:6]!r}"
+                    )
+                static_values = struct.unpack(
+                    "=" + "d" * (len(static_frames) * len(static_defaults)),
+                    Path(static_path).read_bytes(),
+                )
+                expected_static = tuple(static_defaults) * len(static_frames)
+                if static_values != expected_static:
+                    raise RuntimeError(
+                        f"all-static direct spool mismatch: {static_values!r}"
+                    )
+                _must_fail(
+                    cmds,
+                    _payload(static_frames, []),
+                    "packed empty channels",
+                )
+            finally:
+                if static_fd >= 0:
+                    os.close(static_fd)
+                try:
+                    os.unlink(static_path)
+                except FileNotFoundError:
+                    pass
+
+            long_frames = list(range(121))
+            long_expected_bytes = len(long_frames) * len(channels) * 8
+            long_fd, long_path = tempfile.mkstemp(prefix="mmd_focused_direct_long_", suffix=".bin")
+            try:
+                os.ftruncate(long_fd, long_expected_bytes)
+                os.close(long_fd)
+                long_fd = -1
+                long_ack = _call(
+                    cmds,
+                    _direct_payload(
+                        long_frames,
+                        channels,
+                        long_path,
+                        long_expected_bytes,
+                        list(range(len(channels))),
+                        [0.0] * len(channels),
+                    ),
+                )
+                if len(long_ack) != 37 or long_ack[15:17] != [1.0, 2.0]:
+                    raise RuntimeError("direct spool checkpoint acknowledgement mismatch")
+            finally:
+                if long_fd >= 0:
+                    os.close(long_fd)
+                try:
+                    os.unlink(long_path)
+                except FileNotFoundError:
+                    pass
+        finally:
+            if spool_fd >= 0:
+                os.close(spool_fd)
+            try:
+                os.unlink(spool_path)
+            except FileNotFoundError:
+                pass
 
         _assert_close(
             float(cmds.currentTime(query=True)),
             before_time,
             "timeline current time preservation",
         )
+
+        # Complete transform translate/rotate triples are eligible for the
+        # native compound path.  The packed result remains channel-major in
+        # the requested order while the extension reports native coverage.
+        compound_channels = [
+            {"plug": f"{node}.translate{axis}", "unit": "distance", "hint": "timed_mplug"}
+            for axis in ("X", "Y", "Z")
+        ] + [
+            {"plug": f"{node}.rotate{axis}", "unit": "angle", "hint": "timed_mplug"}
+            for axis in ("X", "Y", "Z")
+        ]
+        compound_packed = _call(cmds, _payload(frames, compound_channels))
+        if compound_packed[:6] != [2.0, 3.0, 6.0, 0.0, 0.0, 6.0]:
+            raise RuntimeError(f"unexpected compound strategy header: {compound_packed[:6]!r}")
+        if compound_packed[9:15] != [2.0, 6.0, 2.0, 6.0, 0.0, 0.0]:
+            raise RuntimeError(
+                f"compound diagnostics mismatch: {compound_packed[9:15]!r}"
+            )
+        for frame_index, frame in enumerate(frames):
+            expected = [
+                float(cmds.getAttr(f"{node}.translate{axis}", time=frame))
+                for axis in ("X", "Y", "Z")
+            ] + [
+                float(cmds.getAttr(f"{node}.rotate{axis}", time=frame))
+                for axis in ("X", "Y", "Z")
+            ]
+            offset = 15 + frame_index * len(compound_channels)
+            for channel_index, value in enumerate(expected):
+                _assert_close(
+                    compound_packed[offset + channel_index],
+                    value,
+                    f"compound frame {frame} channel {channel_index}",
+                )
+
+        # Regression: compound values must be refreshed for every frame.  A
+        # previous direct-spool implementation accidentally reused the first
+        # frame's compound tuple for the remainder of its 120-frame checkpoint.
+        compound_spool_bytes = len(frames) * len(compound_channels) * 8
+        compound_spool_fd, compound_spool_path = tempfile.mkstemp(
+            prefix="mmd_focused_compound_direct_", suffix=".bin"
+        )
+        try:
+            os.ftruncate(compound_spool_fd, compound_spool_bytes)
+            os.close(compound_spool_fd)
+            compound_spool_fd = -1
+            direct_compound = _call(
+                cmds,
+                _direct_payload(
+                    frames,
+                    compound_channels,
+                    compound_spool_path,
+                    compound_spool_bytes,
+                    list(range(len(compound_channels))),
+                    [0.0] * len(compound_channels),
+                ),
+            )
+            if len(direct_compound) != 27 or direct_compound[15:17] != [1.0, 1.0]:
+                raise RuntimeError("compound direct-spool checkpoint acknowledgement mismatch")
+            direct_compound_values = struct.unpack(
+                "=" + "d" * (len(frames) * len(compound_channels)),
+                Path(compound_spool_path).read_bytes(),
+            )
+            for index, value in enumerate(direct_compound_values):
+                _assert_close(
+                    value,
+                    compound_packed[15 + index],
+                    f"compound direct/packed parity {index}",
+                )
+        finally:
+            if compound_spool_fd >= 0:
+                os.close(compound_spool_fd)
+            try:
+                os.unlink(compound_spool_path)
+            except FileNotFoundError:
+                pass
+
+        partial_channels = compound_channels[:2]
+        partial_packed = _call(cmds, _payload([1.25], partial_channels))
+        if partial_packed[9:15] != [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]:
+            raise RuntimeError("partial compound group was incorrectly classified")
+        for channel_index, channel in enumerate(partial_channels):
+            _assert_close(
+                partial_packed[15 + channel_index],
+                float(cmds.getAttr(channel["plug"], time=1.25)),
+                f"partial compound channel {channel_index}",
+            )
         legacy_request = json.loads(_payload(frames, channels))
         legacy_request.pop("evaluation_policy")
         _must_fail(
@@ -343,8 +640,8 @@ def main() -> int:
                 ],
             ),
         )
-        _assert_close(static_pre_input[6], 1.25, "static physics pre-input frame 0")
-        _assert_close(static_pre_input[7], 1.25, "static physics pre-input frame 2")
+        _assert_close(static_pre_input[15], 1.25, "static physics pre-input frame 0")
+        _assert_close(static_pre_input[16], 1.25, "static physics pre-input frame 2")
         _must_fail(
             cmds,
             _payload(
@@ -570,8 +867,8 @@ def main() -> int:
         )
         expected_counts = {
             "morph_frames": 3,
-            "camera_frames": 3,
-            "light_frames": 3,
+            "camera_frames": 0,
+            "light_frames": 0,
             "ik_show_hide_frames": 2,
         }
         for section in (
@@ -622,6 +919,25 @@ def main() -> int:
                         float(source),
                         f"Mode C light {field}[{component}]",
                     )
+        unsupported_sections = mode_c_collector.diagnostics.get(
+            "unsupported_mode_c_sections", {}
+        )
+        if unsupported_sections != {"cameras": 1, "lights": 1}:
+            raise RuntimeError(
+                f"Mode C unsupported section evidence mismatch: {unsupported_sections!r}"
+            )
+        native_morph = mode_c_collector.diagnostics.get(
+            "native_morph_sampler", {}
+        )
+        if native_morph.get("strategy_counts", {}).get("direct_curve") != 1:
+            raise RuntimeError(
+                f"Mode C Morph did not use direct curve: {native_morph!r}"
+            )
+        _assert_close(
+            float(native_morph.get("set_current_time_wall_sec", -1.0)),
+            0.0,
+            "Mode C direct Morph Timeline wall",
+        )
         for row in collected["ik_show_hide_frames"]:
             frame_number = int(row["frame_number"])
             expected_state = nonbone_oracle["ik"][frame_number]
@@ -629,7 +945,7 @@ def main() -> int:
                 raise RuntimeError(
                     f"Mode C IK frame {frame_number} mismatch: {row!r}"
                 )
-        print("OK: Mode C morph/IK/camera/light normal Timeline parity")
+        print("OK: Mode C native Morph/IK parity; camera/light unsupported")
 
         _must_fail(
             cmds,
