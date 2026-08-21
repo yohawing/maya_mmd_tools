@@ -3,11 +3,23 @@
 全てのタブ間で共有される情報を一元管理します
 """
 
+from dataclasses import dataclass
+from typing import Optional
+
 from ..core.logger import get_logger
 from ..services.scene_model_service import SceneModelService
 from .qt_compat import QObject, Signal
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class ProgressState:
+    """Structured footer progress state shared by synchronous workflows."""
+
+    active: bool
+    label: str = ""
+    percentage: Optional[int] = None
 
 
 class ApplicationState(QObject):
@@ -22,6 +34,7 @@ class ApplicationState(QObject):
     model_refresh_completed = Signal(int)
     status_message = Signal(str)  # ステータスメッセージ
     progress_updated = Signal(int)  # 進捗状況 (0-100)
+    progress_state_changed = Signal(object)
 
     def __init__(self, scene_model_service=None):
         super().__init__()
@@ -31,6 +44,8 @@ class ApplicationState(QObject):
         self._model_info_cache = {}  # モデル情報のキャッシュ
         self._refresh_generation = 0
         self._refreshing = False
+        self._progress_generation = 0
+        self._active_progress_token = None
 
     @property
     def refresh_generation(self):
@@ -257,3 +272,35 @@ class ApplicationState(QObject):
     def emit_progress(self, value):
         """進捗状況を送信"""
         self.progress_updated.emit(max(0, min(100, value)))
+
+    def begin_progress(self, label: str = "") -> int:
+        """Start a progress owner and return its monotonic operation token."""
+        self._progress_generation += 1
+        token = self._progress_generation
+        self._active_progress_token = token
+        self.progress_state_changed.emit(ProgressState(True, str(label or ""), None))
+        return token
+
+    def update_progress_state(
+        self,
+        token: int,
+        label: str = "",
+        percentage: Optional[int] = None,
+    ) -> bool:
+        """Update only the currently owned progress operation."""
+        if token is None or token != self._active_progress_token:
+            return False
+        if percentage is not None:
+            percentage = max(0, min(100, int(percentage)))
+        self.progress_state_changed.emit(
+            ProgressState(True, str(label or ""), percentage)
+        )
+        return True
+
+    def end_progress(self, token: int) -> bool:
+        """End the operation if ``token`` still owns the footer."""
+        if token is None or token != self._active_progress_token:
+            return False
+        self._active_progress_token = None
+        self.progress_state_changed.emit(ProgressState(False, "", None))
+        return True

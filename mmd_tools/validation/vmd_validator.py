@@ -1,15 +1,44 @@
-"""Maya-independent structural validation for VMD Mode A/C export."""
+"""Maya-independent structural validation for VMD export strategies."""
 
+import hashlib
 import math
+from pathlib import Path
+import struct
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ..core.vmd_data import VmdData
 from .export_validator import ExportValidationIssue, ExportValidationReport
 
 
-VMD_MODE_A = "A"
-VMD_MODE_C = "C"
-VMD_MODES = frozenset({VMD_MODE_A, VMD_MODE_C})
+VMD_EXPORT_PRESERVE_KEYS = "preserve_keys"
+VMD_EXPORT_BAKE_TIMELINE = "bake_timeline"
+VMD_EXPORT_STRATEGIES = frozenset({VMD_EXPORT_PRESERVE_KEYS, VMD_EXPORT_BAKE_TIMELINE})
+_CURRENT_MODEL_BONE_SCOPE = "current_model_bone_names"
+_INVALID_BONE_SCOPE = object()
+
+
+# The stream verifier intentionally never retains one issue per record.  A
+# malformed multi-million-frame file must not turn validation itself into a
+# second unbounded allocation.
+_STREAM_MAX_ISSUES = 100
+_STREAM_SECTIONS = (
+    ("bone_frames", 111),
+    ("morph_frames", 23),
+    ("camera_frames", 61),
+    ("light_frames", 28),
+    ("shadow_frames", 9),
+    ("ik_show_hide_frames", 9),
+)
+_STREAM_METADATA_NAMES = {
+    "bone_frames": "bones",
+    "morph_frames": "morphs",
+    "camera_frames": "cameras",
+    "light_frames": "lights",
+    "shadow_frames": "shadows",
+    "ik_show_hide_frames": "ik",
+}
+_VMD_SIGNATURE = b"Vocaloid Motion Data"
+_VMD_SIGNATURE_V2 = b"Vocaloid Motion Data 0002"
 
 
 def _issue(code: str, path: str, message: str) -> ExportValidationIssue:
@@ -17,9 +46,43 @@ def _issue(code: str, path: str, message: str) -> ExportValidationIssue:
     return ExportValidationIssue(code, "fatal", True, path, message)
 
 
-def _warning(code: str, path: str, message: str) -> ExportValidationIssue:
-    """Create a non-blocking VMD issue that requires explicit acknowledgement."""
-    return ExportValidationIssue(code, "warning", False, path, message)
+def _normalize_frame_range(
+    frame_range: Optional[Tuple[int, int]],
+) -> Tuple[Optional[Tuple[int, int]], Optional[ExportValidationIssue]]:
+    """Normalize a requested frame range using the VMD validation contract."""
+
+    if frame_range is None:
+        return None, None
+    if not isinstance(frame_range, (tuple, list)) or len(frame_range) != 2:
+        return None, _issue(
+            "VMD_FRAME_RANGE",
+            "frame_range",
+            "VMD frame range must contain two integers",
+        )
+    start, end = frame_range
+    if (
+        isinstance(start, bool)
+        or isinstance(end, bool)
+        or not isinstance(start, int)
+        or not isinstance(end, int)
+    ):
+        return None, _issue(
+            "VMD_FRAME_RANGE",
+            "frame_range",
+            "VMD frame range must contain two integers",
+        )
+    if start < 0 or end < start or end > 0xFFFFFFFF:
+        return None, _issue(
+            "VMD_FRAME_RANGE",
+            "frame_range",
+            "VMD frame range must be ordered unsigned 32-bit integers",
+        )
+    return (start, end), None
+
+
+def _info(code: str, path: str, message: str) -> ExportValidationIssue:
+    """Create a non-blocking informational VMD issue."""
+    return ExportValidationIssue(code, "info", False, path, message)
 
 
 def _finite_values(values: Iterable[Any], path: str, issues: List[ExportValidationIssue]) -> None:
@@ -80,6 +143,21 @@ def _interpolation(value: Any, expected: int, path: str, issues: List[ExportVali
         )
 
 
+def _raw_bone_scope(raw_provenance: Any) -> Any:
+    """Return the optional Current Model supported-bone name scope."""
+    if not isinstance(raw_provenance, Mapping) or _CURRENT_MODEL_BONE_SCOPE not in raw_provenance:
+        return None
+    values = raw_provenance.get(_CURRENT_MODEL_BONE_SCOPE)
+    if not isinstance(values, (list, tuple, set, frozenset)):
+        return _INVALID_BONE_SCOPE
+    scope = set()
+    for value in values:
+        if not isinstance(value, str) or not value:
+            return _INVALID_BONE_SCOPE
+        scope.add(value)
+    return scope
+
+
 def _raw_bone_provenance_records(
     raw_provenance: Any,
     frame_range: Optional[Tuple[int, int]] = None,
@@ -97,11 +175,17 @@ def _raw_bone_provenance_records(
     if expected_count != len(records):
         return True, None
 
+    scope = _raw_bone_scope(raw_provenance)
+    if scope is _INVALID_BONE_SCOPE:
+        return True, None
+
     normalized: Dict[Tuple[str, int], bytes] = {}
     for record in records:
         if not isinstance(record, Mapping):
             return True, None
         name = str(record.get("bone_name") or "")
+        if scope is not None and name not in scope:
+            continue
         try:
             frame_number = int(record.get("frame_number"))
             interpolation = bytes(record.get("interpolation", ()))
@@ -165,11 +249,17 @@ def _raw_bone_transform_records(
     if expected_count != len(records):
         return True, None
 
+    scope = _raw_bone_scope(raw_provenance)
+    if scope is _INVALID_BONE_SCOPE:
+        return True, None
+
     normalized: Dict[Tuple[str, int], Tuple[Tuple[float, ...], Tuple[float, ...]]] = {}
     for record in records:
         if not isinstance(record, Mapping):
             return True, None
         name = str(record.get("bone_name") or "")
+        if scope is not None and name not in scope:
+            continue
         try:
             frame_number = int(record.get("frame_number"))
             position = tuple(float(value) for value in record.get("position", ()))
@@ -252,45 +342,53 @@ def _raw_bone_transform_mismatch(
 
 def validate_vmd_data(
     vmd_data: VmdData,
-    mode: str = VMD_MODE_C,
+    export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
     *,
     raw_provenance: Optional[Any] = None,
     frame_range: Optional[Tuple[int, int]] = None,
     require_raw_provenance: bool = True,
 ) -> ExportValidationReport:
-    """Validate a normalized VMD payload for Mode A or Mode C.
+    """Validate a normalized VMD payload for the selected export strategy.
 
-    Mode A requires caller-provided raw provenance so an imported motion is
-    never silently presented as a raw round-trip.  Mode C validates evaluated
-    frame payloads and does not require provenance.
+    Preserving imported keys requires caller-provided raw provenance so an
+    imported motion is never silently presented as a raw round-trip.  Baking
+    the timeline validates evaluated frame payloads and does not require
+    provenance.
     """
-    mode = str(mode or "").upper()
+    export_strategy = str(export_strategy or "").lower()
     issues = []
-    if mode not in VMD_MODES:
-        issues.append(_issue("VMD_MODE_UNSUPPORTED", "mode", f"VMD mode {mode!r} is not supported"))
-    if mode == VMD_MODE_A and require_raw_provenance and raw_provenance is None:
+    if export_strategy not in VMD_EXPORT_STRATEGIES:
+        issues.append(
+            _issue(
+                "VMD_EXPORT_STRATEGY_UNSUPPORTED",
+                "export_strategy",
+                f"VMD export strategy {export_strategy!r} is not supported",
+            )
+        )
+    if export_strategy == VMD_EXPORT_PRESERVE_KEYS and require_raw_provenance and raw_provenance is None:
         issues.append(
             _issue(
                 "VMD_RAW_PROVENANCE_MISSING",
                 "raw_provenance",
-                "VMD Mode A requires imported raw key/interpolation provenance",
+                "Preserve Keys requires imported raw key/interpolation provenance",
             )
         )
     if not isinstance(vmd_data, VmdData):
         issues.append(_issue("OUTPUT_PARSE_FAILED", "animation_data", "VMD animation data must be VmdData"))
-        return ExportValidationReport("vmd", tuple(issues), mode=mode)
+        return ExportValidationReport("vmd", tuple(issues), mode=export_strategy)
 
     if (
-        mode == VMD_MODE_C
+        export_strategy == VMD_EXPORT_BAKE_TIMELINE
         and isinstance(raw_provenance, Mapping)
         and isinstance(raw_provenance.get("raw_bone_interpolation"), list)
         and raw_provenance["raw_bone_interpolation"]
+        and raw_provenance.get("raw_bone_transform_complete") is not True
     ):
         issues.append(
-            _warning(
-                "VMD_MODE_C_RAW_LOSS",
-                "mode",
-                "VMD Mode C dense bake does not preserve imported raw bone keys or interpolation bytes; acknowledge to continue",
+            _info(
+                "VMD_BAKE_TIMELINE_RAW_LOSS",
+                "export_strategy",
+                "Bake Timeline does not preserve imported raw bone keys or interpolation bytes",
             )
         )
 
@@ -318,7 +416,7 @@ def validate_vmd_data(
         if not math.isfinite(norm) or norm <= 1e-12:
             issues.append(_issue("VMD_QUATERNION_INVALID", f"{path}.rotation", "VMD quaternion must not be zero"))
 
-    if mode == VMD_MODE_A:
+    if export_strategy == VMD_EXPORT_PRESERVE_KEYS:
         raw_frame_range = (start, end) if start is not None and end is not None else None
         has_raw_records, expected_raw_records = _raw_bone_provenance_records(
             raw_provenance,
@@ -330,7 +428,7 @@ def validate_vmd_data(
                     _issue(
                         "VMD_RAW_PROVENANCE_MISMATCH",
                         "raw_provenance.raw_bone_interpolation",
-                        "VMD Mode A raw bone provenance is incomplete or malformed",
+                        "Preserve Keys raw bone provenance is incomplete or malformed",
                     )
                 )
             else:
@@ -343,7 +441,7 @@ def validate_vmd_data(
                         _issue(
                             "VMD_RAW_PROVENANCE_MISMATCH",
                             "raw_provenance.raw_bone_interpolation",
-                            "VMD Mode A raw bone key/interpolation mismatch: "
+                            "Preserve Keys raw bone key/interpolation mismatch: "
                             f"missing={missing}, extra={extra}, changed={changed}, duplicate={duplicate}",
                         )
                     )
@@ -357,7 +455,7 @@ def validate_vmd_data(
                     _issue(
                         "VMD_RAW_PROVENANCE_MISMATCH",
                         "raw_provenance.raw_bone_interpolation",
-                        "VMD Mode A raw bone transform provenance is incomplete or malformed",
+                        "Preserve Keys raw bone transform provenance is incomplete or malformed",
                     )
                 )
             else:
@@ -370,7 +468,7 @@ def validate_vmd_data(
                         _issue(
                             "VMD_RAW_PROVENANCE_MISMATCH",
                             "raw_provenance.raw_bone_interpolation",
-                            "VMD Mode A raw bone position/rotation mismatch: "
+                            "Preserve Keys raw bone position/rotation mismatch: "
                             f"missing={missing}, extra={extra}, changed={changed}, duplicate={duplicate}",
                         )
                     )
@@ -476,7 +574,7 @@ def validate_vmd_data(
                         )
                     )
 
-    return ExportValidationReport("vmd", tuple(issues), mode=mode)
+    return ExportValidationReport("vmd", tuple(issues), mode=export_strategy)
 
 
 def _bounded_int(
@@ -511,7 +609,7 @@ def _frame_sections(vmd_data: VmdData) -> Iterable[Tuple[str, Iterable[Any]]]:
 
 def verify_vmd_output(
     file_path: str,
-    mode: str = VMD_MODE_C,
+    export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
     *,
     expected_counts: Optional[Mapping[str, int]] = None,
 ) -> ExportValidationReport:
@@ -528,11 +626,11 @@ def verify_vmd_output(
                     f"VMD output could not be parsed: {type(exc).__name__}",
                 ),
             ),
-            mode=str(mode or "").upper(),
+            mode=str(export_strategy or "").lower(),
         )
     report = validate_vmd_data(
         vmd_data,
-        mode=mode,
+        export_strategy=export_strategy,
         require_raw_provenance=False,
     )
     section_names = {
@@ -565,10 +663,461 @@ def verify_vmd_output(
     return report
 
 
+def _stream_issue(
+    issues: List[ExportValidationIssue],
+    code: str,
+    path: str,
+    message: str,
+) -> None:
+    """Append a bounded blocking issue for the byte-stream verifier."""
+    if len(issues) < _STREAM_MAX_ISSUES:
+        issues.append(_issue(code, path, message))
+
+
+def _stream_info(
+    issues: List[ExportValidationIssue],
+    code: str,
+    path: str,
+    message: str,
+) -> None:
+    """Append a bounded informational issue for the byte-stream verifier."""
+    if len(issues) < _STREAM_MAX_ISSUES:
+        issues.append(_info(code, path, message))
+
+
+def _stream_name(
+    raw_name: bytes,
+    path: str,
+    issues: List[ExportValidationIssue],
+) -> Optional[str]:
+    """Decode one fixed CP932 name without retaining it after validation."""
+    try:
+        name = raw_name.split(b"\x00", 1)[0].decode("cp932")
+    except UnicodeDecodeError:
+        _stream_issue(
+            issues,
+            "OUTPUT_PARSE_FAILED",
+            path,
+            "VMD fixed-width name is not valid CP932",
+        )
+        return None
+    if not name.strip():
+        _stream_issue(issues, "VMD_NAME_EMPTY", path, "VMD bone or morph name must not be empty")
+    return name
+
+
+def _stream_finite(
+    values: Iterable[float],
+    path: str,
+    issues: List[ExportValidationIssue],
+) -> None:
+    """Validate already-unpacked f32 values without retaining their record."""
+    if not all(math.isfinite(value) for value in values):
+        _stream_issue(
+            issues,
+            "VMD_NON_FINITE_NUMBER",
+            path,
+            "VMD numeric value must be finite",
+        )
+
+
+def verify_vmd_output_streaming(
+    file_path: str,
+    export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
+    *,
+    expected_counts: Optional[Mapping[str, int]] = None,
+    expected_bounds: Optional[Mapping[str, Any]] = None,
+    expected_sha256: Optional[str] = None,
+    expected_size: Optional[int] = None,
+    expected_frame_range: Optional[Tuple[int, int]] = None,
+    raw_loss_warning_required: bool = False,
+    ack_warnings: bool = False,
+) -> ExportValidationReport:
+    """Verify a VMD file one wire record at a time.
+
+    Unlike :func:`verify_vmd_output`, this verifier never constructs
+    ``VmdData`` or retains frame/name objects.  It accepts the optional tail
+    sections used by legacy VMD writers, while requiring each section that is
+    present to have a complete count and complete records.  The stream writer
+    emits all six canonical count fields, including an empty IK section.
+    """
+    normalized_strategy = str(export_strategy or "").lower()
+    issues: List[ExportValidationIssue] = []
+    metadata_names = frozenset(_STREAM_METADATA_NAMES.values())
+    canonical_counts: Optional[Dict[str, int]] = None
+    if expected_counts is not None:
+        counts_are_canonical = isinstance(expected_counts, Mapping) and set(expected_counts) == metadata_names
+        if counts_are_canonical:
+            canonical_counts = {
+                section: expected_counts[name]
+                for section, name in _STREAM_METADATA_NAMES.items()
+            }
+            counts_are_canonical = all(
+                type(value) is int and 0 <= value <= 0xFFFFFFFF
+                for value in canonical_counts.values()
+            )
+        if not counts_are_canonical:
+            canonical_counts = None
+            _stream_issue(
+                issues,
+                "VMD_FRAME_COUNT_MISMATCH",
+                "expected_counts",
+                "VMD stream counts must declare exactly six canonical unsigned 32-bit counts",
+            )
+
+    canonical_bounds: Optional[Dict[str, Tuple[Optional[int], Optional[int]]]] = None
+    if expected_bounds is not None:
+        bounds_are_canonical = isinstance(expected_bounds, Mapping) and set(expected_bounds) == metadata_names
+        if bounds_are_canonical:
+            try:
+                canonical_bounds = {
+                    section: (expected_bounds[name].minimum, expected_bounds[name].maximum)
+                    for section, name in _STREAM_METADATA_NAMES.items()
+                }
+            except AttributeError:
+                bounds_are_canonical = False
+            else:
+                bounds_are_canonical = all(
+                    (minimum is None and maximum is None)
+                    or (
+                        type(minimum) is int
+                        and type(maximum) is int
+                        and 0 <= minimum <= maximum <= 0xFFFFFFFF
+                    )
+                    for minimum, maximum in canonical_bounds.values()
+                )
+        if not bounds_are_canonical:
+            canonical_bounds = None
+            _stream_issue(
+                issues,
+                "VMD_FRAME_RANGE",
+                "expected_bounds",
+                "VMD stream bounds must declare six canonical minimum/maximum pairs",
+            )
+
+    normalized_frame_range, frame_range_issue = _normalize_frame_range(expected_frame_range)
+    if frame_range_issue is not None:
+        _stream_issue(
+            issues,
+            frame_range_issue.code,
+            frame_range_issue.path,
+            frame_range_issue.message,
+        )
+    if normalized_strategy not in VMD_EXPORT_STRATEGIES:
+        _stream_issue(
+            issues,
+            "VMD_EXPORT_STRATEGY_UNSUPPORTED",
+            "export_strategy",
+            "VMD export strategy {!r} is not supported".format(normalized_strategy),
+        )
+
+    output_path = Path(file_path)
+    if not output_path.is_file():
+        _stream_issue(issues, "OUTPUT_FILE_MISSING", "output", "temporary output file does not exist")
+        return ExportValidationReport("vmd", tuple(issues), mode=normalized_strategy)
+    try:
+        file_size = output_path.stat().st_size
+    except OSError:
+        _stream_issue(issues, "OUTPUT_PARSE_FAILED", "output", "VMD output size could not be read")
+        return ExportValidationReport("vmd", tuple(issues), mode=normalized_strategy)
+    if file_size == 0:
+        _stream_issue(issues, "OUTPUT_FILE_EMPTY", "output", "temporary output file is empty")
+        return ExportValidationReport("vmd", tuple(issues), mode=normalized_strategy)
+
+    digest = hashlib.sha256()
+    bytes_read = 0
+    counts = {section: 0 for section, _ in _STREAM_SECTIONS}
+    minimums = {section: None for section, _ in _STREAM_SECTIONS}
+    maximums = {section: None for section, _ in _STREAM_SECTIONS}
+
+    def read_bytes(handle: Any, size: int) -> bytes:
+        nonlocal bytes_read
+        data = handle.read(size)
+        bytes_read += len(data)
+        digest.update(data)
+        return data
+
+    def read_exact(handle: Any, size: int, path: str) -> Optional[bytes]:
+        data = read_bytes(handle, size)
+        if len(data) != size:
+            _stream_issue(
+                issues,
+                "OUTPUT_PARSE_FAILED",
+                path,
+                "VMD output is truncated (expected {} bytes, got {})".format(size, len(data)),
+            )
+            return None
+        return data
+
+    def record_frame(section: str, frame_number: int, path: str) -> None:
+        counts[section] += 1
+        minimum = minimums[section]
+        maximum = maximums[section]
+        minimums[section] = frame_number if minimum is None else min(minimum, frame_number)
+        maximums[section] = frame_number if maximum is None else max(maximum, frame_number)
+        if normalized_frame_range is not None:
+            start, end = normalized_frame_range
+            if not start <= frame_number <= end:
+                _stream_issue(
+                    issues,
+                    "VMD_FRAME_RANGE",
+                    path + ".frame_number",
+                    "VMD frame {} is outside requested range {}..{}".format(
+                        frame_number,
+                        start,
+                        end,
+                    ),
+                )
+
+    def consume_remaining(handle: Any) -> None:
+        """Finish hashing bytes after a structural failure without retaining them."""
+        nonlocal bytes_read
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            bytes_read += len(chunk)
+            digest.update(chunk)
+
+    try:
+        with output_path.open("rb") as handle:
+            header = read_bytes(handle, 30)
+            if len(header) != 30:
+                _stream_issue(
+                    issues,
+                    "OUTPUT_PARSE_FAILED",
+                    "output.header",
+                    "VMD output header is truncated",
+                )
+                consume_remaining(handle)
+            elif not (
+                header.startswith(_VMD_SIGNATURE_V2) or header.startswith(_VMD_SIGNATURE)
+            ):
+                _stream_issue(
+                    issues,
+                    "OUTPUT_HEADER_INVALID",
+                    "output.header",
+                    "VMD output header is invalid",
+                )
+                consume_remaining(handle)
+            else:
+                model_name = read_exact(handle, 20, "output.model_name")
+                if model_name is None:
+                    consume_remaining(handle)
+                else:
+                    try:
+                        model_name.split(b"\x00", 1)[0].decode("cp932")
+                    except UnicodeDecodeError:
+                        _stream_issue(
+                            issues,
+                            "OUTPUT_PARSE_FAILED",
+                            "output.model_name",
+                            "VMD model name is not valid CP932",
+                        )
+
+                    stopped = False
+                    for section_index, (section, record_size) in enumerate(_STREAM_SECTIONS):
+                        count_data = read_bytes(handle, 4)
+                        if not count_data:
+                            # Camera and later sections were historically
+                            # optional.  End-of-file here is valid only for
+                            # that optional tail.
+                            if section_index < 2 or canonical_counts is not None:
+                                _stream_issue(
+                                    issues,
+                                    "OUTPUT_PARSE_FAILED",
+                                    "output.{}.count".format(section),
+                                    "VMD output is missing a required section count",
+                                )
+                            break
+                        if len(count_data) != 4:
+                            _stream_issue(
+                                issues,
+                                "OUTPUT_PARSE_FAILED",
+                                "output.{}.count".format(section),
+                                "VMD section count is truncated",
+                            )
+                            consume_remaining(handle)
+                            stopped = True
+                            break
+                        (section_count,) = struct.unpack("<I", count_data)
+                        for index in range(section_count):
+                            path = "output.{}[{}]".format(section, index)
+                            if section == "ik_show_hide_frames":
+                                fixed = read_exact(handle, record_size, path)
+                                if fixed is None:
+                                    stopped = True
+                                    break
+                                frame_number, visible, ik_count = struct.unpack("<IBI", fixed)
+                                record_frame(section, frame_number, path)
+                                if visible not in (0, 1):
+                                    _stream_issue(
+                                        issues,
+                                        "VMD_IK_FLAG_RANGE",
+                                        path + ".visible",
+                                        "VMD visibility flag must be 0 or 1",
+                                    )
+                                for state_index in range(ik_count):
+                                    state_path = "{}.ik_states[{}]".format(path, state_index)
+                                    state = read_exact(handle, 21, state_path)
+                                    if state is None:
+                                        stopped = True
+                                        break
+                                    _stream_name(state[:20], state_path + ".name", issues)
+                                    if state[20] not in (0, 1):
+                                        _stream_issue(
+                                            issues,
+                                            "VMD_IK_FLAG_RANGE",
+                                            state_path + ".enabled",
+                                            "VMD IK flag must be 0 or 1",
+                                        )
+                                if stopped:
+                                    break
+                                continue
+
+                            raw = read_exact(handle, record_size, path)
+                            if raw is None:
+                                stopped = True
+                                break
+                            if section == "bone_frames":
+                                _stream_name(raw[:15], path + ".bone_name", issues)
+                                frame_number = struct.unpack_from("<I", raw, 15)[0]
+                                position = struct.unpack_from("<fff", raw, 19)
+                                rotation = struct.unpack_from("<ffff", raw, 31)
+                                _stream_finite(position, path + ".position", issues)
+                                _stream_finite(rotation, path + ".rotation", issues)
+                                norm = math.sqrt(sum(value * value for value in rotation))
+                                if not math.isfinite(norm) or norm <= 1.0e-12:
+                                    _stream_issue(
+                                        issues,
+                                        "VMD_QUATERNION_INVALID",
+                                        path + ".rotation",
+                                        "VMD quaternion must not be zero",
+                                    )
+                            elif section == "morph_frames":
+                                _stream_name(raw[:15], path + ".morph_name", issues)
+                                frame_number = struct.unpack_from("<I", raw, 15)[0]
+                                _stream_finite((struct.unpack_from("<f", raw, 19)[0],), path + ".value", issues)
+                            elif section == "camera_frames":
+                                frame_number = struct.unpack_from("<I", raw, 0)[0]
+                                distance = struct.unpack_from("<f", raw, 4)[0]
+                                position = struct.unpack_from("<fff", raw, 8)
+                                rotation = struct.unpack_from("<fff", raw, 20)
+                                _stream_finite((distance,), path + ".distance", issues)
+                                _stream_finite(position, path + ".position", issues)
+                                _stream_finite(rotation, path + ".rotation", issues)
+                                perspective = raw[60]
+                                if perspective not in (0, 1):
+                                    _stream_issue(
+                                        issues,
+                                        "VMD_PERSPECTIVE_RANGE",
+                                        path + ".perspective",
+                                        "VMD perspective must be 0 or 1",
+                                    )
+                            elif section == "light_frames":
+                                frame_number = struct.unpack_from("<I", raw, 0)[0]
+                                _stream_finite(struct.unpack_from("<fff", raw, 4), path + ".color", issues)
+                                _stream_finite(struct.unpack_from("<fff", raw, 16), path + ".position", issues)
+                            else:
+                                frame_number = struct.unpack_from("<I", raw, 0)[0]
+                                if raw[4] not in (0, 1, 2):
+                                    _stream_issue(
+                                        issues,
+                                        "VMD_SHADOW_MODE_RANGE",
+                                        path + ".mode",
+                                        "VMD shadow mode must be 0, 1, or 2",
+                                    )
+                                _stream_finite((struct.unpack_from("<f", raw, 5)[0],), path + ".distance", issues)
+                            record_frame(section, frame_number, path)
+                        if stopped:
+                            consume_remaining(handle)
+                            break
+                    if not stopped:
+                        trailing = read_bytes(handle, 1)
+                        if trailing:
+                            _stream_issue(
+                                issues,
+                                "OUTPUT_PARSE_FAILED",
+                                "output.trailing_bytes",
+                                "VMD output contains trailing bytes after the final section",
+                            )
+                            consume_remaining(handle)
+    except OSError as exc:
+        _stream_issue(
+            issues,
+            "OUTPUT_PARSE_FAILED",
+            "output",
+            "VMD output could not be read: {}".format(type(exc).__name__),
+        )
+
+    if raw_loss_warning_required and not ack_warnings and normalized_strategy == VMD_EXPORT_BAKE_TIMELINE:
+        _stream_info(
+            issues,
+            "VMD_BAKE_TIMELINE_RAW_LOSS",
+            "export_strategy",
+            "Bake Timeline does not preserve imported raw bone keys or interpolation bytes",
+        )
+
+    for section, _ in _STREAM_SECTIONS:
+        expected = canonical_counts.get(section) if canonical_counts is not None else None
+        if expected is not None and expected != counts[section]:
+            _stream_issue(
+                issues,
+                "VMD_FRAME_COUNT_MISMATCH",
+                "output.{}".format(section),
+                "VMD {} count {} does not match expected count {}".format(
+                    section,
+                    counts[section],
+                    expected,
+                ),
+            )
+    if canonical_bounds is not None:
+        for section, expected in canonical_bounds.items():
+            actual = (minimums[section], maximums[section])
+            if actual != expected:
+                _stream_issue(
+                    issues,
+                    "VMD_FRAME_RANGE",
+                    "output.{}.frame_bounds".format(section),
+                    "VMD {} bounds {} do not match expected bounds {}".format(
+                        section,
+                        actual,
+                        expected,
+                    ),
+                )
+
+    actual_sha256 = digest.hexdigest()
+    if expected_sha256 is not None:
+        expected_digest = str(expected_sha256)
+        if expected_digest.startswith("sha256:"):
+            expected_digest = expected_digest[7:]
+        if actual_sha256 != expected_digest:
+            _stream_issue(
+                issues,
+                "OUTPUT_PARSE_FAILED",
+                "output.sha256",
+                "VMD output SHA-256 {} does not match expected {}".format(actual_sha256, expected_digest),
+            )
+    if expected_size is not None:
+        try:
+            normalized_size = int(expected_size)
+        except (TypeError, ValueError, OverflowError):
+            normalized_size = None
+        if normalized_size is not None and bytes_read != normalized_size:
+            _stream_issue(
+                issues,
+                "OUTPUT_PARSE_FAILED",
+                "output.size",
+                "VMD output size {} does not match expected {}".format(bytes_read, normalized_size),
+            )
+    return ExportValidationReport("vmd", tuple(issues), mode=normalized_strategy)
+
+
 __all__ = [
-    "VMD_MODE_A",
-    "VMD_MODE_C",
-    "VMD_MODES",
+    "VMD_EXPORT_PRESERVE_KEYS",
+    "VMD_EXPORT_BAKE_TIMELINE",
+    "VMD_EXPORT_STRATEGIES",
     "validate_vmd_data",
     "verify_vmd_output",
+    "verify_vmd_output_streaming",
 ]

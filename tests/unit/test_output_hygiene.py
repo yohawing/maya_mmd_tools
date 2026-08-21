@@ -246,9 +246,52 @@ class OutputHygieneTest(unittest.TestCase):
                         repeated_warnings=0,
                     )
 
+            persisted = json.loads(report.read_text(encoding="utf-8"))
+
         terminal = "\n".join(str(call.args[0]) for call in print_mock.call_args_list)
         self.assertIn("tests=2 pass=1 skip=0 fail=1", terminal)
         self.assertIn("first failure: test runner exited with code 3", terminal)
+
+        self.assertEqual(persisted["returncode"], 3)
+        self.assertEqual(persisted["status"], "fail")
+        self.assertEqual(
+            persisted["summary"],
+            {"tests": 2, "pass": 1, "skip": 0, "fail": 1},
+        )
+        self.assertEqual(persisted["first_failure"], "test runner exited with code 3")
+        self.assertEqual(persisted["log"], str(log.resolve()))
+
+    def test_missing_child_report_is_persisted_with_log_tail(self):
+        controller = importlib.import_module("tests.run_tests")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "missing-result.json"
+            log = root / "result.log"
+            log.write_text(
+                "Command: mayapy tests/maya_test_runner.py\n\n"
+                "Traceback (most recent call last):\n"
+                "QWidget: Cannot create a QWidget without QApplication\n",
+                encoding="utf-8",
+            )
+            with mock.patch("builtins.print"):
+                with self.assertRaisesRegex(SystemExit, "1"):
+                    controller._finish_run(
+                        test_type="unit",
+                        report_path=report,
+                        log_path=log,
+                        returncode=1,
+                        started=time.perf_counter(),
+                        repeated_warnings=0,
+                    )
+
+            persisted = json.loads(report.read_text(encoding="utf-8"))
+
+        self.assertEqual(persisted["status"], "fail")
+        self.assertEqual(persisted["summary"], {"tests": 1, "pass": 0, "skip": 0, "fail": 1})
+        self.assertEqual(persisted["returncode"], 1)
+        self.assertIn("QWidget: Cannot create a QWidget without QApplication", "\n".join(persisted["log_tail"]))
+        self.assertIn("No such file", persisted["error"])
 
     def test_direct_mayapy_version_is_inferred_from_executable_path(self):
         controller = importlib.import_module("tests.run_tests")

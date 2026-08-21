@@ -15,7 +15,7 @@ class TestValidationConsoleRendering(unittest.TestCase):
     """Console text must be derived from the same report/catalog as artifacts."""
 
     def test_ready_report_has_stable_summary(self):
-        report = ExportValidationReport("vmd", (), mode="C")
+        report = ExportValidationReport("vmd", (), mode="bake_timeline")
 
         rendered = render_validation_console_text(
             report,
@@ -24,7 +24,7 @@ class TestValidationConsoleRendering(unittest.TestCase):
 
         self.assertIn("Status: READY", rendered)
         self.assertIn("Format: vmd", rendered)
-        self.assertIn("Mode: C", rendered)
+        self.assertIn("Export strategy: bake_timeline", rendered)
         self.assertIn("Snapshot: sha256:test", rendered)
         self.assertIn("No validation issues.", rendered)
 
@@ -40,15 +40,15 @@ class TestValidationConsoleRendering(unittest.TestCase):
                     "imported raw key provenance was not supplied",
                 ),
             ),
-            mode="A",
+            mode="preserve_keys",
         )
 
-        rendered = render_validation_console_text(report, {"fixture": "mode_a_missing_raw"})
+        rendered = render_validation_console_text(report, {"fixture": "preserve_keys_missing_raw"})
 
         self.assertIn("[FATAL] VMD_RAW_PROVENANCE_MISSING", rendered)
         self.assertIn("imported raw key provenance was not supplied", rendered)
         self.assertIn("Remediation:", rendered)
-        self.assertIn("mode_a_missing_raw", rendered)
+        self.assertIn("preserve_keys_missing_raw", rendered)
 
     def test_oversized_report_shows_folded_occurrence_counts(self):
         report = ExportValidationReport(
@@ -80,22 +80,23 @@ class TestValidationConsoleRendering(unittest.TestCase):
                 "vmd",
                 (
                     ExportValidationIssue(
-                        "VMD_MODE_C_RAW_LOSS",
+                        "VMD_BAKE_TIMELINE_RAW_LOSS",
                         "warning",
                         False,
-                        "mode",
+                        "export_strategy",
                         "dense bake drops imported raw keys",
                     ),
                 ),
-                mode="C",
+                mode="bake_timeline",
             )
 
             rendered = render_validation_console_text(report, localize=True)
 
             self.assertIn("エクスポート検証コンソール", rendered)
-            self.assertIn("タイトル: VMD Mode C の元アニメーション情報の損失", rendered)
+            self.assertIn("書き出し方式: 現在のタイムラインをVMD化", rendered)
+            self.assertIn("タイトル: 現在のタイムライン書き出しによる", rendered)
             self.assertIn("影響: 密なベイクにより", rendered)
-            self.assertIn("対処方法: 未編集のモーションは Mode A", rendered)
+            self.assertIn("対処方法: 未編集のボーンモーションは「読み込んだ未編集ボーンキーを保持」", rendered)
         finally:
             translator.set_language(previous_language)
 

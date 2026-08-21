@@ -76,8 +76,8 @@ class ExportReleaseGateTests(unittest.TestCase):
                 base,
             )
 
-    def test_maya_vmd_probe_explicitly_acknowledges_mode_c_warning(self):
-        """The Maya probe accepts the explicit Mode C raw-provenance warning."""
+    def test_maya_vmd_probe_explicitly_acknowledges_bake_timeline_warning(self):
+        """The Maya probe accepts the explicit Bake Timeline raw-provenance warning."""
         function = ast.parse(inspect.getsource(_run_vmd_case))
         execute = next(
             node
@@ -98,11 +98,11 @@ class ExportReleaseGateTests(unittest.TestCase):
         )
         options = request.args[1]
         self.assertIn(
-            "C",
+            "bake_timeline",
             [
                 ast.literal_eval(value)
                 for key, value in zip(options.keys, options.values)
-                if isinstance(key, ast.Constant) and key.value == "vmd_mode"
+                if isinstance(key, ast.Constant) and key.value == "export_strategy"
             ],
         )
 
@@ -263,7 +263,10 @@ class ExportReleaseGateTests(unittest.TestCase):
         warning_fixture = next(
             fixture for fixture in result["fixtures"] if fixture["name"] == "warning_ack_boundary"
         )
-        self.assertEqual(warning_fixture["first_issue_codes"], ["VMD_MODE_C_RAW_LOSS"])
+        self.assertEqual(warning_fixture["first_issue_codes"], ["VMD_BAKE_TIMELINE_RAW_LOSS"])
+        self.assertEqual(warning_fixture["first_issue_severities"], ["info"])
+        self.assertTrue(warning_fixture["first_succeeded"])
+        self.assertFalse(warning_fixture["first_requires_warning_ack"])
         self.assertEqual(len(result["report_paths"]), 4)
 
     def test_maya_probe_report_is_required_and_validated(self):
@@ -292,9 +295,9 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "pmx_impulse",
                         "pmx_flip",
                         "vmd",
-                        "vmd_mode_a",
-                        "vmd_model_tracks",
-                        "vmd_camera_light",
+                        "vmd_preserve_keys",
+                        "vmd_bake_timeline_model_tracks",
+                        "vmd_bake_timeline_camera_light",
                     )
                 ],
             }
@@ -498,16 +501,17 @@ class ExportReleaseGateTests(unittest.TestCase):
             soft_body_case = next(
                 case for case in report["cases"] if case["format"] == "pmx_soft_body"
             )
-            vmd_model_tracks_case = next(
-                case for case in report["cases"] if case["format"] == "vmd_model_tracks"
+            vmd_bake_timeline_model_tracks_case = next(
+                case for case in report["cases"] if case["format"] == "vmd_bake_timeline_model_tracks"
             )
-            vmd_mode_a_case = next(
-                case for case in report["cases"] if case["format"] == "vmd_mode_a"
+            vmd_preserve_keys_case = next(
+                case for case in report["cases"] if case["format"] == "vmd_preserve_keys"
             )
-            vmd_camera_light_case = next(
-                case for case in report["cases"] if case["format"] == "vmd_camera_light"
+            vmd_bake_timeline_camera_light_case = next(
+                case for case in report["cases"] if case["format"] == "vmd_bake_timeline_camera_light"
             )
-            vmd_model_tracks_case.update(
+            vmd_bake_timeline_model_tracks_case.update(
+                export_strategy="bake_timeline",
                 parsed_counts={
                     "bone_frames": 2,
                     "morph_frames": 2,
@@ -516,10 +520,10 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "light_frames": 0,
                     "shadow_frames": 0,
                 },
-                mode_c_warning_acknowledged=True,
+                bake_timeline_warning_acknowledged=True,
                 track_coverage={
                     "checked_frames": [0, 6, 10, 12, 20],
-                    "tracks": list(RELEASE_GATE.VMD_MODEL_TRACKS),
+                    "tracks": list(RELEASE_GATE.VMD_BAKE_TIMELINE_MODEL_TRACKS),
                     "source_counts": {
                         "bone_frames": 1,
                         "morph_frames": 1,
@@ -569,7 +573,9 @@ class ExportReleaseGateTests(unittest.TestCase):
                     },
                     "comparison": {
                         "status": "pass",
-                        "boundaries": list(RELEASE_GATE.VMD_MODEL_TRACK_COMPARISON_BOUNDARIES),
+                        "boundaries": list(
+                            RELEASE_GATE.VMD_BAKE_TIMELINE_MODEL_TRACK_COMPARISON_BOUNDARIES
+                        ),
                         "checked_frames": [0, 6, 10, 12, 20],
                         "raw_key_interpolation_preserved": False,
                     },
@@ -605,7 +611,8 @@ class ExportReleaseGateTests(unittest.TestCase):
                 for frame in (0, 15, 30, 45, 60)
             }
             dense_payload = {"camera": dense_camera_payload, "light": dense_light_payload}
-            vmd_camera_light_case.update(
+            vmd_bake_timeline_camera_light_case.update(
+                export_strategy="bake_timeline",
                 parsed_counts={
                     "camera_frames": 3,
                     "light_frames": 3,
@@ -615,10 +622,10 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "shadow_frames": 0,
                 },
                 normalization={"excluded_shadow_frames": 1, "shadow_support_claimed": False},
-                mode_c_warning_acknowledged=True,
+                bake_timeline_warning_acknowledged=True,
                 track_coverage={
                     "checked_frames": [0, 15, 30, 45, 60],
-                    "tracks": list(RELEASE_GATE.VMD_CAMERA_LIGHT_TRACKS),
+                    "tracks": list(RELEASE_GATE.VMD_BAKE_TIMELINE_CAMERA_LIGHT_TRACKS),
                     "source_counts": {"camera_frames": 3, "light_frames": 3},
                     "exported_counts": {"camera_frames": 61, "light_frames": 61},
                     "bone_frames": 0,
@@ -636,14 +643,16 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "source": {frame: payload["interpolation"] for frame, payload in camera_payload["camera"].items()},
                         "exported_file": {frame: [20] * 24 for frame in camera_payload["camera"]},
                         "raw_preserved": False,
-                        "mode_c_normalized": True,
+                        "bake_timeline_normalized": True,
                         "canonical_expected": [20] * 24,
                         "canonical_length": 24,
                         "canonical_exported": True,
                     },
                     "comparison": {
                         "status": "pass",
-                        "boundaries": list(RELEASE_GATE.VMD_CAMERA_LIGHT_COMPARISON_BOUNDARIES),
+                        "boundaries": list(
+                            RELEASE_GATE.VMD_BAKE_TIMELINE_CAMERA_LIGHT_COMPARISON_BOUNDARIES
+                        ),
                         "checked_frames": [0, 30, 60],
                         "dense_checked_frames": [0, 15, 30, 45, 60],
                         "dense_status": "pass",
@@ -659,7 +668,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                     },
                 },
             )
-            mode_a_records = [
+            preserve_keys_records = [
                 {
                     "bone_name": "root",
                     "frame_number": frame,
@@ -669,7 +678,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                 }
                 for frame in (0, 9, 19, 29, 39, 49)
             ]
-            mode_a_pose = {
+            preserve_keys_pose = {
                 "joint_count": 1,
                 "frames": {
                     str(frame): [
@@ -699,38 +708,38 @@ class ExportReleaseGateTests(unittest.TestCase):
                     for frame in (0, 9, 19, 29, 39, 49)
                 },
             }
-            mode_a_source_model = root / "vmd_mode_a_model.pmx"
-            mode_a_source = root / "vmd_mode_a_source.vmd"
-            mode_a_output = root / "vmd_mode_a_output.vmd"
-            mode_a_edited_output = root / "vmd_mode_a_edited_sentinel.vmd"
-            mode_a_source_model.write_bytes(b"mode-a-pmx")
-            mode_a_source.write_bytes(b"mode-a-source")
-            mode_a_output.write_bytes(b"mode-a-output")
-            mode_a_edited_output.write_bytes(b"mode-a-sentinel")
-            mode_a_identity = {
-                "pmx_sha256": hashlib.sha256(mode_a_source_model.read_bytes()).hexdigest(),
-                "source_vmd_sha256": hashlib.sha256(mode_a_source.read_bytes()).hexdigest(),
-                "exported_vmd_sha256": hashlib.sha256(mode_a_output.read_bytes()).hexdigest(),
+            preserve_keys_source_model = root / "vmd_preserve_keys_model.pmx"
+            preserve_keys_source = root / "vmd_preserve_keys_source.vmd"
+            preserve_keys_output = root / "vmd_preserve_keys_output.vmd"
+            preserve_keys_edited_output = root / "vmd_preserve_keys_edited_sentinel.vmd"
+            preserve_keys_source_model.write_bytes(b"preserve-keys-pmx")
+            preserve_keys_source.write_bytes(b"preserve-keys-source")
+            preserve_keys_output.write_bytes(b"preserve-keys-output")
+            preserve_keys_edited_output.write_bytes(b"preserve-keys-sentinel")
+            preserve_keys_identity = {
+                "pmx_sha256": hashlib.sha256(preserve_keys_source_model.read_bytes()).hexdigest(),
+                "source_vmd_sha256": hashlib.sha256(preserve_keys_source.read_bytes()).hexdigest(),
+                "exported_vmd_sha256": hashlib.sha256(preserve_keys_output.read_bytes()).hexdigest(),
             }
-            mode_a_provenance = {
+            preserve_keys_provenance = {
                 "status": "success",
                 "evaluation_mode": "authored_sparse_keys",
                 "fallback": "none",
-                "pmx_sha256": mode_a_identity["pmx_sha256"],
-                "raw_vmd_sha256": mode_a_identity["source_vmd_sha256"],
-                "raw_bone_key_count": len(mode_a_records),
+                "pmx_sha256": preserve_keys_identity["pmx_sha256"],
+                "raw_vmd_sha256": preserve_keys_identity["source_vmd_sha256"],
+                "raw_bone_key_count": len(preserve_keys_records),
                 "raw_bone_interpolation_complete": True,
                 "raw_bone_transform_complete": True,
-                "raw_bone_interpolation": mode_a_records,
+                "raw_bone_interpolation": preserve_keys_records,
             }
-            vmd_mode_a_case.update(
+            vmd_preserve_keys_case.update(
                 status="pass",
-                mode="A",
+                export_strategy="preserve_keys",
                 raw_provenance_required=True,
-                source_model=str(mode_a_source_model),
-                source=str(mode_a_source),
-                output=str(mode_a_output),
-                source_identity=mode_a_identity,
+                source_model=str(preserve_keys_source_model),
+                source=str(preserve_keys_source),
+                output=str(preserve_keys_output),
+                source_identity=preserve_keys_identity,
                 fixture={
                     "runtime_copy": True,
                     "nonzero_translation_verified": True,
@@ -745,29 +754,31 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "writer_called": True,
                 },
                 parsed_counts={
-                    "bone_frames": len(mode_a_records),
+                    "bone_frames": len(preserve_keys_records),
                     "morph_frames": 0,
                     "camera_frames": 0,
                     "light_frames": 0,
                     "shadow_frames": 0,
                 },
                 bone_oracle={
-                    "source": mode_a_records,
-                    "source_import": copy.deepcopy(mode_a_records),
-                    "exported_file": copy.deepcopy(mode_a_records),
-                    "fresh_import": copy.deepcopy(mode_a_records),
+                    "source": preserve_keys_records,
+                    "source_import": copy.deepcopy(preserve_keys_records),
+                    "exported_file": copy.deepcopy(preserve_keys_records),
+                    "fresh_import": copy.deepcopy(preserve_keys_records),
                     "comparison": {
                         "status": "pass",
-                        "boundaries": list(RELEASE_GATE.VMD_MODE_A_COMPARISON_BOUNDARIES),
+                        "boundaries": list(
+                            RELEASE_GATE.VMD_PRESERVE_KEYS_COMPARISON_BOUNDARIES
+                        ),
                         "checked_frames": [0, 9, 19, 29, 39, 49],
                         "raw_interpolation_preserved": True,
                     },
                 },
                 provenance={
-                    "source_import": mode_a_provenance,
+                    "source_import": preserve_keys_provenance,
                     "fresh_import": {
-                        **copy.deepcopy(mode_a_provenance),
-                        "raw_vmd_sha256": mode_a_identity["exported_vmd_sha256"],
+                        **copy.deepcopy(preserve_keys_provenance),
+                        "raw_vmd_sha256": preserve_keys_identity["exported_vmd_sha256"],
                     },
                     "comparison": {
                         "status": "pass",
@@ -778,8 +789,8 @@ class ExportReleaseGateTests(unittest.TestCase):
                     },
                 },
                 pose={
-                    "source_import": mode_a_pose,
-                    "fresh_import": copy.deepcopy(mode_a_pose),
+                    "source_import": preserve_keys_pose,
+                    "fresh_import": copy.deepcopy(preserve_keys_pose),
                     "comparison": {
                         "status": "pass",
                         "boundaries": ["source_import", "fresh_import"],
@@ -791,9 +802,9 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "issue_codes": ["VMD_RAW_PROVENANCE_MISMATCH"],
                     "expected_issue_code": "VMD_RAW_PROVENANCE_MISMATCH",
                     "writer_called": False,
-                    "output": str(mode_a_edited_output),
-                    "sentinel_sha256_before": hashlib.sha256(mode_a_edited_output.read_bytes()).hexdigest(),
-                    "sentinel_sha256_after": hashlib.sha256(mode_a_edited_output.read_bytes()).hexdigest(),
+                    "output": str(preserve_keys_edited_output),
+                    "sentinel_sha256_before": hashlib.sha256(preserve_keys_edited_output.read_bytes()).hexdigest(),
+                    "sentinel_sha256_after": hashlib.sha256(preserve_keys_edited_output.read_bytes()).hexdigest(),
                     "sentinel_preserved": True,
                     "translation_edited": True,
                     "rotation_edited": True,
@@ -857,82 +868,82 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "pmx_impulse",
                     "pmx_flip",
                     "vmd",
-                    "vmd_mode_a",
-                    "vmd_model_tracks",
-                    "vmd_camera_light",
+                    "vmd_preserve_keys",
+                    "vmd_bake_timeline_model_tracks",
+                    "vmd_bake_timeline_camera_light",
                 },
             )
 
-            vmd_mode_a_case["provenance"]["source_import"]["status"] = "complete"
+            vmd_preserve_keys_case["provenance"]["source_import"]["status"] = "complete"
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
-            self.assertIn("vmd_mode_a.provenance.source_import.status must be success", step["error"])
-            vmd_mode_a_case["provenance"]["source_import"]["status"] = "success"
+            self.assertIn("vmd_preserve_keys.provenance.source_import.status must be success", step["error"])
+            vmd_preserve_keys_case["provenance"]["source_import"]["status"] = "success"
 
-            original_pmx_sha = vmd_mode_a_case["source_identity"]["pmx_sha256"]
-            vmd_mode_a_case["source_identity"]["pmx_sha256"] = "e" * 64
+            original_pmx_sha = vmd_preserve_keys_case["source_identity"]["pmx_sha256"]
+            vmd_preserve_keys_case["source_identity"]["pmx_sha256"] = "e" * 64
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
-            self.assertIn("vmd_mode_a.source_model SHA mismatch", step["error"])
-            vmd_mode_a_case["source_identity"]["pmx_sha256"] = original_pmx_sha
+            self.assertIn("vmd_preserve_keys.source_model SHA mismatch", step["error"])
+            vmd_preserve_keys_case["source_identity"]["pmx_sha256"] = original_pmx_sha
 
-            original_matrix = vmd_mode_a_case["pose"]["fresh_import"]["frames"]["9"][0]["world_matrix"][12]
-            vmd_mode_a_case["pose"]["fresh_import"]["frames"]["9"][0]["world_matrix"][12] += 0.5
+            original_matrix = vmd_preserve_keys_case["pose"]["fresh_import"]["frames"]["9"][0]["world_matrix"][12]
+            vmd_preserve_keys_case["pose"]["fresh_import"]["frames"]["9"][0]["world_matrix"][12] += 0.5
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
             self.assertIn("worldMatrix mismatch", step["error"])
-            vmd_mode_a_case["pose"]["fresh_import"]["frames"]["9"][0]["world_matrix"][12] = original_matrix
+            vmd_preserve_keys_case["pose"]["fresh_import"]["frames"]["9"][0]["world_matrix"][12] = original_matrix
 
-            original_sentinel_output = vmd_mode_a_case["edited_raw_negative"]["output"]
-            vmd_mode_a_case["edited_raw_negative"]["output"] = ""
+            original_sentinel_output = vmd_preserve_keys_case["edited_raw_negative"]["output"]
+            vmd_preserve_keys_case["edited_raw_negative"]["output"] = ""
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
             self.assertIn("edited_raw_negative.output missing", step["error"])
-            vmd_mode_a_case["edited_raw_negative"]["output"] = original_sentinel_output
+            vmd_preserve_keys_case["edited_raw_negative"]["output"] = original_sentinel_output
 
-            mode_a_edited_output.write_bytes(b"mutated-sentinel")
+            preserve_keys_edited_output.write_bytes(b"mutated-sentinel")
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
             self.assertIn("edited_raw_negative.output SHA mismatch", step["error"])
-            mode_a_edited_output.write_bytes(b"mode-a-sentinel")
+            preserve_keys_edited_output.write_bytes(b"preserve-keys-sentinel")
 
-            original_source_records = copy.deepcopy(vmd_mode_a_case["bone_oracle"]["source"])
-            for record in vmd_mode_a_case["bone_oracle"]["source"]:
+            original_source_records = copy.deepcopy(vmd_preserve_keys_case["bone_oracle"]["source"])
+            for record in vmd_preserve_keys_case["bone_oracle"]["source"]:
                 record["position"] = [0.0, 0.0, 0.0]
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
             self.assertIn("source requires nonzero position", step["error"])
-            vmd_mode_a_case["bone_oracle"]["source"] = copy.deepcopy(original_source_records)
+            vmd_preserve_keys_case["bone_oracle"]["source"] = copy.deepcopy(original_source_records)
 
-            for record in vmd_mode_a_case["bone_oracle"]["source"]:
+            for record in vmd_preserve_keys_case["bone_oracle"]["source"]:
                 record["rotation"] = [0.0, 0.0, 0.0, 1.0]
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
             self.assertIn("source requires nonidentity quaternion", step["error"])
-            vmd_mode_a_case["bone_oracle"]["source"] = original_source_records
+            vmd_preserve_keys_case["bone_oracle"]["source"] = original_source_records
 
-            for record in vmd_mode_a_case["bone_oracle"]["source"]:
+            for record in vmd_preserve_keys_case["bone_oracle"]["source"]:
                 record["rotation"] = [0.0, 0.0, 0.0, 2.0] if record["frame_number"] == 9 else [0.0, 0.0, 0.0, 1.0]
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
             self.assertIn("source requires nonidentity quaternion", step["error"])
-            vmd_mode_a_case["bone_oracle"]["source"] = original_source_records
+            vmd_preserve_keys_case["bone_oracle"]["source"] = original_source_records
 
             missing_bone_import = bone_case["bone_semantics"].pop("fresh_import")
             report_path.write_text(json.dumps(report), encoding="utf-8")
@@ -985,65 +996,65 @@ class ExportReleaseGateTests(unittest.TestCase):
             self.assertIn("controller_outputs", step["error"])
             morph_case["morph_oracle"]["fresh_import"]["controller_outputs"] = controller_outputs
 
-            vmd_model_tracks_case["model_tracks"]["fresh_import"]["morph_values"] = {}
+            vmd_bake_timeline_model_tracks_case["model_tracks"]["fresh_import"]["morph_values"] = {}
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
-            self.assertIn("vmd_model_tracks.model_tracks.fresh_import.morph_values_missing", step["error"])
-            vmd_model_tracks_case["model_tracks"]["fresh_import"]["morph_values"] = {
+            self.assertIn("vmd_bake_timeline_model_tracks.model_tracks.fresh_import.morph_values_missing", step["error"])
+            vmd_bake_timeline_model_tracks_case["model_tracks"]["fresh_import"]["morph_values"] = {
                 "morph": {"0": 1.0, "6": 0.0}
             }
-            vmd_model_tracks_case["model_tracks"]["fresh_import"]["ik_values"] = {}
+            vmd_bake_timeline_model_tracks_case["model_tracks"]["fresh_import"]["ik_values"] = {}
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
-            self.assertIn("vmd_model_tracks.model_tracks.fresh_import.ik_values_missing", step["error"])
-            vmd_model_tracks_case["model_tracks"]["fresh_import"]["ik_values"] = {
+            self.assertIn("vmd_bake_timeline_model_tracks.model_tracks.fresh_import.ik_values_missing", step["error"])
+            vmd_bake_timeline_model_tracks_case["model_tracks"]["fresh_import"]["ik_values"] = {
                 "0": {"ik": 1},
                 "6": {"ik": 0},
             }
 
-            vmd_camera_light_case["parsed_counts"]["camera_frames"] = 0
+            vmd_bake_timeline_camera_light_case["parsed_counts"]["camera_frames"] = 0
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
-            self.assertIn("vmd_camera_light.parsed_counts.camera_frames must be positive", step["error"])
-            vmd_camera_light_case["parsed_counts"]["camera_frames"] = 61
+            self.assertIn("vmd_bake_timeline_camera_light.parsed_counts.camera_frames must be positive", step["error"])
+            vmd_bake_timeline_camera_light_case["parsed_counts"]["camera_frames"] = 61
 
-            vmd_camera_light_case["normalization"]["excluded_shadow_frames"] = 0
+            vmd_bake_timeline_camera_light_case["normalization"]["excluded_shadow_frames"] = 0
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
             self.assertIn("excluded_shadow_frames must be positive", step["error"])
-            vmd_camera_light_case["normalization"]["excluded_shadow_frames"] = 1
+            vmd_bake_timeline_camera_light_case["normalization"]["excluded_shadow_frames"] = 1
 
-            vmd_camera_light_case["camera_light"]["interpolation"]["exported_file"]["0"] = [20] * 23
+            vmd_bake_timeline_camera_light_case["camera_light"]["interpolation"]["exported_file"]["0"] = [20] * 23
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
             self.assertIn("must contain 24 bytes", step["error"])
-            vmd_camera_light_case["camera_light"]["interpolation"]["exported_file"]["0"] = [20] * 24
+            vmd_bake_timeline_camera_light_case["camera_light"]["interpolation"]["exported_file"]["0"] = [20] * 24
 
-            vmd_camera_light_case["camera_light"]["dense"]["source_import"]["camera"]["15"]["distance"] += 0.01
+            vmd_bake_timeline_camera_light_case["camera_light"]["dense"]["source_import"]["camera"]["15"]["distance"] += 0.01
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
             self.assertIn("native_expected_vs_source_import.camera[15].distance mismatch", step["error"])
-            vmd_camera_light_case["camera_light"]["dense"]["source_import"]["camera"]["15"]["distance"] -= 0.01
+            vmd_bake_timeline_camera_light_case["camera_light"]["dense"]["source_import"]["camera"]["15"]["distance"] -= 0.01
 
-            missing_direction = vmd_camera_light_case["camera_light"]["dense"]["fresh_import"]["light"]["15"].pop("direction")
+            missing_direction = vmd_bake_timeline_camera_light_case["camera_light"]["dense"]["fresh_import"]["light"]["15"].pop("direction")
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
             self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
             self.assertEqual(step["status"], "fail")
             self.assertIn("fresh_import.light[15].direction missing", step["error"])
-            vmd_camera_light_case["camera_light"]["dense"]["fresh_import"]["light"]["15"]["direction"] = missing_direction
+            vmd_bake_timeline_camera_light_case["camera_light"]["dense"]["fresh_import"]["light"]["15"]["direction"] = missing_direction
 
             report["cases"][-1]["status"] = "fail"
             report_path.write_text(json.dumps(report), encoding="utf-8")
@@ -1453,6 +1464,53 @@ class ExportReleaseGateTests(unittest.TestCase):
         self.assertTrue(any("material[0].edge_size" in failure for failure in failures))
         self.assertTrue(any("material[0].memo" in failure for failure in failures))
         self.assertFalse(any("material[0].sphere_texture_path" in failure for failure in failures))
+
+    def test_scene_oracle_applies_explicit_tolerance_only_to_pose(self):
+        source = {
+            "metadata": {},
+            "pose": {
+                "joint_count": 1,
+                "frames": {"0": [{"name": "center", "translation": [0.0, 0.0, 0.0]}]},
+            },
+        }
+        within_tolerance = {
+            "metadata": {},
+            "pose": {
+                "joint_count": 1,
+                "frames": {"0": [{"name": "center", "translation": [0.0049, 0.0, 0.0]}]},
+            },
+        }
+        beyond_tolerance = {
+            "metadata": {},
+            "pose": {
+                "joint_count": 1,
+                "frames": {"0": [{"name": "center", "translation": [0.0051, 0.0, 0.0]}]},
+            },
+        }
+
+        assert _compare_scene_oracles(
+            source,
+            within_tolerance,
+            pose=True,
+            mesh=False,
+            materials=False,
+        )
+        assert _compare_scene_oracles(
+            source,
+            within_tolerance,
+            pose=True,
+            pose_tolerance=5e-3,
+            mesh=False,
+            materials=False,
+        ) == []
+        assert _compare_scene_oracles(
+            source,
+            beyond_tolerance,
+            pose=True,
+            pose_tolerance=5e-3,
+            mesh=False,
+            materials=False,
+        )
 
     def test_scene_oracle_derives_optional_edge_flag_from_pmx_draw_flags(self):
         """A redundant Maya edge flag may be absent after a PMX fresh import."""

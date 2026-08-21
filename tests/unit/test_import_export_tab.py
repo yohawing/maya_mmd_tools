@@ -11,6 +11,7 @@ install_headless_ui_stubs()
 
 from mmd_tools.ui.import_export_view_state import ImportExportViewState  # noqa: E402
 from mmd_tools.ui.tabs import import_export_tab  # noqa: E402
+from mmd_tools.ui.tabs import export_tab  # noqa: E402
 
 
 class _FakeSettingsService:
@@ -92,6 +93,58 @@ class _FakeSlider(_FakeSpinBox):
 
     def setVisible(self, visible):
         self.visible = visible
+
+
+class TestExportTabNavigationAndActions(unittest.TestCase):
+    """Keep Export's navigation and format-specific action contract explicit."""
+
+    def setUp(self):
+        self.source = Path(export_tab.__file__).read_text(encoding="utf-8")
+
+    def test_export_uses_tab_navigation_without_legacy_button_selector(self):
+        self.assertIn("CategoryStack(", self.source)
+        self.assertNotIn("navigation=", self.source)
+        self.assertNotIn("button selector over QStackedWidget", self.source)
+
+    def test_export_pages_use_format_specific_primary_actions(self):
+        for key in (
+            '"validate_model"',
+            '"export_pmx"',
+            '"validate_animation"',
+            '"export_vmd"',
+        ):
+            self.assertIn(key, self.source)
+
+    def test_animation_validation_owns_prepare_flow_without_separate_button(self):
+        self.assertNotIn("exportMotionPrepareButton", self.source)
+        self.assertNotIn("prepare_button =", self.source)
+        self.assertIn("validate_animation", self.source)
+
+    def test_supported_languages_define_model_animation_and_format_actions(self):
+        translation_dir = Path(export_tab.__file__).resolve().parents[1] / "translations"
+        expected = {
+            "ja": ("モデル", "アニメーション", "モデルを検証", "モデルを書き出す", "アニメーションを検証", "アニメーションを書き出し"),
+            "en": ("Model", "Animation", "Validate Model", "Export Model", "Validate Animation", "Export Animation"),
+            "zh_cn": ("模型", "动画", "验证模型", "导出模型", "验证动画", "导出动画"),
+            "zh_tw": ("模型", "動畫", "驗證模型", "匯出模型", "驗證動畫", "匯出動畫"),
+        }
+        for language, values in expected.items():
+            translations = json.loads(
+                (translation_dir / f"{language}.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(translations["tabs"]["export_model"], values[0])
+            self.assertEqual(translations["tabs"]["export_motion"], values[1])
+            self.assertEqual(translations["buttons"]["validate_model"], values[2])
+            self.assertEqual(translations["buttons"]["export_pmx"], values[3])
+            self.assertEqual(translations["buttons"]["validate_animation"], values[4])
+            self.assertEqual(translations["buttons"]["export_vmd"], values[5])
+            self.assertIn("vmd_preserve_keys", translations["options"])
+            self.assertIn("vmd_export_timeline", translations["options"])
+            self.assertIn("vmd_bake_export", translations["checkboxes"])
+            self.assertIn("vmd_bake_export_help", translations["messages"])
+            self.assertIn("export_strategy", translations["fields"])
+            self.assertIn("animation_timeline_bake", translations["export_progress"])
+            self.assertIn("animation_prepared_payload", translations["export_progress"])
 
 
 class TestImportExportTabDevModeVisibility(unittest.TestCase):
@@ -209,20 +262,11 @@ class TestImportExportTabNativePhysicsBakeVisibility(unittest.TestCase):
 
 
 class TestImportExportTabCppFastLoadVisibility(unittest.TestCase):
-    def test_vp2_ownership_requires_cpp_fast_load(self):
-        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
-        tab.use_cpp_vp2_ownership_check = _FakeCheck(checked=True)
-
-        import_export_tab.ImportExportTab._sync_cpp_vp2_ownership_enabled(tab, False)
-
-        self.assertFalse(tab.use_cpp_vp2_ownership_check.enabled)
-        self.assertFalse(tab.use_cpp_vp2_ownership_check.checked)
-
-        tab.use_cpp_vp2_ownership_check.checked = True
-        import_export_tab.ImportExportTab._sync_cpp_vp2_ownership_enabled(tab, True)
-
-        self.assertTrue(tab.use_cpp_vp2_ownership_check.enabled)
-        self.assertTrue(tab.use_cpp_vp2_ownership_check.checked)
+    def test_native_controls_are_owned_by_settings_advanced(self):
+        source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("self.use_cpp_fast_load_check =", source)
+        self.assertNotIn("self.use_cpp_vp2_ownership_check =", source)
+        self.assertNotIn("self.use_cpp_rig_nodes_check =", source)
 
 
 class TestImportExportTabReducedBakeVisibility(unittest.TestCase):

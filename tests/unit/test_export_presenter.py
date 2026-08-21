@@ -1,7 +1,8 @@
 """ExportPresenter Current Model ownership and pane invalidation contracts."""
 
 import unittest
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
@@ -9,17 +10,24 @@ install_headless_ui_stubs()
 
 from mmd_tools.services.export_workflow_service import (  # noqa: E402
     ExportWorkflowResult,
+    STATE_BLOCKED,
     STATE_FAILED,
+    STATE_PREPARING,
     STATE_READY,
+    STATE_SUCCEEDED,
 )
+from mmd_tools.actions.prepare_vmd_export_action import PrepareVmdExportResult  # noqa: E402
 from mmd_tools.ui.qt_compat import QApplication  # noqa: E402
 from mmd_tools.ui.presenters.export_presenter import ExportPresenter  # noqa: E402
+from mmd_tools.ui.translations import UITranslator  # noqa: E402
 from mmd_tools.ui.validation_console import (  # noqa: E402
     ValidationConsole,
     render_validation_console_text,
 )
-from mmd_tools.ui.translations import UITranslator  # noqa: E402
-from mmd_tools.validation.export_validator import ExportValidationReport  # noqa: E402
+from mmd_tools.validation.export_validator import (  # noqa: E402
+    ExportValidationIssue,
+    ExportValidationReport,
+)
 
 
 class _Signal:
@@ -38,42 +46,64 @@ class _Console:
     acknowledgement_changed = _Signal()
     warnings_acknowledged = False
 
+    def __init__(self):
+        self.report = None
+        self.metadata = {}
+
+    def set_report(self, report, metadata=None):
+        self.report = report
+        self.metadata = dict(metadata or {})
+
 
 def _create_validation_console():
-    """Create the real Console, filling only unavailable CI widget surfaces."""
-    if callable(getattr(QApplication, "instance", None)):
+    """Create the real Console only when a widget-capable app already exists.
+
+    Maya standalone owns a ``QGuiApplication``.  ``QApplication.instance()``
+    therefore returns a truthy object even though constructing a ``QWidget``
+    is invalid and creating a second ``QApplication`` can crash Maya.
+    """
+    if _qapplication_instance() is not None:
         return ValidationConsole()
-    console = ValidationConsole.__new__(ValidationConsole)
-    console._translator = UITranslator.instance()
-    console._report = None
-    console._metadata = {}
-    console._visible_issue_indices = []
-    console.acknowledge_check = MagicMock()
-    console.acknowledge_check.isChecked.return_value = False
-    console.filter_combo = MagicMock()
-    console.filter_combo.currentData.return_value = "all"
-    console.filter_combo.findData.return_value = 0
-    console.summary_label = MagicMock()
-    console.issue_list = MagicMock()
-    console.detail_text = MagicMock()
-    return console
+    return _Console()
+
+
+def _qapplication_instance():
+    """Return an existing widget-capable QApplication, if one is owned by the host."""
+    instance_factory = getattr(QApplication, "instance", None)
+    if not callable(instance_factory):
+        return None
+    app = instance_factory()
+    if app is None:
+        return None
+    try:
+        return app if isinstance(app, QApplication) else None
+    except TypeError:
+        # The pure-Python Qt stub is intentionally not a QApplication type.
+        return None
 
 
 class _View:
     validate_requested = _Signal()
     export_requested = _Signal()
+    prepare_requested = _Signal()
+    motion_semantic_changed = _Signal()
 
-    def __init__(self, export_format="pmx"):
+    def __init__(self, export_format="pmx", export_strategy=None):
         self.validation_console = _Console()
         self.current_export_format = export_format
+        self.export_strategy = export_strategy
         self.roots = []
         self.states = []
         self.results = []
         self.invalidations = 0
+        self.operation_states = []
+        self.prepared_states = []
 
     def build_request(self, current_model_root=None):
         self.roots.append(current_model_root)
-        mode = "C" if self.current_export_format == "vmd" else "model"
+        export_strategy = self.export_strategy
+        if export_strategy is None:
+            export_strategy = "bake_timeline" if self.current_export_format == "vmd" else "model"
         return type(
             "Request",
             (),
@@ -81,7 +111,7 @@ class _View:
                 "file_path": f"asset.{self.current_export_format}",
                 "options": {
                     "export_format": self.current_export_format,
-                    "vmd_mode": mode,
+                    "export_strategy": export_strategy,
                 },
             },
         )()
@@ -93,8 +123,15 @@ class _View:
         self.results.append(result)
         self.states.append(result.state)
 
+    def set_prepared(self, preparation):
+        self.prepared_states.append(preparation)
+        self.states.append("Prepared")
+
     def invalidate_all_panes(self):
         self.invalidations += 1
+
+    def set_operation_active(self, active):
+        self.operation_states.append(bool(active))
 
 
 class _ConsoleView(_View):
@@ -115,41 +152,180 @@ class _AppState:
     def __init__(self):
         self.current_model_changed = _Signal()
         self.statuses = []
+        self.progress = []
+        self._progress_token = 0
 
     def emit_status(self, message):
         self.statuses.append(message)
+
+    def begin_progress(self, label=""):
+        self._progress_token += 1
+        self.progress.append(("begin", self._progress_token, label, None))
+        return self._progress_token
+
+    def update_progress_state(self, token, label="", percentage=None):
+        self.progress.append(("update", token, label, percentage))
+        return True
+
+    def end_progress(self, token):
+        self.progress.append(("end", token, "", None))
+        return True
 
 
 class _Workflow:
     def __init__(self):
         self.validated = []
         self.executed = []
+        self.prepared = []
+        self.published_tokens = []
+        self.invalidated = []
+        self.progress_callback_calls = []
+        self.stale_on_progress = False
 
     @staticmethod
     def _result():
         return ExportWorkflowResult(STATE_READY, ExportValidationReport("pmx", ()), {})
 
-    def validate(self, request):
+    def validate(self, request, *, progress_callback=None):
         self.validated.append(request)
-        return self._result()
+        if progress_callback is not None:
+            self.progress_callback_calls.append(("validate", request.prepared_vmd_token if hasattr(request, "prepared_vmd_token") else None))
+            if self.stale_on_progress and self.published_tokens:
+                self.invalidate_prepared_vmd(self.published_tokens[-1])
+            progress_callback("scene_preflight")
+            progress_callback("payload_collection")
+            progress_callback("payload_validation")
+            progress_callback("report_ready")
+        export_format = request.options.get("export_format", "pmx")
+        export_strategy = "bake_timeline" if export_format == "vmd" else "model"
+        return ExportWorkflowResult(
+            STATE_READY,
+            ExportValidationReport(export_format, (), mode=export_strategy),
+            {},
+        )
 
-    def execute(self, request, *, acknowledge_warnings=False):
+    def execute(self, request, *, acknowledge_warnings=False, progress_callback=None):
         self.executed.append((request, acknowledge_warnings))
-        return self._result()
+        if progress_callback is not None:
+            self.progress_callback_calls.append(("execute", request.prepared_vmd_token if hasattr(request, "prepared_vmd_token") else None))
+            if self.stale_on_progress and self.published_tokens:
+                self.invalidate_prepared_vmd(self.published_tokens[-1])
+            progress_callback("scene_preflight")
+            progress_callback("payload_collection")
+            progress_callback("payload_validation")
+            progress_callback("report_ready")
+            progress_callback("writer")
+        export_format = request.options.get("export_format", "pmx")
+        export_strategy = "bake_timeline" if export_format == "vmd" else "model"
+        return ExportWorkflowResult(
+            STATE_SUCCEEDED,
+            ExportValidationReport(export_format, (), mode=export_strategy),
+            {},
+        )
+
+    def prepare_vmd(self, request):
+        self.prepared.append(request)
+        token = object()
+        self.published_tokens.append(token)
+        return PrepareVmdExportResult(status="published", token=token)
+
+    def invalidate_prepared_vmd(self, token=None):
+        self.invalidated.append(token)
+        return token is not None
+
+
+class _PrepareFailingWorkflow(_Workflow):
+    def prepare_vmd(self, request):
+        self.prepared.append(request)
+        return PrepareVmdExportResult(status="failed", error=RuntimeError("bake exploded"))
+
+
+class _PreparePreflightBlockedWorkflow(_Workflow):
+    def prepare_vmd(self, request):
+        self.prepared.append(request)
+        report = ExportValidationReport(
+            "vmd",
+            (
+                ExportValidationIssue(
+                    "SCENE_OUTPUT_PATH_INVALID",
+                    "fatal",
+                    True,
+                    "file_path",
+                    "export output path is required",
+                ),
+            ),
+            mode="bake_timeline",
+        )
+        return PrepareVmdExportResult(
+            status="failed",
+            error=RuntimeError("scene preflight blocked"),
+            failure_report=report,
+        )
+
+
+class _PrepareWarningWorkflow(_Workflow):
+    def prepare_vmd(self, request):
+        self.prepared.append(request)
+        issue = ExportValidationIssue(
+            "VMD_BAKE_TIMELINE_RAW_LOSS",
+            "warning",
+            False,
+            "export_strategy",
+            "review raw interpolation loss",
+        )
+        token = SimpleNamespace(
+            validation_report=ExportValidationReport("vmd", (issue,), mode="bake_timeline")
+        )
+        return PrepareVmdExportResult(status="published", token=token)
+
+
+class _PrepareThenFailWorkflow(_Workflow):
+    def prepare_vmd(self, request):
+        self.prepared.append(request)
+        if len(self.prepared) == 1:
+            return PrepareVmdExportResult(status="published", token=object())
+        return PrepareVmdExportResult(status="failed", error=RuntimeError("second bake exploded"))
 
 
 class _FailingWorkflow:
-    def validate(self, request):
+    def __init__(self):
+        self.published_tokens = []
+        self.invalidated = []
+
+    def prepare_vmd(self, request):
         del request
+        token = object()
+        self.published_tokens.append(token)
+        return PrepareVmdExportResult(status="published", token=token)
+
+    def invalidate_prepared_vmd(self, token=None):
+        self.invalidated.append(token)
+        return token is not None
+
+    def validate(self, request, *, progress_callback=None):
+        del request
+        del progress_callback
         raise RuntimeError("validation exploded")
 
-    def execute(self, request, *, acknowledge_warnings=False):
-        del request, acknowledge_warnings
+    def execute(self, request, *, acknowledge_warnings=False, progress_callback=None):
+        del request, acknowledge_warnings, progress_callback
         raise RuntimeError("execution exploded")
 
 
 class TestExportPresenter(unittest.TestCase):
     """Presenter must use Current Model and invalidate both panes on change."""
+
+    def test_qapplication_instance_rejects_host_qgui_application(self):
+        class _HostGuiApplication:
+            pass
+
+        class _FakeQApplication:
+            @staticmethod
+            def instance():
+                return _HostGuiApplication()
+
+        with patch(__name__ + ".QApplication", _FakeQApplication):
+            self.assertIsNone(_qapplication_instance())
 
     def test_validate_and_export_pass_shared_current_model_root(self):
         view = _View()
@@ -163,6 +339,252 @@ class TestExportPresenter(unittest.TestCase):
         self.assertEqual(view.roots, ["CurrentModel_ROOT", "CurrentModel_ROOT"])
         self.assertEqual(len(workflow.validated), 1)
         self.assertEqual(len(workflow.executed), 1)
+        self.assertEqual(view.operation_states, [True, False, True, False])
+        self.assertEqual(app_state.progress[0][0], "begin")
+        self.assertEqual(app_state.progress[-1][0], "end")
+
+    def test_prepare_attaches_token_to_bake_timeline_validate_and_export_then_consumes_it(self):
+        view = _View("vmd")
+        app_state = _AppState()
+        workflow = _Workflow()
+        presenter = ExportPresenter(view, app_state, workflow_service=workflow)
+
+        preparation = presenter.prepare()
+        self.assertTrue(preparation.succeeded)
+        self.assertEqual(view.states[0], STATE_PREPARING)
+        self.assertEqual(len(view.prepared_states), 1)
+        self.assertIs(presenter.prepared_vmd_token, preparation.token)
+
+        presenter.validate()
+        self.assertIsNot(workflow.validated[-1].prepared_vmd_token, preparation.token)
+        self.assertIs(workflow.invalidated[-1], workflow.validated[-1].prepared_vmd_token)
+        self.assertIsNone(presenter.prepared_vmd_token)
+        presenter.export()
+        self.assertIsNot(workflow.executed[-1][0].prepared_vmd_token, preparation.token)
+        self.assertIs(workflow.invalidated[-1], workflow.executed[-1][0].prepared_vmd_token)
+        self.assertIsNone(presenter.prepared_vmd_token)
+        self.assertEqual(len(workflow.prepared), 3)
+        self.assertEqual(len(workflow.invalidated), 3)
+
+    def test_bake_timeline_validate_prepares_inline_before_validating(self):
+        """The single Animation validation action owns the Bake Timeline preparation."""
+        view = _View("vmd")
+        app_state = _AppState()
+        workflow = _Workflow()
+        presenter = ExportPresenter(view, app_state, workflow_service=workflow)
+
+        result = presenter.validate()
+
+        self.assertEqual(result.state, STATE_READY)
+        self.assertEqual(len(workflow.prepared), 1)
+        self.assertEqual(len(workflow.validated), 1)
+        self.assertIs(workflow.invalidated[-1], workflow.validated[0].prepared_vmd_token)
+        self.assertIsNone(presenter.prepared_vmd_token)
+
+    def test_bake_timeline_validate_does_not_allow_progress_to_stale_live_token(self):
+        view = _View("vmd")
+        app_state = _AppState()
+        workflow = _Workflow()
+        workflow.stale_on_progress = True
+        presenter = ExportPresenter(view, app_state, workflow_service=workflow)
+
+        result = presenter.validate()
+
+        self.assertEqual(result.state, STATE_READY)
+        self.assertEqual(workflow.progress_callback_calls, [])
+        self.assertEqual(len(workflow.validated), 1)
+        self.assertEqual(len(workflow.executed), 0)
+        self.assertEqual(len(workflow.invalidated), 1)
+        self.assertEqual(view.prepared_states, [])
+        self.assertIsNone(presenter.prepared_vmd_token)
+
+    def test_bake_timeline_export_fresh_prepares_and_invalidates_without_progress_callback(self):
+        view = _View("vmd")
+        app_state = _AppState()
+        workflow = _Workflow()
+        workflow.stale_on_progress = True
+        presenter = ExportPresenter(view, app_state, workflow_service=workflow)
+
+        result = presenter.export()
+
+        self.assertEqual(result.state, STATE_SUCCEEDED)
+        self.assertEqual(workflow.progress_callback_calls, [])
+        self.assertEqual(len(workflow.prepared), 1)
+        self.assertEqual(len(workflow.executed), 1)
+        self.assertEqual(len(workflow.invalidated), 1)
+        self.assertEqual(view.prepared_states, [])
+        self.assertIs(
+            workflow.invalidated[0],
+            workflow.executed[0][0].prepared_vmd_token,
+        )
+        self.assertIsNone(presenter.prepared_vmd_token)
+
+    def test_bake_timeline_export_preserves_warning_acknowledgement(self):
+        view = _View("vmd")
+        view.validation_console.warnings_acknowledged = True
+        app_state = _AppState()
+        workflow = _Workflow()
+        presenter = ExportPresenter(view, app_state, workflow_service=workflow)
+
+        presenter.export()
+
+        self.assertEqual(len(workflow.executed), 1)
+        self.assertTrue(workflow.executed[0][1])
+
+    def test_bake_timeline_prepare_failure_does_not_execute_or_retain_token(self):
+        view = _View("vmd")
+        app_state = _AppState()
+        workflow = _PrepareFailingWorkflow()
+        presenter = ExportPresenter(view, app_state, workflow_service=workflow)
+
+        result = presenter.export()
+
+        self.assertEqual(result.state, STATE_FAILED)
+        self.assertEqual(len(workflow.executed), 0)
+        self.assertIsNone(presenter.prepared_vmd_token)
+
+    def test_prepare_surfaces_token_warning_report_to_validation_console(self):
+        view = _ConsoleView("vmd")
+        app_state = _AppState()
+        presenter = ExportPresenter(
+            view,
+            app_state,
+            workflow_service=_PrepareWarningWorkflow(),
+        )
+
+        preparation = presenter.prepare()
+
+        self.assertTrue(preparation.succeeded)
+        self.assertIsNotNone(view.validation_console.report)
+        self.assertTrue(view.validation_console.report.requires_warning_ack)
+        self.assertEqual(
+            view.validation_console.report.issues[0].code,
+            "VMD_BAKE_TIMELINE_RAW_LOSS",
+        )
+
+    def test_prepare_failure_publishes_blocking_result_and_keeps_no_token(self):
+        view = _View("vmd")
+        app_state = _AppState()
+        presenter = ExportPresenter(
+            view,
+            app_state,
+            workflow_service=_PrepareFailingWorkflow(),
+        )
+
+        result = presenter.prepare()
+
+        self.assertEqual(result.state, STATE_FAILED)
+        self.assertIsNone(presenter.prepared_vmd_token)
+        self.assertTrue(result.report.is_blocking)
+        self.assertIn("bake exploded", app_state.statuses[-1])
+        self.assertEqual(view.operation_states[-2:], [True, False])
+
+    def test_prepare_preflight_failure_preserves_structured_issue(self):
+        view = _View("vmd")
+        app_state = _AppState()
+        presenter = ExportPresenter(
+            view,
+            app_state,
+            workflow_service=_PreparePreflightBlockedWorkflow(),
+        )
+
+        preparation = presenter.prepare()
+
+        self.assertFalse(preparation.succeeded)
+        self.assertIsNone(presenter.prepared_vmd_token)
+        self.assertEqual(view.results[-1].state, STATE_BLOCKED)
+        self.assertEqual(
+            [issue.code for issue in view.results[-1].report.issues],
+            ["SCENE_OUTPUT_PATH_INVALID"],
+        )
+        self.assertNotIn("EXPORT_WORKFLOW_EXCEPTION", str(view.results[-1].report))
+
+        translator = UITranslator.instance()
+        previous_language = translator.get_language()
+        translator.set_language("ja")
+        try:
+            rendered = render_validation_console_text(
+                view.results[-1].report,
+                view.results[-1].metadata,
+                localize=True,
+            )
+        finally:
+            translator.set_language(previous_language)
+        self.assertIn("タイトル: 出力先が正しく指定されていません", rendered)
+        self.assertIn("対処方法: 出力先のファイルを選択", rendered)
+
+    def test_failed_reprepare_discards_the_previous_token(self):
+        view = _View("vmd")
+        app_state = _AppState()
+        workflow = _PrepareThenFailWorkflow()
+        presenter = ExportPresenter(
+            view,
+            app_state,
+            workflow_service=workflow,
+        )
+
+        first = presenter.prepare()
+        self.assertTrue(first.succeeded)
+        self.assertIsNotNone(presenter.prepared_vmd_token)
+
+        second = presenter.prepare()
+
+        self.assertEqual(second.state, STATE_FAILED)
+        self.assertIsNone(presenter.prepared_vmd_token)
+        self.assertEqual(len(workflow.prepared), 2)
+        self.assertEqual(len(workflow.invalidated), 1)
+        self.assertIs(workflow.invalidated[0], first.token)
+
+    def test_semantic_change_invalidates_prepared_token_but_output_change_does_not(self):
+        view = _View("vmd")
+        app_state = _AppState()
+        workflow = _Workflow()
+        presenter = ExportPresenter(view, app_state, workflow_service=workflow)
+
+        presenter.prepare()
+        self.assertIsNotNone(presenter.prepared_vmd_token)
+        # Output path/report/ack changes have no semantic_changed signal.
+        self.assertIsNotNone(presenter.prepared_vmd_token)
+        view.motion_semantic_changed.emit()
+        self.assertIsNone(presenter.prepared_vmd_token)
+
+        presenter.prepare()
+        app_state.current_model_changed.emit("OtherModel_ROOT")
+        self.assertIsNone(presenter.prepared_vmd_token)
+
+    def test_progress_labels_include_animation_format_and_writer_transition(self):
+        view = _View("vmd", export_strategy="preserve_keys")
+        app_state = _AppState()
+        presenter = ExportPresenter(view, app_state, workflow_service=_Workflow())
+
+        presenter.export()
+
+        labels = [entry[2] for entry in app_state.progress if entry[0] in ("begin", "update")]
+        translator = UITranslator.instance()
+        self.assertIn(
+            translator.translate("animation_scene_preflight", "export_progress"), labels
+        )
+        self.assertIn(translator.translate("animation_writer", "export_progress"), labels)
+        report_ready_label = translator.translate("animation_report_ready", "export_progress")
+        report_ready = [entry for entry in app_state.progress if entry[2].endswith(report_ready_label)]
+        self.assertEqual(report_ready[-1][3], 100)
+
+    def test_prepare_progress_reports_timeline_and_prepared_payload_stages(self):
+        view = _View("vmd")
+        app_state = _AppState()
+        presenter = ExportPresenter(view, app_state, workflow_service=_Workflow())
+
+        presenter.prepare()
+
+        labels = [entry[2] for entry in app_state.progress if entry[0] in ("begin", "update")]
+        translator = UITranslator.instance()
+        self.assertIn(
+            translator.translate("animation_timeline_bake", "export_progress"), labels
+        )
+        prepared_label = translator.translate("animation_prepared_payload", "export_progress")
+        self.assertIn(prepared_label, labels)
+        prepared = [entry for entry in app_state.progress if entry[2] == prepared_label]
+        self.assertEqual(prepared[-1][3], 100)
 
     def test_current_model_changed_invalidates_all_panes(self):
         view = _View()
@@ -172,6 +594,18 @@ class TestExportPresenter(unittest.TestCase):
         app_state.current_model_changed.emit("OtherModel_ROOT")
 
         self.assertEqual(view.invalidations, 1)
+
+    def test_default_workflow_uses_lazy_production_prepare_action(self):
+        view = _View("vmd")
+        app_state = _AppState()
+        production_action = object()
+        with patch(
+            "mmd_tools.ui.presenters.export_presenter.create_maya_vmd_prepare_action",
+            return_value=production_action,
+        ):
+            presenter = ExportPresenter(view, app_state)
+
+        self.assertIs(presenter.workflow_service.prepare_vmd_action, production_action)
 
     def test_validate_exception_publishes_terminal_failed_result(self):
         view = _View()
@@ -184,6 +618,8 @@ class TestExportPresenter(unittest.TestCase):
         self.assertIs(result, view.results[-1])
         self.assertEqual(view.states[-1], STATE_FAILED)
         self.assertIn("validation exploded", app_state.statuses[-1])
+        self.assertEqual(view.operation_states, [True, False])
+        self.assertEqual(app_state.progress[-1][0], "end")
         self.assertEqual(result.report.export_format, "pmx")
         self.assertEqual(result.report.mode, "model")
         self.assertTrue(result.report.issues[0].blocking)
@@ -192,11 +628,11 @@ class TestExportPresenter(unittest.TestCase):
         self.assertIn("validation exploded", result.report.issues[0].message)
 
     def test_execute_exception_publishes_terminal_failed_result(self):
-        instance = getattr(QApplication, "instance", None)
-        app = (instance() or QApplication([])) if callable(instance) else None
+        app = _qapplication_instance()
         view = _ConsoleView("vmd")
         app_state = _AppState()
-        presenter = ExportPresenter(view, app_state, workflow_service=_FailingWorkflow())
+        workflow = _FailingWorkflow()
+        presenter = ExportPresenter(view, app_state, workflow_service=workflow)
 
         result = presenter.export()
 
@@ -204,8 +640,10 @@ class TestExportPresenter(unittest.TestCase):
         self.assertIs(result, view.results[-1])
         self.assertEqual(view.states[-1], STATE_FAILED)
         self.assertIn("execution exploded", app_state.statuses[-1])
+        self.assertEqual(view.operation_states, [True, False])
+        self.assertEqual(app_state.progress[-1][0], "end")
         self.assertEqual(result.report.export_format, "vmd")
-        self.assertEqual(result.report.mode, "C")
+        self.assertEqual(result.report.mode, "bake_timeline")
         self.assertTrue(result.report.issues[0].blocking)
         self.assertEqual(result.report.issues[0].severity, "fatal")
         self.assertEqual(result.report.issues[0].path, "export.motion")
@@ -220,9 +658,11 @@ class TestExportPresenter(unittest.TestCase):
             "execution exploded",
             rendered,
         )
+        self.assertEqual(len(workflow.invalidated), 1)
+        self.assertIsNone(presenter.prepared_vmd_token)
         if app is not None:
             self.assertEqual(view.validation_console.issue_list.count(), 1)
-            self.assertIn("vmd / C", view.validation_console.summary_label.text())
+            self.assertIn("vmd / bake_timeline", view.validation_console.summary_label.text())
             self.assertIn(
                 "EXPORT_WORKFLOW_EXCEPTION",
                 view.validation_console.detail_text.toPlainText(),

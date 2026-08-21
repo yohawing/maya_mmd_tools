@@ -542,6 +542,7 @@ def main():
             logger.info("Maya executable: %s", maya_exe)
             maya_commandport.ensure_port_available(args.port)
             maya_app_dir = Path(tempfile.mkdtemp(prefix=f"maya_mmd_tools_gui_{args.maya_version}_"))
+            maya_commandport.seed_isolated_maya_profile(maya_app_dir, args.maya_version, project_root)
             env_overrides = {
                 "MAYA_APP_DIR": str(maya_app_dir),
                 "MAYA_PLUG_IN_PATH": str(project_root / "mmd_tools"),

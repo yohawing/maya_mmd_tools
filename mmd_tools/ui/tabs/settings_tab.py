@@ -43,6 +43,7 @@ class SettingsTab(BaseTab):
 
         # 各設定タブを追加
         self.settings_tabs.addTab(self._create_general_tab(), self.tr("general_settings", "tabs"))
+        self.settings_tabs.addTab(self._create_advanced_tab(), self.tr("advanced_settings", "tabs"))
 
         scroll_layout.addWidget(self.settings_tabs)
 
@@ -158,12 +159,56 @@ class SettingsTab(BaseTab):
         layout.addStretch()
         return widget
 
+    def _create_advanced_tab(self):
+        """Create the development-only native import controls."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        self.advanced_native_group = QGroupBox(
+            self.tr("advanced_settings", "groups")
+        )
+        native_layout = QVBoxLayout()
+        self.use_cpp_fast_load_check = QCheckBox(
+            self.tr("use_cpp_fast_load", "checkboxes")
+        )
+        self.use_cpp_fast_load_check.setObjectName("settingsUseCppFastLoadCheck")
+        self.use_cpp_fast_load_check.setToolTip(
+            self.tr("use_cpp_fast_load", "tooltips")
+        )
+        native_layout.addWidget(self.use_cpp_fast_load_check)
+
+        self.use_cpp_vp2_ownership_check = QCheckBox(
+            self.tr("use_cpp_vp2_ownership", "checkboxes")
+        )
+        self.use_cpp_vp2_ownership_check.setObjectName(
+            "settingsUseCppVp2OwnershipCheck"
+        )
+        self.use_cpp_vp2_ownership_check.setToolTip(
+            self.tr("use_cpp_vp2_ownership", "tooltips")
+        )
+        native_layout.addWidget(self.use_cpp_vp2_ownership_check)
+
+        self.use_cpp_rig_nodes_check = QCheckBox(
+            self.tr("use_cpp_rig_nodes", "checkboxes")
+        )
+        self.use_cpp_rig_nodes_check.setObjectName("settingsUseCppRigNodesCheck")
+        self.use_cpp_rig_nodes_check.setToolTip(
+            self.tr("use_cpp_rig_nodes", "tooltips")
+        )
+        native_layout.addWidget(self.use_cpp_rig_nodes_check)
+        self.advanced_native_group.setLayout(native_layout)
+        layout.addWidget(self.advanced_native_group)
+        layout.addStretch()
+        self.advanced_native_group.setVisible(False)
+        return widget
+
     def retranslateUi(self):
         """UIテキストを再翻訳"""
         # タブテキスト
         if hasattr(self, "settings_tabs"):
             if self.settings_tabs.count() >= 1:
                 self.settings_tabs.setTabText(0, self.tr("general_settings", "tabs"))
+            if self.settings_tabs.count() >= 2:
+                self.settings_tabs.setTabText(1, self.tr("advanced_settings", "tabs"))
 
         # ボタン
         if hasattr(self, "save_settings_btn"):
@@ -186,6 +231,8 @@ class SettingsTab(BaseTab):
             self.dev_tools_group.setTitle(self.tr("dev_tools", "groups"))
         if hasattr(self, "log_group"):
             self.log_group.setTitle(self.tr("log_settings", "groups"))
+        if hasattr(self, "advanced_native_group"):
+            self.advanced_native_group.setTitle(self.tr("advanced_settings", "groups"))
 
         # Labels
         if hasattr(self, "language_label"):
@@ -204,3 +251,12 @@ class SettingsTab(BaseTab):
             self.development_mode_check.setText(self.tr("development_mode", "checkboxes"))
         if hasattr(self, "logging_enabled_check"):
             self.logging_enabled_check.setText(self.tr("enable_logging", "checkboxes"))
+        for name, key in (
+            ("use_cpp_fast_load_check", "use_cpp_fast_load"),
+            ("use_cpp_vp2_ownership_check", "use_cpp_vp2_ownership"),
+            ("use_cpp_rig_nodes_check", "use_cpp_rig_nodes"),
+        ):
+            checkbox = getattr(self, name, None)
+            if checkbox is not None:
+                checkbox.setText(self.tr(key, "checkboxes"))
+                checkbox.setToolTip(self.tr(key, "tooltips"))

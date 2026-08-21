@@ -2,16 +2,13 @@
 
 The fixture is intentionally generated as a small real PMX binary.  Import
 readback runs through the production importer in both unified and
-material-split modes for BDEF1/BDEF2/BDEF4/SDEF/QDEF, including numeric SDEF
-weights.  Public export rejects SDEF because Maya cannot evaluate its
-auxiliary data; a derived fixture that changes only SDEF tags to BDEF2 keeps
-the positive BDEF/QDEF export round-trip coverage.
+material-split modes for BDEF1/BDEF2/BDEF4/SDEF/QDEF. Maya normalizes every
+mode to skinCluster weights and public PMX export writes every vertex as BDEF4.
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
-import os
 
 from maya import cmds
 
@@ -34,7 +31,7 @@ from tests.common.maya_test_base import MayaTestBase
 
 
 _WEIGHT_MODES = (0, 1, 2, 3, 4)
-_EXPECTED_EXPORT_MODES = {0: 0, 1: 1, 2: 2, 4: 2}
+_EXPECTED_EXPORT_MODES = {mode: 2 for mode in _WEIGHT_MODES}
 
 
 def _make_fixture() -> PmxData:
@@ -124,12 +121,8 @@ def _make_fixture() -> PmxData:
 
 
 def _make_exportable_fixture(source_data: PmxData) -> PmxData:
-    """Copy a source fixture with SDEF tags converted to equivalent BDEF2 tags."""
-    export_data = deepcopy(source_data)
-    for vertex in export_data.vertices:
-        if vertex.weight_transform_type == 3:
-            vertex.weight_transform_type = 1
-    return export_data
+    """Copy a source fixture; importer/exporter performs the BDEF4 downgrade."""
+    return deepcopy(source_data)
 
 
 def _weight_map(vertex) -> dict[int, float]:
@@ -205,7 +198,7 @@ class TestSkinInfluenceRoundtrip(MayaTestBase):
         settings.set("import.model.create_mmd_shaders", False)
 
     def test_all_pmx_weight_modes_import_readback_and_export_policy(self):
-        """Read back all modes, reject SDEF export, and preserve positive export coverage."""
+        """Read every PMX skin mode and export equivalent BDEF4 weights."""
         source_path = self.get_temp_filename("skin_influence_modes.pmx")
         source_data = _make_fixture()
         source_data.write_file(source_path)
@@ -284,13 +277,15 @@ class TestSkinInfluenceRoundtrip(MayaTestBase):
                             options={"export_format": "pmx", "target_model": root},
                         )
                     )
-                    self.assertFalse(export_result.succeeded, export_result.status_message)
-                    self.assertIsNotNone(export_result.validation_report)
-                    self.assertIn(
-                        "PMX_VERTEX_SDEF_UNSUPPORTED",
-                        [issue.code for issue in export_result.validation_report.issues],
+                    self.assertTrue(export_result.succeeded, export_result.status_message)
+                    exported_vertices = parse_pmx_file(
+                        output_path,
+                        use_native_pmx_parse=False,
+                    ).vertices
+                    self.assertTrue(exported_vertices)
+                    self.assertTrue(
+                        all(vertex.weight_transform_type == 2 for vertex in exported_vertices)
                     )
-                    self.assertFalse(os.path.exists(output_path))
 
                     cmds.file(new=True, force=True)
                     settings.set("import.model.separate_meshes_by_material", separate)

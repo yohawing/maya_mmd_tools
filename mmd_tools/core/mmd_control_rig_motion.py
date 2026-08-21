@@ -75,6 +75,60 @@ ROUTE_SAMPLED = "sampled"
 ROUTE_UNSUPPORTED = "unsupported"
 
 
+def _normalize_dense_frame_range(frame_range) -> Optional[Tuple[float, float]]:
+    """Normalize an optional inclusive range for temporary dense sampling."""
+
+    if frame_range is None:
+        return None
+    try:
+        values = list(frame_range)
+        if len(values) != 2:
+            raise ValueError("expected exactly two values")
+        start, end = (float(value) for value in values)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise MmdControlRigBuildError(
+            "automatic Control Rig bake frame_range must contain two numbers"
+        ) from exc
+    if not math.isfinite(start) or not math.isfinite(end) or start > end:
+        raise MmdControlRigBuildError(
+            "automatic Control Rig bake frame_range must be finite and ordered"
+        )
+    return start, end
+
+
+def _dense_sample_times(times, frame_range=None) -> List[float]:
+    """Build a dense sample grid, optionally clipped to an inclusive range.
+
+    The source curves are deliberately left untouched by this helper.  When a
+    range is supplied, only the grid used for evaluated samples is clipped;
+    authored keys outside the range remain available for the restoration
+    journal and for any existing destination curve.
+    """
+
+    source_times = sorted({float(time) for time in (times or [])})
+    if frame_range is None:
+        if not source_times:
+            return []
+        first = math.floor(min(source_times))
+        last = math.ceil(max(source_times))
+        return sorted(
+            set(source_times)
+            | {float(frame) for frame in range(first, last + 1)}
+        )
+
+    start, end = _normalize_dense_frame_range(frame_range)
+
+    clipped = {time for time in source_times if start <= time <= end}
+    first = math.ceil(start)
+    last = math.floor(end)
+    if first <= last:
+        clipped.update(float(frame) for frame in range(first, last + 1))
+    # Preserve non-integral requested endpoints as well.  This keeps the
+    # inclusive contract meaningful for callers that use sub-frame ranges.
+    clipped.update((start, end))
+    return sorted(clipped)
+
+
 def control_rig_edit_routes_for_joints(joints, *, cmds_module=None) -> Dict[str, Dict[str, Tuple[str, str]]]:
     """Return VMD key destinations for joints owned by control rigs in EDIT."""
     cmds = cmds_module or maya_cmds()
@@ -538,17 +592,45 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                     ) or []
                     if len(incoming) > 1:
                         raise MmdControlRigBuildError(f"multiple incoming sources: {target}")
-                    control_incoming = cmds.listConnections(
-                        control_plug, source=True, destination=False, plugs=True
-                    ) or []
-                    if control_incoming:
-                        raise MmdControlRigBuildError(f"control channel already driven: {control_plug}")
-
-                    value = float(cmds.getAttr(target))
-                    source = str(incoming[0]) if incoming else None
                     control_source = _existing_control_curve(
                         cmds, curve_representations, target
                     )
+                    control_incoming = [
+                        str(source)
+                        for source in (
+                            cmds.listConnections(
+                                control_plug,
+                                source=True,
+                                destination=False,
+                                plugs=True,
+                            )
+                            or []
+                        )
+                    ]
+                    if control_incoming:
+                        recorded_source = (
+                            _canonical_plug(cmds, control_source)
+                            if control_source
+                            else None
+                        )
+                        live_sources = [
+                            _canonical_plug(cmds, source)
+                            for source in control_incoming
+                        ]
+                        if len(live_sources) != 1 or live_sources[0] != recorded_source:
+                            raise MmdControlRigBuildError(
+                                f"control channel already driven: {control_plug}"
+                            )
+                        # Older non-identity basis bakes retained the detached
+                        # CONTROL representation on the controller. Its UUID is
+                        # already authoritative in curveRepresentations, so it
+                        # is safe to detach and reuse. Rollback reconnects the
+                        # exact legacy edge if a later step fails.
+                        cmds.disconnectAttr(control_incoming[0], control_plug)
+                        operations.append(("connect", control_incoming[0], control_plug))
+
+                    value = float(cmds.getAttr(target))
+                    source = str(incoming[0]) if incoming else None
                     duplicated_control_source = False
                     if source and control_source is None:
                         control_source = _duplicate_animation_source(
@@ -912,8 +994,17 @@ def restore_and_remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> 
         return remove_mmd_control_rig(model_root, cmds_module=cmds)
 
 
-def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]:
-    """Commit controller animation edges back to MMD authored inputs."""
+def bake_mmd_control_rig(
+    model_root: str,
+    *,
+    cmds_module=None,
+    frame_range=None,
+) -> Dict[str, Any]:
+    """Commit controller animation edges back to MMD authored inputs.
+
+    ``frame_range`` limits only temporary dense evaluation.  The default
+    ``None`` retains the historical manual-bake behavior.
+    """
     cmds = cmds_module or maya_cmds()
     root = _canonical_node(cmds, model_root)
     metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds)
@@ -924,6 +1015,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
         raise MmdControlRigBuildError(
             f"cannot bake MMD control rig while motion owner is {metadata.get('owner')}"
         )
+    dense_frame_range = _normalize_dense_frame_range(frame_range)
     ik_rows, channel_rows, offset_rows = _resolve_edit_journal(cmds, metadata)
     layer_journal = metadata.get("animLayerJournal")
     _assert_bake_route_supported(
@@ -979,6 +1071,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
             cmds,
             group,
             sources_by_control,
+            frame_range=dense_frame_range,
         )
         for group in rotation_groups
         if _rotation_group_requires_live_target_sampling(group)
@@ -1017,6 +1110,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 row,
                 sources_by_control[row["control"]],
                 created_curve_nodes=created_curve_nodes,
+                frame_range=dense_frame_range,
             )
         _disconnect_rotation_converters(cmds, rotation_converters)
         grouped_rows = {id(row) for group in rotation_groups for row in group}
@@ -1032,6 +1126,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 evaluated_target_samples=live_target_samples_by_group.get(
                     id(group[0])
                 ),
+                frame_range=dense_frame_range,
             )
             mmd_sources_by_control.update(group_sources)
         for row in reversed(channel_rows):
@@ -1042,6 +1137,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 row,
                 sources_by_control[row["control"]],
                 created_curve_nodes=created_curve_nodes,
+                frame_range=dense_frame_range,
             )
         _restore_offsets(cmds, offset_rows, strict=True)
         _drop_rotation_converter_nodes(metadata, rotation_converters)
@@ -3386,6 +3482,8 @@ def _capture_live_target_rotation_samples(
     cmds,
     rows: List[Mapping[str, Any]],
     sources_by_control: Mapping[str, Optional[str]],
+    *,
+    frame_range=None,
 ):
     """Capture dense raw solver inputs while the live basis converter exists."""
 
@@ -3408,11 +3506,8 @@ def _capture_live_target_rotation_samples(
             )
         }
     )
-    if times:
-        first = math.floor(min(times))
-        last = math.ceil(max(times))
-        times = sorted({*times, *(float(frame) for frame in range(first, last + 1))})
-    else:
+    times = _dense_sample_times(times, frame_range)
+    if not times:
         times = [float(cmds.currentTime(query=True))]
     return [
         (
@@ -3434,6 +3529,7 @@ def _commit_control_rotation_group(
     created_curve_nodes=None,
     quaternion_interpolation: Optional[bool] = None,
     evaluated_target_samples=None,
+    frame_range=None,
 ) -> Dict[str, Optional[str]]:
     """Bake one sparse three-axis rotation compound without scalar teardown.
 
@@ -3480,6 +3576,7 @@ def _commit_control_rotation_group(
             {row["control"]: source for row, source in zip(rows, control_sources)},
             created_curve_nodes=created_curve_nodes,
             evaluated_samples=evaluated_target_samples,
+            frame_range=frame_range,
         )
 
     # A non-identity authoring basis cannot be represented by copying Euler
@@ -3509,6 +3606,7 @@ def _commit_control_rotation_group(
                 basis.to_dict(),
                 created_curve_nodes=created_curve_nodes,
                 quaternion_interpolation=preserve_quaternion,
+                frame_range=frame_range,
             )
 
     if not standard_rotate_targets:
@@ -3517,6 +3615,7 @@ def _commit_control_rotation_group(
             rows,
             {row["control"]: source for row, source in zip(rows, control_sources)},
             created_curve_nodes=created_curve_nodes,
+            frame_range=frame_range,
         )
 
     # Disconnect all three control edges first.  This keeps the compound
@@ -3608,6 +3707,7 @@ def _sample_control_rotation_group_passthrough(
     *,
     created_curve_nodes=None,
     evaluated_samples=None,
+    frame_range=None,
 ) -> Dict[str, Optional[str]]:
     """Bake evaluated XYZ values into a non-transform rotation compound.
 
@@ -3637,11 +3737,8 @@ def _sample_control_rotation_group_passthrough(
             )
         }
     )
-    if times:
-        first = math.floor(min(times))
-        last = math.ceil(max(times))
-        times = sorted({*times, *(float(frame) for frame in range(first, last + 1))})
-    else:
+    times = _dense_sample_times(times, frame_range)
+    if not times:
         times = [float(cmds.currentTime(query=True))]
     samples = list(evaluated_samples) if evaluated_samples is not None else [
         (
@@ -3734,6 +3831,7 @@ def _sample_control_rotation_group_to_bone(
     *,
     created_curve_nodes=None,
     quaternion_interpolation: bool = False,
+    frame_range=None,
 ) -> Dict[str, Optional[str]]:
     """Sample a complete controller XYZ group through the basis inverse.
 
@@ -3765,9 +3863,12 @@ def _sample_control_rotation_group_to_bone(
         except Exception:
             times = [0.0]
     elif not quaternion_interpolation:
-        first = math.floor(min(times))
-        last = math.ceil(max(times))
-        times = sorted({*times, *(float(frame) for frame in range(first, last + 1))})
+        times = _dense_sample_times(times, frame_range)
+    elif frame_range is not None:
+        start, end = _normalize_dense_frame_range(frame_range)
+        times = [time for time in times if start <= time <= end]
+        if not times:
+            times = [start, end]
     samples = []
     try:
         control_rotate_order = int(cmds.getAttr(f"{control_node}.rotateOrder"))
@@ -3876,6 +3977,16 @@ def _sample_control_rotation_group_to_bone(
             raise MmdControlRigBuildError(
                 f"could not create basis-converted MMD rotation curve: {target_plug}"
             ) from exc
+    # The CONTROL representation remains UUID-addressable for the next EDIT,
+    # but BAKED/MMD_OWNED must not leave it connected to the controller. The
+    # generic re-entry path treats any live controller writer as foreign; this
+    # matches the scalar and quaternion bake paths, which already detach it.
+    for row, control_source in zip(
+        (rows_by_attr[attr] for attr in attrs),
+        sources,
+    ):
+        if control_source and cmds.isConnected(control_source, row["control"]):
+            cmds.disconnectAttr(control_source, row["control"])
     if quaternion_interpolation and all(
         str(row["target"]).rsplit(".", 1)[-1] in {"rotateX", "rotateY", "rotateZ"}
         for row in rows
@@ -4009,6 +4120,7 @@ def _commit_control_input(
     source: Optional[str],
     *,
     created_curve_nodes=None,
+    frame_range=None,
 ) -> Optional[str]:
     control, target = row["control"], row["target"]
     if row.get("layerRoute"):
@@ -4055,6 +4167,7 @@ def _commit_control_input(
             control_source,
             mmd_source,
             created_curve_nodes=created_curve_nodes,
+            frame_range=frame_range,
         )
         _recenter_translate_control_source(cmds, row, control_source)
         return result
@@ -4107,6 +4220,7 @@ def _sample_control_input_to_mmd(
     mmd_source: Optional[str],
     *,
     created_curve_nodes=None,
+    frame_range=None,
 ) -> Optional[str]:
     """Sample controller values into an MMD animCurve.
 
@@ -4132,15 +4246,7 @@ def _sample_control_input_to_mmd(
             float(time)
             for time in (cmds.keyframe(control_node, query=True, timeChange=True) or [])
         ]
-    times = sorted(set(source_times + control_times))
-    if times:
-        times = sorted(
-            set(times)
-            | set(
-                float(frame)
-                for frame in range(int(math.floor(min(times))), int(math.ceil(max(times))) + 1)
-            )
-        )
+    times = _dense_sample_times(source_times + control_times, frame_range)
     sampled_values = [
         (
             time,

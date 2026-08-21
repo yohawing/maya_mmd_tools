@@ -7,7 +7,6 @@ from .qt_compat import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QFileDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -21,10 +20,6 @@ from .qt_compat import (
 )
 from ..validation.export_validator import ExportValidationReport
 from ..validation.issue_catalog import get_issue_catalog_entry
-from ..validation.report_artifacts import (
-    ValidationReportArtifactPaths,
-    write_validation_report_artifacts,
-)
 from .translations import UITranslator
 
 
@@ -80,11 +75,21 @@ def render_validation_console_text(
         evidence=metadata.get("evidence") or metadata,
     )
     summary = canonical["summary"]
+    display_strategy = canonical["mode"]
+    if translator is not None and canonical["format"] == "vmd":
+        strategy_key = {
+            "preserve_keys": "vmd_preserve_keys",
+            "bake_timeline": "vmd_export_timeline",
+        }.get(str(display_strategy).lower())
+        if strategy_key is not None:
+            display_strategy = translator.translate(
+                f"options.{strategy_key}", default=display_strategy
+            )
     lines = [
         label("title", "Export Validation Console"),
         f"{label('status', 'Status')}: {canonical['status'].upper()}",
         f"{label('format', 'Format')}: {canonical['format'] or 'unknown'}",
-        f"{label('mode', 'Mode')}: {canonical['mode']}",
+        f"{label('mode', 'Export strategy')}: {display_strategy}",
         f"{label('target', 'Target')}: {canonical['target_identity'] or 'unspecified'}",
         f"{label('snapshot', 'Snapshot')}: {canonical['snapshot_fingerprint'] or 'unspecified'}",
         (
@@ -151,8 +156,6 @@ def render_validation_console_text(
 class ValidationConsole(QWidget):
     """Display and acknowledge a report without owning validation policy."""
 
-    revalidate_requested = Signal()
-    report_saved = Signal(object)
     acknowledgement_changed = Signal(bool)
 
     def __init__(self, parent=None):
@@ -193,18 +196,10 @@ class ValidationConsole(QWidget):
         self.acknowledge_check.setEnabled(False)
         self.acknowledge_check.toggled.connect(self.acknowledgement_changed.emit)
         actions.addWidget(self.acknowledge_check)
-        self.revalidate_button = QPushButton(self._tr("revalidate", "Revalidate"))
-        self.revalidate_button.setObjectName("validationRevalidateButton")
-        self.revalidate_button.clicked.connect(self.revalidate_requested.emit)
-        actions.addWidget(self.revalidate_button)
         self.copy_button = QPushButton(self._tr("copy", "Copy"))
         self.copy_button.setObjectName("validationCopyButton")
         self.copy_button.clicked.connect(self.copy_report)
         actions.addWidget(self.copy_button)
-        self.save_button = QPushButton(self._tr("save_report", "Save report"))
-        self.save_button.setObjectName("validationSaveButton")
-        self.save_button.clicked.connect(self.save_report)
-        actions.addWidget(self.save_button)
         actions.addStretch()
         layout.addLayout(actions)
 
@@ -374,37 +369,13 @@ class ValidationConsole(QWidget):
                 )
             )
 
-    def save_report(self) -> Optional[ValidationReportArtifactPaths]:
-        """Save JSON/Markdown artifacts through the canonical artifact writer."""
-        if self._report is None:
-            return None
-        directory = QFileDialog.getExistingDirectory(
-            self,
-            self._tr("save_dialog", "Save validation report"),
-        )
-        if not directory:
-            return None
-        paths = write_validation_report_artifacts(
-            self._report,
-            directory,
-            target_identity=self._metadata.get("target_identity"),
-            snapshot_fingerprint=self._metadata.get("payload_fingerprint")
-            or self._metadata.get("snapshot_fingerprint"),
-            provenance=self._metadata.get("provenance", "ExportValidationConsole"),
-            evidence=self._metadata.get("evidence") or self._metadata,
-        )
-        self.report_saved.emit(paths)
-        return paths
-
     def retranslateUi(self) -> None:
         """Refresh labels and the currently selected localized issue detail."""
         self.summary_label.setText(self._tr("no_report", "No validation report"))
         self.acknowledge_check.setText(
             self._tr("acknowledge_warnings", "Acknowledge warnings")
         )
-        self.revalidate_button.setText(self._tr("revalidate", "Revalidate"))
         self.copy_button.setText(self._tr("copy", "Copy"))
-        self.save_button.setText(self._tr("save_report", "Save report"))
         self._refresh_filters()
         self._refresh_summary()
         self._refresh_issue_list()

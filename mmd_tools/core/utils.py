@@ -93,12 +93,22 @@ def encodePMDString(string, length):
         return b"\x00" * length
 
     encoded = encodeCp932String(string)
-    if len(encoded) >= length:
-        # 長すぎる場合は切り詰める
-        return encoded[: length - 1] + b"\x00"
-    else:
-        # 短い場合はヌル文字でパディング
+    if len(encoded) <= length:
+        # 固定長にちょうど収まる文字列は終端を削らず、そのまま保持する。
         return encoded + b"\x00" * (length - len(encoded))
+
+    # CP932 の 2-byte 文字の途中で切ると、読み戻し時に replacement
+    # character が入り、VMD の track 名が変化する。最大長まで取り、
+    # decode できる文字境界まで戻してから null padding する。
+    truncated = encoded[:length]
+    while truncated:
+        try:
+            truncated.decode("cp932")
+        except UnicodeDecodeError:
+            truncated = truncated[:-1]
+        else:
+            break
+    return truncated + b"\x00" * (length - len(truncated))
 
 
 def get_pmx_encoding_string(encoding_flag: PmxEncoding) -> str:

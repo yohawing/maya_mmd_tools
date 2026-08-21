@@ -235,6 +235,65 @@ class TestMmdControlRigRoundtrip(MayaTestBase):
         self.assertTrue(cmds.getAttr(f"{target}.enabled", time=6))
         self.assertFalse(cmds.getAttr(f"{target}.enabled", time=9))
 
+    def test_sampled_route_clips_dense_grid_and_preserves_outside_curves(self):
+        """Automatic range clipping must not rewrite authored keys outside it."""
+        control = cmds.createNode("transform", name="cr061_sampled_range_control")
+        target = cmds.createNode("transform", name="cr061_sampled_range_target")
+        for time, value in ((-5, 1.0), (0, 2.0), (120, 7.0), (125, 11.0)):
+            cmds.setKeyframe(control, attribute="translateX", time=time, value=value)
+        control_source = (
+            cmds.listConnections(
+                f"{control}.translateX", source=True, destination=False, plugs=True
+            )
+            or [None]
+        )[0]
+        self.assertTrue(control_source)
+
+        for time, value in ((-5, 100.0), (125, 200.0)):
+            cmds.setKeyframe(target, attribute="translateX", time=time, value=value)
+        mmd_source = (
+            cmds.listConnections(
+                f"{target}.translateX", source=True, destination=False, plugs=True
+            )
+            or [None]
+        )[0]
+        self.assertTrue(mmd_source)
+
+        _sample_control_input_to_mmd(
+            cmds,
+            {
+                "control": f"{control}.translateX",
+                "target": f"{target}.translateX",
+                "source": mmd_source,
+                "controlSource": control_source,
+                "routeClass": "sampled",
+            },
+            control_source,
+            mmd_source,
+            frame_range=(0, 120),
+        )
+
+        self.assertEqual(
+            cmds.keyframe(control_source.split(".", 1)[0], query=True, timeChange=True),
+            [-5.0, 0.0, 120.0, 125.0],
+        )
+        self.assertEqual(
+            cmds.keyframe(mmd_source.split(".", 1)[0], query=True, timeChange=True),
+            [-5.0] + [float(frame) for frame in range(121)] + [125.0],
+        )
+        self.assertEqual(
+            cmds.getAttr(f"{control}.translateX", time=-5),
+            1.0,
+        )
+        self.assertEqual(
+            cmds.getAttr(f"{target}.translateX", time=-5),
+            100.0,
+        )
+        self.assertEqual(
+            cmds.getAttr(f"{target}.translateX", time=125),
+            200.0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

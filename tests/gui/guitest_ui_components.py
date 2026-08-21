@@ -285,6 +285,28 @@ class TestMainWindow(GuiTestBase):
         # 初期状態では非表示
         self.assertFalse(self.window.progress_bar.isVisible())
 
+    def test_structured_progress_maps_busy_and_determinate_footer_states(self):
+        """Structured export stages drive the footer without changing legacy signals."""
+        token = self.window.app_state.begin_progress("Animation: collecting export data")
+        QApplication.processEvents()
+        self.assertTrue(self.window.progress_bar.isVisible())
+        self.assertEqual(self.window.progress_bar.minimum(), 0)
+        self.assertEqual(self.window.progress_bar.maximum(), 0)
+        self.assertEqual(self.window.status_bar.currentMessage(), "Animation: collecting export data")
+
+        self.window.app_state.update_progress_state(token, "Animation: validation report ready", 100)
+        QApplication.processEvents()
+        self.assertEqual(self.window.progress_bar.minimum(), 0)
+        self.assertEqual(self.window.progress_bar.maximum(), 100)
+        self.assertEqual(self.window.progress_bar.value(), 100)
+
+        self.window.show_status_message("Export failed: terminal status")
+        self.assertTrue(self.window.app_state.end_progress(token))
+        QApplication.processEvents()
+        self.assertFalse(self.window.progress_bar.isVisible())
+        self.assertEqual(self.window.progress_bar.maximum(), 100)
+        self.assertEqual(self.window.status_bar.currentMessage(), "Export failed: terminal status")
+
     def test_header_widget_creation(self):
         """
         ヘッダーウィジェットが作成されているかをテストする

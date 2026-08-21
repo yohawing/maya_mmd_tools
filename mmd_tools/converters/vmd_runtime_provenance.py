@@ -14,6 +14,10 @@ from ..core.constants import ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON
 from ..core import maya_attribute_utils
 
 
+_MAX_EMBEDDED_PROVENANCE_BYTES = 8 * 1024 * 1024
+_SOURCE_VMD_STORAGE = "source_vmd_reference"
+
+
 def _sha256_bytes(payload: Optional[bytes]) -> str:
     """Return a stable SHA-256 for available source bytes."""
     return hashlib.sha256(payload).hexdigest() if payload else ""
@@ -55,7 +59,7 @@ def build_raw_bone_interpolation_provenance(
     The records remain keyed by the original VMD bone name and frame number.
     Interpolation and transform completeness are tracked independently so
     older interpolation-only metadata remains readable while a partial raw
-    transform cannot pass a new Mode A payload gate.
+    transform cannot pass a new Preserve Keys payload gate.
     """
     if frames is None:
         return {
@@ -66,14 +70,20 @@ def build_raw_bone_interpolation_provenance(
             "records": [],
         }
 
-    records = []
-    seen = set()
+    records_by_key = {}
     complete = True
-    transform_complete = True
-    key_count = 0
+    source_key_count = 0
+    duplicate_key_count = 0
+    ignored_key_count = 0
     for frame in frames:
-        key_count += 1
+        source_key_count += 1
         name = str(_frame_value(frame, "bone_name", "") or "")
+        if not name:
+            # An empty VMD bone name cannot bind to a Maya joint and is not
+            # imported.  Keep an audit count, but do not block export of the
+            # model-owned motion that actually reached the scene.
+            ignored_key_count += 1
+            continue
         frame_number = _frame_value(frame, "frame_number")
         interpolation = _frame_value(frame, "interpolation")
         try:
@@ -83,10 +93,15 @@ def build_raw_bone_interpolation_provenance(
             complete = False
             continue
         key = (name, frame_number)
-        if not name or frame_number < 0 or len(raw) != 64 or key in seen:
+        if frame_number < 0 or len(raw) != 64:
             complete = False
             continue
-        seen.add(key)
+        if key in records_by_key:
+            # Maya animation curves also collapse repeated keys at the same
+            # bone/frame.  Preserve the last VMD record, matching the import
+            # result, instead of making an otherwise usable motion impossible
+            # to export with Preserve Keys.
+            duplicate_key_count += 1
         record = {
             "bone_name": name,
             "frame_number": frame_number,
@@ -94,21 +109,24 @@ def build_raw_bone_interpolation_provenance(
         }
         position = _finite_tuple(_frame_value(frame, "position"), 3)
         rotation = _finite_tuple(_frame_value(frame, "rotation"), 4)
-        if position is None or rotation is None:
-            transform_complete = False
-        else:
+        if position is not None and rotation is not None:
             record["position"] = list(position)
             record["rotation"] = list(rotation)
-        records.append(record)
+        records_by_key[key] = record
 
+    records = list(records_by_key.values())
     records.sort(key=lambda item: (item["bone_name"], item["frame_number"]))
+    transform_complete = complete and all(
+        "position" in record and "rotation" in record for record in records
+    )
     return {
         "available": True,
-        "complete": complete and len(records) == key_count,
-        "transform_complete": (
-            transform_complete and complete and len(records) == key_count
-        ),
-        "key_count": key_count,
+        "complete": complete,
+        "transform_complete": transform_complete,
+        "key_count": len(records),
+        "source_key_count": source_key_count,
+        "duplicate_key_count": duplicate_key_count,
+        "ignored_key_count": ignored_key_count,
         "records": records,
     }
 
@@ -150,6 +168,9 @@ def build_runtime_registration_provenance(
                 "raw_bone_interpolation_complete": raw_provenance["complete"],
                 "raw_bone_transform_complete": raw_provenance["transform_complete"],
                 "raw_bone_key_count": raw_provenance["key_count"],
+                "raw_bone_source_key_count": raw_provenance["source_key_count"],
+                "raw_bone_duplicate_key_count": raw_provenance["duplicate_key_count"],
+                "raw_bone_ignored_key_count": raw_provenance["ignored_key_count"],
             }
         )
     return payload
@@ -185,6 +206,77 @@ def build_raw_vmd_source_provenance(
     return payload
 
 
+def _scene_provenance_json(payload: Mapping[str, Any]) -> Optional[str]:
+    """Serialize provenance, externalizing oversized raw records to their source VMD."""
+
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(serialized.encode("utf-8")) <= _MAX_EMBEDDED_PROVENANCE_BYTES:
+        return serialized
+    if not (
+        payload.get("raw_bone_interpolation_complete") is True
+        and payload.get("raw_bone_transform_complete") is True
+        and payload.get("raw_vmd_path")
+        and payload.get("raw_vmd_sha256")
+    ):
+        return None
+    compact = dict(payload)
+    compact.pop("raw_bone_interpolation", None)
+    compact["raw_bone_interpolation_storage"] = _SOURCE_VMD_STORAGE
+    return json.dumps(
+        compact,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def materialize_raw_bone_source_provenance(
+    payload: Mapping[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Reload externally stored raw bone authority after identity verification."""
+
+    if isinstance(payload.get("raw_bone_interpolation"), list):
+        return dict(payload)
+    if payload.get("raw_bone_interpolation_storage") != _SOURCE_VMD_STORAGE:
+        return None
+    source_path = Path(str(payload.get("raw_vmd_path") or ""))
+    expected_sha256 = str(payload.get("raw_vmd_sha256") or "")
+    if not source_path.is_file() or not expected_sha256:
+        return None
+    try:
+        source_bytes = source_path.read_bytes()
+        if _sha256_bytes(source_bytes) != expected_sha256:
+            return None
+        from ..core.vmd_data import VmdData
+
+        source = VmdData().parse_file(str(source_path))
+        raw = build_raw_bone_interpolation_provenance(source.bone_frames)
+        expected_count = int(payload.get("raw_bone_key_count", -1))
+    except Exception:
+        return None
+    if (
+        not raw["complete"]
+        or not raw["transform_complete"]
+        or raw["key_count"] != expected_count
+    ):
+        return None
+    materialized = dict(payload)
+    materialized.update(
+        {
+            "raw_bone_interpolation": raw["records"],
+            "raw_bone_interpolation_complete": True,
+            "raw_bone_transform_complete": True,
+            "raw_bone_key_count": raw["key_count"],
+        }
+    )
+    return materialized
+
+
 def store_runtime_registration_provenance(
     target_model: Optional[str],
     payload: Dict[str, Any],
@@ -193,6 +285,9 @@ def store_runtime_registration_provenance(
     if not target_model or not cmds.objExists(target_model):
         return False
     try:
+        serialized = _scene_provenance_json(payload)
+        if serialized is None:
+            return False
         if not cmds.attributeQuery(
             ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
             node=target_model,
@@ -206,7 +301,7 @@ def store_runtime_registration_provenance(
         maya_attribute_utils.set_attribute(
             target_model,
             ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            serialized,
             "string",
         )
         return True

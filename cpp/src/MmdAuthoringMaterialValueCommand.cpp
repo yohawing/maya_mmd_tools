@@ -132,6 +132,47 @@ bool viewportField(const MFnDependencyNode& shaderFn, FieldSpec& spec)
     return true;
 }
 
+bool viewportAlphaField(const MFnDependencyNode& shaderFn, FieldSpec& spec)
+{
+    const std::string type = utf8(shaderFn.typeName());
+    if (type == "dx11Shader" || type == "GLSLShader") {
+        spec = {"DiffuseColorA", FieldSpec::Scalar};
+        return true;
+    }
+    return false;
+}
+
+bool resolveViewportWritePlug(
+    const MFnDependencyNode& shaderFn,
+    const FieldSpec& spec,
+    const char* evaluatorOutput,
+    const char* evaluatorBase,
+    MPlug& plug,
+    std::string& canonical)
+{
+    MStatus status;
+    plug = shaderFn.findPlug(spec.attribute, false, &status);
+    if (!status) return false;
+    canonical = utf8(shaderFn.name()) + "." + spec.attribute;
+
+    MPlugArray sources;
+    const bool hasSources = plug.connectedTo(sources, true, false, &status);
+    if (!status) return false;
+    if (!hasSources || sources.length() == 0U) return true;
+    if (sources.length() != 1U) return true;
+
+    MFnDependencyNode sourceFn(sources[0].node(), &status);
+    if (!status || utf8(sourceFn.typeName()) != "mmdMaterialMorphEval") return true;
+    MPlug output = sourceFn.findPlug(evaluatorOutput, false, &status);
+    if (!status || sources[0].attribute() != output.attribute()) return true;
+
+    MPlug base = sourceFn.findPlug(evaluatorBase, false, &status);
+    if (!status) return false;
+    plug = base;
+    canonical = canonicalNodeName(sources[0].node()) + "." + evaluatorBase;
+    return true;
+}
+
 bool numericStorage(const MPlug& plug, FieldSpec::Kind kind, Command::Storage& storage)
 {
     MStatus status;
@@ -330,10 +371,25 @@ MStatus MmdAuthoringSetMaterialValuesCommand::doIt(const MArgList& args)
         auto found = fixedFields().find(field);
         if (found != fixedFields().end()) spec = found->second;
         else if (field == "viewport_diffuse" && viewportField(shaderFn, spec)) {}
+        else if (field == "viewport_diffuse_alpha" && viewportAlphaField(shaderFn, spec)) {}
         else { mutations_.clear(); return finishError("prepare", "field_not_allowed", field); }
-        MPlug plug = shaderFn.findPlug(spec.attribute, false, &status);
-        if (!status) { mutations_.clear(); return finishError("prepare", "missing_plug", shaderName + "." + spec.attribute); }
-        const std::string canonicalPlug = shaderName + "." + spec.attribute;
+        MPlug plug;
+        std::string canonicalPlug;
+        if (field == "viewport_diffuse" || field == "viewport_diffuse_alpha") {
+            const char* output = field == "viewport_diffuse"
+                ? "outputDiffuse"
+                : "outputDiffuseAlpha";
+            const char* base = field == "viewport_diffuse"
+                ? "baseDiffuse"
+                : "baseDiffuseA";
+            if (!resolveViewportWritePlug(shaderFn, spec, output, base, plug, canonicalPlug)) {
+                mutations_.clear(); return finishError("prepare", "plug_not_settable", shaderName + "." + spec.attribute);
+            }
+        } else {
+            plug = shaderFn.findPlug(spec.attribute, false, &status);
+            if (!status) { mutations_.clear(); return finishError("prepare", "missing_plug", shaderName + "." + spec.attribute); }
+            canonicalPlug = shaderName + "." + spec.attribute;
+        }
         if (!seenPlugs.insert(canonicalPlug).second || !plugIsSettable(plug)) {
             mutations_.clear(); return finishError("prepare", "plug_not_settable", canonicalPlug);
         }

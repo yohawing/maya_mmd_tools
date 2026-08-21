@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, make_dataclass, replace
+from enum import Enum
 from typing import Any
 
 import pytest
@@ -26,13 +27,17 @@ from mmd_tools.core.morph_topology import (
 )
 from mmd_tools.core.morph_read_projection import (
     MorphAuthoringReadSnapshot,
+    MorphBindingProjection,
     MorphBlendShapeReadProjection,
 )
+from mmd_tools.core.morph_binding_resolver import MorphBinding, MorphBindingWarning
 from mmd_tools.core.material_read_projection import (
     MaterialAssignmentKind,
     MaterialAssignmentSummary,
     MaterialDetailProjection,
+    MaterialListItemProjection,
     MaterialListProjection,
+    MaterialListSemantic,
     MaterialPreviewState,
 )
 
@@ -210,6 +215,19 @@ class FakeBackend:
         self.snapshot = self.scene
         self.events.append("begin:bone_value")
 
+    def begin_morph_value_patch(
+        self,
+        _root: str,
+        _binding: str,
+        _old: MmdMorphSpec,
+        _new: MmdMorphSpec,
+    ) -> None:
+        if self.active:
+            raise RuntimeError("nested transaction")
+        self.active = True
+        self.snapshot = self.scene
+        self.events.append("begin:morph_value")
+
     def begin_bone_register(self, _root: str, _bone: MmdBoneSpec) -> None:
         if self.active:
             raise RuntimeError("nested transaction")
@@ -309,6 +327,31 @@ class FakeMetadataAdapter:
         self.backend.commit_count += 1
         self.backend.events.append("commit:bone_value")
 
+    def read_morph_value(self, _root: str, binding: str, index: int) -> MmdMorphSpec:
+        return next(
+            morph
+            for morph in self.backend.scene.morphs
+            if morph.binding_identity == binding and morph.index == index
+        )
+
+    def commit_morph_value_patch(
+        self,
+        _root: str,
+        _binding: str,
+        morph: MmdMorphSpec,
+    ) -> None:
+        assert self.backend.active
+        self.backend.scene = replace(
+            self.backend.scene,
+            morphs=tuple(
+                morph if item.index == morph.index else item
+                for item in self.backend.scene.morphs
+            ),
+        )
+        self.backend.active = False
+        self.backend.commit_count += 1
+        self.backend.events.append("commit:morph_value")
+
     def commit_bone_register(self, _root: str, bone: MmdBoneSpec) -> None:
         assert self.backend.active
         self.backend.scene = replace(
@@ -377,11 +420,30 @@ _ReloadGenerationSpec.__module__ = MmdModelAuthoringSpec.__module__
 _ReloadGenerationSpec.__qualname__ = MmdModelAuthoringSpec.__qualname__
 
 
+def _old_projection_dataclass(current_type):
+    """Build a strict previous-generation shape for reload boundary tests."""
+
+    old_type = make_dataclass(
+        current_type.__name__,
+        [(field.name, field.type) for field in fields(current_type)],
+        frozen=True,
+    )
+    old_type.__module__ = current_type.__module__
+    old_type.__qualname__ = current_type.__qualname__
+    old_type.projection_schema_version = getattr(
+        current_type,
+        "projection_schema_version",
+        None,
+    )
+    return old_type
+
+
 class FakeMaterialAuthoring:
     def __init__(self, backend: FakeBackend) -> None:
         self.backend = backend
         self.assignments: list[tuple[int, tuple[str, ...]]] = []
         self.fail_create = False
+        self.source_shader: str | None = None
 
     def create_material(
         self,
@@ -389,9 +451,12 @@ class FakeMaterialAuthoring:
         material: MmdMaterialSpec,
         *,
         narrow: bool = False,
+        source_shader: str | None = None,
     ) -> tuple[MmdMaterialSpec, str, str]:
         if self.fail_create:
             raise RuntimeError("create failed")
+        if source_shader is not None:
+            self.source_shader = source_shader
         binding = f"material{material.index}"
         bound = replace(material, binding_identity=binding)
         if not narrow:
@@ -588,6 +653,22 @@ class FakeMorphAuthoring:
     def apply_morph_create(self, _root: str, morph: MmdMorphSpec, _cmds: Any) -> MmdMorphSpec:
         return replace(morph, binding_identity=f"morph{morph.index}")
 
+    def apply_morph_value_patch(
+        self,
+        _root: str,
+        _old: MmdMorphSpec,
+        new: MmdMorphSpec,
+        _cmds: Any,
+    ) -> MmdMorphSpec:
+        self.backend.scene = replace(
+            self.backend.scene,
+            morphs=tuple(
+                new if item.index == new.index else item
+                for item in self.backend.scene.morphs
+            ),
+        )
+        return new
+
 
 def _coordinator() -> tuple[
     MayaModelAuthoringCoordinator,
@@ -698,6 +779,102 @@ def test_read_morph_authoring_snapshot_delegates_one_combined_generation() -> No
     assert backend.events == ["read:morph_snapshot"]
 
 
+def test_read_morph_authoring_snapshot_rehydrates_strict_previous_generation() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    current = backend.scene
+    morph = MmdMorphSpec(
+        "Morph",
+        index=0,
+        morph_type="vertex",
+        binding_identity="morph0",
+    )
+    old_spec = _ReloadGenerationSpec(
+        model=current.model,
+        bones=current.bones,
+        materials=current.materials,
+        morphs=(morph,),
+    )
+    old_binding = _old_projection_dataclass(MorphBinding)(
+        "Morph",
+        0,
+        "blendShape",
+        "Morph",
+        0,
+        "blendShape.weight[0]",
+        "controller",
+        0,
+    )
+    old_warning = _old_projection_dataclass(MorphBindingWarning)(
+        "legacy",
+        "legacy alias",
+    )
+    old_morph = _old_projection_dataclass(MorphBindingProjection)(
+        "Morph",
+        0,
+        "morph0",
+        (old_binding,),
+        (old_warning,),
+        ("controller.inputWeight[0]",),
+        True,
+        "",
+        True,
+    )
+    old_projection = _old_projection_dataclass(MorphBlendShapeReadProjection)(
+        "|root",
+        "controller",
+        (),
+        ("blendShape",),
+        (old_morph,),
+        (),
+    )
+    old_topology = _old_projection_dataclass(MorphTopologyInspection)({}, {}, ())
+    backend.morph_snapshot = _old_projection_dataclass(MorphAuthoringReadSnapshot)(
+        old_spec,
+        old_projection,
+        old_topology,
+    )
+
+    result = coordinator.read_morph_authoring_snapshot("|root")
+
+    assert type(result) is MorphAuthoringReadSnapshot
+    assert type(result.spec) is MmdModelAuthoringSpec
+    assert type(result.projection) is MorphBlendShapeReadProjection
+    assert type(result.projection.morphs[0]) is MorphBindingProjection
+    assert type(result.projection.morphs[0].bindings[0]) is MorphBinding
+    assert type(result.projection.morphs[0].warnings[0]) is MorphBindingWarning
+    assert type(result.topology_inspection) is MorphTopologyInspection
+    assert result.projection.morphs[0].binding_identity == "morph0"
+    assert result.spec.morphs[0].binding_identity == "morph0"
+
+
+def test_read_morph_authoring_snapshot_rejects_schema_drift_and_wrong_root() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    old_snapshot = _old_projection_dataclass(MorphAuthoringReadSnapshot)
+    old_snapshot.projection_schema_version = 999
+    backend.morph_snapshot = old_snapshot(
+        backend.morph_snapshot.spec,
+        backend.morph_snapshot.projection,
+        backend.morph_snapshot.topology_inspection,
+    )
+
+    with pytest.raises(
+        MayaModelAuthoringCoordinatorError,
+        match="morph authoring snapshot reader returned an invalid result",
+    ):
+        coordinator.read_morph_authoring_snapshot("|root")
+
+    backend.morph_snapshot = MorphAuthoringReadSnapshot(
+        backend.morph_snapshot.spec,
+        replace(backend.morph_snapshot.projection, root_identity="|other"),
+        backend.morph_snapshot.topology_inspection,
+    )
+    with pytest.raises(
+        MayaModelAuthoringCoordinatorError,
+        match="morph authoring snapshot returned the wrong root",
+    ):
+        coordinator.read_morph_authoring_snapshot("|root")
+
+
 def test_read_material_list_projection_delegates_one_typed_generation() -> None:
     coordinator, backend, _, _ = _coordinator()
 
@@ -705,6 +882,109 @@ def test_read_material_list_projection_delegates_one_typed_generation() -> None:
 
     assert result is backend.material_list_projection
     assert backend.events == ["read:material_list_projection"]
+
+
+def test_read_material_list_projection_rehydrates_strict_previous_generation() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    old_kind = Enum(
+        "MaterialAssignmentKind",
+        {member.name: member.value for member in MaterialAssignmentKind},
+        module=MaterialAssignmentKind.__module__,
+    )
+    old_kind.__qualname__ = MaterialAssignmentKind.__qualname__
+    old_assignment = _old_projection_dataclass(MaterialAssignmentSummary)
+    old_semantic = _old_projection_dataclass(MaterialListSemantic)
+    old_item = _old_projection_dataclass(MaterialListItemProjection)
+    old_projection = _old_projection_dataclass(MaterialListProjection)
+
+    backend.material_list_projection = old_projection(
+        "|root",
+        (
+            old_item(
+                old_semantic(0, "material0", "Material", "Material EN"),
+                old_assignment(old_kind.EXPLICIT_FACES, 1, 2),
+            ),
+        ),
+    )
+
+    result = coordinator.read_material_list_projection("|root")
+
+    assert type(result) is MaterialListProjection
+    assert type(result.items[0]) is MaterialListItemProjection
+    assert type(result.items[0].semantic) is MaterialListSemantic
+    assert type(result.items[0].assignment) is MaterialAssignmentSummary
+    assert result.root_identity == "|root"
+    assert result.items[0].binding_identity == "material0"
+    assert result.items[0].assignment == MaterialAssignmentSummary(
+        MaterialAssignmentKind.EXPLICIT_FACES,
+        1,
+        2,
+    )
+
+
+def test_read_material_list_projection_rejects_schema_drift_and_wrong_root() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    old_projection = _old_projection_dataclass(MaterialListProjection)
+    old_projection.projection_schema_version = 999
+    backend.material_list_projection = old_projection("|root", ())
+
+    with pytest.raises(
+        MayaModelAuthoringCoordinatorError,
+        match="material list projection reader returned an invalid result",
+    ):
+        coordinator.read_material_list_projection("|root")
+
+    backend.material_list_projection = MaterialListProjection("|other", ())
+    with pytest.raises(
+        MayaModelAuthoringCoordinatorError,
+        match="material list projection returned the wrong root",
+    ):
+        coordinator.read_material_list_projection("|root")
+
+
+def test_read_material_detail_projection_rehydrates_strict_previous_generation() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    current_material = backend.scene.materials[0]
+    old_kind = Enum(
+        "MaterialAssignmentKind",
+        {member.name: member.value for member in MaterialAssignmentKind},
+        module=MaterialAssignmentKind.__module__,
+    )
+    old_kind.__qualname__ = MaterialAssignmentKind.__qualname__
+    old_assignment = _old_projection_dataclass(MaterialAssignmentSummary)
+    old_preview = _old_projection_dataclass(MaterialPreviewState)
+    old_material = _old_projection_dataclass(MmdMaterialSpec)
+
+    def to_mapping(value):
+        return {field.name: getattr(value, field.name) for field in fields(MmdMaterialSpec)}
+
+    old_material.to_mapping = to_mapping
+    old_detail = _old_projection_dataclass(MaterialDetailProjection)
+    backend.material_detail_projection = old_detail(
+        "|root",
+        old_material(
+            **{
+                field.name: getattr(current_material, field.name)
+                for field in fields(MmdMaterialSpec)
+            }
+        ),
+        old_assignment(old_kind.EMPTY, 0, 0),
+        (),
+        old_preview("lambert", False),
+    )
+
+    result = coordinator.read_material_detail_projection(
+        "|root",
+        0,
+        "material0",
+        MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+    )
+
+    assert type(result) is MaterialDetailProjection
+    assert type(result.material) is MmdMaterialSpec
+    assert type(result.assignment) is MaterialAssignmentSummary
+    assert type(result.preview) is MaterialPreviewState
+    assert result.material.binding_identity == "material0"
 
 
 def test_read_material_detail_projection_delegates_and_checks_identity() -> None:
@@ -790,6 +1070,7 @@ def test_create_and_duplicate_material_generate_fresh_binding_identities() -> No
     duplicated = coordinator.duplicate_material("|root", 0)
     assert duplicated.binding_identity == "material2"
     assert duplicated.binding_identity != backend.scene.materials[0].binding_identity
+    assert materials.source_shader == backend.scene.materials[0].binding_identity
     assert materials.assignments == []
     assert backend.begin_count == 2
     assert backend.commit_count == 2
@@ -1032,7 +1313,9 @@ def test_replace_bone_semantic_preserves_rest_tail_and_does_not_xform() -> None:
     assert edited.connect_bone_index == 0
     assert edited.flags & PmxBoneFlag.CONNECT_BONE
     assert coordinator._cmds.positions == {}
-    _assert_one_successful_transaction(backend)
+    assert backend.rebase_count == 0
+    assert backend.events == ["begin:bone_value", "commit:bone_value"]
+    assert backend.rollback_count == 0
 
 
 @pytest.mark.parametrize("invalid_scale", [True, 0.0, float("nan"), float("inf")])
@@ -1060,11 +1343,49 @@ def test_morph_crud_uses_injected_structural_writer_and_canonical_binding() -> N
         replace(created, name="Smile Wide"),
     )
     assert replaced.morphs[0].name == "Smile Wide"
+    assert backend.rebase_count == 0
     backend.rebase_count = 0
     deleted = coordinator.delete_morph("|root", 0)
     assert deleted.morphs == ()
-    assert backend.begin_count == 3
+    assert backend.begin_count == 2
     assert backend.commit_count == 3
+
+
+def test_replace_morph_numeric_offsets_uses_selected_narrow_transaction() -> None:
+    coordinator, backend, _, _ = _coordinator()
+    original = MmdMorphSpec(
+        "Weighted",
+        index=0,
+        morph_type="bone",
+        binding_identity="morph0",
+        offsets=(
+            {
+                "bone_index": 0,
+                "translation": (0.0, 0.0, 0.0),
+                "rotation": (0.0, 0.0, 0.0, 1.0),
+            },
+        ),
+    )
+    backend.scene = replace(backend.scene, morphs=(original,))
+    backend.events.clear()
+    backend.rebase_count = 0
+
+    result = coordinator.replace_morph_offsets(
+        "|root",
+        0,
+        (
+            {
+                "bone_index": 0,
+                "translation": (1.0, 2.0, 3.0),
+                "rotation": (0.0, 0.0, 0.0, 1.0),
+            },
+        ),
+    )
+
+    assert result.morphs[0].offsets[0]["translation"] == (1.0, 2.0, 3.0)
+    assert backend.rebase_count == 0
+    assert backend.events == ["begin:morph_value", "commit:morph_value"]
+    assert backend.rollback_count == 0
 
 
 def test_morph_change_without_structural_writer_fails_before_transaction() -> None:

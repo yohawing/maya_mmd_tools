@@ -2,23 +2,31 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from ..actions.export_model_action import ExportModelAction, ExportModelRequest
 from ..actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
+from ..actions.prepare_vmd_export_action import (
+    PrepareVmdExportError,
+    PrepareVmdExportResult,
+)
+from ..actions.publish_prepared_vmd_action import publish_prepared_vmd_artifact
 from ..validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
 )
 from ..validation.scene_preflight import ScenePreflight
 from ..validation.snapshot import ExportValidationSnapshot
+from ..validation.vmd_validator import VMD_EXPORT_BAKE_TIMELINE
 
 
 STATE_EDITING = "Editing"
 STATE_VALIDATING = "Validating"
+STATE_PREPARING = "Preparing"
 STATE_BLOCKED = "Blocked"
 STATE_READY = "Ready"
 STATE_EXPORTING = "Exporting"
+STATE_PREPARED = "Prepared"
 STATE_SUCCEEDED = "Succeeded"
 STATE_FAILED = "Failed"
 
@@ -31,6 +39,7 @@ class ExportWorkflowRequest:
     options: Dict[str, Any]
     model_data: Any = None
     animation_data: Any = None
+    prepared_vmd_token: Any = None
 
 
 @dataclass
@@ -61,7 +70,7 @@ def _combine_reports(
     second: Optional[ExportValidationReport],
     *,
     export_format: Optional[str],
-    mode: str,
+    export_strategy: str,
 ) -> ExportValidationReport:
     """Merge scene, payload, and output issues into one stable report."""
     if second is None or not second.issues:
@@ -69,13 +78,13 @@ def _combine_reports(
     return ExportValidationReport(
         export_format,
         tuple(first.issues) + tuple(second.issues),
-        mode=mode,
+        mode=export_strategy,
     )
 
 
 def _collect_failure_report(
     export_format: Optional[str],
-    mode: str,
+    export_strategy: str,
     error: Exception,
 ) -> ExportValidationReport:
     """Normalize collector failures without hiding a lower-level report."""
@@ -98,7 +107,44 @@ def _collect_failure_report(
     return ExportValidationReport(
         export_format,
         issues,
-        mode=mode,
+        mode=export_strategy,
+    )
+
+
+def _scene_report_for_prepared_control_rig(
+    report: ExportValidationReport,
+    options: Mapping[str, Any],
+    prepare_vmd_action: Any,
+) -> ExportValidationReport:
+    """Allow the action-owned temporary Control Rig bake lifecycle.
+
+    Scene preflight normally blocks an EDIT/CONTROL_OWNED rig because a raw
+    collector cannot safely sample it.  The Bake Timeline preparation action
+    has an explicit host lifecycle that bakes, collects, and restores the rig;
+    only that narrow capability may clear this one preflight finding.
+    """
+
+    if str(options.get("export_format") or "").lower() != "vmd":
+        return report
+    if str(options.get("export_strategy") or VMD_EXPORT_BAKE_TIMELINE).lower() != VMD_EXPORT_BAKE_TIMELINE:
+        return report
+    can_prepare = getattr(prepare_vmd_action, "can_prepare_for_collection", None)
+    if not callable(can_prepare):
+        return report
+    try:
+        if not bool(can_prepare(options)):
+            return report
+    except Exception:
+        # An ownership inspection failure must remain fail-closed at the
+        # scene preflight boundary; the action will expose the detail if a
+        # caller retries with a valid route.
+        return report
+    if not any(issue.code == "SCENE_OWNER_CONTROL_RIG" for issue in report.issues):
+        return report
+    return ExportValidationReport(
+        report.export_format,
+        tuple(issue for issue in report.issues if issue.code != "SCENE_OWNER_CONTROL_RIG"),
+        mode=report.mode,
     )
 
 
@@ -117,10 +163,91 @@ class ExportWorkflowService:
         scene_service: Any = None,
         model_action: Optional[ExportModelAction] = None,
         vmd_action: Optional[ExportVmdAction] = None,
+        prepare_vmd_action: Any = None,
     ):
         self.model_action = model_action or ExportModelAction()
         self.vmd_action = vmd_action or ExportVmdAction()
+        self.prepare_vmd_action = prepare_vmd_action
         self.scene_preflight = scene_preflight or ScenePreflight(scene_service=scene_service)
+
+    def prepare_vmd(self, request: ExportWorkflowRequest) -> Any:
+        """Prepare one reusable Bake Timeline payload through the public workflow."""
+        if self.prepare_vmd_action is None:
+            raise PrepareVmdExportError("prepared VMD export action is not configured")
+        options = self._options(request)
+        scene_result = self.scene_preflight.run(options)
+        prepared_options = self._prepared_vmd_options(options, scene_result.metadata)
+        report = _scene_report_for_prepared_control_rig(
+            scene_result.report,
+            prepared_options,
+            self.prepare_vmd_action,
+        )
+        if report.is_blocking:
+            issue_codes = ", ".join(issue.code for issue in scene_result.report.issues)
+            return PrepareVmdExportResult(
+                status="failed",
+                error=PrepareVmdExportError(
+                    f"VMD preparation scene preflight blocked: {issue_codes}"
+                ),
+                failure_report=scene_result.report,
+            )
+        execute = getattr(self.prepare_vmd_action, "execute", None)
+        if not callable(execute):
+            raise TypeError("prepare_vmd_action must expose execute(request)")
+        prepared_request = ExportWorkflowRequest(
+            request.file_path,
+            prepared_options,
+            model_data=request.model_data,
+            animation_data=request.animation_data,
+        )
+        return execute(prepared_request)
+
+    def invalidate_prepared_vmd(self, token: Any = None) -> bool:
+        """Discard a prepared Bake Timeline approval through its owning action.
+
+        The workflow deliberately does not keep a second token/cache.  The
+        action owns the active token and Maya revision watch; this seam merely
+        forwards the ownership-checked invalidation used by presenters and
+        other UI-shaped callers.
+        """
+
+        action = self.prepare_vmd_action
+        if action is None:
+            return False
+        invalidate = getattr(action, "invalidate", None)
+        if not callable(invalidate):
+            close = getattr(action, "close", None)
+            if token is not None or not callable(close):
+                return False
+            close()
+            return True
+        return bool(invalidate(token)) if token is not None else bool(invalidate())
+
+    def _prepared_vmd_request(
+        self,
+        request: ExportWorkflowRequest,
+        metadata: Mapping[str, Any],
+    ) -> ExportWorkflowRequest:
+        """Apply the same Current Model projection used by export."""
+        return ExportWorkflowRequest(
+            request.file_path,
+            self._prepared_vmd_options(self._options(request), metadata),
+            model_data=request.model_data,
+            animation_data=request.animation_data,
+            prepared_vmd_token=request.prepared_vmd_token,
+        )
+
+    @staticmethod
+    def _emit_progress(progress_callback: Optional[Callable[[str], None]], stage: str) -> None:
+        """Report a workflow boundary without allowing UI observers to alter results."""
+        if not callable(progress_callback):
+            return
+        try:
+            progress_callback(stage)
+        except Exception:
+            # Progress is observational; validation and writing must keep their
+            # existing failure semantics if a UI observer is unavailable.
+            return
 
     @staticmethod
     def _options(request: ExportWorkflowRequest) -> Dict[str, Any]:
@@ -131,17 +258,36 @@ class ExportWorkflowService:
 
     @staticmethod
     def _target_options(options: Mapping[str, Any], metadata: Mapping[str, Any]) -> Dict[str, Any]:
-        """Add provenance and project Current Model into collector target options."""
+        """Add provenance and project Current Model into model-track options."""
         enriched = dict(options)
-        if metadata.get("format") == "pmx" and enriched.get("current_model_root"):
-            # ExportTab intentionally has no target selector.  Keep the
-            # Current Model authoritative for PMX geometry collection.  VMD
-            # camera/light tracks are scene-level and must remain unscoped.
+        if metadata.get("format") in {"pmx", "vmd"} and enriched.get("current_model_root"):
+            # ExportTab intentionally has no target selector. Keep the
+            # Current Model authoritative for model tracks in both PMX and
+            # VMD requests. Explicit scene-level camera/light tracks remain
+            # in the request unchanged.
             enriched["target_model"] = str(enriched["current_model_root"])
         if metadata.get("target_identity") is not None:
             enriched.setdefault("target_identity", metadata["target_identity"])
         if metadata.get("scene_revision") is not None:
             enriched.setdefault("scene_revision", metadata["scene_revision"])
+        return enriched
+
+    @staticmethod
+    def _prepared_vmd_options(
+        options: Mapping[str, Any],
+        metadata: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Project prepared VMD options without inventing target identity.
+
+        Scene preflight may expose a short display name while Maya discovery
+        returns the canonical long DAG path. Prepared action requests must
+        leave identity resolution to that boundary unless the caller supplied
+        an explicit identity assertion.
+        """
+
+        enriched = ExportWorkflowService._target_options(options, metadata)
+        if "target_identity" not in options:
+            enriched.pop("target_identity", None)
         return enriched
 
     def _collect_model(self, request: ExportWorkflowRequest, options: Mapping[str, Any]) -> Any:
@@ -161,9 +307,13 @@ class ExportWorkflowService:
         self,
         request: ExportWorkflowRequest,
         options: Mapping[str, Any],
-        mode: str = "C",
+        export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
     ) -> Any:
-        """Collect and normalize VMD payload through the configured action."""
+        """Collect and normalize non-Bake-Timeline VMD payload through the action."""
+        if str(export_strategy or "").lower() == VMD_EXPORT_BAKE_TIMELINE:
+            raise PrepareVmdExportError(
+                "Bake Timeline VMD export requires a prepared VMD export token"
+            )
         animation_data = request.animation_data
         if animation_data is None:
             animation_data = options.get("animation_data")
@@ -172,29 +322,42 @@ class ExportWorkflowService:
             if collector is None:
                 raise ValueError("VMD export requires animation_data or a collector")
             collector_options = dict(options)
-            collector_options.setdefault("vmd_mode", mode)
+            collector_options.setdefault("export_strategy", export_strategy)
             animation_data = collector(collector_options)
         converter = getattr(self.vmd_action, "_to_vmd_data", None)
         if callable(converter):
             return converter(animation_data)
         return animation_data
 
-    def validate(self, request: ExportWorkflowRequest) -> ExportWorkflowResult:
+    def validate(
+        self,
+        request: ExportWorkflowRequest,
+        *,
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ) -> ExportWorkflowResult:
         """Run scene preflight and payload validation without invoking a writer."""
         options = self._options(request)
+        self._emit_progress(progress_callback, "scene_preflight")
         scene_result = self.scene_preflight.run(options)
-        report = scene_result.report
+        report = _scene_report_for_prepared_control_rig(
+            scene_result.report,
+            self._prepared_vmd_options(options, scene_result.metadata),
+            self.prepare_vmd_action,
+        )
         metadata = dict(scene_result.metadata)
         export_format = metadata.get("format")
-        mode = metadata.get("mode") or "model"
+        export_strategy = metadata.get("export_strategy") or "model"
         if report.is_blocking:
+            self._emit_progress(progress_callback, "report_ready")
             return ExportWorkflowResult(STATE_BLOCKED, report, metadata)
         try:
             if export_format == "pmx":
+                self._emit_progress(progress_callback, "payload_collection")
                 payload = self._collect_model(request, self._target_options(options, metadata))
                 validator = getattr(self.model_action, "_validator", None)
                 if validator is None:
                     raise ValueError("model action does not expose a validator")
+                self._emit_progress(progress_callback, "payload_validation")
                 payload_report = validator(payload, export_format)
                 snapshot = None
                 if not payload_report.is_blocking:
@@ -205,10 +368,50 @@ class ExportWorkflowService:
                         target_identity=metadata.get("target_identity"),
                     )
             elif export_format == "vmd":
+                prepared_bake_timeline = (
+                    str(export_strategy or "").lower() == VMD_EXPORT_BAKE_TIMELINE
+                    and request.prepared_vmd_token is not None
+                )
+                if str(export_strategy or "").lower() == VMD_EXPORT_BAKE_TIMELINE and request.prepared_vmd_token is None:
+                    raise PrepareVmdExportError(
+                        "Bake Timeline VMD export requires a prepared VMD export token"
+                    )
+                if prepared_bake_timeline:
+                    self._emit_progress(progress_callback, "prepared_artifact_validation")
+                    if self.prepare_vmd_action is None:
+                        raise PrepareVmdExportError(
+                            "prepared VMD export action is not configured"
+                        )
+                    self.prepare_vmd_action.validate_token(
+                        self._prepared_vmd_request(request, metadata),
+                        request.prepared_vmd_token,
+                    )
+                    staged_artifact = request.prepared_vmd_token.staged_artifact
+                    staged_artifact.validate_identity()
+                    report = _combine_reports(
+                        report,
+                        request.prepared_vmd_token.combined_validation_report,
+                        export_format=export_format,
+                        export_strategy=export_strategy,
+                    )
+                    self._emit_progress(progress_callback, "report_ready")
+                    return ExportWorkflowResult(
+                        STATE_BLOCKED if report.is_blocking else STATE_READY,
+                        report,
+                        metadata,
+                    )
+                self._emit_progress(progress_callback, "payload_collection")
+                if request.prepared_vmd_token is not None:
+                    # A token is only valid for Bake Timeline. Keep this explicit so
+                    # a caller cannot smuggle a prepared artifact into a
+                    # preserve-keys request.
+                    raise PrepareVmdExportError(
+                        "prepared VMD export token requires Bake Timeline"
+                    )
                 payload = self._collect_vmd(
                     request,
                     self._target_options(options, metadata),
-                    mode=mode,
+                    export_strategy=export_strategy,
                 )
                 raw_provenance = getattr(payload, "raw_provenance", None)
                 if options.get("raw_provenance") is None and raw_provenance is not None:
@@ -216,27 +419,31 @@ class ExportWorkflowService:
                 validator = getattr(self.vmd_action, "_validator", None)
                 if validator is None:
                     raise ValueError("VMD action does not expose a validator")
-                payload_report = self.vmd_action._validate(payload, mode, options)
+                self._emit_progress(progress_callback, "payload_validation")
+                payload_report = self.vmd_action._validate(payload, export_strategy, options)
                 snapshot = None
             else:
+                self._emit_progress(progress_callback, "report_ready")
                 return ExportWorkflowResult(STATE_BLOCKED, report, metadata)
         except Exception as exc:
-            failure_report = _collect_failure_report(export_format, mode, exc)
+            failure_report = _collect_failure_report(export_format, export_strategy, exc)
             report = _combine_reports(
                 report,
                 failure_report,
                 export_format=export_format,
-                mode=mode,
+                export_strategy=export_strategy,
             )
+            self._emit_progress(progress_callback, "report_ready")
             return ExportWorkflowResult(STATE_BLOCKED, report, metadata, error=exc)
 
         report = _combine_reports(
             report,
             payload_report,
             export_format=export_format,
-            mode=mode,
+            export_strategy=export_strategy,
         )
         state = STATE_BLOCKED if report.is_blocking else STATE_READY
+        self._emit_progress(progress_callback, "report_ready")
         return ExportWorkflowResult(
             state,
             report,
@@ -250,9 +457,10 @@ class ExportWorkflowService:
         request: ExportWorkflowRequest,
         *,
         acknowledge_warnings: bool = False,
+        progress_callback: Optional[Callable[[str], None]] = None,
     ) -> ExportWorkflowResult:
         """Revalidate and execute the appropriate validated export action."""
-        validation = self.validate(request)
+        validation = self.validate(request, progress_callback=progress_callback)
         if validation.error is not None or validation.report.is_blocking:
             return validation
         if validation.report.requires_warning_ack and not acknowledge_warnings:
@@ -262,6 +470,15 @@ class ExportWorkflowService:
         if acknowledge_warnings:
             options["ack_warnings"] = True
         export_format = validation.metadata.get("format")
+        prepared_bake_timeline = (
+            export_format == "vmd"
+            and str(validation.metadata.get("export_strategy") or "").lower() == VMD_EXPORT_BAKE_TIMELINE
+            and request.prepared_vmd_token is not None
+        )
+        self._emit_progress(
+            progress_callback,
+            "prepared_artifact_publish" if prepared_bake_timeline else "writer",
+        )
         try:
             if export_format == "pmx":
                 options["model_data"] = validation.payload
@@ -269,6 +486,24 @@ class ExportWorkflowService:
                 action_result = self.model_action.execute(
                     ExportModelRequest(request.file_path, options)
                 )
+            elif prepared_bake_timeline:
+                token = request.prepared_vmd_token
+                report_artifacts = None
+                write_report = getattr(self.vmd_action, "_write_requested_report", None)
+                if callable(write_report):
+                    report_artifacts = write_report(
+                        ExportVmdRequest(request.file_path, options),
+                        validation.report,
+                        token.staged_artifact.sha256,
+                        VMD_EXPORT_BAKE_TIMELINE,
+                    )
+                action_result = publish_prepared_vmd_artifact(
+                    token.staged_artifact,
+                    request.file_path,
+                    validation_report=validation.report,
+                    payload_fingerprint=token.staged_artifact.sha256,
+                )
+                action_result.validation_report_artifacts = report_artifacts
             else:
                 raw_provenance = getattr(validation.payload, "raw_provenance", None)
                 if options.get("raw_provenance") is None and raw_provenance is not None:
@@ -290,12 +525,17 @@ class ExportWorkflowService:
                 error=exc,
             )
 
-        report = _combine_reports(
-            validation.report,
-            getattr(action_result, "validation_report", None),
-            export_format=export_format,
-            mode=validation.metadata.get("mode") or "model",
-        )
+        if prepared_bake_timeline:
+            # The prepared token's combined report was already included by
+            # validate(); appending it again would duplicate every issue.
+            report = validation.report
+        else:
+            report = _combine_reports(
+                validation.report,
+                getattr(action_result, "validation_report", None),
+                export_format=export_format,
+                export_strategy=validation.metadata.get("export_strategy") or "model",
+            )
         succeeded = bool(getattr(action_result, "succeeded", False)) and getattr(action_result, "error", None) is None
         return ExportWorkflowResult(
             STATE_SUCCEEDED if succeeded else STATE_FAILED,
@@ -316,6 +556,8 @@ __all__ = [
     "STATE_EDITING",
     "STATE_EXPORTING",
     "STATE_FAILED",
+    "STATE_PREPARING",
+    "STATE_PREPARED",
     "STATE_READY",
     "STATE_SUCCEEDED",
     "STATE_VALIDATING",

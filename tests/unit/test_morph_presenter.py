@@ -41,6 +41,22 @@ class TestMorphPresenter(MayaTestBase):
 
         # プレゼンターを作成
         self.presenter = MorphPresenter(self.mock_view, self.mock_app_state)
+        self.presenter._loaded_model_root = "|test_model_root"
+        self.preview_coordinator = MagicMock()
+        self.preview_coordinator.set_morph_preview.side_effect = self._set_preview_weights
+        self.preview_coordinator.reset_morph_preview.side_effect = self._reset_preview_weights
+        self.presenter._preview_coordinator = self.preview_coordinator
+
+    @staticmethod
+    def _set_preview_weights(_model_root, targets, weight):
+        for target in targets:
+            cmds.setAttr(target, weight)
+
+    @staticmethod
+    def _reset_preview_weights(_model_root, targets):
+        for target in targets:
+            cmds.setAttr(target, 0.0)
+        return len(targets)
 
     def _setup_view_mocks(self):
         """ビューのモックを設定"""
@@ -212,20 +228,18 @@ class TestMorphPresenter(MayaTestBase):
                 "blend_shape_node": blend_shape,
                 "blend_shape_target": "Mouth_A01",
                 "blend_shape_weight_attr": "weight[0]",
+                "runtime_targets": (f"{blend_shape}.weight[0]",),
             }
         }
 
         # スライダー変更をシミュレート
-        with patch.object(
-            self.presenter.maya_adapter,
-            "set_attr",
-            wraps=self.presenter.maya_adapter.set_attr,
-        ) as set_attr:
-            self.presenter.on_morph_slider_changed(50)
+        self.presenter.on_morph_slider_changed(50)
 
         # 結果を確認
         self.mock_view.morph_value_label.setText.assert_called_with("50%")
-        set_attr.assert_called_once_with(f"{blend_shape}.weight[0]", 0.5)
+        self.preview_coordinator.set_morph_preview.assert_called_once_with(
+            "|test_model_root", (f"{blend_shape}.weight[0]",), 0.5
+        )
         weight = cmds.getAttr(f"{blend_shape}.weight[0]")
         self.assertAlmostEqual(weight, 0.5, places=5)
 
@@ -246,7 +260,11 @@ class TestMorphPresenter(MayaTestBase):
             # 値を設定
             cmds.setAttr(f"{blend_shape}.{alias_name}", 0.5)
 
-            morphs_data[f"morph_{i}"] = {"blend_shape_node": blend_shape, "blend_shape_target": alias_name}
+            morphs_data[f"morph_{i}"] = {
+                "blend_shape_node": blend_shape,
+                "blend_shape_target": alias_name,
+                "runtime_targets": (f"{blend_shape}.weight[0]",),
+            }
 
         self.presenter.morph_data = morphs_data
 

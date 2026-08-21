@@ -23,6 +23,11 @@ from mmd_tools.validation.export_validator import (  # noqa: E402
 )
 from mmd_tools.validation.scene_preflight import ScenePreflight  # noqa: E402
 from mmd_tools.actions.export_vmd_action import ExportVmdAction  # noqa: E402
+from mmd_tools.actions.prepare_vmd_export_action import (  # noqa: E402
+    PrepareVmdExportError,
+    PrepareVmdExportAction,
+    VmdExportDiscovery,
+)
 from mmd_tools.io.vmd_exporter import VmdExporter  # noqa: E402
 
 
@@ -62,6 +67,77 @@ class _SceneService:
 
     def object_exists(self, _target):
         return self.exists
+
+
+class _VmdPrepareBackend:
+    def __init__(self, *, raw_provenance=False, target_identity="model_ROOT"):
+        self.discover_calls = 0
+        self.collect_calls = 0
+        self.revision_calls = 0
+        self.seen_requests = []
+        self.raw_provenance = raw_provenance
+        self.target_identity = target_identity
+
+    def discover(self, request):
+        self.discover_calls += 1
+        self.seen_requests.append(request)
+        return VmdExportDiscovery(
+            scene_session_id="scene-1",
+            target_uuid="model-uuid",
+            target_identity=self.target_identity,
+            dependency_closure_fingerprint="deps-1",
+            model_name="WorkflowFixture",
+        )
+
+    def supports_streaming(self):
+        return True
+
+    def arm(self, _request, _discovery):
+        return None
+
+    def current_revision(self, _request, _discovery):
+        self.revision_calls += 1
+        return "revision-1"
+
+    def close(self):
+        return None
+
+    def collect_to_sink(self, _request, sink):
+        self.collect_calls += 1
+        sink.write_frame(
+            "bones",
+            {
+                "bone_name": "center",
+                "frame": 1,
+                "position": (0.0, 0.0, 0.0),
+                "rotation": (0.0, 0.0, 0.0, 1.0),
+            },
+        )
+        return {
+            "validation_frame_range": (0, 1),
+            "raw_provenance": self.raw_provenance,
+            "section_counts": {
+                "bones": 1,
+                "morphs": 0,
+                "cameras": 0,
+                "lights": 0,
+                "shadows": 0,
+                "ik": 0,
+            },
+        }
+
+
+class _RecordingVmdExporter(VmdExporter):
+    def __init__(self):
+        super().__init__()
+        self.written_payload = None
+        self.write_calls = 0
+
+    def export_vmd_animation(self, file_path, maya_data):
+        self.write_calls += 1
+        self.written_payload = maya_data
+        maya_data.header.model_name = "writer-mutated"
+        return super().export_vmd_animation(file_path, maya_data)
 
 
 class TestScenePreflight(unittest.TestCase):
@@ -135,6 +211,32 @@ class TestScenePreflight(unittest.TestCase):
             ["SCENE_TARGET_STALE", "SCENE_OWNER_CONTROL_RIG", "SCENE_OWNER_HUMANIK"],
         )
 
+    def test_pmx_model_export_ignores_motion_authoring_ownership(self):
+        result = ScenePreflight(
+            scene_service=_SceneService(),
+            ownership_checker=lambda _target: {
+                "control_rig": {"state": "EDIT", "owner": "CONTROL_OWNED"},
+                "humanik": {"blocked": "target_preview", "character": "HIKCharacter1"},
+            },
+        ).run(
+            {
+                "file_path": "model.pmx",
+                "export_format": "pmx",
+                "export_strategy": "model",
+                "target_model": "model_ROOT",
+            }
+        )
+
+        self.assertTrue(result.valid)
+        self.assertNotIn(
+            "SCENE_OWNER_CONTROL_RIG",
+            [issue.code for issue in result.report.issues],
+        )
+        self.assertNotIn(
+            "SCENE_OWNER_HUMANIK",
+            [issue.code for issue in result.report.issues],
+        )
+
     def test_valid_scene_metadata_is_provenance_ready(self):
         result = ScenePreflight(
             scene_service=_SceneService(),
@@ -145,7 +247,7 @@ class TestScenePreflight(unittest.TestCase):
             {
                 "file_path": "motion.vmd",
                 "export_format": "vmd",
-                "vmd_mode": "C",
+                "export_strategy": "bake_timeline",
                 "target_model": "ns:model_ROOT",
                 "frame_range": (0, 120),
                 "frame_step": 1,
@@ -206,6 +308,252 @@ class _FakeModelAction:
 class TestExportWorkflowService(unittest.TestCase):
     """UI and headless callers share one validation/action boundary."""
 
+    def test_control_rig_owner_preflight_allows_action_owned_temporary_bake(self):
+        backend = _VmdPrepareBackend()
+        lifecycle_events = []
+        backend.can_prepare_for_collection = lambda _request: True
+        backend.prepare_for_collection = lambda _request: object()
+        backend.restore_after_collection = lambda _context: lifecycle_events.append(
+            "restored"
+        )
+        prepare_action = PrepareVmdExportAction(backend)
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {
+                    "control_rig": {"state": "EDIT", "owner": "CONTROL_OWNED"}
+                },
+            ),
+            vmd_action=ExportVmdAction(
+                exporter=_RecordingVmdExporter(),
+                output_verifier=None,
+            ),
+            prepare_vmd_action=prepare_action,
+        )
+        request = ExportWorkflowRequest(
+            "motion.vmd",
+            {
+                "export_format": "vmd",
+                "export_strategy": "bake_timeline",
+                "current_model_root": "model_ROOT",
+                "require_current_model": True,
+                "require_target": True,
+                "target_uuid": "model-uuid",
+                "target_identity": "model_ROOT",
+                "scene_session_id": "scene-1",
+            },
+        )
+
+        prepared = service.prepare_vmd(request)
+
+        self.assertTrue(prepared.succeeded)
+        self.assertEqual(lifecycle_events, ["restored"])
+
+    def test_short_current_model_prepare_uses_backend_canonical_identity(self):
+        backend = _VmdPrepareBackend(target_identity="|MMT_TestModel_root")
+        prepare_action = PrepareVmdExportAction(backend)
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(scene_service=_SceneService()),
+            vmd_action=ExportVmdAction(
+                exporter=_RecordingVmdExporter(),
+                output_verifier=None,
+            ),
+            prepare_vmd_action=prepare_action,
+        )
+        request = ExportWorkflowRequest(
+            "motion.vmd",
+            {
+                "export_format": "vmd",
+                "export_strategy": "bake_timeline",
+                "current_model_root": "MMT_TestModel_root",
+                "require_current_model": True,
+                "require_target": True,
+            },
+        )
+
+        prepared = service.prepare_vmd(request)
+
+        self.assertTrue(prepared.succeeded)
+        self.assertEqual(prepared.token.target_identity, "|MMT_TestModel_root")
+        self.assertNotIn("target_identity", backend.seen_requests[0].options)
+
+        validation = service.validate(
+            ExportWorkflowRequest(
+                "motion.vmd",
+                dict(request.options),
+                prepared_vmd_token=prepared.token,
+            )
+        )
+
+        self.assertEqual(validation.state, STATE_READY)
+        self.assertNotIn("target_identity", backend.seen_requests[2].options)
+        prepare_action.invalidate(prepared.token)
+
+        explicit = service.prepare_vmd(
+            ExportWorkflowRequest(
+                "motion.vmd",
+                dict(request.options, target_identity="MMT_TestModel_root"),
+            )
+        )
+        self.assertFalse(explicit.succeeded)
+        self.assertIn("target_identity", str(explicit.error))
+
+    def test_prepared_vmd_token_publishes_cached_artifact_without_rewriting(self):
+        backend = _VmdPrepareBackend()
+        exporter = _RecordingVmdExporter()
+        prepare_action = PrepareVmdExportAction(backend)
+        vmd_action = ExportVmdAction(
+            exporter=exporter,
+            output_verifier=None,
+        )
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            vmd_action=vmd_action,
+            prepare_vmd_action=prepare_action,
+        )
+        request = ExportWorkflowRequest(
+            "motion.vmd",
+            {
+                "export_format": "vmd",
+                "export_strategy": "bake_timeline",
+                "current_model_root": "model_ROOT",
+                "require_current_model": True,
+                "require_target": True,
+                "target_uuid": "model-uuid",
+                "target_identity": "model_ROOT",
+                "scene_session_id": "scene-1",
+                "dependency_closure_fingerprint": "deps-1",
+            },
+        )
+
+        prepared = service.prepare_vmd(request)
+        self.assertTrue(prepared.succeeded)
+        token = prepared.token
+        self.assertEqual(exporter.write_calls, 0)
+        vmd_action._validator = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("prepared workflow called VMD validator")
+        )
+        validation = service.validate(
+            ExportWorkflowRequest(
+                "other-motion.vmd",
+                dict(request.options, validation_report_dir="reports/other"),
+                prepared_vmd_token=token,
+            )
+        )
+
+        self.assertEqual(validation.state, STATE_READY)
+        self.assertEqual(backend.collect_calls, 1)
+        self.assertEqual(backend.discover_calls, 3)
+        self.assertTrue(
+            all(
+                request.options["target_model"] == "model_ROOT"
+                for request in backend.seen_requests
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "motion.vmd"
+            output_request = ExportWorkflowRequest(
+                str(target),
+                dict(request.options),
+                prepared_vmd_token=token,
+            )
+            result = service.execute(output_request)
+            self.assertEqual(target.read_bytes(), Path(token.staged_artifact.file_path).read_bytes())
+
+        self.assertEqual(result.state, STATE_SUCCEEDED)
+        self.assertEqual(backend.collect_calls, 1)
+        self.assertEqual(exporter.write_calls, 0)
+        self.assertIsNone(validation.payload)
+        self.assertIsNone(result.payload)
+        self.assertEqual(result.action_result.payload_fingerprint, token.staged_artifact.sha256)
+
+    def test_prepared_vmd_raw_loss_info_does_not_require_final_ack(self):
+        backend = _VmdPrepareBackend(raw_provenance=True)
+        exporter = _RecordingVmdExporter()
+        prepare_action = PrepareVmdExportAction(backend)
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            vmd_action=ExportVmdAction(exporter=exporter, output_verifier=None),
+            prepare_vmd_action=prepare_action,
+        )
+        request = ExportWorkflowRequest(
+            "motion.vmd",
+            {
+                "export_format": "vmd",
+                "export_strategy": "bake_timeline",
+                "current_model_root": "model_ROOT",
+                "require_current_model": True,
+                "require_target": True,
+                "target_uuid": "model-uuid",
+                "target_identity": "model_ROOT",
+                "scene_session_id": "scene-1",
+                "dependency_closure_fingerprint": "deps-1",
+            },
+        )
+
+        prepared = service.prepare_vmd(request)
+        token = prepared.token
+        self.assertTrue(prepared.succeeded)
+        self.assertFalse(token.validation_report.requires_warning_ack)
+        self.assertEqual(exporter.write_calls, 0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "motion.vmd"
+            target.write_bytes(b"existing-output")
+            result = service.execute(
+                ExportWorkflowRequest(
+                    str(target), dict(request.options), prepared_vmd_token=token
+                )
+            )
+            self.assertEqual(result.state, STATE_SUCCEEDED)
+            self.assertNotEqual(target.read_bytes(), b"existing-output")
+            self.assertEqual(backend.collect_calls, 1)
+            self.assertEqual(exporter.write_calls, 0)
+
+        self.assertEqual(backend.collect_calls, 1)
+        self.assertEqual(exporter.write_calls, 0)
+        prepare_action.invalidate(token)
+
+    def test_prepare_vmd_preflight_blocks_before_discovery_or_collection(self):
+        backend = _VmdPrepareBackend()
+        prepare_action = PrepareVmdExportAction(backend)
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(exists=False),
+                ownership_checker=lambda _target: {},
+            ),
+            prepare_vmd_action=prepare_action,
+        )
+
+        result = service.prepare_vmd(
+            ExportWorkflowRequest(
+                "motion.vmd",
+                {
+                    "export_format": "vmd",
+                    "export_strategy": "bake_timeline",
+                    "require_target": True,
+                    "target_model": "stale_ROOT",
+                },
+            )
+        )
+
+        self.assertEqual(result.status, "failed")
+        self.assertIsNone(result.token)
+        self.assertIn("SCENE_TARGET_STALE", str(result.error))
+        self.assertEqual(
+            [issue.code for issue in result.report.issues],
+            ["SCENE_TARGET_STALE"],
+        )
+        self.assertEqual(backend.discover_calls, 0)
+        self.assertEqual(backend.collect_calls, 0)
+
     def test_current_model_is_forwarded_as_explicit_collector_target(self):
         payload = _valid_model_data()
         action = _FakeModelAction(payload)
@@ -240,16 +588,67 @@ class TestExportWorkflowService(unittest.TestCase):
         self.assertEqual(result.state, STATE_READY)
         self.assertEqual(observed[0]["target_model"], "model_ROOT")
 
-    def test_current_model_does_not_scope_vmd_scene_tracks(self):
+    def test_current_model_is_forwarded_as_vmd_model_track_target(self):
         options = ExportWorkflowService._target_options(
             {
                 "export_format": "vmd",
                 "current_model_root": "model_ROOT",
+                "cameras": ["scene_camera"],
+                "lights": ["scene_light"],
             },
             {"format": "vmd"},
         )
 
-        self.assertNotIn("target_model", options)
+        self.assertEqual(options["target_model"], "model_ROOT")
+        self.assertEqual(options["cameras"], ["scene_camera"])
+        self.assertEqual(options["lights"], ["scene_light"])
+
+    def test_vmd_current_model_switch_scopes_collector_boundary(self):
+        observed = []
+
+        def collector(options):
+            observed.append(dict(options))
+            return {
+                "model_name": "MotionFixture",
+                "bone_frames": [],
+                "raw_provenance": {
+                    "raw_bone_interpolation_complete": True,
+                    "raw_bone_key_count": 0,
+                    "raw_bone_interpolation": [],
+                },
+            }
+
+        vmd_action = ExportVmdAction(
+            exporter=VmdExporter(),
+            collector=collector,
+        )
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            vmd_action=vmd_action,
+        )
+
+        for current_model_root in ("|model_A|root", "|model_B|root"):
+            result = service.validate(
+                ExportWorkflowRequest(
+                    "motion.vmd",
+                    {
+                        "export_format": "vmd",
+                        "export_strategy": "preserve_keys",
+                        "require_target": True,
+                        "require_current_model": True,
+                        "current_model_root": current_model_root,
+                    },
+                )
+            )
+            self.assertEqual(result.state, STATE_READY)
+
+        self.assertEqual(
+            [options["target_model"] for options in observed],
+            ["|model_A|root", "|model_B|root"],
+        )
 
     def test_validate_does_not_call_writer_and_execute_reuses_snapshot(self):
         payload = _valid_model_data()
@@ -282,6 +681,37 @@ class TestExportWorkflowService(unittest.TestCase):
             result.snapshot.payload_fingerprint,
         )
 
+    def test_progress_callback_reports_validation_boundaries_and_writer_transition(self):
+        payload = _valid_model_data()
+        action = _FakeModelAction(payload)
+        service = ExportWorkflowService(
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {},
+            ),
+            model_action=action,
+            vmd_action=object(),
+        )
+        request = ExportWorkflowRequest(
+            "model.pmx",
+            {"export_format": "pmx", "target_model": "model_ROOT"},
+        )
+        stages = []
+
+        result = service.execute(request, progress_callback=stages.append)
+
+        self.assertEqual(result.state, STATE_SUCCEEDED)
+        self.assertEqual(
+            stages,
+            [
+                "scene_preflight",
+                "payload_collection",
+                "payload_validation",
+                "report_ready",
+                "writer",
+            ],
+        )
+
     def test_vmd_raw_provenance_survives_workflow_validate_and_execute(self):
         raw_provenance = {
             "raw_bone_interpolation_complete": True,
@@ -297,7 +727,7 @@ class TestExportWorkflowService(unittest.TestCase):
             }
 
         vmd_action = ExportVmdAction(
-            exporter=VmdExporter(native_exporter=None),
+            exporter=VmdExporter(),
             collector=collector,
         )
         service = ExportWorkflowService(
@@ -312,7 +742,7 @@ class TestExportWorkflowService(unittest.TestCase):
                 str(Path(directory) / "motion.vmd"),
                 {
                     "export_format": "vmd",
-                    "vmd_mode": "A",
+                    "export_strategy": "preserve_keys",
                     "target_model": "model_ROOT",
                 },
             )
@@ -322,17 +752,18 @@ class TestExportWorkflowService(unittest.TestCase):
 
         self.assertEqual(validation.state, STATE_READY)
         self.assertEqual(result.state, STATE_SUCCEEDED)
-        self.assertEqual(result.action_result.validation_report.mode, "A")
+        self.assertEqual(result.action_result.validation_report.mode, "preserve_keys")
 
-    def test_vmd_workflow_passes_default_mode_to_scene_collector(self):
+    def test_vmd_workflow_default_bake_timeline_requires_prepared_token(self):
         observed = []
+        exporter = _RecordingVmdExporter()
 
         def collector(options):
             observed.append(dict(options))
-            return {"model_name": "ModeCFixture", "bone_frames": []}
+            return {"model_name": "BakeTimelineFixture", "bone_frames": []}
 
         vmd_action = ExportVmdAction(
-            exporter=VmdExporter(native_exporter=None),
+            exporter=exporter,
             collector=collector,
         )
         service = ExportWorkflowService(
@@ -353,8 +784,22 @@ class TestExportWorkflowService(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result.state, STATE_READY)
-        self.assertEqual(observed[0]["vmd_mode"], "C")
+        self.assertEqual(result.state, STATE_BLOCKED)
+        self.assertIsInstance(result.error, PrepareVmdExportError)
+        self.assertIn("prepared VMD export token", str(result.error))
+        self.assertEqual(observed, [])
+        execute_result = service.execute(
+            ExportWorkflowRequest(
+                "motion.vmd",
+                {
+                    "export_format": "vmd",
+                    "target_model": "model_ROOT",
+                },
+            )
+        )
+        self.assertEqual(execute_result.state, STATE_BLOCKED)
+        self.assertEqual(observed, [])
+        self.assertIsNone(exporter.written_payload)
 
     def test_vmd_workflow_preserves_explicit_raw_provenance(self):
         explicit_provenance = {"source": "explicit"}
@@ -368,12 +813,12 @@ class TestExportWorkflowService(unittest.TestCase):
                 "bone_frames": [],
             }
 
-        def validator(_payload, mode, raw_provenance=None, **_kwargs):
+        def validator(_payload, export_strategy, raw_provenance=None, **_kwargs):
             observed.append(raw_provenance)
-            return ExportValidationReport("vmd", (), mode=mode)
+            return ExportValidationReport("vmd", (), mode=export_strategy)
 
         vmd_action = ExportVmdAction(
-            exporter=VmdExporter(native_exporter=None),
+            exporter=VmdExporter(),
             collector=collector,
             validator=validator,
         )
@@ -388,7 +833,7 @@ class TestExportWorkflowService(unittest.TestCase):
             "motion.vmd",
             {
                 "export_format": "vmd",
-                "vmd_mode": "A",
+                "export_strategy": "preserve_keys",
                 "target_model": "model_ROOT",
                 "raw_provenance": explicit_provenance,
             },

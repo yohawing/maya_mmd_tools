@@ -69,6 +69,20 @@ class SettingsPresenter:
             if hasattr(self.view, "command_port_spin") and hasattr(self.view.command_port_spin, "valueChanged"):
                 self.view.command_port_spin.valueChanged.connect(lambda *_args: self.refresh_command_port_status())
 
+            native_controls = (
+                ("use_cpp_fast_load_check", setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD),
+                ("use_cpp_vp2_ownership_check", setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP),
+                ("use_cpp_rig_nodes_check", setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES),
+            )
+            for attribute, key in native_controls:
+                checkbox = getattr(self.view, attribute, None)
+                if checkbox is not None and hasattr(checkbox, "toggled"):
+                    checkbox.toggled.connect(
+                        lambda checked, setting=key: self._on_native_setting_changed(
+                            setting, checked
+                        )
+                    )
+
             # 言語設定
             if hasattr(self.view, "language_combo"):
                 self.view.language_combo.currentIndexChanged.connect(self.on_language_changed)
@@ -102,6 +116,7 @@ class SettingsPresenter:
                 )
             if hasattr(self.view, "command_port_spin"):
                 self.view.command_port_spin.setValue(int(state.get("command_port", 3939)))
+            self._load_native_settings()
             self._refresh_dev_tools_visibility(state["development_mode"])
             if state["development_mode"]:
                 self._auto_open_command_port_if_needed(emit_status=False)
@@ -162,10 +177,59 @@ class SettingsPresenter:
         if not self._loading:
             pass  # 必要に応じて自動保存などを実装
 
+    def _load_native_settings(self):
+        """Load Advanced native toggles without requiring an Import tab."""
+        native_controls = (
+            ("use_cpp_fast_load_check", setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD),
+            ("use_cpp_vp2_ownership_check", setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP),
+            ("use_cpp_rig_nodes_check", setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES),
+        )
+        for attribute, key in native_controls:
+            checkbox = getattr(self.view, attribute, None)
+            if checkbox is None:
+                continue
+            block_signals = getattr(checkbox, "blockSignals", None)
+            blocked = block_signals(True) if callable(block_signals) else None
+            try:
+                checkbox.setChecked(bool(self.settings_service.get(key, False)))
+            finally:
+                if callable(block_signals):
+                    block_signals(blocked)
+        self._sync_native_advanced_controls()
+
+    def _on_native_setting_changed(self, key, value):
+        """Persist an Advanced native toggle and enforce its local dependency."""
+        if self._loading:
+            return
+        self.settings_service.set(key, bool(value))
+        self._sync_native_advanced_controls()
+
+    def _sync_native_advanced_controls(self):
+        """VP2 ownership is valid only when C++ Fast Load is enabled."""
+        fast_load = getattr(self.view, "use_cpp_fast_load_check", None)
+        vp2 = getattr(self.view, "use_cpp_vp2_ownership_check", None)
+        if fast_load is None or vp2 is None:
+            return
+        enabled = bool(fast_load.isChecked())
+        vp2.setEnabled(enabled)
+        if enabled or not vp2.isChecked():
+            return
+        block_signals = getattr(vp2, "blockSignals", None)
+        blocked = block_signals(True) if callable(block_signals) else None
+        try:
+            vp2.setChecked(False)
+        finally:
+            if callable(block_signals):
+                block_signals(blocked)
+        self.settings_service.set(setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP, False)
+
     def _refresh_dev_tools_visibility(self, enabled):
         """Show development-only tools only while Development Mode is enabled."""
         if hasattr(self.view, "dev_tools_group"):
             self.view.dev_tools_group.setVisible(bool(enabled))
+        if hasattr(self.view, "advanced_native_group"):
+            self.view.advanced_native_group.setVisible(bool(enabled))
+        self._sync_native_advanced_controls()
         self.refresh_command_port_status()
 
     def _get_maya_cmds(self):

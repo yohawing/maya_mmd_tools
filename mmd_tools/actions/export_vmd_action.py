@@ -8,7 +8,10 @@ from pathlib import Path
 import tempfile
 from typing import Any, Callable, Dict, List, Optional
 
-from ..converters.vmd_scene_collector import VmdSceneCollector
+from ..converters.vmd_scene_collector import (
+    VmdSceneCollector,
+    _scene_maya_time_to_vmd_frame,
+)
 from ..core.logger import get_logger
 from ..io.vmd_exporter import VmdExporter
 from ..validation.export_validator import (
@@ -23,7 +26,11 @@ from ..validation.report_artifacts import (
     write_validation_report_artifacts,
 )
 from ..validation.snapshot import fingerprint_payload
-from ..validation.vmd_validator import VMD_MODE_C, validate_vmd_data, verify_vmd_output
+from ..validation.vmd_validator import (
+    VMD_EXPORT_BAKE_TIMELINE,
+    validate_vmd_data,
+    verify_vmd_output,
+)
 
 
 logger = get_logger(__name__)
@@ -87,7 +94,7 @@ class ExportVmdAction:
         request: ExportVmdRequest,
         report: Optional[ExportValidationReport],
         payload_fingerprint: Optional[str],
-        mode: str,
+        export_strategy: str,
     ) -> Optional[ValidationReportArtifactPaths]:
         """Write report artifacts only when the caller supplied a run directory."""
         report_directory = request.options.get("validation_report_dir")
@@ -99,7 +106,7 @@ class ExportVmdAction:
             raise TypeError("validation_report_evidence must be a mapping")
         evidence = dict(configured_evidence)
         evidence.setdefault("target_path", str(request.file_path))
-        evidence.setdefault("mode", mode)
+        evidence.setdefault("export_strategy", export_strategy)
         evidence.setdefault(
             "raw_provenance_supplied",
             bool(request.options.get("raw_provenance", request.options.get("vmd_raw_provenance"))),
@@ -118,28 +125,44 @@ class ExportVmdAction:
         converter = getattr(self._exporter, "to_vmd_data", None)
         if callable(converter):
             return converter(animation_data)
-        return VmdExporter(native_exporter=None).to_vmd_data(animation_data)
+        return VmdExporter().to_vmd_data(animation_data)
 
     @staticmethod
     def _append_report(
         report: ExportValidationReport,
         additional: Optional[ExportValidationReport],
-        mode: str,
+        export_strategy: str,
     ) -> ExportValidationReport:
-        """Combine validator reports while preserving the selected VMD mode."""
+        """Combine validator reports while preserving the selected VMD strategy."""
         if additional is None or not additional.issues:
             return report
         return ExportValidationReport(
             "vmd",
             tuple(report.issues) + tuple(additional.issues),
-            mode=mode,
+            mode=export_strategy,
         )
 
-    def _validate(self, vmd_data: Any, mode: str, options: Mapping[str, Any]) -> ExportValidationReport:
+    def _validate(
+        self,
+        vmd_data: Any,
+        export_strategy: str,
+        options: Mapping[str, Any],
+    ) -> ExportValidationReport:
         """Run the configured validator with the VMD workflow options."""
         frame_range = options.get("frame_range")
         if frame_range is None and "frame_start" in options and "frame_end" in options:
             frame_range = (options.get("frame_start"), options.get("frame_end"))
+        if str(export_strategy or "").lower() == VMD_EXPORT_BAKE_TIMELINE and frame_range is not None:
+            try:
+                maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
+                frame_range = tuple(
+                    int(round(float(maya_time_to_vmd(value))))
+                    for value in frame_range
+                )
+            except (IndexError, KeyError, TypeError, ValueError, OverflowError):
+                # Preserve malformed input for the validator's existing
+                # deterministic VMD_FRAME_RANGE report.
+                pass
         raw_provenance = options.get("raw_provenance", options.get("vmd_raw_provenance"))
         try:
             parameters = inspect.signature(self._validator).parameters
@@ -154,7 +177,7 @@ class ExportVmdAction:
             kwargs["raw_provenance"] = raw_provenance
         if accepts_kwargs or "frame_range" in parameters:
             kwargs["frame_range"] = frame_range
-        return self._validator(vmd_data, mode, **kwargs)
+        return self._validator(vmd_data, export_strategy, **kwargs)
 
     def execute(self, request: ExportVmdRequest) -> ExportVmdResult:
         """Run VMD validation/export and convert failures into a result object."""
@@ -169,7 +192,9 @@ class ExportVmdAction:
         payload_fingerprint: Optional[str] = None
         validation_report_artifacts: Optional[ValidationReportArtifactPaths] = None
         temporary_path: Optional[str] = None
-        mode = str(request.options.get("vmd_mode", request.options.get("mode", VMD_MODE_C)) or "").upper()
+        export_strategy = str(
+            request.options.get("export_strategy") or VMD_EXPORT_BAKE_TIMELINE
+        ).lower()
 
         def build_result(
             *,
@@ -185,7 +210,7 @@ class ExportVmdAction:
                 request,
                 validation_report,
                 payload_fingerprint,
-                mode,
+                export_strategy,
             )
             return ExportVmdResult(
                 exported_path=exported_path,
@@ -201,10 +226,14 @@ class ExportVmdAction:
         try:
             animation_data = request.animation_data
             if animation_data is None:
+                if export_strategy == VMD_EXPORT_BAKE_TIMELINE:
+                    raise ValueError(
+                        "Bake Timeline VMD export requires prepared animation_data"
+                    )
                 if self._collector is None:
                     raise ValueError("VMD export requires animation_data or a collector")
                 collector_options = dict(request.options)
-                collector_options.setdefault("vmd_mode", mode)
+                collector_options.setdefault("export_strategy", export_strategy)
                 animation_data = self._collector(collector_options)
             if request.options.get("raw_provenance") is None:
                 if isinstance(animation_data, Mapping):
@@ -219,7 +248,7 @@ class ExportVmdAction:
                 converted_provenance = getattr(vmd_data, "raw_provenance", None)
                 if converted_provenance is not None:
                     request.options["raw_provenance"] = converted_provenance
-            validation_report = self._validate(vmd_data, mode, request.options)
+            validation_report = self._validate(vmd_data, export_strategy, request.options)
             if validation_report.is_blocking:
                 validation_error = ExportValidationError(validation_report)
                 logger.error("VMD export preflight failed: %s", validation_error)
@@ -230,7 +259,7 @@ class ExportVmdAction:
                 )
 
             try:
-                payload = VmdExporter(native_exporter=None).to_native_json_payload(vmd_data)
+                payload = VmdExporter().to_semantic_payload(vmd_data)
                 payload_fingerprint = fingerprint_payload(payload)
             except (TypeError, ValueError, OverflowError):
                 # Structural validation remains the authoritative failure. If
@@ -280,8 +309,16 @@ class ExportVmdAction:
                 verifier_kwargs = {}
                 if accepts_verifier_kwargs or "expected_counts" in verifier_parameters:
                     verifier_kwargs["expected_counts"] = expected_counts
-                output_report = self._output_verifier(temporary_path, mode, **verifier_kwargs)
-                validation_report = self._append_report(validation_report, output_report, mode)
+                output_report = self._output_verifier(
+                    temporary_path,
+                    export_strategy,
+                    **verifier_kwargs,
+                )
+                validation_report = self._append_report(
+                    validation_report,
+                    output_report,
+                    export_strategy,
+                )
                 if output_report is not None and output_report.is_blocking:
                     raise ExportValidationError(validation_report)
 
@@ -291,7 +328,11 @@ class ExportVmdAction:
                     cli_path=request.options.get("mmd_anim_cli") or "mmd-anim",
                     timeout=float(request.options.get("mmd_anim_timeout", 60.0)),
                 )
-                validation_report = self._append_report(validation_report, mmd_anim_report, mode)
+                validation_report = self._append_report(
+                    validation_report,
+                    mmd_anim_report,
+                    export_strategy,
+                )
                 if mmd_anim_report.is_blocking:
                     raise ExportValidationError(validation_report)
 
@@ -307,7 +348,11 @@ class ExportVmdAction:
                     frame=request.options.get("mmd_anim_binding_frame", 0.0),
                     expected_counts=binding_counts,
                 )
-                validation_report = self._append_report(validation_report, binding_report, mode)
+                validation_report = self._append_report(
+                    validation_report,
+                    binding_report,
+                    export_strategy,
+                )
                 if binding_report.is_blocking:
                     raise ExportValidationError(validation_report)
 
@@ -323,12 +368,16 @@ class ExportVmdAction:
                 request,
                 validation_report,
                 payload_fingerprint,
-                mode,
+                export_strategy,
             )
             os.replace(temporary_path, request.file_path)
             temporary_path = None
 
-            logger.info("Exported VMD animation (%s): %s", mode, request.file_path)
+            logger.info(
+                "Exported VMD animation (%s): %s",
+                export_strategy,
+                request.file_path,
+            )
             return ExportVmdResult(
                 exported_path=request.file_path,
                 succeeded=True,
@@ -345,7 +394,7 @@ class ExportVmdAction:
                         request,
                         validation_report,
                         payload_fingerprint,
-                        mode,
+                        export_strategy,
                     )
                 except Exception as artifact_error:
                     logger.error(

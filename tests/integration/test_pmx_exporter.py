@@ -22,8 +22,6 @@ from mmd_tools.converters.material_shader_parameters import (
 )
 from mmd_tools.core.constants import (
     ATTR_MMD_ADDITIONAL_UVS_JSON,
-    ATTR_MMD_PMX_SDEF_VERTEX_COUNT,
-    ATTR_MMD_SDEF_VERTICES_JSON,
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_OFFSET,
     ATTR_MMD_BONE_FLAGS,
@@ -33,6 +31,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_CONNECTION_BONE,
     ATTR_MMD_CONNECT_BONE_INDEX,
     ATTR_MMD_CONNECT_INDEX,
+    ATTR_MMD_COMMENT,
+    ATTR_MMD_COMMENT_EN,
     ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_AMBIENT_COLOR,
     ATTR_MMD_DIFFUSE_COLOR,
@@ -47,6 +47,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_EXTERNAL_PARENT_KEY,
     ATTR_MMD_FIXED_AXIS,
+    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_GRANT_PARENT,
     ATTR_MMD_GRANT_PARENT_INDEX,
     ATTR_MMD_GRANT_RATE,
@@ -58,6 +59,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MATERIAL_NAME_EN,
     ATTR_MMD_MEMO,
     ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_SHARED_TOON_FLAG,
     ATTR_MMD_SHININESS,
     ATTR_MMD_SPHERE_MODE,
@@ -217,6 +219,37 @@ class TestPmxExporter(MayaTestBase):
         root = cmds.group(empty=True, name=root_name)
         cmds.addAttr(root, longName=ATTR_MMD_MODEL_NAME, dataType="string")
         cmds.setAttr(f"{root}.{ATTR_MMD_MODEL_NAME}", "MergedExport", type="string")
+        cmds.addAttr(root, longName=ATTR_MMD_MODEL_NAME_EN, dataType="string")
+        cmds.setAttr(f"{root}.{ATTR_MMD_MODEL_NAME_EN}", "MergedExport", type="string")
+        cmds.addAttr(root, longName=ATTR_MMD_COMMENT, dataType="string")
+        cmds.setAttr(f"{root}.{ATTR_MMD_COMMENT}", "", type="string")
+        cmds.addAttr(root, longName=ATTR_MMD_COMMENT_EN, dataType="string")
+        cmds.setAttr(f"{root}.{ATTR_MMD_COMMENT_EN}", "", type="string")
+        cmds.addAttr(root, longName=ATTR_MMD_IMPORT_SCALE, attributeType="double")
+        cmds.setAttr(f"{root}.{ATTR_MMD_IMPORT_SCALE}", 1.0)
+
+        bone = cmds.createNode("joint", name=f"{root_name}_bone", parent=root)
+        for attr, attr_type, value in (
+            (ATTR_MMD_BONE_INDEX, "long", 0),
+            (ATTR_MMD_BONE_PARENT_INDEX, "long", -1),
+        ):
+            cmds.addAttr(bone, longName=attr, attributeType=attr_type)
+            cmds.setAttr(f"{bone}.{attr}", value)
+        for attr, value in (
+            (ATTR_MMD_BONE_NAME, "センター"),
+            (ATTR_MMD_BONE_NAME_EN, "Center"),
+        ):
+            cmds.addAttr(bone, longName=attr, dataType="string")
+            cmds.setAttr(f"{bone}.{attr}", value, type="string")
+        maya_attribute_utils.set_custom_attributes(
+            bone,
+            {
+                ATTR_MMD_BONE_FLAGS: 0,
+                ATTR_MMD_BONE_OFFSET: [0.0, -1.0, 0.0],
+                ATTR_MMD_PMX_REST_POSITION: [0.0, 0.0, 0.0],
+                ATTR_MMD_DEFORM_LAYER: 0,
+            },
+        )
 
         mesh_a, _ = self._make_triangle(name=f"{root_name}_mesh_a")
         mesh_b, _ = self._make_triangle(name=f"{root_name}_mesh_b")
@@ -225,6 +258,8 @@ class TestPmxExporter(MayaTestBase):
         cmds.parent(mesh_b, root)
         shader_a = self._assign_shader(mesh_a, shader_name=f"{root_name}_MatA")
         shader_b = self._assign_shader(mesh_b, shader_name=f"{root_name}_MatB")
+        self._set_tagged_shader_with_textures(shader_a, 0, shader_a)
+        self._set_tagged_shader_with_textures(shader_b, 1, shader_b)
         return root, (mesh_a, mesh_b), (shader_a, shader_b)
 
     def _make_skinned_triangle(self, name: str = "skinned_tri"):
@@ -325,7 +360,7 @@ class TestPmxExporter(MayaTestBase):
         class FakeMaterialMorph:
             name = "材質点滅"
             name_english = "material_flash"
-            panel = 5
+            panel = 4
             morph_type = PmxMorphType.MaterialMorph
             offsets = [
                 {
@@ -352,12 +387,15 @@ class TestPmxExporter(MayaTestBase):
                 ],
             },
         )()
-        result = MorphConverter().convert_pmx_morphs(fake_data, mesh_name)
+        morph_converter = MorphConverter()
+        result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
         self.assertTrue(result.get("success", False))
         self.assertEqual(len(result["group_morph_nodes"]), 1)
         if root_group is not None:
-            # Match PMX import ownership: vertex metadata stays on blendShape,
-            # while group/bone/material network leaves are registered to the model root.
+            morph_converter.build_morph_controller(fake_data, root_group, result)
+            # Match PMX import ownership: all semantic morph metadata leaves
+            # are registered to the model root; vertex offsets remain on the
+            # blendShape as their runtime authority.
             pipeline = ModelImportPipeline(
                 logger=get_logger(__name__),
                 filepath="<test fixture>",
@@ -378,6 +416,7 @@ class TestPmxExporter(MayaTestBase):
                     result["group_morph_nodes"]
                     + result["bone_morph_nodes"]
                     + result["material_morph_nodes"]
+                    + result["vertex_morph_nodes"]
                 ),
             )
         return result
@@ -509,58 +548,8 @@ class TestPmxExporter(MayaTestBase):
             ],
         )
 
-    def test_roundtrip_imported_sdef_storage(self):
-        """Collector reads canonical SDEF storage and writer preserves raw vectors."""
-        transform, _ = self._make_triangle(name="sdef_tri_mesh")
-        self._assign_shader(transform, shader_name="SdefMat")
-        maya_attribute_utils.set_custom_attributes(
-            transform,
-            {ATTR_MMD_PMX_SDEF_VERTEX_COUNT: 1},
-        )
-        maya_attribute_utils.write_json_attr(
-            transform,
-            ATTR_MMD_SDEF_VERTICES_JSON,
-            {
-                "schema_version": 1,
-                "vertex_count": 3,
-                "source_vertex_count": 3,
-                "source_vertex_indices": [0, 1, 2],
-                "sdef_vertices": [
-                    {
-                        "bone_indices": [0, 0],
-                        "bone_weights": [0.75],
-                        "sdef_c": [0.1, 0.2, 0.3],
-                        "sdef_r0": [0.0, 0.1, 0.0],
-                        "sdef_r1": [0.0, 0.0, 0.1],
-                    },
-                    None,
-                    None,
-                ],
-            },
-        )
-
-        maya_data = ExportSceneCollector().collect_from_mesh(transform)
-        self.assertEqual(maya_data["vertices"][0]["weight_transform_type"], 3)
-        self.assertEqual(maya_data["vertices"][0]["bone_indices"], [0, 0])
-        self.assertEqual(maya_data["vertices"][0]["bone_weights"], [0.75])
-
-        output_path = self.get_temp_filename("sdef_triangle.pmx")
-        PmxExporter().export_pmx_model(output_path, maya_data)
-        pmx = _parse_pmx(output_path)
-
-        vertex = pmx.vertices[0]
-        self.assertEqual(vertex.weight_transform_type, 3)
-        self.assertEqual(vertex.bone_indices, [0, 0])
-        self.assertAlmostEqual(vertex.bone_weights[0], 0.75)
-        for actual, expected in zip(
-            (vertex.sdef_c, vertex.sdef_r0, vertex.sdef_r1),
-            ((0.1, 0.2, 0.3), (0.0, 0.1, 0.0), (0.0, 0.0, 0.1)),
-        ):
-            for actual_component, expected_component in zip(actual, expected):
-                self.assertAlmostEqual(actual_component, expected_component, places=6)
-
-    def test_imported_uv_and_sdef_metadata_survive_pmx_fresh_import(self):
-        """Fresh PMX import restores canonical additional-UV and SDEF payloads."""
+    def test_imported_uv_metadata_survives_pmx_fresh_import(self):
+        """Fresh PMX import restores canonical additional-UV payloads."""
         transform, _ = self._make_triangle(name="fresh_metadata_tri_mesh")
         self._assign_shader(transform, shader_name="FreshMetadataMat")
         maya_attribute_utils.write_json_attr(
@@ -579,32 +568,6 @@ class TestPmxExporter(MayaTestBase):
                 ],
             },
         )
-        maya_attribute_utils.set_custom_attributes(
-            transform,
-            {ATTR_MMD_PMX_SDEF_VERTEX_COUNT: 1},
-        )
-        maya_attribute_utils.write_json_attr(
-            transform,
-            ATTR_MMD_SDEF_VERTICES_JSON,
-            {
-                "schema_version": 1,
-                "vertex_count": 3,
-                "source_vertex_count": 3,
-                "source_vertex_indices": [0, 1, 2],
-                "sdef_vertices": [
-                    {
-                        "bone_indices": [0, 0],
-                        "bone_weights": [0.75],
-                        "sdef_c": [0.1, 0.2, 0.3],
-                        "sdef_r0": [0.0, 0.1, 0.0],
-                        "sdef_r1": [0.0, 0.0, 0.1],
-                    },
-                    None,
-                    None,
-                ],
-            },
-        )
-
         collected = ExportSceneCollector().collect_from_mesh(transform)
         output_path = self.get_temp_filename("fresh_import_metadata.pmx")
         PmxExporter().export_pmx_model(output_path, collected)
@@ -629,24 +592,6 @@ class TestPmxExporter(MayaTestBase):
         ):
             for actual, expected in zip(actual_channels, expected_channels):
                 self.assertAlmostEqual(actual, expected, places=6)
-        self.assertEqual(
-            fresh["vertices"][0]["weight_transform_type"],
-            collected["vertices"][0]["weight_transform_type"],
-        )
-        self.assertEqual(
-            fresh["vertices"][0]["bone_indices"],
-            collected["vertices"][0]["bone_indices"],
-        )
-        self.assertEqual(
-            fresh["vertices"][0]["bone_weights"],
-            collected["vertices"][0]["bone_weights"],
-        )
-        for field in ("sdef_c", "sdef_r0", "sdef_r1"):
-            for actual, expected in zip(
-                fresh["vertices"][0][field], collected["vertices"][0][field]
-            ):
-                self.assertAlmostEqual(actual, expected, places=6, msg=field)
-
     def test_imported_pmx_soft_body_provenance_blocks_export(self):
         """Unsupported PMX 2.1 soft bodies survive import as a blocking export sentinel."""
         source_path = self.get_temp_filename("soft_body_import.pmx")
@@ -1055,13 +1000,14 @@ class TestPmxExporter(MayaTestBase):
 
         self.assertEqual([bone.name for bone in pmx.bones], ["センター", "上半身"])
         self.assertEqual([bone.parent_bone_index for bone in pmx.bones], [-1, 0])
-        self.assertEqual(pmx.vertices[0].weight_transform_type, 0)
-        self.assertEqual(pmx.vertices[0].bone_indices, [0])
-        self.assertEqual(pmx.vertices[1].weight_transform_type, 1)
-        self.assertEqual(pmx.vertices[1].bone_indices, [1, 0])
+        self.assertEqual(pmx.vertices[0].weight_transform_type, 2)
+        self.assertEqual(pmx.vertices[0].bone_indices, [0, 0, 0, 0])
+        self.assertEqual(pmx.vertices[1].weight_transform_type, 2)
+        self.assertEqual(pmx.vertices[1].bone_indices, [1, 0, 1, 1])
         self.assertAlmostEqual(pmx.vertices[1].bone_weights[0], 0.75)
-        self.assertEqual(pmx.vertices[2].weight_transform_type, 0)
-        self.assertEqual(pmx.vertices[2].bone_indices, [1])
+        self.assertAlmostEqual(pmx.vertices[1].bone_weights[1], 0.25)
+        self.assertEqual(pmx.vertices[2].weight_transform_type, 2)
+        self.assertEqual(pmx.vertices[2].bone_indices, [1, 1, 1, 1])
 
     def test_export_model_action_roundtrips_non_ik_bone_semantics(self):
         """Canonical non-IK bone attrs survive Maya → PMX → parser round-trip."""
@@ -1228,8 +1174,40 @@ class TestPmxExporter(MayaTestBase):
         """model exportは0-weight jointもSkeleton metadataからPMX boneへ戻す。"""
         transform, joints, skin_cluster = self._make_skinned_triangle("pmx_zero_weight_bone")
         root = cmds.group(empty=True, name="pmx_zero_weight_root")
+        maya_attribute_utils.set_custom_attributes(
+            root,
+            {
+                ATTR_MMD_MODEL_NAME: "ZeroWeight",
+                ATTR_MMD_MODEL_NAME_EN: "ZeroWeight",
+                ATTR_MMD_COMMENT: "",
+                ATTR_MMD_COMMENT_EN: "",
+                ATTR_MMD_IMPORT_SCALE: 1.0,
+            },
+        )
         cmds.parent(transform, root)
         cmds.parent(joints[0], root)
+        for joint, rest_position in zip(joints, ([0.0, 0.0, 0.0], [0.0, 2.0, 0.0])):
+            maya_attribute_utils.set_custom_attributes(
+                joint,
+                {
+                    ATTR_MMD_BONE_FLAGS: 0,
+                    ATTR_MMD_BONE_OFFSET: [0.0, -1.0, 0.0],
+                    ATTR_MMD_PMX_REST_POSITION: rest_position,
+                    ATTR_MMD_DEFORM_LAYER: 0,
+                },
+            )
+        mesh_shape = (cmds.listRelatives(transform, shapes=True, type="mesh") or [None])[0]
+        shader_groups = (
+            cmds.listConnections(mesh_shape, type="shadingEngine") if mesh_shape else []
+        ) or []
+        for shading_group in shader_groups:
+            shaders = cmds.listConnections(
+                f"{shading_group}.surfaceShader",
+                source=True,
+                destination=False,
+            ) or []
+            for shader in shaders:
+                self._set_tagged_shader_with_textures(shader, 0, shader)
         cmds.select(joints[1], replace=True)
         unused_joint = cmds.joint(name="pmx_unused_ik_target", position=[0.0, 3.0, 0.0])
         for attr, value in [
@@ -1244,6 +1222,15 @@ class TestPmxExporter(MayaTestBase):
         ]:
             cmds.addAttr(unused_joint, longName=attr, dataType="string")
             cmds.setAttr(f"{unused_joint}.{attr}", value, type="string")
+        maya_attribute_utils.set_custom_attributes(
+            unused_joint,
+            {
+                ATTR_MMD_BONE_FLAGS: 0,
+                ATTR_MMD_BONE_OFFSET: [0.0, -1.0, 0.0],
+                ATTR_MMD_PMX_REST_POSITION: [0.0, 3.0, 0.0],
+                ATTR_MMD_DEFORM_LAYER: 0,
+            },
+        )
 
         output_path = self.get_temp_filename("zero_weight_bone.pmx")
         result = ExportModelAction().execute(

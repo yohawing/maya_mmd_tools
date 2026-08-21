@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from tests.common.gui_test_base import GuiTestBase, requires_gui
-from mmd_tools.ui.qt_compat import QSettings
+from mmd_tools.ui.qt_compat import QSettings, Qt
 from mmd_tools.ui.import_export_view_state import ImportExportViewState
 from mmd_tools.ui.tabs.import_export_tab import ImportExportTab
 
@@ -162,6 +162,29 @@ class TestImportExportTabGUI(GuiTestBase):
         self.assertFalse(hasattr(tab, "vpd_group"))
         self.assertFalse(hasattr(tab, "vpd_not_implemented"))
         tab.deleteLater()
+
+    def test_animation_history_filters_vmd_and_populates_motion_path(self):
+        """Animation tab owns the typed VMD history and double-click route."""
+        tab = self._create_tab()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                model_path = os.path.join(directory, "model.pmx")
+                motion_path = os.path.join(directory, "motion.vmd")
+                with open(model_path, "w", encoding="utf-8"):
+                    pass
+                with open(motion_path, "w", encoding="utf-8"):
+                    pass
+                self.view_state.save_file_history("import", model_path)
+                self.view_state.save_file_history("vmd", motion_path)
+                tab.import_category_stack.setCurrentIndex(1)
+                self.assertEqual(tab.import_category_stack.count(), 2)
+                self.assertEqual(tab.unified_history_list.count(), 1)
+                item = tab.unified_history_list.item(0)
+                self.assertEqual(item.data(Qt.UserRole + 1), "vmd")
+                tab._on_history_item_double_clicked(item)
+                self.assertEqual(tab.vmd_path_edit.text(), motion_path)
+        finally:
+            tab.deleteLater()
 
     def test_new_model_entrypoint_is_one_button_next_to_import(self):
         """The inline template fields are gone; one modal entrypoint shares the import row."""

@@ -73,10 +73,11 @@
     },
     "motion": {
       "_comment": "VMD motion export settings",
-      "mode": "C",
+      "strategy": "bake_timeline",
       "use_frame_range": false,
       "start_frame": 0,
-      "end_frame": 120
+      "end_frame": 120,
+      "range_initialized": false
     }
   },
   "ui": {

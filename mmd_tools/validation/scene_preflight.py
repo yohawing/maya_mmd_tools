@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from .export_validator import ExportValidationIssue, ExportValidationReport
+from .vmd_validator import VMD_EXPORT_BAKE_TIMELINE
 
 
 MODEL_FORMATS = frozenset({"pmx"})
@@ -44,12 +45,11 @@ def _normalize_format(options: Mapping[str, Any]) -> str:
     return Path(str(options.get("file_path") or "")).suffix.lower().lstrip(".")
 
 
-def _normalize_mode(export_format: str, options: Mapping[str, Any]) -> str:
-    """Resolve canonical report mode names without exposing Mode B."""
+def _normalize_export_strategy(export_format: str, options: Mapping[str, Any]) -> str:
+    """Resolve the semantic strategy for a VMD export request."""
     if export_format != "vmd":
         return "model"
-    value = str(options.get("vmd_mode", options.get("mode", "C")) or "").upper()
-    return {"VMD_MODE_A": "A", "VMD_MODE_C": "C"}.get(value, value)
+    return str(options.get("export_strategy") or VMD_EXPORT_BAKE_TIMELINE).lower()
 
 
 def _resolve_target(options: Mapping[str, Any], scene_service: Any) -> Optional[str]:
@@ -139,7 +139,7 @@ class ScenePreflight:
         """Return a report and scene provenance for one export request."""
         options = dict(options or {})
         export_format = _normalize_format(options)
-        mode = _normalize_mode(export_format, options)
+        export_strategy = _normalize_export_strategy(export_format, options)
         issues = []
         target = _resolve_target(options, self._scene_service)
         require_current_model = bool(options.get("require_current_model", False))
@@ -258,33 +258,45 @@ class ScenePreflight:
                         f"scene ownership could not be inspected: {type(exc).__name__}",
                     )
                 )
-        control_rig = ownership.get("control_rig") if isinstance(ownership, Mapping) else None
-        if isinstance(control_rig, Mapping):
-            owner = str(control_rig.get("owner") or "").upper()
-            state = str(control_rig.get("state") or "").upper()
-            if owner == "CONTROL_OWNED" or state in {"EDIT", "CONVERTING"}:
+        # Ownership determines which animation path may be sampled. PMX model
+        # export does not collect timeline motion, so an active authoring rig
+        # must not block the model payload.
+        if export_format == "vmd":
+            control_rig = (
+                ownership.get("control_rig")
+                if isinstance(ownership, Mapping)
+                else None
+            )
+            if isinstance(control_rig, Mapping):
+                owner = str(control_rig.get("owner") or "").upper()
+                state = str(control_rig.get("state") or "").upper()
+                if owner == "CONTROL_OWNED" or state in {"EDIT", "CONVERTING"}:
+                    issues.append(
+                        _issue(
+                            "SCENE_OWNER_CONTROL_RIG",
+                            "ownership.control_rig",
+                            "Control Rig owns the authoring path; bake or restore to MMD Rig before export",
+                        )
+                    )
+            humanik = (
+                ownership.get("humanik")
+                if isinstance(ownership, Mapping)
+                else None
+            )
+            blocked = getattr(humanik, "blocked", None)
+            if blocked is None and isinstance(humanik, Mapping):
+                blocked = humanik.get("blocked")
+            if blocked:
+                character = getattr(humanik, "character", None)
+                if character is None and isinstance(humanik, Mapping):
+                    character = humanik.get("character")
                 issues.append(
                     _issue(
-                        "SCENE_OWNER_CONTROL_RIG",
-                        "ownership.control_rig",
-                        "Control Rig owns the authoring path; bake or restore to MMD Rig before export",
+                        "SCENE_OWNER_HUMANIK",
+                        "ownership.humanik",
+                        f"HumanIK owns the export pose ({blocked}{f' on {character}' if character else ''}); bake or restore MMD Rig first",
                     )
                 )
-        humanik = ownership.get("humanik") if isinstance(ownership, Mapping) else None
-        blocked = getattr(humanik, "blocked", None)
-        if blocked is None and isinstance(humanik, Mapping):
-            blocked = humanik.get("blocked")
-        if blocked:
-            character = getattr(humanik, "character", None)
-            if character is None and isinstance(humanik, Mapping):
-                character = humanik.get("character")
-            issues.append(
-                _issue(
-                    "SCENE_OWNER_HUMANIK",
-                    "ownership.humanik",
-                    f"HumanIK owns the export pose ({blocked}{f' on {character}' if character else ''}); bake or restore MMD Rig first",
-                )
-            )
 
         scene_revision = options.get("scene_revision")
         if scene_revision is None and self._scene_revision_getter is not None:
@@ -301,7 +313,7 @@ class ScenePreflight:
         metadata = {
             "schema_version": 1,
             "format": export_format or None,
-            "mode": mode,
+            "export_strategy": export_strategy,
             "target_identity": target,
             "namespace": _namespace_for_target(target),
             "source_scene": str(source_scene) if source_scene else None,
@@ -312,7 +324,11 @@ class ScenePreflight:
             "output_path": str(output_path) if str(options.get("file_path") or "").strip() else None,
         }
         return ScenePreflightResult(
-            report=ExportValidationReport(export_format or None, tuple(issues), mode=mode),
+            report=ExportValidationReport(
+                export_format or None,
+                tuple(issues),
+                mode=export_strategy,
+            ),
             metadata=metadata,
         )
 

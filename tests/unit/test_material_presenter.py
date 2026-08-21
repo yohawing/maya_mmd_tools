@@ -486,6 +486,37 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.list_connections.assert_not_called()
         self.mock_maya_adapter.sets.assert_not_called()
 
+    def test_load_materials_survives_stale_presenter_projection_class_reference(self):
+        self.mock_app_state.current_model_root = "|model_root"
+        self.mock_maya_adapter.object_exists.return_value = True
+        coordinator = Mock()
+        projection = self._list_projection(
+            "|model_root",
+            (
+                0,
+                "shader0",
+                "Material",
+                "",
+                MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0),
+            ),
+        )
+        coordinator.read_material_list_projection.return_value = projection
+        stale_projection_type = type("StaleMaterialListProjection", (), {})
+
+        with patch(
+            "mmd_tools.ui.presenters.material_presenter.MaterialListProjection",
+            stale_projection_type,
+        ):
+            presenter = MaterialPresenter(
+                self.mock_view,
+                self.mock_app_state,
+                maya_adapter=self.mock_maya_adapter,
+                authoring_coordinator=coordinator,
+            )
+
+        assert presenter._material_list_projection is projection
+        self.mock_view.material_list.addItem.assert_called_once()
+
     def test_refresh_consumes_new_assignment_projection_atomically(self):
         self.mock_app_state.current_model_root = "|model_root"
         self.mock_maya_adapter.object_exists.return_value = True

@@ -320,6 +320,18 @@ def _preflight_command_port(port: int, attach_existing: bool) -> None:
         )
 
 
+def _prepare_maya_profile(
+    output_dir: Path,
+    maya_version: str,
+    port: int,
+    project_root: Path,
+) -> Path:
+    """Create the isolated Maya profile and seed its plug-in trust allowlist."""
+    maya_app_dir = (output_dir / f"maya-app-{maya_version}-{port}").resolve()
+    maya_commandport.seed_isolated_maya_profile(maya_app_dir, maya_version, project_root)
+    return maya_app_dir
+
+
 def _monitor_log(log_path: Path, timeout: int) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.touch(exist_ok=True)
@@ -1036,7 +1048,6 @@ def _capture_case(case):
     import mmd_tools.io.mmd_importer as mmd_importer
     import mmd_tools.io.pmx_importer as pmx_importer
     import mmd_tools.io.vmd_importer as vmd_importer
-    from tests.common.maya_plugin_setup import load_mmd_tools_plugin
     from mmd_tools.core.settings import settings
 
     pmx_vertex = importlib.reload(pmx_vertex)
@@ -1050,7 +1061,7 @@ def _capture_case(case):
     mmd_importer = importlib.reload(mmd_importer)
 
     cmds.file(new=True, force=True)
-    load_mmd_tools_plugin(_project_root)
+    _ensure_mmd_tools_plugin()
     settings.set("import.model.create_mmd_shaders", True)
     settings.set("import.model.mmd_shader_backend", _shader_backend)
 
@@ -1354,13 +1365,18 @@ def main() -> int:
             LOGGER.info("Attaching to existing Maya commandPort :%d", args.port)
         else:
             LOGGER.info("Maya executable: %s", maya_commandport.maya_exe(args.maya))
+            maya_app_dir = _prepare_maya_profile(output_dir, args.maya, args.port, project_root)
             proc = maya_commandport.launch_maya(
                 version=args.maya,
                 project_root=project_root,
                 output_dir=output_dir,
                 port=args.port,
                 launch_mode=args.launch_mode,
-                env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": _vp2_override(args.shader_backend, args.vp2_device)},
+                env_overrides={
+                    "MAYA_APP_DIR": str(maya_app_dir),
+                    "MAYA_SKIP_USERSETUP_PY": "1",
+                    "MAYA_VP2_DEVICE_OVERRIDE": _vp2_override(args.shader_backend, args.vp2_device),
+                },
             )
         maya_commandport.wait_for_port(args.port, args.timeout, proc)
         code = _build_maya_code(

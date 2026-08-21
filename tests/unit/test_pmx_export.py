@@ -365,8 +365,9 @@ class TestPmxExporterFromDict(TestBase):
         self.assertEqual(v.position, (0.0, 0.0, 0.0))
         self.assertEqual(v.normal, (0.0, 0.0, 1.0))
         self.assertEqual(v.uv, (0.0, 0.0))
-        self.assertEqual(v.weight_transform_type, 0)  # BDEF1
-        self.assertEqual(v.bone_indices, [0])
+        self.assertEqual(v.weight_transform_type, 2)  # BDEF4
+        self.assertEqual(v.bone_indices, [0, 0, 0, 0])
+        self.assertEqual(v.bone_weights, [1.0, 0.0, 0.0, 0.0])
         self.assertAlmostEqual(v.edge_magnification, 1.0)
 
         # Verify face
@@ -1101,8 +1102,8 @@ class TestPmxExporterFromDict(TestBase):
 
     # --- Phase 2: bone + skin weight tests ---
 
-    def test_export_two_bones_bdef2_roundtrip(self):
-        """bones 2本 + BDEF2 vertex の export -> parse_file 検証"""
+    def test_export_two_bones_as_bdef4_roundtrip(self):
+        """1/2 influenceの入力もBDEF4へ統一してexportする。"""
         data = {
             "model_name": "BoneBDEF2Test",
             "vertices": [
@@ -1154,19 +1155,21 @@ class TestPmxExporterFromDict(TestBase):
 
         # Verify BDEF2 vertex
         v0 = pmx.vertices[0]
-        self.assertEqual(v0.weight_transform_type, 1)  # BDEF2
-        self.assertEqual(v0.bone_indices, [0, 1])
-        self.assertEqual(len(v0.bone_weights), 1)
+        self.assertEqual(v0.weight_transform_type, 2)  # BDEF4
+        self.assertEqual(v0.bone_indices, [0, 1, 0, 0])
+        self.assertEqual(len(v0.bone_weights), 4)
         self.assertAlmostEqual(v0.bone_weights[0], 0.75)
+        self.assertAlmostEqual(v0.bone_weights[1], 0.25)
 
         v1 = pmx.vertices[1]
-        self.assertEqual(v1.weight_transform_type, 1)  # BDEF2
-        self.assertEqual(v1.bone_indices, [0, 1])
+        self.assertEqual(v1.weight_transform_type, 2)  # BDEF4
+        self.assertEqual(v1.bone_indices, [0, 1, 0, 0])
         self.assertAlmostEqual(v1.bone_weights[0], 0.5)
+        self.assertAlmostEqual(v1.bone_weights[1], 0.5)
 
         # Vertex without bone_weights defaults to 0.5
         v2 = pmx.vertices[2]
-        self.assertEqual(v2.weight_transform_type, 1)  # BDEF2
+        self.assertEqual(v2.weight_transform_type, 2)  # BDEF4
         self.assertAlmostEqual(v2.bone_weights[0], 0.5)
 
     def test_export_bdef4_roundtrip(self):
@@ -1220,50 +1223,6 @@ class TestPmxExporterFromDict(TestBase):
         self.assertAlmostEqual(v1.bone_weights[1], 0.0)
         self.assertAlmostEqual(v1.bone_weights[2], 0.0)
         self.assertAlmostEqual(v1.bone_weights[3], 0.0)
-
-    def test_export_sdef_roundtrip_preserves_raw_vertex_payload(self):
-        """SDEF vertices use the Python writer and retain C/R0/R1 vectors."""
-        native_calls = []
-        exporter = PmxExporter(
-            native_parts_exporter=lambda *args, **kwargs: native_calls.append((args, kwargs))
-            or b"NATIVE-PMX"
-        )
-        data = {
-            "model_name": "SDEFTest",
-            "vertices": [
-                {
-                    "position": [0.0, 0.0, 0.0],
-                    "normal": [0.0, 0.0, 1.0],
-                    "bone_indices": [0, 1],
-                    "bone_weights": [0.75],
-                    "weight_transform_type": 3,
-                    "sdef_c": [0.1, 0.2, 0.3],
-                    "sdef_r0": [0.0, 0.1, 0.0],
-                    "sdef_r1": [0.0, 0.0, 0.1],
-                },
-                {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0]},
-                {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0]},
-            ],
-            "faces": [[0, 1, 2]],
-            "bones": [{"name": "b0"}, {"name": "b1"}],
-        }
-        out_path = os.path.join(self.temp_dir, "sdef.pmx")
-        exporter.export_pmx_model(out_path, data)
-        self.assertEqual(native_calls, [])
-
-        pmx = _parse_pmx(out_path)
-
-        vertex = pmx.vertices[0]
-        self.assertEqual(vertex.weight_transform_type, 3)
-        self.assertEqual(vertex.bone_indices, [0, 1])
-        self.assertAlmostEqual(vertex.bone_weights[0], 0.75)
-        for field_name, expected in (
-            ("sdef_c", (0.1, 0.2, 0.3)),
-            ("sdef_r0", (0.0, 0.1, 0.0)),
-            ("sdef_r1", (0.0, 0.0, 0.1)),
-        ):
-            for actual, expected_value in zip(getattr(vertex, field_name), expected):
-                self.assertAlmostEqual(actual, expected_value)
 
     def test_vertex_unsupported_bone_indices_len_raises(self):
         """bone_indices 長さが 1/2/4 以外で ValueError"""

@@ -30,7 +30,7 @@
     "file_io": "匯入",
     "export_workflow": "匯出",
     "export_model": "模型",
-    "export_motion": "動作",
+    "export_motion": "動畫",
     "info": "資訊",
     "material": "材質",
     "bone": "骨骼",
@@ -43,6 +43,7 @@
     "offset_information": "偏移資訊",
     "maya_connection": "Maya連接",
     "general_settings": "一般設定",
+    "advanced_settings": "進階設定",
     "import_settings": "匯入設定",
     "export_settings": "匯出設定",
     "rigid_bodies": "剛體",
@@ -55,6 +56,10 @@
   "buttons": {
     "import": "匯入",
     "export": "匯出",
+    "validate_model": "驗證模型",
+    "export_pmx": "匯出模型",
+    "validate_animation": "驗證動畫",
+    "export_vmd": "匯出動畫",
     "ok": "確定",
     "apply": "套用",
     "cancel": "取消",
@@ -191,6 +196,7 @@
     "use_cpp_vp2_ownership": "使用原生 mmdRenderShape 的 VP2 RenderOverride。需要啟用 C++ Fast Load，僅用於網格顯示（實驗性）"
   },
   "messages": {
+    "vmd_bake_export_help": "匯出動畫前烘焙目前時間軸。啟用範圍時，只評估指定範圍。",
     "import_success": "匯入完成",
     "create_model_unavailable": "此工作階段無法建立 MMD 模型",
     "create_model_templates_unavailable": "無法載入內建模型範本。請重新載入外掛程式後再試",
@@ -205,6 +211,7 @@
     "morph_create_impulse_unsupported": "無法建立 PMX 2.1 衝量變形",
     "select_vmd_target_model": "請選擇目標模型，或選擇 Camera Motion。",
     "export_success": "匯出完成",
+    "prepare_bake_timeline_complete": "VMD 時間軸烘焙準備完成",
     "error_file_not_found": "找不到檔案",
     "error_invalid_file": "無效的檔案格式",
     "error_no_selection": "未選擇任何物件",
@@ -263,6 +270,8 @@
     "humanik_source_tooltip": "可將已角色化的 MMD 模型或場景中已定義的 HumanIK 角色指定為重定向 SOURCE。"
   },
   "options": {
+    "vmd_preserve_keys": "保留未編輯的匯入骨骼關鍵影格",
+    "vmd_export_timeline": "匯出目前時間軸",
     "none": "無",
     "import_mesh": "匯入網格",
     "import_skeleton": "匯入骨骼",
@@ -350,6 +359,7 @@
     "joint_values": "關節數值"
   },
   "checkboxes": {
+    "vmd_bake_export": "烘焙匯出",
     "use_namespace": "使用命名空間",
     "import_models": "匯入模型",
     "create_mmd_shaders": "建立MMD著色器",
@@ -378,6 +388,7 @@
     "enable_physics": "啟用物理"
   },
   "fields": {
+    "export_strategy": "匯出策略",
     "display_frame_name_jp": "日文名稱:",
     "display_frame_name_en": "英文名稱:",
     "special_display_frame": "特殊框（Root／表情）",
@@ -646,7 +657,33 @@
     "source_not_readable": "無法讀取來源檔案",
     "cache_copy_failed": "無法將貼圖複製到快取"
   },
+  "export_progress": {
+    "model_scene_preflight": "模型：正在檢查場景",
+    "model_payload_collection": "模型：正在收集匯出資料",
+    "model_payload_validation": "模型：正在驗證匯出資料",
+    "model_report_ready": "模型：驗證報告已準備就緒",
+    "model_writer": "正在匯出 PMX",
+    "animation_scene_preflight": "動畫：正在檢查場景",
+    "animation_timeline_bake": "動畫：正在評估並準備目前時間軸",
+    "animation_payload_collection": "動畫：正在收集匯出資料",
+    "animation_payload_validation": "動畫：正在驗證匯出資料",
+    "animation_prepared_payload": "動畫：正在準備匯出資料",
+    "animation_report_ready": "動畫：驗證報告已準備就緒",
+    "animation_writer": "正在匯出 VMD"
+  },
   "validation": {
+    "scene_output_path_invalid": {
+      "title": "匯出位置無效",
+      "impact": "無法決定要寫入檔案的儲存位置。",
+      "remediation": "請選擇輸出檔案，然後重新準備或匯出。",
+      "action": "選擇輸出檔案"
+    },
+    "scene_output_extension_mismatch": {
+      "title": "輸出副檔名與格式不符",
+      "impact": "所選檔案無法依要求的格式寫出。",
+      "remediation": "匯出 VMD 時，請使用以 .vmd 結尾的檔名。",
+      "action": "修正輸出副檔名"
+    },
     "export_workflow_exception": {
       "title": "匯出流程意外失敗",
       "impact": "匯出流程在產生可信結果之前已停止。",

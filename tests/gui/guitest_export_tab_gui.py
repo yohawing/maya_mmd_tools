@@ -1,7 +1,7 @@
 """ExportTab の実 Maya GUI 契約テスト。
 
 実際の Maya GUI が提供する Qt アプリケーション上で ExportTab を生成し、
-形式別の mode UI と Validation Console の catalog 表示を検証する。
+形式別の書き出し方式UIとValidation Consoleのcatalog表示を検証する。
 """
 
 import json
@@ -22,7 +22,7 @@ from mmd_tools.validation.export_validator import (
 )
 from mmd_tools.validation.issue_catalog import get_issue_catalog_entry
 from mmd_tools.ui.translations import UITranslator
-from mmd_tools.validation.vmd_validator import VMD_MODE_C, validate_vmd_data
+from mmd_tools.validation.vmd_validator import VMD_EXPORT_BAKE_TIMELINE, validate_vmd_data
 from tests.common.ui_action_coverage import (
     ActionInvocationSpy,
     QtSignalInvocationSpy,
@@ -57,13 +57,22 @@ class _WarningWorkflow:
         self.acknowledgements = []
         self.requests = []
 
-    def execute(self, request, *, acknowledge_warnings=False):
+    def execute(self, request, *, acknowledge_warnings=False, progress_callback=None):
         self.requests.append(request)
         self.acknowledgements.append(acknowledge_warnings)
+        if progress_callback is not None:
+            for stage in (
+                "scene_preflight",
+                "payload_collection",
+                "payload_validation",
+                "report_ready",
+                "writer",
+            ):
+                progress_callback(stage)
         return ExportWorkflowResult(
             STATE_SUCCEEDED,
             self.report,
-            {"output_path": "mode-c-warning.vmd"},
+            {"output_path": "bake-timeline-warning.vmd"},
         )
 
 
@@ -74,9 +83,24 @@ class _GuiAppState:
 
     def __init__(self):
         self.statuses = []
+        self._progress_token = 0
+        self.progress = []
 
     def emit_status(self, message):
         self.statuses.append(message)
+
+    def begin_progress(self, label=""):
+        self._progress_token += 1
+        self.progress.append(("begin", self._progress_token, label, None))
+        return self._progress_token
+
+    def update_progress_state(self, token, label="", percentage=None):
+        self.progress.append(("update", token, label, percentage))
+        return True
+
+    def end_progress(self, token):
+        self.progress.append(("end", token, "", None))
+        return True
 
 
 @requires_gui
@@ -107,25 +131,31 @@ class TestExportTabGUI(GuiTestBase):
         app.sendPostedEvents(tab, QtCore.QEvent.DeferredDelete)
         app.processEvents()
 
-    def test_model_motion_tabs_have_fixed_formats_and_no_target_or_format_widgets(self):
-        """Model/Motion tabs own PMX/VMD and expose no legacy selectors."""
+    def test_model_animation_tabs_have_fixed_formats_and_no_target_or_format_widgets(self):
+        """Model/Animation tabs own PMX/VMD and expose no legacy selectors."""
         tab = self._create_visible_tab()
         try:
             self.assertFalse(hasattr(tab, "target_combo"))
             self.assertFalse(hasattr(tab, "format_combo"))
             self.assertEqual(tab.pane_tabs.count(), 2)
             self.assertEqual(tab.pane_tabs.tabText(0), "モデル")
-            self.assertEqual(tab.pane_tabs.tabText(1), "モーション")
+            self.assertEqual(tab.pane_tabs.tabText(1), "アニメーション")
+            self.assertEqual(tab.validate_button.text(), "モデルを検証")
+            self.assertEqual(tab.export_button.text(), "モデルを書き出す")
             self.assertEqual(tab.build_request("model_ROOT").options["export_format"], "pmx")
             pane_spy = QtSignalInvocationSpy(
                 "ExportTab.pane_changed", tab.pane_tabs.currentChanged, tab.pane_tabs
             )
             tab.pane_tabs.setCurrentIndex(1)
-            self.assertEqual(tab.mode_combo.currentText(), "C")
-            mode_spy = QtSignalInvocationSpy(
-                "ExportTab.motion_mode_changed", tab.mode_combo.currentTextChanged, tab.mode_combo
+            self.assertTrue(tab.bake_export_check.isChecked())
+            self.assertEqual(tab.validate_button.text(), "アニメーションを検証")
+            self.assertEqual(tab.export_button.text(), "アニメーションを書き出し")
+            bake_spy = QtSignalInvocationSpy(
+                "ExportTab.motion_bake_changed",
+                tab.bake_export_check.toggled,
+                tab.bake_export_check,
             )
-            tab.mode_combo.setCurrentText("A")
+            tab.bake_export_check.setChecked(False)
             range_spy = QtSignalInvocationSpy(
                 "ExportTab.frame_range_changed", tab.frame_range_check.toggled, tab.frame_range_check
             )
@@ -141,25 +171,25 @@ class TestExportTabGUI(GuiTestBase):
             request = tab.build_request("model_ROOT")
             self.assertEqual(request.options["export_format"], "vmd")
             self.assertEqual(request.options["current_model_root"], "model_ROOT")
-            self.assertEqual(request.options["vmd_mode"], "A")
+            self.assertEqual(request.options["export_strategy"], "preserve_keys")
             self.assertEqual(request.options["frame_range"], (12, 42))
             _emit_witness(
                 "export.pane_selector",
                 "selector",
-                "objectName=exportPaneTabs",
-                "QTest.setCurrentIndex(objectName=exportPaneTabs, motion)",
-                "model and motion panes expose fixed PMX/VMD formats",
+                "objectName=exportCategoryStack",
+                "QTest.setCurrentIndex(objectName=exportCategoryStack, animation)",
+                "model and animation panes expose fixed PMX/VMD formats",
                 pane_spy,
                 tab.pane_tabs,
             )
             _emit_witness(
-                "export.motion_mode",
+                "export.motion_bake",
                 "selector",
-                "objectName=motionMode",
-                "QTest.setCurrentText(objectName=motionMode, A)",
-                "VMD request mode changed to A",
-                mode_spy,
-                tab.mode_combo,
+                "objectName=motionBakeExport",
+                "QTest.setChecked(objectName=motionBakeExport, false)",
+                "unchecked VMD bake preserves eligible imported bone keys",
+                bake_spy,
+                tab.bake_export_check,
             )
             _emit_witness(
                 "export.motion_frame_range",
@@ -191,6 +221,29 @@ class TestExportTabGUI(GuiTestBase):
         finally:
             self._delete_tab(tab)
 
+    def test_operation_cleanup_restores_the_original_page_after_tab_switch(self):
+        """A model operation must not re-enable or disable the switched page."""
+        tab = self._create_visible_tab()
+        try:
+            animation_page = tab._pages[tab.MOTION_PANE]
+            animation_page.validate_button.setEnabled(False)
+            animation_page.export_button.setEnabled(False)
+
+            tab.pane_tabs.setCurrentIndex(0)
+            tab.set_operation_active(True)
+            self.assertFalse(tab._pages[tab.MODEL_PANE].validate_button.isEnabled())
+            self.assertFalse(tab._pages[tab.MODEL_PANE].export_button.isEnabled())
+
+            tab.pane_tabs.setCurrentIndex(1)
+            tab.set_operation_active(False)
+
+            self.assertTrue(tab._pages[tab.MODEL_PANE].validate_button.isEnabled())
+            self.assertTrue(tab._pages[tab.MODEL_PANE].export_button.isEnabled())
+            self.assertFalse(animation_page.validate_button.isEnabled())
+            self.assertFalse(animation_page.export_button.isEnabled())
+        finally:
+            self._delete_tab(tab)
+
     def test_validation_console_renders_catalog_backed_fatal_issue(self):
         """fatal issue の category と監査文言が Console に表示されることを確認する。"""
         translator = UITranslator.instance()
@@ -212,7 +265,7 @@ class TestExportTabGUI(GuiTestBase):
                         observed,
                     ),
                 ),
-                mode="A",
+                mode="preserve_keys",
             )
             evidence = {
                 "fixture": "gui_validation_console",
@@ -291,8 +344,15 @@ class TestExportTabGUI(GuiTestBase):
         translator.set_language("ja")
         tab = self._create_visible_tab()
         try:
-            self.assertEqual(tab.validate_button.text(), "検証")
+            self.assertEqual(tab.validate_button.text(), "モデルを検証")
+            self.assertEqual(tab.export_button.text(), "モデルを書き出す")
             self.assertEqual(tab.apply_scale_check.text(), "スケールを適用")
+            tab.pane_tabs.setCurrentIndex(1)
+            self.assertEqual(
+                tab.bake_export_check.text(),
+                "ベイク書き出し",
+            )
+            tab.pane_tabs.setCurrentIndex(0)
             self.assertEqual(
                 tab._model_form.labelForField(tab.apply_scale_check).text(),
                 "オプション",
@@ -309,13 +369,13 @@ class TestExportTabGUI(GuiTestBase):
                 tab._motion_form.labelForField(tab.frame_end_spin).text(),
                 "終了",
             )
-            self.assertEqual(tab.validation_console.revalidate_button.text(), "再検証")
+            self.assertFalse(hasattr(tab.validation_console, "revalidate_button"))
             self.assertEqual(tab.validation_console.acknowledge_check.text(), "警告を確認済みにする")
-            self.assertEqual(tab.validation_console.save_button.text(), "レポートを保存")
+            self.assertFalse(hasattr(tab.validation_console, "save_button"))
 
             report = validate_vmd_data(
                 VmdData(),
-                VMD_MODE_C,
+                VMD_EXPORT_BAKE_TIMELINE,
                 raw_provenance={
                     "raw_bone_interpolation": [
                         {
@@ -329,17 +389,24 @@ class TestExportTabGUI(GuiTestBase):
             tab.validation_console.set_report(report)
             QApplication.processEvents()
             detail = tab.validation_console.detail_text.toPlainText()
-            self.assertIn("タイトル: VMD Mode C の元アニメーション情報の損失", detail)
+            self.assertIn("タイトル: 現在のタイムライン書き出しによる", detail)
             self.assertIn("影響: 密なベイクにより", detail)
-            self.assertIn("対処方法: 未編集のモーションは Mode A", detail)
+            self.assertIn("対処方法: 未編集のボーンモーションは「読み込んだ未編集ボーンキーを保持」", detail)
 
             translator.set_language("en")
             translate_spy = ActionInvocationSpy.wrap(
                 "ExportTab.retranslateUi", tab.retranslateUi, tab.apply_scale_check
             )
             translate_spy()
-            self.assertEqual(tab.validate_button.text(), "Validate")
+            self.assertEqual(tab.validate_button.text(), "Validate Model")
+            self.assertEqual(tab.export_button.text(), "Export Model")
             self.assertEqual(tab.apply_scale_check.text(), "Apply Scale")
+            tab.pane_tabs.setCurrentIndex(1)
+            self.assertEqual(
+                tab.bake_export_check.text(),
+                "Bake Export",
+            )
+            tab.pane_tabs.setCurrentIndex(0)
             self.assertEqual(
                 tab._model_form.labelForField(tab.apply_scale_check).text(),
                 "Options",
@@ -356,7 +423,7 @@ class TestExportTabGUI(GuiTestBase):
                 tab._motion_form.labelForField(tab.frame_end_spin).text(),
                 "End",
             )
-            self.assertEqual(tab.validation_console.revalidate_button.text(), "Revalidate")
+            self.assertFalse(hasattr(tab.validation_console, "revalidate_button"))
             _emit_witness(
                 "export.apply_scale",
                 "selector",
@@ -366,16 +433,20 @@ class TestExportTabGUI(GuiTestBase):
                 translate_spy,
                 tab.apply_scale_check,
             )
+            tab.pane_tabs.setCurrentIndex(1)
+            self.assertEqual(tab.pane_tabs.tabText(1), "Animation")
+            self.assertEqual(tab.validate_button.text(), "Validate Animation")
+            self.assertEqual(tab.export_button.text(), "Export Animation")
         finally:
             self._delete_tab(tab)
             translator.set_language(previous_language)
 
-    def test_mode_c_warning_is_acknowledged_before_successful_export_route(self):
+    def test_bake_timeline_warning_is_acknowledged_before_successful_export_route(self):
         """Real Maya widgets show the warning and route an explicit ack to export."""
         tab = self._create_visible_tab()
         report = validate_vmd_data(
             VmdData(),
-            VMD_MODE_C,
+            VMD_EXPORT_BAKE_TIMELINE,
             raw_provenance={
                 "raw_bone_interpolation_complete": True,
                 "raw_bone_interpolation": [
@@ -392,13 +463,13 @@ class TestExportTabGUI(GuiTestBase):
         presenter = ExportPresenter(tab, app_state, workflow_service=workflow)
         try:
             tab.pane_tabs.setCurrentIndex(1)
-            tab.validation_console.set_report(report, {"fixture": "mode-c-raw-loss"})
+            tab.validation_console.set_report(report, {"fixture": "bake-timeline-raw-loss"})
             QApplication.processEvents()
 
             console = tab.validation_console
             self.assertTrue(report.requires_warning_ack)
             self.assertTrue(console.acknowledge_check.isEnabled())
-            self.assertIn("[WARNING] VMD_MODE_C_RAW_LOSS", console.issue_list.item(0).text())
+            self.assertIn("[WARNING] VMD_BAKE_TIMELINE_RAW_LOSS", console.issue_list.item(0).text())
             ack_spy = QtSignalInvocationSpy(
                 "ValidationConsole.acknowledge_changed",
                 console.acknowledge_check.toggled,
@@ -445,6 +516,7 @@ class TestExportTabGUI(GuiTestBase):
         """Switching panes restores each report/ack/path without mixing them."""
         tab = self._create_visible_tab()
         try:
+            model_output_edit = tab.output_path_edit
             output_spy = QtSignalInvocationSpy(
                 "ExportTab.output_path_changed",
                 tab.output_path_edit.textChanged,
@@ -454,12 +526,22 @@ class TestExportTabGUI(GuiTestBase):
             output_spy.stop()
             model_report = ExportValidationReport(
                 "pmx",
-                (ExportValidationIssue("VMD_MODE_C_RAW_LOSS", "warning", False, "mode", "model"),),
+                (ExportValidationIssue("VMD_BAKE_TIMELINE_RAW_LOSS", "warning", False, "export_strategy", "model"),),
                 mode="model",
             )
             tab.validation_console.set_report(model_report)
             tab.validation_console.acknowledge_check.setChecked(True)
             self.assertTrue(tab.build_request("model_ROOT").file_path.endswith("model.pmx"))
+            self.assertEqual(tab.output_path_edit.text(), "model.vmd")
+            _emit_witness(
+                "export.output_path",
+                "selector",
+                "objectName=exportOutputPath",
+                "QTest.setText(objectName=exportOutputPath, model.vmd)",
+                "per-pane output paths preserve typed text and coerce only requests",
+                output_spy,
+                model_output_edit,
+            )
 
             tab.pane_tabs.setCurrentIndex(1)
             self.assertIsNone(tab.validation_console.report)
@@ -467,8 +549,8 @@ class TestExportTabGUI(GuiTestBase):
             tab.output_path_edit.setText("motion.pmx")
             motion_report = ExportValidationReport(
                 "vmd",
-                (ExportValidationIssue("VMD_MODE_C_RAW_LOSS", "warning", False, "mode", "motion"),),
-                mode="C",
+                (ExportValidationIssue("VMD_BAKE_TIMELINE_RAW_LOSS", "warning", False, "export_strategy", "motion"),),
+                mode="bake_timeline",
             )
             tab.validation_console.set_report(motion_report)
             tab.validation_console.acknowledge_check.setChecked(True)
@@ -476,23 +558,14 @@ class TestExportTabGUI(GuiTestBase):
             tab.pane_tabs.setCurrentIndex(0)
             self.assertIs(tab.validation_console.report, model_report)
             self.assertTrue(tab.validation_console.warnings_acknowledged)
-            self.assertEqual(tab.output_path_edit.text(), "model.pmx")
+            self.assertEqual(tab.output_path_edit.text(), "model.vmd")
 
             tab.apply_scale_check.setChecked(not tab.apply_scale_check.isChecked())
             self.assertIsNone(tab.validation_console.report)
             tab.pane_tabs.setCurrentIndex(1)
             self.assertIs(tab.validation_console.report, motion_report)
             self.assertTrue(tab.validation_console.warnings_acknowledged)
-            self.assertEqual(tab.output_path_edit.text(), "motion.vmd")
-            _emit_witness(
-                "export.output_path",
-                "selector",
-                "objectName=exportOutputPath",
-                "QTest.setText(objectName=exportOutputPath, model.vmd)",
-                "per-pane output paths normalize to model.pmx and motion.vmd",
-                output_spy,
-                tab.output_path_edit,
-            )
+            self.assertEqual(tab.output_path_edit.text(), "motion.pmx")
         finally:
             self._delete_tab(tab)
 
@@ -502,8 +575,8 @@ class TestExportTabGUI(GuiTestBase):
         try:
             report = ExportValidationReport(
                 "vmd",
-                (ExportValidationIssue("VMD_MODE_C_RAW_LOSS", "warning", False, "mode", "x"),),
-                mode="C",
+                (ExportValidationIssue("VMD_BAKE_TIMELINE_RAW_LOSS", "warning", False, "export_strategy", "x"),),
+                mode="bake_timeline",
             )
             tab.validation_console.set_report(report)
             tab.pane_tabs.setCurrentIndex(1)

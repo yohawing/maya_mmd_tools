@@ -255,7 +255,7 @@ def build_vmd_data(
     # from its package initializer; role and source validation stay usable in
     # a plain Python process as well as mayapy.
     VmdExporter = _vmd_exporter_class()
-    exporter = VmdExporter(native_exporter=None)
+    exporter = VmdExporter()
     return exporter.to_vmd_data(
         {"model_name": model_name, "bone_frames": bone_frames, "ik_show_hide_frames": ik_frames}
     ), roles
@@ -272,7 +272,7 @@ def generate_fixture(
     vmd_data, _roles = build_vmd_data(model_path, source_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     VmdExporter = _vmd_exporter_class()
-    VmdExporter(native_exporter=None).export_vmd_animation(str(output), vmd_data)
+    VmdExporter().export_vmd_animation(str(output), vmd_data)
     return output
 
 

@@ -200,6 +200,19 @@ def _authoring(cmds: Any, registry: Any) -> MayaMaterialAuthoring:
     )
 
 
+def _register_shader(
+    cmds: FakeCmdsAdapter,
+    registry: FakeRegistry,
+    shader: str,
+    shader_type: str,
+    shading_group: str,
+) -> None:
+    """Register one owned shader and its single shading group in the fake scene."""
+    cmds.types.update({shader: shader_type, shading_group: "shadingEngine"})
+    cmds.connections[shader] = [shading_group]
+    registry.members.append(shader)
+
+
 def _material_offset(material_index: int) -> dict[str, Any]:
     return {
         "material_index": material_index,
@@ -246,6 +259,157 @@ def test_create_writes_unicode_attrs_paths_and_registry() -> None:
     shader_calls = [call for call in cmds.calls if call[0] == "shading_node"]
     assert shader_calls[0][2]["name"] == "mmdMaterial_4"
     assert shader_calls[1][2]["name"] == "mmdMaterial_4_File"
+
+
+def test_duplicate_preserves_standard_surface_family_and_is_independent() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    source_shader = "sourceStandard"
+    _register_shader(cmds, registry, source_shader, "standardSurface", "sourceStandardSG")
+    source = replace(
+        _material(),
+        index=0,
+        name="Original",
+        binding_identity=source_shader,
+        texture_path=None,
+        resolved_texture_path=None,
+    )
+    cmds.attrs[(source_shader, ATTR_MMD_MATERIAL_NAME)] = source.name
+    duplicate = replace(source, index=1, name="Original Copy", binding_identity=None)
+
+    bound, shader, shading_group = _authoring(cmds, registry).create_material(
+        "|Model_root",
+        duplicate,
+        narrow=True,
+        source_shader=source_shader,
+    )
+
+    assert shader != source_shader
+    assert cmds.types[shader] == "standardSurface"
+    assert cmds.types[shading_group] == "shadingEngine"
+    assert bound.binding_identity == shader
+    assert cmds.attrs[(shader, ATTR_MMD_MATERIAL_NAME)] == "Original Copy"
+    cmds.set_attr(f"{shader}.{ATTR_MMD_MATERIAL_NAME}", "Edited Copy", type="string")
+    assert cmds.attrs[(source_shader, ATTR_MMD_MATERIAL_NAME)] == source.name
+
+
+@pytest.mark.parametrize(
+    ("shader_type", "effect_path"),
+    (("dx11Shader", "C:/effects/source.fx"), ("GLSLShader", "C:/effects/source.ogsfx")),
+)
+def test_duplicate_preserves_hardware_family_effect_and_independent_texture_graph(
+    shader_type: str,
+    effect_path: str,
+) -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    source_shader = f"source_{shader_type}"
+    source_sg = f"{source_shader}SG"
+    _register_shader(cmds, registry, source_shader, shader_type, source_sg)
+    source_file = f"{source_shader}File"
+    cmds.types[source_file] = "file"
+    cmds.attrs[(source_file, "fileTextureName")] = "C:/textures/source.png"
+    cmds.connections[f"{source_shader}.MainTexture"] = [f"{source_file}.outColor"]
+    cmds.connections[f"{source_file}.outColor"] = [f"{source_shader}.MainTexture"]
+    cmds.attrs[(source_shader, "shader")] = effect_path
+    cmds.attrs[(source_shader, "technique")] = "SourceTechnique"
+    cmds.attrs[(source_shader, "MMDLightColor")] = (0.1, 0.2, 0.3)
+    cmds.attrs[(source_shader, "mmdDoubleSided")] = True
+    if shader_type == "dx11Shader":
+        cmds.attrs[(source_shader, "EdgeColorRGB")] = (0.7, 0.6, 0.5)
+        cmds.attrs[(source_shader, "EdgeColorA")] = 0.4
+
+    source = replace(
+        _material(),
+        index=0,
+        binding_identity=source_shader,
+        texture_path="textures/source.png",
+        resolved_texture_path="C:/textures/source.png",
+    )
+    duplicate = replace(source, index=1, binding_identity=None)
+
+    bound, shader, shading_group = _authoring(cmds, registry).create_material(
+        "|Model_root",
+        duplicate,
+        narrow=True,
+        source_shader=source_shader,
+    )
+
+    assert bound.binding_identity == shader
+    assert cmds.types[shader] == shader_type
+    assert cmds.types[shading_group] == "shadingEngine"
+    assert cmds.attrs[(shader, "shader")] == effect_path
+    assert cmds.attrs[(shader, "technique")] == "SourceTechnique"
+    assert cmds.attrs[(shader, "MMDLightColor")] == (0.1, 0.2, 0.3)
+    assert cmds.attrs[(shader, "mmdDoubleSided")] is True
+    if shader_type == "dx11Shader":
+        assert cmds.attrs[(shader, "EdgeColorRGB")] == (0.7, 0.6, 0.5)
+        assert cmds.attrs[(shader, "EdgeColorA")] == 0.4
+    target_files = [
+        node for node, node_type in cmds.types.items() if node_type == "file" and node != source_file
+    ]
+    assert len(target_files) == 1
+    assert cmds.attrs[(target_files[0], "fileTextureName")] == "C:/textures/source.png"
+    assert cmds.connections[f"{shader}.MainTexture"] == [f"{target_files[0]}.outColor"]
+    assert cmds.connections[f"{source_shader}.MainTexture"] == [f"{source_file}.outColor"]
+
+
+@pytest.mark.parametrize(
+    ("existing_type", "expected_type"),
+    (("dx11Shader", "dx11Shader"), ("GLSLShader", "GLSLShader"), ("standardSurface", "standardSurface")),
+)
+def test_new_material_uses_current_model_shader_family_policy(
+    existing_type: str,
+    expected_type: str,
+) -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    _register_shader(cmds, registry, "policySource", existing_type, "policySourceSG")
+    requested = replace(_material(), index=9, binding_identity=None, texture_path=None, resolved_texture_path=None)
+
+    _bound, shader, _shading_group = _authoring(cmds, registry).create_material(
+        "|Model_root", requested, narrow=True
+    )
+
+    assert cmds.types[shader] == expected_type
+    if expected_type != "standardSurface":
+        assert cmds.attrs[(shader, "technique")] == (
+            "MMDTechnique" if expected_type == "dx11Shader" else "Main"
+        )
+
+
+def test_new_material_mixed_shader_policy_uses_fixed_hardware_first_tie_break() -> None:
+    cmds = FakeCmdsAdapter()
+    registry = FakeRegistry()
+    _register_shader(cmds, registry, "policyDx", "dx11Shader", "policyDxSG")
+    _register_shader(cmds, registry, "policyStock", "standardSurface", "policyStockSG")
+    requested = replace(_material(), index=9, binding_identity=None, texture_path=None, resolved_texture_path=None)
+
+    _bound, shader, _shading_group = _authoring(cmds, registry).create_material(
+        "|Model_root", requested, narrow=True
+    )
+
+    assert cmds.types[shader] == "dx11Shader"
+
+
+def test_hardware_create_failure_rolls_back_without_standard_surface_fallback() -> None:
+    class FailingCmds(FakeCmdsAdapter):
+        def set_attr(self, path: str, *values: Any, **kwargs: Any) -> None:
+            if path.endswith(f".{ATTR_MMD_MATERIAL_NAME}"):
+                raise RuntimeError("material metadata write failed")
+            super().set_attr(path, *values, **kwargs)
+
+    cmds = FailingCmds()
+    registry = FakeRegistry()
+    _register_shader(cmds, registry, "policySource", "dx11Shader", "policySourceSG")
+    requested = replace(_material(), index=9, binding_identity=None, texture_path=None, resolved_texture_path=None)
+
+    with pytest.raises(MayaMaterialAuthoringError, match="failed to create material"):
+        _authoring(cmds, registry).create_material("|Model_root", requested, narrow=True)
+
+    assert registry.members == ["policySource"]
+    assert [node_type for node_type in cmds.types.values()].count("standardSurface") == 0
+    assert all(not node.startswith("mmdMaterial_9") for node in cmds.types)
 
 
 def test_texture_index_preserves_slot_original_provenance_when_shader_path_is_resolved() -> None:
@@ -673,11 +837,11 @@ def test_apply_material_spec_change_delete_preserves_mesh_assignment_and_registr
         types={
             "|Model_root": "transform",
             "shaderA": "standardSurface",
-            "shaderB": "standardSurface",
+            "shaderB": "dx11Shader",
             old_sg: "shadingEngine",
             replacement_sg: "shadingEngine",
         },
-        connections={"shaderA": [old_sg]},
+        connections={"shaderA": [old_sg], "shaderB": [replacement_sg]},
         members={old_sg: [mesh]},
     )
     registry = FakeRegistry(members=["shaderA", "shaderB"])
@@ -687,7 +851,7 @@ def test_apply_material_spec_change_delete_preserves_mesh_assignment_and_registr
     new_spec = _authoring_spec((replace(material_b, index=0),))
 
     _authoring(cmds, registry).apply_material_spec_change(
-        "|Model_root", old_spec, new_spec, replacement_sg
+        "|Model_root", old_spec, new_spec, "shaderB"
     )
 
     assert cmds.attrs[("shaderB", ATTR_MMD_MATERIAL_INDEX)] == 0
@@ -713,7 +877,7 @@ def test_apply_material_spec_change_notifies_after_first_maya_mutation() -> None
             old_sg: "shadingEngine",
             replacement_sg: "shadingEngine",
         },
-        connections={"shaderA": [old_sg]},
+        connections={"shaderA": [old_sg], "shaderB": [replacement_sg]},
         members={old_sg: [mesh]},
     )
     registry = FakeRegistry(members=["shaderA", "shaderB"])
@@ -733,7 +897,7 @@ def test_apply_material_spec_change_notifies_after_first_maya_mutation() -> None
         mutation_boundary=boundary,
     )
     adapter.apply_material_spec_change(
-        "|Model_root", old_spec, new_spec, replacement_sg
+        "|Model_root", old_spec, new_spec, "shaderB"
     )
 
     boundary_index = next(index for index, call in enumerate(cmds.calls) if call[0] == "mutation-boundary")

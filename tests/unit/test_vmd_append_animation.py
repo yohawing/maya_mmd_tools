@@ -9,6 +9,9 @@ import maya.cmds as cmds
 
 from mmd_tools.converters.vmd_append_decomposition import stable_long_dag_path
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.converters.vmd_redirected_authoring_proxy import (
+    resolve_redirected_authoring_proxy_authority,
+)
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from tests.common.maya_test_base import MayaTestBase
 
@@ -82,7 +85,12 @@ class TestVmdAppendAnimation(MayaTestBase):
         ):
             self.assertTrue(self.converter._convert_bone_animation(frames))
 
-        self.assertIn(3.0, cmds.keyframe(f"{append_node}.baseRotateX", query=True, timeChange=True) or [])
+        proxy_route, authority, claimed = resolve_redirected_authoring_proxy_authority(joint)
+        self.assertTrue(claimed)
+        self.assertEqual(authority["rotateX"], (append_node, "baseRotateX"))
+        proxy, proxy_attr = proxy_route["rotateX"]
+        self.assertIn(3.0, cmds.keyframe(f"{proxy}.{proxy_attr}", query=True, timeChange=True) or [])
+        self.assertIsNone(cmds.keyframe(f"{append_node}.baseRotateX", query=True, timeChange=True))
         self.assertIsNone(cmds.keyframe(f"{joint}.rotateX", query=True, timeChange=True))
 
         cmds.delete(joint, append_node)
@@ -117,7 +125,12 @@ class TestVmdAppendAnimation(MayaTestBase):
 
         self.assertTrue(self.converter._convert_bone_animation(frames))
 
-        self.assertIn(3.0, cmds.keyframe(f"{append_node}.baseRotateX", query=True, timeChange=True) or [])
+        proxy_route, authority, claimed = resolve_redirected_authoring_proxy_authority(long_target_b)
+        self.assertTrue(claimed)
+        self.assertEqual(authority["rotateX"], (append_node, "baseRotateX"))
+        proxy, proxy_attr = proxy_route["rotateX"]
+        self.assertIn(3.0, cmds.keyframe(f"{proxy}.{proxy_attr}", query=True, timeChange=True) or [])
+        self.assertIsNone(cmds.keyframe(f"{append_node}.baseRotateX", query=True, timeChange=True))
         self.assertIsNone(cmds.keyframe(f"{long_target_b}.rotateX", query=True, timeChange=True))
         self.assertIsNone(cmds.keyframe(f"{target_a}.rotateX", query=True, timeChange=True))
         self.assertTrue(cmds.objExists(source_a))
@@ -153,7 +166,12 @@ class TestVmdAppendAnimation(MayaTestBase):
             self.assertTrue(self.converter._convert_bone_animation(frames))
 
         self.assertFalse(cmds.listConnections(f"{joint}.rotateX", s=True, d=False, p=True) or [])
-        self.assertIn(3.0, cmds.keyframe(f"{append_node}.baseRotateX", query=True, timeChange=True) or [])
+        proxy_route, authority, claimed = resolve_redirected_authoring_proxy_authority(joint)
+        self.assertTrue(claimed)
+        self.assertEqual(authority["rotateX"], (append_node, "baseRotateX"))
+        proxy, proxy_attr = proxy_route["rotateX"]
+        self.assertIn(3.0, cmds.keyframe(f"{proxy}.{proxy_attr}", query=True, timeChange=True) or [])
+        self.assertIsNone(cmds.keyframe(f"{append_node}.baseRotateX", query=True, timeChange=True))
 
         cmds.delete(joint, append_node)
 

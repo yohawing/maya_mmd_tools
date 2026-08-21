@@ -2,7 +2,7 @@
 
 The scene collector remains the geometry and provenance oracle.  This bridge
 only overlays semantic model, bone, material, and morph fields while retaining
-writer-owned geometry, texture indices, display frames, physics, SDEF, and
+writer-owned geometry, texture indices, display frames, physics, and
 other raw payload data.
 """
 

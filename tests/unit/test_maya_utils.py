@@ -489,9 +489,11 @@ class TestMayaUtils(MayaTestBase):
 
         # 検索
         mmd_models = SceneModelService(cmds_module=cmds).list_mmd_models()
+        model1_long = (cmds.ls(model1, long=True) or [model1])[0]
+        model2_long = (cmds.ls(model2, long=True) or [model2])[0]
 
-        self.assertIn(model1, mmd_models)
-        self.assertIn(model2, mmd_models)
+        self.assertIn(model1_long, mmd_models)
+        self.assertIn(model2_long, mmd_models)
         self.assertNotIn(not_mmd, mmd_models)
         self.assertEqual(len(mmd_models), 2)
 

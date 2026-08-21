@@ -15,6 +15,7 @@ from mmd_tools.core.material_read_projection import (
     MaterialTextureBinding,
     MaterialTextureProvenance,
     MaterialTextureSlot,
+    normalize_material_list_projection,
 )
 from mmd_tools.core.model_authoring_spec import MmdMaterialSpec
 
@@ -43,6 +44,15 @@ def test_list_projection_is_frozen_hashable_and_routes_by_semantic_identity():
     assert projection.item_for_binding("shaderA") is first
     assert first.assignment.label == "meshes=1, faces=24"
     assert len({projection, projection}) == 1
+
+
+def test_current_generation_list_projection_normalization_is_constant_time_fast_path():
+    projection = MaterialListProjection("|model", (_item(0, "shaderA"),))
+
+    normalized, rehydrated = normalize_material_list_projection(projection)
+
+    assert normalized is projection
+    assert rehydrated is False
     with pytest.raises(FrozenInstanceError):
         projection.root_identity = "|other"
 

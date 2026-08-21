@@ -256,29 +256,13 @@ class TestExportModelValidation(unittest.TestCase):
         pmx_edge_flag["vertices"][0]["edge_flag"] = 0x100
         self.assertTrue(validate_model_data(pmx_edge_flag, "pmx").valid)
 
-        sdef_model = _valid_model_data()
-        sdef_model["vertices"][0].update(
-            {
-                "weight_transform_type": 3,
-                "bone_indices": [0, 0],
-                "bone_weights": [0.75],
-                "sdef_c": [0.1, 0.2, 0.3],
-                "sdef_r0": [0.0, 0.1, 0.0],
-                "sdef_r1": [0.0, 0.0, 0.1],
-            }
-        )
-        report = validate_model_data(sdef_model, "pmx")
-        self.assertEqual(
-            [(issue.code, issue.path) for issue in report.issues],
-            [("PMX_VERTEX_SDEF_UNSUPPORTED", "vertices[0].weight_transform_type")],
-        )
-
     def test_pmx_vertex_payloads_not_retained_by_writer_are_blocking(self):
         cases = (
             ("additional_uv", [[0.25, 0.5, 0.75, 1.0]], "PMX_VERTEX_ADDITIONAL_UV_UNSUPPORTED"),
             ("sdef_c", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
             ("sdef_r0", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
             ("sdef_r1", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
+            ("weight_transform_type", 3, "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED"),
             ("weight_transform_type", 4, "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED"),
             ("weight_transform_type", "0", "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED"),
         )
@@ -342,7 +326,7 @@ class TestExportModelValidation(unittest.TestCase):
             "PMX_VERTEX_SEMANTIC_MISSING",
         )
 
-    def test_pmx_vertex_unsupported_payload_does_not_call_writer(self):
+    def test_pmx_vertex_incomplete_sdef_payload_does_not_call_writer(self):
         exporter = _FakeExporter()
         model_data = _valid_model_data()
         model_data["vertices"][0].update(
@@ -352,7 +336,6 @@ class TestExportModelValidation(unittest.TestCase):
                 "bone_weights": [0.75],
                 "sdef_c": [0.0, 0.0, 0.0],
                 "sdef_r0": [0.0, 0.0, 0.0],
-                "sdef_r1": [0.0, 0.0, 0.0],
             }
         )
 

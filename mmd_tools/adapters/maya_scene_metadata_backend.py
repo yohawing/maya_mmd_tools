@@ -16,7 +16,6 @@ import re
 import struct
 from copy import deepcopy
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from mmd_tools.adapters.maya_material_shader_route import (
@@ -40,6 +39,16 @@ from mmd_tools.adapters.maya_full_metadata_transaction import (
     MayaFullMetadataTransaction,
     MayaFullMetadataTransactionContext,
 )
+from mmd_tools.adapters.maya_info_metadata_transaction import (
+    InfoMetadataSession,
+    MayaInfoMetadataTransaction,
+    MayaInfoMetadataTransactionContext,
+)
+from mmd_tools.adapters.maya_morph_preview_transaction import (
+    MayaMorphPreviewTransaction,
+    MayaMorphPreviewTransactionContext,
+    MorphPreviewSession,
+)
 from mmd_tools.adapters.maya_metadata_read_support import MayaMetadataReadSupport
 from mmd_tools.adapters.maya_model_metadata_repository import (
     MayaModelMetadataRepository,
@@ -48,10 +57,7 @@ from mmd_tools.adapters.maya_morph_metadata_repository import (
     MayaMorphMetadataRepository,
 )
 from mmd_tools.adapters.native_authoring_command import (
-    NativeAuthoringCommandError,
     NativeAuthoringCommandGateway,
-    NativeCommandProtocolError,
-    NativeCommandUnavailable,
 )
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter, SceneMetadataError
 from mmd_tools.core.constants import (
@@ -156,24 +162,6 @@ class MayaSceneMetadataError(SceneMetadataError):
     """Raised when Maya metadata cannot be normalized without loss."""
 
 
-@dataclass(frozen=True)
-class MorphPreviewSession:
-    """Opaque event-spanning preview identity with a fixed write-set."""
-
-    root: str
-    targets: tuple[str, ...]
-    token: object
-
-
-@dataclass(frozen=True)
-class InfoMetadataSession:
-    """Opaque Info-field edit identity fixed at focus-in."""
-
-    root: str
-    attr: str
-    token: object
-
-
 class MayaSceneMetadataBackend:
     """Read model, material, PMX bone, and morph metadata from an adapter."""
 
@@ -186,145 +174,6 @@ class MayaSceneMetadataBackend:
             ATTR_MMD_COMMENT_EN,
         )
     )
-
-    def begin_info_metadata_edit(
-        self, model_root: str, attr: str
-    ) -> InfoMetadataSession:
-        """Capture one Info string and open its focus-spanning undo chunk."""
-        if self._write_transaction is not None:
-            raise MayaSceneMetadataError("a metadata write transaction is already active")
-        if attr not in self._INFO_STRING_ATTRS:
-            raise MayaSceneMetadataError(f"unsupported Info metadata attribute: {attr!r}")
-        names = self._call_adapter("ls", model_root, long=True) or ()
-        if isinstance(names, (str, bytes, bytearray)) or len(names) != 1:
-            raise MayaSceneMetadataError(
-                f"Info model root has no unique canonical identity: {model_root!r}"
-            )
-        root = names[0]
-        self._require_root(root)
-        if not self._has_attr(root, attr):
-            raise MayaSceneMetadataError(f"missing Info metadata attribute: {root}.{attr}")
-        if bool(self._call_adapter("get_attr", f"{root}.{attr}", lock=True)):
-            raise MayaSceneMetadataError(f"locked Info metadata attribute: {root}.{attr}")
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for Info metadata edits")
-        original = self._info_string_value(
-            self._call_adapter("get_attr", f"{root}.{attr}"), root, attr
-        )
-        token = object()
-        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Info Edit")
-        self._write_transaction = {
-            "root": root,
-            "kind": "info_metadata",
-            "attr": attr,
-            "token": token,
-            "original_value": original,
-            "target_value": original,
-            "chunk_open": True,
-            "mutated": False,
-        }
-        return InfoMetadataSession(root=root, attr=attr, token=token)
-
-    def apply_info_metadata_edit(
-        self, model_root: str, session: InfoMetadataSession, value: str
-    ) -> bool:
-        """Write and exactly read back one fixed Info string target."""
-        transaction = self._active_info_metadata_edit(model_root, session)
-        expected = self._info_string_value(value, session.root, session.attr)
-        try:
-            self._call_adapter(
-                "set_attr", f"{session.root}.{session.attr}", expected, type="string"
-            )
-        except Exception:
-            # A rejected first setAttr leaves an empty chunk.  Probe only the
-            # fixed plug so rollback never undoes an unrelated prior action.
-            actual = self._info_string_value(
-                self._call_adapter("get_attr", f"{session.root}.{session.attr}"),
-                session.root,
-                session.attr,
-            )
-            transaction["mutated"] = bool(transaction["mutated"]) or (
-                actual != transaction["original_value"]
-            )
-            raise
-        transaction["mutated"] = True
-        actual = self._info_string_value(
-            self._call_adapter("get_attr", f"{session.root}.{session.attr}"),
-            session.root,
-            session.attr,
-        )
-        if actual != expected:
-            raise MayaSceneMetadataError(
-                f"Info metadata readback mismatch for {session.root}.{session.attr}"
-            )
-        transaction["target_value"] = expected
-        return expected != transaction["original_value"]
-
-    def commit_info_metadata_edit(
-        self, model_root: str, session: InfoMetadataSession
-    ) -> bool:
-        """Verify the final string and close the session's undo chunk."""
-        transaction = self._active_info_metadata_edit(model_root, session)
-        actual = self._info_string_value(
-            self._call_adapter("get_attr", f"{session.root}.{session.attr}"),
-            session.root,
-            session.attr,
-        )
-        if actual != transaction["target_value"]:
-            raise MayaSceneMetadataError(
-                f"Info metadata commit readback mismatch for {session.root}.{session.attr}"
-            )
-        self._call_adapter("undo_info", closeChunk=True)
-        transaction["chunk_open"] = False
-        self._write_transaction = None
-        return transaction["target_value"] != transaction["original_value"]
-
-    def rollback_info_metadata_edit(
-        self, model_root: str, session: InfoMetadataSession
-    ) -> None:
-        """Close then undo one mutated edit and verify its exact preimage."""
-        transaction = self._active_info_metadata_edit(model_root, session)
-        if transaction["chunk_open"]:
-            self._call_adapter("undo_info", closeChunk=True)
-            transaction["chunk_open"] = False
-        if transaction["mutated"]:
-            self._call_adapter("undo")
-            transaction["mutated"] = False
-        self._write_transaction = None
-        actual = self._info_string_value(
-            self._call_adapter("get_attr", f"{session.root}.{session.attr}"),
-            session.root,
-            session.attr,
-        )
-        if actual != transaction["original_value"]:
-            error = MayaSceneMetadataError(
-                f"Info metadata rollback preimage mismatch for {session.root}.{session.attr}"
-            )
-            error.rollback_pending = False
-            raise error
-
-    def _active_info_metadata_edit(
-        self, model_root: str, session: InfoMetadataSession
-    ) -> dict[str, Any]:
-        if not isinstance(session, InfoMetadataSession):
-            raise MayaSceneMetadataError("invalid Info metadata session")
-        transaction = self._active_transaction(model_root)
-        if (
-            transaction.get("kind") != "info_metadata"
-            or transaction.get("token") is not session.token
-            or transaction.get("root") != session.root
-            or transaction.get("attr") != session.attr
-        ):
-            raise MayaSceneMetadataError("Info metadata session identity mismatch")
-        return transaction
-
-    @staticmethod
-    def _info_string_value(value: Any, root: str, attr: str) -> str:
-        if not isinstance(value, str):
-            raise MayaSceneMetadataError(
-                f"Info metadata must be a string for {root}.{attr}"
-            )
-        return value
 
     def inspect_morph_topology(self, model_root: str) -> MorphTopologyInspection:
         """Inspect derived controller topology without changing the scene."""
@@ -498,6 +347,35 @@ class MayaSceneMetadataBackend:
             == "native"
         )
         self._write_transaction: dict[str, Any] | None = None
+        self._info_metadata_transaction = MayaInfoMetadataTransaction(
+            MayaInfoMetadataTransactionContext(
+                error_factory=MayaSceneMetadataError,
+                string_attributes=self._INFO_STRING_ATTRS,
+                canonical_identity=self._material_identity,
+                require_root=self._require_root,
+                call_adapter=self._call_adapter,
+                has_attribute=self._has_attr,
+                get_active_transaction=self._get_write_transaction,
+                set_active_transaction=self._set_write_transaction,
+                active_transaction=self._active_transaction,
+            )
+        )
+        self._morph_preview_transaction = MayaMorphPreviewTransaction(
+            MayaMorphPreviewTransactionContext(
+                error_factory=MayaSceneMetadataError,
+                canonical_identity=self._material_identity,
+                require_root=self._require_root,
+                call_adapter=self._call_adapter,
+                native_authoring=self._native_authoring,
+                use_native_weights=lambda: self._use_native_morph_weights,
+                has_native_command_surface=lambda: hasattr(
+                    self._cmds, "command_exists"
+                ),
+                get_active_transaction=self._get_write_transaction,
+                set_active_transaction=self._set_write_transaction,
+                active_transaction=self._active_transaction,
+            )
+        )
         self._full_metadata_transaction = MayaFullMetadataTransaction(
             MayaFullMetadataTransactionContext(
                 error_factory=MayaSceneMetadataError,
@@ -590,6 +468,27 @@ class MayaSceneMetadataBackend:
             legacy_member_reader=self._legacy_material_members,
             material_reader=self._read_material,
         )
+
+    def begin_info_metadata_edit(
+        self, model_root: str, attr: str
+    ) -> InfoMetadataSession:
+        """Delegate the focus-spanning Info edit to its narrow authority."""
+        return self._info_metadata_transaction.begin(model_root, attr)
+
+    def apply_info_metadata_edit(
+        self, model_root: str, session: InfoMetadataSession, value: str
+    ) -> bool:
+        return self._info_metadata_transaction.apply(model_root, session, value)
+
+    def commit_info_metadata_edit(
+        self, model_root: str, session: InfoMetadataSession
+    ) -> bool:
+        return self._info_metadata_transaction.commit(model_root, session)
+
+    def rollback_info_metadata_edit(
+        self, model_root: str, session: InfoMetadataSession
+    ) -> None:
+        self._info_metadata_transaction.rollback(model_root, session)
 
     def begin_write(self, model_root: str) -> None:
         """Capture the current spec and open one Maya undo chunk."""
@@ -970,11 +869,20 @@ class MayaSceneMetadataBackend:
             self._node_type(shader),
             has_main_texture=bool(old_material.resolved_texture_path or old_material.texture_path),
         )
+        diffuse_target = self._resolve_material_diffuse_target(shader, diffuse_route)
+        diffuse_alpha_target = self._resolve_material_diffuse_alpha_target(
+            shader,
+            diffuse_route,
+            diffuse_target,
+        )
         if diffuse_route is not None:
-            original["viewport_diffuse"] = self._required_vector(
-                shader, diffuse_route.diffuse_attribute
-            )
+            original["viewport_diffuse"] = self._read_material_diffuse_target(diffuse_target)
             expected_old["viewport_diffuse"] = self._maya_float3(old_material.diffuse[:3])
+            if diffuse_alpha_target is not None:
+                original["viewport_diffuse_alpha"] = self._read_material_scalar_target(
+                    diffuse_alpha_target
+                )
+                expected_old["viewport_diffuse_alpha"] = old_material.diffuse[3]
         if not self._material_value_attrs_equal(original, expected_old):
             raise MayaSceneMetadataError(
                 f"material value patch preimage mismatch for {shader!r}: "
@@ -993,6 +901,8 @@ class MayaSceneMetadataBackend:
             "original_values": original,
             "target_values": self._material_value_attrs(new_material),
             "diffuse_route": diffuse_route,
+            "diffuse_target": diffuse_target,
+            "diffuse_alpha_target": diffuse_alpha_target,
             "target": None,
             "chunk_open": True,
             "outline_original": outline_original,
@@ -1136,38 +1046,10 @@ class MayaSceneMetadataBackend:
         *,
         chunk_name: str = "MMD Morph Preview",
     ) -> MorphPreviewSession:
-        """Capture a fixed preview write-set and open one Maya undo chunk."""
-        if self._write_transaction is not None:
-            raise MayaSceneMetadataError("a metadata write transaction is already active")
-        root = self._material_identity(model_root)
-        self._require_root(root)
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for morph preview")
-        canonical = tuple(self._canonical_preview_plug(plug) for plug in target_plugs)
-        if not canonical:
-            raise MayaSceneMetadataError("morph preview requires at least one target plug")
-        if len(set(canonical)) != len(canonical):
-            raise MayaSceneMetadataError("morph preview target plugs must be unique")
-        original: dict[str, float] = {}
-        for plug in canonical:
-            if not self._call_adapter("object_exists", plug):
-                raise MayaSceneMetadataError(f"morph preview target does not exist: {plug!r}")
-            if bool(self._call_adapter("get_attr", plug, lock=True)):
-                raise MayaSceneMetadataError(f"morph preview target is locked: {plug!r}")
-            original[plug] = self._preview_weight(self._call_adapter("get_attr", plug), plug)
-        token = object()
-        self._call_adapter("undo_info", openChunk=True, chunkName=chunk_name)
-        self._write_transaction = {
-            "root": root,
-            "kind": "morph_preview",
-            "token": token,
-            "targets": canonical,
-            "original_values": original,
-            "target_values": dict(original),
-            "chunk_open": True,
-            "mutated": False,
-        }
-        return MorphPreviewSession(root=root, targets=canonical, token=token)
+        """Delegate fixed-target preview ownership to its narrow authority."""
+        return self._morph_preview_transaction.begin(
+            model_root, target_plugs, chunk_name=chunk_name
+        )
 
     def apply_morph_preview(
         self,
@@ -1175,139 +1057,19 @@ class MayaSceneMetadataBackend:
         session: MorphPreviewSession,
         target_values: Sequence[float],
     ) -> int:
-        """Write only the session's fixed targets and verify their exact values."""
-        transaction = self._active_morph_preview(model_root, session)
-        if len(target_values) != len(session.targets):
-            raise MayaSceneMetadataError("morph preview update value count mismatch")
-        expected = {
-            plug: self._preview_weight(value, plug)
-            for plug, value in zip(session.targets, target_values)
-        }
-        native_updates = [
-            {"plug": plug, "value": value} for plug, value in expected.items()
-        ]
-        use_python = not self._use_native_morph_weights
-        if self._use_native_morph_weights:
-            try:
-                if not hasattr(self._cmds, "command_exists"):
-                    raise NativeCommandUnavailable("adapter has no native command surface")
-                result = self._native_authoring.set_morph_weights(native_updates)
-                canonical_values = result["values"]
-                expected = {
-                    plug: self._preview_weight(value, plug)
-                    for plug, value in zip(session.targets, canonical_values)
-                }
-                transaction["mutated"] = True
-            except NativeCommandUnavailable:
-                use_python = True
-            except NativeCommandProtocolError:
-                # Maya returned from a registered command, but its envelope
-                # cannot prove whether the no-op-looking command was queued.
-                # Undo it even when all observed values equal the preimage.
-                transaction["mutated"] = True
-                raise
-            except NativeAuthoringCommandError:
-                # A transport/protocol failure can occur after Maya executed
-                # the command. Preserve enough state for the coordinator's
-                # rollback to undo the whole event-spanning preview safely.
-                for plug, original in transaction["original_values"].items():
-                    try:
-                        actual = self._preview_weight(
-                            self._call_adapter("get_attr", plug), plug
-                        )
-                    except Exception:
-                        transaction["mutated"] = True
-                        break
-                    if not self._preview_weights_equal(actual, original):
-                        transaction["mutated"] = True
-                        break
-                raise
-        if use_python:
-            for plug, value in expected.items():
-                self._call_adapter("set_attr", plug, value)
-                transaction["mutated"] = True
-                actual = self._preview_weight(self._call_adapter("get_attr", plug), plug)
-                if not self._preview_weights_equal(actual, value):
-                    raise MayaSceneMetadataError(
-                        f"morph preview readback mismatch for {plug!r}: expected {value!r}, got {actual!r}"
-                    )
-        transaction["target_values"] = expected
-        return len(expected)
+        return self._morph_preview_transaction.apply(
+            model_root, session, target_values
+        )
 
-    def commit_morph_preview(self, model_root: str, session: MorphPreviewSession) -> int:
-        """Close a preview chunk only after exact final-target readback."""
-        transaction = self._active_morph_preview(model_root, session)
-        for plug, expected in transaction["target_values"].items():
-            actual = self._preview_weight(self._call_adapter("get_attr", plug), plug)
-            if not self._preview_weights_equal(actual, expected):
-                raise MayaSceneMetadataError(
-                    f"morph preview commit readback mismatch for {plug!r}"
-                )
-        self._call_adapter("undo_info", closeChunk=True)
-        transaction["chunk_open"] = False
-        self._write_transaction = None
-        return len(transaction["targets"])
-
-    def rollback_morph_preview(self, model_root: str, session: MorphPreviewSession) -> None:
-        """Close and undo one mutated preview chunk, then verify its preimage."""
-        transaction = self._active_morph_preview(model_root, session)
-        try:
-            if transaction["chunk_open"]:
-                self._call_adapter("undo_info", closeChunk=True)
-                transaction["chunk_open"] = False
-            if transaction["mutated"]:
-                self._call_adapter("undo")
-        finally:
-            self._write_transaction = None
-        for plug, expected in transaction["original_values"].items():
-            actual = self._preview_weight(self._call_adapter("get_attr", plug), plug)
-            if not self._preview_weights_equal(actual, expected):
-                raise MayaSceneMetadataError(
-                    f"morph preview rollback preimage mismatch for {plug!r}"
-                )
-
-    def _active_morph_preview(
+    def commit_morph_preview(
         self, model_root: str, session: MorphPreviewSession
-    ) -> dict[str, Any]:
-        if not isinstance(session, MorphPreviewSession):
-            raise MayaSceneMetadataError("invalid morph preview session")
-        transaction = self._active_transaction(model_root)
-        if (
-            transaction.get("kind") != "morph_preview"
-            or transaction.get("token") is not session.token
-            or transaction.get("root") != session.root
-            or transaction.get("targets") != session.targets
-        ):
-            raise MayaSceneMetadataError("morph preview session identity mismatch")
-        return transaction
+    ) -> int:
+        return self._morph_preview_transaction.commit(model_root, session)
 
-    def _canonical_preview_plug(self, plug: Any) -> str:
-        if not isinstance(plug, str) or "." not in plug:
-            raise MayaSceneMetadataError(f"invalid morph preview target plug: {plug!r}")
-        node, attr = plug.rsplit(".", 1)
-        names = self._call_adapter("ls", node, long=True) or ()
-        if isinstance(names, (str, bytes, bytearray)) or len(names) != 1:
-            raise MayaSceneMetadataError(
-                f"morph preview node has no unique canonical identity: {node!r}"
-            )
-        canonical = names[0]
-        if not isinstance(canonical, str) or not canonical or not attr:
-            raise MayaSceneMetadataError(f"invalid morph preview target plug: {plug!r}")
-        return f"{canonical}.{attr}"
-
-    @staticmethod
-    def _preview_weight(value: Any, plug: str) -> float:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise MayaSceneMetadataError(f"morph preview weight must be numeric for {plug!r}")
-        result = float(value)
-        if not math.isfinite(result):
-            raise MayaSceneMetadataError(f"morph preview weight must be finite for {plug!r}")
-        return result
-
-    @staticmethod
-    def _preview_weights_equal(actual: float, expected: float) -> bool:
-        """Accept only the bounded round-trip error of Maya float attributes."""
-        return math.isclose(actual, expected, rel_tol=1e-7, abs_tol=1e-7)
+    def rollback_morph_preview(
+        self, model_root: str, session: MorphPreviewSession
+    ) -> None:
+        self._morph_preview_transaction.rollback(model_root, session)
 
     def commit_morph_value_patch(
         self,
@@ -1438,10 +1200,16 @@ class MayaSceneMetadataBackend:
         expected = dict(transaction["target_values"])
         diffuse_route = transaction.get("diffuse_route")
         if isinstance(diffuse_route, MayaMaterialShaderRoute):
-            actual["viewport_diffuse"] = self._required_vector(
-                shader, diffuse_route.diffuse_attribute
+            actual["viewport_diffuse"] = self._read_material_diffuse_target(
+                transaction["diffuse_target"]
             )
             expected["viewport_diffuse"] = self._maya_float3(material.diffuse[:3])
+            diffuse_alpha_target = transaction.get("diffuse_alpha_target")
+            if diffuse_alpha_target is not None:
+                actual["viewport_diffuse_alpha"] = self._read_material_scalar_target(
+                    diffuse_alpha_target
+                )
+                expected["viewport_diffuse_alpha"] = material.diffuse[3]
         if not self._material_value_attrs_equal(actual, expected):
             raise MayaSceneMetadataError(
                 f"material value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
@@ -1512,6 +1280,7 @@ class MayaSceneMetadataBackend:
             "edge_color",
             "edge_size",
             "viewport_diffuse",
+            "viewport_diffuse_alpha",
         }
         for field in actual:
             actual_value = actual[field]
@@ -2219,9 +1988,14 @@ class MayaSceneMetadataBackend:
             actual = self._read_material_value_attrs(transaction["binding"])
             diffuse_route = transaction.get("diffuse_route")
             if isinstance(diffuse_route, MayaMaterialShaderRoute):
-                actual["viewport_diffuse"] = self._required_vector(
-                    transaction["binding"], diffuse_route.diffuse_attribute
+                actual["viewport_diffuse"] = self._read_material_diffuse_target(
+                    transaction["diffuse_target"]
                 )
+                diffuse_alpha_target = transaction.get("diffuse_alpha_target")
+                if diffuse_alpha_target is not None:
+                    actual["viewport_diffuse_alpha"] = self._read_material_scalar_target(
+                        diffuse_alpha_target
+                    )
             if not self._material_value_attrs_equal(
                 actual, transaction["original_values"]
             ):
@@ -2286,9 +2060,14 @@ class MayaSceneMetadataBackend:
         diffuse_route = transaction.get("diffuse_route")
         expected = transaction["original_values"]
         if isinstance(diffuse_route, MayaMaterialShaderRoute):
-            actual["viewport_diffuse"] = self._required_vector(
-                transaction["binding"], diffuse_route.diffuse_attribute
+            actual["viewport_diffuse"] = self._read_material_diffuse_target(
+                transaction["diffuse_target"]
             )
+            diffuse_alpha_target = transaction.get("diffuse_alpha_target")
+            if diffuse_alpha_target is not None:
+                actual["viewport_diffuse_alpha"] = self._read_material_scalar_target(
+                    diffuse_alpha_target
+                )
         if not self._material_value_attrs_equal(actual, expected):
             return True
         outline_original = transaction.get("outline_original")
@@ -2574,6 +2353,133 @@ class MayaSceneMetadataBackend:
 
     def _material_identity(self, node: Any) -> str:
         return self._read_support.canonical_identity(node)
+
+    def _resolve_material_diffuse_target(
+        self,
+        shader: str,
+        route: MayaMaterialShaderRoute | None,
+    ) -> str | None:
+        """Resolve the writable diffuse authority for a selected shader.
+
+        A material-morph evaluator owns the final hardware shader output. In
+        that topology the narrow Material transaction must fingerprint and
+        update the evaluator's ``baseDiffuse`` input instead of the connected
+        ``DiffuseColorRGB`` output. Unsupported or ambiguous connections fail
+        closed before the undo chunk opens.
+        """
+
+        if route is None:
+            return None
+        destination = f"{shader}.{route.diffuse_attribute}"
+        sources = self._list_connections(
+            destination,
+            source=True,
+            destination=False,
+            plugs=True,
+        )
+        if not sources:
+            return destination
+        if len(sources) != 1 or not isinstance(sources[0], str) or "." not in sources[0]:
+            raise MayaSceneMetadataError(
+                f"material diffuse target has an ambiguous source: {destination!r}"
+            )
+        source_node, source_attr = sources[0].rsplit(".", 1)
+        if (
+            self._node_type(source_node) != "mmdMaterialMorphEval"
+            or source_attr != "outputDiffuse"
+        ):
+            raise MayaSceneMetadataError(
+                f"material diffuse target is driven by an unsupported source: {sources[0]!r}"
+            )
+        base = f"{source_node}.baseDiffuse"
+        if not self._has_attr(source_node, "baseDiffuse"):
+            raise MayaSceneMetadataError(
+                f"material morph evaluator is missing writable baseDiffuse: {source_node!r}"
+            )
+        if self._list_connections(
+            base,
+            source=True,
+            destination=False,
+            plugs=True,
+        ):
+            raise MayaSceneMetadataError(
+                f"material morph evaluator baseDiffuse is externally driven: {base!r}"
+            )
+        if bool(self._call_adapter("get_attr", base, lock=True)):
+            raise MayaSceneMetadataError(
+                f"material morph evaluator baseDiffuse is locked: {base!r}"
+            )
+        return base
+
+    def _resolve_material_diffuse_alpha_target(
+        self,
+        shader: str,
+        route: MayaMaterialShaderRoute | None,
+        diffuse_target: str | None,
+    ) -> str | None:
+        """Resolve the split hardware diffuse-alpha authority, if present."""
+
+        if route is None or route.diffuse_alpha_attribute is None:
+            return None
+        if not self._has_attr(shader, route.diffuse_alpha_attribute):
+            return None
+        destination = f"{shader}.{route.diffuse_alpha_attribute}"
+        sources = self._list_connections(
+            destination,
+            source=True,
+            destination=False,
+            plugs=True,
+        )
+        if not sources:
+            return destination
+        if len(sources) != 1 or not isinstance(sources[0], str) or "." not in sources[0]:
+            raise MayaSceneMetadataError(
+                f"material diffuse alpha target has an ambiguous source: {destination!r}"
+            )
+        source_node, source_attr = sources[0].rsplit(".", 1)
+        if (
+            self._node_type(source_node) != "mmdMaterialMorphEval"
+            or source_attr != "outputDiffuseAlpha"
+        ):
+            raise MayaSceneMetadataError(
+                f"material diffuse alpha target is driven by an unsupported source: {sources[0]!r}"
+            )
+        expected_rgb_target = f"{source_node}.baseDiffuse"
+        if diffuse_target != expected_rgb_target:
+            raise MayaSceneMetadataError(
+                f"material diffuse alpha evaluator does not match RGB target: {sources[0]!r}"
+            )
+        base = f"{source_node}.baseDiffuseA"
+        if not self._has_attr(source_node, "baseDiffuseA"):
+            raise MayaSceneMetadataError(
+                f"material morph evaluator is missing writable baseDiffuseA: {source_node!r}"
+            )
+        if self._list_connections(
+            base,
+            source=True,
+            destination=False,
+            plugs=True,
+        ):
+            raise MayaSceneMetadataError(
+                f"material morph evaluator baseDiffuseA is externally driven: {base!r}"
+            )
+        if bool(self._call_adapter("get_attr", base, lock=True)):
+            raise MayaSceneMetadataError(
+                f"material morph evaluator baseDiffuseA is locked: {base!r}"
+            )
+        return base
+
+    def _read_material_diffuse_target(self, target: str | None) -> tuple[float, float, float]:
+        if not isinstance(target, str) or "." not in target:
+            raise MayaSceneMetadataError("material diffuse target is unavailable")
+        node, attr = target.rsplit(".", 1)
+        return self._required_vector(node, attr)
+
+    def _read_material_scalar_target(self, target: str) -> float:
+        if not isinstance(target, str) or "." not in target:
+            raise MayaSceneMetadataError("material diffuse alpha target is unavailable")
+        node, attr = target.rsplit(".", 1)
+        return self._required_number(node, attr)
 
     def _list_connections(self, query: Any, **kwargs: Any) -> list[str]:
         result = self._call_adapter("list_connections", query, **kwargs) or []

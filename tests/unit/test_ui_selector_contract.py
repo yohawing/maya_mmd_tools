@@ -154,10 +154,9 @@ def test_authoring_tabs_have_stable_action_list_table_and_swatch_selectors(qapp)
         BoneTab(),
         (
             ("bone_authoring_toolbar", "boneAuthoringToolbar", QWidget),
-            ("refresh_btn", "boneRefreshButton", QPushButton),
+            ("sync_btn", "boneSyncButton", QPushButton),
             ("reindex_up_btn", "boneMoveUpButton", QPushButton),
             ("reindex_down_btn", "boneMoveDownButton", QPushButton),
-            ("reset_authoring_btn", "boneResetAuthoringButton", QPushButton),
             ("bone_list", "boneList", QListWidget),
             ("search_edit", "boneSearchEdit", QLineEdit),
             ("ik_authoring_toolbar", "boneIkAuthoringToolbar", QWidget),
@@ -255,6 +254,9 @@ def test_physics_settings_and_validation_selectors(qapp):
             ("log_level_combo", "settingsLogLevelCombo", QComboBox),
             ("log_file_path_edit", "settingsLogFilePathEdit", QLineEdit),
             ("log_file_browse_btn", "settingsLogFileBrowseButton", QPushButton),
+            ("use_cpp_fast_load_check", "settingsUseCppFastLoadCheck", QCheckBox),
+            ("use_cpp_vp2_ownership_check", "settingsUseCppVp2OwnershipCheck", QCheckBox),
+            ("use_cpp_rig_nodes_check", "settingsUseCppRigNodesCheck", QCheckBox),
         ),
     )
     validation = ValidationConsole()
@@ -266,9 +268,67 @@ def test_physics_settings_and_validation_selectors(qapp):
             ("issue_list", "validationIssueList", QListWidget),
             ("detail_text", "validationDetailEdit", QTextEdit),
             ("acknowledge_check", "validationAcknowledgeCheck", QCheckBox),
-            ("revalidate_button", "validationRevalidateButton", QPushButton),
             ("copy_button", "validationCopyButton", QPushButton),
-            ("save_button", "validationSaveButton", QPushButton),
         ),
     )
     assert len(names) == len(set(names))
+
+
+@pytest.mark.skipif(not _HAS_REAL_QT_WIDGETS, reason="real Qt widgets unavailable")
+def test_export_range_defaults_to_timeline_but_full_timeline_request(qapp):
+    """Timeline bounds stay dormant until the user enables range export."""
+    from mmd_tools.ui.tabs.export_tab import ExportTab
+
+    class Settings:
+        def __init__(self):
+            self.values = {}
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def set(self, key, value):
+            self.values[key] = value
+
+    tab = ExportTab(
+        settings_service=Settings(),
+        timeline_range_provider=lambda: (7, 83),
+    )
+    tab.pane_tabs.setCurrentIndex(1)
+
+    assert not tab.frame_range_check.isChecked()
+    assert not tab.frame_start_spin.isEnabled()
+    assert not tab.frame_end_spin.isEnabled()
+    assert (tab.frame_start_spin.value(), tab.frame_end_spin.value()) == (7, 83)
+    assert "frame_range" not in tab.build_request("model_ROOT").options
+
+    tab.frame_range_check.setChecked(True)
+    assert tab.frame_start_spin.isEnabled()
+    assert tab.frame_end_spin.isEnabled()
+    assert tab.build_request("model_ROOT").options["frame_range"] == (7, 83)
+
+
+@pytest.mark.skipif(not _HAS_REAL_QT_WIDGETS, reason="real Qt widgets unavailable")
+def test_export_output_text_persists_without_request_coercion(qapp):
+    """Persist exact input text while keeping the built request format-safe."""
+    from mmd_tools.ui.tabs.export_tab import ExportTab
+
+    class ViewState:
+        def __init__(self):
+            self.values = {}
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def set(self, key, value):
+            self.values[key] = value
+
+    state = ViewState()
+    first = ExportTab(view_state=state, timeline_range_provider=lambda: (0, 120))
+    first.output_path_edit.setText("typed-name.vmd")
+    request = first.build_request("model_ROOT")
+
+    assert first.output_path_edit.text() == "typed-name.vmd"
+    assert request.file_path.endswith("typed-name.pmx")
+
+    restored = ExportTab(view_state=state, timeline_range_provider=lambda: (0, 120))
+    assert restored.output_path_edit.text() == "typed-name.vmd"

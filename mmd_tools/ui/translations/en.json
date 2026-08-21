@@ -30,7 +30,7 @@
     "file_io": "Import",
     "export_workflow": "Export",
     "export_model": "Model",
-    "export_motion": "Motion",
+    "export_motion": "Animation",
     "info": "Info",
     "material": "Material",
     "bone": "Bone",
@@ -43,6 +43,7 @@
     "offset_information": "Offset Information",
     "maya_connection": "Maya Connection",
     "general_settings": "General",
+    "advanced_settings": "Advanced",
     "import_settings": "Import",
     "export_settings": "Export",
     "rigid_bodies": "Rigid Bodies",
@@ -56,6 +57,10 @@
     "import": "Import",
     "export": "Export",
     "validate": "Validate",
+    "validate_model": "Validate Model",
+    "export_pmx": "Export Model",
+    "validate_animation": "Validate Animation",
+    "export_vmd": "Export Animation",
     "apply": "Apply",
     "ok": "OK",
     "cancel": "Cancel",
@@ -199,6 +204,7 @@
     "use_cpp_rig_nodes": "Use experimental C++ rig nodes for IK/append constraints. Falls back to Python nodes when unavailable"
   },
   "messages": {
+    "vmd_bake_export_help": "Bake the current timeline before exporting the animation. When a range is enabled, only that range is evaluated.",
     "display_element_added": "Added {element_type} (PMX index {index})",
     "no_display_element_candidates": "No display-frame element candidates are available",
     "duplicate_display_element": "That element already belongs to this display frame",
@@ -207,6 +213,7 @@
     "facial_display_frame_morph_only": "The Facial display frame can contain only morphs",
     "import_success": "Import completed successfully",
     "export_success": "Export completed successfully",
+    "prepare_bake_timeline_complete": "VMD Bake Timeline preparation complete",
     "export_mmd_asset": "Export MMD asset",
     "error_file_not_found": "File not found",
     "error_invalid_file": "Invalid file format",
@@ -235,6 +242,11 @@
     "physics_read_only_v04": "Read-only in v0.4. Physics graph editing is planned for a future version.",
     "bone_reset_blocked": "Bone reset blocked: {blockers}",
     "bone_reset_succeeded": "Bones reset (added {added}, removed {removed}, rest updated {rest})",
+    "bone_sync_no_changes": "Bone sync found no scene differences; the list was refreshed.",
+    "bone_sync_pending_edits": "Apply or discard the selected bone's pending edits before syncing.",
+    "bone_sync_cancelled": "Bone sync was cancelled; the scene and list were unchanged.",
+    "bone_sync_confirm_title": "Synchronize MMD Bones",
+    "bone_sync_confirm": "Apply these scene-authoritative bone changes?\n{details}",
     "confirm_delete": "Delete selected items?",
     "confirm_overwrite": "Overwrite existing file?",
     "settings_saved": "Settings saved",
@@ -356,6 +368,8 @@
     "humanik_source_tooltip": "Select a characterized MMD model, or a HumanIK character already defined in the scene, as the retarget SOURCE."
   },
   "options": {
+    "vmd_preserve_keys": "Preserve unedited imported bone keys",
+    "vmd_export_timeline": "Export the current timeline",
     "none": "None",
     "import_mesh": "Import Mesh",
     "import_skeleton": "Import Skeleton",
@@ -443,6 +457,7 @@
     "joint_values": "Joint Values"
   },
   "checkboxes": {
+    "vmd_bake_export": "Bake Export",
     "use_namespace": "Use Namespace",
     "custom_namespace": "Custom namespace:",
     "import_models": "Import Models",
@@ -491,7 +506,7 @@
     "motion_scale": "Motion Scale:",
     "reduce_quality": "Reduce Quality:",
     "format": "Format:",
-    "vmd_mode": "VMD mode",
+    "export_strategy": "Export strategy",
     "range": "Range",
     "start": "Start",
     "end": "End",
@@ -756,13 +771,10 @@
     "no_report": "No validation report",
     "all": "All",
     "acknowledge_warnings": "Acknowledge warnings",
-    "revalidate": "Revalidate",
     "copy": "Copy",
-    "save_report": "Save report",
-    "save_dialog": "Save validation report",
     "status": "Status",
     "format": "Format",
-    "mode": "Mode",
+    "mode": "Export method",
     "target": "Target",
     "snapshot": "Snapshot",
     "summary": "Summary",
@@ -829,7 +841,7 @@
     "animation": {
       "label": "Animation",
       "impact": "The exported motion would be malformed, ambiguous, or lose raw animation provenance.",
-      "remediation": "Repair the VMD frame payload or use the supported Mode A/C export route."
+      "remediation": "Repair the VMD frame payload or use a supported VMD export strategy."
     },
     "physics": {
       "label": "Physics",
@@ -842,18 +854,44 @@
       "remediation": "Select a live MMD target, bake or restore scene ownership, and repair the export options."
     }
   },
+  "export_progress": {
+    "model_scene_preflight": "Model: checking scene",
+    "model_payload_collection": "Model: collecting export data",
+    "model_payload_validation": "Model: validating export data",
+    "model_report_ready": "Model: validation report ready",
+    "model_writer": "Writing PMX",
+    "animation_scene_preflight": "Animation: checking scene",
+    "animation_timeline_bake": "Animation: evaluating and preparing the current timeline",
+    "animation_payload_collection": "Animation: collecting export data",
+    "animation_payload_validation": "Animation: validating export data",
+    "animation_prepared_payload": "Animation: preparing payload",
+    "animation_report_ready": "Animation: validation report ready",
+    "animation_writer": "Writing VMD"
+  },
   "validation": {
+    "scene_output_path_invalid": {
+      "title": "The export destination is not valid",
+      "impact": "The file to write has no usable destination.",
+      "remediation": "Choose an output file, then prepare or export again.",
+      "action": "Choose an output file"
+    },
+    "scene_output_extension_mismatch": {
+      "title": "The output extension does not match the format",
+      "impact": "The selected file cannot be written as the requested format.",
+      "remediation": "For VMD export, use a file name ending in .vmd.",
+      "action": "Correct the output extension"
+    },
     "export_workflow_exception": {
       "title": "Unexpected export workflow failure",
       "impact": "The export workflow stopped before it could produce a trustworthy result.",
       "remediation": "Review the reported exception and output path, correct the underlying problem, and retry validation or export.",
       "action": "Review export workflow failure"
     },
-    "vmd_mode_c_raw_loss": {
-      "title": "VMD Mode C raw animation loss",
+    "vmd_bake_timeline_raw_loss": {
+      "title": "Raw animation loss when exporting the current timeline",
       "impact": "Dense baking will replace imported raw bone keys and interpolation bytes.",
-      "remediation": "Use Mode A for an unedited imported motion, or acknowledge this loss before exporting Mode C.",
-      "action": "Acknowledge Mode C animation loss"
+      "remediation": "For unedited bone motion, choose Preserve unedited imported bone keys, or acknowledge this loss before exporting the current timeline.",
+      "action": "Acknowledge timeline export animation loss"
     }
   }
 }

@@ -155,8 +155,13 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
 
     def setUp(self):
         """各テスト前の初期化"""
-        # テスト用に一時的なカスタム辞書ファイルを作成
-        self.custom_dict_path = "test_custom_dict.json"
+        # Maya のバージョン別 unit lane は並列実行されるため、共有名にしない。
+        # Windows では別プロセスの作成・削除と競合すると、辞書が正常に閉じられて
+        # いても tearDown の削除が PermissionError になることがある。
+        fd, self.custom_dict_path = tempfile.mkstemp(
+            prefix="mmd_tools_unicode_test_", suffix=".json"
+        )
+        os.close(fd)
         custom_dict_data = {
             "_meta": {
                 "version": "1.0",

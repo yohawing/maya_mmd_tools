@@ -30,7 +30,7 @@
     "file_io": "インポート",
     "export_workflow": "エクスポート",
     "export_model": "モデル",
-    "export_motion": "モーション",
+    "export_motion": "アニメーション",
     "info": "情報",
     "material": "材質",
     "bone": "ボーン",
@@ -43,6 +43,7 @@
     "offset_information": "オフセット情報",
     "maya_connection": "Maya連携",
     "general_settings": "全般設定",
+    "advanced_settings": "詳細設定",
     "import_settings": "インポート設定",
     "export_settings": "エクスポート設定",
     "rigid_bodies": "剛体",
@@ -56,6 +57,10 @@
     "import": "インポート",
     "export": "エクスポート",
     "validate": "検証",
+    "validate_model": "モデルを検証",
+    "export_pmx": "モデルを書き出す",
+    "validate_animation": "アニメーションを検証",
+    "export_vmd": "アニメーションを書き出し",
     "apply": "適用",
     "ok": "OK",
     "cancel": "キャンセル",
@@ -199,6 +204,7 @@
     "use_cpp_rig_nodes": "IK/付与制約に実験的なC++リグノードを使います。利用できない場合はPythonノードにフォールバックします"
   },
   "messages": {
+    "vmd_bake_export_help": "現在のタイムラインをベイクしてアニメーションを書き出します。範囲指定時は指定範囲だけを対象にします。",
     "display_element_added": "{element_type}（PMXインデックス {index}）を追加しました",
     "no_display_element_candidates": "表示枠に追加できる要素がありません",
     "duplicate_display_element": "その要素は既にこの表示枠にあります",
@@ -207,6 +213,7 @@
     "facial_display_frame_morph_only": "表情枠にはモーフのみ追加できます",
     "import_success": "インポートが完了しました",
     "export_success": "エクスポートが完了しました",
+    "prepare_bake_timeline_complete": "VMDベイク書き出しの準備が完了しました",
     "export_mmd_asset": "MMDアセットをエクスポート",
     "error_file_not_found": "ファイルが見つかりません",
     "error_invalid_file": "無効なファイル形式です",
@@ -235,6 +242,11 @@
     "physics_read_only_v04": "v0.4では読み取り専用です。物理グラフ編集は将来のバージョンで対応予定です",
     "bone_reset_blocked": "ボーンリセットを中止しました: {blockers}",
     "bone_reset_succeeded": "ボーンをリセットしました（追加{added}／削除{removed}／Rest更新{rest}）",
+    "bone_sync_no_changes": "ボーン同期: シーンとの差分はありません。一覧を更新しました。",
+    "bone_sync_pending_edits": "同期する前に、選択ボーンの未適用編集を適用または破棄してください。",
+    "bone_sync_cancelled": "ボーン同期をキャンセルしました。シーンと一覧は変更していません。",
+    "bone_sync_confirm_title": "MMDボーンを同期",
+    "bone_sync_confirm": "シーンを正とした次のボーン変更を適用しますか？\n{details}",
     "confirm_delete": "選択した項目を削除しますか？",
     "confirm_overwrite": "ファイルを上書きしますか？",
     "settings_saved": "設定を保存しました",
@@ -356,6 +368,8 @@
     "humanik_source_tooltip": "SOURCEにはキャラクタライズ済みのMMDモデル、またはシーン内でキャラクタ定義済みのHumanIKキャラクターを指定できます。"
   },
   "options": {
+    "vmd_preserve_keys": "読み込んだ未編集ボーンキーを保持",
+    "vmd_export_timeline": "現在のタイムラインをVMD化",
     "none": "なし",
     "import_mesh": "メッシュをインポート",
     "import_skeleton": "スケルトンをインポート",
@@ -443,6 +457,7 @@
     "joint_values": "ジョイントの値"
   },
   "checkboxes": {
+    "vmd_bake_export": "ベイク書き出し",
     "use_namespace": "ネームスペースを使用",
     "custom_namespace": "カスタムnamespace:",
     "import_models": "モデルをインポート",
@@ -491,7 +506,7 @@
     "motion_scale": "モーション倍率:",
     "reduce_quality": "削減品質:",
     "format": "フォーマット:",
-    "vmd_mode": "VMDモード",
+    "export_strategy": "書き出し方式",
     "range": "範囲",
     "start": "開始",
     "end": "終了",
@@ -756,13 +771,10 @@
     "no_report": "検証レポートはありません",
     "all": "すべて",
     "acknowledge_warnings": "警告を確認済みにする",
-    "revalidate": "再検証",
     "copy": "コピー",
-    "save_report": "レポートを保存",
-    "save_dialog": "検証レポートを保存",
     "status": "状態",
     "format": "形式",
-    "mode": "モード",
+    "mode": "書き出し方式",
     "target": "対象",
     "snapshot": "スナップショット",
     "summary": "概要",
@@ -829,7 +841,7 @@
     "animation": {
       "label": "アニメーション",
       "impact": "エクスポートされるモーションが壊れる、曖昧になる、または元のアニメーション情報を失います。",
-      "remediation": "VMDフレームデータを修正するか、対応するMode A/Cのエクスポート経路を使用してください。"
+      "remediation": "VMDフレームデータを修正するか、対応する書き出し方式を選択してください。"
     },
     "physics": {
       "label": "物理",
@@ -842,18 +854,44 @@
       "remediation": "有効なMMD対象を選択し、シーン所有権をベイクまたは復元して、エクスポート設定を修正してください。"
     }
   },
+  "export_progress": {
+    "model_scene_preflight": "モデル: シーンを確認中",
+    "model_payload_collection": "モデル: エクスポートデータを収集中",
+    "model_payload_validation": "モデル: エクスポートデータを検証中",
+    "model_report_ready": "モデル: 検証レポート準備完了",
+    "model_writer": "PMXを書き出し中",
+    "animation_scene_preflight": "アニメーション: シーンを確認中",
+    "animation_timeline_bake": "アニメーション: 現在のタイムラインを評価・準備中",
+    "animation_payload_collection": "アニメーション: エクスポートデータを収集中",
+    "animation_payload_validation": "アニメーション: エクスポートデータを検証中",
+    "animation_prepared_payload": "アニメーション: 準備済みデータを生成中",
+    "animation_report_ready": "アニメーション: 検証レポート準備完了",
+    "animation_writer": "VMDを書き出し中"
+  },
   "validation": {
+    "scene_output_path_invalid": {
+      "title": "出力先が正しく指定されていません",
+      "impact": "書き出すファイルの保存先を決定できません。",
+      "remediation": "出力先のファイルを選択してから、もう一度準備または書き出しを実行してください。",
+      "action": "出力先を選択"
+    },
+    "scene_output_extension_mismatch": {
+      "title": "出力先の拡張子が形式と一致しません",
+      "impact": "選択した形式として正しく書き出せません。",
+      "remediation": "VMD書き出しでは、出力ファイル名の末尾を .vmd にしてください。",
+      "action": "出力ファイルの拡張子を修正"
+    },
     "export_workflow_exception": {
       "title": "エクスポート処理の予期しない失敗",
       "impact": "信頼できる結果を生成する前にエクスポート処理が停止しました。",
       "remediation": "報告された例外と出力パスを確認し、原因を修正してから検証またはエクスポートを再実行してください。",
       "action": "エクスポート処理の失敗を確認"
     },
-    "vmd_mode_c_raw_loss": {
-      "title": "VMD Mode C の元アニメーション情報の損失",
+    "vmd_bake_timeline_raw_loss": {
+      "title": "現在のタイムライン書き出しによる元アニメーション情報の損失",
       "impact": "密なベイクにより、読み込んだボーンキーと補間バイト列が置き換えられます。",
-      "remediation": "未編集のモーションは Mode A を使うか、この損失を承認してから Mode C をエクスポートしてください。",
-      "action": "Mode C のアニメーション情報の損失を承認"
+      "remediation": "未編集のボーンモーションは「読み込んだ未編集ボーンキーを保持」を選ぶか、この損失を承認してから現在のタイムラインを書き出してください。",
+      "action": "タイムライン書き出しによるアニメーション情報の損失を承認"
     }
   }
 }
