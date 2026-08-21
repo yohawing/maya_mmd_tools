@@ -612,6 +612,8 @@ def run_e2e_check(
     evaluation_mode: str = "default",
     create_on_import: bool = False,
     auto_bake_only: bool = False,
+    cpp_config: str = "Debug",
+    ffi_path: str | None = None,
 ) -> None:
     """Execute the complete control-rig workflow in a live Maya GUI.
 
@@ -651,6 +653,14 @@ def run_e2e_check(
         "focusedMode": {
             "autoBakeOnly": bool(auto_bake_only),
             "scope": "auto_bake_export" if auto_bake_only else "full_control_rig_roundtrip",
+        },
+        "cppConfig": str(cpp_config),
+        "ffiRuntime": {
+            "requestedPath": str(ffi_path) if ffi_path else None,
+            "configuredPath": None,
+            "resolvedPath": None,
+            "symbolAvailability": {},
+            "status": "not_requested" if not ffi_path else "pending",
         },
         "model": str(model_path),
         "motion": str(motion_path),
@@ -699,11 +709,26 @@ def run_e2e_check(
         plugin_path = _PROJECT_ROOT / "mmd_tools" / "plugin_main.py"
         plugin_name = plugin_path.stem
         maya_major = str(cmds.about(version=True)).split(".", 1)[0]
-        cpp_plugin = _PROJECT_ROOT / "plug-ins" / maya_major / "Debug" / "mmd_tools_cpp.mll"
+        cpp_plugin = (
+            _PROJECT_ROOT
+            / "plug-ins"
+            / maya_major
+            / str(cpp_config)
+            / "mmd_tools_cpp.mll"
+        )
         if not cpp_plugin.is_file():
             raise RuntimeError(
-                f"Maya {maya_major} Debug C++ plugin is required for mmdCcdIk E2E: {cpp_plugin}"
+                f"Maya {maya_major} {cpp_config} C++ plugin is required for mmdCcdIk E2E: {cpp_plugin}"
             )
+        if ffi_path:
+            configured_ffi_path = Path(ffi_path).expanduser()
+            if not configured_ffi_path.is_absolute():
+                configured_ffi_path = _PROJECT_ROOT / configured_ffi_path
+            configured_ffi_path = configured_ffi_path.resolve()
+            report["ffiRuntime"]["configuredPath"] = str(configured_ffi_path)
+            if not configured_ffi_path.is_file():
+                raise RuntimeError(f"requested mmd-anim FFI library does not exist: {configured_ffi_path}")
+            os.environ["MMD_ANIM_FFI_PATH"] = str(configured_ffi_path)
         plugin_dir = str(cpp_plugin.parent)
         if plugin_dir not in os.environ.get("PATH", "").split(os.pathsep):
             os.environ["PATH"] = plugin_dir + os.pathsep + os.environ.get("PATH", "")
@@ -715,6 +740,46 @@ def run_e2e_check(
         if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
             cmds.loadPlugin(str(plugin_path), quiet=True)
             _log(f"loaded plugin: {plugin_path}")
+
+        if ffi_path:
+            from mmd_tools.core.native.mmd_anim_runtime import (
+                get_mmd_runtime_library,
+                get_runtime_library_path,
+            )
+
+            runtime_library = get_mmd_runtime_library()
+            runtime_path = get_runtime_library_path()
+            resolved_runtime_path = runtime_path.resolve() if runtime_path else None
+            symbol_availability = {
+                "mmd_runtime_export_vmd_from_parts": bool(
+                    runtime_library is not None
+                    and hasattr(runtime_library, "mmd_runtime_export_vmd_from_parts")
+                )
+            }
+            report["ffiRuntime"].update(
+                {
+                    "resolvedPath": str(resolved_runtime_path) if resolved_runtime_path else None,
+                    "symbolAvailability": symbol_availability,
+                }
+            )
+            configured_path = Path(report["ffiRuntime"]["configuredPath"])
+            path_matches = bool(
+                resolved_runtime_path
+                and os.path.normcase(str(resolved_runtime_path))
+                == os.path.normcase(str(configured_path))
+            )
+            if runtime_library is None or not path_matches or not all(symbol_availability.values()):
+                report["ffiRuntime"]["status"] = "fail"
+                raise RuntimeError(
+                    "requested mmd-anim FFI library was not loaded with the required export: "
+                    f"requested={configured_path}, loaded={resolved_runtime_path}, "
+                    f"symbols={symbol_availability}"
+                )
+            report["ffiRuntime"]["status"] = "pass"
+            _log(
+                "mmd-anim FFI runtime: "
+                f"path={resolved_runtime_path} symbols={symbol_availability}"
+            )
 
         if create_on_import:
             # Preserve Maya's script-editor diagnostics alongside the JSON
@@ -1195,6 +1260,59 @@ def run_e2e_check(
             float(cmds.playbackOptions(query=True, minTime=True)),
             float(cmds.playbackOptions(query=True, maxTime=True)),
         )
+        auto_source_world = {}
+        auto_source_ik = {}
+        auto_sentinel_indices = {}
+        if auto_bake_only:
+            authored_controls = {
+                "center": str(rig.controls["center"]),
+                "left_arm": str(rig.controls["left_arm"]),
+            }
+            for key_time, center_x, arm_rotation in (
+                (timeline_range[0], 0.0, (0.0, 0.0, 0.0)),
+                (timeline_range[1], 1.25, (18.0, -7.0, 11.0)),
+            ):
+                cmds.setKeyframe(
+                    authored_controls["center"],
+                    attribute="translateX",
+                    time=key_time,
+                    value=center_x,
+                )
+                for axis, value in zip("XYZ", arm_rotation):
+                    cmds.setKeyframe(
+                        authored_controls["left_arm"],
+                        attribute=f"rotate{axis}",
+                        time=key_time,
+                        value=value,
+                    )
+            from mmd_tools.core.mmd_control_rig_builder import (
+                resolve_mmd_control_rig_binding_joint,
+            )
+
+            for role in authored_controls:
+                joint = resolve_mmd_control_rig_binding_joint(
+                    cmds,
+                    edit_metadata["bindings"][role],
+                )
+                auto_sentinel_indices[role] = str(
+                    int(cmds.getAttr(f"{joint}.mmd_bone_index"))
+                )
+            auto_source_world = _joint_worlds(cmds, ROUNDTRIP_FRAMES)
+            auto_source_ik = _ik_states(cmds, ROUNDTRIP_FRAMES)
+            sentinel_effect = {
+                role: max(
+                    abs(last - first)
+                    for first, last in zip(
+                        auto_source_world[str(ROUNDTRIP_FRAMES[0])][index],
+                        auto_source_world[str(ROUNDTRIP_FRAMES[-1])][index],
+                    )
+                )
+                for role, index in auto_sentinel_indices.items()
+            }
+            if any(value <= MOVE_EPSILON for value in sentinel_effect.values()):
+                raise RuntimeError(
+                    f"automatic export sentinel edits had no world-space effect: {sentinel_effect}"
+                )
         auto_options = {
             "export_format": "vmd",
             "export_strategy": "bake_timeline",
@@ -1214,6 +1332,11 @@ def run_e2e_check(
             "frameRange": list(timeline_range),
         }
         report["autoBakeExport"] = auto_gate
+        if auto_bake_only:
+            auto_gate["authoredSentinels"] = {
+                "jointIndices": dict(auto_sentinel_indices),
+                "worldMatrixEffect": sentinel_effect,
+            }
         unrelated_layer = None
         unrelated_node = None
         if auto_bake_only:
@@ -1365,8 +1488,101 @@ def run_e2e_check(
                     auto_gate["cleanupPass"] = True
 
         if auto_bake_only:
+            cmds.file(new=True, force=True)
+            fresh_root = import_mmd_file(
+                str(model_path),
+                options={
+                    "setup_rig": True,
+                    "setup_bone_orientation": True,
+                    "import_physics": False,
+                },
+            )
+            if not fresh_root:
+                raise RuntimeError("fresh PMX import failed for automatic export parity")
+            if not import_mmd_file(
+                str(auto_output),
+                options={"target_model": str(fresh_root), "pmx_path": str(model_path)},
+            ):
+                raise RuntimeError("fresh VMD import failed for automatic export parity")
+            fresh_world = _joint_worlds(cmds, ROUNDTRIP_FRAMES)
+            fresh_ik = _ik_states(cmds, ROUNDTRIP_FRAMES)
+            if set(auto_source_world) != set(fresh_world):
+                raise RuntimeError(
+                    "automatic export parity frame set changed after fresh import"
+                )
+            for frame in auto_source_world:
+                if set(auto_source_world[frame]) != set(fresh_world[frame]):
+                    raise RuntimeError(
+                        f"automatic export parity joint set changed at frame {frame}"
+                    )
+            source_solver_owned = set(
+                _expand_solver_owned_joint_indices(
+                    _solver_owned_joint_indices(cmds),
+                    cmds,
+                )
+            )
+            matrix_errors = [
+                {
+                    "error": abs(actual - expected),
+                    "frame": int(frame),
+                    "jointIndex": str(index),
+                    "element": int(element),
+                }
+                for frame in sorted(auto_source_world)
+                for index in sorted(auto_source_world[frame])
+                if index in fresh_world.get(frame, {})
+                for element, (actual, expected) in enumerate(
+                    zip(auto_source_world[frame][index], fresh_world[frame][index])
+                )
+            ]
+            error_summary = _matrix_error_summary(
+                matrix_errors,
+                solver_owned_indices=source_solver_owned,
+            )
+            non_solver = error_summary["nonSolverOwned"]
+            sentinel_errors = {
+                role: max(
+                    (
+                        item["error"]
+                        for item in matrix_errors
+                        if item["jointIndex"] == index
+                    ),
+                    default=float("inf"),
+                )
+                for role, index in auto_sentinel_indices.items()
+            }
+            parity_pass = bool(
+                matrix_errors
+                and non_solver["jointCount"] > 0
+                and non_solver["maxWorldMatrixError"] < ROUNDTRIP_MATRIX_EPSILON
+                and error_summary["solverOwned"]["maxWorldMatrixError"]
+                < ROUNDTRIP_MATRIX_EPSILON
+                and all(
+                    error < ROUNDTRIP_MATRIX_EPSILON
+                    for error in sentinel_errors.values()
+                )
+                and auto_source_ik == fresh_ik
+            )
+            auto_gate["authoredRoundtrip"] = {
+                "frames": list(ROUNDTRIP_FRAMES),
+                "matrixErrorMetric": "max_abs_element",
+                "nonSolverOwned": non_solver,
+                "solverOwned": error_summary["solverOwned"],
+                "sentinelErrors": sentinel_errors,
+                "ikStatesEqual": auto_source_ik == fresh_ik,
+                "pass": parity_pass,
+            }
+            if not parity_pass:
+                raise RuntimeError(
+                    "automatic Control Rig VMD authored-motion parity exceeded the numeric gate"
+                )
+            report["internalOracle"] = {
+                "identity": "maya_vmd_export_reimport_authored_parity",
+                "status": "pass",
+                "solverOwnedDriftDelegatedToExternalOracle": False,
+            }
             report["status"] = "pass"
-            _log("PASS: focused automatic Bake Timeline export gate passed")
+            _log("PASS: focused automatic Bake Timeline authored-motion parity passed")
             return
 
         baked_metadata = bake_mmd_control_rig(root)
@@ -1623,15 +1839,28 @@ def main() -> int:
             "then stop before manual bake and round-trip gates"
         ),
     )
+    parser.add_argument(
+        "--cpp-config",
+        choices=("Debug", "Release"),
+        default="Debug",
+        help="C++ plugin configuration used by the Maya E2E process",
+    )
+    parser.add_argument(
+        "--ffi-path",
+        default=None,
+        help="Explicit mmd_runtime_ffi.dll path used inside the Maya process",
+    )
     parser.add_argument("--out-dir", default=str(_PROJECT_ROOT / "build" / "e2e"))
     args = parser.parse_args()
 
     out_dir = _repo_path(args.out_dir)
+    ffi_path = _repo_path(args.ffi_path) if args.ffi_path else None
     out_dir.mkdir(parents=True, exist_ok=True)
     mode_suffix = "" if args.evaluation_mode == "default" else f"_{args.evaluation_mode}"
     route_suffix = "_create_on_import" if args.create_on_import else ""
     focused_suffix = "_auto_bake_only" if args.auto_bake_only else ""
-    output_suffix = f"{mode_suffix}{route_suffix}{focused_suffix}"
+    config_suffix = "" if args.cpp_config == "Debug" else f"_{args.cpp_config.lower()}"
+    output_suffix = f"{mode_suffix}{route_suffix}{focused_suffix}{config_suffix}"
     report_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.json"
     log_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.log"
     scene_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.ma"
@@ -1642,6 +1871,7 @@ def main() -> int:
     try:
         model_posix = model_path.as_posix()
         motion_posix = motion_path.as_posix()
+        ffi_command_arg = repr(ffi_path.as_posix() if ffi_path else None)
         command = (
             "import sys\n"
             "from pathlib import Path\n"
@@ -1649,7 +1879,7 @@ def main() -> int:
             "if str(project_root) not in sys.path:\n"
             "    sys.path.insert(0, str(project_root))\n"
             "from tests.viewport.e2e_mmd_control_rig import run_e2e_check\n"
-            f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}', r'{motion_posix}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{exported_vmd_path.as_posix()}', r'{args.evaluation_mode}', {bool(args.create_on_import)!r}, {bool(args.auto_bake_only)!r})\n"
+            f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}', r'{motion_posix}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{exported_vmd_path.as_posix()}', r'{args.evaluation_mode}', {bool(args.create_on_import)!r}, {bool(args.auto_bake_only)!r}, r'{args.cpp_config}', {ffi_command_arg})\n"
         )
         report = run_maya_e2e(
             project_root=_PROJECT_ROOT,
@@ -1690,6 +1920,8 @@ def main() -> int:
             "port": args.port,
             "evaluationMode": args.evaluation_mode,
             "autoBakeOnly": bool(args.auto_bake_only),
+            "cppConfig": args.cpp_config,
+            "ffiPath": str(ffi_path) if ffi_path else None,
             "error": str(exc),
         }
         _write_maya_report(report_path, blocked)
