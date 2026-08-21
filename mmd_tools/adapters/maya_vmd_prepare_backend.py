@@ -650,7 +650,16 @@ class MayaVmdPrepareBackend:
             raise PrepareVmdExportError(f"could not inspect connections for {node!r}") from exc
         if isinstance(upstream_values, Mapping):
             upstream_values = list(upstream_values.values())
-        upstream_plugs = {str(value) for value in upstream_values}
+        # Maya may return short node names from listConnections even when the
+        # queried node was resolved to a full DAG path.  Normalize the source
+        # plugs before comparing them with the canonicalized connection pair;
+        # this is essential for valid intra-node connections, where the node
+        # identity cannot disambiguate the source and destination endpoints.
+        upstream_plugs = set()
+        for value in upstream_values:
+            source_node, source_attr = self._split_plug(value)
+            source_path = self._canonical_required(source_node)
+            upstream_plugs.add(f"{source_path}.{source_attr}")
         if isinstance(values, Mapping):
             values = [item for pair in values.items() for item in pair]
         values = list(values)

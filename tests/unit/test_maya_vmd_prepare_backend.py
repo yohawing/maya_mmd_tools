@@ -232,6 +232,37 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         changed = self.backend.discover(_request())
         self.assertNotEqual(first.dependency_closure_fingerprint, changed.dependency_closure_fingerprint)
 
+    def test_self_connection_with_short_plugs_preserves_direction_and_fingerprint(self):
+        # Maya can return short plug names for a full-path DAG node.  A
+        # parentConstraint also exposes valid source/destination pairs on the
+        # same node (for example targetWeight <- parentW0), so node identity
+        # alone cannot determine the direction.
+        self.cmds.long_name_aliases["bone"] = "|model|bone"
+        self.cmds.connections["|model|bone"] = ["bone.targetWeight", "bone.parentW0"]
+        self.cmds.incoming["|model|bone"] = ["bone.parentW0"]
+
+        first = self.backend.discover(_request())
+        _, topology = self.backend._dependency_closure("|model", _request()["options"])
+        self.assertIn(
+            ("uuid-bone", "parentW0", "uuid-bone", "targetWeight"),
+            topology,
+        )
+
+        self.cmds.connections["|model|bone"][0] = "bone.targetWeight2"
+        changed = self.backend.discover(_request())
+        self.assertNotEqual(
+            first.dependency_closure_fingerprint,
+            changed.dependency_closure_fingerprint,
+        )
+
+    def test_self_connection_with_both_endpoints_marked_upstream_fails_closed(self):
+        self.cmds.long_name_aliases["bone"] = "|model|bone"
+        self.cmds.connections["|model|bone"] = ["bone.targetWeight", "bone.parentW0"]
+        self.cmds.incoming["|model|bone"] = ["bone.targetWeight", "bone.parentW0"]
+
+        with self.assertRaisesRegex(PrepareVmdExportError, "ambiguous connection topology"):
+            self.backend.discover(_request())
+
     def test_model_name_prefers_request_then_mmd_attribute_then_identity(self):
         self.cmds.getAttr = lambda plug: "Imported Name" if plug == "|model.mmd_model_name" else None
         self.assertEqual(self.backend.discover(_request()).model_name, "Imported Name")
