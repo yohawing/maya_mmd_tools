@@ -222,13 +222,14 @@ class ScenePreflight:
                     )
                 )
 
-        output_path = Path(str(options.get("file_path") or ""))
-        if not str(options.get("file_path") or "").strip():
+        output_path_text = str(options.get("file_path") or "")
+        output_path = Path(output_path_text)
+        expected_extension = export_format if export_format in SUPPORTED_FORMATS else None
+        if not output_path_text.strip():
             issues.append(_issue("SCENE_OUTPUT_PATH_INVALID", "file_path", "export output path is required"))
         elif output_path.exists() and output_path.is_dir():
             issues.append(_issue("SCENE_OUTPUT_PATH_INVALID", "file_path", "export output path is a directory"))
-        expected_extension = export_format if export_format in SUPPORTED_FORMATS else None
-        if expected_extension and output_path.suffix.lower().lstrip(".") != expected_extension:
+        elif expected_extension and output_path.suffix.lower().lstrip(".") != expected_extension:
             issues.append(
                 _issue(
                     "SCENE_OUTPUT_EXTENSION_MISMATCH",

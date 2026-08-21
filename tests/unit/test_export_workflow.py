@@ -144,6 +144,16 @@ class _RecordingVmdExporter(VmdExporter):
 class TestScenePreflight(unittest.TestCase):
     """Scene facts are checked before any collector or writer call."""
 
+    def test_empty_output_path_reports_only_root_path_error(self):
+        result = ScenePreflight(scene_service=_SceneService()).run(
+            {"file_path": "", "export_format": "pmx", "target_model": "model_ROOT"}
+        )
+
+        self.assertEqual(
+            [issue.code for issue in result.report.issues],
+            ["SCENE_OUTPUT_PATH_INVALID"],
+        )
+
     def test_missing_target_and_extension_are_blocking(self):
         result = ScenePreflight().run(
             {"file_path": "motion.pmx", "export_format": "pmx"}
