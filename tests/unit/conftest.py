@@ -54,3 +54,21 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if _item_uses_real_maya(item):
             item.add_marker(skip_maya)
+
+
+@pytest.fixture(autouse=True)
+def _install_headless_vmd_parts_oracle(monkeypatch):
+    """Keep headless tests independent of a platform-native runtime DLL."""
+
+    if _real_maya:
+        yield
+        return
+    from mmd_tools.actions import prepared_vmd_artifact
+    from tests.common.vmd_parts_export_oracle import export_vmd_from_parts_oracle
+
+    monkeypatch.setattr(
+        prepared_vmd_artifact,
+        "export_vmd_from_parts",
+        export_vmd_from_parts_oracle,
+    )
+    yield
