@@ -86,6 +86,19 @@ def _connect_enabled_world(solver):
     return world
 
 
+def _solver_world_gravity(solver):
+    """Read gravity from the world shape connected to the solver."""
+    source_plug = cmds.connectionInfo(
+        f"{solver}.inWorldSettings", sourceFromDestination=True
+    )
+    if not source_plug:
+        raise AssertionError(f"solver has no connected world: {solver}")
+    world = source_plug.rsplit(".", 1)[0]
+    if cmds.nodeType(world) != "mmdPhysicsWorldShape":
+        raise AssertionError(f"solver world is not a world shape: {world}")
+    return tuple(float(cmds.getAttr(f"{world}.gravity{axis}")) for axis in "XYZ")
+
+
 @unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
 @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
 class TestPhysicsSolverNode(MayaTestBase):
@@ -305,6 +318,7 @@ class TestPhysicsSolverNode(MayaTestBase):
         solver_flat = cmds.getAttr(f"{solver}.outBoneMatrices")
 
         ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        self.assertTrue(ref_world.set_gravity(_solver_world_gravity(solver)))
         ref_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         ref_instance = MmdRuntimeInstance.for_model(ref_model)
         ref_instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
@@ -739,6 +753,7 @@ class TestSolverTimeStateMachine(MayaTestBase):
         solver_flat = cmds.getAttr(f"{solver}.outBoneMatrices")
 
         ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        self.assertTrue(ref_world.set_gravity(_solver_world_gravity(solver)))
         ref_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         ref_instance = MmdRuntimeInstance.for_model(ref_model)
         ref_instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
