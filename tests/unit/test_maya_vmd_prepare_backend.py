@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from mmd_tools.actions.prepare_vmd_export_action import (
     PrepareVmdExportAction,
@@ -10,6 +11,7 @@ from mmd_tools.actions.prepare_vmd_export_action import (
 )
 from mmd_tools.adapters.maya_vmd_prepare_backend import (
     MayaVmdPrepareBackend,
+    MayaVmdTemporaryControlRigBake,
     create_maya_vmd_prepare_action,
 )
 class _FakeCmds:
@@ -209,6 +211,111 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
             revision_service=self.service,
             mobject_resolver=lambda node: self.mobjects.setdefault(node, object()),
         )
+
+    def test_edit_control_owned_rig_is_temporarily_baked_and_restored(self):
+        self.cmds.attributeQuery = lambda *_args, **_kwargs: True
+        edit_metadata = {"state": "EDIT", "owner": "CONTROL_OWNED"}
+        baked_metadata = {"state": "BAKED", "owner": "MMD_OWNED"}
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            side_effect=[edit_metadata, baked_metadata],
+        ) as read_metadata, patch(
+            "mmd_tools.core.mmd_control_rig_motion.bake_mmd_control_rig",
+            return_value=baked_metadata,
+        ) as bake, patch(
+            "mmd_tools.core.mmd_control_rig_motion.enter_mmd_control_rig_edit",
+            return_value=edit_metadata,
+        ) as enter_edit:
+            context = self.backend.prepare_for_collection(_request())
+            self.backend.restore_after_collection(context)
+
+        self.assertEqual(context.target_model, "|model")
+        bake.assert_called_once_with("|model", cmds_module=self.cmds)
+        enter_edit.assert_called_once_with("|model", cmds_module=self.cmds)
+        self.assertEqual(read_metadata.call_count, 2)
+
+    def test_bake_postcondition_failure_restores_before_prepare_raises(self):
+        self.cmds.attributeQuery = lambda *_args, **_kwargs: True
+        edit_metadata = {"state": "EDIT", "owner": "CONTROL_OWNED"}
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            side_effect=[edit_metadata, edit_metadata],
+        ) as read_metadata, patch(
+            "mmd_tools.core.mmd_control_rig_motion.bake_mmd_control_rig",
+            return_value={"state": "EDIT", "owner": "CONTROL_OWNED"},
+        ) as bake, patch(
+            "mmd_tools.core.mmd_control_rig_motion.enter_mmd_control_rig_edit",
+        ) as enter_edit:
+            with self.assertRaisesRegex(PrepareVmdExportError, "did not produce"):
+                self.backend.prepare_for_collection(_request())
+
+        bake.assert_called_once_with("|model", cmds_module=self.cmds)
+        enter_edit.assert_not_called()
+        self.assertEqual(read_metadata.call_count, 2)
+
+    def test_bake_exception_restores_or_reports_original_and_restore_errors(self):
+        self.cmds.attributeQuery = lambda *_args, **_kwargs: True
+        edit_metadata = {"state": "EDIT", "owner": "CONTROL_OWNED"}
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            side_effect=[edit_metadata, edit_metadata],
+        ) as read_metadata, patch(
+            "mmd_tools.core.mmd_control_rig_motion.bake_mmd_control_rig",
+            side_effect=RuntimeError("bake exploded"),
+        ) as bake, patch(
+            "mmd_tools.core.mmd_control_rig_motion.enter_mmd_control_rig_edit",
+        ) as enter_edit:
+            with self.assertRaisesRegex(PrepareVmdExportError, "bake failed"):
+                self.backend.prepare_for_collection(_request())
+
+        bake.assert_called_once_with("|model", cmds_module=self.cmds)
+        enter_edit.assert_not_called()
+        self.assertEqual(read_metadata.call_count, 2)
+
+    def test_bake_exception_includes_restore_failure_context(self):
+        self.cmds.attributeQuery = lambda *_args, **_kwargs: True
+        edit_metadata = {"state": "EDIT", "owner": "CONTROL_OWNED"}
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            side_effect=[edit_metadata, {"state": "CONVERTING", "owner": "CONVERTING"}],
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_motion.bake_mmd_control_rig",
+            side_effect=RuntimeError("bake exploded"),
+        ):
+            with self.assertRaisesRegex(
+                PrepareVmdExportError,
+                "bake failed.*restoration failed",
+            ):
+                self.backend.prepare_for_collection(_request())
+
+    def test_restore_is_idempotent_when_bake_failed_before_state_change(self):
+        self.cmds.attributeQuery = lambda *_args, **_kwargs: True
+        edit_metadata = {"state": "EDIT", "owner": "CONTROL_OWNED"}
+        context = MayaVmdTemporaryControlRigBake(
+            "|model",
+            "EDIT",
+            "CONTROL_OWNED",
+        )
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value=edit_metadata,
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_motion.enter_mmd_control_rig_edit",
+        ) as enter_edit:
+            self.backend.restore_after_collection(context)
+        enter_edit.assert_not_called()
+
+    def test_non_edit_control_rig_is_not_mutated_for_collection(self):
+        self.cmds.attributeQuery = lambda *_args, **_kwargs: True
+        attached_metadata = {"state": "ATTACHED", "owner": "MMD_OWNED"}
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value=attached_metadata,
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_motion.bake_mmd_control_rig",
+        ) as bake:
+            self.assertIsNone(self.backend.prepare_for_collection(_request()))
+        bake.assert_not_called()
 
     def test_requires_bake_timeline_and_explicit_current_model_projection(self):
         with self.assertRaises(PrepareVmdExportError):

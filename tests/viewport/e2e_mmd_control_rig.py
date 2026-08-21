@@ -611,6 +611,7 @@ def run_e2e_check(
     exported_vmd_path: str,
     evaluation_mode: str = "default",
     create_on_import: bool = False,
+    auto_bake_only: bool = False,
 ) -> None:
     """Execute the complete control-rig workflow in a live Maya GUI.
 
@@ -618,6 +619,11 @@ def run_e2e_check(
     exercise the legacy PMX import -> VMD import -> explicit rig-build route.
     When enabled, VMD import itself owns the transactional Control Rig create
     or reuse and direct controller keying path.
+
+    ``auto_bake_only`` keeps the existing Control Rig edits and evidence but
+    stops after the automatic Bake Timeline export gate.  It is intended for
+    focused host diagnosis; normal mode retains every existing assertion and
+    round-trip gate.
     """
 
     import maya.cmds as cmds
@@ -641,6 +647,10 @@ def run_e2e_check(
             "requested": str(evaluation_mode or "default"),
             "active": None,
             "mayaMode": None,
+        },
+        "focusedMode": {
+            "autoBakeOnly": bool(auto_bake_only),
+            "scope": "auto_bake_export" if auto_bake_only else "full_control_rig_roundtrip",
         },
         "model": str(model_path),
         "motion": str(motion_path),
@@ -666,6 +676,7 @@ def run_e2e_check(
         "vmdApplicability": {},
         "ikMove": {},
         "ikToggle": {},
+        "autoBakeExport": {},
         "cycles": [],
         "roundtrip": {},
         "errors": [],
@@ -1061,8 +1072,10 @@ def run_e2e_check(
                 "IK move: unrelated control deltas=%s"
                 % json.dumps(other_control_deltas, sort_keys=True)
             )
-        if not report["ikMove"]["pass"]:
+        if not report["ikMove"]["pass"] and not auto_bake_only:
             raise RuntimeError("left foot IK move did not produce an owned solver response")
+        if not report["ikMove"]["pass"] and auto_bake_only:
+            _log("focused auto-bake mode: retaining failed IK move evidence")
 
         enabled_before = bool(cmds.getAttr(f"{solver}.enabled"))
         enabled_after_expected = not enabled_before
@@ -1159,8 +1172,154 @@ def run_e2e_check(
             "pass": enabled_after == enabled_after_expected,
         }
         _log(f"IK enabled toggle: {enabled_before} -> {enabled_after}")
-        if not report["ikToggle"]["pass"]:
+        if not report["ikToggle"]["pass"] and not auto_bake_only:
             raise RuntimeError("ikEnabled toggle did not reach mmdCcdIk.enabled")
+        if not report["ikToggle"]["pass"] and auto_bake_only:
+            _log("focused auto-bake mode: retaining failed IK toggle evidence")
+
+        # Exercise the production user-path while the Control Rig still owns
+        # the authoring motion.  The preparation boundary must temporarily
+        # bake to MMD inputs, publish a parseable VMD, validate the restored
+        # EDIT token, and clean up its private stage before the explicit
+        # manual-bake route below continues.
+        from mmd_tools.adapters.maya_vmd_prepare_backend import (
+            create_maya_vmd_prepare_action,
+        )
+        from mmd_tools.services.export_workflow_service import (
+            ExportWorkflowRequest,
+            ExportWorkflowService,
+        )
+
+        auto_output = Path(exported_vmd_path).with_suffix(".auto_bake.vmd")
+        timeline_range = (
+            float(cmds.playbackOptions(query=True, minTime=True)),
+            float(cmds.playbackOptions(query=True, maxTime=True)),
+        )
+        auto_options = {
+            "export_format": "vmd",
+            "export_strategy": "bake_timeline",
+            "current_model_root": root,
+            "target_model": root,
+            "require_current_model": True,
+            "require_target": True,
+            "frame_range": timeline_range,
+            "frame_step": 1.0,
+        }
+        auto_request = ExportWorkflowRequest(str(auto_output), auto_options)
+        auto_action = None
+        auto_token = None
+        auto_gate = {
+            "status": "running",
+            "outputPath": str(auto_output),
+            "frameRange": list(timeline_range),
+        }
+        report["autoBakeExport"] = auto_gate
+        try:
+            auto_action = create_maya_vmd_prepare_action()
+            auto_service = ExportWorkflowService(prepare_vmd_action=auto_action)
+            prepared = auto_service.prepare_vmd(auto_request)
+            if not prepared.succeeded or prepared.token is None:
+                raise RuntimeError(f"automatic Bake Timeline prepare failed: {prepared.error}")
+            auto_token = prepared.token
+            staged_path = Path(auto_token.staged_artifact.file_path)
+            staged_vmd = VmdData().parse_file(str(staged_path))
+            auto_gate.update(
+                {
+                    "stagedPath": str(staged_path),
+                    "stagedBoneFrames": len(staged_vmd.bone_frames),
+                    "stagedParsePass": bool(staged_vmd.bone_frames),
+                }
+            )
+            if not staged_vmd.bone_frames:
+                raise RuntimeError("automatic Bake Timeline staged VMD contains no bone frames")
+
+            restored_metadata = read_mmd_control_rig_metadata(root)
+            auto_gate["restoredState"] = (
+                {
+                    "state": restored_metadata.get("state"),
+                    "owner": restored_metadata.get("owner"),
+                }
+                if restored_metadata
+                else None
+            )
+            restored_pass = bool(
+                restored_metadata
+                and restored_metadata.get("state") == CONTROL_RIG_EDIT
+                and restored_metadata.get("owner") == CONTROL_RIG_CONTROL_OWNED
+            )
+            auto_gate["restoredEditPass"] = restored_pass
+            if not restored_pass:
+                raise RuntimeError(
+                    "automatic Bake Timeline did not restore EDIT/CONTROL_OWNED: "
+                    f"{restored_metadata}"
+                )
+
+            validation = auto_service.validate(
+                ExportWorkflowRequest(
+                    str(auto_output),
+                    dict(auto_options),
+                    prepared_vmd_token=auto_token,
+                )
+            )
+            token_validation_pass = bool(
+                validation.error is None and not validation.report.is_blocking
+            )
+            auto_gate["tokenValidation"] = {
+                "state": validation.state,
+                "pass": token_validation_pass,
+            }
+            if not token_validation_pass:
+                raise RuntimeError(
+                    f"restored-scene token validation failed: {validation.error or validation.report.summary}"
+                )
+
+            published = auto_service.execute(
+                ExportWorkflowRequest(
+                    str(auto_output),
+                    dict(auto_options),
+                    prepared_vmd_token=auto_token,
+                )
+            )
+            published_vmd = VmdData().parse_file(str(auto_output))
+            published_pass = bool(
+                published.succeeded
+                and auto_output.is_file()
+                and published_vmd.bone_frames
+            )
+            auto_gate.update(
+                {
+                    "publishedState": published.state,
+                    "publishedBoneFrames": len(published_vmd.bone_frames),
+                    "publishedParsePass": bool(published_vmd.bone_frames),
+                    "pass": published_pass,
+                }
+            )
+            if not published_pass:
+                raise RuntimeError(
+                    f"automatic Bake Timeline publish/parse failed: {published.error}"
+                )
+            auto_gate["status"] = "pass"
+        except Exception as exc:
+            auto_gate["status"] = "fail"
+            auto_gate["error"] = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            if auto_action is not None:
+                try:
+                    if auto_token is not None:
+                        auto_action.invalidate(auto_token)
+                    else:
+                        auto_action.close()
+                except Exception as exc:
+                    auto_gate["cleanupError"] = f"{type(exc).__name__}: {exc}"
+                    raise
+                else:
+                    auto_gate["cleanupPass"] = True
+
+        if auto_bake_only:
+            report["status"] = "pass"
+            _log("PASS: focused automatic Bake Timeline export gate passed")
+            return
 
         baked_metadata = bake_mmd_control_rig(root)
         report["states"]["afterBake"] = baked_metadata.get("state")
@@ -1408,6 +1567,14 @@ def main() -> int:
             "controllers directly, and clear existing motion"
         ),
     )
+    parser.add_argument(
+        "--auto-bake-only",
+        action="store_true",
+        help=(
+            "Run the Control Rig edits and automatic Bake Timeline export gate, "
+            "then stop before manual bake and round-trip gates"
+        ),
+    )
     parser.add_argument("--out-dir", default=str(_PROJECT_ROOT / "build" / "e2e"))
     args = parser.parse_args()
 
@@ -1415,11 +1582,13 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     mode_suffix = "" if args.evaluation_mode == "default" else f"_{args.evaluation_mode}"
     route_suffix = "_create_on_import" if args.create_on_import else ""
-    output_suffix = f"{mode_suffix}{route_suffix}"
+    focused_suffix = "_auto_bake_only" if args.auto_bake_only else ""
+    output_suffix = f"{mode_suffix}{route_suffix}{focused_suffix}"
     report_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.json"
     log_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.log"
     scene_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.ma"
     exported_vmd_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.vmd"
+    auto_exported_vmd_path = exported_vmd_path.with_suffix(".auto_bake.vmd")
     model_path = _repo_path(args.model)
     motion_path = _repo_path(args.motion)
     try:
@@ -1432,7 +1601,7 @@ def main() -> int:
             "if str(project_root) not in sys.path:\n"
             "    sys.path.insert(0, str(project_root))\n"
             "from tests.viewport.e2e_mmd_control_rig import run_e2e_check\n"
-            f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}', r'{motion_posix}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{exported_vmd_path.as_posix()}', r'{args.evaluation_mode}', {bool(args.create_on_import)!r})\n"
+            f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}', r'{motion_posix}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{exported_vmd_path.as_posix()}', r'{args.evaluation_mode}', {bool(args.create_on_import)!r}, {bool(args.auto_bake_only)!r})\n"
         )
         report = run_maya_e2e(
             project_root=_PROJECT_ROOT,
@@ -1445,7 +1614,13 @@ def main() -> int:
             command=command,
             marker=COMPLETION_MARKER,
             send_label="<mmd-control-rig-e2e>",
-            stale_paths=[log_path, report_path, scene_path, exported_vmd_path],
+            stale_paths=[
+                log_path,
+                report_path,
+                scene_path,
+                exported_vmd_path,
+                auto_exported_vmd_path,
+            ],
             port_error=(
                 f"commandPort :{args.port} is already open; refusing to attach; choose a free port"
             ),
@@ -1466,6 +1641,7 @@ def main() -> int:
             "maya": args.maya,
             "port": args.port,
             "evaluationMode": args.evaluation_mode,
+            "autoBakeOnly": bool(args.auto_bake_only),
             "error": str(exc),
         }
         _write_maya_report(report_path, blocked)

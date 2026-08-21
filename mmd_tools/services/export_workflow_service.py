@@ -111,6 +111,43 @@ def _collect_failure_report(
     )
 
 
+def _scene_report_for_prepared_control_rig(
+    report: ExportValidationReport,
+    options: Mapping[str, Any],
+    prepare_vmd_action: Any,
+) -> ExportValidationReport:
+    """Allow the action-owned temporary Control Rig bake lifecycle.
+
+    Scene preflight normally blocks an EDIT/CONTROL_OWNED rig because a raw
+    collector cannot safely sample it.  The Bake Timeline preparation action
+    has an explicit host lifecycle that bakes, collects, and restores the rig;
+    only that narrow capability may clear this one preflight finding.
+    """
+
+    if str(options.get("export_format") or "").lower() != "vmd":
+        return report
+    if str(options.get("export_strategy") or VMD_EXPORT_BAKE_TIMELINE).lower() != VMD_EXPORT_BAKE_TIMELINE:
+        return report
+    can_prepare = getattr(prepare_vmd_action, "can_prepare_for_collection", None)
+    if not callable(can_prepare):
+        return report
+    try:
+        if not bool(can_prepare(options)):
+            return report
+    except Exception:
+        # An ownership inspection failure must remain fail-closed at the
+        # scene preflight boundary; the action will expose the detail if a
+        # caller retries with a valid route.
+        return report
+    if not any(issue.code == "SCENE_OWNER_CONTROL_RIG" for issue in report.issues):
+        return report
+    return ExportValidationReport(
+        report.export_format,
+        tuple(issue for issue in report.issues if issue.code != "SCENE_OWNER_CONTROL_RIG"),
+        mode=report.mode,
+    )
+
+
 class ExportWorkflowService:
     """Run the same scene/payload/action path for UI and headless callers.
 
@@ -139,7 +176,13 @@ class ExportWorkflowService:
             raise PrepareVmdExportError("prepared VMD export action is not configured")
         options = self._options(request)
         scene_result = self.scene_preflight.run(options)
-        if scene_result.report.is_blocking:
+        prepared_options = self._prepared_vmd_options(options, scene_result.metadata)
+        report = _scene_report_for_prepared_control_rig(
+            scene_result.report,
+            prepared_options,
+            self.prepare_vmd_action,
+        )
+        if report.is_blocking:
             issue_codes = ", ".join(issue.code for issue in scene_result.report.issues)
             return PrepareVmdExportResult(
                 status="failed",
@@ -153,7 +196,7 @@ class ExportWorkflowService:
             raise TypeError("prepare_vmd_action must expose execute(request)")
         prepared_request = ExportWorkflowRequest(
             request.file_path,
-            self._target_options(options, scene_result.metadata),
+            prepared_options,
             model_data=request.model_data,
             animation_data=request.animation_data,
         )
@@ -188,7 +231,7 @@ class ExportWorkflowService:
         """Apply the same Current Model projection used by export."""
         return ExportWorkflowRequest(
             request.file_path,
-            self._target_options(self._options(request), metadata),
+            self._prepared_vmd_options(self._options(request), metadata),
             model_data=request.model_data,
             animation_data=request.animation_data,
             prepared_vmd_token=request.prepared_vmd_token,
@@ -227,6 +270,24 @@ class ExportWorkflowService:
             enriched.setdefault("target_identity", metadata["target_identity"])
         if metadata.get("scene_revision") is not None:
             enriched.setdefault("scene_revision", metadata["scene_revision"])
+        return enriched
+
+    @staticmethod
+    def _prepared_vmd_options(
+        options: Mapping[str, Any],
+        metadata: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Project prepared VMD options without inventing target identity.
+
+        Scene preflight may expose a short display name while Maya discovery
+        returns the canonical long DAG path. Prepared action requests must
+        leave identity resolution to that boundary unless the caller supplied
+        an explicit identity assertion.
+        """
+
+        enriched = ExportWorkflowService._target_options(options, metadata)
+        if "target_identity" not in options:
+            enriched.pop("target_identity", None)
         return enriched
 
     def _collect_model(self, request: ExportWorkflowRequest, options: Mapping[str, Any]) -> Any:
@@ -278,7 +339,11 @@ class ExportWorkflowService:
         options = self._options(request)
         self._emit_progress(progress_callback, "scene_preflight")
         scene_result = self.scene_preflight.run(options)
-        report = scene_result.report
+        report = _scene_report_for_prepared_control_rig(
+            scene_result.report,
+            self._prepared_vmd_options(options, scene_result.metadata),
+            self.prepare_vmd_action,
+        )
         metadata = dict(scene_result.metadata)
         export_format = metadata.get("format")
         export_strategy = metadata.get("export_strategy") or "model"

@@ -208,6 +208,25 @@ class _StreamingBackend(_Backend):
             sink.begin_section(section)
         return dict(self.metadata)
 
+
+class _TemporaryBakeBackend(_StreamingBackend):
+    def __init__(self, discoveries, *, fail=False, restore_fail=False):
+        super().__init__(discoveries, fail=fail)
+        self.lifecycle_events = []
+        self.lifecycle_context = object()
+        self.restore_fail = restore_fail
+
+    def prepare_for_collection(self, request):
+        del request
+        self.lifecycle_events.append("prepare")
+        return self.lifecycle_context
+
+    def restore_after_collection(self, context):
+        self.assert_context = context
+        self.lifecycle_events.append("restore")
+        if self.restore_fail:
+            raise RuntimeError("restore failed")
+
 def _request(**options):
     values = {
         "target_uuid": "model-uuid",
@@ -236,6 +255,100 @@ def _discovery(**changes):
 
 
 class PrepareVmdExportActionTests(unittest.TestCase):
+    def test_temporary_control_rig_bake_restores_before_token_is_published(self):
+        backend = _TemporaryBakeBackend([_discovery(), _discovery()])
+        revisions = _Revisions(["baked-revision", "edit-revision"])
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, revisions))
+
+        token = action.prepare(_request())
+
+        self.assertEqual(backend.lifecycle_events, ["prepare", "restore"])
+        self.assertIs(backend.assert_context, backend.lifecycle_context)
+        self.assertEqual(backend.discover_calls, 2)
+        self.assertEqual(revisions.arm_calls, 2)
+        self.assertEqual(token.revision, "edit-revision")
+
+    def test_temporary_token_uses_restored_discovery_and_validates_against_edit_scene(self):
+        first = _discovery(
+            cache_id="cache-baked",
+            dependency_closure_fingerprint="sha256:deps-baked",
+        )
+        second = _discovery(
+            cache_id="cache-edit",
+            dependency_closure_fingerprint="sha256:deps-edit",
+        )
+        backend = _TemporaryBakeBackend([first, second, second])
+        revisions = _Revisions(["baked-revision", "edit-revision", "edit-revision"])
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, revisions))
+
+        token = action.prepare(_request())
+
+        self.assertEqual(token.cache_id, "cache-edit")
+        self.assertEqual(
+            token.dependency_closure_fingerprint,
+            "sha256:deps-edit",
+        )
+        action.validate_token(_request(), token)
+        self.assertEqual(backend.discover_calls, 3)
+
+    def test_temporary_collection_requires_stable_identity_across_restore(self):
+        backend = _TemporaryBakeBackend(
+            [_discovery(), _discovery(target_identity="|otherRoot")]
+        )
+        action = PrepareVmdExportAction(
+            _PreparationBoundary(backend, _Revisions(["baked-revision"]))
+        )
+
+        result = action.execute(_request())
+
+        self.assertFalse(result.succeeded)
+        self.assertIsNone(result.token)
+        self.assertEqual(backend.lifecycle_events, ["prepare", "restore"])
+
+    def test_temporary_control_rig_bake_restores_when_collection_fails(self):
+        backend = _TemporaryBakeBackend([_discovery()], fail=True)
+        action = PrepareVmdExportAction(
+            _PreparationBoundary(backend, _Revisions(["baked-revision"]))
+        )
+
+        result = action.execute(_request())
+
+        self.assertFalse(result.succeeded)
+        self.assertIsNone(result.token)
+        self.assertEqual(backend.lifecycle_events, ["prepare", "restore"])
+
+    def test_temporary_control_rig_restore_failure_is_fail_closed(self):
+        backend = _TemporaryBakeBackend(
+            [_discovery()],
+            restore_fail=True,
+        )
+        action = PrepareVmdExportAction(
+            _PreparationBoundary(backend, _Revisions(["baked-revision"]))
+        )
+
+        result = action.execute(_request())
+
+        self.assertFalse(result.succeeded)
+        self.assertIsNone(result.token)
+        self.assertIn("could not be restored", str(result.error))
+
+    def test_temporary_control_rig_bake_restores_when_collection_is_cancelled(self):
+        class CancelBackend(_TemporaryBakeBackend):
+            def collect_to_sink(self, request, sink):
+                del request, sink
+                raise KeyboardInterrupt("cancelled")
+
+        backend = CancelBackend([_discovery()])
+        action = PrepareVmdExportAction(
+            _PreparationBoundary(backend, _Revisions(["baked-revision"]))
+        )
+
+        with self.assertRaisesRegex(KeyboardInterrupt, "cancelled"):
+            action.execute(_request())
+
+        self.assertEqual(backend.lifecycle_events, ["prepare", "restore"])
+        self.assertGreaterEqual(backend.close_calls, 1)
+
     def test_streaming_prepare_uses_sink_and_retains_warning(self):
         _StreamingSession.instances.clear()
         backend = _StreamingBackend(

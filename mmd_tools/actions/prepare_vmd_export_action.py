@@ -433,6 +433,60 @@ def _arm_boundary(boundary: Any, request: Any, discovery: VmdExportDiscovery) ->
     boundary.arm(request, discovery)
 
 
+def _prepare_boundary_for_collection(boundary: Any, request: Any) -> Any:
+    """Run an optional host lifecycle before the first discovery.
+
+    Maya may need to move an authoring Control Rig into its MMD-owned state
+    before the dependency route is discovered.  Keeping this hook optional
+    preserves the small, Maya-independent contract used by headless tests and
+    non-Maya callers.
+    """
+
+    prepare = getattr(boundary, "prepare_for_collection", None)
+    if not callable(prepare):
+        return None
+    return prepare(request)
+
+
+def _restore_boundary_after_collection(boundary: Any, context: Any) -> Optional[Exception]:
+    """Close the temporary watch and restore a host-side collection lifecycle.
+
+    Restoration is attempted even when closing the old watch fails.  The
+    caller treats either failure as fatal, so a partially restored scene can
+    never be published through a prepared token.
+    """
+
+    close_error: Optional[Exception] = None
+    close = getattr(boundary, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception as exc:
+            close_error = exc
+    restore = getattr(boundary, "restore_after_collection", None)
+    if not callable(restore):
+        restore_error: Optional[Exception] = PrepareVmdExportError(
+            "preparation boundary cannot restore temporary collection state"
+        )
+    else:
+        try:
+            restore(context)
+        except Exception as exc:
+            restore_error = exc
+        else:
+            restore_error = None
+    if close_error is None:
+        return restore_error
+    if restore_error is None:
+        return PrepareVmdExportError(
+            f"closing the temporary collection watch failed: {close_error}"
+        )
+    return PrepareVmdExportError(
+        "temporary collection cleanup failed: "
+        f"watch close: {close_error}; scene restore: {restore_error}"
+    )
+
+
 class PrepareVmdExportAction:
     """Prepare one Bake Timeline payload through injected production boundaries."""
 
@@ -485,6 +539,14 @@ class PrepareVmdExportAction:
         """Return a detached report-writer copy of :attr:`diagnostics`."""
 
         return self._diagnostics.as_dict()
+
+    def can_prepare_for_collection(self, request: Any) -> bool:
+        """Report whether the host can perform a temporary collection bake."""
+
+        capability = getattr(self._boundary, "can_prepare_for_collection", None)
+        if not callable(capability):
+            return False
+        return bool(capability(request))
 
     def invalidate(self, token: Optional[PreparedVmdExportToken] = None) -> bool:
         """Discard a token and close its host-side revision watch.
@@ -568,6 +630,9 @@ class PrepareVmdExportAction:
         staged_artifact: Optional[PreparedVmdArtifactReceipt] = None
         stream_metadata: Mapping[str, Any] = {}
         stream_session: Optional[PreparedVmdStageSession] = None
+        lifecycle_context: Any = None
+        lifecycle_active = False
+        temporary_lifecycle = False
         status = "failed"
         error_text: Optional[str] = None
 
@@ -578,11 +643,29 @@ class PrepareVmdExportAction:
         # closes the old Maya revision watch before discovery/arm starts.
         self._diagnostics = PrepareVmdExportDiagnostics(status="running")
         self.invalidate()
+
+        def restore_temporary_collection() -> Optional[Exception]:
+            """Restore an automatic Control Rig bake exactly once."""
+
+            nonlocal lifecycle_active, lifecycle_context
+            if not lifecycle_active:
+                return None
+            context = lifecycle_context
+            lifecycle_active = False
+            lifecycle_context = None
+            result = _restore_boundary_after_collection(self._boundary, context)
+            self._boundary_open = False
+            return result
+
         try:
             fingerprint_begin = time.perf_counter()
             frame_range, frame_step, scale, export_strategy = _normalize_frame_options(request)
             options_fingerprint = request_fingerprint(request)
             timed("request_fingerprint", fingerprint_begin)
+
+            lifecycle_context = _prepare_boundary_for_collection(self._boundary, request)
+            lifecycle_active = lifecycle_context is not None
+            temporary_lifecycle = lifecycle_active
 
             discovery_begin = time.perf_counter()
             first = _normalize_discovery(self._boundary.discover(request), request)
@@ -625,15 +708,33 @@ class PrepareVmdExportAction:
             self._validate_stream_counts(stream_metadata, stream_summary)
             timed("backend_collect", collect_begin)
 
+            # A temporary Control Rig bake intentionally changes the route and
+            # revision while collecting.  Restore it before the final
+            # discovery, then arm a fresh watch so the token describes the
+            # live EDIT/CONTROL_OWNED scene rather than the transient BAKED one.
+            restoration_error = restore_temporary_collection()
+            if restoration_error is not None:
+                raise PrepareVmdExportError(
+                    "automatic Control Rig bake could not be restored: "
+                    f"{restoration_error}"
+                )
+
             discovery_begin = time.perf_counter()
             second = _normalize_discovery(self._boundary.discover(request), request)
             timed("second_discovery", discovery_begin)
+            if lifecycle_context is not None:
+                raise PrepareVmdExportError("temporary collection lifecycle remained active")
+            if temporary_lifecycle:
+                # Re-arm after a temporary lifecycle.  The first watch belongs
+                # to the transient BAKED graph and was closed before restore.
+                _arm_boundary(self._boundary, request, second)
+                self._boundary_open = True
 
             revision_after_begin = time.perf_counter()
             revision_after = _revision_method(self._boundary, request, second)
             revision_after = _require_identity(revision_after, "revision_after")
             timed("revision_after", revision_after_begin)
-            if revision_before != revision_after:
+            if not temporary_lifecycle and revision_before != revision_after:
                 raise PrepareVmdExportRaceError(
                     f"scene revision changed during VMD collection ({revision_before} -> {revision_after})"
                 )
@@ -641,8 +742,11 @@ class PrepareVmdExportAction:
                 first.scene_session_id != second.scene_session_id
                 or first.target_uuid != second.target_uuid
                 or first.target_identity != second.target_identity
-                or first.dependency_closure_fingerprint != second.dependency_closure_fingerprint
                 or first.model_name != second.model_name
+            ):
+                raise PrepareVmdExportRaceError("VMD route or dependency closure changed during collection")
+            if not temporary_lifecycle and (
+                first.dependency_closure_fingerprint != second.dependency_closure_fingerprint
             ):
                 raise PrepareVmdExportRaceError("VMD route or dependency closure changed during collection")
 
@@ -658,25 +762,26 @@ class PrepareVmdExportAction:
             combined_validation_report = staged_artifact.output_validation_report
             payload_fingerprint = staged_artifact.sha256
             timed("artifact_stage_verify", stage_begin)
-            cache_id = first.cache_id or _cache_id(
-                first.scene_session_id,
-                first.target_uuid,
+            authority = second
+            cache_id = authority.cache_id or _cache_id(
+                authority.scene_session_id,
+                authority.target_uuid,
                 options_fingerprint or request_fingerprint(request),
-                first.dependency_closure_fingerprint,
+                authority.dependency_closure_fingerprint,
             )
             token = PreparedVmdExportToken(
-                schema_version=first.schema_version,
+                schema_version=authority.schema_version,
                 cache_id=cache_id,
-                scene_session_id=first.scene_session_id,
+                scene_session_id=authority.scene_session_id,
                 revision=revision_after,
-                target_uuid=first.target_uuid,
-                target_identity=first.target_identity,
+                target_uuid=authority.target_uuid,
+                target_identity=authority.target_identity,
                 export_strategy=export_strategy,
                 frame_range=frame_range,
                 frame_step=frame_step,
                 semantic_options_fingerprint=options_fingerprint,
                 payload_fingerprint=payload_fingerprint,
-                dependency_closure_fingerprint=first.dependency_closure_fingerprint,
+                dependency_closure_fingerprint=authority.dependency_closure_fingerprint,
                 staged_artifact=staged_artifact,
                 combined_validation_report=combined_validation_report,
             )
@@ -685,12 +790,22 @@ class PrepareVmdExportAction:
             return PrepareVmdExportResult(status="published", token=token)
         except PrepareVmdExportRaceError as exc:
             status = "partial"
+            restoration_error = restore_temporary_collection()
+            if restoration_error is not None:
+                exc = PrepareVmdExportError(
+                    f"{exc}; automatic Control Rig bake restoration failed: {restoration_error}"
+                )
             error_text = f"{type(exc).__name__}: {exc}"
             if staged_artifact is not None:
                 staged_artifact.cleanup()
             self.invalidate()
             return PrepareVmdExportResult(status="partial", error=exc)
         except Exception as exc:
+            restoration_error = restore_temporary_collection()
+            if restoration_error is not None:
+                exc = PrepareVmdExportError(
+                    f"{exc}; automatic Control Rig bake restoration failed: {restoration_error}"
+                )
             error_text = f"{type(exc).__name__}: {exc}"
             if staged_artifact is not None:
                 staged_artifact.cleanup()
@@ -699,9 +814,15 @@ class PrepareVmdExportAction:
         except BaseException:
             # Cancellation and host-level interrupts must preserve their type
             # while still releasing any private writer and revision watch.
+            restoration_error = restore_temporary_collection()
             if staged_artifact is not None:
                 staged_artifact.cleanup()
             self.invalidate()
+            if restoration_error is not None:
+                raise PrepareVmdExportError(
+                    "automatic Control Rig bake restoration failed during cancellation: "
+                    f"{restoration_error}"
+                ) from restoration_error
             raise
         finally:
             phase_timing["total"] = round(time.perf_counter() - started, 6)
