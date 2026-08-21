@@ -369,7 +369,7 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         events = []
         sink = events.append
         action = create_maya_vmd_prepare_action(diagnostics_sink=sink)
-        self.assertIs(action._backend._diagnostics_sink, sink)
+        self.assertIs(action._boundary._diagnostics_sink, sink)
 
         backend = MayaVmdPrepareBackend(
             self.cmds,
@@ -394,7 +394,7 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
             self.backend.collect_to_sink(_request(), _FakeSink())
 
     def test_reprepare_replaces_watch_and_invalidates_older_token(self):
-        action = PrepareVmdExportAction(self.backend, self.backend)
+        action = PrepareVmdExportAction(self.backend)
         request = _request()
         token = action.prepare(request)
         self.assertEqual(len(self.service.watches), 1)
@@ -404,7 +404,7 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
             action.validate_token(request, token)
 
     def test_prepare_action_rejects_caller_uuid_assertion_mismatch(self):
-        action = PrepareVmdExportAction(self.backend, self.backend)
+        action = PrepareVmdExportAction(self.backend)
         result = action.execute(_request(target_uuid="caller-uuid"))
         self.assertEqual(result.status, "failed")
         self.assertIsNone(result.token)

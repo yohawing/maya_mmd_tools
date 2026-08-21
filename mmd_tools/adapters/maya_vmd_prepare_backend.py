@@ -699,9 +699,6 @@ class MayaVmdPrepareBackend:
         return bool(current)
 
 
-MayaVmdPrepareRevisionProvider = MayaVmdPrepareBackend
-
-
 def create_maya_vmd_prepare_action(
     *,
     diagnostics_sink: Any = None,
@@ -722,12 +719,11 @@ def create_maya_vmd_prepare_action(
         diagnostics_sink=diagnostics_sink,
         bone_channel_sampler=bone_channel_sampler,
     )
-    return PrepareVmdExportAction(backend, backend)
+    return PrepareVmdExportAction(backend)
 
 
 __all__ = [
     "MayaVmdExportRoute",
     "MayaVmdPrepareBackend",
-    "MayaVmdPrepareRevisionProvider",
     "create_maya_vmd_prepare_action",
 ]

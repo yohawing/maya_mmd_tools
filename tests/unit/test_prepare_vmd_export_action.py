@@ -78,6 +78,26 @@ class _Revisions:
         return next(self.revisions)
 
 
+class _PreparationBoundary:
+    """Compose backend and revision state as one lifecycle owner."""
+
+    def __init__(self, backend, revisions):
+        self._backend = backend
+        self._revisions = revisions
+
+    def __getattr__(self, name):
+        return getattr(self._backend, name)
+
+    def arm(self, request, discovery):
+        return self._revisions.arm(request, discovery)
+
+    def current_revision(self, request, discovery):
+        return self._revisions.current_revision(request, discovery)
+
+    def close(self):
+        return self._backend.close()
+
+
 class _StreamingSession:
     instances = []
 
@@ -233,7 +253,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
                 "raw_provenance": {"source": "fixture"},
             },
         )
-        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1"]))
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1", "r1"])))
 
         with patch(
             "mmd_tools.actions.prepare_vmd_export_action.PreparedVmdStageSession",
@@ -262,7 +282,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
             [_discovery(model_name="stream-model"), _discovery(model_name="stream-model")],
             fail=True,
         )
-        action = PrepareVmdExportAction(backend, _Revisions(["r1"]))
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1"])))
         with patch(
             "mmd_tools.actions.prepare_vmd_export_action.PreparedVmdStageSession",
             _StreamingSession,
@@ -277,7 +297,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         backend = _StreamingBackend(
             [_discovery(model_name="stream-model"), _discovery(model_name="stream-model")]
         )
-        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r2"]))
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1", "r2"])))
         with patch(
             "mmd_tools.actions.prepare_vmd_export_action.PreparedVmdStageSession",
             _StreamingSession,
@@ -296,7 +316,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
         _StreamingSession.instances.clear()
         backend = CancelBackend([_discovery(model_name="stream-model")])
-        action = PrepareVmdExportAction(backend, _Revisions(["r1"]))
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1"])))
         with patch(
             "mmd_tools.actions.prepare_vmd_export_action.PreparedVmdStageSession",
             _StreamingSession,
@@ -333,7 +353,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
                     ],
                     metadata=metadata,
                 )
-                action = PrepareVmdExportAction(backend, _Revisions(["r1"]))
+                action = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1"])))
                 with patch(
                     "mmd_tools.actions.prepare_vmd_export_action.PreparedVmdStageSession",
                     _StreamingSession,
@@ -363,7 +383,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         backend = _StreamingBackend(
             [_discovery(model_name="stream-model"), _discovery(model_name="stream-model")]
         )
-        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1"]))
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1", "r1"])))
         with patch(
             "mmd_tools.actions.prepare_vmd_export_action.PreparedVmdStageSession",
             TamperedSession,
@@ -382,7 +402,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
                 del request
 
         with self.assertRaisesRegex(TypeError, "supports_streaming"):
-            PrepareVmdExportAction(LegacyBackend(), _Revisions(["r1"]))
+            PrepareVmdExportAction(LegacyBackend())
 
         class DisabledBackend(_Backend):
             def supports_streaming(self):
@@ -390,15 +410,14 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(TypeError, "must support streaming"):
             PrepareVmdExportAction(
-                DisabledBackend([_discovery()]),
-                _Revisions(["r1"]),
+                _PreparationBoundary(DisabledBackend([_discovery()]), _Revisions(["r1"])),
             )
 
     def test_collects_once_and_publishes_immutable_token(self):
         backend = _Backend([_discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1"])
 
-        action = PrepareVmdExportAction(backend, revisions)
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, revisions))
         result = action.execute(_request())
 
         self.assertTrue(result.succeeded)
@@ -424,7 +443,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_diagnostics_keep_prepare_phase_evidence_on_success_and_failure(self):
         backend = _Backend([_discovery(), _discovery()])
-        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1"]))
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1", "r1"])))
 
         result = action.execute(_request())
         diagnostics = action.diagnostics
@@ -450,7 +469,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         copied["phase_timing"]["total"] = -1
         self.assertGreaterEqual(diagnostics.phase_timing["total"], 0.0)
 
-        failing = PrepareVmdExportAction(_Backend([_discovery()]), _Revisions([None]))
+        failing = PrepareVmdExportAction(_PreparationBoundary(_Backend([_discovery()]), _Revisions([None])))
         failure = failing.execute(_request())
         self.assertEqual(failure.status, "failed")
         self.assertEqual(failing.diagnostics.status, "failed")
@@ -461,7 +480,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_revision_race_is_partial_and_never_publishes(self):
         backend = _Backend([_discovery(), _discovery()])
-        result = PrepareVmdExportAction(backend, _Revisions(["r1", "r2"])).execute(_request())
+        result = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1", "r2"]))).execute(_request())
 
         self.assertEqual(result.status, "partial")
         self.assertIsNone(result.token)
@@ -469,7 +488,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_dependency_closure_change_is_partial_and_never_publishes(self):
         backend = _Backend([_discovery(), _discovery(dependency_closure_fingerprint="sha256:deps-2")])
-        result = PrepareVmdExportAction(backend, _Revisions(["r1", "r1"])).execute(_request())
+        result = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1", "r1"]))).execute(_request())
 
         self.assertEqual(result.status, "partial")
         self.assertIsNone(result.token)
@@ -477,7 +496,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_missing_revision_fails_before_collection(self):
         backend = _Backend([_discovery()])
-        result = PrepareVmdExportAction(backend, _Revisions([None])).execute(_request())
+        result = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions([None]))).execute(_request())
 
         self.assertEqual(result.status, "failed")
         self.assertIsNone(result.token)
@@ -486,7 +505,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_non_bake_timeline_is_rejected_before_discovery(self):
         backend = _Backend([_discovery()])
-        result = PrepareVmdExportAction(backend, _Revisions(["r1"])).execute(
+        result = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1"]))).execute(
             _request(export_strategy="preserve_keys")
         )
 
@@ -522,7 +541,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
     def test_validate_token_rediscoveres_without_collecting_and_allows_output_change(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r1"])
-        action = PrepareVmdExportAction(backend, revisions)
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, revisions))
         token = action.prepare(_request())
 
         action.validate_token(_request(options={"output_path": "other.vmd"}), token)
@@ -534,7 +553,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
     def test_validate_token_rejects_stale_revision_with_stable_error(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r2"])
-        action = PrepareVmdExportAction(backend, revisions)
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, revisions))
         token = action.prepare(_request())
 
         with self.assertRaisesRegex(
@@ -548,7 +567,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
     def test_validate_token_rejects_receipt_payload_fingerprint_tampering(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r1"])
-        action = PrepareVmdExportAction(backend, revisions)
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, revisions))
         token = action.prepare(_request())
         tampered = replace(token, payload_fingerprint="sha256:stale")
         action._active_token = tampered
@@ -561,7 +580,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_invalidate_closes_boundary_and_is_idempotent(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
-        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1", "r1"]))
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1", "r1", "r1"])))
         token = action.prepare(_request())
 
         self.assertTrue(action.invalidate(token))
@@ -574,7 +593,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
     def test_discarded_token_cannot_be_reused_at_same_revision(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
         revisions = _Revisions(["r1", "r1", "r1"])
-        action = PrepareVmdExportAction(backend, revisions)
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, revisions))
         token = action.prepare(_request())
         action.invalidate(token)
         discover_calls = backend.discover_calls
@@ -590,7 +609,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
 
     def test_validate_token_rejects_tampered_staged_artifact(self):
         backend = _Backend([_discovery(), _discovery(), _discovery()])
-        action = PrepareVmdExportAction(backend, _Revisions(["r1", "r1", "r1"]))
+        action = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1", "r1", "r1"])))
         token = action.prepare(_request())
         stage_path = Path(token.staged_artifact.file_path)
         stage_path.write_bytes(stage_path.read_bytes() + b"tamper")

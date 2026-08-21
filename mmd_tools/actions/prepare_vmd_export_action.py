@@ -56,8 +56,8 @@ class PrepareVmdExportRaceError(PrepareVmdExportError):
     """Raised when the scene changes while a payload is being collected."""
 
 
-class VmdExportPreparationBackend(Protocol):
-    """Maya-owned discovery and collection boundary."""
+class VmdExportPreparationBoundary(Protocol):
+    """Maya-owned boundary for one complete preparation lifecycle."""
 
     def discover(self, request: Any) -> Any:
         """Return a route/dependency descriptor for the requested target."""
@@ -68,15 +68,14 @@ class VmdExportPreparationBackend(Protocol):
     def collect_to_sink(self, request: Any, sink: Any) -> Mapping[str, Any]:
         """Collect directly into a bounded VMD stream sink."""
 
-
-class VmdExportRevisionProvider(Protocol):
-    """Maya-owned scene revision/watcher boundary."""
-
     def arm(self, request: Any, discovery: Any) -> Any:
         """Arm a watcher before collection begins."""
 
     def current_revision(self, request: Any, discovery: Any) -> Any:
         """Return the current non-null scene revision."""
+
+    def close(self) -> Any:
+        """Close the active scene watch and release host-side state."""
 
 
 @dataclass(frozen=True)
@@ -421,17 +420,17 @@ def _freeze_diagnostics(value: Any) -> Any:
     return value
 
 
-def _revision_method(provider: Any, request: Any, discovery: VmdExportDiscovery) -> Any:
-    method = getattr(provider, "current_revision", None)
+def _revision_method(boundary: Any, request: Any, discovery: VmdExportDiscovery) -> Any:
+    method = getattr(boundary, "current_revision", None)
     if not callable(method):
         raise PrepareVmdExportError(
-            "revision provider must expose current_revision(request, discovery)"
+            "preparation boundary must expose current_revision(request, discovery)"
         )
     return method(request, discovery)
 
 
-def _arm_revision_provider(provider: Any, request: Any, discovery: VmdExportDiscovery) -> None:
-    provider.arm(request, discovery)
+def _arm_boundary(boundary: Any, request: Any, discovery: VmdExportDiscovery) -> None:
+    boundary.arm(request, discovery)
 
 
 class PrepareVmdExportAction:
@@ -439,32 +438,27 @@ class PrepareVmdExportAction:
 
     def __init__(
         self,
-        backend: VmdExportPreparationBackend,
-        revision_provider: Any,
+        boundary: VmdExportPreparationBoundary,
     ):
-        has_discovery = backend is not None and callable(getattr(backend, "discover", None))
-        has_stream_collect = backend is not None and callable(
-            getattr(backend, "collect_to_sink", None)
+        required_methods = (
+            "discover",
+            "supports_streaming",
+            "collect_to_sink",
+            "arm",
+            "current_revision",
+            "close",
         )
-        has_stream_capability = backend is not None and callable(
-            getattr(backend, "supports_streaming", None)
-        )
-        if not has_discovery or not has_stream_capability or not has_stream_collect:
+        if boundary is None or any(
+            not callable(getattr(boundary, name, None)) for name in required_methods
+        ):
             raise TypeError(
-                "backend must expose discover(request), supports_streaming(), "
-                "and collect_to_sink(request, sink)"
+                "boundary must expose discover(request), supports_streaming(), "
+                "collect_to_sink(request, sink), arm(request, discovery), "
+                "current_revision(request, discovery), and close()"
             )
-        if not bool(backend.supports_streaming()):
-            raise TypeError("backend must support streaming VMD preparation")
-        if revision_provider is None or not callable(
-            getattr(revision_provider, "arm", None)
-        ) or not callable(getattr(revision_provider, "current_revision", None)):
-            raise TypeError(
-                "revision_provider must expose arm(request, discovery) and "
-                "current_revision(request, discovery)"
-            )
-        self._backend = backend
-        self._revision_provider = revision_provider
+        if not bool(boundary.supports_streaming()):
+            raise TypeError("boundary must support streaming VMD preparation")
+        self._boundary = boundary
         # The action owns exactly one prepared approval.  Keeping this as an
         # identity (rather than a cache id or revision string) prevents a
         # discarded token from becoming valid again when Maya happens to
@@ -506,7 +500,8 @@ class PrepareVmdExportAction:
         active_token = self._active_token
         owned = self._active_token is not None
         pending_session = self._pending_stage_session
-        if not owned and pending_session is None and not self._boundary_open:
+        boundary_open = self._boundary_open
+        if not owned and pending_session is None and not boundary_open:
             return False
         self._active_token = None
         self._pending_stage_session = None
@@ -514,15 +509,11 @@ class PrepareVmdExportAction:
             pending_session.cleanup()
         if active_token is not None:
             active_token.staged_artifact.cleanup()
-        closed: set[int] = set()
-        for owner in (self._backend, self._revision_provider):
-            close = getattr(owner, "close", None)
-            if not callable(close) or id(owner) in closed:
-                continue
-            closed.add(id(owner))
+        close = getattr(self._boundary, "close", None)
+        if callable(close):
             close()
         self._boundary_open = False
-        return owned or bool(closed)
+        return owned or pending_session is not None or boundary_open
 
     def close(self) -> bool:
         """Close the action boundary; repeated calls are safe."""
@@ -594,7 +585,7 @@ class PrepareVmdExportAction:
             timed("request_fingerprint", fingerprint_begin)
 
             discovery_begin = time.perf_counter()
-            first = _normalize_discovery(self._backend.discover(request), request)
+            first = _normalize_discovery(self._boundary.discover(request), request)
             timed("first_discovery", discovery_begin)
             requested_uuid = _read_field(request, "target_uuid")
             requested_identity = _read_field(request, "target_identity")
@@ -603,12 +594,12 @@ class PrepareVmdExportAction:
             if requested_identity is not None and str(requested_identity) != first.target_identity:
                 raise PrepareVmdExportError("requested target_identity does not match discovered target")
             arm_begin = time.perf_counter()
-            _arm_revision_provider(self._revision_provider, request, first)
+            _arm_boundary(self._boundary, request, first)
             self._boundary_open = True
             timed("watcher_arm", arm_begin)
 
             revision_before_begin = time.perf_counter()
-            revision_before = _revision_method(self._revision_provider, request, first)
+            revision_before = _revision_method(self._boundary, request, first)
             revision_before = _require_identity(revision_before, "revision_before")
             timed("revision_before", revision_before_begin)
 
@@ -620,7 +611,7 @@ class PrepareVmdExportAction:
                 output_verifier=verify_vmd_output_streaming,
             )
             self._pending_stage_session = stream_session
-            stream_metadata_value = self._backend.collect_to_sink(request, stream_session)
+            stream_metadata_value = self._boundary.collect_to_sink(request, stream_session)
             if stream_metadata_value is not None and not isinstance(
                 stream_metadata_value, Mapping
             ):
@@ -635,11 +626,11 @@ class PrepareVmdExportAction:
             timed("backend_collect", collect_begin)
 
             discovery_begin = time.perf_counter()
-            second = _normalize_discovery(self._backend.discover(request), request)
+            second = _normalize_discovery(self._boundary.discover(request), request)
             timed("second_discovery", discovery_begin)
 
             revision_after_begin = time.perf_counter()
-            revision_after = _revision_method(self._revision_provider, request, second)
+            revision_after = _revision_method(self._boundary, request, second)
             revision_after = _require_identity(revision_after, "revision_after")
             timed("revision_after", revision_after_begin)
             if revision_before != revision_after:
@@ -714,11 +705,11 @@ class PrepareVmdExportAction:
             raise
         finally:
             phase_timing["total"] = round(time.perf_counter() - started, 6)
-            backend_diagnostics = getattr(self._backend, "diagnostics_copy", None)
+            backend_diagnostics = getattr(self._boundary, "diagnostics_copy", None)
             if callable(backend_diagnostics):
                 backend_diagnostics = backend_diagnostics()
             elif backend_diagnostics is None:
-                backend_diagnostics = getattr(self._backend, "diagnostics", {})
+                backend_diagnostics = getattr(self._boundary, "diagnostics", {})
             if not isinstance(backend_diagnostics, Mapping):
                 backend_diagnostics = {}
             self._diagnostics = PrepareVmdExportDiagnostics(
@@ -767,9 +758,9 @@ class PrepareVmdExportAction:
 
         try:
             frame_range, frame_step, _scale, export_strategy = _normalize_frame_options(request)
-            discovery = _normalize_discovery(self._backend.discover(request), request)
+            discovery = _normalize_discovery(self._boundary.discover(request), request)
             revision = _require_identity(
-                _revision_method(self._revision_provider, request, discovery),
+                _revision_method(self._boundary, request, discovery),
                 "revision",
             )
         except PrepareVmdExportError as exc:
@@ -825,7 +816,6 @@ __all__ = [
     "PreparedVmdArtifactReceipt",
     "PreparedVmdExportToken",
     "VmdExportDiscovery",
-    "VmdExportPreparationBackend",
-    "VmdExportRevisionProvider",
+    "VmdExportPreparationBoundary",
     "request_fingerprint",
 ]

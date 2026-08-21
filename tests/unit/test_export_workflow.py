@@ -73,6 +73,7 @@ class _VmdPrepareBackend:
     def __init__(self, *, raw_provenance=False):
         self.discover_calls = 0
         self.collect_calls = 0
+        self.revision_calls = 0
         self.seen_requests = []
         self.raw_provenance = raw_provenance
 
@@ -89,6 +90,16 @@ class _VmdPrepareBackend:
 
     def supports_streaming(self):
         return True
+
+    def arm(self, _request, _discovery):
+        return None
+
+    def current_revision(self, _request, _discovery):
+        self.revision_calls += 1
+        return "revision-1"
+
+    def close(self):
+        return None
 
     def collect_to_sink(self, _request, sink):
         self.collect_calls += 1
@@ -113,18 +124,6 @@ class _VmdPrepareBackend:
                 "ik": 0,
             },
         }
-
-
-class _VmdRevisions:
-    def __init__(self):
-        self.calls = 0
-
-    def arm(self, _request, _discovery):
-        return None
-
-    def current_revision(self, _request, _discovery):
-        self.calls += 1
-        return "revision-1"
 
 
 class _RecordingVmdExporter(VmdExporter):
@@ -284,9 +283,8 @@ class TestExportWorkflowService(unittest.TestCase):
 
     def test_prepared_vmd_token_publishes_cached_artifact_without_rewriting(self):
         backend = _VmdPrepareBackend()
-        revisions = _VmdRevisions()
         exporter = _RecordingVmdExporter()
-        prepare_action = PrepareVmdExportAction(backend, revisions)
+        prepare_action = PrepareVmdExportAction(backend)
         vmd_action = ExportVmdAction(
             exporter=exporter,
             output_verifier=None,
@@ -358,9 +356,8 @@ class TestExportWorkflowService(unittest.TestCase):
 
     def test_prepared_vmd_raw_loss_info_does_not_require_final_ack(self):
         backend = _VmdPrepareBackend(raw_provenance=True)
-        revisions = _VmdRevisions()
         exporter = _RecordingVmdExporter()
-        prepare_action = PrepareVmdExportAction(backend, revisions)
+        prepare_action = PrepareVmdExportAction(backend)
         service = ExportWorkflowService(
             scene_preflight=ScenePreflight(
                 scene_service=_SceneService(),
@@ -409,7 +406,7 @@ class TestExportWorkflowService(unittest.TestCase):
 
     def test_prepare_vmd_preflight_blocks_before_discovery_or_collection(self):
         backend = _VmdPrepareBackend()
-        prepare_action = PrepareVmdExportAction(backend, _VmdRevisions())
+        prepare_action = PrepareVmdExportAction(backend)
         service = ExportWorkflowService(
             scene_preflight=ScenePreflight(
                 scene_service=_SceneService(exists=False),
