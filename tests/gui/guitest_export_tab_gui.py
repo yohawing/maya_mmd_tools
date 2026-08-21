@@ -22,7 +22,11 @@ from mmd_tools.validation.export_validator import (
 )
 from mmd_tools.validation.issue_catalog import get_issue_catalog_entry
 from mmd_tools.ui.translations import UITranslator
-from mmd_tools.validation.vmd_validator import VMD_EXPORT_BAKE_TIMELINE, validate_vmd_data
+from mmd_tools.validation.vmd_validator import (
+    VMD_EXPORT_BAKE_TIMELINE,
+    VMD_EXPORT_PRESERVE_KEYS,
+    validate_vmd_data,
+)
 from tests.common.ui_action_coverage import (
     ActionInvocationSpy,
     QtSignalInvocationSpy,
@@ -441,28 +445,28 @@ class TestExportTabGUI(GuiTestBase):
             self._delete_tab(tab)
             translator.set_language(previous_language)
 
-    def test_bake_timeline_warning_is_acknowledged_before_successful_export_route(self):
-        """Real Maya widgets show the warning and route an explicit ack to export."""
+    def test_acknowledgeable_warning_is_forwarded_to_successful_export_route(self):
+        """Real Maya widgets route an explicit acknowledgement to export."""
         tab = self._create_visible_tab()
-        report = validate_vmd_data(
-            VmdData(),
-            VMD_EXPORT_BAKE_TIMELINE,
-            raw_provenance={
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_interpolation": [
-                    {
-                        "bone_name": "センター",
-                        "frame_number": 0,
-                        "interpolation": [20] * 64,
-                    }
-                ],
-            },
+        report = ExportValidationReport(
+            "vmd",
+            (
+                ExportValidationIssue(
+                    "VMD_BAKE_TIMELINE_RAW_LOSS",
+                    "warning",
+                    False,
+                    "export_strategy",
+                    "fixture acknowledgement warning",
+                ),
+            ),
+            mode=VMD_EXPORT_PRESERVE_KEYS,
         )
         workflow = _WarningWorkflow(report)
         app_state = _GuiAppState()
         presenter = ExportPresenter(tab, app_state, workflow_service=workflow)
         try:
             tab.pane_tabs.setCurrentIndex(1)
+            tab.bake_export_check.setChecked(False)
             tab.validation_console.set_report(report, {"fixture": "bake-timeline-raw-loss"})
             QApplication.processEvents()
 
@@ -517,6 +521,9 @@ class TestExportTabGUI(GuiTestBase):
         tab = self._create_visible_tab()
         try:
             model_output_edit = tab.output_path_edit
+            # Export paths persist as user preferences.  Normalize first so a
+            # repeated GUI run still performs a real text-change interaction.
+            tab.output_path_edit.setText("")
             output_spy = QtSignalInvocationSpy(
                 "ExportTab.output_path_changed",
                 tab.output_path_edit.textChanged,
