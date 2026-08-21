@@ -43,6 +43,7 @@
     "offset_information": "偏移資訊",
     "maya_connection": "Maya連接",
     "general_settings": "一般設定",
+    "advanced_settings": "進階設定",
     "import_settings": "匯入設定",
     "export_settings": "匯出設定",
     "rigid_bodies": "剛體",
@@ -56,10 +57,9 @@
     "import": "匯入",
     "export": "匯出",
     "validate_model": "驗證模型",
-    "export_pmx": "匯出 PMX",
+    "export_pmx": "匯出模型",
     "validate_animation": "驗證動畫",
-    "prepare_mode_c": "準備匯出資料",
-    "export_vmd": "匯出 VMD",
+    "export_vmd": "匯出動畫",
     "ok": "確定",
     "apply": "套用",
     "cancel": "取消",
@@ -196,7 +196,7 @@
     "use_cpp_vp2_ownership": "使用原生 mmdRenderShape 的 VP2 RenderOverride。需要啟用 C++ Fast Load，僅用於網格顯示（實驗性）"
   },
   "messages": {
-    "vmd_bake_export_help": "關閉時會保留符合條件且未編輯的匯入骨骼關鍵影格與插值。已編輯動作不會自動烘焙，而是停止匯出。",
+    "vmd_bake_export_help": "匯出動畫前烘焙目前時間軸。啟用範圍時，只評估指定範圍。",
     "import_success": "匯入完成",
     "create_model_unavailable": "此工作階段無法建立 MMD 模型",
     "create_model_templates_unavailable": "無法載入內建模型範本。請重新載入外掛程式後再試",
@@ -359,7 +359,7 @@
     "joint_values": "關節數值"
   },
   "checkboxes": {
-    "vmd_bake_export": "烘焙時間軸後匯出",
+    "vmd_bake_export": "烘焙匯出",
     "use_namespace": "使用命名空間",
     "import_models": "匯入模型",
     "create_mmd_shaders": "建立MMD著色器",

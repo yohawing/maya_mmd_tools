@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 
 from ..base_tab import BaseTab
 from ..components.category_stack import CategoryStack
+from ..import_export_view_state import ImportExportViewState
 from ..qt_compat import (
     QCheckBox,
     QFileDialog,
@@ -39,7 +40,6 @@ class _ExportPage(QWidget):
 
     validate_requested = Signal()
     export_requested = Signal()
-    prepare_requested = Signal()
     semantic_changed = Signal()
 
     def __init__(self, owner, pane: str, title: str):
@@ -59,7 +59,6 @@ class _ExportPage(QWidget):
             key = "validate_model" if action == "validate" else "export_pmx"
         else:
             key = {
-                "prepare": "prepare_mode_c",
                 "validate": "validate_animation",
                 "export": "export_vmd",
             }[action]
@@ -128,17 +127,20 @@ class _ExportPage(QWidget):
                 self._on_semantic_input_changed
             )
             self._motion_form.addRow(self.bake_export_check)
-            self.bake_export_help = QLabel(
+            # Keep the explanation available as a tooltip without spending a
+            # persistent row on an already unambiguous Bake-only option.
+            self.bake_export_check.setToolTip(
                 self.owner.tr("vmd_bake_export_help", "messages")
             )
-            self.bake_export_help.setWordWrap(True)
-            self._motion_form.addRow(self.bake_export_help)
 
             self.frame_range_check = QCheckBox(
                 self.owner.tr("use_frame_range", "checkboxes")
             )
             self.frame_range_check.setObjectName("motionUseFrameRange")
             self.frame_range_check.toggled.connect(self._on_semantic_input_changed)
+            self.frame_range_check.toggled.connect(
+                lambda *_args: self._sync_frame_range_enabled()
+            )
             self._motion_form.addRow(
                 self.owner.tr("range", "fields"), self.frame_range_check
             )
@@ -158,6 +160,7 @@ class _ExportPage(QWidget):
             self._motion_form.addRow(
                 self.owner.tr("end", "fields"), self.frame_end_spin
             )
+            self._sync_frame_range_enabled()
         self.settings_layout.addStretch()
 
     def _build_workflow(self) -> None:
@@ -170,6 +173,7 @@ class _ExportPage(QWidget):
             if self.pane == self.owner.MODEL_PANE
             else "exportMotionOutputPath"
         )
+        self.output_path_edit.setText(self.owner._load_output_path(self.pane))
         self.output_browse_button = QPushButton(self.owner.tr("browse", "buttons"))
         output_row = QWidget(self)
         output_layout = QHBoxLayout(output_row)
@@ -179,11 +183,6 @@ class _ExportPage(QWidget):
         export_form.addRow(self.owner.tr("file_path", "labels"), output_row)
 
         buttons = QHBoxLayout()
-        if self.pane == self.owner.MOTION_PANE:
-            self.prepare_button = QPushButton(self._button_text("prepare"))
-            self.prepare_button.setObjectName("exportMotionPrepareButton")
-            self.prepare_button.clicked.connect(self.prepare_requested.emit)
-            buttons.addWidget(self.prepare_button)
         self.validate_button = QPushButton(self._button_text("validate"))
         self.validate_button.clicked.connect(self.validate_requested.emit)
         buttons.addWidget(self.validate_button)
@@ -198,12 +197,11 @@ class _ExportPage(QWidget):
         self.workflow_layout.addWidget(self.export_group)
 
         self.validation_console = ValidationConsole(self)
-        self.validation_console.revalidate_requested.connect(self.validate_requested.emit)
         self.workflow_layout.addWidget(self.validation_console, 1)
         self.workflow_layout.addStretch()
 
         self.output_browse_button.clicked.connect(self.owner._browse_output)
-        self.output_path_edit.textChanged.connect(self.owner._mark_editing)
+        self.output_path_edit.textChanged.connect(self._on_output_path_changed)
 
     def _browse_output(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -227,6 +225,8 @@ class _ExportPage(QWidget):
         return str(current.with_suffix(target))
 
     def build_request(self, current_model_root: Optional[str]) -> ExportWorkflowRequest:
+        # Coerce the extension only in the request.  The line edit remains an
+        # exact record of what the user typed, including a non-native suffix.
         output_path = self.normalize_output_path()
         options: Dict[str, Any] = {
             "export_format": self.export_format,
@@ -246,16 +246,13 @@ class _ExportPage(QWidget):
         return ExportWorkflowRequest(file_path=output_path, options=options)
 
     def normalize_output_path(self) -> str:
-        """Keep this page's output path aligned with its fixed export format."""
-        current = self.output_path_edit.text()
-        normalized = self._coerce_output_path(current, self.export_format)
-        if normalized != current:
-            self._restoring = True
-            try:
-                self.output_path_edit.setText(normalized)
-            finally:
-                self._restoring = False
-        return normalized
+        """Return a format-safe request path without mutating the line edit."""
+        return self._coerce_output_path(self.output_path_edit.text(), self.export_format)
+
+    def _on_output_path_changed(self, *_args) -> None:
+        """Persist exact typed text and invalidate the active report."""
+        self.owner._save_output_path(self.pane, self.output_path_edit.text())
+        self._mark_editing()
 
     def _mark_editing(self, *_args) -> None:
         if self._restoring:
@@ -268,7 +265,6 @@ class _ExportPage(QWidget):
     def _on_semantic_input_changed(self, *_args) -> None:
         """Invalidate the prepared payload for timeline-affecting inputs."""
         self._mark_editing()
-        self._sync_prepare_enabled()
         self.semantic_changed.emit()
 
     def set_result(self, result: ExportWorkflowResult) -> None:
@@ -295,11 +291,8 @@ class _ExportPage(QWidget):
         """Disable every workflow entry point owned by this page."""
         self._operation_active = bool(active)
         enabled = not self._operation_active
-        if self.pane == self.owner.MOTION_PANE:
-            self.prepare_button.setEnabled(enabled and self._motion_mode() == "C")
         self.validate_button.setEnabled(enabled)
         self.export_button.setEnabled(enabled)
-        self.validation_console.revalidate_button.setEnabled(enabled)
 
     def invalidate(self) -> None:
         self._state = STATE_EDITING
@@ -313,12 +306,11 @@ class _ExportPage(QWidget):
         self.state_label.setText(self._state)
         self.validation_console.clear_report()
 
-    def _sync_prepare_enabled(self) -> None:
-        if self.pane == self.owner.MOTION_PANE:
-            self.prepare_button.setEnabled(
-                not self._operation_active
-                and self._motion_mode() == "C"
-            )
+    def _sync_frame_range_enabled(self) -> None:
+        """Only expose editable frame bounds when range export is enabled."""
+        enabled = self.frame_range_check.isChecked()
+        self.frame_start_spin.setEnabled(enabled)
+        self.frame_end_spin.setEnabled(enabled)
 
     def _motion_mode(self) -> str:
         """Return the stable internal export strategy for the localized choice."""
@@ -338,8 +330,6 @@ class _ExportPage(QWidget):
         self.output_browse_button.setText(self.owner.tr("browse", "buttons"))
         self.validate_button.setText(self._button_text("validate"))
         self.export_button.setText(self._button_text("export"))
-        if self.pane == self.owner.MOTION_PANE:
-            self.prepare_button.setText(self._button_text("prepare"))
         self._set_form_label(
             self._export_form,
             self.output_path_edit,
@@ -356,7 +346,7 @@ class _ExportPage(QWidget):
             self.bake_export_check.setText(
                 self.owner.tr("vmd_bake_export", "checkboxes")
             )
-            self.bake_export_help.setText(
+            self.bake_export_check.setToolTip(
                 self.owner.tr("vmd_bake_export_help", "messages")
             )
             self.frame_range_check.setText(
@@ -392,15 +382,24 @@ class ExportTab(BaseTab):
 
     validate_requested = Signal()
     export_requested = Signal()
-    prepare_requested = Signal()
     motion_semantic_changed = Signal()
 
     MODEL_PANE = "model"
     MOTION_PANE = "motion"
 
-    def __init__(self, parent=None, settings_service=None):
+    def __init__(
+        self,
+        parent=None,
+        settings_service=None,
+        view_state=None,
+        maya_cmds=None,
+        timeline_range_provider=None,
+    ):
         super().__init__(parent)
         self.settings_service = settings_service
+        self.view_state = view_state if view_state is not None else ImportExportViewState()
+        self._maya_cmds = maya_cmds
+        self._timeline_range_provider = timeline_range_provider
         self._active_pane = self.MODEL_PANE
         self._operation_owner_page = None
         self._build_ui()
@@ -435,17 +434,47 @@ class ExportTab(BaseTab):
             page.validate_requested.connect(self.validate_requested.emit)
             page.export_requested.connect(self.export_requested.emit)
             if pane == self.MOTION_PANE:
-                page.prepare_requested.connect(self.prepare_requested.emit)
                 page.semantic_changed.connect(self.motion_semantic_changed.emit)
             self.category_stack.add_page(pane, page)
         self.category_stack.currentChanged.connect(self._on_pane_changed)
         main_layout.addWidget(self.category_stack)
 
+    def _load_output_path(self, pane: str) -> str:
+        """Load one pane's exact output text from the view-only state store."""
+        key = "export_model_path" if pane == self.MODEL_PANE else "export_motion_path"
+        value = self.view_state.get(key, "")
+        return str(value or "")
+
+    def _save_output_path(self, pane: str, value: str) -> None:
+        """Persist one pane's exact output text without extension coercion."""
+        key = "export_model_path" if pane == self.MODEL_PANE else "export_motion_path"
+        self.view_state.set(key, str(value or ""))
+
+    def _timeline_range(self):
+        """Return Maya playback range lazily, with a Maya-independent fallback."""
+        try:
+            provider = self._timeline_range_provider
+            if callable(provider):
+                result = provider()
+            else:
+                cmds = self._maya_cmds
+                if cmds is None:
+                    from maya import cmds
+                else:
+                    cmds = self._maya_cmds
+                result = (
+                    cmds.playbackOptions(query=True, minTime=True),
+                    cmds.playbackOptions(query=True, maxTime=True),
+                )
+            start, end = (int(round(float(value))) for value in result)
+            if end < start:
+                raise ValueError("Maya playback range is reversed")
+            return start, end
+        except Exception:
+            return 0, 120
+
     def _on_pane_changed(self, index: int) -> None:
         """Update the active format when the shared selector changes."""
-        outgoing = self._pages.get(self._active_pane)
-        if outgoing is not None:
-            outgoing.normalize_output_path()
         self._active_pane = (
             self.MODEL_PANE if int(index) == 0 else self.MOTION_PANE
         )
@@ -478,7 +507,8 @@ class ExportTab(BaseTab):
         service = self.settings_service
         getter = getattr(service, "get", None) if service is not None else None
         if not callable(getter):
-            return
+            def getter(_key, default=None):
+                return default
         model = self._pages[self.MODEL_PANE]
         motion = self._pages[self.MOTION_PANE]
         model.apply_scale_check.setChecked(
@@ -489,12 +519,17 @@ class ExportTab(BaseTab):
         motion.frame_range_check.setChecked(
             bool(getter(settings_keys.EXPORT_MOTION_USE_FRAME_RANGE, False))
         )
-        motion.frame_start_spin.setValue(
-            int(getter(settings_keys.EXPORT_MOTION_START_FRAME, 0) or 0)
+        range_initialized = bool(
+            getter(settings_keys.EXPORT_MOTION_RANGE_INITIALIZED, False)
         )
-        motion.frame_end_spin.setValue(
-            int(getter(settings_keys.EXPORT_MOTION_END_FRAME, 120) or 120)
-        )
+        if range_initialized:
+            start = getter(settings_keys.EXPORT_MOTION_START_FRAME, 0)
+            end = getter(settings_keys.EXPORT_MOTION_END_FRAME, 120)
+        else:
+            start, end = self._timeline_range()
+        motion.frame_start_spin.setValue(int(start or 0))
+        motion.frame_end_spin.setValue(int(end if end is not None else 120))
+        motion._sync_frame_range_enabled()
 
     def _persist_semantic_preferences(self) -> None:
         service = self.settings_service
@@ -511,6 +546,7 @@ class ExportTab(BaseTab):
         )
         setter(settings_keys.EXPORT_MOTION_START_FRAME, motion.frame_start_spin.value())
         setter(settings_keys.EXPORT_MOTION_END_FRAME, motion.frame_end_spin.value())
+        setter(settings_keys.EXPORT_MOTION_RANGE_INITIALIZED, True)
 
     def build_request(self, current_model_root: Optional[str] = None) -> ExportWorkflowRequest:
         return self._active_page().build_request(current_model_root)
@@ -561,12 +597,10 @@ class ExportTab(BaseTab):
             "output_browse_button",
             "validate_button",
             "export_button",
-            "prepare_button",
             "state_label",
             "validation_console",
             "apply_scale_check",
             "bake_export_check",
-            "bake_export_help",
             "frame_range_check",
             "frame_start_spin",
             "frame_end_spin",
@@ -582,7 +616,6 @@ class ExportTab(BaseTab):
                 "apply_scale_check": self.MODEL_PANE,
                 "_motion_form": self.MOTION_PANE,
                 "bake_export_check": self.MOTION_PANE,
-                "bake_export_help": self.MOTION_PANE,
                 "frame_range_check": self.MOTION_PANE,
                 "frame_start_spin": self.MOTION_PANE,
                 "frame_end_spin": self.MOTION_PANE,

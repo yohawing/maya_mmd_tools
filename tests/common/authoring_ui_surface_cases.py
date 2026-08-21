@@ -191,8 +191,6 @@ def _prepare_surface(window: Any, surface: Mapping[str, Any], widget: QWidget) -
             view.use_namespace_check.setChecked(True)
         if surface["id"] == "import_export.namespace":
             view.custom_namespace_check.setChecked(True)
-        if surface["id"] == "import_export.cpp_vp2_ownership":
-            view.use_cpp_fast_load_check.setChecked(True)
         if surface["id"] == "import_export.vmd_rotation_time_curve":
             view.create_mmd_control_rig_check.setChecked(True)
             view.bake_mode_check.setChecked(False)
@@ -223,6 +221,12 @@ def _prepare_surface(window: Any, surface: Mapping[str, Any], widget: QWidget) -
                 ),
             )
         )
+    elif tab == "export":
+        if surface["id"] in {
+            "export.motion_frame_start",
+            "export.motion_frame_end",
+        }:
+            view.frame_range_check.setChecked(True)
     elif tab == "info":
         view.set_fields_enabled(True)
     elif tab == "material":
@@ -279,6 +283,14 @@ def _prepare_surface(window: Any, surface: Mapping[str, Any], widget: QWidget) -
             presenter._sync_physics_enable_checkbox()
     elif tab == "settings":
         window.settings_presenter._refresh_dev_tools_visibility(True)
+        if surface["id"] in {
+            "settings.cpp_fast_load",
+            "settings.cpp_vp2_ownership",
+            "settings.cpp_rig_nodes",
+        }:
+            view.settings_tabs.setCurrentIndex(1)
+        if surface["id"] == "settings.cpp_vp2_ownership":
+            view.use_cpp_fast_load_check.setChecked(True)
 
 
 def _interaction(widget: QWidget, kind: str) -> Tuple[str, Any]:

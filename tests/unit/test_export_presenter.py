@@ -334,6 +334,23 @@ class TestExportPresenter(unittest.TestCase):
         self.assertIsNone(presenter.prepared_vmd_token)
         self.assertEqual(workflow.invalidated, [preparation.token])
 
+    def test_mode_c_validate_prepares_inline_before_validating(self):
+        """The single Animation validation action owns the Mode C preparation."""
+        view = _View("vmd")
+        app_state = _AppState()
+        workflow = _Workflow()
+        presenter = ExportPresenter(view, app_state, workflow_service=workflow)
+
+        result = presenter.validate()
+
+        self.assertEqual(result.state, STATE_READY)
+        self.assertEqual(len(workflow.prepared), 1)
+        self.assertEqual(len(workflow.validated), 1)
+        self.assertIs(
+            workflow.validated[0].prepared_vmd_token,
+            presenter.prepared_vmd_token,
+        )
+
     def test_prepare_surfaces_token_warning_report_to_validation_console(self):
         view = _ConsoleView("vmd")
         app_state = _AppState()

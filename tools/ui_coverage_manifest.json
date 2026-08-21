@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "gate_id": "V070-UI-COVERAGE-1",
-  "minimum_qt_case_surfaces": 229,
+  "minimum_qt_case_surfaces": 227,
   "inventory_scope": "MainWindow nine tabs; logical mutable/actionable surfaces only, with explicit exclusions for containers and read-only displays.",
   "tabs": [
     {
@@ -312,31 +312,31 @@
       "expected_handler": "mmd_tools.ui.presenters.import_export_presenter.ImportExportPresenter.import_file"
     },
     {
-      "id": "import_export.cpp_fast_load",
-      "tab": "import_export",
+      "id": "settings.cpp_fast_load",
+      "tab": "settings",
       "kind": "check",
       "attribute": "use_cpp_fast_load_check",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.tabs.import_export_tab.ImportExportTab._on_setting_changed"
+      "expected_handler": "mmd_tools.ui.presenters.settings_presenter.SettingsPresenter._on_native_setting_changed"
     },
     {
-      "id": "import_export.cpp_vp2_ownership",
-      "tab": "import_export",
+      "id": "settings.cpp_vp2_ownership",
+      "tab": "settings",
       "kind": "check",
       "attribute": "use_cpp_vp2_ownership_check",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.tabs.import_export_tab.ImportExportTab._on_setting_changed"
+      "expected_handler": "mmd_tools.ui.presenters.settings_presenter.SettingsPresenter._on_native_setting_changed"
     },
     {
-      "id": "import_export.cpp_rig_nodes",
-      "tab": "import_export",
+      "id": "settings.cpp_rig_nodes",
+      "tab": "settings",
       "kind": "check",
       "attribute": "use_cpp_rig_nodes_check",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.tabs.import_export_tab.ImportExportTab._on_setting_changed"
+      "expected_handler": "mmd_tools.ui.presenters.settings_presenter.SettingsPresenter._on_native_setting_changed"
     },
     {
       "id": "import_export.vmd_fps",
@@ -525,7 +525,7 @@
       "selector": "objectName=exportOutputPath",
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.tabs.export_tab.ExportTab._mark_editing"
+      "expected_handler": "mmd_tools.ui.tabs.export_tab._ExportPage._on_output_path_changed"
     },
     {
       "id": "export.output_browse",
@@ -636,15 +636,6 @@
       "expected_handler": "mmd_tools.ui.presenters.export_presenter.ExportPresenter._on_acknowledgement_changed"
     },
     {
-      "id": "export.validation_revalidate",
-      "tab": "export",
-      "kind": "button",
-      "selector": "objectName=validationRevalidateButton",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.export_presenter.ExportPresenter.validate"
-    },
-    {
       "id": "export.validation_copy",
       "tab": "export",
       "kind": "button",
@@ -652,15 +643,6 @@
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
       "expected_handler": "mmd_tools.ui.validation_console.ValidationConsole.copy_report"
-    },
-    {
-      "id": "export.validation_save",
-      "tab": "export",
-      "kind": "button",
-      "selector": "objectName=validationSaveButton",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.validation_console.ValidationConsole.save_report"
     },
     {
       "id": "export.validation_console",

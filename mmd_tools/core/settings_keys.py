@@ -58,6 +58,7 @@ EXPORT_MOTION_MODE = "export.motion.mode"
 EXPORT_MOTION_USE_FRAME_RANGE = "export.motion.use_frame_range"
 EXPORT_MOTION_START_FRAME = "export.motion.start_frame"
 EXPORT_MOTION_END_FRAME = "export.motion.end_frame"
+EXPORT_MOTION_RANGE_INITIALIZED = "export.motion.range_initialized"
 
 UI_GENERAL_DEVELOPMENT_MODE = "ui.general.development_mode"
 UI_GENERAL_LANGUAGE = "ui.general.language"

@@ -209,38 +209,6 @@ class ImportExportTab(BaseTab):
         self.physics_group.setLayout(physics_layout)
         model_settings_layout.addWidget(self.physics_group)
 
-        # Other Settings Group (dev-only advanced toggles)
-        self.other_group = QGroupBox(self.tr("other", "groups"))
-        other_layout = QVBoxLayout()
-
-        self.use_cpp_fast_load_check = self._bind_checkbox(
-            "use_cpp_fast_load",
-            setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD,
-            False,
-            other_layout,
-            tooltip_key="use_cpp_fast_load",
-            on_change=self._on_setting_changed,
-        )
-        self.use_cpp_vp2_ownership_check = self._bind_checkbox(
-            "use_cpp_vp2_ownership",
-            setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP,
-            False,
-            other_layout,
-            tooltip_key="use_cpp_vp2_ownership",
-            on_change=self._on_setting_changed,
-        )
-
-        self.use_cpp_rig_nodes_check = self._bind_checkbox(
-            "use_cpp_rig_nodes",
-            setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES,
-            False,
-            other_layout,
-            tooltip_key="use_cpp_rig_nodes",
-            on_change=self._on_setting_changed,
-        )
-
-        self.other_group.setLayout(other_layout)
-
         # Animation Import Settings
         self.animation_settings_group = QGroupBox(self.tr("animation", "tabs"))
         anim_settings_layout = QVBoxLayout()
@@ -323,18 +291,13 @@ class ImportExportTab(BaseTab):
             self._sync_vmd_rotation_time_curve_enabled
         )
         self.reduce_bake_keys_check.toggled.connect(self._sync_reduce_bake_quality_enabled)
-        self.use_cpp_fast_load_check.toggled.connect(self._sync_cpp_vp2_ownership_enabled)
         self._sync_native_physics_bake_enabled(self.bake_mode_check.isChecked())
         self._sync_reduce_bake_keys_enabled(self.bake_mode_check.isChecked())
         self._sync_reduce_bake_quality_enabled()
         self._sync_vmd_rotation_time_curve_enabled()
-        self._sync_cpp_vp2_ownership_enabled(self.use_cpp_fast_load_check.isChecked())
 
         self.animation_settings_group.setLayout(anim_settings_layout)
         model_settings_layout.addWidget(self.animation_settings_group)
-
-        # Other group at the bottom (dev-only)
-        model_settings_layout.addWidget(self.other_group)
 
         model_settings_layout.addStretch()
 
@@ -433,10 +396,6 @@ class ImportExportTab(BaseTab):
             self.texture_row,
             self.uv_row,
             self.morph_group,
-            self.other_group,
-            self.use_cpp_fast_load_check,
-            self.use_cpp_vp2_ownership_check,
-            self.use_cpp_rig_nodes_check,
             self.motion_scale_row,
             self.vmd_rotation_time_curve_check,
         ]
@@ -495,13 +454,12 @@ class ImportExportTab(BaseTab):
         return page, workflow_layout
 
     def _build_category_stack(self, main_layout, settings_layout, workflow_layout):
-        """Move existing controls into Model/Animation/Other full-page stacks."""
+        """Move existing controls into Model/Animation full-page stacks."""
         self.import_category_stack = CategoryStack(
-            ("model", "animation", "other"),
+            ("model", "animation"),
             {
                 "model": self.tr("model", "groups"),
                 "animation": self.tr("animation", "tabs"),
-                "other": self.tr("other", "groups"),
             },
             "importCategoryStack",
             self,
@@ -519,7 +477,6 @@ class ImportExportTab(BaseTab):
         ):
             self._take_layout_widget(settings_layout, widget)
         self._take_layout_widget(settings_layout, self.animation_settings_group)
-        self._take_layout_widget(settings_layout, self.other_group)
         self._take_layout_widget(workflow_layout, self.model_import_group)
         self._take_layout_widget(workflow_layout, self.animation_group)
         self._take_layout_widget(workflow_layout, self.history_group)
@@ -542,19 +499,17 @@ class ImportExportTab(BaseTab):
             [self.animation_settings_group],
             [self.animation_group],
         )
-        other_page, _ = self._make_category_page(
-            "Other",
-            self.tr("other", "groups"),
-            [self.other_group],
-            None,
-        )
         self.import_category_stack.add_page("model", model_page)
         self.import_category_stack.add_page("animation", animation_page)
-        self.import_category_stack.add_page("other", other_page)
         self._import_workflow_layouts = {
             "model": model_workflow_layout,
             "animation": animation_workflow_layout,
         }
+        # QTabWidget tab clicks emit currentChanged directly; CategoryStack's
+        # category signal is only emitted by its programmatic selector path.
+        self.import_category_stack.currentChanged.connect(
+            self._on_import_stack_index_changed
+        )
         self._place_history_group("model")
         main_layout.addWidget(self.import_category_stack)
 
@@ -570,6 +525,15 @@ class ImportExportTab(BaseTab):
         self.refresh_unified_history()
 
     def _on_category_changed(self, category):
+        self._place_history_group(category)
+
+    def _on_import_stack_index_changed(self, index):
+        """Keep the typed file history aligned with a clicked import tab."""
+        categories = ("model", "animation")
+        try:
+            category = categories[int(index)]
+        except (IndexError, TypeError, ValueError):
+            return
         self._place_history_group(category)
 
     def _bind_checkbox(
@@ -594,19 +558,6 @@ class ImportExportTab(BaseTab):
     def _sync_native_physics_bake_enabled(self, bake_mode_enabled):
         """Native physics bake is a VMD bake-mode option, not a model import option."""
         self.native_physics_bake_check.setEnabled(bool(bake_mode_enabled))
-
-    def _sync_cpp_vp2_ownership_enabled(self, fast_load_enabled):
-        """VP2 ownership is available only when C++ Fast Load is enabled."""
-        enabled = bool(fast_load_enabled)
-        self.use_cpp_vp2_ownership_check.setEnabled(enabled)
-        if not enabled and self.use_cpp_vp2_ownership_check.isChecked():
-            block_signals = getattr(self.use_cpp_vp2_ownership_check, "blockSignals", None)
-            blocked = block_signals(True) if callable(block_signals) else None
-            try:
-                self.use_cpp_vp2_ownership_check.setChecked(False)
-            finally:
-                if callable(block_signals):
-                    block_signals(blocked)
 
     def _sync_reduce_bake_keys_enabled(self, bake_mode_enabled):
         """Reduce Bake Keys is an opt-in control available only for Bake Motion."""
@@ -670,17 +621,9 @@ class ImportExportTab(BaseTab):
         is_dev = self.settings_service.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
         for widget in self._dev_only_widgets:
             widget.setVisible(is_dev)
-        self._sync_other_category_visibility(bool(is_dev))
         # Import scale: normal mode displays 1.0 without overwriting the persisted value.
         self._sync_import_scale_control(is_dev)
         self._sync_reduce_bake_quality_control()
-
-    def _sync_other_category_visibility(self, is_dev):
-        """Hide the empty developer category outside development mode."""
-        stack = getattr(self, "import_category_stack", None)
-        if stack is None:
-            return
-        stack.set_category_visible("other", bool(is_dev))
 
     def _sync_import_scale_control(self, is_dev):
         """Sync scale spin display for the current mode without clobbering settings.
@@ -759,8 +702,6 @@ class ImportExportTab(BaseTab):
             self.morph_group.setTitle(self.tr("morph", "groups"))
         if hasattr(self, "physics_group"):
             self.physics_group.setTitle(self.tr("physics_settings", "groups"))
-        if hasattr(self, "other_group"):
-            self.other_group.setTitle(self.tr("other", "groups"))
         if hasattr(self, "model_import_group"):
             self.model_import_group.setTitle(self.tr("model_import", "groups"))
         if hasattr(self, "animation_group"):
@@ -794,11 +735,6 @@ class ImportExportTab(BaseTab):
             self.vmd_rotation_time_curve_check.setText(
                 self.tr("vmd_rotation_time_curve", "checkboxes")
             )
-        self.use_cpp_rig_nodes_check.setText(self.tr("use_cpp_rig_nodes", "checkboxes"))
-        self.use_cpp_fast_load_check.setText(self.tr("use_cpp_fast_load", "checkboxes"))
-        self.use_cpp_vp2_ownership_check.setText(
-            self.tr("use_cpp_vp2_ownership", "checkboxes")
-        )
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
 
         # Tooltips
@@ -821,11 +757,6 @@ class ImportExportTab(BaseTab):
             self.vmd_rotation_time_curve_check.setToolTip(
                 self.tr("vmd_rotation_time_curve", "tooltips")
             )
-        self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
-        self.use_cpp_fast_load_check.setToolTip(self.tr("use_cpp_fast_load", "tooltips"))
-        self.use_cpp_vp2_ownership_check.setToolTip(
-            self.tr("use_cpp_vp2_ownership", "tooltips")
-        )
         if hasattr(self, "animation_start_frame"):
             self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))
         self.vmd_fps_combo.setToolTip(self.tr("vmd_fps", "tooltips"))
@@ -845,13 +776,11 @@ class ImportExportTab(BaseTab):
             labels = {
                 "model": self.tr("model", "groups"),
                 "animation": self.tr("animation", "tabs"),
-                "other": self.tr("other", "groups"),
             }
             self.import_category_stack.retranslate(labels)
             for category, key in (
                 ("Model", "model"),
                 ("Animation", "animation"),
-                ("Other", "other"),
             ):
                 header = self.findChild(QLabel, f"import{category}PageHeader")
                 if header is not None:

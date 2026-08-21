@@ -395,7 +395,7 @@ def _errors(matrix, ui_manifest, semantic_manifest):
         for surface in ui_manifest.get("surfaces", [])
         if all(surface.get(key) == value for key, value in selector.items())
     ]
-    if trace.get("expected_surface_count") != 229 or len(surfaces) != 229:
+    if trace.get("expected_surface_count") != 227 or len(surfaces) != 227:
         errors.append("surface_count")
     owner_id = trace.get("version_independent_owner")
     owner_cases = [case for case in ui_manifest.get("cases", []) if case.get("id") == owner_id]
@@ -453,12 +453,12 @@ def test_profiles_encode_focused_sensitive_and_release_version_policy():
     assert manifest["change_kind_policy"] == CHANGE_KIND_POLICY
 
 
-def test_all_229_surfaces_have_one_versionless_headless_owner_and_tab_trace():
+def test_all_227_surfaces_have_one_versionless_headless_owner_and_tab_trace():
     matrix = _load(MATRIX_PATH)
     ui_manifest = _load(UI_MANIFEST_PATH)
     trace = matrix["surface_trace"]
     surfaces = [surface for surface in ui_manifest["surfaces"] if surface["disposition"] == "qt_case"]
-    assert len(surfaces) == 229
+    assert len(surfaces) == 227
     assert {surface["case_id"] for surface in surfaces} == {trace["version_independent_owner"]}
     assert set(trace["headless_only_tabs"]) == {"settings"}
     assert set(trace["tab_representatives"]) | set(trace["headless_only_tabs"]) == {

@@ -142,7 +142,7 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(tab.pane_tabs.tabText(0), "モデル")
             self.assertEqual(tab.pane_tabs.tabText(1), "アニメーション")
             self.assertEqual(tab.validate_button.text(), "モデルを検証")
-            self.assertEqual(tab.export_button.text(), "PMXを書き出す")
+            self.assertEqual(tab.export_button.text(), "モデルを書き出す")
             self.assertEqual(tab.build_request("model_ROOT").options["export_format"], "pmx")
             pane_spy = QtSignalInvocationSpy(
                 "ExportTab.pane_changed", tab.pane_tabs.currentChanged, tab.pane_tabs
@@ -150,7 +150,7 @@ class TestExportTabGUI(GuiTestBase):
             tab.pane_tabs.setCurrentIndex(1)
             self.assertTrue(tab.bake_export_check.isChecked())
             self.assertEqual(tab.validate_button.text(), "アニメーションを検証")
-            self.assertEqual(tab.export_button.text(), "VMDを書き出す")
+            self.assertEqual(tab.export_button.text(), "アニメーションを書き出し")
             bake_spy = QtSignalInvocationSpy(
                 "ExportTab.motion_bake_changed",
                 tab.bake_export_check.toggled,
@@ -346,12 +346,12 @@ class TestExportTabGUI(GuiTestBase):
         tab = self._create_visible_tab()
         try:
             self.assertEqual(tab.validate_button.text(), "モデルを検証")
-            self.assertEqual(tab.export_button.text(), "PMXを書き出す")
+            self.assertEqual(tab.export_button.text(), "モデルを書き出す")
             self.assertEqual(tab.apply_scale_check.text(), "スケールを適用")
             tab.pane_tabs.setCurrentIndex(1)
             self.assertEqual(
                 tab.bake_export_check.text(),
-                "タイムラインをベイクして書き出す",
+                "ベイク書き出し",
             )
             tab.pane_tabs.setCurrentIndex(0)
             self.assertEqual(
@@ -370,9 +370,9 @@ class TestExportTabGUI(GuiTestBase):
                 tab._motion_form.labelForField(tab.frame_end_spin).text(),
                 "終了",
             )
-            self.assertEqual(tab.validation_console.revalidate_button.text(), "再検証")
+            self.assertFalse(hasattr(tab.validation_console, "revalidate_button"))
             self.assertEqual(tab.validation_console.acknowledge_check.text(), "警告を確認済みにする")
-            self.assertEqual(tab.validation_console.save_button.text(), "レポートを保存")
+            self.assertFalse(hasattr(tab.validation_console, "save_button"))
 
             report = validate_vmd_data(
                 VmdData(),
@@ -400,12 +400,12 @@ class TestExportTabGUI(GuiTestBase):
             )
             translate_spy()
             self.assertEqual(tab.validate_button.text(), "Validate Model")
-            self.assertEqual(tab.export_button.text(), "Export PMX")
+            self.assertEqual(tab.export_button.text(), "Export Model")
             self.assertEqual(tab.apply_scale_check.text(), "Apply Scale")
             tab.pane_tabs.setCurrentIndex(1)
             self.assertEqual(
                 tab.bake_export_check.text(),
-                "Bake the timeline for export",
+                "Bake Export",
             )
             tab.pane_tabs.setCurrentIndex(0)
             self.assertEqual(
@@ -424,7 +424,7 @@ class TestExportTabGUI(GuiTestBase):
                 tab._motion_form.labelForField(tab.frame_end_spin).text(),
                 "End",
             )
-            self.assertEqual(tab.validation_console.revalidate_button.text(), "Revalidate")
+            self.assertFalse(hasattr(tab.validation_console, "revalidate_button"))
             _emit_witness(
                 "export.apply_scale",
                 "selector",
@@ -437,7 +437,7 @@ class TestExportTabGUI(GuiTestBase):
             tab.pane_tabs.setCurrentIndex(1)
             self.assertEqual(tab.pane_tabs.tabText(1), "Animation")
             self.assertEqual(tab.validate_button.text(), "Validate Animation")
-            self.assertEqual(tab.export_button.text(), "Export VMD")
+            self.assertEqual(tab.export_button.text(), "Export Animation")
         finally:
             self._delete_tab(tab)
             translator.set_language(previous_language)
@@ -533,12 +533,13 @@ class TestExportTabGUI(GuiTestBase):
             tab.validation_console.set_report(model_report)
             tab.validation_console.acknowledge_check.setChecked(True)
             self.assertTrue(tab.build_request("model_ROOT").file_path.endswith("model.pmx"))
+            self.assertEqual(tab.output_path_edit.text(), "model.vmd")
             _emit_witness(
                 "export.output_path",
                 "selector",
                 "objectName=exportOutputPath",
                 "QTest.setText(objectName=exportOutputPath, model.vmd)",
-                "per-pane output paths normalize to model.pmx and motion.vmd",
+                "per-pane output paths preserve typed text and coerce only requests",
                 output_spy,
                 model_output_edit,
             )
@@ -558,14 +559,14 @@ class TestExportTabGUI(GuiTestBase):
             tab.pane_tabs.setCurrentIndex(0)
             self.assertIs(tab.validation_console.report, model_report)
             self.assertTrue(tab.validation_console.warnings_acknowledged)
-            self.assertEqual(tab.output_path_edit.text(), "model.pmx")
+            self.assertEqual(tab.output_path_edit.text(), "model.vmd")
 
             tab.apply_scale_check.setChecked(not tab.apply_scale_check.isChecked())
             self.assertIsNone(tab.validation_console.report)
             tab.pane_tabs.setCurrentIndex(1)
             self.assertIs(tab.validation_console.report, motion_report)
             self.assertTrue(tab.validation_console.warnings_acknowledged)
-            self.assertEqual(tab.output_path_edit.text(), "motion.vmd")
+            self.assertEqual(tab.output_path_edit.text(), "motion.pmx")
         finally:
             self._delete_tab(tab)
 

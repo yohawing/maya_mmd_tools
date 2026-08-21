@@ -114,22 +114,18 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
         ):
             self.assertIn(key, self.source)
 
-    def test_prepare_mode_c_is_motion_only_and_uses_stable_selector(self):
-        self.assertIn('"prepare_mode_c"', self.source)
-        self.assertIn('"exportMotionPrepareButton"', self.source)
-        self.assertIn("self.pane == self.owner.MOTION_PANE", self.source)
-        self.assertIn("self._motion_mode() == \"C\"", self.source)
-        # The Model page remains a PMX Validate/Export-only surface.
-        model_section = self.source.split('if self.pane == self.owner.MOTION_PANE:', 1)[0]
-        self.assertNotIn("exportMotionPrepareButton", model_section)
+    def test_animation_validation_owns_prepare_flow_without_separate_button(self):
+        self.assertNotIn("exportMotionPrepareButton", self.source)
+        self.assertNotIn("prepare_button =", self.source)
+        self.assertIn("validate_animation", self.source)
 
     def test_supported_languages_define_model_animation_and_format_actions(self):
         translation_dir = Path(export_tab.__file__).resolve().parents[1] / "translations"
         expected = {
-            "ja": ("モデル", "アニメーション", "モデルを検証", "PMXを書き出す", "アニメーションを検証", "VMDを書き出す"),
-            "en": ("Model", "Animation", "Validate Model", "Export PMX", "Validate Animation", "Export VMD"),
-            "zh_cn": ("模型", "动画", "验证模型", "导出 PMX", "验证动画", "导出 VMD"),
-            "zh_tw": ("模型", "動畫", "驗證模型", "匯出 PMX", "驗證動畫", "匯出 VMD"),
+            "ja": ("モデル", "アニメーション", "モデルを検証", "モデルを書き出す", "アニメーションを検証", "アニメーションを書き出し"),
+            "en": ("Model", "Animation", "Validate Model", "Export Model", "Validate Animation", "Export Animation"),
+            "zh_cn": ("模型", "动画", "验证模型", "导出模型", "验证动画", "导出动画"),
+            "zh_tw": ("模型", "動畫", "驗證模型", "匯出模型", "驗證動畫", "匯出動畫"),
         }
         for language, values in expected.items():
             translations = json.loads(
@@ -141,8 +137,6 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
             self.assertEqual(translations["buttons"]["export_pmx"], values[3])
             self.assertEqual(translations["buttons"]["validate_animation"], values[4])
             self.assertEqual(translations["buttons"]["export_vmd"], values[5])
-            self.assertIn("prepare_mode_c", translations["buttons"])
-            self.assertNotIn("Mode C", translations["buttons"]["prepare_mode_c"])
             self.assertIn("vmd_preserve_imported", translations["options"])
             self.assertIn("vmd_export_timeline", translations["options"])
             self.assertIn("vmd_bake_export", translations["checkboxes"])
@@ -267,20 +261,11 @@ class TestImportExportTabNativePhysicsBakeVisibility(unittest.TestCase):
 
 
 class TestImportExportTabCppFastLoadVisibility(unittest.TestCase):
-    def test_vp2_ownership_requires_cpp_fast_load(self):
-        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
-        tab.use_cpp_vp2_ownership_check = _FakeCheck(checked=True)
-
-        import_export_tab.ImportExportTab._sync_cpp_vp2_ownership_enabled(tab, False)
-
-        self.assertFalse(tab.use_cpp_vp2_ownership_check.enabled)
-        self.assertFalse(tab.use_cpp_vp2_ownership_check.checked)
-
-        tab.use_cpp_vp2_ownership_check.checked = True
-        import_export_tab.ImportExportTab._sync_cpp_vp2_ownership_enabled(tab, True)
-
-        self.assertTrue(tab.use_cpp_vp2_ownership_check.enabled)
-        self.assertTrue(tab.use_cpp_vp2_ownership_check.checked)
+    def test_native_controls_are_owned_by_settings_advanced(self):
+        source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("self.use_cpp_fast_load_check =", source)
+        self.assertNotIn("self.use_cpp_vp2_ownership_check =", source)
+        self.assertNotIn("self.use_cpp_rig_nodes_check =", source)
 
 
 class TestImportExportTabReducedBakeVisibility(unittest.TestCase):

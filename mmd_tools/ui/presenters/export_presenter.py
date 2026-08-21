@@ -189,7 +189,7 @@ class ExportPresenter(QObject):
         return None
 
     def validate(self):
-        """Run preflight and payload validation without writing an output."""
+        """Validate without writing; Mode C first prepares its payload inline."""
         self.view.set_state(STATE_VALIDATING)
         request = None
         export_format = self._view_export_format()
@@ -203,6 +203,31 @@ class ExportPresenter(QObject):
                 getattr(self.app_state, "current_model_root", None)
             )
             export_format = self._request_export_format(request, export_format)
+            options = getattr(request, "options", None) or {}
+            mode = str(options.get("vmd_mode") or "").upper()
+            if export_format == "vmd" and mode == "C" and self._prepared_vmd_token is None:
+                self._clear_prepared_token()
+                self._update_progress(token, export_format, "timeline_bake")
+                preparation = self.workflow_service.prepare_vmd(request)
+                self._update_progress(token, export_format, "prepared_payload")
+                if not getattr(preparation, "succeeded", False):
+                    preparation_report = getattr(preparation, "report", None)
+                    if isinstance(preparation_report, ExportValidationReport):
+                        result = ExportWorkflowResult(
+                            STATE_BLOCKED,
+                            preparation_report,
+                            {"output_path": getattr(request, "file_path", None)},
+                            error=getattr(preparation, "error", None),
+                        )
+                        self.view.set_result(result)
+                        self._emit_status(result)
+                        return result
+                    error = getattr(preparation, "error", None)
+                    raise RuntimeError(error or "VMD preparation did not publish a token")
+                self._prepared_vmd_token = preparation.token
+                set_prepared = getattr(self.view, "set_prepared", None)
+                if callable(set_prepared):
+                    set_prepared(preparation)
             request = self._attach_prepared_token(request, export_format)
             result = self.workflow_service.validate(
                 request,

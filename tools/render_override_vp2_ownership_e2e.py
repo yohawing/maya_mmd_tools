@@ -369,7 +369,8 @@ def run_probe(
             from mmd_tools.io.mmd_importer import import_mmd_file
             from mmd_tools.services.settings_service import SettingsService
 
-            ui_options = SettingsService().build_pmx_import_options(
+            settings_service = SettingsService()
+            ui_options = settings_service.build_pmx_import_options(
                 custom_namespace="render_override_vp2_ownership",
                 development_mode=True,
             )
@@ -387,9 +388,17 @@ def run_probe(
                     "import_physics",
                 )
             }
-            from mmd_tools.ui.tabs.import_export_tab import ImportExportTab
+            from mmd_tools.ui.application_state import ApplicationState
+            from mmd_tools.ui.presenters.settings_presenter import SettingsPresenter
+            from mmd_tools.ui.tabs.settings_tab import SettingsTab
 
-            ui_tab = ImportExportTab()
+            settings_presenter = SettingsPresenter(
+                SettingsTab(),
+                ApplicationState(),
+                settings_service=settings_service,
+                maya_cmds=cmds,
+            )
+            ui_tab = settings_presenter.view
             report["uiCheckboxes"] = {
                 "use_cpp_fast_load": bool(
                     ui_tab.use_cpp_fast_load_check.isChecked()
@@ -397,7 +406,9 @@ def run_probe(
                 "use_cpp_vp2_ownership": bool(
                     ui_tab.use_cpp_vp2_ownership_check.isChecked()
                 ),
-                "otherGroupVisible": bool(ui_tab.other_group.isVisible()),
+                "advancedNativeGroupVisible": bool(
+                    ui_tab.advanced_native_group.isVisible()
+                ),
             }
             ui_tab.deleteLater()
             log(f"UI import options: {report['uiImportOptions']}")
