@@ -102,7 +102,8 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
         self.source = Path(export_tab.__file__).read_text(encoding="utf-8")
 
     def test_export_uses_tab_navigation_without_legacy_button_selector(self):
-        self.assertIn('navigation="tabs"', self.source)
+        self.assertIn("CategoryStack(", self.source)
+        self.assertNotIn("navigation=", self.source)
         self.assertNotIn("button selector over QStackedWidget", self.source)
 
     def test_export_pages_use_format_specific_primary_actions(self):

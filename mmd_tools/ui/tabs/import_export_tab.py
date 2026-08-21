@@ -463,9 +463,7 @@ class ImportExportTab(BaseTab):
             },
             "importCategoryStack",
             self,
-            navigation="tabs",
         )
-        self.import_category_stack.category_changed.connect(self._on_category_changed)
         self._active_import_category = "model"
 
         self._take_layout_widget(settings_layout, self.scale_row)
@@ -505,8 +503,6 @@ class ImportExportTab(BaseTab):
             "model": model_workflow_layout,
             "animation": animation_workflow_layout,
         }
-        # QTabWidget tab clicks emit currentChanged directly; CategoryStack's
-        # category signal is only emitted by its programmatic selector path.
         self.import_category_stack.currentChanged.connect(
             self._on_import_stack_index_changed
         )
@@ -523,9 +519,6 @@ class ImportExportTab(BaseTab):
             self.history_group.show()
             layout.insertWidget(max(0, layout.count() - 1), self.history_group)
         self.refresh_unified_history()
-
-    def _on_category_changed(self, category):
-        self._place_history_group(category)
 
     def _on_import_stack_index_changed(self, index):
         """Keep the typed file history aligned with a clicked import tab."""

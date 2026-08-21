@@ -227,8 +227,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             for call in self.plugin_main.cmds.menuItem.call_args_list
             if call[1].get("label") == "Translate MMD Names"
         ]
-        self.assertEqual(len(translate_calls), 1)
-        self.assertEqual(translate_calls[0][1]["parent"], "MMDToolsSubMenu")
+        self.assertFalse(translate_calls)
 
         tools_submenus = [
             call

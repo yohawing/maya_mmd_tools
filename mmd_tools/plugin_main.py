@@ -309,13 +309,6 @@ def install_mmd_menu():
         parent="MMD",
     )
     cmds.menuItem(
-        "MMDTranslateNamesMenuItem",
-        label="Translate MMD Names",
-        command=lambda *args: _run_mmd_name_translation(),
-        parent="MMDToolsSubMenu",
-    )
-
-    cmds.menuItem(
         "MMDAnimatorToolsetMenuItem",
         label="Animator Toolset",
         command=lambda *args: open_animator_toolset(dockable=True),

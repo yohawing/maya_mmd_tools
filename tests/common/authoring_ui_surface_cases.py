@@ -133,20 +133,24 @@ def _select_widget_path(window: Any, widget: QWidget) -> None:
     """Reach a control through production tab selectors without forcing visibility."""
     for stack in window.findChildren(CategoryStack):
         for index in range(stack.count()):
-            page = stack.stacked_widget.widget(index)
+            page = stack.widget(index)
             if page is widget or page.isAncestorOf(widget):
                 stack.setCurrentIndex(index)
                 break
     parent = widget.parentWidget()
     while parent is not None:
         if isinstance(parent, CategoryStack):
-            candidate = widget
-            while candidate is not None and candidate.parentWidget() is not parent.stacked_widget:
-                candidate = candidate.parentWidget()
-            if candidate is not None:
-                index = parent.stacked_widget.indexOf(candidate)
-                if index >= 0:
-                    parent.setCurrentIndex(index)
+            page = next(
+                (
+                    parent.widget(index)
+                    for index in range(parent.count())
+                    if parent.widget(index) is widget
+                    or parent.widget(index).isAncestorOf(widget)
+                ),
+                None,
+            )
+            if page is not None:
+                parent.setCurrentWidget(page)
         if isinstance(parent, QTabWidget):
             page = next(
                 (
@@ -239,7 +243,7 @@ def _prepare_surface(window: Any, surface: Mapping[str, Any], widget: QWidget) -
         view.bone_list.addItem(QListWidgetItem("matrix-bone"))
         view.bone_list.setCurrentRow(0)
         view.set_bone_details_enabled(True)
-        for action in ("sync", "move_up", "move_down"):
+        for action in ("refresh", "move_up", "move_down"):
             view.bone_authoring_toolbar.set_action_enabled(action, True, "", "")
         key = surface["id"].split(".", 1)[1]
         if key == "external_parent_key":

@@ -427,7 +427,6 @@ class ExportTab(BaseTab):
             },
             "exportCategoryStack",
             self,
-            navigation="tabs",
         )
         self.category_stack.setObjectName("exportCategoryStack")
         # Compatibility name retained as an API alias for existing presenters

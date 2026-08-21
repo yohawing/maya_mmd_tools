@@ -138,7 +138,6 @@ class TestExportTabGUI(GuiTestBase):
             self.assertFalse(hasattr(tab, "target_combo"))
             self.assertFalse(hasattr(tab, "format_combo"))
             self.assertEqual(tab.pane_tabs.count(), 2)
-            self.assertEqual(tab.category_stack._navigation, "tabs")
             self.assertEqual(tab.pane_tabs.tabText(0), "モデル")
             self.assertEqual(tab.pane_tabs.tabText(1), "アニメーション")
             self.assertEqual(tab.validate_button.text(), "モデルを検証")
