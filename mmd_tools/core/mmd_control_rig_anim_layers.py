@@ -17,6 +17,10 @@ class MmdControlRigAnimLayerError(RuntimeError):
 
 
 _BASE_LAYER_NAMES = frozenset({"BaseAnimation", "baseAnimation"})
+_VMD_AUTHORING_PROXY_MARKER = "mmd_vmd_authoring_proxy"
+_VMD_AUTHORING_PROXY_TARGET = "mmd_vmd_authoring_target"
+_VMD_AUTHORING_SOURCE_OWNERS = "mmd_vmd_authoring_source_owners"
+_VMD_AUTHORING_CONVERSION_WRAPPERS = "mmd_vmd_authoring_conversion_wrappers"
 _SETTING_FLAGS = (
     "weight",
     "mute",
@@ -402,7 +406,8 @@ def _under_target_scope(cmds, node, root, visited=None):
             active.discard(current)
             memo[current] = False
             return False
-        if not node_type.startswith("mmd"):
+        is_vmd_proxy = _is_target_owned_vmd_proxy(cmds, current, root)
+        if not node_type.startswith("mmd") and not is_vmd_proxy:
             active.discard(current)
             memo[current] = False
             return False
@@ -420,6 +425,11 @@ def _under_target_scope(cmds, node, root, visited=None):
             destination
             for destination in destinations
             if str(cmds.nodeType(str(destination).split(".", 1)[0])) != "animLayer"
+            and not (
+                is_vmd_proxy
+                and _is_vmd_proxy_layer_metadata_edge(cmds, destination)
+            )
+            and not _is_vmd_proxy_metadata_edge(cmds, destination)
         ]
         # An external helper with no output cannot be proven to belong to this
         # model.  Requiring every branch to resolve also rejects foreign
@@ -444,6 +454,8 @@ def _touches_target_scope(cmds, node, root, visited=None):
         return True
     if current in active or not cmds.objExists(current):
         return False
+    if _is_target_owned_vmd_proxy(cmds, current, root):
+        return True
     try:
         if not str(cmds.nodeType(current)).startswith("mmd"):
             return False
@@ -466,9 +478,92 @@ def _touches_target_scope(cmds, node, root, visited=None):
             )
             for destination in destinations
             if str(cmds.nodeType(str(destination).split(".", 1)[0])) != "animLayer"
+            and not _is_vmd_proxy_metadata_edge(cmds, destination)
         )
     finally:
         active.discard(current)
+
+
+def _is_target_owned_vmd_proxy(cmds, node, root):
+    """Recognize a redirected VMD proxy whose target belongs to ``root``.
+
+    Redirected VMD channels intentionally live on a world-level Transform so
+    they can drive non-Transform MMD helper inputs.  The proxy is target-owned
+    only when its marker is enabled and its target message has exactly one
+    source on a node below the requested model root.  Output fan-out remains
+    checked by ``_under_target_scope``; this helper only establishes ownership
+    of the proxy itself.
+    """
+    try:
+        if str(cmds.nodeType(node)) != "transform":
+            return False
+        if not cmds.attributeQuery(
+            _VMD_AUTHORING_PROXY_MARKER,
+            node=node,
+            exists=True,
+        ) or not bool(cmds.getAttr(f"{node}.{_VMD_AUTHORING_PROXY_MARKER}")):
+            return False
+        if not cmds.attributeQuery(
+            _VMD_AUTHORING_PROXY_TARGET,
+            node=node,
+            exists=True,
+        ):
+            return False
+        targets = cmds.listConnections(
+            f"{node}.{_VMD_AUTHORING_PROXY_TARGET}",
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+        if len(targets) != 1:
+            return False
+        target = str(targets[0])
+        target_node, separator, target_attribute = target.partition(".")
+        if not separator or target_attribute != "message":
+            return False
+        target_matches = cmds.ls(target_node, long=True) or []
+        return len(target_matches) == 1 and _under_root(str(target_matches[0]), root)
+    except Exception:
+        return False
+
+
+def _is_vmd_proxy_layer_metadata_edge(cmds, destination):
+    """Ignore a proxy rotate-order edge into its animLayer blend metadata."""
+    try:
+        destination_text = str(destination)
+        node, separator, attribute = destination_text.rpartition(".")
+        return (
+            separator
+            and attribute == "rotateOrder"
+            and str(cmds.nodeType(node)).startswith("animBlendNode")
+        )
+    except Exception:
+        return False
+
+
+def _is_vmd_proxy_metadata_edge(cmds, destination):
+    """Return whether a connection lands on proxy ownership metadata."""
+    node, separator, attribute = str(destination).rpartition(".")
+    if not separator:
+        return False
+    attribute = attribute.split("[", 1)[0]
+    if attribute not in {
+        _VMD_AUTHORING_SOURCE_OWNERS,
+        _VMD_AUTHORING_CONVERSION_WRAPPERS,
+    }:
+        return False
+    try:
+        return (
+            str(cmds.nodeType(node)) == "transform"
+            and cmds.attributeQuery(
+                _VMD_AUTHORING_PROXY_MARKER,
+                node=node,
+                exists=True,
+            )
+            and bool(cmds.getAttr(f"{node}.{_VMD_AUTHORING_PROXY_MARKER}"))
+        )
+    except Exception:
+        return False
 
 
 def _node_uuid(cmds, node):

@@ -155,6 +155,52 @@ class TestMmdControlRigAnimLayers(MayaTestBase):
         with self.assertRaisesRegex(MmdControlRigAnimLayerError, "foreign/shared"):
             capture_mmd_control_rig_anim_layers(cmds, root)
 
+    def test_vmd_authoring_proxy_helper_scope_and_foreign_fanout(self):
+        """A target-owned VMD proxy is accepted until its helper fans out."""
+        if "mmdAppend" not in (cmds.allNodeTypes() or []):
+            self.skipTest("mmdAppend plugin node is unavailable")
+
+        root = cmds.group(empty=True, name="cr061_anim_layer_vmd_proxy_root")
+        target = cmds.createNode("transform", name="cr061_anim_layer_vmd_proxy_target")
+        cmds.parent(target, root)
+        proxy = cmds.createNode("transform", name="cr061_anim_layer_vmd_proxy")
+        helper = cmds.createNode("mmdAppend", name="cr061_anim_layer_vmd_append")
+        cmds.addAttr(proxy, longName="mmd_vmd_authoring_proxy", attributeType="bool")
+        cmds.setAttr(f"{proxy}.mmd_vmd_authoring_proxy", True)
+        cmds.addAttr(proxy, longName="mmd_vmd_authoring_target", attributeType="message")
+        cmds.connectAttr(f"{target}.message", f"{proxy}.mmd_vmd_authoring_target")
+        cmds.setAttr(f"{helper}.affectRotation", True)
+        for axis in "XYZ":
+            cmds.connectAttr(
+                f"{proxy}.rotate{axis}",
+                f"{helper}.baseRotate{axis}",
+                force=True,
+            )
+            cmds.connectAttr(
+                f"{helper}.outputRotate{axis}",
+                f"{target}.rotate{axis}",
+                force=True,
+            )
+
+        layer = cmds.animLayer(
+            "cr061_anim_layer_vmd_proxy_motion",
+            override=False,
+            weight=1.0,
+        )
+        for axis in "XYZ":
+            cmds.animLayer(layer, edit=True, attribute=f"{proxy}.rotate{axis}")
+
+        journal = capture_mmd_control_rig_anim_layers(cmds, root)
+        self.assertEqual(
+            set(journal["routes"]),
+            {f"|{proxy}.rotate{axis}" for axis in "XYZ"},
+        )
+
+        foreign = cmds.createNode("transform", name="cr061_anim_layer_vmd_proxy_foreign")
+        cmds.connectAttr(f"{helper}.outputRotateX", f"{foreign}.rotateX", force=True)
+        with self.assertRaisesRegex(MmdControlRigAnimLayerError, "foreign/shared"):
+            capture_mmd_control_rig_anim_layers(cmds, root)
+
 
 if __name__ == "__main__":
     unittest.main()
