@@ -258,33 +258,45 @@ class ScenePreflight:
                         f"scene ownership could not be inspected: {type(exc).__name__}",
                     )
                 )
-        control_rig = ownership.get("control_rig") if isinstance(ownership, Mapping) else None
-        if isinstance(control_rig, Mapping):
-            owner = str(control_rig.get("owner") or "").upper()
-            state = str(control_rig.get("state") or "").upper()
-            if owner == "CONTROL_OWNED" or state in {"EDIT", "CONVERTING"}:
+        # Ownership determines which animation path may be sampled. PMX model
+        # export does not collect timeline motion, so an active authoring rig
+        # must not block the model payload.
+        if export_format == "vmd":
+            control_rig = (
+                ownership.get("control_rig")
+                if isinstance(ownership, Mapping)
+                else None
+            )
+            if isinstance(control_rig, Mapping):
+                owner = str(control_rig.get("owner") or "").upper()
+                state = str(control_rig.get("state") or "").upper()
+                if owner == "CONTROL_OWNED" or state in {"EDIT", "CONVERTING"}:
+                    issues.append(
+                        _issue(
+                            "SCENE_OWNER_CONTROL_RIG",
+                            "ownership.control_rig",
+                            "Control Rig owns the authoring path; bake or restore to MMD Rig before export",
+                        )
+                    )
+            humanik = (
+                ownership.get("humanik")
+                if isinstance(ownership, Mapping)
+                else None
+            )
+            blocked = getattr(humanik, "blocked", None)
+            if blocked is None and isinstance(humanik, Mapping):
+                blocked = humanik.get("blocked")
+            if blocked:
+                character = getattr(humanik, "character", None)
+                if character is None and isinstance(humanik, Mapping):
+                    character = humanik.get("character")
                 issues.append(
                     _issue(
-                        "SCENE_OWNER_CONTROL_RIG",
-                        "ownership.control_rig",
-                        "Control Rig owns the authoring path; bake or restore to MMD Rig before export",
+                        "SCENE_OWNER_HUMANIK",
+                        "ownership.humanik",
+                        f"HumanIK owns the export pose ({blocked}{f' on {character}' if character else ''}); bake or restore MMD Rig first",
                     )
                 )
-        humanik = ownership.get("humanik") if isinstance(ownership, Mapping) else None
-        blocked = getattr(humanik, "blocked", None)
-        if blocked is None and isinstance(humanik, Mapping):
-            blocked = humanik.get("blocked")
-        if blocked:
-            character = getattr(humanik, "character", None)
-            if character is None and isinstance(humanik, Mapping):
-                character = humanik.get("character")
-            issues.append(
-                _issue(
-                    "SCENE_OWNER_HUMANIK",
-                    "ownership.humanik",
-                    f"HumanIK owns the export pose ({blocked}{f' on {character}' if character else ''}); bake or restore MMD Rig first",
-                )
-            )
 
         scene_revision = options.get("scene_revision")
         if scene_revision is None and self._scene_revision_getter is not None:

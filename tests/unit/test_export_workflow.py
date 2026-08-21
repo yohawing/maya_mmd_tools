@@ -211,6 +211,32 @@ class TestScenePreflight(unittest.TestCase):
             ["SCENE_TARGET_STALE", "SCENE_OWNER_CONTROL_RIG", "SCENE_OWNER_HUMANIK"],
         )
 
+    def test_pmx_model_export_ignores_motion_authoring_ownership(self):
+        result = ScenePreflight(
+            scene_service=_SceneService(),
+            ownership_checker=lambda _target: {
+                "control_rig": {"state": "EDIT", "owner": "CONTROL_OWNED"},
+                "humanik": {"blocked": "target_preview", "character": "HIKCharacter1"},
+            },
+        ).run(
+            {
+                "file_path": "model.pmx",
+                "export_format": "pmx",
+                "export_strategy": "model",
+                "target_model": "model_ROOT",
+            }
+        )
+
+        self.assertTrue(result.valid)
+        self.assertNotIn(
+            "SCENE_OWNER_CONTROL_RIG",
+            [issue.code for issue in result.report.issues],
+        )
+        self.assertNotIn(
+            "SCENE_OWNER_HUMANIK",
+            [issue.code for issue in result.report.issues],
+        )
+
     def test_valid_scene_metadata_is_provenance_ready(self):
         result = ScenePreflight(
             scene_service=_SceneService(),
