@@ -2336,6 +2336,38 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             if row.get("target") == rows["rotateX"]["target"]
         )
         self.assertFalse(representation.get("quaternionInterpolation"))
+        for axis in "XYZ":
+            self.assertFalse(
+                cmds.listConnections(
+                    f"{control}.rotate{axis}",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or []
+            )
+        representations = {
+            row["target"]: row
+            for row in baked["curveRepresentations"]
+            if row.get("target") in {rows[f"rotate{axis}"]["target"] for axis in "XYZ"}
+        }
+        for axis in "XYZ":
+            row = rows[f"rotate{axis}"]
+            legacy_source = representations[row["target"]]["control"]
+            cmds.connectAttr(legacy_source, row["control"], force=False)
+        reentered = enter_mmd_control_rig_edit(root)
+        self.assertEqual(reentered["state"], "EDIT")
+
+        bake_mmd_control_rig(root)
+        foreign_curve = cmds.createNode("animCurveTA", name="foreign_arm_driver")
+        cmds.setKeyframe(foreign_curve, time=0.0, value=3.0)
+        cmds.connectAttr(f"{foreign_curve}.output", rows["rotateX"]["control"])
+        with self.assertRaisesRegex(
+            MmdControlRigBuildError,
+            "control channel already driven",
+        ):
+            enter_mmd_control_rig_edit(root)
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "BAKED")
 
     def test_ik_link_quaternion_compound_bakes_evaluated_xyz(self):
         control = cmds.createNode("transform", name="ik_link_bake_CTRL")

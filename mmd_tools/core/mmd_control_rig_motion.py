@@ -538,17 +538,45 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                     ) or []
                     if len(incoming) > 1:
                         raise MmdControlRigBuildError(f"multiple incoming sources: {target}")
-                    control_incoming = cmds.listConnections(
-                        control_plug, source=True, destination=False, plugs=True
-                    ) or []
-                    if control_incoming:
-                        raise MmdControlRigBuildError(f"control channel already driven: {control_plug}")
-
-                    value = float(cmds.getAttr(target))
-                    source = str(incoming[0]) if incoming else None
                     control_source = _existing_control_curve(
                         cmds, curve_representations, target
                     )
+                    control_incoming = [
+                        str(source)
+                        for source in (
+                            cmds.listConnections(
+                                control_plug,
+                                source=True,
+                                destination=False,
+                                plugs=True,
+                            )
+                            or []
+                        )
+                    ]
+                    if control_incoming:
+                        recorded_source = (
+                            _canonical_plug(cmds, control_source)
+                            if control_source
+                            else None
+                        )
+                        live_sources = [
+                            _canonical_plug(cmds, source)
+                            for source in control_incoming
+                        ]
+                        if len(live_sources) != 1 or live_sources[0] != recorded_source:
+                            raise MmdControlRigBuildError(
+                                f"control channel already driven: {control_plug}"
+                            )
+                        # Older non-identity basis bakes retained the detached
+                        # CONTROL representation on the controller. Its UUID is
+                        # already authoritative in curveRepresentations, so it
+                        # is safe to detach and reuse. Rollback reconnects the
+                        # exact legacy edge if a later step fails.
+                        cmds.disconnectAttr(control_incoming[0], control_plug)
+                        operations.append(("connect", control_incoming[0], control_plug))
+
+                    value = float(cmds.getAttr(target))
+                    source = str(incoming[0]) if incoming else None
                     duplicated_control_source = False
                     if source and control_source is None:
                         control_source = _duplicate_animation_source(
@@ -3876,6 +3904,16 @@ def _sample_control_rotation_group_to_bone(
             raise MmdControlRigBuildError(
                 f"could not create basis-converted MMD rotation curve: {target_plug}"
             ) from exc
+    # The CONTROL representation remains UUID-addressable for the next EDIT,
+    # but BAKED/MMD_OWNED must not leave it connected to the controller. The
+    # generic re-entry path treats any live controller writer as foreign; this
+    # matches the scalar and quaternion bake paths, which already detach it.
+    for row, control_source in zip(
+        (rows_by_attr[attr] for attr in attrs),
+        sources,
+    ):
+        if control_source and cmds.isConnected(control_source, row["control"]):
+            cmds.disconnectAttr(control_source, row["control"])
     if quaternion_interpolation and all(
         str(row["target"]).rsplit(".", 1)[-1] in {"rotateX", "rotateY", "rotateZ"}
         for row in rows
