@@ -232,12 +232,22 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.cmds = FakeCmds()
         self.original_cmds = collector_module.cmds
         self.original_read_control_rig_metadata = collector_module.read_mmd_control_rig_metadata
+        self.original_bake_timeline_writable_plug = (
+            collector_module._bake_timeline_writable_plug
+        )
         collector_module.cmds = self.cmds
         collector_module.read_mmd_control_rig_metadata = lambda _target_model: None
+        # The non-Maya fake has no MSelectionList/MFnAttribute implementation.
+        # Model ordinary authored input plugs as writable by default; tests for
+        # nonwritable routes override this helper explicitly.
+        collector_module._bake_timeline_writable_plug = lambda _node, _attr: True
 
     def tearDown(self):
         collector_module.cmds = self.original_cmds
         collector_module.read_mmd_control_rig_metadata = self.original_read_control_rig_metadata
+        collector_module._bake_timeline_writable_plug = (
+            self.original_bake_timeline_writable_plug
+        )
 
     def _timeline_sampler(self):
         cmds_module = self.cmds

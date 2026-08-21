@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Dict, Mapping, Optional, Tuple
 
 from maya import cmds
@@ -14,6 +15,7 @@ _TARGET_UUID = "mmd_vmd_authoring_target_uuid"
 _TARGET_PATH = "mmd_vmd_authoring_target_path"
 _DESTINATIONS = "mmd_vmd_authoring_destinations_json"
 _SOURCE_OWNERS = "mmd_vmd_authoring_source_owners"
+_CONVERSION_WRAPPERS = "mmd_vmd_authoring_conversion_wrappers"
 
 
 def ensure_redirected_authoring_proxy(
@@ -79,13 +81,10 @@ def ensure_redirected_authoring_proxy(
         for attribute, value in (
             (_TARGET_UUID, target_uuid),
             (_TARGET_PATH, target_path),
-            (
-                _DESTINATIONS,
-                json.dumps(destination_records, separators=(",", ":"), sort_keys=True),
-            ),
         ):
             cmds.addAttr(proxy, longName=attribute, dataType="string")
             cmds.setAttr(f"{proxy}.{attribute}", value, type="string")
+        cmds.addAttr(proxy, longName=_DESTINATIONS, dataType="string")
         for attribute, value in (
             ("visibility", False),
             ("inheritsTransform", False),
@@ -99,6 +98,7 @@ def ensure_redirected_authoring_proxy(
                 f"{proxy}.rotateOrder",
                 force=True,
             )
+        conversion_nodes = []
         for channel, record in destination_records.items():
             proxy_plug = f"{proxy}.{channel}"
             destination = str(record["plug"])
@@ -108,6 +108,31 @@ def ensure_redirected_authoring_proxy(
                 cmds.disconnectAttr(source, destination)
                 cmds.connectAttr(source, proxy_plug, force=True)
             cmds.connectAttr(proxy_plug, destination, force=True)
+            conversion = _unit_conversion_authority(proxy_plug, destination)
+            if conversion is not None:
+                wrapper, wrapper_uuid, factor = conversion
+                record["unit_conversion"] = {
+                    "uuid": wrapper_uuid,
+                    "factor": factor,
+                }
+                conversion_nodes.append(wrapper)
+        if conversion_nodes:
+            cmds.addAttr(
+                proxy,
+                longName=_CONVERSION_WRAPPERS,
+                attributeType="message",
+                multi=True,
+            )
+            for index, wrapper in enumerate(sorted(set(conversion_nodes))):
+                cmds.connectAttr(
+                    f"{wrapper}.message",
+                    f"{proxy}.{_CONVERSION_WRAPPERS}[{index}]",
+                )
+        cmds.setAttr(
+            f"{proxy}.{_DESTINATIONS}",
+            json.dumps(destination_records, separators=(",", ":"), sort_keys=True),
+            type="string",
+        )
         resolved, authority, claimed = resolve_redirected_authoring_proxy_authority(
             target_path
         )
@@ -237,6 +262,28 @@ def _validated_proxy_route(
                 or []
             )
         }
+        conversion_authorities = [
+            record.get("unit_conversion")
+            for record in records.values()
+            if isinstance(record, dict) and record.get("unit_conversion") is not None
+        ]
+        connected_conversion_uuids = set()
+        if conversion_authorities:
+            if not cmds.attributeQuery(
+                _CONVERSION_WRAPPERS, node=proxy, exists=True
+            ):
+                return {}, {}
+            connected_conversion_uuids = {
+                _single_uuid(str(wrapper))
+                for wrapper in (
+                    cmds.listConnections(
+                        f"{proxy}.{_CONVERSION_WRAPPERS}",
+                        source=True,
+                        destination=False,
+                    )
+                    or []
+                )
+            }
         route = {}
         authority = {}
         for channel, record in records.items():
@@ -250,7 +297,12 @@ def _validated_proxy_route(
                 not destination
                 or _single_uuid(owner) != str(record.get("owner_uuid") or "")
                 or str(record.get("owner_uuid") or "") not in connected_owner_uuids
-                or not cmds.isConnected(f"{proxy}.{channel}", destination)
+                or not _proxy_drives_destination(
+                    f"{proxy}.{channel}",
+                    destination,
+                    record.get("unit_conversion"),
+                    connected_conversion_uuids,
+                )
             ):
                 return {}, {}
             route[channel] = (proxy, channel)
@@ -258,6 +310,89 @@ def _validated_proxy_route(
         return route, authority
     except Exception:
         return {}, {}
+
+
+def _unit_conversion_authority(
+    proxy_plug: str,
+    destination: str,
+) -> Optional[Tuple[str, str, float]]:
+    """Return Maya's exact single conversion wrapper, or ``None`` for a direct edge."""
+
+    if cmds.isConnected(proxy_plug, destination):
+        return None
+    incoming = cmds.listConnections(
+        destination,
+        source=True,
+        destination=False,
+        plugs=True,
+        skipConversionNodes=False,
+    ) or []
+    if isinstance(incoming, (str, bytes)) or len(incoming) != 1:
+        raise RuntimeError("redirected VMD destination is not driven by one source")
+    wrapper_output = str(incoming[0])
+    wrapper, separator, output_attr = wrapper_output.partition(".")
+    if (
+        not separator
+        or output_attr != "output"
+        or str(cmds.nodeType(wrapper) or "") != "unitConversion"
+        or not cmds.isConnected(wrapper_output, destination)
+    ):
+        raise RuntimeError("redirected VMD destination has an unexpected conversion wrapper")
+    wrapper_input = f"{wrapper}.input"
+    sources = cmds.listConnections(
+        wrapper_input,
+        source=True,
+        destination=False,
+        plugs=True,
+        skipConversionNodes=False,
+    ) or []
+    if (
+        isinstance(sources, (str, bytes))
+        or len(sources) != 1
+        or str(sources[0]) != proxy_plug
+        or not cmds.isConnected(proxy_plug, wrapper_input)
+    ):
+        raise RuntimeError("redirected VMD conversion input authority is invalid")
+    wrapper_uuid = _single_uuid(wrapper)
+    factor = float(cmds.getAttr(f"{wrapper}.conversionFactor"))
+    if not wrapper_uuid or not math.isfinite(factor):
+        raise RuntimeError("redirected VMD conversion authority is invalid")
+    return wrapper, wrapper_uuid, factor
+
+
+def _proxy_drives_destination(
+    proxy_plug: str,
+    destination: str,
+    expected_conversion: object,
+    owned_conversion_uuids: set[str],
+) -> bool:
+    """Validate the recorded identity and factor of an owned conversion edge."""
+
+    try:
+        actual = _unit_conversion_authority(proxy_plug, destination)
+    except Exception:
+        return False
+    if expected_conversion is None:
+        return actual is None
+    if not isinstance(expected_conversion, Mapping) or actual is None:
+        return False
+    _wrapper, actual_uuid, actual_factor = actual
+    try:
+        expected_uuid = str(expected_conversion["uuid"])
+        expected_factor = float(expected_conversion["factor"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    return (
+        expected_uuid == actual_uuid
+        and actual_uuid in owned_conversion_uuids
+        and math.isfinite(expected_factor)
+        and math.isclose(
+            actual_factor,
+            expected_factor,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
+    )
 
 
 def _canonical_path(node: str) -> Optional[str]:

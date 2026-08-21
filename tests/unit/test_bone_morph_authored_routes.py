@@ -568,3 +568,54 @@ def test_redirected_proxy_rejects_stale_owner_or_plug_authority() -> None:
             assert "authority is stale" in str(exc)
         else:
             raise AssertionError("stale redirected proxy was silently reused")
+
+
+def test_redirected_proxy_accepts_only_its_automatic_unit_conversion() -> None:
+    maya_cmds = mock.MagicMock()
+    maya_cmds.isConnected.side_effect = lambda source, destination: (
+        (source, destination)
+        in {
+            ("unitConversion1.output", "append.baseRotateX"),
+            ("proxy.rotateX", "unitConversion1.input"),
+        }
+    )
+    maya_cmds.nodeType.return_value = "unitConversion"
+    maya_cmds.getAttr.return_value = 57.29577951308232
+
+    def connections(plug, **_kwargs):
+        return {
+            "append.baseRotateX": ["unitConversion1.output"],
+            "unitConversion1.input": ["proxy.rotateX"],
+        }.get(plug, [])
+
+    maya_cmds.listConnections.side_effect = connections
+    with mock.patch.object(
+        vmd_redirected_authoring_proxy, "cmds", maya_cmds
+    ), mock.patch.object(
+        vmd_redirected_authoring_proxy,
+        "_single_uuid",
+        return_value="conversion-uuid",
+    ):
+        assert vmd_redirected_authoring_proxy._proxy_drives_destination(
+            "proxy.rotateX",
+            "append.baseRotateX",
+            {"uuid": "conversion-uuid", "factor": 57.29577951308232},
+            {"conversion-uuid"},
+        )
+        maya_cmds.getAttr.return_value = 2.0
+        assert not vmd_redirected_authoring_proxy._proxy_drives_destination(
+            "proxy.rotateX",
+            "append.baseRotateX",
+            {"uuid": "conversion-uuid", "factor": 57.29577951308232},
+            {"conversion-uuid"},
+        )
+        maya_cmds.getAttr.return_value = 57.29577951308232
+        maya_cmds.listConnections.side_effect = lambda plug, **_kwargs: (
+            ["foreign.rotateX"] if plug == "unitConversion1.input" else connections(plug)
+        )
+        assert not vmd_redirected_authoring_proxy._proxy_drives_destination(
+            "proxy.rotateX",
+            "append.baseRotateX",
+            {"uuid": "conversion-uuid", "factor": 57.29577951308232},
+            {"conversion-uuid"},
+        )
