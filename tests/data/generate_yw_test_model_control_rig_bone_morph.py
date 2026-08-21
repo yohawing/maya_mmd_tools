@@ -140,7 +140,7 @@ def generate_motion(
                 "value": float(entry["weight"]),
             }
         )
-    vmd_data.morph_frames = _load_vmd_generator()._vmd_exporter_class()(native_exporter=None).to_vmd_data(
+    vmd_data.morph_frames = _load_vmd_generator()._vmd_exporter_class()().to_vmd_data(
         {
             "model_name": vmd_data.header.model_name,
             "bone_frames": vmd_data.bone_frames,

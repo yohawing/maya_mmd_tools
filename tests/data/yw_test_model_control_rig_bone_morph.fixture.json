@@ -14,7 +14,7 @@
     "generator": "tests/data/generate_yw_test_model_control_rig_bone_morph.py",
     "source_spec": "yw_test_model_control_rig_bone_morph.json",
     "command": "python tests/data/generate_yw_test_model_control_rig_bone_morph.py",
-    "record": "PMX is produced by PmxData legacy parse/write with one explicit BoneMorph; VMD is produced by VmdExporter(native_exporter=None) from semantic source data. Binary hand editing is prohibited; regeneration must be byte-identical."
+    "record": "PMX is produced by PmxData legacy parse/write with one explicit BoneMorph; VMD is produced by VmdExporter from semantic source data. Binary hand editing is prohibited; regeneration must be byte-identical."
   },
   "files": [
     {

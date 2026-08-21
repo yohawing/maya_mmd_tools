@@ -20,7 +20,6 @@ class MmdAnimRuntimeExportError(RuntimeError):
     """Raised when a native format export cannot be completed safely."""
 
 _JSON_EXPORT_SYMBOLS = {
-    "vmd": "mmd_runtime_export_vmd_animation_json",
     "pmx": "mmd_runtime_export_pmx_model_json",
 }
 
@@ -219,7 +218,7 @@ def is_native_json_export_available(
     指定 MMD format の JSON writer FFI が利用可能かどうかを返す。
 
     Args:
-        format_kind: ``"vmd"`` / ``"pmx"``。
+        format_kind: ``"pmx"``。
 
     Returns:
         対応する native JSON writer と byte buffer free ABI があれば True。
@@ -255,14 +254,6 @@ def _export_json_with_symbol(
     except Exception as exc:
         logger.error("%s failed: %s", symbol, exc, exc_info=True)
         return None
-
-
-def export_vmd_animation_json(
-    payload: Any,
-    get_library: Optional[Callable[[], Optional[CDLL]]] = None,
-) -> Optional[bytes]:
-    """VmdParsedAnimation JSON から VMD バイト列を native writer で生成する。"""
-    return _export_json_with_symbol(_JSON_EXPORT_SYMBOLS["vmd"], payload, get_library)
 
 
 def export_pmx_model_json(
@@ -480,7 +471,6 @@ __all__ = [
     "is_native_pmx_parts_export_available",
     "is_native_vmd_parts_export_available",
     "is_native_json_export_available",
-    "export_vmd_animation_json",
     "export_pmx_model_json",
     "export_pmx_from_parts",
     "export_vmd_from_parts",

@@ -857,7 +857,7 @@ class TestExportVmdValidationGate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "motion.vmd"
             result = ExportVmdAction(
-                exporter=VmdExporter(native_exporter=None),
+                exporter=VmdExporter(),
                 collector=collector,
             ).execute(ExportVmdRequest(str(target), {"export_strategy": VMD_EXPORT_PRESERVE_KEYS}))
 
@@ -876,7 +876,7 @@ class TestExportVmdValidationGate(unittest.TestCase):
             )
         )
         action = ExportVmdAction(
-            exporter=VmdExporter(native_exporter=None),
+            exporter=VmdExporter(),
             collector=lambda _options: next(payloads),
         )
 

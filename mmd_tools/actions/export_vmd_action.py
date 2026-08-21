@@ -125,7 +125,7 @@ class ExportVmdAction:
         converter = getattr(self._exporter, "to_vmd_data", None)
         if callable(converter):
             return converter(animation_data)
-        return VmdExporter(native_exporter=None).to_vmd_data(animation_data)
+        return VmdExporter().to_vmd_data(animation_data)
 
     @staticmethod
     def _append_report(
@@ -259,7 +259,7 @@ class ExportVmdAction:
                 )
 
             try:
-                payload = VmdExporter(native_exporter=None).to_native_json_payload(vmd_data)
+                payload = VmdExporter().to_semantic_payload(vmd_data)
                 payload_fingerprint = fingerprint_payload(payload)
             except (TypeError, ValueError, OverflowError):
                 # Structural validation remains the authoritative failure. If

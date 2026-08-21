@@ -120,19 +120,13 @@ class TestVmdExport(TestBase):
         vmd_data.morph_frames.append(frame)
 
         tmp_path = os.path.join(self.temp_dir, "cp932_exact_name.vmd")
-        VmdExporter(native_exporter=None).export_vmd_animation(tmp_path, vmd_data)
+        VmdExporter().export_vmd_animation(tmp_path, vmd_data)
 
         parsed = VmdData().parse_file(tmp_path)
         self.assertEqual(parsed.morph_frames[0].morph_name, frame.morph_name)
 
-    def test_exporter_uses_native_writer_when_available(self):
-        """native writer が bytes を返す場合は従来 writer ではなくその bytes を書く。"""
-        calls = []
-
-        def native_exporter(payload):
-            calls.append(payload)
-            return b"NATIVE-VMD"
-
+    def test_semantic_payload_contains_all_vmd_sections(self):
+        """検証用semantic payloadが全VMD sectionを保持する。"""
         vmd_data = VmdData()
         vmd_data.header.model_name = "NativeModel"
 
@@ -161,14 +155,7 @@ class TestVmdExport(TestBase):
         prop.ik_states = [("左足IK", 1), ("右足IK", 0)]
         vmd_data.ik_show_hide_frames.append(prop)
 
-        tmp_path = os.path.join(self.temp_dir, "native_export.vmd")
-        exported = VmdExporter(native_exporter=native_exporter).export_vmd_animation(tmp_path, vmd_data)
-
-        with open(tmp_path, "rb") as handle:
-            self.assertEqual(handle.read(), b"NATIVE-VMD")
-        self.assertIs(exported, vmd_data)
-        self.assertEqual(len(calls), 1)
-        payload = calls[0]
+        payload = VmdExporter().to_semantic_payload(vmd_data)
         self.assertEqual(payload["metadata"]["modelName"], "NativeModel")
         self.assertEqual(payload["metadata"]["counts"]["bones"], 1)
         self.assertEqual(payload["metadata"]["counts"]["lights"], 1)
@@ -179,9 +166,9 @@ class TestVmdExport(TestBase):
         self.assertEqual(payload["lightFrames"][0]["direction"], [4.0, 5.0, 6.0])
         self.assertEqual(payload["propertyFrames"][0]["ikStates"][1]["enabled"], False)
 
-    def test_native_payload_uses_linear_default_interpolation_for_missing_values(self):
-        """native payload の補間 fallback は Python writer と同じ linear default にする。"""
-        exporter = VmdExporter(native_exporter=lambda payload: b"NATIVE-VMD")
+    def test_semantic_payload_uses_linear_default_interpolation_for_missing_values(self):
+        """semantic payloadの補間既定値はVMD writerと同じlinear値にする。"""
+        exporter = VmdExporter()
 
         for missing_value in (None, b"", []):
             with self.subTest(missing_value=missing_value):
@@ -198,34 +185,10 @@ class TestVmdExport(TestBase):
                 camera.interpolation = missing_value
                 vmd_data.camera_frames.append(camera)
 
-                payload = exporter.to_native_json_payload(vmd_data)
+                payload = exporter.to_semantic_payload(vmd_data)
 
                 self.assertEqual(payload["boneFrames"][0]["interpolation"], [20] * 64)
                 self.assertEqual(payload["cameraFrames"][0]["interpolation"], [20] * 24)
-
-    def test_exporter_falls_back_when_native_writer_returns_none(self):
-        """native writer が使えない環境では従来の VmdData writer へ戻る。"""
-        vmd_data = VmdData()
-        vmd_data.header.model_name = "FallbackModel"
-
-        frame = VmdMorphFrame()
-        frame.morph_name = "笑い"
-        frame.frame_number = 5
-        frame.value = 0.5
-        vmd_data.morph_frames.append(frame)
-
-        tmp_path = os.path.join(self.temp_dir, "fallback_export.vmd")
-        VmdExporter(native_exporter=lambda payload: None).export_vmd_animation(tmp_path, vmd_data)
-
-        parsed = VmdData().parse_file(tmp_path)
-        with open(tmp_path, "rb") as handle:
-            self.assertEqual(
-                handle.read(30),
-                b"Vocaloid Motion Data 0002" + b"\x00" * 5,
-            )
-        self.assertEqual(parsed.header.model_name, "FallbackModel")
-        self.assertEqual(parsed.morph_frames[0].morph_name, "笑い")
-        self.assertAlmostEqual(parsed.morph_frames[0].value, 0.5)
 
     def test_exporter_rejects_invalid_frame_shape(self):
         """不正な frame shape はバイナリ書き出し前に失敗させる。"""

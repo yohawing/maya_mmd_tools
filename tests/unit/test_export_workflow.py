@@ -129,7 +129,7 @@ class _VmdPrepareBackend:
 
 class _RecordingVmdExporter(VmdExporter):
     def __init__(self):
-        super().__init__(native_exporter=None)
+        super().__init__()
         self.written_payload = None
         self.write_calls = 0
 
@@ -619,7 +619,7 @@ class TestExportWorkflowService(unittest.TestCase):
             }
 
         vmd_action = ExportVmdAction(
-            exporter=VmdExporter(native_exporter=None),
+            exporter=VmdExporter(),
             collector=collector,
         )
         service = ExportWorkflowService(
@@ -727,7 +727,7 @@ class TestExportWorkflowService(unittest.TestCase):
             }
 
         vmd_action = ExportVmdAction(
-            exporter=VmdExporter(native_exporter=None),
+            exporter=VmdExporter(),
             collector=collector,
         )
         service = ExportWorkflowService(
@@ -818,7 +818,7 @@ class TestExportWorkflowService(unittest.TestCase):
             return ExportValidationReport("vmd", (), mode=export_strategy)
 
         vmd_action = ExportVmdAction(
-            exporter=VmdExporter(native_exporter=None),
+            exporter=VmdExporter(),
             collector=collector,
             validator=validator,
         )

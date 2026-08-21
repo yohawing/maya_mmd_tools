@@ -24,9 +24,7 @@ if str(ROOT) not in sys.path:
 from mmd_tools.core.native import (
     export_pmx_from_parts,
     export_vmd_from_parts,
-    export_vmd_animation_json,
     get_mmd_runtime_library,
-    is_native_json_export_available,
     is_native_pmx_parts_export_available,
     is_native_vmd_parts_export_available,
 )
@@ -37,39 +35,6 @@ from mmd_tools.core.vmd_data import VmdData
 def _write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
-
-
-def _vmd_payload() -> dict:
-    return {
-        "kind": "vmd",
-        "metadata": {
-            "format": "vmd",
-            "modelName": "native-export-smoke",
-            "counts": {
-                "bones": 1,
-                "morphs": 0,
-                "cameras": 0,
-                "lights": 0,
-                "selfShadows": 0,
-                "properties": 0,
-            },
-            "maxFrame": 1,
-        },
-        "boneFrames": [
-            {
-                "boneName": "センター",
-                "frame": 1,
-                "translation": [1.0, 2.0, 3.0],
-                "rotation": [0.0, 0.0, 0.0, 1.0],
-                "interpolation": [20] * 64,
-            }
-        ],
-        "morphFrames": [],
-        "cameraFrames": [],
-        "lightFrames": [],
-        "selfShadowFrames": [],
-        "propertyFrames": [],
-    }
 
 
 def _pmx_parts() -> Tuple[dict, List[float], List[float], List[float], List[int]]:
@@ -170,13 +135,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps({"status": "skip", "missing": missing}, ensure_ascii=False))
         return 1 if args.strict else 0
 
-    optional_json_exports = {"vmd": is_native_json_export_available("vmd")}
-    skipped_optional = [
-        f"{kind}_json_export"
-        for kind, available in optional_json_exports.items()
-        if not available
-    ]
-
     with tempfile.TemporaryDirectory(prefix="native_export_smoke_") as tmp:
         tmp_dir = Path(tmp)
 
@@ -215,16 +173,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         assert len(vmd_parts.morph_frames) == 1
         assert len(vmd_parts.ik_show_hide_frames) == 1
 
-        if optional_json_exports["vmd"]:
-            vmd_bytes = export_vmd_animation_json(_vmd_payload())
-            if not vmd_bytes:
-                raise RuntimeError("native VMD export returned empty bytes")
-            vmd_path = tmp_dir / "smoke.vmd"
-            _write(vmd_path, vmd_bytes)
-            vmd = VmdData().parse_file(str(vmd_path))
-            assert vmd.header.model_name == "native-export-smoke"
-            assert len(vmd.bone_frames) == 1
-
         descriptor, positions, normals, uvs, indices = _pmx_parts()
         pmx_bytes = export_pmx_from_parts(descriptor, positions, normals, uvs, indices=indices)
         if not pmx_bytes:
@@ -235,7 +183,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         assert pmx.header.model_name == "native-export-smoke"
         assert len(pmx.vertices) == 3
 
-    print(json.dumps({"status": "pass", "skippedOptional": skipped_optional}, ensure_ascii=False))
+    print(json.dumps({"status": "pass"}, ensure_ascii=False))
     return 0
 
 

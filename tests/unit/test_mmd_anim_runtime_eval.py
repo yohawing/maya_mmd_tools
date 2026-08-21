@@ -1233,9 +1233,6 @@ class _FakeJsonExportLib:
         buf.len = len(self.payload)
         return buf
 
-    def mmd_runtime_export_vmd_animation_json(self, json_payload, json_len):
-        return self._export("vmd", json_payload, json_len)
-
     def mmd_runtime_export_pmx_model_json(self, json_payload, json_len):
         return self._export("pmx", json_payload, json_len)
 
@@ -1247,19 +1244,10 @@ class TestJsonExportWrapper(unittest.TestCase):
     def test_availability_uses_format_symbol(self):
         lib = _FakeJsonExportLib()
         with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
-            self.assertTrue(rt.is_native_json_export_available("vmd"))
+            self.assertFalse(rt.is_native_json_export_available("vmd"))
             self.assertTrue(rt.is_native_json_export_available("pmx"))
             self.assertFalse(rt.is_native_json_export_available("pmd"))
             self.assertFalse(rt.is_native_json_export_available("unknown"))
-
-    def test_export_vmd_json_encodes_dict_payload_and_frees(self):
-        lib = _FakeJsonExportLib(payload=b"VMD")
-        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
-            result = rt.export_vmd_animation_json({"kind": "vmd", "frames": []})
-
-        self.assertEqual(result, b"VMD")
-        self.assertEqual(lib.free_calls, 1)
-        self.assertEqual(lib.calls, [{"symbol": "vmd", "payload": b'{"kind":"vmd","frames":[]}'}])
 
     def test_export_pmx_json_selects_pmx_symbol(self):
         lib = _FakeJsonExportLib(payload=b"PMX")
@@ -1269,12 +1257,7 @@ class TestJsonExportWrapper(unittest.TestCase):
         self.assertEqual([call["symbol"] for call in lib.calls], ["pmx"])
         self.assertEqual(lib.free_calls, 1)
 
-    def test_export_json_returns_none_when_symbol_missing_or_empty(self):
-        missing = _FakeJsonExportLib(missing_symbols={"mmd_runtime_export_vmd_animation_json"})
-        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=missing):
-            self.assertIsNone(rt.export_vmd_animation_json({"kind": "vmd"}))
-        self.assertEqual(missing.calls, [])
-
+    def test_export_json_returns_none_for_empty_pmx_result(self):
         empty = _FakeJsonExportLib(empty_result=True)
         with mock.patch.object(rt, "get_mmd_runtime_library", return_value=empty):
             self.assertIsNone(rt.export_pmx_model_json({"kind": "pmx"}))

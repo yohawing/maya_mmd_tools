@@ -34,7 +34,7 @@ class _RecordingVmdExporter:
 
     def __init__(self):
         self.calls = []
-        self._delegate = VmdExporter(native_exporter=None)
+        self._delegate = VmdExporter()
 
     def to_vmd_data(self, animation_data):
         """Keep the action's normal data normalization contract."""
