@@ -59,17 +59,35 @@ def capture_mmd_control_rig_anim_layers(
             raise MmdControlRigAnimLayerError(
                 f"animLayer has an unknown graph without membership: {layer}"
             )
+        scoped_attributes = tuple(
+            plug
+            for plug in attributes
+            if _under_target_scope(cmds, str(plug).split(".", 1)[0], root)
+        )
+        shared_attributes = tuple(
+            plug
+            for plug in attributes
+            if plug not in scoped_attributes
+            and _touches_target_scope(cmds, str(plug).split(".", 1)[0], root)
+        )
+        # Layers belonging entirely to another model or scene object do not
+        # participate in this ownership transaction. A layer that mixes this
+        # target with foreign members remains unsafe because its settings and
+        # internal graph are shared across both scopes.
+        if shared_attributes:
+            raise MmdControlRigAnimLayerError(
+                f"animLayer contains foreign/shared target attributes: {layer}"
+            )
+        if not scoped_attributes:
+            continue
+        if len(scoped_attributes) != len(attributes):
+            raise MmdControlRigAnimLayerError(
+                f"animLayer contains foreign/shared target attributes: {layer}"
+            )
         parent = _query_parent(cmds, layer)
         if parent and parent not in _BASE_LAYER_NAMES:
             raise MmdControlRigAnimLayerError(
                 f"nested/shared animLayer is unsupported: {layer}"
-            )
-        if any(
-            not _under_target_scope(cmds, str(plug).split(".", 1)[0], root)
-            for plug in attributes
-        ):
-            raise MmdControlRigAnimLayerError(
-                f"animLayer contains foreign/shared target attributes: {layer}"
             )
         layer_uuid = _node_uuid(cmds, layer)
         layer_row: Dict[str, Any] = {
@@ -98,7 +116,11 @@ def capture_mmd_control_rig_anim_layers(
                 }
             )
             known_nodes.add(blend_node)
-        route_targets = attributes if wanted is None else wanted.intersection(attributes)
+        route_targets = (
+            scoped_attributes
+            if wanted is None
+            else wanted.intersection(scoped_attributes)
+        )
         for target in sorted(route_targets):
             route = _capture_route(cmds, layer, layer_row, target, blend_nodes)
             routes[target] = route
@@ -410,6 +432,43 @@ def _under_target_scope(cmds, node, root, visited=None):
         return result
 
     return check(node)
+
+
+def _touches_target_scope(cmds, node, root, visited=None):
+    """Return whether an MMD helper has any evaluated output under ``root``."""
+
+    active = visited if isinstance(visited, set) else set()
+    matches = cmds.ls(node, long=True) or []
+    current = str(matches[0]) if len(matches) == 1 else str(node)
+    if _under_root(current, root):
+        return True
+    if current in active or not cmds.objExists(current):
+        return False
+    try:
+        if not str(cmds.nodeType(current)).startswith("mmd"):
+            return False
+    except Exception:
+        return False
+    active.add(current)
+    try:
+        destinations = cmds.listConnections(
+            current,
+            source=False,
+            destination=True,
+            plugs=True,
+        ) or []
+        return any(
+            _touches_target_scope(
+                cmds,
+                str(destination).split(".", 1)[0],
+                root,
+                active,
+            )
+            for destination in destinations
+            if str(cmds.nodeType(str(destination).split(".", 1)[0])) != "animLayer"
+        )
+    finally:
+        active.discard(current)
 
 
 def _node_uuid(cmds, node):

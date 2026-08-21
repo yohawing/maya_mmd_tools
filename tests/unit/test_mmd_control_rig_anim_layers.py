@@ -95,6 +95,16 @@ class TestMmdControlRigAnimLayers(MayaTestBase):
                 (f"{owned}.translateX",),
             )
 
+    def test_layer_owned_entirely_by_another_scope_is_ignored(self):
+        root = cmds.group(empty=True, name="cr061_anim_layer_target_root")
+        foreign = cmds.createNode("transform", name="cr061_anim_layer_other_joint")
+        layer = cmds.animLayer("cr061_anim_layer_other_model", override=False, weight=1.0)
+        cmds.animLayer(layer, edit=True, attribute=f"{foreign}.translateX")
+
+        journal = capture_mmd_control_rig_anim_layers(cmds, root, None)
+
+        self.assertEqual(journal, {"layers": [], "routes": {}})
+
     def test_nested_layer_fails_closed(self):
         root = cmds.group(empty=True, name="cr061_anim_layer_nested_root")
         joint = cmds.createNode("transform", name="cr061_anim_layer_nested_joint")

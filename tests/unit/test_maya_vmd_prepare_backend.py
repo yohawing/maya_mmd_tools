@@ -305,6 +305,26 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
             self.backend.restore_after_collection(context)
         enter_edit.assert_not_called()
 
+    def test_restore_error_preserves_the_underlying_maya_failure(self):
+        self.cmds.attributeQuery = lambda *_args, **_kwargs: True
+        context = MayaVmdTemporaryControlRigBake(
+            "|model",
+            "EDIT",
+            "CONTROL_OWNED",
+        )
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value={"state": "BAKED", "owner": "MMD_OWNED"},
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_motion.enter_mmd_control_rig_edit",
+            side_effect=RuntimeError("foreign VMD_Motion layer"),
+        ):
+            with self.assertRaisesRegex(
+                PrepareVmdExportError,
+                "RuntimeError: foreign VMD_Motion layer",
+            ):
+                self.backend.restore_after_collection(context)
+
     def test_non_edit_control_rig_is_not_mutated_for_collection(self):
         self.cmds.attributeQuery = lambda *_args, **_kwargs: True
         attached_metadata = {"state": "ATTACHED", "owner": "MMD_OWNED"}

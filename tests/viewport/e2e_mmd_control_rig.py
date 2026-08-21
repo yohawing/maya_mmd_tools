@@ -1214,6 +1214,39 @@ def run_e2e_check(
             "frameRange": list(timeline_range),
         }
         report["autoBakeExport"] = auto_gate
+        unrelated_layer = None
+        unrelated_node = None
+        if auto_bake_only:
+            # Reproduce a production scene that retains a muted VMD_Motion-like
+            # layer for another model/object. It must neither block restoration
+            # nor be absorbed into this model's ownership journal.
+            unrelated_node = cmds.createNode(
+                "transform",
+                name="MMT_AutoBake_Unrelated",
+            )
+            unrelated_layer = cmds.animLayer(
+                "MMT_AutoBake_Unrelated_VMD_Motion",
+                override=False,
+                weight=0.0,
+            )
+            cmds.animLayer(
+                unrelated_layer,
+                edit=True,
+                attribute=f"{unrelated_node}.translateX",
+            )
+            cmds.setKeyframe(
+                unrelated_node,
+                attribute="translateX",
+                time=2.0,
+                value=1.0,
+                animLayer=unrelated_layer,
+            )
+            auto_gate["unrelatedLayer"] = {
+                "name": unrelated_layer,
+                "weight": float(
+                    cmds.animLayer(unrelated_layer, query=True, weight=True)
+                ),
+            }
         try:
             auto_action = create_maya_vmd_prepare_action()
             auto_service = ExportWorkflowService(prepare_vmd_action=auto_action)
@@ -1253,6 +1286,21 @@ def run_e2e_check(
                     "automatic Bake Timeline did not restore EDIT/CONTROL_OWNED: "
                     f"{restored_metadata}"
                 )
+            if unrelated_layer is not None and unrelated_node is not None:
+                unrelated_attributes = cmds.animLayer(
+                    unrelated_layer,
+                    query=True,
+                    attribute=True,
+                ) or []
+                unrelated_pass = any(
+                    str(attribute).endswith(f"{unrelated_node}.translateX")
+                    for attribute in unrelated_attributes
+                )
+                auto_gate["unrelatedLayer"]["preserved"] = unrelated_pass
+                if not unrelated_pass:
+                    raise RuntimeError(
+                        "automatic Bake Timeline changed an unrelated animation layer"
+                    )
 
             validation = auto_service.validate(
                 ExportWorkflowRequest(

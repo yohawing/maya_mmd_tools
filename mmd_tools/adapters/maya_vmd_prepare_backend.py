@@ -312,7 +312,8 @@ class MayaVmdPrepareBackend:
             )
         except Exception as exc:
             raise PrepareVmdExportError(
-                "automatic Control Rig restoration to EDIT failed"
+                "automatic Control Rig restoration to EDIT failed: "
+                f"{type(exc).__name__}: {exc}"
             ) from exc
         if not isinstance(restored, Mapping):
             raise PrepareVmdExportError("Control Rig restoration returned invalid metadata")
