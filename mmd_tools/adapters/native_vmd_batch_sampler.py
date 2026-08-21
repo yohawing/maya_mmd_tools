@@ -49,8 +49,6 @@ _NUMERIC_ATTR_TYPES = {
     "enum",
 }
 _HEADER_SIZE = 6
-_TIMING_HEADER_SIZE_V1 = 3
-_TIMING_HEADER_SIZE_V2 = 5
 _TIMING_HEADER_SIZE = 9
 _TIMING_PROTOCOL = "wall_v3"
 _DIRECT_SPOOL_MODE = "direct_spool"
@@ -71,7 +69,7 @@ if _DOUBLE_ITEM_SIZE != struct.calcsize("=d"):
 
 
 class NativeVmdBatchSamplerError(RuntimeError):
-    """Raised when the native command or its packed result is not trusted."""
+    """Raised when the native command or its direct-spool result is not trusted."""
 
 
 class NativeDirectSpoolUnsupportedError(NativeVmdBatchSamplerError):
@@ -89,7 +87,7 @@ _DIRECT_SPOOL_UNSUPPORTED_MARKERS = (
 
 
 def _is_direct_spool_unsupported_error(exc: BaseException) -> bool:
-    """Recognize the one capability error that permits a packed retry."""
+    """Recognize the capability error emitted by an old loaded plug-in."""
 
     return (
         isinstance(exc, RuntimeError)
@@ -966,13 +964,13 @@ def build_dense_scalar_sample_plan(
 
 def _header_int(value: Any, name: str) -> int:
     if isinstance(value, bool):
-        raise NativeVmdBatchSamplerError(f"packed header {name} is not numeric")
+        raise NativeVmdBatchSamplerError(f"native sampler header {name} is not numeric")
     try:
         numeric = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
-        raise NativeVmdBatchSamplerError(f"packed header {name} is not numeric") from exc
+        raise NativeVmdBatchSamplerError(f"native sampler header {name} is not numeric") from exc
     if not math.isfinite(numeric) or numeric != int(numeric):
-        raise NativeVmdBatchSamplerError(f"packed header {name} is not an exact integer")
+        raise NativeVmdBatchSamplerError(f"native sampler header {name} is not an exact integer")
     return int(numeric)
 
 
@@ -980,204 +978,25 @@ def _header_nonnegative_int(value: Any, name: str) -> int:
     numeric = _header_int(value, name)
     if numeric < 0:
         raise NativeVmdBatchSamplerError(
-            f"packed header {name} must be a non-negative exact integer"
+            f"native sampler header {name} must be a non-negative exact integer"
         )
     return numeric
 
 
 def _header_seconds(value: Any, name: str) -> float:
     if isinstance(value, bool):
-        raise NativeVmdBatchSamplerError(f"packed header {name} is not numeric")
+        raise NativeVmdBatchSamplerError(f"native sampler header {name} is not numeric")
     try:
         numeric = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise NativeVmdBatchSamplerError(
-            f"packed header {name} is not numeric"
+            f"native sampler header {name} is not numeric"
         ) from exc
     if not math.isfinite(numeric) or numeric < 0.0:
         raise NativeVmdBatchSamplerError(
-            f"packed header {name} must be finite and non-negative"
+            f"native sampler header {name} must be finite and non-negative"
         )
     return numeric
-
-
-def parse_packed_result(
-    packed: Sequence[Any],
-    plan: DenseBoneSamplePlan,
-    *,
-    require_timing: bool = False,
-) -> tuple[
-    tuple[tuple[float, ...], ...],
-    dict[str, int],
-    dict[str, float],
-]:
-    """Validate C++ frame-major output and return rows plus actual strategies."""
-
-    if (
-        not plan.frames
-        or any(not math.isfinite(frame) for frame in plan.frames)
-        or any(right <= left for left, right in zip(plan.frames, plan.frames[1:]))
-    ):
-        raise NativeVmdBatchSamplerError("native sampler plan frames are not ordered")
-    try:
-        values = list(packed)
-    except TypeError as exc:
-        raise NativeVmdBatchSamplerError("native sampler result is not iterable") from exc
-    if len(values) < _HEADER_SIZE:
-        raise NativeVmdBatchSamplerError("native sampler result is shorter than its header")
-    version = _header_int(values[0], "version")
-    frame_count = _header_int(values[1], "frame_count")
-    channel_count = _header_int(values[2], "channel_count")
-    direct_count = _header_int(values[3], "direct_count")
-    static_count = _header_int(values[4], "static_count")
-    timed_count = _header_int(values[5], "timed_count")
-    if version != _PROTOCOL_VERSION:
-        raise NativeVmdBatchSamplerError(f"unsupported native sampler protocol: {version}")
-    if frame_count != len(plan.frames) or channel_count != len(plan.physical_channels):
-        raise NativeVmdBatchSamplerError("native sampler frame/channel header mismatch")
-    if min(direct_count, static_count, timed_count) < 0:
-        raise NativeVmdBatchSamplerError("native sampler strategy count is negative")
-    if direct_count + static_count + timed_count != channel_count:
-        raise NativeVmdBatchSamplerError("native sampler strategy counts do not sum to channels")
-    legacy_length = _HEADER_SIZE + frame_count * channel_count
-    timed_v1_length = legacy_length + _TIMING_HEADER_SIZE_V1
-    timed_v2_length = legacy_length + _TIMING_HEADER_SIZE_V2
-    timed_v3_length = legacy_length + _TIMING_HEADER_SIZE
-    has_timing_v1 = len(values) == timed_v1_length
-    has_timing_v2 = len(values) == timed_v2_length
-    has_timing_v3 = len(values) == timed_v3_length
-    if require_timing and not has_timing_v3:
-        raise NativeVmdBatchSamplerError(
-            "native sampler result is missing timing metadata"
-        )
-    if len(values) not in {
-        legacy_length,
-        timed_v1_length,
-        timed_v2_length,
-        timed_v3_length,
-    }:
-        raise NativeVmdBatchSamplerError("native sampler packed result has unexpected length")
-    if has_timing_v1 or has_timing_v2 or has_timing_v3:
-        timing = {
-            "set_current_time_wall_sec": _header_seconds(
-                values[_HEADER_SIZE], "set_current_time_wall_sec"
-            ),
-            "first_timed_mplug_read_wall_sec": _header_seconds(
-                values[_HEADER_SIZE + 1], "first_timed_mplug_read_wall_sec"
-            ),
-            "channel_loop_wall_sec": _header_seconds(
-                values[_HEADER_SIZE + 2], "channel_loop_wall_sec"
-            ),
-        }
-        if has_timing_v1:
-            timing.update(
-                {
-                    "compound_group_count": 0,
-                    "compound_covered_channel_count": 0,
-                }
-            )
-        if has_timing_v2 or has_timing_v3:
-            group_count = _header_nonnegative_int(
-                values[_HEADER_SIZE + 3], "classified_compound_group_count"
-            )
-            covered_count = _header_nonnegative_int(
-                values[_HEADER_SIZE + 4], "classified_compound_covered_channel_count"
-            )
-            if covered_count != group_count * 3 or covered_count > channel_count:
-                raise NativeVmdBatchSamplerError(
-                    "native sampler compound diagnostics are inconsistent"
-                )
-            if has_timing_v3:
-                success_group_count = _header_nonnegative_int(
-                    values[_HEADER_SIZE + 5], "compound_success_group_count"
-                )
-                success_covered_count = _header_nonnegative_int(
-                    values[_HEADER_SIZE + 6],
-                    "compound_success_covered_channel_count",
-                )
-                fallback_group_count = _header_nonnegative_int(
-                    values[_HEADER_SIZE + 7], "compound_fallback_group_count"
-                )
-                fallback_covered_count = _header_nonnegative_int(
-                    values[_HEADER_SIZE + 8],
-                    "compound_fallback_covered_channel_count",
-                )
-                if (
-                    success_covered_count != success_group_count * 3
-                    or fallback_covered_count != fallback_group_count * 3
-                    or success_group_count + fallback_group_count != group_count
-                    or success_covered_count + fallback_covered_count != covered_count
-                ):
-                    raise NativeVmdBatchSamplerError(
-                        "native sampler compound runtime diagnostics are inconsistent"
-                    )
-                timing.update(
-                    {
-                        "classified_compound_group_count": group_count,
-                        "classified_compound_covered_channel_count": covered_count,
-                        "compound_success_group_count": success_group_count,
-                        "compound_success_covered_channel_count": success_covered_count,
-                        "compound_fallback_group_count": fallback_group_count,
-                        "compound_fallback_covered_channel_count": fallback_covered_count,
-                    }
-                )
-            else:
-                timing.update(
-                    {
-                        "compound_group_count": group_count,
-                        "compound_covered_channel_count": covered_count,
-                    }
-                )
-    else:
-        timing = {
-            "set_current_time_wall_sec": 0.0,
-            "first_timed_mplug_read_wall_sec": 0.0,
-            "channel_loop_wall_sec": 0.0,
-            "compound_group_count": 0,
-            "compound_covered_channel_count": 0,
-        }
-    rows = []
-    timing_size = (
-        _TIMING_HEADER_SIZE
-        if has_timing_v3
-        else _TIMING_HEADER_SIZE_V2
-        if has_timing_v2
-        else _TIMING_HEADER_SIZE_V1
-    )
-    offset = _HEADER_SIZE + (
-        timing_size if has_timing_v1 or has_timing_v2 or has_timing_v3 else 0
-    )
-    for _frame_index in range(frame_count):
-        row = []
-        for _channel_index in range(channel_count):
-            try:
-                number = float(values[offset])
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise NativeVmdBatchSamplerError("native sampler value is not numeric") from exc
-            if not math.isfinite(number):
-                raise NativeVmdBatchSamplerError("native sampler value is not finite")
-            row.append(number)
-            offset += 1
-        rows.append(tuple(row))
-    return (
-        tuple(rows),
-        {
-            "direct_curve": direct_count,
-            "static": static_count,
-            "timed_mplug": timed_count,
-        },
-        timing,
-    )
-
-
-def _chunk_plan(plan: DenseBoneSamplePlan, start: int, end: int) -> DenseBoneSamplePlan:
-    """Make a local frame-index plan while preserving channel/logical order."""
-
-    return DenseBoneSamplePlan(
-        frames=plan.frames[start:end],
-        physical_channels=plan.physical_channels,
-        logical_channels=plan.logical_channels,
-    )
 
 
 def _unlink_spool(path: Optional[str]) -> None:
@@ -1210,7 +1029,7 @@ def _close_partial_spool(
 
 
 def _parse_direct_spool_result(
-    packed: Sequence[Any],
+    ack: Sequence[Any],
     *,
     frame_count: int,
     output_channel_count: int,
@@ -1219,7 +1038,7 @@ def _parse_direct_spool_result(
     """Validate the direct-spool acknowledgement and its diagnostics."""
 
     try:
-        values = list(packed)
+        values = list(ack)
     except TypeError as exc:
         raise NativeVmdBatchSamplerError(
             "native direct spool result is not iterable"
@@ -1445,9 +1264,9 @@ def _sample_direct_spool(
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        packed = command(payload=payload)
+        ack = command(payload=payload)
         strategy_counts, timing = _parse_direct_spool_result(
-            packed,
+            ack,
             frame_count=len(plan.frames),
             output_channel_count=output_channel_count,
             native_channel_count=native_channel_count,
@@ -1555,14 +1374,9 @@ class NativeVmdBatchSampler:
         self,
         cmds_module: Any,
         diagnostics_sink=None,
-        *,
-        use_direct_spool: bool = True,
     ) -> None:
         self._cmds = cmds_module
         self._diagnostics_sink = diagnostics_sink
-        # Direct spool is the production path; callers can explicitly select
-        # packed mode for the byte/value oracle or old-plugin compatibility.
-        self.use_direct_spool = bool(use_direct_spool)
         self._plugin_attempted = False
         self._plugin_path: Optional[str] = None
         self.last_diagnostics: dict[str, Any] = {
@@ -1662,7 +1476,6 @@ class NativeVmdBatchSampler:
         joints: Sequence[str],
         input_routes: Optional[Mapping[str, Mapping[str, Sequence[str]]]] = None,
     ) -> NativeDenseBoneSamples:
-        started = time.perf_counter()
         if not self.available:
             self.last_diagnostics.update(
                 {
@@ -1696,439 +1509,26 @@ class NativeVmdBatchSampler:
             _native_request_plan(plan, self._cmds)
         )
         command = getattr(self._cmds, self.command_name)
-        physical_channel_count = len(plan.physical_channels)
-        if self.use_direct_spool:
-            try:
-                result, direct_diagnostics = _sample_direct_spool(
-                    command,
-                    plan,
-                    request_plan,
-                    request_index_by_physical,
-                    static_physics_values,
-                )
-            except NativeDirectSpoolUnsupportedError:
-                # An old MLL can be loaded before this Python adapter runs.
-                # Retry packed mode only for the native capability marker;
-                # protocol, I/O, cancellation, and value failures stay fatal.
-                self.use_direct_spool = False
-                try:
-                    result = self.sample_dense_bone_channels(
-                        frames,
-                        joints,
-                        input_routes=input_routes,
-                    )
-                finally:
-                    self.use_direct_spool = True
-                self.last_diagnostics = {
-                    **self.last_diagnostics,
-                    "direct_spool_fallback": "unsupported_native_sampler_request_mode",
-                    "mode": "packed",
-                }
-                self._publish_diagnostics()
-                return result
-            self.last_diagnostics = {
-                **plugin_diagnostics,
-                **direct_diagnostics,
-                "status": "completed",
-                "protocol_failure": False,
-                "python_static_physics_compat_count": len(static_physics_values),
-            }
-            self._publish_diagnostics()
-            return result
-        max_frames_per_chunk = max(
-            1,
-            min(
-                MAX_NATIVE_FRAMES,
-                MAX_NATIVE_SAMPLES // physical_channel_count,
-            ),
-        )
-        chunk_count = (
-            len(plan.frames) + max_frames_per_chunk - 1
-        ) // max_frames_per_chunk
-        strategy_counts = None
-        compound_counts = None
-        chunk_wall_secs = []
-        chunk_set_current_time_wall_secs = []
-        chunk_first_timed_mplug_read_wall_secs = []
-        chunk_channel_loop_wall_secs = []
-        chunk_classified_compound_group_counts = []
-        chunk_classified_compound_covered_channel_counts = []
-        chunk_compound_success_group_counts = []
-        chunk_compound_success_covered_channel_counts = []
-        chunk_compound_fallback_group_counts = []
-        chunk_compound_fallback_covered_channel_counts = []
-        current_chunk_index = -1
-        spool_path: Optional[str] = None
-        spool_file = None
-        spool_mapping: Optional[mmap.mmap] = None
+        try:
+            result, direct_diagnostics = _sample_direct_spool(
+                command,
+                plan,
+                request_plan,
+                request_index_by_physical,
+                static_physics_values,
+            )
+        except NativeDirectSpoolUnsupportedError as exc:
+            raise NativeVmdBatchSamplerError(
+                "native bone sampling requires a direct-spool capable plug-in; "
+                "rebuild it and restart Maya"
+            ) from exc
         self.last_diagnostics = {
             **plugin_diagnostics,
-            "available": True,
-            "used": True,
-            "status": "sampling",
-            "chunk_index": -1,
-            "chunk_count": chunk_count,
-            "channel_count": physical_channel_count,
-            "frame_count": len(plan.frames),
-            "sample_count": len(plan.frames) * physical_channel_count,
+            **direct_diagnostics,
+            "status": "completed",
+            "protocol_failure": False,
             "python_static_physics_compat_count": len(static_physics_values),
-            "max_frames_per_chunk": max_frames_per_chunk,
-            "max_samples_per_chunk": max_frames_per_chunk * physical_channel_count,
-            "set_current_time_wall_sec": 0.0,
-            "first_timed_mplug_read_wall_sec": 0.0,
-            "channel_loop_wall_sec": 0.0,
-            "classified_compound_group_count": 0,
-            "classified_compound_covered_channel_count": 0,
-            "compound_success_group_count": 0,
-            "compound_success_covered_channel_count": 0,
-            "compound_fallback_group_count": 0,
-            "compound_fallback_covered_channel_count": 0,
-            "chunk_set_current_time_wall_sec": [],
-            "chunk_first_timed_mplug_read_wall_sec": [],
-            "chunk_channel_loop_wall_sec": [],
-            "chunk_classified_compound_group_count": [],
-            "chunk_classified_compound_covered_channel_count": [],
-            "chunk_compound_success_group_count": [],
-            "chunk_compound_success_covered_channel_count": [],
-            "chunk_compound_fallback_group_count": [],
-            "chunk_compound_fallback_covered_channel_count": [],
         }
-        self._publish_diagnostics()
-        try:
-            spool_fd, spool_path = tempfile.mkstemp(
-                prefix="mmd_bake_timeline_",
-                suffix=".bin",
-            )
-            spool_file = os.fdopen(spool_fd, "w+b")
-            for _chunk_index, start in enumerate(
-                range(0, len(plan.frames), max_frames_per_chunk)
-            ):
-                end = min(start + max_frames_per_chunk, len(plan.frames))
-                chunk_plan = _chunk_plan(request_plan, start, end)
-                current_chunk_index = start // max_frames_per_chunk
-                self.last_diagnostics.update(
-                    {
-                        "status": "sampling_chunk",
-                        "chunk_index": current_chunk_index,
-                        "chunk_frame_start": start,
-                        "chunk_frame_end": end - 1,
-                        "chunk_frame_count": end - start,
-                        "chunk_sample_count": (end - start) * physical_channel_count,
-                    }
-                )
-                self._publish_diagnostics()
-                chunk_started = time.perf_counter()
-                if chunk_plan.physical_channels:
-                    payload = json.dumps(
-                        {
-                            "version": _PROTOCOL_VERSION,
-                            "evaluation_policy": EVALUATION_POLICY,
-                            "timing": _TIMING_PROTOCOL,
-                            "frames": list(chunk_plan.frames),
-                            "channels": list(chunk_plan.request_channels),
-                        },
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                    packed = command(payload=payload)
-                    native_rows, chunk_strategies, chunk_timing = parse_packed_result(
-                        packed,
-                        chunk_plan,
-                        require_timing=True,
-                    )
-                else:
-                    native_rows = ((),) * len(chunk_plan.frames)
-                    chunk_strategies = {
-                        "direct_curve": 0,
-                        "static": 0,
-                        "timed_mplug": 0,
-                    }
-                    chunk_timing = {
-                        "set_current_time_wall_sec": 0.0,
-                        "first_timed_mplug_read_wall_sec": 0.0,
-                        "channel_loop_wall_sec": 0.0,
-                        "classified_compound_group_count": 0,
-                        "classified_compound_covered_channel_count": 0,
-                        "compound_success_group_count": 0,
-                        "compound_success_covered_channel_count": 0,
-                        "compound_fallback_group_count": 0,
-                        "compound_fallback_covered_channel_count": 0,
-                    }
-                chunk_set_current_time_wall_secs.append(
-                    chunk_timing["set_current_time_wall_sec"]
-                )
-                chunk_first_timed_mplug_read_wall_secs.append(
-                    chunk_timing["first_timed_mplug_read_wall_sec"]
-                )
-                chunk_channel_loop_wall_secs.append(
-                    chunk_timing["channel_loop_wall_sec"]
-                )
-                chunk_classified_compound_group_counts.append(
-                    chunk_timing["classified_compound_group_count"]
-                )
-                chunk_classified_compound_covered_channel_counts.append(
-                    chunk_timing["classified_compound_covered_channel_count"]
-                )
-                chunk_compound_success_group_counts.append(
-                    chunk_timing["compound_success_group_count"]
-                )
-                chunk_compound_success_covered_channel_counts.append(
-                    chunk_timing["compound_success_covered_channel_count"]
-                )
-                chunk_compound_fallback_group_counts.append(
-                    chunk_timing["compound_fallback_group_count"]
-                )
-                chunk_compound_fallback_covered_channel_counts.append(
-                    chunk_timing["compound_fallback_covered_channel_count"]
-                )
-                current_compound_counts = (
-                    chunk_timing["classified_compound_group_count"],
-                    chunk_timing["classified_compound_covered_channel_count"],
-                    chunk_timing["compound_success_group_count"],
-                    chunk_timing["compound_success_covered_channel_count"],
-                    chunk_timing["compound_fallback_group_count"],
-                    chunk_timing["compound_fallback_covered_channel_count"],
-                )
-                if compound_counts is None:
-                    compound_counts = current_compound_counts
-                elif compound_counts != current_compound_counts:
-                    raise NativeVmdBatchSamplerError(
-                        "native sampler compound diagnostics differ between chunks"
-                    )
-                chunk_strategies["static"] += len(static_physics_values)
-                chunk_rows = tuple(
-                    tuple(
-                        static_physics_values[physical_index]
-                        if physical_index in static_physics_values
-                        else native_row[request_index_by_physical[physical_index]]
-                        for physical_index in range(physical_channel_count)
-                    )
-                    for native_row in native_rows
-                )
-                chunk_wall_secs.append(
-                    round(time.perf_counter() - chunk_started, 6)
-                )
-                self.last_diagnostics.update(
-                    {
-                        "set_current_time_wall_sec": sum(
-                            chunk_set_current_time_wall_secs
-                        ),
-                        "first_timed_mplug_read_wall_sec": sum(
-                            chunk_first_timed_mplug_read_wall_secs
-                        ),
-                        "channel_loop_wall_sec": sum(chunk_channel_loop_wall_secs),
-                        "chunk_set_current_time_wall_sec": list(
-                            chunk_set_current_time_wall_secs
-                        ),
-                        "chunk_first_timed_mplug_read_wall_sec": list(
-                            chunk_first_timed_mplug_read_wall_secs
-                        ),
-                        "chunk_channel_loop_wall_sec": list(
-                            chunk_channel_loop_wall_secs
-                        ),
-                        "classified_compound_group_count": (
-                            compound_counts[0] if compound_counts is not None else 0
-                        ),
-                        "classified_compound_covered_channel_count": (
-                            compound_counts[1] if compound_counts is not None else 0
-                        ),
-                        "compound_success_group_count": (
-                            compound_counts[2] if compound_counts is not None else 0
-                        ),
-                        "compound_success_covered_channel_count": (
-                            compound_counts[3] if compound_counts is not None else 0
-                        ),
-                        "compound_fallback_group_count": (
-                            compound_counts[4] if compound_counts is not None else 0
-                        ),
-                        "compound_fallback_covered_channel_count": (
-                            compound_counts[5] if compound_counts is not None else 0
-                        ),
-                        "chunk_classified_compound_group_count": list(
-                            chunk_classified_compound_group_counts
-                        ),
-                        "chunk_classified_compound_covered_channel_count": list(
-                            chunk_classified_compound_covered_channel_counts
-                        ),
-                        "chunk_compound_success_group_count": list(
-                            chunk_compound_success_group_counts
-                        ),
-                        "chunk_compound_success_covered_channel_count": list(
-                            chunk_compound_success_covered_channel_counts
-                        ),
-                        "chunk_compound_fallback_group_count": list(
-                            chunk_compound_fallback_group_counts
-                        ),
-                        "chunk_compound_fallback_covered_channel_count": list(
-                            chunk_compound_fallback_covered_channel_counts
-                        ),
-                    }
-                )
-                if strategy_counts is None:
-                    strategy_counts = chunk_strategies
-                elif strategy_counts != chunk_strategies:
-                    raise NativeVmdBatchSamplerError(
-                        "native sampler strategy counts differ between chunks"
-                    )
-                chunk_values = array(
-                    "d",
-                    (number for row in chunk_rows for number in row),
-                )
-                chunk_values.tofile(spool_file)
-                del chunk_values
-                del chunk_rows
-                del native_rows
-            if strategy_counts is None:
-                raise NativeVmdBatchSamplerError("native sampler produced no chunks")
-            spool_file.flush()
-            os.fsync(spool_file.fileno())
-            expected_bytes = len(plan.frames) * physical_channel_count * _DOUBLE_ITEM_SIZE
-            actual_bytes = os.fstat(spool_file.fileno()).st_size
-            if actual_bytes != expected_bytes:
-                raise NativeVmdBatchSamplerError(
-                    "native sampler spool has an unexpected byte size"
-                )
-            spool_file.close()
-            spool_file = None
-            spool_file = open(spool_path, "rb")
-            spool_mapping = mmap.mmap(
-                spool_file.fileno(),
-                actual_bytes,
-                access=mmap.ACCESS_READ,
-            )
-            result = NativeDenseBoneSamples(
-                plan=plan,
-                strategy_counts=strategy_counts,
-                wall_sec=round(time.perf_counter() - started, 6),
-                mapping=spool_mapping,
-                spool_file=spool_file,
-                spool_path=spool_path,
-                storage_bytes=actual_bytes,
-                chunk_count=chunk_count,
-                max_frames_per_chunk=max_frames_per_chunk,
-                max_samples_per_chunk=max_frames_per_chunk * physical_channel_count,
-                chunk_wall_secs=tuple(chunk_wall_secs),
-                chunk_set_current_time_wall_secs=tuple(
-                    chunk_set_current_time_wall_secs
-                ),
-                chunk_first_timed_mplug_read_wall_secs=tuple(
-                    chunk_first_timed_mplug_read_wall_secs
-                ),
-                chunk_channel_loop_wall_secs=tuple(chunk_channel_loop_wall_secs),
-                chunk_classified_compound_group_counts=tuple(
-                    chunk_classified_compound_group_counts
-                ),
-                chunk_classified_compound_covered_channel_counts=tuple(
-                    chunk_classified_compound_covered_channel_counts
-                ),
-                chunk_compound_success_group_counts=tuple(
-                    chunk_compound_success_group_counts
-                ),
-                chunk_compound_success_covered_channel_counts=tuple(
-                    chunk_compound_success_covered_channel_counts
-                ),
-                chunk_compound_fallback_group_counts=tuple(
-                    chunk_compound_fallback_group_counts
-                ),
-                chunk_compound_fallback_covered_channel_counts=tuple(
-                    chunk_compound_fallback_covered_channel_counts
-                ),
-            )
-            spool_mapping = None
-            spool_file = None
-            spool_path = None
-        except BaseException as exc:
-            _close_partial_spool(spool_mapping, spool_file, spool_path)
-            spool_mapping = None
-            spool_file = None
-            spool_path = None
-            self.last_diagnostics = {
-                **plugin_diagnostics,
-                "available": True,
-                "used": False,
-                "fallback_reason": f"{type(exc).__name__}: {exc}",
-                "wall_sec": round(time.perf_counter() - started, 6),
-                "chunk_count": chunk_count,
-                "chunk_index": current_chunk_index,
-                "channel_count": physical_channel_count,
-                "frame_count": len(plan.frames),
-                "sample_count": len(plan.frames) * physical_channel_count,
-                "python_static_physics_compat_count": len(static_physics_values),
-                "max_frames_per_chunk": max_frames_per_chunk,
-                "max_samples_per_chunk": max_frames_per_chunk * physical_channel_count,
-                "chunk_wall_sec": chunk_wall_secs,
-                "set_current_time_wall_sec": sum(chunk_set_current_time_wall_secs),
-                "first_timed_mplug_read_wall_sec": sum(
-                    chunk_first_timed_mplug_read_wall_secs
-                ),
-                "channel_loop_wall_sec": sum(chunk_channel_loop_wall_secs),
-                "chunk_set_current_time_wall_sec": list(
-                    chunk_set_current_time_wall_secs
-                ),
-                "chunk_first_timed_mplug_read_wall_sec": list(
-                    chunk_first_timed_mplug_read_wall_secs
-                ),
-                "chunk_channel_loop_wall_sec": list(chunk_channel_loop_wall_secs),
-                "classified_compound_group_count": (
-                    compound_counts[0] if compound_counts is not None else 0
-                ),
-                "classified_compound_covered_channel_count": (
-                    compound_counts[1] if compound_counts is not None else 0
-                ),
-                "compound_success_group_count": (
-                    compound_counts[2] if compound_counts is not None else 0
-                ),
-                "compound_success_covered_channel_count": (
-                    compound_counts[3] if compound_counts is not None else 0
-                ),
-                "compound_fallback_group_count": (
-                    compound_counts[4] if compound_counts is not None else 0
-                ),
-                "compound_fallback_covered_channel_count": (
-                    compound_counts[5] if compound_counts is not None else 0
-                ),
-                "chunk_classified_compound_group_count": list(
-                    chunk_classified_compound_group_counts
-                ),
-                "chunk_classified_compound_covered_channel_count": list(
-                    chunk_classified_compound_covered_channel_counts
-                ),
-                "chunk_compound_success_group_count": list(
-                    chunk_compound_success_group_counts
-                ),
-                "chunk_compound_success_covered_channel_count": list(
-                    chunk_compound_success_covered_channel_counts
-                ),
-                "chunk_compound_fallback_group_count": list(
-                    chunk_compound_fallback_group_counts
-                ),
-                "chunk_compound_fallback_covered_channel_count": list(
-                    chunk_compound_fallback_covered_channel_counts
-                ),
-                "status": "failed",
-                "protocol_failure": isinstance(exc, NativeVmdBatchSamplerError),
-                "protocol_error": str(exc)
-                if isinstance(exc, NativeVmdBatchSamplerError)
-                else None,
-            }
-            self._publish_diagnostics()
-            if isinstance(exc, NativeVmdBatchSamplerError):
-                raise
-            if not isinstance(exc, Exception):
-                raise
-            raise NativeVmdBatchSamplerError(
-                "native sampler invocation failed: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
-        self.last_diagnostics = {**plugin_diagnostics, **result.diagnostics}
-        self.last_diagnostics.update(
-            {
-                "status": "completed",
-                "chunk_index": chunk_count - 1,
-                "protocol_failure": False,
-                "python_static_physics_compat_count": len(static_physics_values),
-            }
-        )
         self._publish_diagnostics()
         return result
 
@@ -2192,5 +1592,4 @@ __all__ = [
     "MAX_NATIVE_FRAMES",
     "build_dense_bone_sample_plan",
     "build_dense_scalar_sample_plan",
-    "parse_packed_result",
 ]

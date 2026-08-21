@@ -38,10 +38,7 @@ using json = nlohmann::json;
 
 constexpr int kProtocolVersion = 2;
 constexpr std::size_t kHeaderSize = 6U;
-constexpr std::size_t kTimingHeaderSizeV1 = 3U;
-constexpr std::size_t kTimingHeaderSizeV2 = 5U;
 constexpr std::size_t kTimingHeaderSizeV3 = 9U;
-constexpr std::size_t kMaxSamples = 4'194'304U;
 constexpr std::size_t kMaxSessionSamples = 134'217'728U;
 constexpr std::size_t kMaxSpoolBytes = 2'147'483'648ULL;
 constexpr std::size_t kMaxTraversalNodes = 4096U;
@@ -49,18 +46,14 @@ constexpr double kMaxFrame = 1.0e9;
 constexpr const char* kCommand = "mmdVmdBatchSample";
 constexpr const char* kPayloadFlag = "-payload";
 constexpr const char* kEvaluationPolicy = "maya_timeline_bake_v1";
-constexpr const char* kTimingProtocolV1 = "wall_v1";
-constexpr const char* kTimingProtocolV2 = "wall_v2";
 constexpr const char* kTimingProtocolV3 = "wall_v3";
 
 enum class UnitKind { Angle, Distance, Scalar };
 enum class Strategy { DirectCurve, Static, TimedMPlug };
-enum class TimingProtocol { None, WallV1, WallV2, WallV3 };
 // A direct-spool request is one bounded Prepare-scoped sampling session.  The
 // command receives the full frame plan once and performs 120-frame internal
 // checkpoints, so the canonicalized MPlugs live for the whole session without
 // requiring a process-global registry.
-enum class RequestMode { Packed, DirectSpool };
 struct Channel {
     MPlug plug;
     MPlug directOutput;
@@ -76,10 +69,8 @@ struct CompoundGroup {
 };
 
 struct Request {
-    RequestMode mode = RequestMode::Packed;
     std::vector<double> frames;
     std::vector<Channel> channels;
-    TimingProtocol timingProtocol = TimingProtocol::None;
     std::vector<CompoundGroup> compoundGroups;
     std::string spoolPath;
     std::size_t spoolBytes = 0U;
@@ -690,110 +681,76 @@ bool parseRequest(const MString& payloadString, Request& request, std::string& e
                                "payload requires version=2 and evaluation_policy=maya_timeline_bake_v1";
         return false;
     }
-    const std::string mode = payload.contains("mode") && payload["mode"].is_string()
-                                 ? payload["mode"].get<std::string>()
-                                 : "packed";
-    if (mode == "packed") request.mode = RequestMode::Packed;
-    else if (mode == "direct_spool") request.mode = RequestMode::DirectSpool;
-    else {
+    if (!payload.contains("mode") || !payload["mode"].is_string() ||
+        payload["mode"].get<std::string>() != "direct_spool") {
         error = "unsupported native sampler request mode";
         return false;
     }
 
-    const bool hasTiming = payload.contains("timing");
-    if (hasTiming && !payload["timing"].is_string()) {
-        error = "payload timing must be wall_v1, wall_v2, or wall_v3";
-        return false;
-    }
-    if (hasTiming && payload["timing"].get<std::string>() != kTimingProtocolV1 &&
-        payload["timing"].get<std::string>() != kTimingProtocolV2 &&
+    if (!payload.contains("timing") || !payload["timing"].is_string() ||
         payload["timing"].get<std::string>() != kTimingProtocolV3) {
-        error = "payload timing must be wall_v1, wall_v2, or wall_v3";
+        error = "payload timing must be wall_v3";
         return false;
     }
-    if (hasTiming) {
-        const std::string timingProtocol = payload["timing"].get<std::string>();
-        request.timingProtocol = timingProtocol == kTimingProtocolV3
-                                     ? TimingProtocol::WallV3
-                                     : timingProtocol == kTimingProtocolV2
-                                           ? TimingProtocol::WallV2
-                                           : TimingProtocol::WallV1;
-    }
-    if (request.mode == RequestMode::Packed) {
-        if ((payload.size() != 4U && !(payload.size() == 5U && hasTiming)) ||
-            !onlyKeys(payload, {"version", "frames", "channels", "evaluation_policy", "timing"}) ||
-            !payload.contains("frames") || !payload.contains("channels") ||
-            !parseFrames(payload["frames"], request.frames, error) ||
-            !parseChannels(payload["channels"], request.channels, error)) return false;
-        request.compoundGroups = classifyCompoundGroups(request.channels);
-    } else if (request.mode == RequestMode::DirectSpool) {
-        if (!onlyKeys(payload, {"version", "evaluation_policy", "timing", "mode",
-                                "frames", "channels", "spool_path", "spool_bytes",
-                                "output_channel_count", "output_slots", "output_defaults"}) ||
-            !payload.contains("timing") || request.timingProtocol != TimingProtocol::WallV3 ||
-            !payload.contains("spool_path") || !payload["spool_path"].is_string() ||
-            !payload.contains("spool_bytes") || !exactSize(payload["spool_bytes"], request.spoolBytes) ||
-            !payload.contains("output_channel_count") ||
-            !exactSize(payload["output_channel_count"], request.outputChannelCount) ||
-            !payload.contains("output_slots") || !payload["output_slots"].is_array() ||
-            !payload.contains("output_defaults") || !payload["output_defaults"].is_array() ||
-            !parseFrames(payload["frames"], request.frames, error) ||
-            !parseChannels(payload["channels"], request.channels, error, true)) {
-            if (error.empty()) error = "invalid native sampler direct_spool payload";
-            return false;
-        }
-        request.spoolPath = payload["spool_path"].get<std::string>();
-        if (request.spoolPath.empty() ||
-            request.outputChannelCount == 0U || request.outputChannelCount > 1'000'000U) {
-            error = "invalid native sampler direct spool identity or output shape";
-            return false;
-        }
-        request.outputSlots.reserve(payload["output_slots"].size());
-        for (const json& slot : payload["output_slots"]) {
-            std::size_t index = 0U;
-            if (!exactSize(slot, index)) {
-                error = "native sampler output slot must be an exact non-negative integer";
-                return false;
-            }
-            request.outputSlots.push_back(index);
-        }
-        request.outputDefaults.reserve(payload["output_defaults"].size());
-        for (const json& value : payload["output_defaults"]) {
-            double number = 0.0;
-            if (!finiteNumber(value, number)) {
-                error = "native sampler output default must be finite";
-                return false;
-            }
-            request.outputDefaults.push_back(number);
-        }
-        if (request.outputSlots.size() != request.channels.size() ||
-            request.outputDefaults.size() != request.outputChannelCount) {
-            error = "native sampler output shape does not match channels";
-            return false;
-        }
-        std::vector<bool> covered(request.outputChannelCount, false);
-        for (std::size_t slot : request.outputSlots) {
-            if (slot >= request.outputChannelCount || covered[slot]) {
-                error = "native sampler output slots are duplicated or out of range";
-                return false;
-            }
-            covered[slot] = true;
-        }
-        if (request.frames.size() > std::numeric_limits<std::size_t>::max() / request.outputChannelCount ||
-            request.frames.size() * request.outputChannelCount > kMaxSessionSamples ||
-            request.frames.size() * request.outputChannelCount > kMaxSpoolBytes / sizeof(double) ||
-            request.spoolBytes != request.frames.size() * request.outputChannelCount * sizeof(double)) {
-            error = "native sampler direct spool shape is invalid or too large";
-            return false;
-        }
-        request.compoundGroups = classifyCompoundGroups(request.channels);
-    }
-    if (request.mode == RequestMode::Packed &&
-        (request.frames.size() > std::numeric_limits<std::size_t>::max() / request.channels.size() ||
-         request.frames.size() * request.channels.size() > kMaxSamples)) {
-        error = "frame/channel sample count exceeds 4,194,304";
+    if (!onlyKeys(payload, {"version", "evaluation_policy", "timing", "mode",
+                            "frames", "channels", "spool_path", "spool_bytes",
+                            "output_channel_count", "output_slots", "output_defaults"}) ||
+        !payload.contains("spool_path") || !payload["spool_path"].is_string() ||
+        !payload.contains("spool_bytes") || !exactSize(payload["spool_bytes"], request.spoolBytes) ||
+        !payload.contains("output_channel_count") ||
+        !exactSize(payload["output_channel_count"], request.outputChannelCount) ||
+        !payload.contains("output_slots") || !payload["output_slots"].is_array() ||
+        !payload.contains("output_defaults") || !payload["output_defaults"].is_array() ||
+        !parseFrames(payload["frames"], request.frames, error) ||
+        !parseChannels(payload["channels"], request.channels, error, true)) {
+        if (error.empty()) error = "invalid native sampler direct_spool payload";
         return false;
     }
+    request.spoolPath = payload["spool_path"].get<std::string>();
+    if (request.spoolPath.empty() ||
+        request.outputChannelCount == 0U || request.outputChannelCount > 1'000'000U) {
+        error = "invalid native sampler direct spool identity or output shape";
+        return false;
+    }
+    request.outputSlots.reserve(payload["output_slots"].size());
+    for (const json& slot : payload["output_slots"]) {
+        std::size_t index = 0U;
+        if (!exactSize(slot, index)) {
+            error = "native sampler output slot must be an exact non-negative integer";
+            return false;
+        }
+        request.outputSlots.push_back(index);
+    }
+    request.outputDefaults.reserve(payload["output_defaults"].size());
+    for (const json& value : payload["output_defaults"]) {
+        double number = 0.0;
+        if (!finiteNumber(value, number)) {
+            error = "native sampler output default must be finite";
+            return false;
+        }
+        request.outputDefaults.push_back(number);
+    }
+    if (request.outputSlots.size() != request.channels.size() ||
+        request.outputDefaults.size() != request.outputChannelCount) {
+        error = "native sampler output shape does not match channels";
+        return false;
+    }
+    std::vector<bool> covered(request.outputChannelCount, false);
+    for (std::size_t slot : request.outputSlots) {
+        if (slot >= request.outputChannelCount || covered[slot]) {
+            error = "native sampler output slots are duplicated or out of range";
+            return false;
+        }
+        covered[slot] = true;
+    }
+    if (request.frames.size() > std::numeric_limits<std::size_t>::max() / request.outputChannelCount ||
+        request.frames.size() * request.outputChannelCount > kMaxSessionSamples ||
+        request.frames.size() * request.outputChannelCount > kMaxSpoolBytes / sizeof(double) ||
+        request.spoolBytes != request.frames.size() * request.outputChannelCount * sizeof(double)) {
+        error = "native sampler direct spool shape is invalid or too large";
+        return false;
+    }
+    request.compoundGroups = classifyCompoundGroups(request.channels);
     return true;
 }
 
@@ -803,180 +760,6 @@ bool directValue(const Channel& channel, const MFnAnimCurve& curve, double frame
     const double raw = curve.evaluate(MTime(frame, MTime::uiUnit()), &status);
     if (!status || !std::isfinite(raw)) return false;
     return sourceOutputUnit(channel.directOutput, channel.unit, raw, value);
-}
-
-MStatus sample(const Request& request)
-{
-    const bool includeTiming = request.timingProtocol != TimingProtocol::None;
-    const bool includeCompoundDiagnostics = request.timingProtocol == TimingProtocol::WallV2 ||
-                                            request.timingProtocol == TimingProtocol::WallV3;
-    const bool includeRuntimeCompoundDiagnostics = request.timingProtocol == TimingProtocol::WallV3;
-    const std::size_t timingHeaderSize = includeRuntimeCompoundDiagnostics
-                                             ? kTimingHeaderSizeV3
-                                             : includeCompoundDiagnostics ? kTimingHeaderSizeV2
-                                                                           : kTimingHeaderSizeV1;
-    MDoubleArray result;
-    const std::size_t valueOffset = kHeaderSize +
-                                     (includeTiming ? timingHeaderSize : 0U);
-    result.setLength(static_cast<unsigned int>(valueOffset));
-    result[0] = static_cast<double>(kProtocolVersion);
-    result[1] = static_cast<double>(request.frames.size());
-    result[2] = static_cast<double>(request.channels.size());
-    std::size_t directCount = 0U;
-    std::size_t staticCount = 0U;
-    std::size_t timedCount = 0U;
-    for (const Channel& channel : request.channels) {
-        if (channel.strategy == Strategy::DirectCurve) ++directCount;
-        else if (channel.strategy == Strategy::Static) ++staticCount;
-        else ++timedCount;
-    }
-    result[3] = static_cast<double>(directCount);
-    result[4] = static_cast<double>(staticCount);
-    result[5] = static_cast<double>(timedCount);
-    result.setLength(static_cast<unsigned int>(valueOffset +
-                                               request.frames.size() * request.channels.size()));
-
-    std::vector<int> groupForChannel(request.channels.size(), -1);
-    std::vector<int> groupSlot(request.channels.size(), -1);
-    for (std::size_t groupIndex = 0U; groupIndex < request.compoundGroups.size(); ++groupIndex) {
-        const CompoundGroup& group = request.compoundGroups[groupIndex];
-        for (std::size_t slot = 0U; slot < group.channelIndices.size(); ++slot) {
-            const std::size_t channelIndex = group.channelIndices[slot];
-            groupForChannel[channelIndex] = static_cast<int>(groupIndex);
-            groupSlot[channelIndex] = static_cast<int>(slot);
-        }
-    }
-
-    // Bind each direct curve once per command.  Constructing an MFnAnimCurve
-    // inside the frame loop would retain the intended semantics but would
-    // re-enter the dependency-node function-set machinery for every sample.
-    std::vector<std::unique_ptr<MFnAnimCurve>> directCurves(request.channels.size());
-    for (std::size_t channelIndex = 0; channelIndex < request.channels.size(); ++channelIndex) {
-        const Channel& channel = request.channels[channelIndex];
-        if (channel.strategy != Strategy::DirectCurve) continue;
-        MStatus status;
-        directCurves[channelIndex] = std::make_unique<MFnAnimCurve>(channel.directOutput.node(), &status);
-        if (!status || !directCurves[channelIndex]) {
-            return fail("direct animation curve became unavailable: " + channel.canonicalPlug);
-        }
-    }
-
-    if (MAnimControl::isPlaying()) {
-        return fail("maya_timeline_bake_v1 is unavailable during playback");
-    }
-    CurrentTimeGuard currentTimeGuard;
-    ComputationGuard computationGuard;
-    std::string sampleError;
-    TimingTotals timing;
-    std::size_t offset = valueOffset;
-    std::vector<std::array<double, 3U>> compoundValues(request.compoundGroups.size());
-    std::vector<bool> compoundReady(request.compoundGroups.size(), false);
-    std::vector<bool> compoundSucceeded(request.compoundGroups.size(), false);
-    std::vector<bool> compoundFallback(request.compoundGroups.size(), false);
-    for (double frame : request.frames) {
-        const auto setCurrentTimeStart = WallClock::now();
-        const MStatus status = MAnimControl::setCurrentTime(MTime(frame, MTime::uiUnit()));
-        timing.setCurrentTimeWallSec += elapsedSeconds(setCurrentTimeStart, WallClock::now());
-        if (!status) {
-            sampleError = "maya_timeline_bake_v1 could not set frame " + std::to_string(frame);
-            break;
-        }
-        const auto channelLoopStart = WallClock::now();
-        bool firstTimedMPlugReadMeasured = false;
-        std::fill(compoundReady.begin(), compoundReady.end(), false);
-        for (std::size_t channelIndex = 0; channelIndex < request.channels.size(); ++channelIndex) {
-            const Channel& channel = request.channels[channelIndex];
-            double value = 0.0;
-            bool ok = false;
-            if (channel.strategy == Strategy::DirectCurve) {
-                ok = directCurves[channelIndex] &&
-                     directValue(channel, *directCurves[channelIndex], frame, value);
-            }
-            else if (channel.strategy == Strategy::Static) {
-                value = channel.staticValue;
-                ok = true;
-            } else {
-                const int groupIndex = groupForChannel[channelIndex];
-                if (groupIndex >= 0 && !compoundReady[static_cast<std::size_t>(groupIndex)] &&
-                    !compoundFallback[static_cast<std::size_t>(groupIndex)]) {
-                    const auto firstTimedReadStart =
-                        !firstTimedMPlugReadMeasured ? WallClock::now() : WallClock::time_point();
-                    const bool compoundOk = readCompoundGroup(
-                        request.compoundGroups[static_cast<std::size_t>(groupIndex)],
-                        request.channels,
-                        compoundValues[static_cast<std::size_t>(groupIndex)]);
-                    if (!firstTimedMPlugReadMeasured) {
-                        timing.firstTimedMPlugReadWallSec +=
-                            elapsedSeconds(firstTimedReadStart, WallClock::now());
-                        firstTimedMPlugReadMeasured = true;
-                    }
-                    if (compoundOk) {
-                        compoundReady[static_cast<std::size_t>(groupIndex)] = true;
-                        compoundSucceeded[static_cast<std::size_t>(groupIndex)] = true;
-                    } else {
-                        compoundFallback[static_cast<std::size_t>(groupIndex)] = true;
-                    }
-                }
-                if (groupIndex >= 0 && compoundReady[static_cast<std::size_t>(groupIndex)]) {
-                    value = compoundValues[static_cast<std::size_t>(groupIndex)]
-                        [static_cast<std::size_t>(groupSlot[channelIndex])];
-                    ok = std::isfinite(value);
-                } else {
-                    const auto firstTimedReadStart =
-                        !firstTimedMPlugReadMeasured ? WallClock::now() : WallClock::time_point();
-                    ok = readNumeric(channel.plug, channel.unit, value);
-                    if (!firstTimedMPlugReadMeasured) {
-                        timing.firstTimedMPlugReadWallSec +=
-                            elapsedSeconds(firstTimedReadStart, WallClock::now());
-                        firstTimedMPlugReadMeasured = true;
-                    }
-                }
-            }
-            if (!ok || !std::isfinite(value)) {
-                sampleError = "sampling failed for channel " + channel.canonicalPlug +
-                              " at frame " + std::to_string(frame);
-                break;
-            }
-            result[static_cast<unsigned int>(offset++)] = value;
-        }
-        timing.channelLoopWallSec += elapsedSeconds(channelLoopStart, WallClock::now());
-        if (!sampleError.empty()) break;
-        if (computationGuard.interrupted()) {
-            sampleError = "sampling cancelled";
-            break;
-        }
-    }
-    if (!currentTimeGuard.restore()) {
-        return fail("current time restoration failed");
-    }
-    if (!sampleError.empty()) {
-        return fail(sampleError);
-    }
-    if (includeTiming) {
-        result[kHeaderSize] = timing.setCurrentTimeWallSec;
-        result[kHeaderSize + 1U] = timing.firstTimedMPlugReadWallSec;
-        result[kHeaderSize + 2U] = timing.channelLoopWallSec;
-        if (includeCompoundDiagnostics) {
-            result[kHeaderSize + 3U] = static_cast<double>(request.compoundGroups.size());
-            result[kHeaderSize + 4U] =
-                static_cast<double>(request.compoundGroups.size() * 3U);
-            if (includeRuntimeCompoundDiagnostics) {
-                std::size_t successGroupCount = 0U;
-                std::size_t fallbackGroupCount = 0U;
-                for (std::size_t groupIndex = 0U; groupIndex < request.compoundGroups.size();
-                     ++groupIndex) {
-                    if (compoundFallback[groupIndex]) ++fallbackGroupCount;
-                    else if (compoundSucceeded[groupIndex]) ++successGroupCount;
-                }
-                result[kHeaderSize + 5U] = static_cast<double>(successGroupCount);
-                result[kHeaderSize + 6U] = static_cast<double>(successGroupCount * 3U);
-                result[kHeaderSize + 7U] = static_cast<double>(fallbackGroupCount);
-                result[kHeaderSize + 8U] = static_cast<double>(fallbackGroupCount * 3U);
-            }
-        }
-    }
-    MPxCommand::setResult(result);
-    return MS::kSuccess;
 }
 
 MStatus sampleDirectSpool(const Request& request)
@@ -1074,8 +857,7 @@ MStatus sampleDirectSpool(const Request& request)
     for (std::size_t frameIndex = 0U; frameIndex < request.frames.size(); ++frameIndex) {
         checkpointStart(frameIndex);
         // The parent compound value is frame-local.  Only the runtime
-        // success/fallback decision is checkpoint-scoped, matching the
-        // legacy packed command's per-frame compoundReady reset.
+        // success/fallback decision is checkpoint-scoped.
         std::fill(compoundReady.begin(), compoundReady.end(), false);
         // A failed setCurrentTime/read/write/cancellation path must perform a
         // final restore.  A completed checkpoint already restored entryTime,
@@ -1271,8 +1053,7 @@ MStatus MmdVmdBatchSamplerCommand::doIt(const MArgList& args)
     Request request;
     std::string error;
     if (!parseRequest(payload, request, error)) return fail(error);
-    if (request.mode == RequestMode::DirectSpool) return sampleDirectSpool(request);
-    return sample(request);
+    return sampleDirectSpool(request);
 }
 
 bool MmdVmdBatchSamplerCommand::isUndoable() const

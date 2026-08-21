@@ -155,7 +155,7 @@ def _values_path(config: Mapping[str, Any], prefix: int) -> Path:
     return Path(config["out_dir"]) / f"{_result_stem(prefix)}.values.bin"
 
 
-def _packed_bytes(values: Sequence[float]) -> bytes:
+def _value_bytes(values: Sequence[float]) -> bytes:
     return struct.pack(f"<{len(values)}d", *(float(value) for value in values))
 
 
@@ -769,7 +769,7 @@ def _run_worker(config: Mapping[str, Any], prefix: int) -> dict[str, Any]:
         raise RuntimeError(
             f"currentTime was not restored: entry={entry_time} restored={restored_time}"
         )
-    values_blob = _packed_bytes(
+    values_blob = _value_bytes(
         [value for row in samples.rows for value in row]
     )
     values_path = _values_path(config, prefix)

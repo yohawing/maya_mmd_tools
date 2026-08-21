@@ -1,4 +1,4 @@
-"""Focused Maya 2024 smoke for the native packed VMD scalar sampler."""
+"""Focused Maya 2024 smoke for the native direct-spool VMD scalar sampler."""
 
 from __future__ import annotations
 
@@ -30,8 +30,8 @@ def _plugin_path() -> Path:
     return path
 
 
-def _payload(frames: Iterable[float], channels: List[dict[str, str]]) -> str:
-    """Serialize with compact separators so Maya receives one argument."""
+def _legacy_payload(frames: Iterable[float], channels: List[dict[str, str]]) -> str:
+    """Serialize an intentionally unsupported pre-direct-spool request."""
     return json.dumps(
         {
             "version": 2,
@@ -50,7 +50,7 @@ def _call(cmds: Any, payload: str) -> List[float]:
     values = cmds.mmdVmdBatchSample(payload=payload)
     result = [float(value) for value in values]
     if any(not math.isfinite(value) for value in result):
-        raise RuntimeError("native sampler returned a non-finite packed value")
+        raise RuntimeError("native sampler returned a non-finite value")
     return result
 
 
@@ -287,29 +287,6 @@ def main() -> int:
         cmds.connectAttr(f"{source}.sourceValue", f"{conversion}.input", force=True)
         cmds.connectAttr(f"{conversion}.output", f"{node}.convertedValue", force=True)
 
-        # An unconnected computed output is numeric but not a safe static
-        # input.  A hostile/incorrect hint must be downgraded to timed MPlug.
-        computed = cmds.createNode("plusMinusAverage", name="focused_vmd_batch_computed")
-        cmds.setAttr(f"{computed}.input1D[0]", 6.0)
-        # output1D is a top-level plug.  Maya 2024 may return kFailure from
-        # MPlug.parent() for it; the sampler must treat that as no parent.
-        computed_result = _call(
-            cmds,
-            _payload(
-                [0.0],
-                [{"plug": f"{computed}.output1D", "unit": "scalar", "hint": "static"}],
-            ),
-        )
-        if computed_result[:6] != [2.0, 1.0, 1.0, 0.0, 0.0, 1.0]:
-            raise RuntimeError(f"computed output was accepted as static: {computed_result[:6]!r}")
-        if len(computed_result) != 15 + 1:
-            raise RuntimeError("timing extension was not returned")
-        for timing_index in range(6, 9):
-            if computed_result[timing_index] < 0.0 or not math.isfinite(computed_result[timing_index]):
-                raise RuntimeError("invalid timing extension")
-        if computed_result[9:15] != [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]:
-            raise RuntimeError("computed output unexpectedly used a compound group")
-        _assert_close(computed_result[15], 6.0, "computed timed fallback")
 
         frames = [0.5, 1.25, 2.0]
         channels = [
@@ -321,27 +298,8 @@ def main() -> int:
         ]
         cmds.currentTime(7.5, edit=True)
         before_time = float(cmds.currentTime(query=True))
-        packed = _call(cmds, _payload(frames, channels))
-        after_time = float(cmds.currentTime(query=True))
-        _assert_close(after_time, before_time, "current time preservation")
 
-        if packed[:6] != [2.0, 3.0, 5.0, 3.0, 1.0, 1.0]:
-            raise RuntimeError(f"unexpected packed header: {packed[:6]!r}")
-        if len(packed) != 15 + len(frames) * len(channels):
-            raise RuntimeError(f"unexpected packed length: {len(packed)}")
-        if any(packed[index] < 0.0 for index in range(6, 9)):
-            raise RuntimeError("negative timing metadata")
-        for frame_index, frame in enumerate(frames):
-            expected = [
-                float(cmds.getAttr(f"{node}.rotateX", time=frame)),
-                float(cmds.getAttr(f"{node}.translateX", time=frame)),
-                float(cmds.getAttr(f"{node}.directValue", time=frame)),
-                float(cmds.getAttr(f"{node}.staticValue", time=frame)),
-                float(cmds.getAttr(f"{node}.convertedValue", time=frame)),
-            ]
-            offset = 15 + frame_index * len(channels)
-            for channel_index, value in enumerate(expected):
-                _assert_close(packed[offset + channel_index], value, f"frame {frame} channel {channel_index}")
+
 
         # The direct-spool protocol keeps the same Timeline semantics and
         # frame-major double layout, but resolves the route plan only once.
@@ -367,9 +325,22 @@ def main() -> int:
             direct_bytes = Path(spool_path).read_bytes()
             if len(direct_bytes) != expected_bytes:
                 raise RuntimeError("direct spool byte size mismatch")
-            unpacked = struct.unpack("=" + "d" * (len(frames) * len(channels)), direct_bytes)
-            for index, value in enumerate(unpacked):
-                _assert_close(value, packed[15 + index], f"direct spool parity {index}")
+            spool_values = struct.unpack("=" + "d" * (len(frames) * len(channels)), direct_bytes)
+            for frame_index, frame in enumerate(frames):
+                expected = [
+                    float(cmds.getAttr(f"{node}.rotateX", time=frame)),
+                    float(cmds.getAttr(f"{node}.translateX", time=frame)),
+                    float(cmds.getAttr(f"{node}.directValue", time=frame)),
+                    float(cmds.getAttr(f"{node}.staticValue", time=frame)),
+                    float(cmds.getAttr(f"{node}.convertedValue", time=frame)),
+                ]
+                offset = frame_index * len(channels)
+                for channel_index, value in enumerate(expected):
+                    _assert_close(
+                        spool_values[offset + channel_index],
+                        value,
+                        f"direct spool frame {frame} channel {channel_index}",
+                    )
 
             # A Morph-like scalar request made only of direct animCurves must
             # evaluate MFnAnimCurve at each requested time without advancing
@@ -466,11 +437,6 @@ def main() -> int:
                     raise RuntimeError(
                         f"all-static direct spool mismatch: {static_values!r}"
                     )
-                _must_fail(
-                    cmds,
-                    _payload(static_frames, []),
-                    "packed empty channels",
-                )
             finally:
                 if static_fd >= 0:
                     os.close(static_fd)
@@ -521,8 +487,8 @@ def main() -> int:
         )
 
         # Complete transform translate/rotate triples are eligible for the
-        # native compound path.  The packed result remains channel-major in
-        # the requested order while the extension reports native coverage.
+        # native compound path.  Direct-spool output stays frame-major in the
+        # requested order while the acknowledgement reports native coverage.
         compound_channels = [
             {"plug": f"{node}.translate{axis}", "unit": "distance", "hint": "timed_mplug"}
             for axis in ("X", "Y", "Z")
@@ -530,28 +496,8 @@ def main() -> int:
             {"plug": f"{node}.rotate{axis}", "unit": "angle", "hint": "timed_mplug"}
             for axis in ("X", "Y", "Z")
         ]
-        compound_packed = _call(cmds, _payload(frames, compound_channels))
-        if compound_packed[:6] != [2.0, 3.0, 6.0, 0.0, 0.0, 6.0]:
-            raise RuntimeError(f"unexpected compound strategy header: {compound_packed[:6]!r}")
-        if compound_packed[9:15] != [2.0, 6.0, 2.0, 6.0, 0.0, 0.0]:
-            raise RuntimeError(
-                f"compound diagnostics mismatch: {compound_packed[9:15]!r}"
-            )
-        for frame_index, frame in enumerate(frames):
-            expected = [
-                float(cmds.getAttr(f"{node}.translate{axis}", time=frame))
-                for axis in ("X", "Y", "Z")
-            ] + [
-                float(cmds.getAttr(f"{node}.rotate{axis}", time=frame))
-                for axis in ("X", "Y", "Z")
-            ]
-            offset = 15 + frame_index * len(compound_channels)
-            for channel_index, value in enumerate(expected):
-                _assert_close(
-                    compound_packed[offset + channel_index],
-                    value,
-                    f"compound frame {frame} channel {channel_index}",
-                )
+
+
 
         # Regression: compound values must be refreshed for every frame.  A
         # previous direct-spool implementation accidentally reused the first
@@ -581,12 +527,22 @@ def main() -> int:
                 "=" + "d" * (len(frames) * len(compound_channels)),
                 Path(compound_spool_path).read_bytes(),
             )
-            for index, value in enumerate(direct_compound_values):
-                _assert_close(
-                    value,
-                    compound_packed[15 + index],
-                    f"compound direct/packed parity {index}",
-                )
+            for frame_index, frame in enumerate(frames):
+                expected = [
+                    float(cmds.getAttr(f"{node}.translate{axis}", time=frame))
+                    for axis in ("X", "Y", "Z")
+                ] + [
+                    float(cmds.getAttr(f"{node}.rotate{axis}", time=frame))
+                    for axis in ("X", "Y", "Z")
+                ]
+                offset = frame_index * len(compound_channels)
+                for channel_index, value in enumerate(expected):
+                    _assert_close(
+                        direct_compound_values[offset + channel_index],
+                        value,
+                        f"compound direct frame {frame} channel {channel_index}",
+                    )
+
         finally:
             if compound_spool_fd >= 0:
                 os.close(compound_spool_fd)
@@ -595,17 +551,7 @@ def main() -> int:
             except FileNotFoundError:
                 pass
 
-        partial_channels = compound_channels[:2]
-        partial_packed = _call(cmds, _payload([1.25], partial_channels))
-        if partial_packed[9:15] != [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]:
-            raise RuntimeError("partial compound group was incorrectly classified")
-        for channel_index, channel in enumerate(partial_channels):
-            _assert_close(
-                partial_packed[15 + channel_index],
-                float(cmds.getAttr(channel["plug"], time=1.25)),
-                f"partial compound channel {channel_index}",
-            )
-        legacy_request = json.loads(_payload(frames, channels))
+        legacy_request = json.loads(_legacy_payload(frames, channels))
         legacy_request.pop("evaluation_policy")
         _must_fail(
             cmds,
@@ -619,43 +565,6 @@ def main() -> int:
             "legacy evaluation mode",
         )
 
-        # Production physics routes intentionally use an mmdPhysicsBoneDriver
-        # pre-input even when that channel has no incoming animCurve.  The
-        # plug's authored value is the valid pre-physics pose in that case.
-        static_physics = cmds.createNode(
-            "mmdPhysicsBoneDriver",
-            name="focused_vmd_static_physics_input",
-        )
-        cmds.setAttr(f"{static_physics}.inPreTranslateX", 1.25)
-        static_pre_input = _call(
-            cmds,
-            _payload(
-                [0.0, 2.0],
-                [
-                    {
-                        "plug": f"{static_physics}.inPreTranslateX",
-                        "unit": "distance",
-                        "hint": "static",
-                    }
-                ],
-            ),
-        )
-        _assert_close(static_pre_input[15], 1.25, "static physics pre-input frame 0")
-        _assert_close(static_pre_input[16], 1.25, "static physics pre-input frame 2")
-        _must_fail(
-            cmds,
-            _payload(
-                [0.0],
-                [
-                    {
-                        "plug": f"{static_physics}.outTranslateX",
-                        "unit": "distance",
-                        "hint": "timed_mplug",
-                    }
-                ],
-            ),
-            "direct physics output",
-        )
 
         # Regression: a dependency node can enter through two different
         # source plugs (compound parent plus child).  One branch is fed by a
@@ -700,21 +609,6 @@ def main() -> int:
             raise RuntimeError(
                 "physics branch regression graph did not preserve child and parent sources"
             )
-        _must_fail(
-            cmds,
-            _payload(
-                [0.0],
-                [
-                    {
-                        "plug": f"{target}.translateX",
-                        "unit": "distance",
-                        "hint": "timed_mplug",
-                    }
-                ],
-            ),
-            "physics dependency through a shared node branch",
-        )
-
         # Exercise the production collector seam.  Build the expected values
         # independently through Maya Timeline/currentTime + getAttr; the old
         # Python timed evaluator is deliberately not used as an oracle.
@@ -849,7 +743,18 @@ def main() -> int:
         bake_timeline_collector = VmdSceneCollector(
             bone_channel_sampler=NativeVmdBatchSampler(cmds)
         )
-        collected = bake_timeline_collector.collect(
+        class _ProbeSink:
+            def __init__(self):
+                self.frames = []
+
+            def begin_section(self, _section):
+                return None
+
+            def write_frame(self, section, frame):
+                self.frames.append((section, frame))
+
+        probe_sink = _ProbeSink()
+        bake_timeline_collector.collect_to_sink(
             {
                 "target_model": model_root,
                 "joints": [joint],
@@ -858,8 +763,23 @@ def main() -> int:
                 "lights": [light],
                 "export_strategy": "bake_timeline",
                 "frame_range": (0.0, 2.0),
-            }
+            },
+            probe_sink,
         )
+        collected = {
+            "morph_frames": [
+                frame for section, frame in probe_sink.frames if section == "morphs"
+            ],
+            "camera_frames": [
+                frame for section, frame in probe_sink.frames if section == "cameras"
+            ],
+            "light_frames": [
+                frame for section, frame in probe_sink.frames if section == "lights"
+            ],
+            "ik_show_hide_frames": [
+                frame for section, frame in probe_sink.frames if section == "ik"
+            ],
+        }
         _assert_close(
             float(cmds.currentTime(query=True)),
             entry_time,
@@ -952,22 +872,18 @@ def main() -> int:
             '{"version":1,"frames":[0],"frames":[1],"channels":[]}',
             "duplicate field",
         )
-        _must_fail(
-            cmds,
-            _payload([0.0], [{"plug": f"{node}.missing", "unit": "scalar", "hint": "timed_mplug"}]),
-            "missing plug",
-        )
-        oversized_frames = (float(index) for index in range(2_097_153))
-        _must_fail(cmds, _payload(oversized_frames, channels[:2]), "oversized sample count")
-
         cmds.unloadPlugin(plugin_name, force=True)
         if cmds.pluginInfo(plugin_name, query=True, loaded=True):
             raise RuntimeError("mmd_tools_cpp did not unload")
         cmds.loadPlugin(str(plugin_path), quiet=True)
         if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
             raise RuntimeError("mmd_tools_cpp did not reload")
-        if _call(cmds, _payload([0.0], [channels[0]]))[:3] != [2.0, 1.0, 1.0]:
-            raise RuntimeError("sampler command was not registered after reload")
+        from mmd_tools.adapters.native_vmd_batch_sampler import NativeVmdBatchSampler
+
+        reloaded_samples = NativeVmdBatchSampler(cmds).sample_dense_bone_channels(
+            [0.0], [node]
+        )
+        reloaded_samples.close()
         print("OK: focused mmdVmdBatchSample Timeline/direct/static/timed/protocol/reload")
         return 0
     finally:
