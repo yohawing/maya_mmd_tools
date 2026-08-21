@@ -2261,6 +2261,57 @@ class TestToolsSection(unittest.TestCase):
         self.assertEqual(adapter._transforms["j2"][1], [0, 0, 0])
         self.assertEqual(adapter._undo_chunks, ["Reset Pose"])
 
+    def test_control_owned_reset_uses_control_zero_not_joint_bind_translation(self):
+        presenter, _, _, adapter = self._make()
+
+        class FakeCmds:
+            _paths = {
+                "test_model": "|test_model",
+                "control-uuid": "|controls|center_CTRL",
+                "center_joint": "|test_model|Skeleton|center_joint",
+            }
+
+            def ls(self, node=None, long=False, uuid=False, **_kwargs):
+                if uuid:
+                    return ["model-uuid"] if node == "test_model" else []
+                if long and node in self._paths:
+                    return [self._paths[node]]
+                if long and node in self._paths.values():
+                    return [node]
+                return [node] if node else []
+
+            @staticmethod
+            def listRelatives(*_args, **_kwargs):
+                return ["center_joint"]
+
+        adapter._cmds = FakeCmds()
+        adapter._attrs[
+            ("|test_model|Skeleton|center_joint", "mmd_vmd_bind_translate")
+        ] = "[8.0, 9.0, 10.0]"
+        metadata = {
+            "owner": "CONTROL_OWNED",
+            "controls": {"center": "control-uuid"},
+            "bindings": {"center": {"jointUuid": "joint-uuid"}},
+        }
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value=metadata,
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_builder.resolve_mmd_control_rig_binding_joint",
+            return_value="center_joint",
+        ), patch.object(
+            presenter,
+            "_selected_bind_translations",
+            side_effect=AssertionError("joint bind translation must not be read"),
+        ):
+            targets, rest_translations = presenter._rest_pose_targets()
+
+        self.assertEqual(targets, ["|controls|center_CTRL"])
+        self.assertEqual(
+            rest_translations,
+            {"|controls|center_CTRL": (0.0, 0.0, 0.0)},
+        )
+
     def test_reset_pose_has_no_shared_mode_state(self):
         presenter, view, _, adapter = self._make()
         self.assertFalse(hasattr(presenter, "rest_pose_manager"))

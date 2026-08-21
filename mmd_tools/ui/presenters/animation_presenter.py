@@ -2427,7 +2427,6 @@ class AnimationPresenter:
             )
 
             targets = []
-            bound_joints = []
             for role, control_uuid in (metadata.get("controls") or {}).items():
                 control_paths = cmds.ls(control_uuid, long=True) or []
                 binding = (metadata.get("bindings") or {}).get(role)
@@ -2443,10 +2442,11 @@ class AnimationPresenter:
                 bound = str(bound_paths[0])
                 if target not in targets:
                     targets.append(target)
-                if bound not in bound_joints:
-                    bound_joints.append(bound)
             targets = self._selected_or_all_reset_targets(targets, cmds)
-            return targets, self._selected_bind_translations(bound_joints)
+            # Controllers are authored relative to their ZERO groups. A bound
+            # joint's bind translation is in a different local basis and must
+            # never be applied to its controller.
+            return targets, {target: (0.0, 0.0, 0.0) for target in targets}
         except Exception:
             logger.debug("Rest Pose target resolution failed", exc_info=True)
             return [], {}

@@ -1,8 +1,9 @@
 """One-shot Reset Pose transaction for Animator controls and MMD joints.
 
-The action writes rest values only to static channels. Connected animation
-channels are left unchanged, so Reset Pose never creates or edits keys. Maya
-Undo restores changed static values.
+Static channels receive their rest value directly. A channel driven directly
+by an animCurve receives a rest key at the current Maya frame without changing
+the connection or neighbouring keys. Other writer graphs fail closed because
+writing through them requires an owner-specific route.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ class _ChannelSnapshot:
     value: Any
     writer: str | None
     locked: bool
-    writable: bool
+    route: str
 
 
 class ResetPoseTransaction:
@@ -65,15 +66,18 @@ class ResetPoseTransaction:
             return 0
         self._snapshots = self._capture_channels(cmds)
         opened = self._open_undo("Animator Reset Pose")
+        if any(snapshot.route == "anim_curve" for snapshot in self._snapshots) and not opened:
+            raise ResetPoseTransactionError("animated Reset Pose requires Maya Undo")
         self._applied = []
         try:
             applied_targets = set()
             for snapshot in self._snapshots:
-                if not snapshot.writable:
-                    continue
                 value = self._rest_value(snapshot)
                 self._applied.append(snapshot)
-                self._set_static(cmds, snapshot, value)
+                if snapshot.route == "anim_curve":
+                    self._set_animated(cmds, snapshot, value)
+                else:
+                    self._set_static(cmds, snapshot, value)
                 applied_targets.add(snapshot.plug.rsplit(".", 1)[0])
             return len(applied_targets)
         except Exception as exc:
@@ -124,17 +128,43 @@ class ResetPoseTransaction:
                         f"multiple Reset Pose writers on {plug}"
                     )
                 writer = incoming[0] if incoming else None
-                writable = not writer and self._is_channel_settable(cmds, plug)
                 try:
                     locked = bool(cmds.getAttr(plug, lock=True))
                 except Exception:
                     locked = False
+                route = self._channel_route(cmds, plug, writer, locked)
                 snapshots.append(
-                    _ChannelSnapshot(plug, value, writer, locked, writable)
+                    _ChannelSnapshot(plug, value, writer, locked, route)
                 )
         if not snapshots:
             raise ResetPoseTransactionError("Reset Pose channels are unavailable")
         return tuple(snapshots)
+
+    def _channel_route(
+        self,
+        cmds,
+        plug: str,
+        writer: str | None,
+        locked: bool,
+    ) -> str:
+        if writer is None:
+            if locked or self._is_channel_settable(cmds, plug):
+                return "static"
+            raise ResetPoseTransactionError(
+                f"Reset Pose channel is not writable: {plug}"
+            )
+        writer_node = writer.rsplit(".", 1)[0]
+        try:
+            writer_type = str(cmds.nodeType(writer_node))
+        except Exception as exc:
+            raise ResetPoseTransactionError(
+                f"Reset Pose writer type is unavailable: {writer}"
+            ) from exc
+        if writer_type.startswith("animCurve"):
+            return "anim_curve"
+        raise ResetPoseTransactionError(
+            f"unsupported Reset Pose writer on {plug}: {writer_type} ({writer})"
+        )
 
     @staticmethod
     def _is_channel_settable(cmds, plug: str) -> bool:
@@ -152,6 +182,16 @@ class ResetPoseTransaction:
         finally:
             if snapshot.locked:
                 cmds.setAttr(snapshot.plug, lock=True)
+
+    @staticmethod
+    def _set_animated(cmds, snapshot: _ChannelSnapshot, value: float) -> None:
+        if snapshot.writer is None:
+            raise ResetPoseTransactionError(
+                f"animated Reset Pose writer is unavailable: {snapshot.plug}"
+            )
+        writer_node = snapshot.writer.rsplit(".", 1)[0]
+        frame = float(cmds.currentTime(query=True))
+        cmds.setKeyframe(writer_node, time=(frame,), value=float(value))
 
     def _restore_static(self, cmds) -> None:
         for snapshot in reversed(self._applied):

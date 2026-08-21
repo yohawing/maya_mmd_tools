@@ -16,7 +16,7 @@ class TestBoneResetPoseMaya(unittest.TestCase):
     def tearDown(self):
         cmds.file(new=True, force=True)
 
-    def test_reset_pose_does_not_key_or_change_animated_channel(self):
+    def test_reset_pose_keys_only_current_animated_channel_frame(self):
         root = cmds.createNode("transform", name="model")
         cmds.select(clear=True)
         joint = cmds.joint(name="joint", position=(1.0, 2.0, 3.0))
@@ -25,13 +25,14 @@ class TestBoneResetPoseMaya(unittest.TestCase):
         root = (cmds.ls(root, long=True) or [root])[0]
 
         cmds.setKeyframe(joint, attribute="rotateX", time=1.0, value=25.0)
+        cmds.setKeyframe(joint, attribute="rotateX", time=36.0, value=35.0)
         cmds.currentTime(24.0, edit=True)
         curve_plug = cmds.listConnections(
             f"{joint}.rotateX", source=True, destination=False, plugs=True
         )
         self.assertEqual(len(curve_plug or []), 1)
         curve = curve_plug[0].rsplit(".", 1)[0]
-        self.assertEqual(cmds.getAttr(f"{joint}.rotateX"), 25.0)
+        self.assertNotEqual(cmds.getAttr(f"{joint}.rotateX"), 0.0)
 
         model_uuid = (cmds.ls(root, uuid=True) or [None])[0]
         transaction = ResetPoseTransaction(
@@ -44,17 +45,25 @@ class TestBoneResetPoseMaya(unittest.TestCase):
 
         self.assertEqual(transaction.apply(), 1)
         cmds.dgdirty(a=True)
-        self.assertEqual(cmds.getAttr(f"{joint}.rotateX"), 25.0)
+        self.assertEqual(cmds.getAttr(f"{joint}.rotateX"), 0.0)
         self.assertEqual(
             cmds.listConnections(
                 f"{joint}.rotateX", source=True, destination=False, plugs=True
             ),
             curve_plug,
         )
-        self.assertNotIn(24.0, cmds.keyframe(curve, query=True, timeChange=True) or [])
+        self.assertIn(24.0, cmds.keyframe(curve, query=True, timeChange=True) or [])
         self.assertEqual(
             cmds.keyframe(curve, query=True, time=(1.0, 1.0), valueChange=True),
             [25.0],
+        )
+        self.assertEqual(
+            cmds.keyframe(curve, query=True, time=(24.0, 24.0), valueChange=True),
+            [0.0],
+        )
+        self.assertEqual(
+            cmds.keyframe(curve, query=True, time=(36.0, 36.0), valueChange=True),
+            [35.0],
         )
 
     def test_reset_pose_restores_stored_translation_and_zero_rotation(self):
