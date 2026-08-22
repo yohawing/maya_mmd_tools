@@ -1490,9 +1490,12 @@ class VmdSceneCollector:
         # Controls.  Rotation conversion still needs the complete PMX parent
         # hierarchy; otherwise a selected child is converted as if it were a
         # root whenever its keyless parent was omitted.
-        rotation_context = _build_rotation_export_context(
+        context_joints = (
             rotation_context_joints if rotation_context_joints is not None else joints
         )
+        if selector_key_times_by_joint is not None:
+            _validate_direct_rotation_export_indices(context_joints, joints)
+        rotation_context = _build_rotation_export_context(context_joints)
         rotation_interpolation = rotation_interpolation or {}
         raw_bone_transforms = raw_bone_transforms or {}
         raw_bone_frames_by_name = _index_raw_bone_transform_frames(raw_bone_transforms)
@@ -4494,6 +4497,60 @@ def _build_rotation_export_context(
             ).rotation(asQuaternion=True),
         }
     return result
+
+
+def _validate_direct_rotation_export_indices(
+    context_joints: Sequence[str],
+    selected_joints: Sequence[str],
+) -> None:
+    """Require an unambiguous indexed parent context for direct export."""
+
+    context = {
+        str((cmds.ls(joint, long=True) or [joint])[0]) for joint in context_joints
+    }
+    selected = {
+        str((cmds.ls(joint, long=True) or [joint])[0]) for joint in selected_joints
+    }
+    indexed = set()
+    owners = {}
+    for joint in context:
+        if not _has_attr(joint, "mmd_bone_index"):
+            continue
+        index = int(cmds.getAttr(f"{joint}.mmd_bone_index"))
+        prior = owners.get(index)
+        if prior is not None and prior != joint:
+            raise ValueError(
+                "direct Control Rig rotation context has duplicate bone index "
+                f"{index}: {prior}, {joint}"
+            )
+        owners[index] = joint
+        indexed.add(joint)
+    missing = sorted(selected - indexed)
+    if missing:
+        raise ValueError(
+            f"direct Control Rig rotation context has unindexed selected joints: {missing!r}"
+        )
+    for joint in selected:
+        visited = set()
+        current = joint
+        while True:
+            parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
+            if not parents:
+                break
+            parent = str((cmds.ls(parents[0], long=True) or [parents[0]])[0])
+            if str(cmds.nodeType(parent) or "") != "joint":
+                break
+            if parent in visited:
+                raise ValueError(
+                    f"direct Control Rig rotation context has a parent cycle: {joint}"
+                )
+            visited.add(parent)
+            if parent not in indexed:
+                raise ValueError(
+                    "direct Control Rig rotation context has an unindexed parent: "
+                    f"{parent} -> {joint}"
+                )
+            current = parent
 
 
 def _joint_orient_quaternion(joint: str) -> om.MQuaternion:

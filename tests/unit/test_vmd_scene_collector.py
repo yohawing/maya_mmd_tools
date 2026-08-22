@@ -101,6 +101,7 @@ class FakeCmds:
         self,
         node,
         allDescendents=False,
+        parent=False,
         type=None,
         fullPath=False,
         shapes=False,
@@ -113,6 +114,12 @@ class FakeCmds:
                 "shapes": shapes,
             }
         )
+        if parent:
+            return [
+                candidate
+                for candidate, children in self.children.items()
+                if node in children
+            ]
         result = []
         for child in self.children.get(node, []):
             if type is None or self.node_types.get(child) == type:
@@ -1265,6 +1272,8 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.cmds.children["model_root"] = ["parent_joint"]
         self.cmds.children["parent_joint"] = ["center_joint"]
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        self.cmds.attrs[("parent_joint", "mmd_bone_index")] = 0
+        self.cmds.attrs[("center_joint", "mmd_bone_index")] = 1
         self.cmds.keys[("center_control", "translateX")] = {
             0.0: 100.0,
             2.0: 300.0,
@@ -1413,6 +1422,29 @@ class TestVmdSceneCollector(unittest.TestCase):
         selection = collector.diagnostics["track_selection"]
         self.assertEqual(selection["counts"]["omitted_default"], 1)
         self.assertEqual(selection["evidence"][0]["reason"], "control_keyless")
+
+    def test_direct_rotation_context_rejects_unindexed_selected_joint(self):
+        self.cmds.node_types.update({"model_root": "transform", "joint": "joint"})
+        self.cmds.children["model_root"] = ["joint"]
+
+        with self.assertRaisesRegex(ValueError, "unindexed selected joints"):
+            collector_module._validate_direct_rotation_export_indices(
+                ["joint"], ["joint"]
+            )
+
+    def test_direct_rotation_context_rejects_duplicate_bone_indices(self):
+        self.cmds.node_types.update(
+            {"model_root": "transform", "parent_joint": "joint", "joint": "joint"}
+        )
+        self.cmds.children["model_root"] = ["parent_joint"]
+        self.cmds.children["parent_joint"] = ["joint"]
+        self.cmds.attrs[("parent_joint", "mmd_bone_index")] = 7
+        self.cmds.attrs[("joint", "mmd_bone_index")] = 7
+
+        with self.assertRaisesRegex(ValueError, "duplicate bone index 7"):
+            collector_module._validate_direct_rotation_export_indices(
+                ["parent_joint", "joint"], ["joint"]
+            )
 
     def test_bake_timeline_direct_single_key_bones_avoid_native_sampling(self):
         self.cmds.node_types.update(
