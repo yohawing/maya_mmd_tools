@@ -274,6 +274,30 @@ class GuiTestRunnerTests(unittest.TestCase):
         self.assertRegex(log, r"\[GUI TEST\] START .*_PassingCase\.test_pass")
         self.assertRegex(log, r"\[GUI TEST\] END .*_PassingCase\.test_pass outcome=success")
 
+    def test_qsettings_backend_is_activated_before_gui_discovery(self):
+        events = []
+
+        def activate():
+            events.append("settings")
+            return {"root": Path("F:/isolated-qsettings")}
+
+        def discover(*_args, **_kwargs):
+            events.append("discovery")
+            return unittest.TestSuite()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "gui.log"
+            with mock.patch(
+                "tests.common.qsettings_isolation.activate_qsettings_isolation",
+                side_effect=activate,
+            ), mock.patch.object(unittest.TestLoader, "discover", side_effect=discover):
+                status = GuiTestRunner.run_tests_from_command(
+                    str(log_path), "tests/gui"
+                )
+
+        self.assertEqual("NO_TESTS", status)
+        self.assertEqual(["settings", "discovery"], events)
+
     def test_failure_status_is_encoded(self):
         status, log = self.run_runner(unittest.defaultTestLoader.loadTestsFromTestCase(_FailingCase))
         self.assertEqual("FAIL", status)
@@ -1150,6 +1174,86 @@ class GuiTestRunnerTests(unittest.TestCase):
         self.assertEqual(4, restore.call_count)
         self.assertEqual(1, log.count(run_gui_tests.GUI_TEST_FINISHED_MARKER))
 
+    def test_batch_qsettings_backend_is_activated_before_snapshot(self):
+        cases = [{"id": "one", "test_path": "tests/gui", "test_filter": "test_one"}]
+        events = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "batch.log"
+            report_path = Path(temp_dir) / "batch.timing.json"
+            run_gui_tests.write_timing_report(
+                report_path,
+                run_gui_tests.new_batch_report("2024", cases),
+            )
+
+            def activate():
+                events.append("settings")
+                return {"root": Path("F:/isolated-qsettings")}
+
+            def snapshot():
+                events.append("snapshot")
+                return {}
+
+            with mock.patch(
+                "tests.common.qsettings_isolation.activate_qsettings_isolation",
+                side_effect=activate,
+            ), mock.patch(
+                "tests.common.gui_test_base._batch_environment_snapshot",
+                side_effect=snapshot,
+            ), mock.patch("tests.common.gui_test_base._restore_batch_environment"), mock.patch.object(
+                GuiTestRunner,
+                "run_tests_from_command",
+                return_value="PASS",
+            ):
+                self.assertEqual(
+                    "PASS",
+                    GuiTestRunner.run_batch_from_command(
+                        str(log_path), cases, str(report_path)
+                    ),
+                )
+
+        self.assertEqual(["settings", "snapshot"], events[:2])
+
+    def test_batch_cases_do_not_observe_previous_case_qsettings(self):
+        cases = [
+            {"id": "case-a", "test_path": "tests/gui", "test_filter": "test_a"},
+            {"id": "case-b", "test_path": "tests/gui", "test_filter": "test_b"},
+        ]
+        observed = []
+
+        def run_case(*_args, **_kwargs):
+            from tests.common.qsettings_isolation import isolated_settings_store
+
+            store = isolated_settings_store("maya_mmd_tools", "ImportExportTab")
+            observed.append(store.value("case_marker"))
+            store.setValue("case_marker", f"case-{len(observed)}")
+            store.sync()
+            return "PASS"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "batch.log"
+            report_path = Path(temp_dir) / "batch.timing.json"
+            run_gui_tests.write_timing_report(
+                report_path,
+                run_gui_tests.new_batch_report("2024", cases),
+            )
+            with mock.patch(
+                "tests.common.gui_test_base._batch_environment_snapshot",
+                return_value={},
+            ), mock.patch(
+                "tests.common.gui_test_base._restore_batch_environment",
+            ), mock.patch.object(
+                GuiTestRunner,
+                "run_tests_from_command",
+                side_effect=run_case,
+            ):
+                status = GuiTestRunner.run_batch_from_command(
+                    str(log_path), cases, str(report_path)
+                )
+
+        self.assertEqual("PASS", status)
+        self.assertEqual([None, None], observed)
+
     def test_batch_runner_preserves_attached_scene_when_requested(self):
         cases = [{"id": "attached", "test_path": "tests/gui", "test_filter": "test_attached"}]
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1311,16 +1415,10 @@ class GuiTestRunnerTests(unittest.TestCase):
         new_widget = mock.Mock()
         app = mock.Mock()
         app.topLevelWidgets.return_value = [existing_widget, new_widget]
-        settings = mock.Mock()
-        settings.allKeys.return_value = ["base", "new"]
-        settings.value.side_effect = lambda key: "changed" if key == "base" else "case"
         snapshot = {
             "widgets": {id(existing_widget)},
             "maya_windows": {"ExistingWindow"},
             "script_jobs": {10},
-            "settings": [
-                ("yohawing", "maya_mmd_tools", {"base": "old"}),
-            ],
         }
         cmds = mock.Mock()
         cmds.lsUI.return_value = ["ExistingWindow", "CaseWindow"]
@@ -1333,9 +1431,6 @@ class GuiTestRunnerTests(unittest.TestCase):
         with mock.patch.object(gui_test_base, "cmds", cmds), mock.patch(
             "mmd_tools.ui.qt_compat.QApplication",
             new=qt_application,
-        ), mock.patch(
-            "mmd_tools.ui.qt_compat.QSettings",
-            return_value=settings,
         ):
             gui_test_base._restore_batch_environment(snapshot, new_scene=True)
 
@@ -1344,9 +1439,6 @@ class GuiTestRunnerTests(unittest.TestCase):
         cmds.deleteUI.assert_called_once_with("CaseWindow", window=True)
         self.assertIn(mock.call(kill=11, force=True), cmds.scriptJob.call_args_list)
         self.assertNotIn(mock.call(kill=10, force=True), cmds.scriptJob.call_args_list)
-        settings.remove.assert_called_once_with("new")
-        settings.setValue.assert_called_once_with("base", "old")
-        settings.clear.assert_not_called()
         cmds.file.assert_called_once_with(new=True, force=True)
 
     def test_host_dispatches_batch_manifest_to_one_attached_session(self):
@@ -1662,6 +1754,73 @@ class GuiTestRunnerTests(unittest.TestCase):
              mock.patch.object(run_gui_tests, "LOG_FILE_NAME", "unit_gui_runner_fail.log"), \
              mock.patch.object(sys, "argv", ["run_gui_tests.py"]):
             self.assertEqual(1, run_gui_tests.main())
+
+    def test_host_returns_one_when_native_qsettings_fingerprint_changes_or_cannot_read(self):
+        for after in ({"changed": "fingerprint"}, RuntimeError("after read failed")):
+            with self.subTest(after=after), tempfile.TemporaryDirectory() as temp_dir:
+                log_path = Path(temp_dir) / "gui.log"
+                timing_path = Path(temp_dir) / "gui.timing.json"
+                with mock.patch.object(
+                    run_gui_tests.maya_commandport,
+                    "maya_exe",
+                    return_value=Path("maya.exe"),
+                ), mock.patch.object(
+                    run_gui_tests.maya_commandport,
+                    "launch_maya",
+                    return_value=None,
+                ), mock.patch.object(
+                    run_gui_tests.maya_commandport,
+                    "ensure_port_available",
+                ), mock.patch.object(
+                    run_gui_tests.maya_commandport,
+                    "wait_for_port",
+                ), mock.patch.object(
+                    run_gui_tests.maya_commandport,
+                    "wait_for_maya_process_id",
+                    return_value=None,
+                ), mock.patch.object(
+                    run_gui_tests.maya_commandport,
+                    "send_python",
+                ), mock.patch.object(
+                    run_gui_tests,
+                    "wait_for_maya_python_ready",
+                ), mock.patch.object(
+                    run_gui_tests.maya_commandport,
+                    "quit_maya",
+                ), mock.patch.object(
+                    run_gui_tests.maya_commandport,
+                    "wait_for_port_close",
+                ), mock.patch.object(
+                    run_gui_tests.maya_commandport,
+                    "close_process_logs",
+                ), mock.patch.object(
+                    run_gui_tests,
+                    "monitor_log_file",
+                    return_value="PASS",
+                ), mock.patch(
+                    "tests.common.qsettings_isolation.host_native_qsettings_fingerprints",
+                    side_effect=[{"baseline": "fingerprint"}, after],
+                ), mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "run_gui_tests.py",
+                        "--log_path",
+                        str(log_path),
+                        "--timing_report",
+                        str(timing_path),
+                    ],
+                ):
+                    with self.assertLogs(run_gui_tests.logger, level="INFO") as logs:
+                        self.assertEqual(1, run_gui_tests.main())
+
+                report = json.loads(timing_path.read_text(encoding="utf-8"))
+                self.assertEqual("ERROR", report["status"])
+                self.assertEqual("failed", report["qsettings_isolation"]["status"])
+                self.assertEqual("passed", report["phases"]["shutdown"]["status"])
+                output = "\n".join(logs.output)
+                self.assertIn("QSettings verification failure", output)
+                self.assertNotIn("finished successfully", output)
 
     def test_startup_failure_removes_profile_after_direct_process_exits(self):
         process = mock.MagicMock()

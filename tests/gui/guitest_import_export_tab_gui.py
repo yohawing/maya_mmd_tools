@@ -8,7 +8,11 @@ import tempfile
 import unittest
 
 from tests.common.gui_test_base import GuiTestBase, requires_gui
-from mmd_tools.ui.qt_compat import QSettings, Qt
+from tests.common.qsettings_isolation import (
+    host_native_qsettings_fingerprints,
+    isolated_settings_store,
+)
+from mmd_tools.ui.qt_compat import Qt
 from mmd_tools.ui.import_export_view_state import ImportExportViewState
 from mmd_tools.ui.tabs.import_export_tab import ImportExportTab
 
@@ -19,10 +23,10 @@ class TestImportExportTabGUI(GuiTestBase):
 
     def setUp(self):
         super().setUp()
-        # 本番の QSettings を消さないよう、テストごとの一時 INI に隔離する。
-        self._settings_dir = tempfile.TemporaryDirectory()
-        settings_path = os.path.join(self._settings_dir.name, "import_export_tab.ini")
-        self.settings = QSettings(settings_path, QSettings.IniFormat)
+        # The runner activates one process-level INI backend before this
+        # class is imported.  Use the same production scope so default
+        # ImportExportTab construction and injected view-state tests share it.
+        self.settings = isolated_settings_store("maya_mmd_tools", "ImportExportTab")
         self.settings.clear()
         self.settings.sync()
         self.view_state = ImportExportViewState(self.settings)
@@ -33,7 +37,6 @@ class TestImportExportTabGUI(GuiTestBase):
             self.settings.sync()
             del self.view_state
             del self.settings
-            self._settings_dir.cleanup()
         finally:
             super().tearDown()
 
@@ -41,10 +44,43 @@ class TestImportExportTabGUI(GuiTestBase):
         """テスト専用の view state を使うタブを作成する。"""
         return ImportExportTab(view_state=self.view_state)
 
-    def test_settings_store_is_isolated_from_user_profile(self):
-        """GUIテストが実ユーザーのファイル履歴ストアを使わないことを確認する。"""
-        user_settings = QSettings("maya_mmd_tools", "ImportExportTab")
-        self.assertNotEqual(self.settings.fileName(), user_settings.fileName())
+    def test_default_production_tab_keeps_matrix_value_in_fixture_store(self):
+        """The real default view state never targets either native scope."""
+        before = host_native_qsettings_fingerprints()
+        tab = ImportExportTab()
+        try:
+            tab.import_path_edit.setText("matrix-value")
+            tab.namespace_edit.setText("matrix-value")
+            self.settings.sync()
+            self.assertEqual(self.settings.value("import_path"), "matrix-value")
+            self.assertEqual(self.settings.value("custom_namespace_name"), "matrix-value")
+        finally:
+            tab.deleteLater()
+        self.assertEqual(before, host_native_qsettings_fingerprints())
+
+    def test_clear_history_click_only_clears_isolated_fixture_history(self):
+        """Keep the production Clear History interaction on isolated data."""
+        with tempfile.TemporaryDirectory() as directory:
+            import_path = os.path.join(directory, "model.pmx")
+            vmd_path = os.path.join(directory, "motion.vmd")
+            export_path = os.path.join(directory, "export.pmx")
+            for path in (import_path, vmd_path, export_path):
+                with open(path, "w", encoding="utf-8"):
+                    pass
+            self.view_state.save_file_history("import", import_path)
+            self.view_state.save_file_history("vmd", vmd_path)
+            self.view_state.save_file_history("export", export_path)
+            before = host_native_qsettings_fingerprints()
+            tab = self._create_tab()
+            try:
+                tab.clear_history_button.click()
+            finally:
+                tab.deleteLater()
+            self.assertEqual(
+                self.view_state.load_file_history(),
+                [{"path": export_path, "type": "export"}],
+            )
+            self.assertEqual(before, host_native_qsettings_fingerprints())
 
     def test_path_persistence_with_real_widgets(self):
         """実際のウィジェットを使用したパスの永続化テスト"""

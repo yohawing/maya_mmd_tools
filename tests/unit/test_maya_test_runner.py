@@ -1,7 +1,7 @@
 """Verify the mayapy runner restores only the plugin instance it loaded."""
 
 from unittest import TestCase
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from tests import maya_test_runner
 
@@ -45,3 +45,20 @@ class TestGlobalTestPluginLifecycle(TestCase):
 
         self.cmds.file.assert_not_called()
         self.cmds.unloadPlugin.assert_not_called()
+
+    def test_run_tests_activates_qsettings_before_discovery(self):
+        events = []
+        empty_suite = MagicMock()
+        empty_suite.countTestCases.return_value = 0
+
+        with patch(
+            "tests.common.qsettings_isolation.activate_qsettings_isolation",
+            side_effect=lambda: events.append("settings"),
+        ), patch.object(
+            maya_test_runner,
+            "discover_tests",
+            side_effect=lambda *_args: events.append("discovery") or empty_suite,
+        ), self.assertRaises(SystemExit):
+            maya_test_runner.run_tests("gui")
+
+        self.assertEqual(["settings", "discovery"], events)

@@ -3685,6 +3685,7 @@ def _import_vmd_into_current_scene(
 
 def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
     """Run all model and motion cases in one initialized Maya process."""
+    from tests.common.qsettings_isolation import activate_qsettings_isolation
     from mmd_tools.core.pmx_data import PmxData
     from maya import standalone
 
@@ -3693,6 +3694,11 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
         standalone.initialize(name="python")
     except RuntimeError:
         pass
+    # This mayapy route constructs real production UI widgets for the
+    # release material-edit probe.  Redirect QSettings after Maya's Qt host
+    # is ready, before any such production widget construction, and keep it
+    # active until exit.
+    activate_qsettings_isolation()
     load_mmd_tools_plugin(ROOT)
     out_dir.mkdir(parents=True, exist_ok=True)
     PmxData().parse_file(str(pmx_path))

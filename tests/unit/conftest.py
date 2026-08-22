@@ -16,6 +16,13 @@ _real_maya = _is_real_maya_present()
 if not _real_maya:
     install_maya_stub(profile="headless")
 
+# All headless Qt tests construct production widgets in-process.  Redirect
+# QSettings before test modules are imported so their production class aliases
+# cannot bind the Windows native backend first.
+from tests.common.qsettings_isolation import activate_qsettings_isolation  # noqa: E402
+
+activate_qsettings_isolation()
+
 
 def _uses_real_maya_class(cls):
     """Return True when a collected test class expects a live Maya scene."""

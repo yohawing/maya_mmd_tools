@@ -252,6 +252,12 @@ def run_tests(
         test_type: 'unit' または 'integration'
         test_filter: テストをフィルタリングする文字列（オプション）
     """
+    # The mayapy unittest route does not load pytest's conftest.py.  Install
+    # the same process-level backend before plugin/test discovery can import
+    # production UI modules.
+    from tests.common.qsettings_isolation import activate_qsettings_isolation
+
+    activate_qsettings_isolation()
     plugin_name = _load_global_test_plugin() if test_type in {"unit", "integration"} else None
     try:
         # テストを探索
