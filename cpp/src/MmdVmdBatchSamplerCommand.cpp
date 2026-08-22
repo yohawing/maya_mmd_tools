@@ -335,6 +335,26 @@ bool timeInputCurveType(MFnAnimCurve::AnimCurveType type)
            type == MFnAnimCurve::kAnimCurveTT || type == MFnAnimCurve::kAnimCurveTU;
 }
 
+bool hasOnlyGlobalTimeInput(const MPlug& input)
+{
+    MStatus status;
+    MPlugArray sources;
+    const bool connected = input.connectedTo(sources, true, false, &status);
+    if (!status) return false;
+    if (!connected || sources.length() == 0U) return true;
+    if (sources.length() != 1U) return false;
+
+    const MPlug source = sources[0];
+    MFnDependencyNode sourceNode(source.node(), &status);
+    if (!status) return false;
+    MFnAttribute sourceAttribute(source.attribute(), &status);
+    if (!status) return false;
+    const MString nodeType = sourceNode.typeName(&status);
+    if (!status || nodeType != MString("time")) return false;
+    const MString attributeName = sourceAttribute.name(&status);
+    return status && attributeName == MString("outTime");
+}
+
 bool findDirectCurve(const MPlug& plug, MPlug& output)
 {
     if (hasParentIncoming(plug)) return false;
@@ -345,6 +365,8 @@ bool findDirectCurve(const MPlug& plug, MPlug& output)
     const MPlug source = sources[0];
     MFnAnimCurve curve(source.node(), &status);
     if (!status || !timeInputCurveType(curve.animCurveType(&status)) || !status) return false;
+    const MPlug input = curve.findPlug("input", false, &status);
+    if (!status || input.isNull() || !hasOnlyGlobalTimeInput(input)) return false;
     output = curve.findPlug("output", false, &status);
     if (!status || output.isNull() || !(source.attribute() == output.attribute())) return false;
     // A direct route must have a time-input curve, not a driven animCurveU

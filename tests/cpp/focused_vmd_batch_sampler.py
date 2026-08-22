@@ -395,6 +395,104 @@ def main() -> int:
                 except FileNotFoundError:
                     pass
 
+            # A direct hint must be revalidated when the animCurve's input is
+            # driven by an animCurveTT.  Calling MFnAnimCurve.evaluate(1)
+            # would bypass the remap and return 45 degrees, while Maya's DG
+            # value at frame 1 is 22.5 degrees after the 0.5 time mapping.
+            mapped_node = cmds.createNode(
+                "transform", name="focused_vmd_time_mapped_destination"
+            )
+            time_warp = cmds.createNode(
+                "animCurveTT", name="focused_vmd_time_warp"
+            )
+            mapped_curve = cmds.createNode(
+                "animCurveTA", name="focused_vmd_time_mapped_curve"
+            )
+            time_node = (cmds.ls(type="time") or ["time1"])[0]
+            cmds.connectAttr(
+                f"{time_node}.outTime", f"{time_warp}.input", force=True
+            )
+            for frame, value in ((0.0, 0.0), (1.0, 0.5), (2.0, 2.0)):
+                cmds.setKeyframe(time_warp, time=frame, value=value)
+            cmds.keyTangent(
+                time_warp,
+                edit=True,
+                inTangentType="linear",
+                outTangentType="linear",
+            )
+            for frame, value in ((0.0, 0.0), (2.0, 90.0)):
+                cmds.setKeyframe(mapped_curve, time=frame, value=value)
+            cmds.keyTangent(
+                mapped_curve,
+                edit=True,
+                inTangentType="linear",
+                outTangentType="linear",
+            )
+            cmds.connectAttr(
+                f"{time_warp}.output", f"{mapped_curve}.input", force=True
+            )
+            cmds.connectAttr(
+                f"{mapped_curve}.output", f"{mapped_node}.rotateY", force=True
+            )
+            remapped_expected = float(
+                cmds.getAttr(f"{mapped_node}.rotateY", time=1.0)
+            )
+            _assert_close(remapped_expected, 22.5, "time-remapped DG oracle")
+            remapped_entry_time = float(cmds.currentTime(query=True))
+            remapped_expected_bytes = 8
+            remapped_fd, remapped_path = tempfile.mkstemp(
+                prefix="mmd_focused_time_remap_", suffix=".bin"
+            )
+            try:
+                os.ftruncate(remapped_fd, remapped_expected_bytes)
+                os.close(remapped_fd)
+                remapped_fd = -1
+                remapped_ack = _call(
+                    cmds,
+                    _direct_payload(
+                        [1.0],
+                        [
+                            {
+                                "plug": f"{mapped_node}.rotateY",
+                                "unit": "angle",
+                                # Intentionally send the stale direct hint;
+                                # native topology validation must downgrade it.
+                                "hint": "direct_curve",
+                            }
+                        ],
+                        remapped_path,
+                        remapped_expected_bytes,
+                        [0],
+                        [0.0],
+                    ),
+                )
+                if remapped_ack[:6] != [2.0, 1.0, 1.0, 0.0, 0.0, 1.0]:
+                    raise RuntimeError(
+                        "time-remapped route was not downgraded to timed_mplug: "
+                        f"{remapped_ack[:6]!r}"
+                    )
+                remapped_value = struct.unpack(
+                    "=d", Path(remapped_path).read_bytes()
+                )[0]
+                _assert_close(
+                    remapped_value,
+                    remapped_expected,
+                    "time-remapped native DG value",
+                )
+                _assert_close(
+                    float(cmds.currentTime(query=True)),
+                    remapped_entry_time,
+                    "time-remapped current time preservation",
+                )
+            finally:
+                if remapped_fd >= 0:
+                    os.close(remapped_fd)
+                try:
+                    os.unlink(remapped_path)
+                except FileNotFoundError:
+                    pass
+                cmds.delete(mapped_node, time_warp, mapped_curve)
+
             # A fully static physics request has no native channels after the
             # Python-side compatibility split.  Direct mode still owns the
             # complete frame-major output through output_defaults.
