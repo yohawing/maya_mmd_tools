@@ -1419,9 +1419,6 @@ class TestVmdSceneCollector(unittest.TestCase):
             [],
         )
         self.assertEqual(sampler.bone_calls, [])
-        selection = collector.diagnostics["track_selection"]
-        self.assertEqual(selection["counts"]["omitted_default"], 1)
-        self.assertEqual(selection["evidence"][0]["reason"], "control_keyless")
 
     def test_direct_rotation_context_rejects_unindexed_selected_joint(self):
         self.cmds.node_types.update({"model_root": "transform", "joint": "joint"})

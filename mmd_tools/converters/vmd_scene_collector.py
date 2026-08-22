@@ -2494,14 +2494,6 @@ class VmdSceneCollector:
                 key_times.update(_key_times(node, (attribute,)))
             key_times = sorted(key_times)
             if not key_times:
-                self._record_track_selection(
-                    "bone",
-                    candidate["boneName"],
-                    "omitted_default",
-                    "control_keyless",
-                    0,
-                    0,
-                )
                 continue
             selected_joints.append(joint)
             value_routes[joint] = dict(candidate["valueRoutes"])
