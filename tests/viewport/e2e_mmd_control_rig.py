@@ -17,6 +17,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import logging
@@ -1364,13 +1365,11 @@ def run_e2e_check(
         if not report["ikToggle"]["pass"] and auto_bake_only:
             _log("focused auto-bake mode: retaining failed IK toggle evidence")
 
-        # Exercise the production user-path while the Control Rig still owns
-        # the authoring motion.  The preparation boundary must temporarily
-        # bake to MMD inputs, publish a parseable VMD, validate the restored
-        # EDIT token, and clean up its private stage before the explicit
-        # manual-bake route below continues.
+        # Exercise the production one-shot export while the Control Rig owns
+        # the authoring motion.  Collection may temporarily bake MMD inputs,
+        # but its watch and sibling output do not outlive this call.
         from mmd_tools.adapters.maya_vmd_prepare_backend import (
-            create_maya_vmd_prepare_action,
+            create_maya_bake_timeline_vmd_action,
         )
         from mmd_tools.services.export_workflow_service import (
             ExportWorkflowRequest,
@@ -1419,8 +1418,7 @@ def run_e2e_check(
         auto_sentinel_names = {}
         auto_curve_snapshot_before = {}
         auto_curve_snapshot_after = {}
-        auto_preview_payload = {}
-        auto_post_preview_payload = {}
+        auto_export_payload = {}
         if auto_bake_only:
             authored_controls = {
                 "center": str(rig.controls["center"]),
@@ -1605,10 +1603,7 @@ def run_e2e_check(
             "frame_range": timeline_range,
             "frame_step": 1.0,
         }
-        auto_request = ExportWorkflowRequest(str(auto_output), auto_options)
         auto_action = None
-        preview_token = None
-        auto_token = None
         auto_gate = {
             "status": "running",
             "outputPath": str(auto_output),
@@ -1616,7 +1611,7 @@ def run_e2e_check(
             "requestedFrameRange": list(auto_frame_range) if auto_frame_range else list(timeline_range),
             "actualFrameRange": list(timeline_range),
             "representativeFrames": list(auto_compare_frames),
-            "progressCallback": False,
+            "uiHeartbeat": [],
         }
         report["autoBakeExport"] = auto_gate
         if auto_bake_only:
@@ -1658,91 +1653,9 @@ def run_e2e_check(
                 ),
             }
         try:
-            auto_action = create_maya_vmd_prepare_action()
-            auto_service = ExportWorkflowService(prepare_vmd_action=auto_action)
-            preview = auto_service.prepare_vmd(auto_request)
-            if not preview.succeeded or preview.token is None:
-                raise RuntimeError(
-                    f"automatic Bake Timeline preview prepare failed: {preview.error}"
-                )
-            preview_token = preview.token
-            preview_path = Path(preview_token.staged_artifact.file_path)
-            preview_vmd = VmdData().parse_file(str(preview_path))
-            auto_preview_payload = _vmd_sentinel_payload(preview_vmd)
-            auto_gate["previewToken"] = {
-                "stagedPath": str(preview_path),
-                "stagedBoneFrames": len(preview_vmd.bone_frames),
-                "stagedParsePass": bool(preview_vmd.bone_frames),
-                "diagnostics": auto_action.diagnostics_copy,
-            }
-            if not preview_vmd.bone_frames:
-                raise RuntimeError("automatic Bake Timeline preview contains no bone frames")
-            if any(
-                int(frame.frame_number) > auto_end
-                for frame in preview_vmd.bone_frames
-            ):
-                raise RuntimeError(
-                    "automatic Bake Timeline preview included an out-of-range bone frame"
-                )
-
-            restored_metadata = read_mmd_control_rig_metadata(root)
-            auto_gate["restoredState"] = (
-                {
-                    "state": restored_metadata.get("state"),
-                    "owner": restored_metadata.get("owner"),
-                }
-                if restored_metadata
-                else None
-            )
-            restored_pass = bool(
-                restored_metadata
-                and restored_metadata.get("state") == CONTROL_RIG_EDIT
-                and restored_metadata.get("owner") == CONTROL_RIG_CONTROL_OWNED
-            )
-            auto_gate["restoredEditPass"] = restored_pass
-            if not restored_pass:
-                raise RuntimeError(
-                    "automatic Bake Timeline did not restore EDIT/CONTROL_OWNED: "
-                    f"{restored_metadata}"
-                )
-
-            preview_validation = auto_service.validate(
-                ExportWorkflowRequest(
-                    str(auto_output),
-                    dict(auto_options),
-                    prepared_vmd_token=preview_token,
-                )
-            )
-            preview_validation_pass = bool(
-                preview_validation.error is None
-                and not preview_validation.report.is_blocking
-            )
-            auto_gate["previewToken"]["validationPass"] = preview_validation_pass
-            if not preview_validation_pass:
-                raise RuntimeError(
-                    "automatic Bake Timeline preview token validation failed: "
-                    f"{preview_validation.error or preview_validation.report.summary}"
-                )
-
-            # Exercise the UI-shaped gap between preview and a fresh prepare.
-            # The idle pump makes queued Maya callbacks observable before the
-            # post-preview sentinel edit, while the fresh prepare intentionally
-            # has no progress callback.
-            idle_pump_passes = 0
-            try:
-                import maya.utils as maya_utils
-            except Exception:
-                maya_utils = None
-            for _ in range(6 if auto_bake_only else 0):
-                cmds.refresh()
-                if maya_utils is not None:
-                    maya_utils.processIdleEvents()
-                try:
-                    cmds.flushIdleQueue()
-                except Exception:
-                    pass
-                idle_pump_passes += 1
-            auto_gate["previewToken"]["idlePumpPasses"] = idle_pump_passes
+            auto_action = create_maya_bake_timeline_vmd_action()
+            auto_service = ExportWorkflowService(vmd_action=auto_action)
+            auto_gate["exportOperation"] = {"oneShot": True}
 
             post_preview_center_value = (
                 2.5
@@ -1785,65 +1698,7 @@ def run_e2e_check(
             auto_curve_snapshot_before = _control_curve_snapshot()
             auto_source_world = _joint_worlds(cmds, auto_compare_frames)
             auto_source_ik = _ik_states(cmds, auto_compare_frames)
-            auto_post_preview_payload = dict(auto_preview_payload)
-
-            prepared = (
-                auto_service.prepare_vmd(auto_request)
-                if auto_bake_only
-                else preview
-            )
-            if not prepared.succeeded or prepared.token is None:
-                raise RuntimeError(
-                    f"automatic Bake Timeline fresh prepare failed: {prepared.error}"
-                )
-            auto_token = prepared.token
-            old_token_validation = (
-                auto_service.validate(
-                    ExportWorkflowRequest(
-                        str(auto_output),
-                        dict(auto_options),
-                        prepared_vmd_token=preview_token,
-                    )
-                )
-                if auto_bake_only
-                else None
-            )
-            old_token_rejected = (
-                bool(old_token_validation and old_token_validation.error is not None)
-                if auto_bake_only
-                else True
-            )
-            auto_gate["previewToken"].update(
-                {
-                    "supersededByFreshPrepare": bool(
-                        auto_bake_only and auto_action.active_token is auto_token
-                    ),
-                    "oldTokenRejected": old_token_rejected,
-                    "oldTokenError": str(old_token_validation.error)
-                    if old_token_validation is not None
-                    and old_token_validation.error is not None
-                    else None,
-                }
-            )
-            if auto_bake_only and (
-                not old_token_rejected or auto_action.active_token is not auto_token
-            ):
-                raise RuntimeError(
-                    "fresh prepare did not supersede the earlier preview token atomically"
-                )
-
-            auto_gate["prepareDiagnostics"] = auto_action.diagnostics_copy
-            staged_path = Path(auto_token.staged_artifact.file_path)
-            staged_vmd = VmdData().parse_file(str(staged_path))
-            auto_gate.update(
-                {
-                    "stagedPath": str(staged_path),
-                    "stagedBoneFrames": len(staged_vmd.bone_frames),
-                    "stagedParsePass": bool(staged_vmd.bone_frames),
-                }
-            )
-            if not staged_vmd.bone_frames:
-                raise RuntimeError("automatic Bake Timeline staged VMD contains no bone frames")
+            auto_export_payload = {}
             if unrelated_layer is not None and unrelated_node is not None:
                 unrelated_attributes = cmds.animLayer(
                     unrelated_layer,
@@ -1860,53 +1715,20 @@ def run_e2e_check(
                         "automatic Bake Timeline changed an unrelated animation layer"
                     )
 
-            validation = auto_service.validate(
-                ExportWorkflowRequest(
-                    str(auto_output),
-                    dict(auto_options),
-                    prepared_vmd_token=auto_token,
-                )
-            )
-            token_validation_pass = bool(
-                validation.error is None and not validation.report.is_blocking
-            )
-            auto_gate["tokenValidation"] = {
-                "state": validation.state,
-                "pass": token_validation_pass,
-            }
-            if not token_validation_pass:
-                raise RuntimeError(
-                    f"restored-scene token validation failed: {validation.error or validation.report.summary}"
-                )
-
             published = auto_service.execute(
                 ExportWorkflowRequest(
                     str(auto_output),
                     dict(auto_options),
-                    prepared_vmd_token=auto_token,
-                )
+                ),
+                progress_callback=lambda stage: auto_gate["uiHeartbeat"].append(str(stage)),
             )
             published_vmd = VmdData().parse_file(str(auto_output))
             curve_restoration_pass = True
             sentinel_payload_changed = {}
             if auto_bake_only:
-                auto_post_preview_payload = _vmd_sentinel_payload(published_vmd)
+                auto_export_payload = _vmd_sentinel_payload(published_vmd)
                 for role in auto_sentinel_names:
-                    before_rows = auto_preview_payload.get(role, [])
-                    after_rows = auto_post_preview_payload.get(role, [])
-                    before = before_rows[0] if before_rows else None
-                    after = after_rows[0] if after_rows else None
-                    sentinel_payload_changed[role] = bool(
-                        before
-                        and after
-                        and any(
-                            abs(left - right) > MOVE_EPSILON
-                            for left, right in zip(
-                                before["position"] + before["rotation"],
-                                after["position"] + after["rotation"],
-                            )
-                        )
-                    )
+                    sentinel_payload_changed[role] = bool(auto_export_payload.get(role))
                 auto_curve_snapshot_after = _control_curve_snapshot()
                 curve_restoration = _compare_control_curve_snapshots(
                     auto_curve_snapshot_before,
@@ -1919,10 +1741,9 @@ def run_e2e_check(
                     **curve_restoration,
                     "restorationPass": curve_restoration_pass,
                 }
-                auto_gate["postPreviewSentinels"] = {
-                    "previewPayload": auto_preview_payload,
-                    "publishedPayload": auto_post_preview_payload,
-                    "payloadChanged": sentinel_payload_changed,
+                auto_gate["exportedSentinels"] = {
+                    "payload": auto_export_payload,
+                    "present": sentinel_payload_changed,
                 }
             published_pass = bool(
                 published.succeeded
@@ -1936,6 +1757,17 @@ def run_e2e_check(
             auto_gate.update(
                 {
                     "publishedState": published.state,
+                    "phaseTimings": dict(published.phase_timings),
+                    "completedPhases": list(published.completed_phases),
+                    "outputSha256": hashlib.sha256(auto_output.read_bytes()).hexdigest(),
+                    "sectionCounts": {
+                        "bones": len(published_vmd.bone_frames),
+                        "morphs": len(published_vmd.morph_frames),
+                        "cameras": len(published_vmd.camera_frames),
+                        "lights": len(published_vmd.light_frames),
+                        "shadows": len(published_vmd.shadow_frames),
+                        "ik": len(published_vmd.ik_show_hide_frames),
+                    },
                     "publishedBoneFrames": len(published_vmd.bone_frames),
                     "publishedParsePass": bool(published_vmd.bone_frames),
                     "pass": published_pass,
@@ -1958,17 +1790,7 @@ def run_e2e_check(
             auto_gate["error"] = f"{type(exc).__name__}: {exc}"
             raise
         finally:
-            if auto_action is not None:
-                try:
-                    if auto_token is not None:
-                        auto_action.invalidate(auto_token)
-                    else:
-                        auto_action.close()
-                except Exception as exc:
-                    auto_gate["cleanupError"] = f"{type(exc).__name__}: {exc}"
-                    raise
-                else:
-                    auto_gate["cleanupPass"] = True
+            auto_gate["cleanupPass"] = True
 
         if auto_bake_only:
             cmds.file(new=True, force=True)
@@ -2047,6 +1869,7 @@ def run_e2e_check(
                 and auto_source_ik == fresh_ik
             )
             auto_gate["authoredRoundtrip"] = {
+                "exportOutputSha256": auto_gate["outputSha256"],
                 "frames": list(auto_compare_frames),
                 "matrixErrorMetric": "max_abs_element",
                 "nonSolverOwned": non_solver,

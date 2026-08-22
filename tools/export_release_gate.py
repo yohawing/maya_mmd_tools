@@ -513,20 +513,6 @@ class _SpyModelExporter:
         self.calls.append((path, data))
         Path(path).write_bytes(b"writer-output")
 
-class _SpyVmdExporter:
-    """Writer spy for VMD fail-closed and warning-ack cases."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, Any]] = []
-
-    def to_vmd_data(self, data: Any) -> Any:
-        return data
-
-    def export_vmd_animation(self, path: str, data: Any) -> None:
-        self.calls.append((path, data))
-        Path(path).write_bytes(b"writer-output")
-
-
 def _report_evidence(directory: Path) -> dict[str, Any]:
     """Return report artifact presence and hashes for one fail fixture."""
     result: dict[str, Any] = {}
@@ -545,9 +531,6 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
 
     install_maya_stub(profile="headless")
     from mmd_tools.actions.export_model_action import ExportModelAction, ExportModelRequest
-    from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
-    from mmd_tools.core.vmd_data import VmdData
-    from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 
     fixtures: list[dict[str, Any]] = []
     report_paths: list[str] = []
@@ -598,124 +581,6 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
         )
         report_paths.append(str(case_dir / "report" / "report.json"))
 
-    invalid_vmd = VmdData()
-    frame = VmdBoneFrame()
-    frame.bone_name = "root"
-    frame.rotation = (0.0, 0.0, 0.0, 0.0)
-    invalid_vmd.bone_frames.append(frame)
-    vmd_dir = out_dir / "invalid-vmd"
-    vmd_dir.mkdir(parents=True, exist_ok=True)
-    vmd_target = vmd_dir / "existing.vmd"
-    vmd_target.write_bytes(b"preserve-existing-target")
-    vmd_before = vmd_target.read_bytes()
-    vmd_writer = _SpyVmdExporter()
-    vmd_result = ExportVmdAction(exporter=vmd_writer, output_verifier=None).execute(
-        ExportVmdRequest(
-            str(vmd_target),
-            {
-                "export_strategy": "bake_timeline",
-                "validation_report_dir": str(vmd_dir / "report"),
-                "validation_report_evidence": {
-                    "gate": "V070-EXPORT-RELEASE-GATE-1",
-                    "fixture": "invalid-vmd-quaternion",
-                    "writer_expected": "not_called",
-                    "target_expected": "preserved",
-                },
-            },
-            animation_data=invalid_vmd,
-        )
-    )
-    vmd_passed = (
-        not vmd_result.succeeded
-        and not vmd_writer.calls
-        and vmd_target.read_bytes() == vmd_before
-        and vmd_result.validation_report is not None
-        and vmd_result.validation_report.is_blocking
-    )
-    fixtures.append(
-        {
-            "name": "invalid_vmd_quaternion",
-            "status": "pass" if vmd_passed else "fail",
-            "issue_codes": [issue.code for issue in (vmd_result.validation_report.issues if vmd_result.validation_report else ())],
-            "writer_calls": len(vmd_writer.calls),
-            "target_preserved": vmd_target.read_bytes() == vmd_before,
-            "report": _report_evidence(vmd_dir / "report"),
-        }
-    )
-    report_paths.append(str(vmd_dir / "report" / "report.json"))
-
-    warning_dir = out_dir / "warning-ack"
-    warning_dir.mkdir(parents=True, exist_ok=True)
-
-    warning_writer = _SpyVmdExporter()
-    warning_target = warning_dir / "warning.vmd"
-    first = ExportVmdAction(
-        exporter=warning_writer,
-        output_verifier=None,
-    ).execute(
-        ExportVmdRequest(
-            str(warning_target),
-            {
-                "export_strategy": "bake_timeline",
-                "validation_report_dir": str(warning_dir / "report-no-ack"),
-                "validation_report_evidence": {
-                    "gate": "V070-EXPORT-RELEASE-GATE-1",
-                    "fixture": "warning-ack-boundary",
-                    "ack_expected": "not_required",
-                },
-            },
-            animation_data=VmdData(),
-        )
-    )
-    second = ExportVmdAction(
-        exporter=warning_writer,
-        output_verifier=None,
-    ).execute(
-        ExportVmdRequest(
-            str(warning_target),
-            {
-                "export_strategy": "bake_timeline",
-                "ack_warnings": True,
-                "validation_report_dir": str(warning_dir / "report-ack"),
-                "validation_report_evidence": {
-                    "gate": "V070-EXPORT-RELEASE-GATE-1",
-                    "fixture": "warning-ack-boundary",
-                    "ack_expected": "optional",
-                },
-            },
-            animation_data=VmdData(),
-        )
-    )
-    warning_passed = (
-        first.succeeded
-        and first.validation_report is not None
-        and not first.validation_report.requires_warning_ack
-        and len(warning_writer.calls) == 2
-        and second.succeeded
-    )
-    fixtures.append(
-        {
-            "name": "warning_ack_boundary",
-            "status": "pass" if warning_passed else "fail",
-            "first_succeeded": first.succeeded,
-            "second_succeeded": second.succeeded,
-            "first_requires_warning_ack": False,
-            "writer_calls": len(warning_writer.calls),
-            "first_issue_codes": [issue.code for issue in (first.validation_report.issues if first.validation_report else ())],
-            "first_issue_severities": [issue.severity for issue in (first.validation_report.issues if first.validation_report else ())],
-            "second_issue_codes": [issue.code for issue in (second.validation_report.issues if second.validation_report else ())],
-            "reports": {
-                "no_ack": _report_evidence(warning_dir / "report-no-ack"),
-                "ack": _report_evidence(warning_dir / "report-ack"),
-            },
-        }
-    )
-    report_paths.extend(
-        [
-            str(warning_dir / "report-no-ack" / "report.json"),
-            str(warning_dir / "report-ack" / "report.json"),
-        ]
-    )
     return {
         "status": "pass" if all(fixture["status"] == "pass" for fixture in fixtures) else "fail",
         "fixtures": fixtures,

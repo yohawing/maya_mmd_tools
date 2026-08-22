@@ -213,7 +213,6 @@
     "facial_display_frame_morph_only": "The Facial display frame can contain only morphs",
     "import_success": "Import completed successfully",
     "export_success": "Export completed successfully",
-    "prepare_bake_timeline_complete": "VMD Bake Timeline preparation complete",
     "export_mmd_asset": "Export MMD asset",
     "error_file_not_found": "File not found",
     "error_invalid_file": "Invalid file format",
@@ -862,9 +861,17 @@
     "animation_timeline_bake": "Animation: evaluating and preparing the current timeline",
     "animation_payload_collection": "Animation: collecting export data",
     "animation_payload_validation": "Animation: validating export data",
-    "animation_prepared_payload": "Animation: preparing payload",
     "animation_report_ready": "Animation: validation report ready",
     "animation_writer": "Writing VMD"
+  },
+  "export_status": {
+    "editing": "Editing",
+    "validating_scene": "Validating scene",
+    "collecting_animation": "Collecting animation",
+    "writing_temporary_file": "Writing temporary file",
+    "finalizing": "Finalizing",
+    "completed": "Completed",
+    "blocked": "Blocked"
   },
   "validation": {
     "scene_output_path_invalid": {

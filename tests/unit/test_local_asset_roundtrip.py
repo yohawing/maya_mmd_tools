@@ -22,9 +22,7 @@ from tools.local_asset_roundtrip import (
     _motion_evaluation_frames,
     _motion_phase_evidence,
     _bake_timeline_track_boundary_diff,
-    _prepare_diagnostics_sink,
-    _prepare_vmd_bake_timeline,
-    _run_prepared_vmd_exports,
+    _export_diagnostics_sink,
     _import_options,
     _import_model_action,
     _resolve_morph_controller_input_plug,
@@ -35,7 +33,6 @@ from tools.local_asset_roundtrip import (
     _skip_warm_vmd_export_samples,
     _run_worker,
     _compare_motion_morph_witness_values,
-    _copy_prepared_vmd_payload,
     _select_cases,
     _summary_markdown,
     _worker_failure_classification,
@@ -44,26 +41,6 @@ from tools.local_asset_roundtrip import (
     _vmd_payload,
     _vmd_payload_diff,
 )
-
-
-def test_copy_prepared_vmd_payload_reads_verified_stage(monkeypatch, tmp_path):
-    stage = tmp_path / "prepared.vmd"
-    stage.write_bytes(b"vmd")
-    identity_checks = []
-    receipt = SimpleNamespace(
-        file_path=str(stage),
-        validate_identity=lambda: identity_checks.append(True),
-    )
-    parsed = _empty_vmd_data()
-    monkeypatch.setattr(
-        "mmd_tools.core.vmd_data.VmdData.parse_file",
-        lambda _self, path: parsed if path == str(stage) else None,
-    )
-
-    payload = _copy_prepared_vmd_payload(SimpleNamespace(staged_artifact=receipt))
-
-    assert identity_checks == [True]
-    assert payload["model_name"] == "model"
 
 
 def test_bake_timeline_pose_tolerance_covers_vmd_ccd_reconstruction_only():
@@ -180,7 +157,7 @@ def test_summary_explicitly_reports_cold_and_warm_export_samples():
     assert "cold=1/1, warm=3/3" in summary
 
 
-def test_dense_warm_samples_use_distinct_outputs_and_the_prepared_source_target(monkeypatch, tmp_path):
+def test_dense_warm_samples_use_distinct_outputs_and_the_source_target(monkeypatch, tmp_path):
     phase_requests = []
     export_requests = []
 
@@ -221,14 +198,12 @@ def test_dense_warm_samples_use_distinct_outputs_and_the_prepared_source_target(
         lambda result, export_format: [],
     )
 
-    prepared_token = SimpleNamespace(cache_id="prepared-token")
     samples = _run_warm_vmd_export_samples(
         {"name": "dense", "classification": "dense"},
         tmp_path,
         context,
         _Workflow(),
         "|edited_source_root",
-        prepared_token,
         0,
         20,
         "rabbit",
@@ -242,7 +217,6 @@ def test_dense_warm_samples_use_distinct_outputs_and_the_prepared_source_target(
         str(tmp_path / "motion-warm-03.vmd"),
     ]
     assert {request["target_model"] for request in export_requests} == {"|edited_source_root"}
-    assert all(request["prepared_vmd_token"] is prepared_token for request in export_requests)
     assert [request["output"].name for request in export_requests] == [
         "motion-warm-01.vmd",
         "motion-warm-02.vmd",
@@ -252,166 +226,34 @@ def test_dense_warm_samples_use_distinct_outputs_and_the_prepared_source_target(
     assert all((tmp_path / f"warm-export-{index:02d}.json").is_file() for index in range(1, 4))
 
 
-def test_bake_timeline_prepare_is_called_once_and_publishes_timing_evidence(monkeypatch):
-    calls = []
-    token = SimpleNamespace(
-        cache_id="cache",
-        scene_session_id="session",
-        target_uuid="uuid",
-        target_identity="|edited_root",
-        revision="4:0",
-    )
-
-    class _Preparation:
-        status = "published"
-        published = True
-        succeeded = True
-        error = None
-
-        def __init__(self):
-            self.token = token
-
-    class _Workflow:
-        prepare_vmd_action = SimpleNamespace(
-            diagnostics_copy=lambda: {
-                "status": "published",
-                "phase_timing": {"total": 0.25},
-            }
-        )
-
-        def prepare_vmd(self, request):
-            calls.append(request)
-            return _Preparation()
-
-    context = SimpleNamespace(
-        phases=[{"name": "prepare_bake_timeline", "wall_sec": 12.5, "status": "passed"}],
-    )
-    monkeypatch.setattr(
-        "tools.local_asset_roundtrip._phase",
-        lambda worker_context, name, function: function(),
-    )
-
-    actual, evidence = _prepare_vmd_bake_timeline(_Workflow(), {"export_strategy": "bake_timeline"}, context)
-
-    assert actual is token
-    assert len(calls) == 1
-    assert evidence["token_published"] is True
-    assert evidence["phase_timing"]["wall_sec"] == 12.5
-    assert evidence["diagnostics"]["phase_timing"]["total"] == 0.25
-
-
-def test_bake_timeline_prepare_failure_is_non_pass_and_has_no_collector_fallback(monkeypatch):
-    calls = []
-
-    class _Workflow:
-        def prepare_vmd(self, request):
-            calls.append(("prepare", request))
-            return SimpleNamespace(
-                status="partial",
-                published=False,
-                succeeded=False,
-                token=None,
-                error=RuntimeError("collector failed"),
-            )
-
-        def collect(self, request):
-            calls.append(("collect", request))
-            raise AssertionError("legacy collector fallback must not run")
-
-    context = SimpleNamespace(phases=[])
-    monkeypatch.setattr(
-        "tools.local_asset_roundtrip._phase",
-        lambda worker_context, name, function: function(),
-    )
-
-    with pytest.raises(RuntimeError, match="preparation failed"):
-        _prepare_vmd_bake_timeline(_Workflow(), {"export_strategy": "bake_timeline"}, context)
-    assert [kind for kind, _request in calls] == ["prepare"]
-
-
-def test_prepared_export_boundary_invalidates_once_on_failure(monkeypatch, tmp_path):
-    lifecycle = []
-
-    class _Workflow:
-        def validate(self, request):
-            raise RuntimeError("validation boom")
-
-        def invalidate_prepared_vmd(self, token):
-            lifecycle.append(("invalidate", token))
-
-    monkeypatch.setattr(
-        "tools.local_asset_roundtrip._phase",
-        lambda worker_context, name, function: function(),
-    )
-    context = SimpleNamespace(
-        phases=[],
-        export_write_budget_violations=[],
-        export_write_budget_sec=60.0,
-    )
-    stage = tmp_path / "prepared.vmd"
-    stage.write_bytes(b"vmd")
-    monkeypatch.setattr(
-        "mmd_tools.core.vmd_data.VmdData.parse_file",
-        lambda _self, path: _empty_vmd_data() if path == str(stage) else None,
-    )
-    token = SimpleNamespace(
-        cache_id="prepared",
-        staged_artifact=SimpleNamespace(
-            file_path=str(stage),
-            validate_identity=lambda: lifecycle.append(("copy", None)),
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="validation boom"):
-        _run_prepared_vmd_exports(
-            {"name": "dense"},
-            tmp_path,
-            context,
-            _Workflow(),
-            SimpleNamespace(prepared_vmd_token=token),
-            token,
-            "|edited_source_root",
-            {"bone": [], "morph": [], "camera": [], "light": [], "shadow": [], "ik": []},
-            {"bone": set(), "morph": set()},
-            {},
-            0,
-            20,
-            "model",
-            3,
-        )
-    assert lifecycle == [("copy", None), ("invalidate", token)]
-
-
 def test_motion_phase_evidence_reports_boundaries_and_edit_to_first_file():
     context = SimpleNamespace(
         phases=[
             {"name": "motion_adjustment", "wall_sec": 2.0},
             {"name": "edited_motion_oracle", "wall_sec": 3.0},
-            {"name": "prepare_bake_timeline", "wall_sec": 4.0},
-            {"name": "export_validation", "wall_sec": 5.0},
+            {"name": "export_bake_timeline", "wall_sec": 4.0},
             {"name": "export_write", "wall_sec": 6.0},
             {"name": "exported_parse", "wall_sec": 7.0},
         ],
     )
     evidence = _motion_phase_evidence(
         context,
-        {"phase_timing": {"name": "prepare_bake_timeline", "wall_sec": 4.0}},
-        context.phases[3:5],
+        {"phase_timing": {"name": "export_bake_timeline", "wall_sec": 4.0}},
+        context.phases[2:4],
     )
 
-    assert evidence["prepare_bake_timeline"]["wall_sec"] == 4.0
-    assert evidence["cold_validate"]["wall_sec"] == 5.0
+    assert evidence["export_bake_timeline"]["wall_sec"] == 4.0
     assert evidence["cold_export"]["wall_sec"] == 6.0
-    assert evidence["edit_to_first_file"]["wall_sec"] == 20.0
+    assert evidence["edit_to_first_file"]["wall_sec"] == 15.0
     assert evidence["edit_to_first_file"]["method"].startswith("sum recorded phase wall_sec")
 
 
-def test_prepare_diagnostics_sink_publishes_atomic_live_snapshot(tmp_path):
-    path = tmp_path / "prepare-diagnostics.live.json"
-    sink = _prepare_diagnostics_sink(path, "dense")
+def test_export_diagnostics_sink_publishes_atomic_live_snapshot(tmp_path):
+    path = tmp_path / "export-diagnostics.live.json"
+    sink = _export_diagnostics_sink(path, "dense")
 
     started = json.loads(path.read_text(encoding="utf-8"))
-    assert started["phase"] == "prepare_bake_timeline"
+    assert started["phase"] == "export_bake_timeline"
     assert started["snapshot"]["status"] == "started"
 
     sink({"native_sampler": {"status": "sampling_chunk", "chunk_index": 2}})
@@ -545,38 +387,38 @@ def test_bake_timeline_track_boundaries_exclude_only_model_unmatched_source_trac
     unmatched = _bone()
     unmatched.bone_name = "別モデル専用"
     source = _vmd_payload(_empty_vmd_data(bone_frames=[center, unmatched]))
-    prepared = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
+    collected = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
     exported = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
 
     failures = _bake_timeline_track_boundary_diff(
         source,
-        prepared,
+        collected,
         exported,
         {"bone": {"センター"}, "morph": set()},
     )
 
-    assert failures == {"source_to_prepared": [], "prepared_to_export": []}
+    assert failures == {"source_to_collected": [], "collected_to_export": []}
 
 
-def test_bake_timeline_track_boundaries_reject_supported_physics_track_lost_in_prepare():
+def test_bake_timeline_track_boundaries_reject_supported_physics_track_lost_in_collection():
     center = _bone()
     center.bone_name = "センター"
     physics = _bone()
     physics.bone_name = "右胸"
     source = _vmd_payload(_empty_vmd_data(bone_frames=[center, physics]))
-    prepared = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
+    collected = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
 
     failures = _bake_timeline_track_boundary_diff(
         source,
-        prepared,
-        prepared,
+        collected,
+        collected,
         {"bone": {"センター", "右胸"}, "morph": set()},
     )
 
-    assert failures["source_to_prepared"] == [
+    assert failures["source_to_collected"] == [
         "bone required tracks missing: ['右胸']"
     ]
-    assert failures["prepared_to_export"] == []
+    assert failures["collected_to_export"] == []
 
 
 def test_bake_timeline_track_boundaries_accept_only_exact_committed_omissions():
@@ -587,47 +429,47 @@ def test_bake_timeline_track_boundaries_accept_only_exact_committed_omissions():
     physics = _bone()
     physics.bone_name = "右胸"
     source = _vmd_payload(_empty_vmd_data(bone_frames=[center, physics]))
-    prepared = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
+    collected = _vmd_payload(_empty_vmd_data(bone_frames=[center]))
     identities = [["bone", "右胸"]]
     commitment = {"count": 1, "fingerprint": fingerprint_payload(identities)}
 
     accepted = _bake_timeline_track_boundary_diff(
         source,
-        prepared,
-        prepared,
+        collected,
+        collected,
         {"bone": {"センター", "右胸"}, "morph": set()},
         source_omission_commitment=commitment,
     )
     rejected = _bake_timeline_track_boundary_diff(
         source,
-        prepared,
-        prepared,
+        collected,
+        collected,
         {"bone": {"センター", "右胸"}, "morph": set()},
         source_omission_commitment={"count": 1, "fingerprint": "wrong"},
     )
 
-    assert accepted["source_to_prepared"] == []
-    assert rejected["source_to_prepared"][0].startswith(
+    assert accepted["source_to_collected"] == []
+    assert rejected["source_to_collected"][0].startswith(
         "source omission commitment does not exactly match"
     )
 
 
-def test_bake_timeline_track_boundaries_reject_prepared_authored_track_lost_by_writer():
+def test_bake_timeline_track_boundaries_reject_collected_authored_track_lost_by_writer():
     authored = _bone()
     authored.bone_name = "センター"
     source = _vmd_payload(_empty_vmd_data(bone_frames=[authored]))
-    prepared = _vmd_payload(_empty_vmd_data(bone_frames=[authored]))
+    collected = _vmd_payload(_empty_vmd_data(bone_frames=[authored]))
     exported = _vmd_payload(_empty_vmd_data())
 
     failures = _bake_timeline_track_boundary_diff(
         source,
-        prepared,
+        collected,
         exported,
         {"bone": {"センター"}, "morph": set()},
     )
 
-    assert failures["source_to_prepared"] == []
-    assert failures["prepared_to_export"] == [
+    assert failures["source_to_collected"] == []
+    assert failures["collected_to_export"] == [
         "bone.count expected=1 actual=0"
     ]
 
@@ -656,7 +498,7 @@ def _dense_bake_timeline_payload():
     }
 
 
-def test_bake_timeline_track_boundaries_accept_identical_dense_prepared_payload():
+def test_bake_timeline_track_boundaries_accept_identical_dense_collected_payload():
     payload = _dense_bake_timeline_payload()
 
     failures = _bake_timeline_track_boundary_diff(
@@ -666,7 +508,7 @@ def test_bake_timeline_track_boundaries_accept_identical_dense_prepared_payload(
         {"bone": {"センター"}, "morph": {"笑顔"}},
     )
 
-    assert failures == {"source_to_prepared": [], "prepared_to_export": []}
+    assert failures == {"source_to_collected": [], "collected_to_export": []}
 
 
 @pytest.mark.parametrize(
@@ -682,40 +524,40 @@ def test_bake_timeline_track_boundaries_accept_identical_dense_prepared_payload(
 def test_bake_timeline_track_boundaries_reject_writer_value_changes_with_same_tracks(
     section, index, field, replacement, expected_failure
 ):
-    prepared = _dense_bake_timeline_payload()
+    collected = _dense_bake_timeline_payload()
     exported = {
-        **prepared,
-        section: [dict(item) for item in prepared[section]],
+        **collected,
+        section: [dict(item) for item in collected[section]],
     }
     exported[section][index][field] = replacement
 
     failures = _bake_timeline_track_boundary_diff(
-        prepared,
-        prepared,
+        collected,
+        collected,
         exported,
         {"bone": {"センター"}, "morph": {"笑顔"}},
     )
 
-    assert failures["source_to_prepared"] == []
-    assert expected_failure in failures["prepared_to_export"]
+    assert failures["source_to_collected"] == []
+    assert expected_failure in failures["collected_to_export"]
 
 
 def test_bake_timeline_track_boundaries_reject_writer_count_change_with_same_track_name():
-    prepared = _dense_bake_timeline_payload()
+    collected = _dense_bake_timeline_payload()
     exported = {
-        **prepared,
-        "bone": [dict(item) for item in prepared["bone"][:-1]],
+        **collected,
+        "bone": [dict(item) for item in collected["bone"][:-1]],
     }
 
     failures = _bake_timeline_track_boundary_diff(
-        prepared,
-        prepared,
+        collected,
+        collected,
         exported,
         {"bone": {"センター"}, "morph": {"笑顔"}},
     )
 
-    assert failures["source_to_prepared"] == []
-    assert failures["prepared_to_export"] == [
+    assert failures["source_to_collected"] == []
+    assert failures["collected_to_export"] == [
         "bone.count expected=3 actual=2"
     ]
 

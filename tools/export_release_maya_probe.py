@@ -3095,7 +3095,7 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
     """Roundtrip a VMD through a Maya scene and compare fresh-import poses."""
     from mmd_tools.core.vmd_data import VmdData
     from mmd_tools.adapters.maya_vmd_prepare_backend import (
-        create_maya_vmd_prepare_action,
+        create_maya_bake_timeline_vmd_action,
     )
     from mmd_tools.services.export_workflow_service import (
         ExportWorkflowRequest,
@@ -3108,7 +3108,7 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
     output = out_dir / "motion.vmd"
     report_dir = out_dir / "report"
     workflow = ExportWorkflowService(
-        prepare_vmd_action=create_maya_vmd_prepare_action()
+        vmd_action=create_maya_bake_timeline_vmd_action()
     )
     request = ExportWorkflowRequest(
         str(output),
@@ -3130,19 +3130,10 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
             },
         },
     )
-    preparation = workflow.prepare_vmd(request)
-    if not preparation.succeeded:
-        raise RuntimeError(
-            f"vmd preparation failed: {preparation.error or preparation.report}"
-        )
-    request.prepared_vmd_token = preparation.token
-    try:
-        result = workflow.execute(
-            request,
-            acknowledge_warnings=True,
-        )
-    finally:
-        workflow.invalidate_prepared_vmd(preparation.token)
+    result = workflow.execute(
+        request,
+        acknowledge_warnings=True,
+    )
     if not result.succeeded:
         raise RuntimeError(f"vmd export failed: {result.error or result.report}")
     parsed = VmdData().parse_file(str(output))
@@ -3160,6 +3151,7 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
         "export_strategy": "bake_timeline",
         "source": str(source_vmd),
         "output": str(output),
+        "output_sha256": _sha256_file(output),
         "report_json": str(report_dir / "report.json"),
         "report_md": str(report_dir / "report.md"),
         "parsed_counts": {
@@ -3185,7 +3177,7 @@ def _run_vmd_bake_timeline_model_tracks_case(out_dir: Path) -> dict[str, Any]:
     """Roundtrip real Bake Timeline bone, morph, and IK show/hide model tracks."""
     from mmd_tools.core.vmd_data import VmdData
     from mmd_tools.adapters.maya_vmd_prepare_backend import (
-        create_maya_vmd_prepare_action,
+        create_maya_bake_timeline_vmd_action,
     )
     from mmd_tools.services.export_workflow_service import (
         ExportWorkflowRequest,
@@ -3212,7 +3204,7 @@ def _run_vmd_bake_timeline_model_tracks_case(out_dir: Path) -> dict[str, Any]:
     output = out_dir / "motion.vmd"
     report_dir = out_dir / "report"
     workflow = ExportWorkflowService(
-        prepare_vmd_action=create_maya_vmd_prepare_action()
+        vmd_action=create_maya_bake_timeline_vmd_action()
     )
     request = ExportWorkflowRequest(
         str(output),
@@ -3234,20 +3226,10 @@ def _run_vmd_bake_timeline_model_tracks_case(out_dir: Path) -> dict[str, Any]:
             },
         },
     )
-    preparation = workflow.prepare_vmd(request)
-    if not preparation.succeeded:
-        raise RuntimeError(
-            "VMD model-track preparation failed: "
-            f"{preparation.error or preparation.report}"
-        )
-    request.prepared_vmd_token = preparation.token
-    try:
-        result = workflow.execute(
-            request,
-            acknowledge_warnings=True,
-        )
-    finally:
-        workflow.invalidate_prepared_vmd(preparation.token)
+    result = workflow.execute(
+        request,
+        acknowledge_warnings=True,
+    )
     if not result.succeeded:
         raise RuntimeError(f"VMD model-track export failed: {result.error or result.report}")
     exported_data = VmdData().parse_file(str(output))
@@ -3541,7 +3523,7 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
     """Roundtrip standalone camera/light tracks through Bake Timeline and fresh import."""
     from mmd_tools.core.vmd_data import VmdData
     from mmd_tools.adapters.maya_vmd_prepare_backend import (
-        create_maya_vmd_prepare_action,
+        create_maya_bake_timeline_vmd_action,
     )
     from mmd_tools.services.export_workflow_service import ExportWorkflowRequest, ExportWorkflowService
 
@@ -3558,7 +3540,7 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
     output = out_dir / "camera_light.vmd"
     report_dir = out_dir / "report"
     workflow = ExportWorkflowService(
-        prepare_vmd_action=create_maya_vmd_prepare_action()
+        vmd_action=create_maya_bake_timeline_vmd_action()
     )
     request = ExportWorkflowRequest(
         str(output),
@@ -3581,20 +3563,10 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
             },
         },
     )
-    preparation = workflow.prepare_vmd(request)
-    if not preparation.succeeded:
-        raise RuntimeError(
-            "camera/light VMD preparation failed: "
-            f"{preparation.error or preparation.report}"
-        )
-    request.prepared_vmd_token = preparation.token
-    try:
-        result = workflow.execute(
-            request,
-            acknowledge_warnings=True,
-        )
-    finally:
-        workflow.invalidate_prepared_vmd(preparation.token)
+    result = workflow.execute(
+        request,
+        acknowledge_warnings=True,
+    )
     if not result.succeeded:
         raise RuntimeError(f"camera/light Bake Timeline export failed: {result.error or result.report}")
     exported_data = VmdData().parse_file(str(output))

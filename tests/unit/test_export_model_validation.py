@@ -2,6 +2,7 @@
 
 import json
 import math
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -1682,7 +1683,7 @@ class TestExportModelValidation(unittest.TestCase):
         self.assertEqual(result.validation_report.issues[0].code, "MMD_ANIM_CLI_UNAVAILABLE")
         self.assertFalse(Path(exporter.calls[0][0]).exists())
 
-    def test_warning_report_requires_ack_before_writer(self):
+    def test_warning_cancel_removes_verified_sibling_before_publish(self):
         def warning_validator(model_data, export_format):
             return ExportValidationReport(
                 export_format,
@@ -1704,17 +1705,74 @@ class TestExportModelValidation(unittest.TestCase):
             output_verifier=None,
             validator=warning_validator,
         )
-        result = action.execute(
-            ExportModelRequest(
-                file_path="out.pmx",
-                options={"export_format": "pmx", "model_data": _valid_model_data()},
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "out.pmx"
+            target.write_bytes(b"existing target")
+            sibling_exists = []
+
+            def cancel_after_verified_sibling(_report):
+                sibling_exists.append(Path(exporter.calls[0][0]).is_file())
+                return False
+
+            result = action.execute(
+                ExportModelRequest(
+                    file_path=str(target),
+                    options={
+                        "export_format": "pmx",
+                        "model_data": _valid_model_data(),
+                        "_warning_callback": cancel_after_verified_sibling,
+                    },
+                )
             )
-        )
+
+            self.assertEqual(len(exporter.calls), 1)
+            self.assertEqual(sibling_exists, [True])
+            self.assertEqual(target.read_bytes(), b"existing target")
+            self.assertEqual(list(Path(directory).glob(".out.*.pmx")), [])
 
         self.assertFalse(result.succeeded)
         self.assertIsInstance(result.error, ExportValidationAcknowledgementRequired)
         self.assertTrue(result.validation_report.requires_warning_ack)
-        self.assertEqual(exporter.calls, [])
+
+    def test_warning_callback_cannot_redirect_relative_target_with_chdir(self):
+        def warning_validator(model_data, export_format):
+            return ExportValidationReport(
+                export_format,
+                (
+                    ExportValidationIssue(
+                        "TEXT_FIELD_TYPE", "warning", False, "comment", "ack me"
+                    ),
+                ),
+            )
+
+        exporter = _FakeExporter()
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as other:
+            original_cwd = Path.cwd()
+            target = Path(directory) / "relative.pmx"
+            try:
+                os.chdir(directory)
+                result = ExportModelAction(
+                    pmx_exporter=exporter,
+                    collector=None,
+                    output_verifier=None,
+                    validator=warning_validator,
+                ).execute(
+                    ExportModelRequest(
+                        "relative.pmx",
+                        {
+                            "export_format": "pmx",
+                            "model_data": _valid_model_data(),
+                            "_warning_callback": lambda _report: (os.chdir(other), True)[1],
+                        },
+                    )
+                )
+            finally:
+                os.chdir(original_cwd)
+
+            self.assertTrue(result.succeeded, result.error)
+            self.assertEqual(Path(result.exported_path), target.resolve())
+            self.assertTrue(target.is_file())
+            self.assertFalse((Path(other) / "relative.pmx").exists())
 
     def test_warning_report_exports_only_after_ack(self):
         def warning_validator(model_data, export_format):

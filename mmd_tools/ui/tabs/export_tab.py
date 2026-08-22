@@ -31,7 +31,6 @@ from ...services.export_workflow_service import (
     ExportWorkflowRequest,
     ExportWorkflowResult,
     STATE_EDITING,
-    STATE_PREPARED,
 )
 from ...validation.vmd_validator import (
     VMD_EXPORT_BAKE_TIMELINE,
@@ -41,9 +40,21 @@ from ...validation.vmd_validator import (
 class _ExportPage(QWidget):
     """Own one format's settings, workflow controls, and validation report."""
 
-    validate_requested = Signal()
     export_requested = Signal()
-    semantic_changed = Signal()
+
+    _STATE_STATUS_KEYS = {
+        STATE_EDITING: "editing",
+        "Exporting": "validating_scene",
+        "Succeeded": "completed",
+        "Blocked": "blocked",
+        "Failed": "blocked",
+    }
+    _PROGRESS_STATUS_KEYS = {
+        "scene_preflight": "validating_scene",
+        "payload_collection": "collecting_animation",
+        "writer": "writing_temporary_file",
+        "report_ready": "finalizing",
+    }
 
     def __init__(self, owner, pane: str, title: str):
         super().__init__(owner)
@@ -52,6 +63,7 @@ class _ExportPage(QWidget):
         self.export_format = "pmx" if self.pane == owner.MODEL_PANE else "vmd"
         self.setObjectName(f"export{self.pane.title()}Page")
         self._state = STATE_EDITING
+        self._status_key = self._STATE_STATUS_KEYS[STATE_EDITING]
         self._restoring = False
         self._operation_active = False
         self._build(title)
@@ -59,13 +71,14 @@ class _ExportPage(QWidget):
     def _button_text(self, action: str) -> str:
         """Return the format-specific primary action label."""
         if self.pane == self.owner.MODEL_PANE:
-            key = "validate_model" if action == "validate" else "export_pmx"
+            key = "export_pmx"
         else:
-            key = {
-                "validate": "validate_animation",
-                "export": "export_vmd",
-            }[action]
+            key = "export_vmd"
         return self.owner.tr(key, "buttons")
+
+    def _set_status_key(self, key: str) -> None:
+        self._status_key = key
+        self.state_label.setText(self.owner.tr(key, "export_status"))
 
     def _build(self, title: str) -> None:
         page_layout = QVBoxLayout(self)
@@ -187,13 +200,10 @@ class _ExportPage(QWidget):
         export_form.addRow(self.owner.tr("file_path", "labels"), output_row)
 
         buttons = QHBoxLayout()
-        self.validate_button = QPushButton(self._button_text("validate"))
-        self.validate_button.clicked.connect(self.validate_requested.emit)
-        buttons.addWidget(self.validate_button)
         self.export_button = QPushButton(self._button_text("export"))
         self.export_button.clicked.connect(self.export_requested.emit)
         buttons.addWidget(self.export_button)
-        self.state_label = QLabel(STATE_EDITING)
+        self.state_label = QLabel(self.owner.tr(self._status_key, "export_status"))
         self.state_label.setObjectName(f"export{self.pane.title()}StateLabel")
         buttons.addWidget(self.state_label)
         buttons.addStretch()
@@ -262,22 +272,19 @@ class _ExportPage(QWidget):
         if self._restoring:
             return
         self._state = STATE_EDITING
-        self.state_label.setText(self._state)
+        self._set_status_key(self._STATE_STATUS_KEYS[STATE_EDITING])
         self.validation_console.clear_report()
         self.owner._persist_semantic_preferences()
 
     def _on_semantic_input_changed(self, *_args) -> None:
-        """Invalidate the prepared payload for timeline-affecting inputs."""
+        """Invalidate the visible report for timeline-affecting inputs."""
         self._mark_editing()
-        self.semantic_changed.emit()
 
     def set_result(self, result: ExportWorkflowResult) -> None:
         previous_ack = self.validation_console.warnings_acknowledged
         self._state = result.state
-        self.state_label.setText(result.state)
+        self._set_status_key(self._STATE_STATUS_KEYS.get(result.state, "blocked"))
         metadata = dict(result.metadata or {})
-        if result.snapshot is not None:
-            metadata["payload_fingerprint"] = result.snapshot.payload_fingerprint
         action_result = result.action_result
         if action_result is not None:
             metadata.setdefault(
@@ -289,25 +296,21 @@ class _ExportPage(QWidget):
 
     def set_state(self, state: str) -> None:
         self._state = state
-        self.state_label.setText(state)
+        self._set_status_key(self._STATE_STATUS_KEYS.get(state, "blocked"))
+
+    def set_progress(self, stage: str) -> None:
+        """Show the current one-shot export boundary beside the button."""
+        self._set_status_key(self._PROGRESS_STATUS_KEYS.get(stage, "finalizing"))
 
     def set_operation_active(self, active: bool) -> None:
         """Disable every workflow entry point owned by this page."""
         self._operation_active = bool(active)
         enabled = not self._operation_active
-        self.validate_button.setEnabled(enabled)
         self.export_button.setEnabled(enabled)
 
     def invalidate(self) -> None:
         self._state = STATE_EDITING
-        self.state_label.setText(STATE_EDITING)
-        self.validation_console.clear_report()
-
-    def set_prepared(self, preparation) -> None:
-        """Show a successful Bake Timeline preparation without fabricating a report."""
-        del preparation
-        self._state = STATE_PREPARED
-        self.state_label.setText(self._state)
+        self._set_status_key(self._STATE_STATUS_KEYS[STATE_EDITING])
         self.validation_console.clear_report()
 
     def _sync_frame_range_enabled(self) -> None:
@@ -333,8 +336,8 @@ class _ExportPage(QWidget):
         self.settings_group.setTitle(self.owner.tr("export", "settings"))
         self.export_group.setTitle(self.owner.tr("export", "groups"))
         self.output_browse_button.setText(self.owner.tr("browse", "buttons"))
-        self.validate_button.setText(self._button_text("validate"))
         self.export_button.setText(self._button_text("export"))
+        self._set_status_key(self._status_key)
         self._set_form_label(
             self._export_form,
             self.output_path_edit,
@@ -385,9 +388,7 @@ class _ExportPage(QWidget):
 class ExportTab(BaseTab):
     """Present independent PMX and VMD pages under one category selector."""
 
-    validate_requested = Signal()
     export_requested = Signal()
-    motion_semantic_changed = Signal()
 
     MODEL_PANE = "model"
     MOTION_PANE = "motion"
@@ -436,10 +437,7 @@ class ExportTab(BaseTab):
             ),
         }
         for pane, page in self._pages.items():
-            page.validate_requested.connect(self.validate_requested.emit)
             page.export_requested.connect(self.export_requested.emit)
-            if pane == self.MOTION_PANE:
-                page.semantic_changed.connect(self.motion_semantic_changed.emit)
             self.category_stack.add_page(pane, page)
         self.category_stack.currentChanged.connect(self._on_pane_changed)
         main_layout.addWidget(self.category_stack)
@@ -574,13 +572,13 @@ class ExportTab(BaseTab):
             return
         self._active_page().set_result(result)
 
-    def set_prepared(self, preparation) -> None:
-        """Show the Motion page's reusable Bake Timeline payload state."""
-        self._pages[self.MOTION_PANE].set_prepared(preparation)
-
     def set_state(self, state: str) -> None:
         owner_page = self._operation_owner_page or self._result_owner_page
         (owner_page if owner_page is not None else self._active_page()).set_state(state)
+
+    def set_progress(self, stage: str) -> None:
+        owner_page = self._operation_owner_page or self._result_owner_page
+        (owner_page if owner_page is not None else self._active_page()).set_progress(stage)
 
     def set_operation_active(self, active: bool) -> None:
         """Toggle controls only for the page that owns the active operation."""
@@ -617,7 +615,6 @@ class ExportTab(BaseTab):
         if name in {
             "output_path_edit",
             "output_browse_button",
-            "validate_button",
             "export_button",
             "state_label",
             "validation_console",

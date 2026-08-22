@@ -233,10 +233,22 @@ class ExportModelAction:
 
     def execute(self, request: ExportModelRequest) -> ExportModelResult:
         """Export a PMX model and return a small result object."""
+        # Resolve once before invoking collectors, writers, or warning UI.
+        # Warning handling can enter a nested host event loop, so retaining a
+        # relative path here could otherwise publish into a later ``chdir``.
+        request = ExportModelRequest(
+            str(Path(request.file_path).expanduser().resolve(strict=False)),
+            request.options,
+        )
         validation_report: Optional[ExportValidationReport] = None
         payload_fingerprint: Optional[str] = None
         validation_report_artifacts: Optional[ValidationReportArtifactPaths] = None
         temporary_path: Optional[str] = None
+        phase_callback = request.options.get("_phase_callback")
+
+        def phase(name: str, started: bool) -> None:
+            if callable(phase_callback):
+                phase_callback(name, started)
 
         def build_result(
             *,
@@ -390,15 +402,6 @@ class ExportModelAction:
                     warnings=list(validation_report.issues),
                 )
 
-            if validation_report.requires_warning_ack and request.options.get("ack_warnings") is not True:
-                acknowledgement_error = ExportValidationAcknowledgementRequired(validation_report)
-                logger.error("Model export is waiting for warning acknowledgement: %s", acknowledgement_error)
-                return build_result(
-                    status_message=f"Export failed: {acknowledgement_error}",
-                    error=acknowledgement_error,
-                    warnings=list(validation_report.issues),
-                )
-
             if not snapshot.matches(
                 source_model_data,
                 export_format,
@@ -437,12 +440,37 @@ class ExportModelAction:
                     from ..io.pmx_exporter import PmxExporter
 
                     self._pmx_exporter = PmxExporter()
-                self._pmx_exporter.export_pmx_model(temporary_path, writer_model_data)
+                phase("encode", True)
+                try:
+                    self._pmx_exporter.export_pmx_model(temporary_path, writer_model_data)
+                except Exception:
+                    raise
+                else:
+                    phase("encode", False)
             else:  # pragma: no cover - guarded by the format preflight above
                 raise ValueError(f"Unsupported model export format: {export_format}")
 
+            phase("flush", True)
+            try:
+                with open(temporary_path, "rb") as output_handle:
+                    os.fsync(output_handle.fileno())
+            except OSError:
+                # A successful writer still owns the output contract on filesystems
+                # without an fsync-capable read handle.
+                pass
+            finally:
+                phase("flush", False)
+
             if self._output_verifier is not None:
-                output_report = self._output_verifier(temporary_path, export_format, writer_model_data)
+                phase("output_verify", True)
+                try:
+                    output_report = self._output_verifier(
+                        temporary_path, export_format, writer_model_data
+                    )
+                except Exception:
+                    raise
+                else:
+                    phase("output_verify", False)
                 if output_report is not None and output_report.issues:
                     validation_report = ExportValidationReport(
                         export_format,
@@ -497,7 +525,18 @@ class ExportModelAction:
                     raise ExportValidationError(validation_report)
 
             if validation_report.requires_warning_ack and request.options.get("ack_warnings") is not True:
-                raise ExportValidationAcknowledgementRequired(validation_report)
+                warning_callback = request.options.get("_warning_callback")
+                phase("warning_decision", True)
+                try:
+                    approved = (
+                        bool(warning_callback(validation_report))
+                        if callable(warning_callback)
+                        else False
+                    )
+                finally:
+                    phase("warning_decision", False)
+                if not approved:
+                    raise ExportValidationAcknowledgementRequired(validation_report)
 
             if not os.path.isfile(temporary_path) or os.path.getsize(temporary_path) == 0:
                 raise FileNotFoundError(
@@ -509,7 +548,13 @@ class ExportModelAction:
                 validation_report,
                 payload_fingerprint,
             )
-            os.replace(temporary_path, request.file_path)
+            phase("replace", True)
+            try:
+                os.replace(temporary_path, request.file_path)
+            except Exception:
+                raise
+            else:
+                phase("replace", False)
             temporary_path = None
 
             logger.info("Exported %s model: %s", export_format.upper(), request.file_path)
@@ -550,9 +595,12 @@ class ExportModelAction:
             )
         finally:
             if temporary_path is not None:
+                phase("cleanup", True)
                 try:
                     os.unlink(temporary_path)
                 except FileNotFoundError:
                     pass
                 except OSError:
                     logger.warning("Failed to remove temporary export file: %s", temporary_path)
+                finally:
+                    phase("cleanup", False)

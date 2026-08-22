@@ -58,17 +58,14 @@ class _WarningWorkflow:
         self.acknowledgements = []
         self.requests = []
 
-    def prepare_vmd(self, request):
-        """Provide the Bake-only preparation boundary used by ExportPresenter."""
-        self.prepare_requests = getattr(self, "prepare_requests", [])
-        self.prepare_requests.append(request)
-        return type(
-            "_Preparation",
-            (),
-            {"succeeded": True, "token": object(), "report": self.report},
-        )()
-
-    def execute(self, request, *, acknowledge_warnings=False, progress_callback=None):
+    def execute(
+        self,
+        request,
+        *,
+        acknowledge_warnings=False,
+        warning_callback=None,
+        progress_callback=None,
+    ):
         self.requests.append(request)
         self.acknowledgements.append(acknowledge_warnings)
         if progress_callback is not None:
@@ -94,11 +91,19 @@ class _PaneSwitchWorkflow(_WarningWorkflow):
         super().__init__(report)
         self._switch_pane = switch_pane
 
-    def execute(self, request, *, acknowledge_warnings=False, progress_callback=None):
+    def execute(
+        self,
+        request,
+        *,
+        acknowledge_warnings=False,
+        warning_callback=None,
+        progress_callback=None,
+    ):
         self._switch_pane()
         return super().execute(
             request,
             acknowledge_warnings=acknowledge_warnings,
+            warning_callback=warning_callback,
             progress_callback=progress_callback,
         )
 
@@ -167,7 +172,6 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(tab.pane_tabs.count(), 2)
             self.assertEqual(tab.pane_tabs.tabText(0), "モデル")
             self.assertEqual(tab.pane_tabs.tabText(1), "アニメーション")
-            self.assertEqual(tab.validate_button.text(), "モデルを検証")
             self.assertEqual(tab.export_button.text(), "モデルを書き出す")
             self.assertEqual(tab.build_request("model_ROOT").options["export_format"], "pmx")
             pane_spy = QtSignalInvocationSpy(
@@ -176,7 +180,6 @@ class TestExportTabGUI(GuiTestBase):
             tab.pane_tabs.setCurrentIndex(1)
             self.assertTrue(tab.bake_export_check.isChecked())
             self.assertFalse(tab.bake_export_check.isEnabled())
-            self.assertEqual(tab.validate_button.text(), "アニメーションを検証")
             self.assertEqual(tab.export_button.text(), "アニメーションを書き出し")
             tab.bake_export_check.click()
             range_spy = QtSignalInvocationSpy(
@@ -241,12 +244,10 @@ class TestExportTabGUI(GuiTestBase):
         tab = self._create_visible_tab()
         try:
             animation_page = tab._pages[tab.MOTION_PANE]
-            animation_page.validate_button.setEnabled(False)
             animation_page.export_button.setEnabled(False)
 
             tab.pane_tabs.setCurrentIndex(0)
             tab.set_operation_active(True)
-            self.assertFalse(tab._pages[tab.MODEL_PANE].validate_button.isEnabled())
             self.assertFalse(tab._pages[tab.MODEL_PANE].export_button.isEnabled())
 
             tab.pane_tabs.setCurrentIndex(1)
@@ -255,9 +256,7 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(animation_page.state_label.text(), "Editing")
             tab.set_operation_active(False)
 
-            self.assertTrue(tab._pages[tab.MODEL_PANE].validate_button.isEnabled())
             self.assertTrue(tab._pages[tab.MODEL_PANE].export_button.isEnabled())
-            self.assertFalse(animation_page.validate_button.isEnabled())
             self.assertFalse(animation_page.export_button.isEnabled())
         finally:
             self._delete_tab(tab)
@@ -289,7 +288,6 @@ class TestExportTabGUI(GuiTestBase):
             self.assertIsNone(model_page.validation_console.report)
             self.assertEqual(motion_page.state_label.text(), STATE_SUCCEEDED)
             self.assertIs(motion_page.validation_console.report, report)
-            self.assertTrue(motion_page.validate_button.isEnabled())
             self.assertTrue(motion_page.export_button.isEnabled())
         finally:
             presenter.deleteLater()
@@ -297,6 +295,35 @@ class TestExportTabGUI(GuiTestBase):
             if app is not None:
                 app.sendPostedEvents(presenter, QtCore.QEvent.DeferredDelete)
             self._delete_tab(tab)
+
+    def test_button_status_follows_one_shot_progress_and_terminal_result(self):
+        """The button-adjacent status is translated separately from the Console."""
+        translator = UITranslator.instance()
+        previous_language = translator.get_language()
+        translator.set_language("en")
+        tab = self._create_visible_tab()
+        try:
+            expected = {
+                "scene_preflight": "Validating scene",
+                "payload_collection": "Collecting animation",
+                "writer": "Writing temporary file",
+                "report_ready": "Finalizing",
+            }
+            for stage, label in expected.items():
+                tab.set_progress(stage)
+                self.assertEqual(tab.state_label.text(), label)
+
+            tab.set_result(
+                ExportWorkflowResult(
+                    STATE_SUCCEEDED,
+                    ExportValidationReport("pmx", ()),
+                    {},
+                )
+            )
+            self.assertEqual(tab.state_label.text(), "Completed")
+        finally:
+            self._delete_tab(tab)
+            translator.set_language(previous_language)
 
     def test_validation_console_renders_catalog_backed_fatal_issue(self):
         """fatal issue の category と監査文言が Console に表示されることを確認する。"""
@@ -398,7 +425,6 @@ class TestExportTabGUI(GuiTestBase):
         translator.set_language("ja")
         tab = self._create_visible_tab()
         try:
-            self.assertEqual(tab.validate_button.text(), "モデルを検証")
             self.assertEqual(tab.export_button.text(), "モデルを書き出す")
             self.assertEqual(tab.apply_scale_check.text(), "スケールを適用")
             tab.pane_tabs.setCurrentIndex(1)
@@ -453,7 +479,6 @@ class TestExportTabGUI(GuiTestBase):
                 "ExportTab.retranslateUi", tab.retranslateUi, tab.apply_scale_check
             )
             translate_spy()
-            self.assertEqual(tab.validate_button.text(), "Validate Model")
             self.assertEqual(tab.export_button.text(), "Export Model")
             self.assertEqual(tab.apply_scale_check.text(), "Apply Scale")
             tab.pane_tabs.setCurrentIndex(1)
@@ -490,7 +515,6 @@ class TestExportTabGUI(GuiTestBase):
             )
             tab.pane_tabs.setCurrentIndex(1)
             self.assertEqual(tab.pane_tabs.tabText(1), "Animation")
-            self.assertEqual(tab.validate_button.text(), "Validate Animation")
             self.assertEqual(tab.export_button.text(), "Export Animation")
         finally:
             self._delete_tab(tab)
@@ -573,28 +597,26 @@ class TestExportTabGUI(GuiTestBase):
         finally:
             self._delete_tab(tab)
 
-    def test_validate_and_export_buttons_emit_workflow_requests(self):
-        """Validate/Export buttons route into the shared presenter signals."""
+    def test_export_button_emits_one_workflow_request(self):
+        """The only workflow button routes one request to the presenter."""
         tab = self._create_visible_tab()
         events = []
-        tab.validate_requested.connect(lambda: events.append("validate"))
         tab.export_requested.connect(lambda: events.append("export"))
         try:
-            validate_spy = QtSignalInvocationSpy(
-                "ExportTab.validate_requested", tab.validate_button.clicked, tab.validate_button
+            export_spy = QtSignalInvocationSpy(
+                "ExportTab.export_requested", tab.export_button.clicked, tab.export_button
             )
-            tab.validate_button.click()
             tab.export_button.click()
             QApplication.processEvents()
-            self.assertEqual(events, ["validate", "export"])
+            self.assertEqual(events, ["export"])
             _emit_witness(
-                "export.validate",
+                "export.submit",
                 "attribute",
-                "validate_button",
-                "QTest.click(attribute=validate_button)",
-                "validate signal emitted once before export signal",
-                validate_spy,
-                tab.validate_button,
+                "export_button",
+                "QTest.click(attribute=export_button)",
+                "export signal emitted once",
+                export_spy,
+                tab.export_button,
             )
         finally:
             self._delete_tab(tab)

@@ -213,7 +213,6 @@
     "facial_display_frame_morph_only": "表情枠にはモーフのみ追加できます",
     "import_success": "インポートが完了しました",
     "export_success": "エクスポートが完了しました",
-    "prepare_bake_timeline_complete": "VMDベイク書き出しの準備が完了しました",
     "export_mmd_asset": "MMDアセットをエクスポート",
     "error_file_not_found": "ファイルが見つかりません",
     "error_invalid_file": "無効なファイル形式です",
@@ -862,9 +861,17 @@
     "animation_timeline_bake": "アニメーション: 現在のタイムラインを評価・準備中",
     "animation_payload_collection": "アニメーション: エクスポートデータを収集中",
     "animation_payload_validation": "アニメーション: エクスポートデータを検証中",
-    "animation_prepared_payload": "アニメーション: 準備済みデータを生成中",
     "animation_report_ready": "アニメーション: 検証レポート準備完了",
     "animation_writer": "VMDを書き出し中"
+  },
+  "export_status": {
+    "editing": "編集中",
+    "validating_scene": "シーンを検証中",
+    "collecting_animation": "アニメーションを収集中",
+    "writing_temporary_file": "一時ファイルを書き込み中",
+    "finalizing": "最終処理中",
+    "completed": "完了",
+    "blocked": "ブロック済み"
   },
   "validation": {
     "scene_output_path_invalid": {

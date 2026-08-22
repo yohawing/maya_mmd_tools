@@ -659,7 +659,7 @@ def _committed_source_omissions(
     commitment: Mapping[str, Any],
     missing: set[tuple[str, str]],
 ) -> tuple[set[tuple[str, str]], Optional[str]]:
-    """Accept omissions only when their exact count and fingerprint were prepared."""
+    """Accept omissions only when their exact count and fingerprint match."""
 
     count = commitment.get("count")
     fingerprint = commitment.get("fingerprint")
@@ -681,61 +681,53 @@ def _committed_source_omissions(
 
 def _bake_timeline_track_boundary_diff(
     source_payload: Mapping[str, Any],
-    prepared_payload: Mapping[str, Any],
+    collected_payload: Mapping[str, Any],
     exported_payload: Mapping[str, Any],
     required_track_names: Mapping[str, Iterable[str]],
     source_omission_commitment: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, list[str]]:
-    """Classify Bake Timeline required-track loss at prepare and writer boundaries.
-
-    The current character scene remains authoritative for model-resolved input
-    tracks, while tracks that cannot resolve to the paired model are explicitly excluded.
-    The immutable prepared snapshot is then authoritative at the writer
-    boundary.  Keeping both comparisons prevents preparation-time loss (for
-    example, a dynamic physics bone) from being mistaken for an allowed raw
-    provenance difference.
-    """
+    """Classify collection and writer boundaries in one export operation."""
 
     required_source = _required_source_vmd_payload(source_payload, required_track_names)
-    source_to_prepared_payload = required_source
+    source_to_collected_payload = required_source
     commitment_error = None
     if source_omission_commitment is not None:
         missing = (
             _bake_timeline_payload_identities(required_source)
-            - _bake_timeline_payload_identities(prepared_payload)
+            - _bake_timeline_payload_identities(collected_payload)
         )
         allowed, commitment_error = _committed_source_omissions(
             source_omission_commitment,
             missing,
         )
-        source_to_prepared_payload = dict(required_source)
+        source_to_collected_payload = dict(required_source)
         for section in ("bone", "morph"):
-            source_to_prepared_payload[section] = [
+            source_to_collected_payload[section] = [
                 item
                 for item in required_source.get(section, ())
                 if _bake_timeline_identity(section, item.get("name")) not in allowed
             ]
-    source_to_prepared = _vmd_bake_timeline_semantic_diff(
-        source_to_prepared_payload,
-        prepared_payload,
+    source_to_collected = _vmd_bake_timeline_semantic_diff(
+        source_to_collected_payload,
+        collected_payload,
     )
     if commitment_error is not None:
-        source_to_prepared.insert(0, commitment_error)
+        source_to_collected.insert(0, commitment_error)
     return {
-        "source_to_prepared": source_to_prepared,
-        "prepared_to_export": _vmd_payload_diff(
-            prepared_payload,
+        "source_to_collected": source_to_collected,
+        "collected_to_export": _vmd_payload_diff(
+            collected_payload,
             exported_payload,
         ),
     }
 
 
 def _source_omission_commitment(
-    preparation_evidence: Mapping[str, Any],
+    export_evidence: Mapping[str, Any],
 ) -> Mapping[str, Any]:
-    """Read the exact collector omission commitment from Prepare diagnostics."""
+    """Read the exact collector omission commitment from export diagnostics."""
 
-    diagnostics = preparation_evidence.get("diagnostics")
+    diagnostics = export_evidence.get("diagnostics")
     backend = diagnostics.get("backend") if isinstance(diagnostics, Mapping) else None
     collector = backend.get("collector") if isinstance(backend, Mapping) else None
     selection = collector.get("track_selection") if isinstance(collector, Mapping) else None
@@ -745,33 +737,8 @@ def _source_omission_commitment(
         else None
     )
     if not isinstance(commitment, Mapping):
-        raise RuntimeError("VMD source omission commitment missing from Prepare diagnostics")
+        raise RuntimeError("VMD source omission commitment missing from export diagnostics")
     return dict(commitment)
-
-
-def _copy_prepared_vmd_payload(prepared_token: Any) -> dict[str, Any]:
-    """Parse the verified staged receipt while the token remains active.
-
-    Production tokens are receipt-only and intentionally retain no in-memory
-    ``VmdData`` graph.  This development runner needs a normalized snapshot for
-    its source/prepared/exported comparisons, so it reads the private stage
-    after checking the receipt identity.
-    """
-
-    from mmd_tools.core.vmd_data import VmdData
-
-    receipt = getattr(prepared_token, "staged_artifact", None)
-    if receipt is None:
-        receipt = getattr(prepared_token, "stage_receipt", None)
-    if receipt is None:
-        raise TypeError("prepared VMD token does not expose a staged artifact receipt")
-    validate_identity = getattr(receipt, "validate_identity", None)
-    if callable(validate_identity):
-        validate_identity()
-    file_path = getattr(receipt, "file_path", None)
-    if not file_path:
-        raise TypeError("prepared VMD receipt does not expose file_path")
-    return _vmd_payload(VmdData().parse_file(str(file_path)))
 
 
 def _vmd_edit_track_witness(
@@ -1746,7 +1713,6 @@ def _export_request(
     start_frame: int | None = None,
     end_frame: int | None = None,
     model_name: str | None = None,
-    prepared_vmd_token: Any = None,
     case: Mapping[str, Any],
 ) -> Any:
     """Build a release-style ExportWorkflow request for one local case."""
@@ -1780,11 +1746,7 @@ def _export_request(
         options["model_name"] = model_name
     if export_format == "vmd":
         options["export_strategy"] = "bake_timeline"
-    return ExportWorkflowRequest(
-        str(output),
-        options,
-        prepared_vmd_token=prepared_vmd_token,
-    )
+    return ExportWorkflowRequest(str(output), options)
 
 
 def _run_pmx_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContext) -> dict[str, Any]:
@@ -1844,16 +1806,6 @@ def _run_pmx_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
         case=case,
     )
     workflow = ExportWorkflowService()
-    validation = _phase(context, "export_validation", lambda: workflow.validate(request))
-    validation_evidence = _report_summary(validation)
-    acknowledged_warnings, unexpected_warnings = _allowed_warning_codes(validation, "pmx")
-    if unexpected_warnings:
-        raise RuntimeError(f"unexpected validation warnings: {unexpected_warnings}")
-    if validation.error is not None or validation_evidence["blocking"]:
-        raise RuntimeError(
-            f"PMX validation blocked: state={validation_evidence['state']} "
-            f"issues={validation_evidence['issues']}"
-        )
     result = _phase(
         context,
         "export_write",
@@ -1861,6 +1813,7 @@ def _run_pmx_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
     )
     if not result.succeeded:
         raise RuntimeError(f"PMX export failed: {result.error or result.report}")
+    validation_evidence = _report_summary(result)
     acknowledged_warnings = _assert_execute_warnings(result, "pmx")
     exported_data = _phase(context, "exported_parse", lambda: PmxData().parse_file(str(output)))
     parser_diffs, parser_warnings = _compare_pmx_supported_content(
@@ -1962,20 +1915,12 @@ def _run_warm_vmd_export_samples(
     context: _WorkerContext,
     workflow: Any,
     source_root: str,
-    prepared_vmd_token: Any,
     start_frame: int,
     end_frame: int,
     model_name: str,
     warm_runs: int,
 ) -> list[dict[str, Any]]:
-    """Write dense warm samples from the edited source scene.
-
-    Dense correctness is intentionally exercised once.  Warm samples measure
-    only the public validation/execute export path from that same edited scene
-    and prepared Bake Timeline token; they do not repeat import, edit, parse, or
-    semantic oracle work.  The caller must invoke this before the fresh-import
-    boundary invalidates the token's scene ownership.
-    """
+    """Write independent one-shot samples from the edited source scene."""
 
     samples: list[dict[str, Any]] = []
     for sample_index in range(warm_runs):
@@ -1990,7 +1935,6 @@ def _run_warm_vmd_export_samples(
             start_frame=start_frame,
             end_frame=end_frame,
             model_name=model_name,
-            prepared_vmd_token=prepared_vmd_token,
             case=case,
         )
         phase_start = len(context.phases)
@@ -2002,16 +1946,6 @@ def _run_warm_vmd_export_samples(
             "status": "fail",
         }
         try:
-            validation = _phase(context, "export_validation", lambda: workflow.validate(request))
-            validation_evidence = _report_summary(validation)
-            acknowledged_warnings, unexpected_warnings = _allowed_warning_codes(validation, "vmd")
-            if unexpected_warnings:
-                raise RuntimeError(f"unexpected validation warnings: {unexpected_warnings}")
-            if validation.error is not None or validation_evidence["blocking"]:
-                raise RuntimeError(
-                    f"VMD validation blocked: state={validation_evidence['state']} "
-                    f"issues={validation_evidence['issues']}"
-                )
             result = _phase(
                 context,
                 "export_write",
@@ -2024,7 +1958,7 @@ def _run_warm_vmd_export_samples(
             sample.update(
                 {
                     "status": "pass" if not budget_evidence else "fail",
-                    "validation": validation_evidence,
+                    "validation": _report_summary(result),
                     "acknowledged_warnings": acknowledged_warnings,
                     "performance_evidence": {
                         "export_write_budget_sec": context.export_write_budget_sec,
@@ -2100,8 +2034,8 @@ def _skip_warm_vmd_export_samples(
     return samples
 
 
-def _prepare_diagnostics_sink(path: Path, case_name: str) -> Callable[[Any], None]:
-    """Create a bounded atomic live snapshot sink for one prepare attempt."""
+def _export_diagnostics_sink(path: Path, case_name: str) -> Callable[[Any], None]:
+    """Create a bounded atomic live snapshot sink for one export call."""
 
     def publish(snapshot: Any) -> None:
         _write_atomic_json(
@@ -2109,7 +2043,7 @@ def _prepare_diagnostics_sink(path: Path, case_name: str) -> Callable[[Any], Non
             {
                 "schema_version": 1,
                 "case": str(case_name),
-                "phase": "prepare_bake_timeline",
+                "phase": "export_bake_timeline",
                 "updated_at": time.time(),
                 "snapshot": snapshot,
             },
@@ -2119,70 +2053,12 @@ def _prepare_diagnostics_sink(path: Path, case_name: str) -> Callable[[Any], Non
     return publish
 
 
-def _prepare_vmd_bake_timeline(
-    workflow: Any,
-    request: Any,
-    context: _WorkerContext,
-) -> tuple[Any, dict[str, Any]]:
-    """Prepare a reusable Bake Timeline payload through the public workflow.
-
-    The runner deliberately has no collector fallback here.  A missing,
-    partial, or token-less preparation is a failed user-path gate even when a
-    legacy direct collector could produce an output.
-    """
-
-    preparation = _phase(context, "prepare_bake_timeline", lambda: workflow.prepare_vmd(request))
-    token = getattr(preparation, "token", None)
-    succeeded = bool(getattr(preparation, "succeeded", False))
-    evidence = {
-        "status": getattr(preparation, "status", None),
-        "published": bool(getattr(preparation, "published", False)),
-        "succeeded": succeeded,
-        "token_published": token is not None,
-        "error": None,
-    }
-    prepare_action = getattr(workflow, "prepare_vmd_action", None)
-    diagnostics = getattr(prepare_action, "diagnostics_copy", None)
-    if callable(diagnostics):
-        diagnostics = diagnostics()
-    elif diagnostics is None:
-        diagnostics = getattr(prepare_action, "diagnostics", None)
-    if diagnostics is not None:
-        if hasattr(diagnostics, "as_dict") and callable(diagnostics.as_dict):
-            diagnostics = diagnostics.as_dict()
-        evidence["diagnostics"] = diagnostics
-    phase_entries = [
-        item for item in getattr(context, "phases", ())
-        if str(item.get("name")) == "prepare_bake_timeline"
-    ]
-    if phase_entries:
-        evidence["phase_timing"] = dict(phase_entries[-1])
-    error = getattr(preparation, "error", None)
-    if error is not None:
-        evidence["error"] = f"{type(error).__name__}: {error}"
-    if not succeeded or token is None:
-        raise RuntimeError(
-            "VMD Bake Timeline preparation failed: "
-            f"status={evidence['status']!r} error={evidence['error']!r} "
-            f"token_published={evidence['token_published']}"
-        )
-    evidence["token"] = {
-        "cache_id": str(getattr(token, "cache_id", "")),
-        "scene_session_id": str(getattr(token, "scene_session_id", "")),
-        "target_uuid": str(getattr(token, "target_uuid", "")),
-        "target_identity": str(getattr(token, "target_identity", "")),
-        "revision": str(getattr(token, "revision", "")),
-    }
-    return token, evidence
-
-
-def _run_prepared_vmd_exports(
+def _run_vmd_exports(
     case: Mapping[str, Any],
     out_dir: Path,
     context: _WorkerContext,
     workflow: Any,
     request: Any,
-    prepared_token: Any,
     source_root: str,
     source_payload: Mapping[str, Any],
     required_track_names: Mapping[str, Iterable[str]],
@@ -2191,38 +2067,16 @@ def _run_prepared_vmd_exports(
     end_frame: int,
     model_name: str,
     warm_runs: int,
-    preparation_evidence: Optional[Mapping[str, Any]] = None,
+    export_evidence: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Validate/write cold and warm exports under one prepared-token boundary.
-
-    The token remains active for every public Validate/Execute call and is
-    invalidated exactly once before this helper returns, including failures.
-    Keeping this boundary separate from fresh import makes the scene
-    ownership transition explicit.
-    """
+    """Write cold and warm exports; each sample owns its own lifecycle."""
 
     from mmd_tools.core.vmd_data import VmdData
 
     try:
-        # Token invalidation happens in ``finally``.  Detach the immutable
-        # prepared-scene authority before validation/execute can fail.
-        source_omissions = (
-            _source_omission_commitment(preparation_evidence)
-            if preparation_evidence is not None
-            else None
-        )
-        prepared_payload = _copy_prepared_vmd_payload(prepared_token)
+        source_omissions = None
+        collected_payload = source_payload
         cold_export_phase_start = len(context.phases)
-        validation = _phase(context, "export_validation", lambda: workflow.validate(request))
-        validation_evidence = _report_summary(validation)
-        acknowledged_warnings, unexpected_warnings = _allowed_warning_codes(validation, "vmd")
-        if unexpected_warnings:
-            raise RuntimeError(f"unexpected validation warnings: {unexpected_warnings}")
-        if validation.error is not None or validation_evidence["blocking"]:
-            raise RuntimeError(
-                f"VMD validation blocked: state={validation_evidence['state']} "
-                f"issues={validation_evidence['issues']}"
-            )
         result = _phase(
             context,
             "export_write",
@@ -2230,6 +2084,7 @@ def _run_prepared_vmd_exports(
         )
         if not result.succeeded:
             raise RuntimeError(f"VMD export failed: {result.error or result.report}")
+        validation_evidence = _report_summary(result)
         acknowledged_warnings = _assert_execute_warnings(result, "vmd")
         exported_data = _phase(
             context,
@@ -2240,7 +2095,7 @@ def _run_prepared_vmd_exports(
         adjustment["exported_tracks"] = _vmd_edit_track_witness(exported_payload, adjustment)
         track_boundary_failures = _bake_timeline_track_boundary_diff(
             source_payload,
-            prepared_payload,
+            collected_payload,
             exported_payload,
             required_track_names,
             source_omission_commitment=source_omissions,
@@ -2277,7 +2132,6 @@ def _run_prepared_vmd_exports(
                 context,
                 workflow,
                 source_root,
-                prepared_token,
                 start_frame,
                 end_frame,
                 model_name,
@@ -2289,7 +2143,7 @@ def _run_prepared_vmd_exports(
             "acknowledged_warnings": acknowledged_warnings,
             "exported_data": exported_data,
             "exported_payload": exported_payload,
-            "prepared_payload": prepared_payload,
+            "collected_payload": collected_payload,
             "track_boundary_failures": track_boundary_failures,
             "parser_failures": parser_failures,
             "source_total_keys": source_total_keys,
@@ -2300,15 +2154,15 @@ def _run_prepared_vmd_exports(
             "warm_samples": warm_samples,
         }
     finally:
-        workflow.invalidate_prepared_vmd(prepared_token)
+        pass
 
 
 def _motion_phase_evidence(
     context: _WorkerContext,
-    preparation_evidence: Mapping[str, Any],
+    export_evidence: Mapping[str, Any],
     cold_phase_timing: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Summarize user-visible preparation/export timing boundaries."""
+    """Summarize the one-shot export timing boundaries."""
 
     def first_phase_entry(name: str, entries: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         return next(
@@ -2339,8 +2193,7 @@ def _motion_phase_evidence(
         6,
     )
     return {
-        "prepare_bake_timeline": dict(preparation_evidence.get("phase_timing", {})),
-        "cold_validate": first_phase_entry("export_validation", cold_phase_timing),
+        "export_bake_timeline": dict(export_evidence.get("phase_timing", {})),
         "cold_export": first_phase_entry("export_write", cold_phase_timing),
         "edit_to_first_file": {
             "wall_sec": edit_to_first_file_sec,
@@ -2363,7 +2216,9 @@ def _run_vmd_case(
 
     from mmd_tools.core.vmd_data import VmdData
     from mmd_tools.services.export_workflow_service import ExportWorkflowService
-    from mmd_tools.adapters.maya_vmd_prepare_backend import create_maya_vmd_prepare_action
+    from mmd_tools.adapters.maya_vmd_prepare_backend import (
+        create_maya_bake_timeline_vmd_action,
+    )
     from tools.export_release_maya_probe import (
         _capture_camera_light_scene_oracle,
         _capture_scene_oracle,
@@ -2441,25 +2296,20 @@ def _run_vmd_case(
         model_name=str(getattr(source_data.header, "model_name", "") or ""),
         case=case,
     )
-    diagnostics_path = out_dir / "prepare-diagnostics.live.json"
-    diagnostics_sink = _prepare_diagnostics_sink(diagnostics_path, str(case["name"]))
+    diagnostics_path = out_dir / "export-diagnostics.live.json"
+    diagnostics_sink = _export_diagnostics_sink(diagnostics_path, str(case["name"]))
     workflow = ExportWorkflowService(
-        prepare_vmd_action=create_maya_vmd_prepare_action(
+        vmd_action=create_maya_bake_timeline_vmd_action(
             diagnostics_sink=diagnostics_sink,
         ),
     )
-    prepared_token, preparation_evidence = _prepare_vmd_bake_timeline(workflow, request, context)
-    preparation_evidence["diagnostics_path"] = str(diagnostics_path)
-    # Every public Validate/Execute request, including the cold export below,
-    # must carry the same edited-scene preparation token.
-    request.prepared_vmd_token = prepared_token
-    export_result = _run_prepared_vmd_exports(
+    export_evidence = {"diagnostics_path": str(diagnostics_path)}
+    export_result = _run_vmd_exports(
         case,
         out_dir,
         context,
         workflow,
         request,
-        prepared_token,
         source_root,
         source_payload,
         required_track_names,
@@ -2468,13 +2318,19 @@ def _run_vmd_case(
         end_frame,
         str(getattr(source_data.header, "model_name", "") or ""),
         warm_runs,
-        preparation_evidence,
+        export_evidence,
     )
     validation_evidence = export_result["validation"]
+    export_evidence.update(
+        status="succeeded",
+        phase_timing=dict(export_result["cold_export_phases"][0])
+        if export_result["cold_export_phases"]
+        else {},
+    )
     acknowledged_warnings = export_result["acknowledged_warnings"]
     exported_data = export_result["exported_data"]
     exported_payload = export_result["exported_payload"]
-    prepared_payload = export_result["prepared_payload"]
+    collected_payload = export_result["collected_payload"]
     track_boundary_failures = export_result["track_boundary_failures"]
     parser_failures = export_result["parser_failures"]
     source_total_keys = export_result["source_total_keys"]
@@ -2486,7 +2342,7 @@ def _run_vmd_case(
     cold_phase_timing = export_result["cold_phase_timing"]
     phase_evidence = _motion_phase_evidence(
         context,
-        preparation_evidence,
+        export_evidence,
         cold_phase_timing,
     )
     def import_fresh() -> tuple[
@@ -2595,7 +2451,7 @@ def _run_vmd_case(
         "source": str(source_vmd),
         "output": str(output),
         "validation": validation_evidence,
-        "preparation": preparation_evidence,
+        "export_operation": export_evidence,
         "phase_evidence": phase_evidence,
         "acknowledged_warnings": acknowledged_warnings,
         "adjustment": adjustment,
@@ -2618,7 +2474,7 @@ def _run_vmd_case(
         "track_counts": {
             section: {
                 "source": len(source_payload[section]),
-                "prepared": len(prepared_payload[section]),
+                "collected": len(collected_payload[section]),
                 "exported": len(exported_payload[section]),
             }
             for section in ("bone", "morph", "camera", "light", "shadow", "ik")
@@ -2661,8 +2517,7 @@ def _run_worker(
     case = config["case"]
     is_dense = str(case.get("classification")) == "dense"
     # Dense correctness is one full roundtrip.  Its additional repetitions
-    # are export-only samples performed by _run_vmd_case on the same prepared
-    # edited source scene, before the fresh-import boundary.
+    # are independent export-only samples from the same edited source scene.
     repetitions = 1 if is_dense else int(config.get("repetitions", 1))
     warm_runs = int(config.get("warm_runs", 0)) if is_dense else 0
     out_dir = Path(config["out_dir"])
@@ -2680,7 +2535,7 @@ def _run_worker(
         "repetitions": repetitions,
         "warm_runs": warm_runs,
         "export_sample_policy": (
-            "dense: one full roundtrip/cold export plus same-prepared-scene warm samples"
+            "dense: one full roundtrip/cold export plus independent warm samples"
             if is_dense
             else "non-dense: one full roundtrip/cold export"
         ),
@@ -2920,7 +2775,7 @@ def _summary_markdown(document: Mapping[str, Any]) -> str:
         f"- manifest: `{document.get('manifest')}`",
         f"- export_write budget: `{document.get('export_write_budget_sec', 'n/a')}s`",
         "- export samples: Dense uses one full roundtrip/cold sample plus warm samples from the same "
-        "prepared edited source scene; non-dense uses one full roundtrip/cold sample.",
+        "edited source scene; non-dense uses one full roundtrip/cold sample.",
         "",
         "| Case | Classification | Status | Failure | Runs | Export samples | Last phase |",
         "| --- | --- | --- | --- | ---: | --- | --- |",

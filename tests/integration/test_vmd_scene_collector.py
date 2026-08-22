@@ -7,11 +7,8 @@ from maya import cmds
 
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_converter import VmdConverter
-from mmd_tools.actions.export_vmd_action import ExportVmdRequest
-from mmd_tools.actions.publish_prepared_vmd_action import (
-    publish_prepared_vmd_artifact,
-)
-from mmd_tools.adapters.maya_vmd_prepare_backend import create_maya_vmd_prepare_action
+from mmd_tools.adapters.maya_vmd_prepare_backend import create_maya_bake_timeline_vmd_action
+from mmd_tools.services.export_workflow_service import ExportWorkflowRequest
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_NAME,
@@ -117,11 +114,11 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertAlmostEqual(ry, 0.0, places=5)
         self.assertAlmostEqual(rz, 0.0, places=5)
 
-    def test_export_vmd_action_uses_prepared_bake_timeline_payload(self):
+    def test_one_shot_bake_timeline_export_uses_streamed_payload(self):
         root, _joint = self._make_keyed_joint_scene()
         output_path = self.get_temp_filename("action_keyed_joint_export.vmd")
 
-        result = self._export_prepared_bake_timeline(
+        result = self._export_bake_timeline(
             output_path,
             {
                 "target_model": root,
@@ -156,7 +153,7 @@ class TestVmdSceneCollector(MayaTestBase):
         output_path = self.get_temp_filename("bake_timeline_numeric_oracle.vmd")
         cmds.currentTime(7, edit=True)
 
-        result = self._export_prepared_bake_timeline(
+        result = self._export_bake_timeline(
             output_path,
             {
                 "target_model": root,
@@ -310,7 +307,7 @@ class TestVmdSceneCollector(MayaTestBase):
         )
 
         output_path = self.get_temp_filename(output_file_name)
-        result = self._export_prepared_bake_timeline(
+        result = self._export_bake_timeline(
             output_path,
             {
                 "target_model": source_root,
@@ -356,7 +353,7 @@ class TestVmdSceneCollector(MayaTestBase):
             "Fresh exported VMD import failed",
         )
 
-        collected = self._prepare_bake_timeline_payload(
+        collected = self._export_bake_timeline_payload(
             output_path,
             {
                 "target_model": fresh_root,
@@ -385,36 +382,21 @@ class TestVmdSceneCollector(MayaTestBase):
                 msg=f"Quaternion mismatch for {key}",
             )
 
-    def _export_prepared_bake_timeline(self, output_path, options):
-        """Prepare through the production Maya boundary, then publish its stage."""
-        request = ExportVmdRequest(file_path=output_path, options=dict(options))
-        prepare_action = create_maya_vmd_prepare_action()
-        preparation = prepare_action.execute(request)
-        self.assertTrue(preparation.succeeded, preparation.error)
-        token = preparation.token
-        try:
-            prepare_action.validate_token(request, token)
-            return publish_prepared_vmd_artifact(
-                token.staged_artifact,
-                output_path,
-                validation_report=token.combined_validation_report,
-                payload_fingerprint=token.payload_fingerprint,
-            )
-        finally:
-            prepare_action.invalidate(token)
+    def _export_bake_timeline(self, output_path, options):
+        """Run the production Bake Timeline export in one operation."""
+        request = ExportWorkflowRequest(file_path=output_path, options=dict(options))
+        return create_maya_bake_timeline_vmd_action().execute_one_shot(
+            request, acknowledge_warnings=True
+        )
 
-    def _prepare_bake_timeline_payload(self, output_path, options):
-        """Parse one validated private stage before invalidating its receipt."""
-        request = ExportVmdRequest(file_path=output_path, options=dict(options))
-        prepare_action = create_maya_vmd_prepare_action()
-        preparation = prepare_action.execute(request)
-        self.assertTrue(preparation.succeeded, preparation.error)
-        token = preparation.token
-        try:
-            prepare_action.validate_token(request, token)
-            return VmdData().parse_file(token.staged_artifact.file_path)
-        finally:
-            prepare_action.invalidate(token)
+    def _export_bake_timeline_payload(self, output_path, options):
+        """Parse the final one-shot output after direct atomic publication."""
+        request = ExportWorkflowRequest(file_path=output_path, options=dict(options))
+        result = create_maya_bake_timeline_vmd_action().execute_one_shot(
+            request, acknowledge_warnings=True
+        )
+        self.assertTrue(result.succeeded, result.error)
+        return VmdData().parse_file(output_path)
 
     def _make_keyed_blendshape(self, root):
         base, _base_shape = cmds.polyCube(name="bake_timeline_base")

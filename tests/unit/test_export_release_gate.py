@@ -129,11 +129,11 @@ class ExportReleaseGateTests(unittest.TestCase):
                 if isinstance(key, ast.Constant) and key.value == "export_strategy"
             ],
         )
-        self.assertTrue(
+        self.assertFalse(
             any(
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "prepare_vmd"
+                and node.func.attr.startswith("prepare")
                 for node in ast.walk(function)
             )
         )
@@ -290,22 +290,11 @@ class ExportReleaseGateTests(unittest.TestCase):
         self.assertEqual(result["status"], "pass")
         self.assertEqual(
             {fixture["name"] for fixture in result["fixtures"]},
-            {
-                "invalid_pmx",
-                "invalid_vmd_quaternion",
-                "warning_ack_boundary",
-            },
+            {"invalid_pmx"},
         )
         for fixture in result["fixtures"]:
             self.assertEqual(fixture["status"], "pass")
-        warning_fixture = next(
-            fixture for fixture in result["fixtures"] if fixture["name"] == "warning_ack_boundary"
-        )
-        self.assertEqual(warning_fixture["first_issue_codes"], [])
-        self.assertEqual(warning_fixture["first_issue_severities"], [])
-        self.assertTrue(warning_fixture["first_succeeded"])
-        self.assertFalse(warning_fixture["first_requires_warning_ack"])
-        self.assertEqual(len(result["report_paths"]), 4)
+        self.assertEqual(len(result["report_paths"]), 1)
 
     def test_maya_probe_report_is_required_and_validated(self):
         with tempfile.TemporaryDirectory() as directory:

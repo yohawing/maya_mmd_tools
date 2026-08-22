@@ -70,11 +70,11 @@ def _install_headless_vmd_parts_oracle(monkeypatch):
     if _real_maya:
         yield
         return
-    from mmd_tools.actions import prepared_vmd_artifact
+    from mmd_tools.actions import vmd_sibling_stage
     from tests.common.vmd_parts_export_oracle import export_vmd_from_parts_oracle
 
     monkeypatch.setattr(
-        prepared_vmd_artifact,
+        vmd_sibling_stage,
         "export_vmd_from_parts",
         export_vmd_from_parts_oracle,
     )
