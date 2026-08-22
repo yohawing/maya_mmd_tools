@@ -1,6 +1,5 @@
 """Integration tests for VMD export via VmdSceneCollector + VmdExporter."""
 
-import json
 import math
 import os
 
@@ -8,7 +7,7 @@ from maya import cmds
 
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_converter import VmdConverter
-from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
+from mmd_tools.actions.export_vmd_action import ExportVmdRequest
 from mmd_tools.actions.publish_prepared_vmd_action import (
     publish_prepared_vmd_artifact,
 )
@@ -19,7 +18,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_CAMERA,
     ATTR_MMD_LIGHT,
     ATTR_MMD_MODEL_NAME,
-    ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
 )
 from mmd_tools.core.namespace_utils import NamespaceUtils
 from mmd_tools.core.vmd_data import VmdData
@@ -210,132 +208,6 @@ class TestVmdSceneCollector(MayaTestBase):
             [frame.frame_number for frame in parsed.light_frames],
             [],
         )
-
-    def test_roundtrip_imported_fixture_motion_exports_parseable_vmd(self):
-        pmx_path = self.fixture_provider.get_pmx_file("mmt_test_model")
-        vmd_path = self.fixture_provider.get_vmd_file("mmt_test_model_test_motion")
-        source_data = VmdData().parse_file(vmd_path)
-
-        root = import_mmd_file(
-            pmx_path,
-            options={"setup_rig": True, "setup_bone_orientation": True},
-        )
-        self.assertIsNotNone(root, "PMX import failed")
-        self.assertTrue(
-            import_mmd_file(vmd_path, options={"target_model": root, "pmx_path": pmx_path}),
-            "VMD import failed",
-        )
-
-        provenance = json.loads(
-            cmds.getAttr(f"{root}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}")
-        )
-        self.assertTrue(provenance["raw_bone_interpolation_complete"])
-        self.assertTrue(provenance["raw_bone_transform_complete"])
-        self.assertEqual(provenance["raw_bone_key_count"], len(source_data.bone_frames))
-
-        output_path = self.get_temp_filename("imported_fixture_export.vmd")
-        result = ExportVmdAction().execute(
-            ExportVmdRequest(
-                file_path=output_path,
-                options={
-                    "target_model": root,
-                    "export_format": "vmd",
-                    "export_strategy": "preserve_keys",
-                },
-            )
-        )
-
-        self.assertTrue(result.succeeded, result.error)
-        parsed = VmdData().parse_file(output_path)
-        self.assertTrue(parsed.header.model_name)
-        self.assertGreater(len(parsed.bone_frames), 0)
-        self.assertTrue(any(frame.bone_name == "センター" for frame in parsed.bone_frames))
-
-        source_interpolation = {
-            (frame.bone_name, frame.frame_number): frame.interpolation
-            for frame in source_data.bone_frames
-        }
-        source_transforms = {
-            (frame.bone_name, frame.frame_number): (frame.position, frame.rotation)
-            for frame in source_data.bone_frames
-        }
-        for frame in parsed.bone_frames:
-            key = (frame.bone_name, frame.frame_number)
-            self.assertIn(key, source_interpolation)
-            self.assertEqual(frame.interpolation, source_interpolation[key])
-            self.assertEqual(frame.position, source_transforms[key][0])
-            self.assertEqual(frame.rotation, source_transforms[key][1])
-
-    def test_preserve_keys_blocks_imported_fixture_after_bone_transform_edit(self):
-        pmx_path = self.fixture_provider.get_pmx_file("mmt_test_model")
-        vmd_path = self.fixture_provider.get_vmd_file("mmt_test_model_test_motion")
-
-        root = import_mmd_file(
-            pmx_path,
-            options={"setup_rig": True, "setup_bone_orientation": True},
-        )
-        self.assertIsNotNone(root, "PMX import failed")
-        self.assertTrue(
-            import_mmd_file(vmd_path, options={"target_model": root, "pmx_path": pmx_path}),
-            "VMD import failed",
-        )
-
-        center_joint = next(
-            (
-                joint
-                for joint in (
-                    cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True)
-                    or []
-                )
-                if cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}") == "センター"
-            ),
-            None,
-        )
-        self.assertIsNotNone(center_joint, "Imported センター joint was not found")
-
-        cmds.currentTime(0, edit=True)
-        original_translate_x = float(cmds.getAttr(f"{center_joint}.translateX"))
-        cmds.keyframe(
-            center_joint,
-            attribute="translateX",
-            edit=True,
-            time=(0, 0),
-            valueChange=original_translate_x + 1.0,
-        )
-        self.assertNotAlmostEqual(
-            float(cmds.getAttr(f"{center_joint}.translateX")),
-            original_translate_x,
-        )
-
-        output_path = self.get_temp_filename("edited_fixture_preserve_keys.vmd")
-        original_output = b"pre-existing VMD output"
-        with open(output_path, "wb") as handle:
-            handle.write(original_output)
-
-        exporter = _RecordingVmdExporter()
-        result = ExportVmdAction(exporter=exporter).execute(
-            ExportVmdRequest(
-                file_path=output_path,
-                options={
-                    "target_model": root,
-                    "export_format": "vmd",
-                    "export_strategy": "preserve_keys",
-                },
-            )
-        )
-
-        self.assertFalse(
-            result.succeeded,
-            result.validation_report.to_dict() if result.validation_report else result.status_message,
-        )
-        self.assertIsNotNone(result.validation_report)
-        self.assertIn(
-            "VMD_RAW_PROVENANCE_MISMATCH",
-            [issue.code for issue in result.validation_report.issues],
-        )
-        self.assertEqual(exporter.calls, [])
-        with open(output_path, "rb") as handle:
-            self.assertEqual(handle.read(), original_output)
 
     def test_bake_timeline_imported_fixture_fresh_import_matches_exported_bone_payload(self):
         self._assert_bake_timeline_fresh_import_bone_payload(

@@ -1,4 +1,4 @@
-"""VMD Preserve Keys/Bake Timeline validation and atomic export fail-path contracts."""
+"""VMD current-scene Bake Timeline validation and atomic export contracts."""
 
 import hashlib
 import math
@@ -11,14 +11,12 @@ from unittest import mock
 from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
-from mmd_tools.io.vmd_exporter import VmdExporter
 from mmd_tools.io.vmd_stream_writer import VmdStreamWriter
 from mmd_tools.validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
 )
 from mmd_tools.validation.vmd_validator import (
-    VMD_EXPORT_PRESERVE_KEYS,
     VMD_EXPORT_BAKE_TIMELINE,
     validate_vmd_data,
     verify_vmd_output,
@@ -64,285 +62,6 @@ class TestVmdValidator(unittest.TestCase):
         self.assertEqual(report.mode, VMD_EXPORT_BAKE_TIMELINE)
         self.assertEqual(report.to_dict()["status"], "ready")
 
-    def test_bake_timeline_reports_raw_loss_as_information_without_acknowledgement(self):
-        report = validate_vmd_data(
-            VmdData(),
-            VMD_EXPORT_BAKE_TIMELINE,
-            raw_provenance={
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_interpolation": [
-                    {
-                        "bone_name": "センター",
-                        "frame_number": 0,
-                        "interpolation": [20] * 64,
-                    }
-                ],
-            },
-        )
-
-        self.assertTrue(report.valid)
-        self.assertFalse(report.requires_warning_ack)
-        self.assertEqual(report.to_dict()["status"], "ready")
-        self.assertEqual(report.issues[0].code, "VMD_BAKE_TIMELINE_RAW_LOSS")
-        self.assertEqual(report.issues[0].severity, "info")
-        self.assertFalse(report.issues[0].blocking)
-
-    def test_bake_timeline_does_not_warn_when_raw_transforms_are_complete(self):
-        report = validate_vmd_data(
-            VmdData(),
-            VMD_EXPORT_BAKE_TIMELINE,
-            raw_provenance={
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_transform_complete": True,
-                "raw_bone_interpolation": [
-                    {
-                        "bone_name": "センター",
-                        "frame_number": 0,
-                        "position": [0.0, 0.0, 0.0],
-                        "rotation": [0.0, 0.0, 0.0, 1.0],
-                        "interpolation": [20] * 64,
-                    }
-                ],
-            },
-        )
-
-        self.assertTrue(report.valid)
-        self.assertFalse(report.requires_warning_ack)
-        self.assertEqual(report.issues, ())
-
-    def test_preserve_keys_requires_raw_provenance(self):
-        report = validate_vmd_data(VmdData(), VMD_EXPORT_PRESERVE_KEYS)
-
-        self.assertTrue(report.is_blocking)
-        self.assertEqual([issue.code for issue in report.issues], ["VMD_RAW_PROVENANCE_MISSING"])
-
-    def test_preserve_keys_rejects_raw_key_set_mismatch(self):
-        data = VmdData()
-        data.bone_frames.append(_valid_bone_frame())
-        report = validate_vmd_data(
-            data,
-            VMD_EXPORT_PRESERVE_KEYS,
-            raw_provenance={
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_key_count": 1,
-                "raw_bone_interpolation": [
-                    {
-                        "bone_name": "センター",
-                        "frame_number": 10,
-                        "interpolation": [20] * 64,
-                    }
-                ],
-            },
-        )
-
-        self.assertIn("VMD_RAW_PROVENANCE_MISMATCH", [issue.code for issue in report.issues])
-
-    def test_preserve_keys_scopes_raw_records_to_current_model_bones(self):
-        data = VmdData()
-        data.bone_frames.append(_valid_bone_frame())
-        unsupported = {
-            "bone_name": "DokuhebiUnsupported",
-            "frame_number": 0,
-            "interpolation": [31] * 64,
-        }
-        raw_provenance = {
-            "raw_bone_interpolation_complete": True,
-            "raw_bone_key_count": 2,
-            "raw_bone_interpolation": [
-                {
-                    "bone_name": "センター",
-                    "frame_number": 0,
-                    "interpolation": list(data.bone_frames[0].interpolation),
-                },
-                unsupported,
-            ],
-            "current_model_bone_names": ["センター"],
-        }
-
-        report = validate_vmd_data(data, VMD_EXPORT_PRESERVE_KEYS, raw_provenance=raw_provenance)
-
-        self.assertTrue(report.valid, report.summary)
-        self.assertEqual(raw_provenance["raw_bone_interpolation"].count(unsupported), 1)
-
-    def test_preserve_keys_scoped_raw_interpolation_change_still_blocks(self):
-        data = VmdData()
-        data.bone_frames.append(_valid_bone_frame())
-        raw_provenance = {
-            "raw_bone_interpolation_complete": True,
-            "raw_bone_key_count": 2,
-            "raw_bone_interpolation": [
-                {
-                    "bone_name": "センター",
-                    "frame_number": 0,
-                    "interpolation": [21] * 64,
-                },
-                {
-                    "bone_name": "DokuhebiUnsupported",
-                    "frame_number": 0,
-                    "interpolation": [31] * 64,
-                },
-            ],
-            "current_model_bone_names": ["センター"],
-        }
-
-        report = validate_vmd_data(data, VMD_EXPORT_PRESERVE_KEYS, raw_provenance=raw_provenance)
-
-        self.assertTrue(report.is_blocking)
-        self.assertIn("changed=1", report.summary)
-
-    def test_preserve_keys_scoped_raw_transforms_ignore_unsupported_and_block_supported_changes(self):
-        supported_raw = {
-            "bone_name": "センター",
-            "frame_number": 0,
-            "position": [1.0, 2.0, 3.0],
-            "rotation": [0.0, 0.0, 0.0, 1.0],
-            "interpolation": [20] * 64,
-        }
-        unsupported_raw = {
-            "bone_name": "DokuhebiUnsupported",
-            "frame_number": 0,
-            "position": [8.0, 9.0, 10.0],
-            "rotation": [0.0, 0.0, 0.0, 1.0],
-            "interpolation": [31] * 64,
-        }
-        raw_provenance = {
-            "raw_bone_interpolation_complete": True,
-            "raw_bone_transform_complete": True,
-            "raw_bone_key_count": 2,
-            "raw_bone_interpolation": [supported_raw, unsupported_raw],
-            "current_model_bone_names": ["センター"],
-        }
-
-        matching = VmdData()
-        matching_frame = _valid_bone_frame()
-        matching_frame.position = (1.0, 2.0, 3.0)
-        matching.bone_frames.append(matching_frame)
-        matching_report = validate_vmd_data(
-            matching,
-            VMD_EXPORT_PRESERVE_KEYS,
-            raw_provenance=raw_provenance,
-        )
-        self.assertTrue(matching_report.valid, matching_report.summary)
-
-        changed = VmdData()
-        changed_frame = _valid_bone_frame()
-        changed_frame.position = (1.5, 2.0, 3.0)
-        changed.bone_frames.append(changed_frame)
-        changed_report = validate_vmd_data(
-            changed,
-            VMD_EXPORT_PRESERVE_KEYS,
-            raw_provenance=raw_provenance,
-        )
-        self.assertTrue(changed_report.is_blocking)
-        self.assertIn("changed=1", changed_report.summary)
-
-        missing_report = validate_vmd_data(
-            VmdData(),
-            VMD_EXPORT_PRESERVE_KEYS,
-            raw_provenance=raw_provenance,
-        )
-        self.assertTrue(missing_report.is_blocking)
-        self.assertIn("missing=1", missing_report.summary)
-
-    def test_preserve_keys_missing_supported_raw_record_still_blocks_with_scoped_provenance(self):
-        data = VmdData()
-        raw_provenance = {
-            "raw_bone_interpolation_complete": True,
-            "raw_bone_key_count": 2,
-            "raw_bone_interpolation": [
-                {
-                    "bone_name": "センター",
-                    "frame_number": 0,
-                    "interpolation": [20] * 64,
-                },
-                {
-                    "bone_name": "DokuhebiUnsupported",
-                    "frame_number": 0,
-                    "interpolation": [31] * 64,
-                },
-            ],
-            "current_model_bone_names": ["センター"],
-        }
-
-        report = validate_vmd_data(data, VMD_EXPORT_PRESERVE_KEYS, raw_provenance=raw_provenance)
-
-        self.assertTrue(report.is_blocking)
-        self.assertIn("missing=1", report.summary)
-
-    def test_preserve_keys_rejects_raw_interpolation_payload_change(self):
-        data = VmdData()
-        data.bone_frames.append(_valid_bone_frame())
-        report = validate_vmd_data(
-            data,
-            VMD_EXPORT_PRESERVE_KEYS,
-            raw_provenance={
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_key_count": 1,
-                "raw_bone_interpolation": [
-                    {
-                        "bone_name": "センター",
-                        "frame_number": 0,
-                        "interpolation": [7] * 64,
-                    }
-                ],
-            },
-        )
-
-        self.assertIn("VMD_RAW_PROVENANCE_MISMATCH", [issue.code for issue in report.issues])
-
-    def test_preserve_keys_rejects_raw_position_or_rotation_payload_change(self):
-        data = VmdData()
-        data.bone_frames.append(_valid_bone_frame())
-        report = validate_vmd_data(
-            data,
-            VMD_EXPORT_PRESERVE_KEYS,
-            raw_provenance={
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_transform_complete": True,
-                "raw_bone_key_count": 1,
-                "raw_bone_interpolation": [
-                    {
-                        "bone_name": "センター",
-                        "frame_number": 0,
-                        "position": [1.0, 2.0, 3.0],
-                        "rotation": [0.0, 0.0, 0.0, 1.0],
-                        "interpolation": [20] * 64,
-                    }
-                ],
-            },
-        )
-
-        self.assertIn("VMD_RAW_PROVENANCE_MISMATCH", [issue.code for issue in report.issues])
-
-    def test_preserve_keys_scopes_raw_comparison_to_requested_frame_range(self):
-        data = VmdData()
-        frame = _valid_bone_frame()
-        frame.frame_number = 10
-        data.bone_frames.append(frame)
-        report = validate_vmd_data(
-            data,
-            VMD_EXPORT_PRESERVE_KEYS,
-            frame_range=(10, 10),
-            raw_provenance={
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_key_count": 2,
-                "raw_bone_interpolation": [
-                    {
-                        "bone_name": "センター",
-                        "frame_number": 0,
-                        "interpolation": [20] * 64,
-                    },
-                    {
-                        "bone_name": "センター",
-                        "frame_number": 10,
-                        "interpolation": [20] * 64,
-                    },
-                ],
-            },
-        )
-
-        self.assertTrue(report.valid)
-
     def test_invalid_bone_payload_reports_all_relevant_contracts(self):
         data = VmdData()
         frame = _valid_bone_frame()
@@ -365,12 +84,6 @@ class TestVmdValidator(unittest.TestCase):
             ],
         )
         self.assertEqual(report.issues[0].path, "bone_frames[0].frame_number")
-
-    def test_unsupported_export_strategy_is_blocking(self):
-        report = validate_vmd_data(VmdData(), "B")
-
-        self.assertTrue(report.is_blocking)
-        self.assertEqual(report.issues[0].code, "VMD_EXPORT_STRATEGY_UNSUPPORTED")
 
     def test_verify_output_parses_vmd_written_by_writer(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -688,7 +401,7 @@ class TestExportVmdValidationGate(unittest.TestCase):
         self.assertEqual(observed[1], (VMD_EXPORT_BAKE_TIMELINE, (-1, 13)))
         self.assertEqual(converter.call_count, 2)
 
-    def test_bake_timeline_ntsc_range_is_unchanged_and_preserve_keys_is_not_converted(self):
+    def test_legacy_strategy_is_normalized_and_ntsc_range_is_unchanged(self):
         observed = []
 
         def validator(_data, export_strategy, *, frame_range=None):
@@ -700,10 +413,9 @@ class TestExportVmdValidationGate(unittest.TestCase):
             "mmd_tools.actions.export_vmd_action._scene_maya_time_to_vmd_frame",
             return_value=lambda value: float(value),
         ) as converter:
-            action._validate(VmdData(), VMD_EXPORT_BAKE_TIMELINE, {"frame_range": (0, 10)})
-            action._validate(VmdData(), VMD_EXPORT_PRESERVE_KEYS, {"frame_range": (0, 10)})
+            action._validate(VmdData(), "preserve_keys", {"frame_range": (0, 10)})
 
-        self.assertEqual(observed, [(VMD_EXPORT_BAKE_TIMELINE, (0, 10)), (VMD_EXPORT_PRESERVE_KEYS, (0, 10))])
+        self.assertEqual(observed, [(VMD_EXPORT_BAKE_TIMELINE, (0, 10))])
         self.assertEqual(converter.call_count, 1)
 
     def test_fatal_payload_does_not_call_writer_or_change_target(self):
@@ -764,134 +476,6 @@ class TestExportVmdValidationGate(unittest.TestCase):
             self.assertEqual(result.validation_report.issues[-1].code, "OUTPUT_PARSE_FAILED")
             self.assertEqual(target.read_bytes(), before)
             self.assertTrue(exporter.calls)
-
-    def test_preserve_keys_with_raw_provenance_can_export(self):
-        exporter = _WritingVmdExporter()
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "motion.vmd"
-            result = ExportVmdAction(exporter=exporter).execute(
-                ExportVmdRequest(
-                    str(target),
-                    {"export_strategy": VMD_EXPORT_PRESERVE_KEYS, "raw_provenance": {"source": "import"}},
-                    animation_data=VmdData(),
-                )
-            )
-
-            self.assertTrue(result.succeeded)
-        self.assertEqual(result.validation_report.mode, VMD_EXPORT_PRESERVE_KEYS)
-        self.assertIsNotNone(result.payload_fingerprint)
-
-    def test_bake_timeline_raw_loss_information_does_not_require_ack_before_writer(self):
-        exporter = _WritingVmdExporter()
-        raw_provenance = {
-            "raw_bone_interpolation_complete": True,
-            "raw_bone_interpolation": [
-                {
-                    "bone_name": "センター",
-                    "frame_number": 0,
-                    "interpolation": [20] * 64,
-                }
-            ],
-        }
-
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "bake-timeline-warning.vmd"
-            first = ExportVmdAction(
-                exporter=exporter,
-                output_verifier=None,
-            ).execute(
-                ExportVmdRequest(
-                    str(target),
-                    {"export_strategy": VMD_EXPORT_BAKE_TIMELINE, "raw_provenance": raw_provenance},
-                    animation_data=VmdData(),
-                )
-            )
-            second = ExportVmdAction(
-                exporter=exporter,
-                output_verifier=None,
-            ).execute(
-                ExportVmdRequest(
-                    str(target),
-                    {
-                        "export_strategy": VMD_EXPORT_BAKE_TIMELINE,
-                        "raw_provenance": raw_provenance,
-                        "ack_warnings": True,
-                    },
-                    animation_data=VmdData(),
-                )
-            )
-
-        self.assertTrue(first.succeeded, first.error)
-        self.assertIsNone(first.error)
-        self.assertEqual(first.validation_report.issues[0].code, "VMD_BAKE_TIMELINE_RAW_LOSS")
-        self.assertEqual(first.validation_report.issues[0].severity, "info")
-        self.assertTrue(second.succeeded, second.error)
-        self.assertEqual(len(exporter.calls), 2)
-
-    def test_streaming_bake_timeline_raw_loss_is_informational_without_ack(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "bake-timeline-stream.vmd"
-            writer = VmdStreamWriter(path, "モデル")
-            writer.finish()
-
-            report = verify_vmd_output_streaming(
-                str(path),
-                VMD_EXPORT_BAKE_TIMELINE,
-                raw_loss_warning_required=True,
-                ack_warnings=False,
-            )
-
-        self.assertTrue(report.valid, report.summary)
-        self.assertFalse(report.requires_warning_ack)
-        self.assertEqual(report.issues[0].code, "VMD_BAKE_TIMELINE_RAW_LOSS")
-        self.assertEqual(report.issues[0].severity, "info")
-
-    def test_collector_raw_provenance_flows_into_preserve_keys_validation(self):
-        def collector(_options):
-            return {
-                "model_name": "ImportedMotion",
-                "raw_provenance": {"source": "import", "raw_bone_key_count": 0},
-                "bone_frames": [],
-            }
-
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "motion.vmd"
-            result = ExportVmdAction(
-                exporter=VmdExporter(),
-                collector=collector,
-            ).execute(ExportVmdRequest(str(target), {"export_strategy": VMD_EXPORT_PRESERVE_KEYS}))
-
-        self.assertTrue(result.succeeded)
-        self.assertEqual(result.validation_report.mode, VMD_EXPORT_PRESERVE_KEYS)
-
-    def test_reusing_request_does_not_retain_collector_provenance(self):
-        payloads = iter(
-            (
-                {
-                    "model_name": "ImportedMotion",
-                    "raw_provenance": {"source": "first"},
-                    "bone_frames": [],
-                },
-                {"model_name": "EditedMotion", "bone_frames": []},
-            )
-        )
-        action = ExportVmdAction(
-            exporter=VmdExporter(),
-            collector=lambda _options: next(payloads),
-        )
-
-        with tempfile.TemporaryDirectory() as directory:
-            request = ExportVmdRequest(
-                str(Path(directory) / "motion.vmd"),
-                {"export_strategy": VMD_EXPORT_PRESERVE_KEYS},
-            )
-            first = action.execute(request)
-            second = action.execute(request)
-
-        self.assertTrue(first.succeeded)
-        self.assertFalse(second.succeeded)
-        self.assertEqual(second.validation_report.issues[0].code, "VMD_RAW_PROVENANCE_MISSING")
-        self.assertNotIn("raw_provenance", request.options)
 
     def test_warning_requires_ack_before_writer_and_ack_allows_export(self):
         exporter = _WritingVmdExporter()

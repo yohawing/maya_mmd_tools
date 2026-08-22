@@ -8,14 +8,13 @@ converted back to VMD quaternions with jointOrient compensation. Explicit
 Bake Timeline requests sample the selected Maya frame range at one-frame intervals:
 bones use the native sampler while morph/IK/camera/light tracks advance Maya's
 normal Timeline and read current-frame values. Sampling failures block export.
-An imported raw key/interpolation/transform payload is reused only when the
-caller explicitly opts into ``preserve_raw_bone_transforms``; Preserve Keys and
-low-level collector callers retain sparse collection semantics.
+The current character scene is the sole export authority. Import provenance
+may remain attached to the scene for diagnostics, but is never materialized
+as an export payload.
 """
 
 import json
 import math
-import re
 import struct
 import tempfile
 import time
@@ -31,7 +30,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_CAMERA,
     ATTR_MMD_LIGHT,
     ATTR_MMD_MODEL_NAME,
-    ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
 )
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_EDIT,
@@ -110,7 +108,6 @@ class VmdIkSceneRepresentationMissingError(ValueError):
     validation_issue_path = "ik_show_hide_frames"
 _TRANSFORM_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 _CAMERA_SHAPE_EXPORT_ATTRS = ("focalLength", "orthographic", "orthographicWidth")
-_CURRENT_MODEL_BONE_SCOPE = "current_model_bone_names"
 _TRACK_SELECTION_DECISIONS = (
     "omitted_default",
     "constant_one_key",
@@ -616,216 +613,6 @@ def _dag_path_is_under_root(node: str, root_path: str) -> bool:
     return node_path == root_path or node_path.startswith(f"{root_path}|")
 
 
-def _raw_vmd_rotation_interpolation(
-    provenance: Optional[Mapping[str, Any]],
-) -> dict[str, dict[int, bytes]]:
-    """Decode complete raw bone interpolation records into collector keys."""
-    if not isinstance(provenance, Mapping):
-        return {}
-    result: dict[str, dict[int, bytes]] = {}
-    for record in provenance.get("raw_bone_interpolation", ()) or ():
-        if not isinstance(record, Mapping):
-            continue
-        name = str(record.get("bone_name") or "")
-        try:
-            frame_number = int(record.get("frame_number"))
-            interpolation = bytes(record.get("interpolation", ()))
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if not name or frame_number < 0 or len(interpolation) != 64:
-            continue
-        result.setdefault(name, {})[frame_number] = interpolation
-    return result
-
-
-def _raw_vmd_bone_transforms(
-    provenance: Optional[Mapping[str, Any]],
-) -> dict[tuple[str, int], tuple[tuple[float, ...], tuple[float, ...]]]:
-    """Decode complete raw bone position/rotation records for imported-key reuse."""
-    if not isinstance(provenance, Mapping) or not provenance.get(
-        "raw_bone_transform_complete"
-    ):
-        return {}
-    records = provenance.get("raw_bone_interpolation")
-    if not isinstance(records, list):
-        return {}
-    try:
-        expected_count = int(provenance.get("raw_bone_key_count", len(records)))
-    except (TypeError, ValueError, OverflowError):
-        return {}
-    if expected_count != len(records):
-        return {}
-    result = {}
-    for record in records:
-        if not isinstance(record, Mapping):
-            return {}
-        name = str(record.get("bone_name") or "")
-        try:
-            frame_number = int(record.get("frame_number"))
-            position = tuple(float(value) for value in record.get("position", ()))
-            rotation = tuple(float(value) for value in record.get("rotation", ()))
-        except (TypeError, ValueError, OverflowError):
-            return {}
-        key = (name, frame_number)
-        if (
-            not name
-            or frame_number < 0
-            or len(position) != 3
-            or len(rotation) != 4
-            or not all(math.isfinite(value) for value in position + rotation)
-            or key in result
-        ):
-            return {}
-        result[key] = (position, rotation)
-    return result
-
-
-def _raw_bone_transform_matches(
-    position: Sequence[float],
-    rotation: Sequence[float],
-    expected: tuple[tuple[float, ...], tuple[float, ...]],
-) -> bool:
-    """Return whether Maya reconstruction still represents the raw payload."""
-    expected_position, expected_rotation = expected
-    try:
-        if len(position) != 3 or len(rotation) != 4:
-            return False
-        if any(
-            not math.isclose(float(actual), float(source), rel_tol=0.0, abs_tol=1.0e-5)
-            for actual, source in zip(position, expected_position)
-        ):
-            return False
-        actual_rotation = tuple(float(value) for value in rotation)
-        source_rotation = tuple(float(value) for value in expected_rotation)
-        actual_norm = math.sqrt(sum(value * value for value in actual_rotation))
-        source_norm = math.sqrt(sum(value * value for value in source_rotation))
-        if actual_norm <= 1.0e-12 or source_norm <= 1.0e-12:
-            return False
-        dot = abs(
-            sum(actual * source for actual, source in zip(actual_rotation, source_rotation))
-            / (actual_norm * source_norm)
-        )
-        return math.isclose(dot, 1.0, rel_tol=0.0, abs_tol=1.0e-5)
-    except (TypeError, ValueError, OverflowError):
-        return False
-
-
-def _index_raw_bone_transform_frames(
-    raw_bone_transforms: Mapping[
-        tuple[str, int], tuple[tuple[float, ...], tuple[float, ...]]
-    ],
-) -> dict[str, set[int]]:
-    """Index raw transform frame numbers by bone name in one pass."""
-    result: dict[str, set[int]] = {}
-    for bone_name, frame_number in raw_bone_transforms:
-        result.setdefault(bone_name, set()).add(frame_number)
-    return result
-
-
-def _read_vmd_import_provenance(target_model: Optional[str]) -> Optional[dict[str, Any]]:
-    """Read complete raw VMD bone provenance from one model root."""
-    if not target_model:
-        return None
-    try:
-        if not cmds.attributeQuery(
-            ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
-            node=target_model,
-            exists=True,
-        ):
-            return None
-        raw = cmds.getAttr(f"{target_model}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}")
-        provenance = json.loads(raw or "")
-    except (TypeError, ValueError, RuntimeError):
-        return None
-    if isinstance(provenance, dict) and not isinstance(
-        provenance.get("raw_bone_interpolation"), list
-    ):
-        from .vmd_runtime_provenance import materialize_raw_bone_source_provenance
-
-        provenance = materialize_raw_bone_source_provenance(provenance)
-    if not isinstance(provenance, dict) or not provenance.get("raw_bone_interpolation_complete"):
-        return None
-    records = provenance.get("raw_bone_interpolation")
-    if not isinstance(records, list):
-        return None
-    try:
-        expected_count = int(provenance.get("raw_bone_key_count", len(records)))
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if expected_count != len(records):
-        return None
-    decoded = _raw_vmd_rotation_interpolation(provenance)
-    if sum(len(frames) for frames in decoded.values()) != len(records):
-        return None
-    return provenance
-
-
-def _read_raw_vmd_ik_authority(
-    target_model: Optional[str],
-) -> Optional[list[dict[str, Any]]]:
-    """Read exact source property/IK records, failing closed when declared."""
-
-    if not target_model:
-        return None
-    try:
-        if not cmds.attributeQuery(
-            ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
-            node=target_model,
-            exists=True,
-        ):
-            return None
-        raw = cmds.getAttr(f"{target_model}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}")
-        provenance = json.loads(raw or "")
-    except (TypeError, ValueError, RuntimeError):
-        return None
-    if not isinstance(provenance, dict) or "raw_ik_key_count" not in provenance:
-        return None
-    try:
-        expected_count = int(provenance["raw_ik_key_count"])
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("Source VMD IK provenance has an invalid frame count") from exc
-    if expected_count < 0 or provenance.get("raw_ik_complete") is not True:
-        raise ValueError("Source VMD IK provenance is incomplete")
-    if not isinstance(provenance.get("raw_ik_frames"), list):
-        from .vmd_runtime_provenance import materialize_raw_bone_source_provenance
-
-        provenance = materialize_raw_bone_source_provenance(provenance)
-    if not isinstance(provenance, dict):
-        raise ValueError("Source VMD IK provenance identity verification failed")
-    records = provenance.get("raw_ik_frames")
-    if not isinstance(records, list) or len(records) != expected_count:
-        raise ValueError("Source VMD IK provenance frame count does not match")
-
-    decoded = []
-    for record in records:
-        try:
-            frame_number = int(record["frame_number"])
-            visible = int(record["visible"])
-            states = list(record["ik_states"])
-        except (KeyError, TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("Source VMD IK provenance contains an invalid frame") from exc
-        if frame_number < 0 or visible not in (0, 1):
-            raise ValueError("Source VMD IK provenance contains an invalid frame")
-        normalized_states = []
-        for state in states:
-            try:
-                name, enabled = state
-                enabled = int(enabled)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError("Source VMD IK provenance contains an invalid state") from exc
-            if enabled not in (0, 1):
-                raise ValueError("Source VMD IK provenance contains an invalid state")
-            normalized_states.append((str(name), enabled))
-        decoded.append(
-            {
-                "frame_number": frame_number,
-                "visible": visible,
-                "ik_states": normalized_states,
-            }
-        )
-    return decoded
-
-
 def _close_native_samples(native_samples: Any) -> None:
     """Close native sample storage without requiring legacy test fakes to do so."""
 
@@ -859,43 +646,6 @@ def _write_stream_frame(sink: Any, section: str, frame: Mapping[str, Any]) -> No
     method(frame)
 
 
-def _read_bake_timeline_raw_loss_marker(target_model: Optional[str]) -> Optional[dict[str, Any]]:
-    """Return a bounded raw-loss marker without decoding raw frame records."""
-
-    if not target_model:
-        return None
-    try:
-        if not cmds.attributeQuery(
-            ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
-            node=target_model,
-            exists=True,
-        ):
-            return None
-        raw = cmds.getAttr(f"{target_model}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}")
-    except (TypeError, ValueError, RuntimeError):
-        return None
-    # This intentionally does not call json.loads: imported provenance may
-    # contain millions of raw records.  A complete interpolation payload is
-    # enough to require the existing acknowledgement warning in Bake Timeline.
-    text = str(raw or "")
-    has_raw_bones = bool(re.search(
-        r'"raw_bone_interpolation_complete"\s*:\s*true\b',
-        text,
-        flags=re.IGNORECASE,
-    ))
-    ik_match = re.search(r'"raw_ik_key_count"\s*:\s*(\d+)\b', text)
-    raw_ik_key_count = int(ik_match.group(1)) if ik_match else 0
-    if not has_raw_bones and raw_ik_key_count <= 0:
-        return None
-    return {
-        "warning_code": "VMD_BAKE_TIMELINE_RAW_LOSS",
-        "raw_loss_warning_required": False,
-        "required": False,
-        "informational": True,
-        "raw_ik_key_count": raw_ik_key_count,
-    }
-
-
 class VmdSceneCollector:
     """Collect minimum VMD-compatible animation data from a Maya scene."""
 
@@ -907,8 +657,7 @@ class VmdSceneCollector:
         existing low-level collector API and keeps the hot loop untouched.
         ``bone_channel_sampler`` is the required Bake Timeline bone sampling
         seam. Native command, protocol, and value failures are fatal for Bake
-        Timeline; sparse Preserve Keys collection continues to use
-        ``cmds.getAttr``.
+        Timeline; all output comes from the current scene.
         """
 
         self._diagnostics_sink = diagnostics_sink
@@ -1014,15 +763,6 @@ class VmdSceneCollector:
         self._source_omission_identities = set()
         try:
             options = options or {}
-            export_strategy = str(
-                options.get("export_strategy", "preserve_keys")
-                or "preserve_keys"
-            ).lower()
-            if export_strategy == "bake_timeline":
-                raise ValueError(
-                    "collect() does not support Bake Timeline Mode C; "
-                    "use collect_to_sink() with the prepared export workflow"
-                )
             result = self._collect_impl(options)
             self._diagnostics["status"] = "completed"
             return result
@@ -1043,7 +783,6 @@ class VmdSceneCollector:
     ) -> dict[str, Any]:
         """Stream standard Bake Timeline sections into a VMD writer-compatible sink.
 
-        The object-graph ``collect`` API is limited to preserve-keys export.
         This path owns Bake Timeline planning and shares the per-track collectors,
         but keeps only one bone track (and one aggregate morph candidate
         spool) alive at a time.  ``sink.finish`` is owned by the caller so the
@@ -1056,10 +795,6 @@ class VmdSceneCollector:
         export_strategy = str(options.get("export_strategy", "") or "").lower()
         if export_strategy != "bake_timeline":
             raise ValueError("collect_to_sink supports standard Bake Timeline only")
-        if options.get("preserve_raw_bone_transforms"):
-            raise ValueError(
-                "streaming Bake Timeline cannot preserve raw imported bone frame records"
-            )
         started = time.perf_counter()
         self._diagnostics = {}
         self._source_omission_identities = set()
@@ -1121,17 +856,6 @@ class VmdSceneCollector:
             if direct_control_rig_plan is None:
                 self._control_rig_dense_export(target_model)
             rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
-            raw_marker = _read_bake_timeline_raw_loss_marker(target_model)
-            if (
-                raw_marker
-                and raw_marker.get("raw_ik_key_count", 0) > 0
-                and not direct_ik_routes
-                and not collect_ik_nodes_by_bone_name(target_model=target_model)
-            ):
-                raise VmdIkSceneRepresentationMissingError(
-                    "Bake Timeline cannot export source VMD IK frames because "
-                    "the current model has no owned IK scene representation"
-                )
             selector_key_times_by_joint = None
             if direct_control_rig_plan is None:
                 authored_routes = self._scene_authored_input_routes(
@@ -1162,7 +886,6 @@ class VmdSceneCollector:
                 "camera_count": len(cameras),
                 "light_count": len(lights),
                 "authored_route_count": len(authored_routes),
-                "raw_provenance": bool(raw_marker),
                 "dense_frame_count": len(bake_timeline_dense_frames or ()),
                 "streaming": True,
             }
@@ -1183,8 +906,6 @@ class VmdSceneCollector:
                 time_converter=maya_time_to_vmd,
                 rotation_interpolation=rotation_interpolation,
                 dense_frame_samples=bake_timeline_dense_frames,
-                preserve_raw_bone_transforms=False,
-                raw_bone_transforms=None,
                 bone_channel_sampler=self._bone_channel_sampler,
                 frame_sink=lambda frame: emit("bones", frame),
                 exact_run_reduction=exact_run_reduction,
@@ -1255,7 +976,6 @@ class VmdSceneCollector:
                 )
             return {
                 "model_name": str(options.get("model_name") or self._model_name(target_model)),
-                "raw_provenance": raw_marker,
                 "validation_frame_range": validation_frame_range,
                 "section_counts": dict(section_counts),
                 "diagnostics": self.diagnostics,
@@ -1277,7 +997,7 @@ class VmdSceneCollector:
             options: Optional mapping. Supported keys are ``target_model`` /
                 ``model_root``, ``joints``, ``blend_shapes``, ``cameras``,
                 ``lights``, ``start_frame`` / ``end_frame`` or ``frame_range``,
-                ``export_strategy`` (``preserve_keys`` only), ``model_name``,
+                ``export_strategy`` (legacy input, normalized to Bake Timeline), ``model_name``,
                 ``motion_scale``, and
                 ``bone_bind_poses``. Automatic joint and blendShape discovery
                 is scoped to the selected model root; camera/light discovery
@@ -1300,26 +1020,8 @@ class VmdSceneCollector:
         motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
         bone_bind_poses = options.get("bone_bind_poses") or {}
         maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
-        export_strategy = str(
-            options.get("export_strategy", "preserve_keys")
-            or "preserve_keys"
-        ).lower()
-        if export_strategy != "preserve_keys":
-            raise ValueError(f"unsupported VMD export strategy: {export_strategy!r}")
-        preserve_raw_bone_transforms = bool(
-            options.get("preserve_raw_bone_transforms", False)
-        )
         dense_control_rig_export = self._control_rig_dense_export(target_model)
         rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
-        raw_provenance = _read_vmd_import_provenance(target_model)
-        raw_provenance = self._attach_current_model_bone_scope(
-            raw_provenance,
-            joints,
-            target_model,
-        )
-        for bone_name, values in _raw_vmd_rotation_interpolation(raw_provenance).items():
-            rotation_interpolation.setdefault(bone_name, {}).update(values)
-        raw_bone_transforms = _raw_vmd_bone_transforms(raw_provenance)
         authored_routes = self._scene_authored_input_routes(
             joints,
             target_model,
@@ -1332,7 +1034,6 @@ class VmdSceneCollector:
             "camera_count": len(cameras),
             "light_count": len(lights),
             "authored_route_count": len(authored_routes),
-            "raw_provenance": bool(raw_provenance),
             "dense_frame_count": 0,
         }
 
@@ -1349,8 +1050,6 @@ class VmdSceneCollector:
             time_converter=maya_time_to_vmd,
             rotation_interpolation=rotation_interpolation,
             dense_frame_samples=None,
-            preserve_raw_bone_transforms=preserve_raw_bone_transforms,
-            raw_bone_transforms=raw_bone_transforms,
             bone_channel_sampler=self._bone_channel_sampler,
         )
         self._diagnostics["bone_collection"] = {
@@ -1408,36 +1107,16 @@ class VmdSceneCollector:
         }
 
         ik_started = time.perf_counter()
-        raw_ik_frames = _read_raw_vmd_ik_authority(target_model)
-        if raw_ik_frames is not None:
-            start_vmd = (
-                _vmd_frame_number(start_frame, maya_time_to_vmd)
-                if start_frame is not None
-                else None
-            )
-            end_vmd = (
-                _vmd_frame_number(end_frame, maya_time_to_vmd)
-                if end_frame is not None
-                else None
-            )
-            ik_frames = [
-                frame
-                for frame in raw_ik_frames
-                if (start_vmd is None or frame["frame_number"] >= start_vmd)
-                and (end_vmd is None or frame["frame_number"] <= end_vmd)
-            ]
-        else:
-            ik_frames = self.collect_ik_show_hide_frames(
-                target_model,
-                start_frame,
-                end_frame,
-                time_converter=maya_time_to_vmd,
-                # IK show/hide is a step track, not a numeric pose track.
-                # Keep keyed/baseline semantics for legacy scene authority.
-                dense_sample=False,
-                dense_frame_samples=None,
-                timeline_evaluation=False,
-            )
+        ik_frames = self.collect_ik_show_hide_frames(
+            target_model,
+            start_frame,
+            end_frame,
+            time_converter=maya_time_to_vmd,
+            # IK show/hide is a step track, not a numeric pose track.
+            dense_sample=False,
+            dense_frame_samples=None,
+            timeline_evaluation=False,
+        )
         self._diagnostics["ik_collection"] = {
             "wall_sec": round(time.perf_counter() - ik_started, 6),
             "frame_count": len(ik_frames),
@@ -1452,7 +1131,6 @@ class VmdSceneCollector:
 
         return {
             "model_name": str(options.get("model_name") or self._model_name(target_model)),
-            "raw_provenance": raw_provenance,
             "bone_frames": bone_frames,
             "morph_frames": morph_frames,
             "camera_frames": camera_frames,
@@ -1565,10 +1243,6 @@ class VmdSceneCollector:
         rotation_interpolation: Optional[Mapping[str, Mapping[int, bytes]]] = None,
         force_dense_sample: bool = False,
         dense_frame_samples: Optional[Sequence[float]] = None,
-        preserve_raw_bone_transforms: bool = False,
-        raw_bone_transforms: Optional[
-            Mapping[tuple[str, int], tuple[tuple[float, ...], tuple[float, ...]]]
-        ] = None,
         bone_channel_sampler=None,
         frame_sink=None,
         exact_run_reduction: bool = False,
@@ -1580,13 +1254,9 @@ class VmdSceneCollector:
         """Collect keyed or one-frame-sampled local joint transforms.
 
         ``dense_sample`` is retained for the baked control-rig route, where a
-        rotation-time curve may intentionally keep sparse VMD keys.  Bake Timeline
-        uses ``force_dense_sample`` so its numeric pose export is not
-        accidentally changed back to sparse collection by raw interpolation
-        metadata.  ``preserve_raw_bone_transforms`` is an explicit import
-        roundtrip route for callers that have established that raw VMD
-        provenance is authoritative; it does not change the default edited
-        scene behavior.
+        rotation-time curve may intentionally keep sparse VMD keys. Bake Timeline
+        uses ``force_dense_sample`` for numeric pose export; interpolation comes
+        from the current character scene's registered curves.
         """
         bone_bind_poses = bone_bind_poses or {}
         input_routes = input_routes or {}
@@ -1602,8 +1272,6 @@ class VmdSceneCollector:
             _validate_direct_rotation_export_indices(context_joints, joints)
         rotation_context = _build_rotation_export_context(context_joints)
         rotation_interpolation = rotation_interpolation or {}
-        raw_bone_transforms = raw_bone_transforms or {}
-        raw_bone_frames_by_name = _index_raw_bone_transform_frames(raw_bone_transforms)
         native_samples = None
         native_bulk_track_api = False
         native_bulk_track_count = 0
@@ -2045,15 +1713,9 @@ class VmdSceneCollector:
                     and len(bone_output_providers.get(bone_name, ())) == 1
                     and direct_multi_key_candidates[bone_name][0][0] == long_name
                 )
-                raw_provenance_frames = raw_bone_frames_by_name.get(bone_name, set())
-                has_new_authored_key = bool(
-                    raw_provenance_frames
-                    and set(sparse_frames).difference(raw_provenance_frames)
-                )
                 preserve_sparse_rotation = (
                     not force_dense_sample
                     and bone_name in rotation_interpolation
-                    and not has_new_authored_key
                 )
                 keyed_frames = (
                     sparse_frames
@@ -2224,20 +1886,6 @@ class VmdSceneCollector:
                     interpolation = rotation_interpolation.get(bone_name, {}).get(vmd_frame)
                     if interpolation is not None:
                         payload["interpolation"] = interpolation
-                    raw_transform = (
-                        None
-                        if force_dense_sample
-                        else raw_bone_transforms.get((bone_name, vmd_frame))
-                    )
-                    if raw_transform is not None and (
-                        preserve_raw_bone_transforms
-                        or _raw_bone_transform_matches(
-                            payload["position"],
-                            payload["rotation"],
-                            raw_transform,
-                        )
-                    ):
-                        payload["position"], payload["rotation"] = raw_transform
                     return payload
 
                 def iter_payloads():
@@ -3986,24 +3634,6 @@ class VmdSceneCollector:
             if value:
                 return str(value)
         return str(target_model or "")
-
-    def _attach_current_model_bone_scope(
-        self,
-        raw_provenance: Optional[Mapping[str, Any]],
-        joints: Sequence[str],
-        target_model: Optional[str],
-    ) -> Optional[dict[str, Any]]:
-        """Attach deterministic supported-bone scope without changing source records."""
-        if raw_provenance is None or not target_model:
-            return raw_provenance
-        supported_names = set()
-        for joint in joints:
-            name = self._mmd_bone_name(joint)
-            if name:
-                supported_names.add(str(name))
-        scoped_provenance = dict(raw_provenance)
-        scoped_provenance[_CURRENT_MODEL_BONE_SCOPE] = sorted(supported_names)
-        return scoped_provenance
 
     def _mmd_bone_name(self, joint: str) -> str:
         if _has_attr(joint, ATTR_MMD_BONE_NAME):

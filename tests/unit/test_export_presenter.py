@@ -1,7 +1,6 @@
 """ExportPresenter Current Model ownership and pane invalidation contracts."""
 
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
@@ -286,22 +285,6 @@ class _PrepareIkBlockedWorkflow(_Workflow):
         )
 
 
-class _PrepareWarningWorkflow(_Workflow):
-    def prepare_vmd(self, request):
-        self.prepared.append(request)
-        issue = ExportValidationIssue(
-            "VMD_BAKE_TIMELINE_RAW_LOSS",
-            "warning",
-            False,
-            "export_strategy",
-            "review raw interpolation loss",
-        )
-        token = SimpleNamespace(
-            validation_report=ExportValidationReport("vmd", (issue,), mode="bake_timeline")
-        )
-        return PrepareVmdExportResult(status="published", token=token)
-
-
 class _PrepareThenFailWorkflow(_Workflow):
     def prepare_vmd(self, request):
         self.prepared.append(request)
@@ -466,25 +449,6 @@ class TestExportPresenter(unittest.TestCase):
         self.assertEqual(len(workflow.executed), 0)
         self.assertIsNone(presenter.prepared_vmd_token)
 
-    def test_prepare_surfaces_token_warning_report_to_validation_console(self):
-        view = _ConsoleView("vmd")
-        app_state = _AppState()
-        presenter = ExportPresenter(
-            view,
-            app_state,
-            workflow_service=_PrepareWarningWorkflow(),
-        )
-
-        preparation = presenter.prepare()
-
-        self.assertTrue(preparation.succeeded)
-        self.assertIsNotNone(view.validation_console.report)
-        self.assertTrue(view.validation_console.report.requires_warning_ack)
-        self.assertEqual(
-            view.validation_console.report.issues[0].code,
-            "VMD_BAKE_TIMELINE_RAW_LOSS",
-        )
-
     def test_prepare_failure_publishes_blocking_result_and_keeps_no_token(self):
         view = _View("vmd")
         app_state = _AppState()
@@ -597,8 +561,8 @@ class TestExportPresenter(unittest.TestCase):
         app_state.current_model_changed.emit("OtherModel_ROOT")
         self.assertIsNone(presenter.prepared_vmd_token)
 
-    def test_progress_labels_include_animation_format_and_writer_transition(self):
-        view = _View("vmd", export_strategy="preserve_keys")
+    def test_progress_labels_include_animation_format_and_bake_transition(self):
+        view = _View("vmd", export_strategy="bake_timeline")
         app_state = _AppState()
         presenter = ExportPresenter(view, app_state, workflow_service=_Workflow())
 
@@ -609,10 +573,9 @@ class TestExportPresenter(unittest.TestCase):
         self.assertIn(
             translator.translate("animation_scene_preflight", "export_progress"), labels
         )
-        self.assertIn(translator.translate("animation_writer", "export_progress"), labels)
-        report_ready_label = translator.translate("animation_report_ready", "export_progress")
-        report_ready = [entry for entry in app_state.progress if entry[2].endswith(report_ready_label)]
-        self.assertEqual(report_ready[-1][3], 100)
+        self.assertIn(
+            translator.translate("animation_timeline_bake", "export_progress"), labels
+        )
 
     def test_prepare_progress_reports_timeline_and_prepared_payload_stages(self):
         view = _View("vmd")

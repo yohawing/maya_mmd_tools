@@ -2,7 +2,6 @@
 
 import ast
 import copy
-import hashlib
 import inspect
 import json
 from pathlib import Path
@@ -76,8 +75,8 @@ class ExportReleaseGateTests(unittest.TestCase):
                 base,
             )
 
-    def test_maya_vmd_probe_explicitly_acknowledges_bake_timeline_warning(self):
-        """The Maya probe accepts the explicit Bake Timeline raw-provenance warning."""
+    def test_maya_vmd_probe_explicitly_acknowledges_bake_timeline_export(self):
+        """The Maya probe explicitly acknowledges the fixed Bake Timeline export."""
         function = ast.parse(inspect.getsource(_run_vmd_case))
         execute = next(
             node
@@ -263,8 +262,8 @@ class ExportReleaseGateTests(unittest.TestCase):
         warning_fixture = next(
             fixture for fixture in result["fixtures"] if fixture["name"] == "warning_ack_boundary"
         )
-        self.assertEqual(warning_fixture["first_issue_codes"], ["VMD_BAKE_TIMELINE_RAW_LOSS"])
-        self.assertEqual(warning_fixture["first_issue_severities"], ["info"])
+        self.assertEqual(warning_fixture["first_issue_codes"], [])
+        self.assertEqual(warning_fixture["first_issue_severities"], [])
         self.assertTrue(warning_fixture["first_succeeded"])
         self.assertFalse(warning_fixture["first_requires_warning_ack"])
         self.assertEqual(len(result["report_paths"]), 4)
@@ -295,7 +294,6 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "pmx_impulse",
                         "pmx_flip",
                         "vmd",
-                        "vmd_preserve_keys",
                         "vmd_bake_timeline_model_tracks",
                         "vmd_bake_timeline_camera_light",
                     )
@@ -504,9 +502,6 @@ class ExportReleaseGateTests(unittest.TestCase):
             vmd_bake_timeline_model_tracks_case = next(
                 case for case in report["cases"] if case["format"] == "vmd_bake_timeline_model_tracks"
             )
-            vmd_preserve_keys_case = next(
-                case for case in report["cases"] if case["format"] == "vmd_preserve_keys"
-            )
             vmd_bake_timeline_camera_light_case = next(
                 case for case in report["cases"] if case["format"] == "vmd_bake_timeline_camera_light"
             )
@@ -642,7 +637,6 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "interpolation": {
                         "source": {frame: payload["interpolation"] for frame, payload in camera_payload["camera"].items()},
                         "exported_file": {frame: [20] * 24 for frame in camera_payload["camera"]},
-                        "raw_preserved": False,
                         "bake_timeline_normalized": True,
                         "canonical_expected": [20] * 24,
                         "canonical_length": 24,
@@ -667,149 +661,6 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "fresh_import": copy.deepcopy(dense_payload),
                     },
                 },
-            )
-            preserve_keys_records = [
-                {
-                    "bone_name": "root",
-                    "frame_number": frame,
-                    "position": [float(frame), 0.0, 0.0],
-                    "rotation": [0.0, 0.1, 0.0, 0.995] if frame == 9 else [0.0, 0.0, 0.0, 1.0],
-                    "interpolation": [20] * 64,
-                }
-                for frame in (0, 9, 19, 29, 39, 49)
-            ]
-            preserve_keys_pose = {
-                "joint_count": 1,
-                "frames": {
-                    str(frame): [
-                        {
-                            "index": 0,
-                            "name": "root",
-                            "world_matrix": [
-                                1.0,
-                                0.0,
-                                0.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                0.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                float(frame),
-                                0.0,
-                                0.0,
-                                1.0,
-                            ],
-                        }
-                    ]
-                    for frame in (0, 9, 19, 29, 39, 49)
-                },
-            }
-            preserve_keys_source_model = root / "vmd_preserve_keys_model.pmx"
-            preserve_keys_source = root / "vmd_preserve_keys_source.vmd"
-            preserve_keys_output = root / "vmd_preserve_keys_output.vmd"
-            preserve_keys_edited_output = root / "vmd_preserve_keys_edited_sentinel.vmd"
-            preserve_keys_source_model.write_bytes(b"preserve-keys-pmx")
-            preserve_keys_source.write_bytes(b"preserve-keys-source")
-            preserve_keys_output.write_bytes(b"preserve-keys-output")
-            preserve_keys_edited_output.write_bytes(b"preserve-keys-sentinel")
-            preserve_keys_identity = {
-                "pmx_sha256": hashlib.sha256(preserve_keys_source_model.read_bytes()).hexdigest(),
-                "source_vmd_sha256": hashlib.sha256(preserve_keys_source.read_bytes()).hexdigest(),
-                "exported_vmd_sha256": hashlib.sha256(preserve_keys_output.read_bytes()).hexdigest(),
-            }
-            preserve_keys_provenance = {
-                "status": "success",
-                "evaluation_mode": "authored_sparse_keys",
-                "fallback": "none",
-                "pmx_sha256": preserve_keys_identity["pmx_sha256"],
-                "raw_vmd_sha256": preserve_keys_identity["source_vmd_sha256"],
-                "raw_bone_key_count": len(preserve_keys_records),
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_transform_complete": True,
-                "raw_bone_interpolation": preserve_keys_records,
-            }
-            vmd_preserve_keys_case.update(
-                status="pass",
-                export_strategy="preserve_keys",
-                raw_provenance_required=True,
-                source_model=str(preserve_keys_source_model),
-                source=str(preserve_keys_source),
-                output=str(preserve_keys_output),
-                source_identity=preserve_keys_identity,
-                fixture={
-                    "runtime_copy": True,
-                    "nonzero_translation_verified": True,
-                    "nonzero_rotation_verified": True,
-                },
-                output_safety={
-                    "target_existed_before": False,
-                    "target_exists_after": True,
-                    "created": True,
-                    "overwritten": False,
-                    "preserved": True,
-                    "writer_called": True,
-                },
-                parsed_counts={
-                    "bone_frames": len(preserve_keys_records),
-                    "morph_frames": 0,
-                    "camera_frames": 0,
-                    "light_frames": 0,
-                    "shadow_frames": 0,
-                },
-                bone_oracle={
-                    "source": preserve_keys_records,
-                    "source_import": copy.deepcopy(preserve_keys_records),
-                    "exported_file": copy.deepcopy(preserve_keys_records),
-                    "fresh_import": copy.deepcopy(preserve_keys_records),
-                    "comparison": {
-                        "status": "pass",
-                        "boundaries": list(
-                            RELEASE_GATE.VMD_PRESERVE_KEYS_COMPARISON_BOUNDARIES
-                        ),
-                        "checked_frames": [0, 9, 19, 29, 39, 49],
-                        "raw_interpolation_preserved": True,
-                    },
-                },
-                provenance={
-                    "source_import": preserve_keys_provenance,
-                    "fresh_import": {
-                        **copy.deepcopy(preserve_keys_provenance),
-                        "raw_vmd_sha256": preserve_keys_identity["exported_vmd_sha256"],
-                    },
-                    "comparison": {
-                        "status": "pass",
-                        "boundaries": ["source_import", "fresh_import"],
-                        "pmx_identity_preserved": True,
-                        "raw_vmd_identity_checked": True,
-                        "raw_blocks_complete": True,
-                    },
-                },
-                pose={
-                    "source_import": preserve_keys_pose,
-                    "fresh_import": copy.deepcopy(preserve_keys_pose),
-                    "comparison": {
-                        "status": "pass",
-                        "boundaries": ["source_import", "fresh_import"],
-                        "checked_frames": [0, 9, 19, 29, 39, 49],
-                    },
-                },
-                edited_raw_negative={
-                    "status": "pass",
-                    "issue_codes": ["VMD_RAW_PROVENANCE_MISMATCH"],
-                    "expected_issue_code": "VMD_RAW_PROVENANCE_MISMATCH",
-                    "writer_called": False,
-                    "output": str(preserve_keys_edited_output),
-                    "sentinel_sha256_before": hashlib.sha256(preserve_keys_edited_output.read_bytes()).hexdigest(),
-                    "sentinel_sha256_after": hashlib.sha256(preserve_keys_edited_output.read_bytes()).hexdigest(),
-                    "sentinel_preserved": True,
-                    "translation_edited": True,
-                    "rotation_edited": True,
-                },
-                collection={"edited_raw_block_policy": "fail-closed"},
             )
             soft_body_case.update(
                 status="policy-reject",
@@ -868,82 +719,10 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "pmx_impulse",
                     "pmx_flip",
                     "vmd",
-                    "vmd_preserve_keys",
                     "vmd_bake_timeline_model_tracks",
                     "vmd_bake_timeline_camera_light",
                 },
             )
-
-            vmd_preserve_keys_case["provenance"]["source_import"]["status"] = "complete"
-            report_path.write_text(json.dumps(report), encoding="utf-8")
-            step = {"name": "maya_probe_2024", "status": "pass"}
-            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
-            self.assertEqual(step["status"], "fail")
-            self.assertIn("vmd_preserve_keys.provenance.source_import.status must be success", step["error"])
-            vmd_preserve_keys_case["provenance"]["source_import"]["status"] = "success"
-
-            original_pmx_sha = vmd_preserve_keys_case["source_identity"]["pmx_sha256"]
-            vmd_preserve_keys_case["source_identity"]["pmx_sha256"] = "e" * 64
-            report_path.write_text(json.dumps(report), encoding="utf-8")
-            step = {"name": "maya_probe_2024", "status": "pass"}
-            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
-            self.assertEqual(step["status"], "fail")
-            self.assertIn("vmd_preserve_keys.source_model SHA mismatch", step["error"])
-            vmd_preserve_keys_case["source_identity"]["pmx_sha256"] = original_pmx_sha
-
-            original_matrix = vmd_preserve_keys_case["pose"]["fresh_import"]["frames"]["9"][0]["world_matrix"][12]
-            vmd_preserve_keys_case["pose"]["fresh_import"]["frames"]["9"][0]["world_matrix"][12] += 0.5
-            report_path.write_text(json.dumps(report), encoding="utf-8")
-            step = {"name": "maya_probe_2024", "status": "pass"}
-            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
-            self.assertEqual(step["status"], "fail")
-            self.assertIn("worldMatrix mismatch", step["error"])
-            vmd_preserve_keys_case["pose"]["fresh_import"]["frames"]["9"][0]["world_matrix"][12] = original_matrix
-
-            original_sentinel_output = vmd_preserve_keys_case["edited_raw_negative"]["output"]
-            vmd_preserve_keys_case["edited_raw_negative"]["output"] = ""
-            report_path.write_text(json.dumps(report), encoding="utf-8")
-            step = {"name": "maya_probe_2024", "status": "pass"}
-            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
-            self.assertEqual(step["status"], "fail")
-            self.assertIn("edited_raw_negative.output missing", step["error"])
-            vmd_preserve_keys_case["edited_raw_negative"]["output"] = original_sentinel_output
-
-            preserve_keys_edited_output.write_bytes(b"mutated-sentinel")
-            report_path.write_text(json.dumps(report), encoding="utf-8")
-            step = {"name": "maya_probe_2024", "status": "pass"}
-            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
-            self.assertEqual(step["status"], "fail")
-            self.assertIn("edited_raw_negative.output SHA mismatch", step["error"])
-            preserve_keys_edited_output.write_bytes(b"preserve-keys-sentinel")
-
-            original_source_records = copy.deepcopy(vmd_preserve_keys_case["bone_oracle"]["source"])
-            for record in vmd_preserve_keys_case["bone_oracle"]["source"]:
-                record["position"] = [0.0, 0.0, 0.0]
-            report_path.write_text(json.dumps(report), encoding="utf-8")
-            step = {"name": "maya_probe_2024", "status": "pass"}
-            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
-            self.assertEqual(step["status"], "fail")
-            self.assertIn("source requires nonzero position", step["error"])
-            vmd_preserve_keys_case["bone_oracle"]["source"] = copy.deepcopy(original_source_records)
-
-            for record in vmd_preserve_keys_case["bone_oracle"]["source"]:
-                record["rotation"] = [0.0, 0.0, 0.0, 1.0]
-            report_path.write_text(json.dumps(report), encoding="utf-8")
-            step = {"name": "maya_probe_2024", "status": "pass"}
-            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
-            self.assertEqual(step["status"], "fail")
-            self.assertIn("source requires nonidentity quaternion", step["error"])
-            vmd_preserve_keys_case["bone_oracle"]["source"] = original_source_records
-
-            for record in vmd_preserve_keys_case["bone_oracle"]["source"]:
-                record["rotation"] = [0.0, 0.0, 0.0, 2.0] if record["frame_number"] == 9 else [0.0, 0.0, 0.0, 1.0]
-            report_path.write_text(json.dumps(report), encoding="utf-8")
-            step = {"name": "maya_probe_2024", "status": "pass"}
-            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
-            self.assertEqual(step["status"], "fail")
-            self.assertIn("source requires nonidentity quaternion", step["error"])
-            vmd_preserve_keys_case["bone_oracle"]["source"] = original_source_records
 
             missing_bone_import = bone_case["bone_semantics"].pop("fresh_import")
             report_path.write_text(json.dumps(report), encoding="utf-8")

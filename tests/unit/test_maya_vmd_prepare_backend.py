@@ -238,9 +238,7 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
             self.assertIsNone(self.backend.prepare_for_collection(_request()))
         bake.assert_not_called()
 
-    def test_requires_bake_timeline_and_explicit_current_model_projection(self):
-        with self.assertRaises(PrepareVmdExportError):
-            self.backend.discover(_request(export_strategy="preserve_keys"))
+    def test_requires_explicit_current_model_projection(self):
         with self.assertRaises(PrepareVmdExportError):
             self.backend.discover({"options": {"export_strategy": "bake_timeline", "target_model": "|model"}})
         with self.assertRaises(PrepareVmdExportError):
@@ -393,7 +391,6 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
         options = self.collector.stream_calls[0][0]
         self.assertEqual(options["target_model"], "|model")
         self.assertEqual(options["export_strategy"], "bake_timeline")
-        self.assertFalse(options["preserve_raw_bone_transforms"])
         diagnostics = self.backend.diagnostics
         self.assertIn("dependency_discovery", diagnostics)
         self.assertIn("raw_collector", diagnostics)

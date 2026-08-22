@@ -9,7 +9,7 @@ payload still belongs to the discovered scene.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import math
 import time
@@ -130,7 +130,7 @@ class PrepareVmdExportRequest:
             "target_uuid": self.target_uuid,
             "target_identity": self.target_identity,
             "scene_session_id": self.scene_session_id,
-            "export_strategy": self.export_strategy,
+            "export_strategy": VMD_EXPORT_BAKE_TIMELINE,
             "frame_range": tuple(self.frame_range),
             "frame_step": self.frame_step,
             "scale": self.scale,
@@ -282,7 +282,40 @@ def request_fingerprint(request: Any) -> str:
             pass
         if not semantic and hasattr(request, "__dict__"):
             semantic = _filter_request_value(vars(request))
+    if isinstance(semantic, Mapping) and "export_strategy" in semantic:
+        semantic = dict(semantic)
+        semantic["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
+        options = semantic.get("options")
+        if isinstance(options, Mapping) and "export_strategy" in options:
+            normalized_options = dict(options)
+            normalized_options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
+            semantic["options"] = normalized_options
     return fingerprint_payload(_canonical_value(semantic))
+
+
+def _normalize_request_for_export(request: Any) -> Any:
+    """Pass a canonical Bake Timeline request to every host callback."""
+
+    if isinstance(request, PrepareVmdExportRequest):
+        options = request.options
+        if isinstance(options, Mapping) and "export_strategy" in options:
+            options = dict(options)
+            options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
+        return replace(
+            request,
+            export_strategy=VMD_EXPORT_BAKE_TIMELINE,
+            options=options,
+        )
+    if isinstance(request, Mapping):
+        normalized = dict(request)
+        normalized["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
+        options = normalized.get("options")
+        if isinstance(options, Mapping) and "export_strategy" in options:
+            options = dict(options)
+            options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
+            normalized["options"] = options
+        return normalized
+    return request
 
 
 def _read_field(value: Any, name: str, *aliases: str) -> Any:
@@ -370,11 +403,10 @@ def _normalize_discovery(value: Any, request: Any) -> VmdExportDiscovery:
 
 
 def _normalize_frame_options(request: Any) -> Tuple[Tuple[float, float], float, float, str]:
-    export_strategy = str(
-        _read_field(request, "export_strategy") or VMD_EXPORT_BAKE_TIMELINE
-    ).lower()
-    if export_strategy != VMD_EXPORT_BAKE_TIMELINE:
-        raise PrepareVmdExportError("prepared VMD export supports Bake Timeline only")
+    # VMD export has one authority and one mode: the current character scene
+    # evaluated over the requested timeline. Legacy callers may still provide
+    # a stale strategy value, but it is intentionally ignored here.
+    export_strategy = VMD_EXPORT_BAKE_TIMELINE
     frame_range = _read_field(request, "frame_range")
     if frame_range is None:
         start = _read_field(request, "frame_start")
@@ -684,6 +716,7 @@ class PrepareVmdExportAction:
             return result
 
         try:
+            request = _normalize_request_for_export(request)
             fingerprint_begin = time.perf_counter()
             frame_range, frame_step, scale, export_strategy = _normalize_frame_options(request)
             options_fingerprint = request_fingerprint(request)
@@ -777,10 +810,7 @@ class PrepareVmdExportAction:
                 raise PrepareVmdExportRaceError("VMD route or dependency closure changed during collection")
 
             stage_begin = time.perf_counter()
-            raw_loss_warning_required = bool(stream_metadata.get("raw_provenance"))
-            staged_artifact = stream_session.promote(
-                raw_loss_warning_required=raw_loss_warning_required
-            )
+            staged_artifact = stream_session.promote()
             if not isinstance(staged_artifact, PreparedVmdArtifactReceipt):
                 raise PrepareVmdExportError("VMD stream session returned an invalid receipt")
             staged_artifact.validate_identity()

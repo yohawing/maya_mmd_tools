@@ -29,7 +29,6 @@ from .snapshot import ExportValidationSnapshot, fingerprint_payload
 from .scene_preflight import ScenePreflight, ScenePreflightResult
 from .vmd_validator import (
     VMD_EXPORT_BAKE_TIMELINE,
-    VMD_EXPORT_PRESERVE_KEYS,
     VMD_EXPORT_STRATEGIES,
     validate_vmd_data,
     verify_vmd_output,
@@ -49,7 +48,6 @@ __all__ = [
     "UnknownValidationIssueError",
     "ValidationReportArtifactPaths",
     "VMD_EXPORT_BAKE_TIMELINE",
-    "VMD_EXPORT_PRESERVE_KEYS",
     "VMD_EXPORT_STRATEGIES",
     "get_issue_catalog_entry",
     "fingerprint_payload",

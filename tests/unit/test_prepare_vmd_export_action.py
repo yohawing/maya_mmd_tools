@@ -16,7 +16,7 @@ from mmd_tools.actions.prepare_vmd_export_action import (
     request_fingerprint,
 )
 from mmd_tools.actions.prepared_vmd_artifact import PreparedVmdArtifactReceipt
-from mmd_tools.validation.export_validator import ExportValidationIssue, ExportValidationReport
+from mmd_tools.validation.export_validator import ExportValidationReport
 
 
 class _Backend:
@@ -145,22 +145,9 @@ class _StreamingSession:
             }
         )
 
-    def promote(self, *, raw_loss_warning_required=False):
-        self.promote_warning = raw_loss_warning_required
+    def promote(self):
         digest = hashlib.sha256(self.path.read_bytes()).hexdigest()
-        report = ExportValidationReport(
-            "vmd",
-            (
-                ExportValidationIssue(
-                    "RAW_LOSS_WARNING",
-                    "warning",
-                    False,
-                    "output",
-                    "raw provenance was omitted",
-                ),
-            ),
-            mode="bake_timeline",
-        )
+        report = ExportValidationReport("vmd", (), mode="bake_timeline")
         return PreparedVmdArtifactReceipt(
             schema_version=1,
             stage_directory=str(self.directory),
@@ -375,7 +362,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         self.assertEqual(backend.lifecycle_events, ["prepare", "restore"])
         self.assertGreaterEqual(backend.close_calls, 1)
 
-    def test_streaming_prepare_uses_sink_and_retains_warning(self):
+    def test_streaming_prepare_uses_sink_without_legacy_warning(self):
         _StreamingSession.instances.clear()
         backend = _StreamingBackend(
             [_discovery(model_name="stream-model"), _discovery(model_name="stream-model")],
@@ -389,7 +376,6 @@ class PrepareVmdExportActionTests(unittest.TestCase):
                     "shadows": 0,
                     "ik": 0,
                 },
-                "raw_provenance": {"source": "fixture"},
             },
         )
         action = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1", "r1"])))
@@ -407,8 +393,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         self.assertEqual(session.model_name, "stream-model")
         self.assertEqual(session.expected_frame_range, (4, 8))
         self.assertTrue(session.finished)
-        self.assertTrue(session.promote_warning)
-        self.assertTrue(result.token.validation_report.requires_warning_ack)
+        self.assertFalse(result.token.validation_report.requires_warning_ack)
         self.assertEqual(
             result.token.combined_validation_report,
             result.token.staged_artifact.output_validation_report,
@@ -642,15 +627,15 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         self.assertEqual(backend.collect_calls, 0)
         self.assertIn("revision_before", str(result.error))
 
-    def test_non_bake_timeline_is_rejected_before_discovery(self):
-        backend = _Backend([_discovery()])
-        result = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1"]))).execute(
+    def test_legacy_strategy_is_normalized_before_discovery(self):
+        backend = _Backend([_discovery(), _discovery()])
+        result = PrepareVmdExportAction(_PreparationBoundary(backend, _Revisions(["r1", "r1"]))).execute(
             _request(export_strategy="preserve_keys")
         )
 
-        self.assertEqual(result.status, "failed")
-        self.assertEqual(backend.discover_calls, 0)
-        self.assertIn("Bake Timeline", str(result.error))
+        self.assertEqual(result.status, "published")
+        self.assertEqual(backend.discover_calls, 2)
+        self.assertEqual(result.token.export_strategy, "bake_timeline")
 
     def test_request_fingerprint_excludes_output_report_and_ack(self):
         base = {

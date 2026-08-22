@@ -20,7 +20,6 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_CAMERA,
     ATTR_MMD_LIGHT,
     ATTR_MMD_MODEL_NAME,
-    ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
 )
 from mmd_tools.validation.snapshot import fingerprint_payload  # noqa: E402
 
@@ -374,10 +373,6 @@ class TestVmdSceneCollector(unittest.TestCase):
             "ownedFamilies": ("translate", "rotate"),
         }
 
-    def test_collect_rejects_bake_timeline_and_directs_callers_to_streaming(self):
-        with self.assertRaisesRegex(ValueError, "collect_to_sink.*prepared"):
-            VmdSceneCollector().collect({"export_strategy": "bake_timeline"})
-
     def test_bake_timeline_collect_to_sink_keeps_canonical_sections_and_never_finishes(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
         self.cmds.children["model_root"] = ["center_joint"]
@@ -445,13 +440,6 @@ class TestVmdSceneCollector(unittest.TestCase):
         )
 
         self.assertEqual(result["validation_frame_range"], (3, 7))
-
-    def test_bake_timeline_collect_to_sink_rejects_raw_preservation(self):
-        with self.assertRaisesRegex(ValueError, "cannot preserve raw"):
-            VmdSceneCollector().collect_to_sink(
-                {"export_strategy": "bake_timeline", "preserve_raw_bone_transforms": True},
-                object(),
-            )
 
     def test_bake_timeline_stream_morph_exact_constant_semantics(self):
         self.cmds.node_types.update({"model_root": "transform", "face_bs": "blendShape"})
@@ -1190,18 +1178,6 @@ class TestVmdSceneCollector(unittest.TestCase):
                     "frame_range": (0, 2),
                 }
             )
-
-    def test_indexes_raw_transform_frames_once_by_bone(self):
-        raw = {
-            ("center", 0): ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
-            ("center", 10): ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
-            ("arm", 4): ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
-        }
-
-        self.assertEqual(
-            collector_module._index_raw_bone_transform_frames(raw),
-            {"center": {0, 10}, "arm": {4}},
-        )
 
     def test_collects_bone_frames_from_mmd_named_joints(self):
         self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
@@ -3280,193 +3256,6 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(diagnostics["section_counts"]["ik"], 0)
         self.assertGreaterEqual(diagnostics["total"]["wall_sec"], 0.0)
 
-    def test_uses_complete_raw_interpolation_provenance_from_model_root(self):
-        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
-        self.cmds.children["model_root"] = ["center_joint"]
-        self.cmds.attrs[("model_root", ATTR_MMD_MODEL_NAME)] = "TestModel"
-        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
-        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
-            {
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_key_count": 1,
-                "raw_bone_interpolation": [
-                    {
-                        "bone_name": "センター",
-                        "frame_number": 0,
-                        "interpolation": [7] * 64,
-                    }
-                ],
-            }
-        )
-        for attribute in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
-            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0}
-
-        result = VmdSceneCollector().collect({"target_model": "model_root"})
-
-        self.assertIsNotNone(result["raw_provenance"])
-        self.assertEqual(result["raw_provenance"]["current_model_bone_names"], ["センター"])
-        self.assertEqual(result["bone_frames"][0]["interpolation"], bytes([7]) * 64)
-
-    def test_current_model_bone_scope_is_sorted_without_mutating_raw_records(self):
-        collector = VmdSceneCollector()
-        raw_records = [{"bone_name": "source", "frame_number": 0}]
-        raw_provenance = {"raw_bone_interpolation": raw_records}
-
-        with mock.patch.object(
-            collector,
-            "_mmd_bone_name",
-            side_effect=lambda joint: {"joint_z": "zeta", "joint_a": "alpha"}[joint],
-        ):
-            scoped = collector._attach_current_model_bone_scope(
-                raw_provenance,
-                ["joint_z", "joint_a", "joint_z"],
-                "model_root",
-            )
-
-        self.assertEqual(scoped["current_model_bone_names"], ["alpha", "zeta"])
-        self.assertIs(scoped["raw_bone_interpolation"], raw_records)
-        self.assertNotIn("current_model_bone_names", raw_provenance)
-
-    def test_explicit_raw_roundtrip_preserves_transform_values(self):
-        self.cmds.node_types.update({"model_root": "transform", "center_joint": "joint"})
-        self.cmds.children["model_root"] = ["center_joint"]
-        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
-        raw_record = {
-            "bone_name": "センター",
-            "frame_number": 0,
-            "position": [1.0, 2.0, 3.0],
-            "rotation": [0.0, 0.0, 0.3826834324, 0.9238795325],
-            "interpolation": [7] * 64,
-        }
-        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
-            {
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_transform_complete": True,
-                "raw_bone_key_count": 1,
-                "raw_bone_interpolation": [raw_record],
-            }
-        )
-        for attribute in (
-            "translateX",
-            "translateY",
-            "translateZ",
-            "rotateX",
-            "rotateY",
-            "rotateZ",
-        ):
-            self.cmds.keys[("center_joint", attribute)] = {0.0: 0.0}
-
-        result = VmdSceneCollector().collect(
-            {
-                "target_model": "model_root",
-                "preserve_raw_bone_transforms": True,
-            }
-        )
-
-        frame = result["bone_frames"][0]
-        self.assertEqual(frame["position"], (1.0, 2.0, 3.0))
-        self.assertEqual(frame["rotation"], (0.0, 0.0, 0.3826834324, 0.9238795325))
-
-    def test_rejects_raw_provenance_with_inconsistent_key_count(self):
-        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
-            {
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_key_count": 2,
-                "raw_bone_interpolation": [
-                    {
-                        "bone_name": "センター",
-                        "frame_number": 0,
-                        "interpolation": [7] * 64,
-                    }
-                ],
-            }
-        )
-
-        result = VmdSceneCollector().collect({"target_model": "model_root"})
-
-        self.assertIsNone(result["raw_provenance"])
-
-    def test_preserve_keys_uses_exact_raw_ik_authority_without_scene_nodes(self):
-        self.cmds.node_types["model_root"] = "transform"
-        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
-            {
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_key_count": 0,
-                "raw_bone_interpolation": [],
-                "raw_ik_complete": True,
-                "raw_ik_key_count": 2,
-                "raw_ik_frames": [
-                    {
-                        "frame_number": 12,
-                        "visible": 0,
-                        "ik_states": [["左足ＩＫ", 0], ["右足ＩＫ", 1]],
-                    },
-                    {"frame_number": 3, "visible": 1, "ik_states": []},
-                ],
-            }
-        )
-
-        with mock.patch.object(
-            collector_module,
-            "collect_ik_nodes_by_bone_name",
-            return_value={},
-        ):
-            result = VmdSceneCollector().collect({"target_model": "model_root"})
-
-        self.assertEqual(
-            result["ik_show_hide_frames"],
-            [
-                {
-                    "frame_number": 12,
-                    "visible": 0,
-                    "ik_states": [("左足ＩＫ", 0), ("右足ＩＫ", 1)],
-                },
-                {"frame_number": 3, "visible": 1, "ik_states": []},
-            ],
-        )
-
-    def test_preserve_keys_rejects_declared_raw_ik_count_mismatch(self):
-        self.cmds.node_types["model_root"] = "transform"
-        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
-            {
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_key_count": 0,
-                "raw_bone_interpolation": [],
-                "raw_ik_complete": True,
-                "raw_ik_key_count": 2,
-                "raw_ik_frames": [
-                    {"frame_number": 3, "visible": 1, "ik_states": []}
-                ],
-            }
-        )
-
-        with self.assertRaisesRegex(ValueError, "IK provenance frame count"):
-            VmdSceneCollector().collect({"target_model": "model_root"})
-
-    def test_bake_timeline_blocks_source_ik_without_owned_scene_route(self):
-        self.cmds.node_types["model_root"] = "transform"
-        self.cmds.attrs[("model_root", ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON)] = json.dumps(
-            {
-                "raw_bone_interpolation_complete": True,
-                "raw_ik_complete": True,
-                "raw_ik_key_count": 1,
-            }
-        )
-
-        with mock.patch.object(
-            collector_module,
-            "collect_ik_nodes_by_bone_name",
-            return_value={},
-        ), self.assertRaisesRegex(ValueError, "no owned IK scene representation"):
-            self._collect_to_sink(
-                {
-                    "target_model": "model_root",
-                    "export_strategy": "bake_timeline",
-                    "frame_range": (0, 1),
-                },
-                self._timeline_sampler(),
-            )
-
     def test_auto_discovery_is_scoped_to_namespaced_model_root(self):
         root = "|hero:model_ROOT"
         mesh_group = "|hero:model_ROOT|hero:Geometry"
@@ -3696,44 +3485,6 @@ class TestVmdSceneCollector(unittest.TestCase):
         ]
         self.assertEqual(sparse_frames, [0, 2])
         self.assertEqual(dense_frames, [0, 1, 2])
-
-    def test_new_control_rig_key_forces_dense_sampling_with_raw_provenance(self):
-        self.cmds.node_types["edited_joint"] = "joint"
-        self.cmds.attrs[("edited_joint", ATTR_MMD_BONE_NAME)] = "下半身"
-        for attribute in (
-            "translateX",
-            "translateY",
-            "translateZ",
-            "rotateX",
-            "rotateY",
-            "rotateZ",
-        ):
-            self.cmds.keys[("edited_joint", attribute)] = {
-                0.0: 0.0,
-                2.0: 1.0,
-                3.0: 2.0,
-            }
-
-        frames = VmdSceneCollector().collect_bone_frames(
-            ["edited_joint"],
-            dense_sample=True,
-            rotation_interpolation={
-                "下半身": {
-                    0: bytes([20] * 64),
-                    2: bytes([20] * 64),
-                }
-            },
-            raw_bone_transforms={
-                ("下半身", 0): ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
-                ("下半身", 2): ((1.0, 1.0, 1.0), (0.0, 0.0, 0.0, 1.0)),
-            },
-            time_converter=lambda value: value,
-        )
-
-        self.assertEqual(
-            [row["frame_number"] for row in frames],
-            [0, 1, 2, 3],
-        )
 
     def test_rejects_control_rig_export_while_editing(self):
         collector_module.read_mmd_control_rig_metadata = lambda _target_model: {

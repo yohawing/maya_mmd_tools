@@ -138,11 +138,10 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
             self.assertEqual(translations["buttons"]["export_pmx"], values[3])
             self.assertEqual(translations["buttons"]["validate_animation"], values[4])
             self.assertEqual(translations["buttons"]["export_vmd"], values[5])
-            self.assertIn("vmd_preserve_keys", translations["options"])
             self.assertIn("vmd_export_timeline", translations["options"])
             self.assertIn("vmd_bake_export", translations["checkboxes"])
             self.assertIn("vmd_bake_export_help", translations["messages"])
-            self.assertIn("export_strategy", translations["fields"])
+            self.assertNotIn("export_strategy", translations["fields"])
             self.assertIn("animation_timeline_bake", translations["export_progress"])
             self.assertIn("animation_prepared_payload", translations["export_progress"])
 

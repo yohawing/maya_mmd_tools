@@ -10,11 +10,8 @@ from ..core.vmd_data import VmdData
 from .export_validator import ExportValidationIssue, ExportValidationReport
 
 
-VMD_EXPORT_PRESERVE_KEYS = "preserve_keys"
 VMD_EXPORT_BAKE_TIMELINE = "bake_timeline"
-VMD_EXPORT_STRATEGIES = frozenset({VMD_EXPORT_PRESERVE_KEYS, VMD_EXPORT_BAKE_TIMELINE})
-_CURRENT_MODEL_BONE_SCOPE = "current_model_bone_names"
-_INVALID_BONE_SCOPE = object()
+VMD_EXPORT_STRATEGIES = frozenset({VMD_EXPORT_BAKE_TIMELINE})
 
 
 # The stream verifier intentionally never retains one issue per record.  A
@@ -80,11 +77,6 @@ def _normalize_frame_range(
     return (start, end), None
 
 
-def _info(code: str, path: str, message: str) -> ExportValidationIssue:
-    """Create a non-blocking informational VMD issue."""
-    return ExportValidationIssue(code, "info", False, path, message)
-
-
 def _finite_values(values: Iterable[Any], path: str, issues: List[ExportValidationIssue]) -> None:
     """Append one issue for the first non-finite numeric value."""
     try:
@@ -143,254 +135,21 @@ def _interpolation(value: Any, expected: int, path: str, issues: List[ExportVali
         )
 
 
-def _raw_bone_scope(raw_provenance: Any) -> Any:
-    """Return the optional Current Model supported-bone name scope."""
-    if not isinstance(raw_provenance, Mapping) or _CURRENT_MODEL_BONE_SCOPE not in raw_provenance:
-        return None
-    values = raw_provenance.get(_CURRENT_MODEL_BONE_SCOPE)
-    if not isinstance(values, (list, tuple, set, frozenset)):
-        return _INVALID_BONE_SCOPE
-    scope = set()
-    for value in values:
-        if not isinstance(value, str) or not value:
-            return _INVALID_BONE_SCOPE
-        scope.add(value)
-    return scope
-
-
-def _raw_bone_provenance_records(
-    raw_provenance: Any,
-    frame_range: Optional[Tuple[int, int]] = None,
-) -> Tuple[bool, Optional[Dict[Tuple[str, int], bytes]]]:
-    """Normalize complete raw bone records, scoped to the requested range."""
-    if not isinstance(raw_provenance, Mapping) or "raw_bone_interpolation" not in raw_provenance:
-        return False, None
-    records = raw_provenance.get("raw_bone_interpolation")
-    if not isinstance(records, list) or not raw_provenance.get("raw_bone_interpolation_complete"):
-        return True, None
-    try:
-        expected_count = int(raw_provenance.get("raw_bone_key_count", len(records)))
-    except (TypeError, ValueError, OverflowError):
-        return True, None
-    if expected_count != len(records):
-        return True, None
-
-    scope = _raw_bone_scope(raw_provenance)
-    if scope is _INVALID_BONE_SCOPE:
-        return True, None
-
-    normalized: Dict[Tuple[str, int], bytes] = {}
-    for record in records:
-        if not isinstance(record, Mapping):
-            return True, None
-        name = str(record.get("bone_name") or "")
-        if scope is not None and name not in scope:
-            continue
-        try:
-            frame_number = int(record.get("frame_number"))
-            interpolation = bytes(record.get("interpolation", ()))
-        except (TypeError, ValueError, OverflowError):
-            return True, None
-        key = (name, frame_number)
-        if not name or frame_number < 0 or len(interpolation) != 64 or key in normalized:
-            return True, None
-        normalized[key] = interpolation
-    if frame_range is not None:
-        start, end = frame_range
-        normalized = {
-            key: interpolation
-            for key, interpolation in normalized.items()
-            if start <= key[1] <= end
-        }
-    return True, normalized
-
-
-def _raw_bone_payload_mismatch(
-    expected: Mapping[Tuple[str, int], bytes],
-    frames: Iterable[Any],
-) -> Tuple[int, int, int, int]:
-    """Return missing, extra, changed-payload, and duplicate raw key counts."""
-    actual: Dict[Tuple[str, int], bytes] = {}
-    duplicate_count = 0
-    invalid_count = 0
-    for frame in frames:
-        try:
-            key = (str(frame.bone_name), int(frame.frame_number))
-            interpolation = bytes(frame.interpolation)
-        except (AttributeError, TypeError, ValueError, OverflowError):
-            invalid_count += 1
-            continue
-        if key in actual:
-            duplicate_count += 1
-        actual[key] = interpolation
-    missing_count = len(set(expected).difference(actual))
-    extra_count = len(set(actual).difference(expected))
-    changed_count = sum(
-        expected[key] != actual[key]
-        for key in set(expected).intersection(actual)
-    )
-    return missing_count, extra_count, changed_count, duplicate_count + invalid_count
-
-
-def _raw_bone_transform_records(
-    raw_provenance: Any,
-    frame_range: Optional[Tuple[int, int]] = None,
-) -> Tuple[bool, Optional[Dict[Tuple[str, int], Tuple[Tuple[float, ...], Tuple[float, ...]]]]]:
-    """Normalize complete raw bone position/rotation provenance."""
-    if not isinstance(raw_provenance, Mapping) or "raw_bone_transform_complete" not in raw_provenance:
-        return False, None
-    records = raw_provenance.get("raw_bone_interpolation")
-    if not isinstance(records, list) or not raw_provenance.get("raw_bone_transform_complete"):
-        return True, None
-    try:
-        expected_count = int(raw_provenance.get("raw_bone_key_count", len(records)))
-    except (TypeError, ValueError, OverflowError):
-        return True, None
-    if expected_count != len(records):
-        return True, None
-
-    scope = _raw_bone_scope(raw_provenance)
-    if scope is _INVALID_BONE_SCOPE:
-        return True, None
-
-    normalized: Dict[Tuple[str, int], Tuple[Tuple[float, ...], Tuple[float, ...]]] = {}
-    for record in records:
-        if not isinstance(record, Mapping):
-            return True, None
-        name = str(record.get("bone_name") or "")
-        if scope is not None and name not in scope:
-            continue
-        try:
-            frame_number = int(record.get("frame_number"))
-            position = tuple(float(value) for value in record.get("position", ()))
-            rotation = tuple(float(value) for value in record.get("rotation", ()))
-        except (TypeError, ValueError, OverflowError):
-            return True, None
-        key = (name, frame_number)
-        if (
-            not name
-            or frame_number < 0
-            or len(position) != 3
-            or len(rotation) != 4
-            or not all(math.isfinite(value) for value in position + rotation)
-            or key in normalized
-        ):
-            return True, None
-        normalized[key] = (position, rotation)
-    if frame_range is not None:
-        start, end = frame_range
-        normalized = {
-            key: transform
-            for key, transform in normalized.items()
-            if start <= key[1] <= end
-        }
-    return True, normalized
-
-
-def _same_raw_bone_transform(
-    actual: Tuple[Tuple[float, ...], Tuple[float, ...]],
-    expected: Tuple[Tuple[float, ...], Tuple[float, ...]],
-) -> bool:
-    """Compare position and quaternion with sign-equivalent rotation semantics."""
-    actual_position, actual_rotation = actual
-    expected_position, expected_rotation = expected
-    if len(actual_position) != 3 or len(actual_rotation) != 4:
-        return False
-    if any(
-        not math.isclose(float(value), float(source), rel_tol=0.0, abs_tol=1.0e-6)
-        for value, source in zip(actual_position, expected_position)
-    ):
-        return False
-    actual_norm = math.sqrt(sum(float(value) ** 2 for value in actual_rotation))
-    expected_norm = math.sqrt(sum(float(value) ** 2 for value in expected_rotation))
-    if actual_norm <= 1.0e-12 or expected_norm <= 1.0e-12:
-        return False
-    dot = abs(
-        sum(float(value) * float(source) for value, source in zip(actual_rotation, expected_rotation))
-        / (actual_norm * expected_norm)
-    )
-    return math.isclose(dot, 1.0, rel_tol=0.0, abs_tol=1.0e-6)
-
-
-def _raw_bone_transform_mismatch(
-    expected: Mapping[Tuple[str, int], Tuple[Tuple[float, ...], Tuple[float, ...]]],
-    frames: Iterable[Any],
-) -> Tuple[int, int, int, int]:
-    """Return missing, extra, changed, and duplicate/invalid raw transform counts."""
-    actual: Dict[Tuple[str, int], Tuple[Tuple[float, ...], Tuple[float, ...]]] = {}
-    duplicate_count = 0
-    invalid_count = 0
-    for frame in frames:
-        try:
-            key = (str(frame.bone_name), int(frame.frame_number))
-            position = tuple(float(value) for value in frame.position)
-            rotation = tuple(float(value) for value in frame.rotation)
-        except (AttributeError, TypeError, ValueError, OverflowError):
-            invalid_count += 1
-            continue
-        if key in actual:
-            duplicate_count += 1
-        actual[key] = (position, rotation)
-    missing_count = len(set(expected).difference(actual))
-    extra_count = len(set(actual).difference(expected))
-    changed_count = sum(
-        not _same_raw_bone_transform(actual[key], expected[key])
-        for key in set(expected).intersection(actual)
-    )
-    return missing_count, extra_count, changed_count, duplicate_count + invalid_count
-
-
 def validate_vmd_data(
     vmd_data: VmdData,
     export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
     *,
-    raw_provenance: Optional[Any] = None,
     frame_range: Optional[Tuple[int, int]] = None,
-    require_raw_provenance: bool = True,
 ) -> ExportValidationReport:
-    """Validate a normalized VMD payload for the selected export strategy.
-
-    Preserving imported keys requires caller-provided raw provenance so an
-    imported motion is never silently presented as a raw round-trip.  Baking
-    the timeline validates evaluated frame payloads and does not require
-    provenance.
-    """
-    export_strategy = str(export_strategy or "").lower()
+    """Validate a normalized current-scene VMD payload."""
+    # The character scene is the sole export authority. Legacy callers may
+    # still pass a stale mode value, but it must never select another writer.
+    export_strategy = VMD_EXPORT_BAKE_TIMELINE
     issues = []
-    if export_strategy not in VMD_EXPORT_STRATEGIES:
-        issues.append(
-            _issue(
-                "VMD_EXPORT_STRATEGY_UNSUPPORTED",
-                "export_strategy",
-                f"VMD export strategy {export_strategy!r} is not supported",
-            )
-        )
-    if export_strategy == VMD_EXPORT_PRESERVE_KEYS and require_raw_provenance and raw_provenance is None:
-        issues.append(
-            _issue(
-                "VMD_RAW_PROVENANCE_MISSING",
-                "raw_provenance",
-                "Preserve Keys requires imported raw key/interpolation provenance",
-            )
-        )
     if not isinstance(vmd_data, VmdData):
         issues.append(_issue("OUTPUT_PARSE_FAILED", "animation_data", "VMD animation data must be VmdData"))
         return ExportValidationReport("vmd", tuple(issues), mode=export_strategy)
 
-    if (
-        export_strategy == VMD_EXPORT_BAKE_TIMELINE
-        and isinstance(raw_provenance, Mapping)
-        and isinstance(raw_provenance.get("raw_bone_interpolation"), list)
-        and raw_provenance["raw_bone_interpolation"]
-        and raw_provenance.get("raw_bone_transform_complete") is not True
-    ):
-        issues.append(
-            _info(
-                "VMD_BAKE_TIMELINE_RAW_LOSS",
-                "export_strategy",
-                "Bake Timeline does not preserve imported raw bone keys or interpolation bytes",
-            )
-        )
 
     start = end = None
     if frame_range is not None:
@@ -416,62 +175,6 @@ def validate_vmd_data(
         if not math.isfinite(norm) or norm <= 1e-12:
             issues.append(_issue("VMD_QUATERNION_INVALID", f"{path}.rotation", "VMD quaternion must not be zero"))
 
-    if export_strategy == VMD_EXPORT_PRESERVE_KEYS:
-        raw_frame_range = (start, end) if start is not None and end is not None else None
-        has_raw_records, expected_raw_records = _raw_bone_provenance_records(
-            raw_provenance,
-            frame_range=raw_frame_range,
-        )
-        if has_raw_records:
-            if expected_raw_records is None:
-                issues.append(
-                    _issue(
-                        "VMD_RAW_PROVENANCE_MISMATCH",
-                        "raw_provenance.raw_bone_interpolation",
-                        "Preserve Keys raw bone provenance is incomplete or malformed",
-                    )
-                )
-            else:
-                missing, extra, changed, duplicate = _raw_bone_payload_mismatch(
-                    expected_raw_records,
-                    vmd_data.bone_frames,
-                )
-                if missing or extra or changed or duplicate:
-                    issues.append(
-                        _issue(
-                            "VMD_RAW_PROVENANCE_MISMATCH",
-                            "raw_provenance.raw_bone_interpolation",
-                            "Preserve Keys raw bone key/interpolation mismatch: "
-                            f"missing={missing}, extra={extra}, changed={changed}, duplicate={duplicate}",
-                        )
-                    )
-        has_raw_transforms, expected_raw_transforms = _raw_bone_transform_records(
-            raw_provenance,
-            frame_range=raw_frame_range,
-        )
-        if has_raw_transforms:
-            if expected_raw_transforms is None:
-                issues.append(
-                    _issue(
-                        "VMD_RAW_PROVENANCE_MISMATCH",
-                        "raw_provenance.raw_bone_interpolation",
-                        "Preserve Keys raw bone transform provenance is incomplete or malformed",
-                    )
-                )
-            else:
-                missing, extra, changed, duplicate = _raw_bone_transform_mismatch(
-                    expected_raw_transforms,
-                    vmd_data.bone_frames,
-                )
-                if missing or extra or changed or duplicate:
-                    issues.append(
-                        _issue(
-                            "VMD_RAW_PROVENANCE_MISMATCH",
-                            "raw_provenance.raw_bone_interpolation",
-                            "Preserve Keys raw bone position/rotation mismatch: "
-                            f"missing={missing}, extra={extra}, changed={changed}, duplicate={duplicate}",
-                        )
-                    )
 
     for index, frame in enumerate(vmd_data.morph_frames):
         path = f"morph_frames[{index}]"
@@ -626,12 +329,11 @@ def verify_vmd_output(
                     f"VMD output could not be parsed: {type(exc).__name__}",
                 ),
             ),
-            mode=str(export_strategy or "").lower(),
+            mode=VMD_EXPORT_BAKE_TIMELINE,
         )
     report = validate_vmd_data(
         vmd_data,
         export_strategy=export_strategy,
-        require_raw_provenance=False,
     )
     section_names = {
         "bone_frames": vmd_data.bone_frames,
@@ -672,17 +374,6 @@ def _stream_issue(
     """Append a bounded blocking issue for the byte-stream verifier."""
     if len(issues) < _STREAM_MAX_ISSUES:
         issues.append(_issue(code, path, message))
-
-
-def _stream_info(
-    issues: List[ExportValidationIssue],
-    code: str,
-    path: str,
-    message: str,
-) -> None:
-    """Append a bounded informational issue for the byte-stream verifier."""
-    if len(issues) < _STREAM_MAX_ISSUES:
-        issues.append(_info(code, path, message))
 
 
 def _stream_name(
@@ -730,8 +421,6 @@ def verify_vmd_output_streaming(
     expected_sha256: Optional[str] = None,
     expected_size: Optional[int] = None,
     expected_frame_range: Optional[Tuple[int, int]] = None,
-    raw_loss_warning_required: bool = False,
-    ack_warnings: bool = False,
 ) -> ExportValidationReport:
     """Verify a VMD file one wire record at a time.
 
@@ -741,7 +430,7 @@ def verify_vmd_output_streaming(
     present to have a complete count and complete records.  The stream writer
     emits all six canonical count fields, including an empty IK section.
     """
-    normalized_strategy = str(export_strategy or "").lower()
+    normalized_strategy = VMD_EXPORT_BAKE_TIMELINE
     issues: List[ExportValidationIssue] = []
     metadata_names = frozenset(_STREAM_METADATA_NAMES.values())
     canonical_counts: Optional[Dict[str, int]] = None
@@ -803,14 +492,6 @@ def verify_vmd_output_streaming(
             frame_range_issue.path,
             frame_range_issue.message,
         )
-    if normalized_strategy not in VMD_EXPORT_STRATEGIES:
-        _stream_issue(
-            issues,
-            "VMD_EXPORT_STRATEGY_UNSUPPORTED",
-            "export_strategy",
-            "VMD export strategy {!r} is not supported".format(normalized_strategy),
-        )
-
     output_path = Path(file_path)
     if not output_path.is_file():
         _stream_issue(issues, "OUTPUT_FILE_MISSING", "output", "temporary output file does not exist")
@@ -1050,14 +731,6 @@ def verify_vmd_output_streaming(
             "VMD output could not be read: {}".format(type(exc).__name__),
         )
 
-    if raw_loss_warning_required and not ack_warnings and normalized_strategy == VMD_EXPORT_BAKE_TIMELINE:
-        _stream_info(
-            issues,
-            "VMD_BAKE_TIMELINE_RAW_LOSS",
-            "export_strategy",
-            "Bake Timeline does not preserve imported raw bone keys or interpolation bytes",
-        )
-
     for section, _ in _STREAM_SECTIONS:
         expected = canonical_counts.get(section) if canonical_counts is not None else None
         if expected is not None and expected != counts[section]:
@@ -1114,7 +787,6 @@ def verify_vmd_output_streaming(
 
 
 __all__ = [
-    "VMD_EXPORT_PRESERVE_KEYS",
     "VMD_EXPORT_BAKE_TIMELINE",
     "VMD_EXPORT_STRATEGIES",
     "validate_vmd_data",

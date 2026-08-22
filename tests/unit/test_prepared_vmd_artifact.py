@@ -23,11 +23,6 @@ class _StreamingVerifier:
         if self.blocking:
             issue = ExportValidationIssue("OUTPUT_PARSE_FAILED", "fatal", True, "output", "bad")
             return ExportValidationReport("vmd", (issue,), mode=mode)
-        if kwargs.get("raw_loss_warning_required") and not kwargs.get("ack_warnings"):
-            issue = ExportValidationIssue(
-                "VMD_BAKE_TIMELINE_RAW_LOSS", "warning", False, "export_strategy", "review"
-            )
-            return ExportValidationReport("vmd", (issue,), mode=mode)
         return ExportValidationReport("vmd", (), mode=mode)
 
 
@@ -112,9 +107,7 @@ class PreparedVmdArtifactTests(unittest.TestCase):
 
     def test_incremental_session_promotes_stream_summary_without_vmd_data(self):
         verifier = _StreamingVerifier()
-        with PreparedVmdStageSession(
-            "モデル", output_verifier=verifier, raw_loss_warning_required=True
-        ) as session:
+        with PreparedVmdStageSession("モデル", output_verifier=verifier) as session:
             session.write_frame(
                 "bones",
                 {
@@ -132,11 +125,10 @@ class PreparedVmdArtifactTests(unittest.TestCase):
         self.assertEqual(receipt.section_counts["bone_frames"], 1)
         self.assertEqual(receipt.section_counts["morph_frames"], 1)
         self.assertEqual(receipt.frame_bounds, (4, 8))
-        self.assertTrue(receipt.output_validation_report.requires_warning_ack)
+        self.assertFalse(receipt.output_validation_report.requires_warning_ack)
         self.assertEqual(verifier.calls[0][2]["expected_counts"]["bones"], 1)
         self.assertEqual(verifier.calls[0][2]["expected_size"], receipt.size)
         self.assertEqual(verifier.calls[0][2]["expected_sha256"], receipt.sha256)
-        self.assertFalse(verifier.calls[0][2]["ack_warnings"])
         stage_directory = Path(receipt.stage_directory)
         self.assertTrue(stage_directory.is_dir())
         self.assertTrue(receipt.cleanup())
@@ -167,7 +159,6 @@ class PreparedVmdArtifactTests(unittest.TestCase):
             receipt = session.promote()
 
         self.assertEqual(verifier.calls[0][2]["expected_frame_range"], (4, 8))
-        self.assertFalse(verifier.calls[0][2]["ack_warnings"])
         receipt.cleanup()
 
     def test_incremental_session_rejects_range_change_after_collection(self):

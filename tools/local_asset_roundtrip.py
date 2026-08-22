@@ -36,7 +36,6 @@ MANIFEST_SCHEMA_VERSION = 2
 FLOAT_TOLERANCE = 1.0e-4
 VMD_EXPORT_BAKE_TIMELINE_POSE_TOLERANCE = 1.0e-2
 DEFAULT_EXPORT_WRITE_BUDGET_SEC = 60.0
-EXPECTED_BAKE_TIMELINE_WARNING = "VMD_BAKE_TIMELINE_RAW_LOSS"
 FAILURE_CLASSIFICATIONS = (
     "import_failed",
     "edit_failed",
@@ -294,7 +293,8 @@ def _allowed_warning_codes(validation: Any, export_format: str) -> tuple[list[st
         for issue in issues
         if str(getattr(issue, "severity", "")).casefold() == "warning"
     ]
-    allowed = EXPECTED_BAKE_TIMELINE_WARNING if str(export_format).casefold() == "vmd" else None
+    del export_format
+    allowed = None
     return (
         [code for code in warning_codes if allowed is not None and code == allowed],
         [code for code in warning_codes if code != allowed],
@@ -409,7 +409,7 @@ def _select_cases(
 
 
 def _vmd_payload(data: Any) -> dict[str, Any]:
-    """Normalize every VMD section for structural and raw interpolation checks."""
+    """Normalize every VMD section for structural scene-motion checks."""
 
     def vector(value: Any) -> list[float]:
         return [round(float(item), 7) for item in (value or ())]
@@ -688,8 +688,8 @@ def _bake_timeline_track_boundary_diff(
 ) -> dict[str, list[str]]:
     """Classify Bake Timeline required-track loss at prepare and writer boundaries.
 
-    The raw source remains authoritative for model-resolved input tracks, but
-    tracks that cannot resolve to the paired model are explicitly excluded.
+    The current character scene remains authoritative for model-resolved input
+    tracks, while tracks that cannot resolve to the paired model are explicitly excluded.
     The immutable prepared snapshot is then authoritative at the writer
     boundary.  Keeping both comparisons prevents preparation-time loss (for
     example, a dynamic physics bone) from being mistaken for an allowed raw
@@ -1629,7 +1629,6 @@ def _apply_motion_adjustment(
         },
         "morph": morph_witness,
         "export_strategy": "bake_timeline",
-        "preserve_raw_bone_transforms": False,
     }
 
 
@@ -2606,7 +2605,6 @@ def _run_vmd_case(
             "track_names": True,
             "key_frames": True,
             "ik_states": True,
-            "raw_interpolation": False,
             "bake_timeline_dense_semantics": True,
             "fresh_pose": True,
             "fresh_camera_light": source_camera_oracle is not None,

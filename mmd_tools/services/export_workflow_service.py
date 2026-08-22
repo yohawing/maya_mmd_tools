@@ -289,6 +289,9 @@ class ExportWorkflowService:
         """Copy options and make the request path explicit."""
         options = dict(request.options or {})
         options.setdefault("file_path", request.file_path)
+        if str(options.get("export_format") or "").lower() == "vmd":
+            # Keep legacy callers from selecting a removed export mode.
+            options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
         return options
 
     @staticmethod
@@ -344,11 +347,8 @@ class ExportWorkflowService:
         options: Mapping[str, Any],
         export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
     ) -> Any:
-        """Collect and normalize non-Bake-Timeline VMD payload through the action."""
-        if str(export_strategy or "").lower() == VMD_EXPORT_BAKE_TIMELINE:
-            raise PrepareVmdExportError(
-                "Bake Timeline VMD export requires a prepared VMD export token"
-            )
+        """Collect a current-scene VMD payload for legacy direct callers."""
+        del export_strategy
         animation_data = request.animation_data
         if animation_data is None:
             animation_data = options.get("animation_data")
@@ -357,7 +357,7 @@ class ExportWorkflowService:
             if collector is None:
                 raise ValueError("VMD export requires animation_data or a collector")
             collector_options = dict(options)
-            collector_options.setdefault("export_strategy", export_strategy)
+            collector_options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
             animation_data = collector(collector_options)
         converter = getattr(self.vmd_action, "_to_vmd_data", None)
         if callable(converter):
@@ -381,7 +381,13 @@ class ExportWorkflowService:
         )
         metadata = dict(scene_result.metadata)
         export_format = metadata.get("format")
-        export_strategy = metadata.get("export_strategy") or "model"
+        export_strategy = (
+            VMD_EXPORT_BAKE_TIMELINE
+            if export_format == "vmd"
+            else metadata.get("export_strategy") or "model"
+        )
+        if export_format == "vmd":
+            metadata["export_strategy"] = export_strategy
         if report.is_blocking:
             self._emit_progress(progress_callback, "report_ready")
             return ExportWorkflowResult(STATE_BLOCKED, report, metadata)
@@ -439,7 +445,7 @@ class ExportWorkflowService:
                 if request.prepared_vmd_token is not None:
                     # A token is only valid for Bake Timeline. Keep this explicit so
                     # a caller cannot smuggle a prepared artifact into a
-                    # preserve-keys request.
+                    # VMD export always uses the current scene as its authority.
                     raise PrepareVmdExportError(
                         "prepared VMD export token requires Bake Timeline"
                     )
@@ -448,9 +454,6 @@ class ExportWorkflowService:
                     self._target_options(options, metadata),
                     export_strategy=export_strategy,
                 )
-                raw_provenance = getattr(payload, "raw_provenance", None)
-                if options.get("raw_provenance") is None and raw_provenance is not None:
-                    options["raw_provenance"] = raw_provenance
                 validator = getattr(self.vmd_action, "_validator", None)
                 if validator is None:
                     raise ValueError("VMD action does not expose a validator")
@@ -540,9 +543,6 @@ class ExportWorkflowService:
                 )
                 action_result.validation_report_artifacts = report_artifacts
             else:
-                raw_provenance = getattr(validation.payload, "raw_provenance", None)
-                if options.get("raw_provenance") is None and raw_provenance is not None:
-                    options["raw_provenance"] = raw_provenance
                 action_result = self.vmd_action.execute(
                     ExportVmdRequest(
                         request.file_path,

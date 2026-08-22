@@ -145,29 +145,5 @@ class ValidationReportCatalogTests(unittest.TestCase):
             "validation.pmx_vertex_sdef_unsupported.remediation",
         )
 
-    def test_bake_timeline_raw_loss_is_cataloged_as_acknowledgeable_warning(self):
-        entry = get_issue_catalog_entry("VMD_BAKE_TIMELINE_RAW_LOSS")
-        report = ExportValidationReport(
-            "vmd",
-            (
-                ExportValidationIssue(
-                    "VMD_BAKE_TIMELINE_RAW_LOSS",
-                    "warning",
-                    False,
-                    "export_strategy",
-                    "dense bake drops imported raw keys",
-                ),
-            ),
-            mode="bake_timeline",
-        )
-
-        payload = report.to_canonical_dict()
-
-        self.assertEqual(entry.category, "animation")
-        self.assertEqual(entry.loss_policy, "warn")
-        self.assertTrue(payload["requires_warning_ack"])
-        self.assertEqual(payload["issues"][0]["loss_policy"], "warn")
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -38,12 +38,9 @@ DEFAULT_MORPH_PMX = ROOT / "tests" / "data" / "for_unit_test" / "test_vmd_morph_
 DEFAULT_VMD = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube_motion.vmd"
 VMD_BAKE_TIMELINE_MODEL_TRACK_PMX = ROOT / "tests" / "data" / "yw_test_model_control_rig_bone_morph.pmx"
 VMD_BAKE_TIMELINE_MODEL_TRACK_VMD = ROOT / "tests" / "data" / "yw_test_model_control_rig_bone_morph.vmd"
-VMD_PRESERVE_KEYS_PMX = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube.pmx"
-VMD_PRESERVE_KEYS_VMD = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube_motion.vmd"
 VMD_BAKE_TIMELINE_CAMERA_LIGHT_VMD = ROOT / "tests" / "data" / "test_camera_light.vmd"
 ORACLE_FRAMES = (0, 9, 19, 29, 39, 49)
 VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES = (0, 6, 10, 12, 20)
-VMD_PRESERVE_KEYS_FRAMES = ORACLE_FRAMES
 VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES = (0, 30, 60)
 VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES = (0, 15, 30, 45, 60)
 VMD_BAKE_TIMELINE_CAMERA_LIGHT_CANONICAL_INTERPOLATION = tuple([20] * 24)
@@ -2939,122 +2936,6 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _vmd_preserve_keys_payload(data: Any) -> list[dict[str, Any]]:
-    """Normalize every raw VMD bone key for Preserve Keys field-level comparison."""
-    payload = []
-    for frame in data.bone_frames:
-        interpolation = list(bytes(frame.interpolation))
-        if len(interpolation) != 64:
-            raise AssertionError("Preserve Keys bone interpolation must contain 64 bytes")
-        payload.append(
-            {
-                "bone_name": str(frame.bone_name),
-                "frame_number": int(frame.frame_number),
-                "position": _round_values(frame.position),
-                "rotation": _round_values(frame.rotation),
-                "interpolation": interpolation,
-            }
-        )
-    payload.sort(key=lambda item: (item["bone_name"], item["frame_number"]))
-    return payload
-
-
-def _capture_vmd_import_provenance(root: str) -> dict[str, Any]:
-    """Read and normalize the raw VMD import provenance attached to a model."""
-    from maya import cmds
-    from mmd_tools.core.constants import ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON
-
-    plug = f"{root}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}"
-    if not cmds.attributeQuery(ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON, node=root, exists=True):
-        raise RuntimeError("Preserve Keys source model has no VMD provenance attribute")
-    raw = cmds.getAttr(plug)
-    try:
-        parsed = json.loads(raw or "{}")
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Preserve Keys VMD provenance is malformed JSON") from exc
-    if not isinstance(parsed, dict):
-        raise RuntimeError("Preserve Keys VMD provenance must be an object")
-    records = parsed.get("raw_bone_interpolation")
-    if not isinstance(records, list):
-        raise RuntimeError("Preserve Keys VMD provenance has no raw bone records")
-    normalized_records = []
-    for record in records:
-        if not isinstance(record, dict):
-            raise RuntimeError("Preserve Keys VMD provenance has a malformed raw bone record")
-        interpolation = list(bytes(record.get("interpolation", ())))
-        position = _round_values(record.get("position", ()))
-        rotation = _round_values(record.get("rotation", ()))
-        if len(interpolation) != 64 or len(position) != 3 or len(rotation) != 4:
-            raise RuntimeError("Preserve Keys VMD provenance raw bone payload is malformed")
-        normalized_records.append(
-            {
-                "bone_name": str(record.get("bone_name") or ""),
-                "frame_number": int(record.get("frame_number")),
-                "position": position,
-                "rotation": rotation,
-                "interpolation": interpolation,
-            }
-        )
-    normalized_records.sort(key=lambda item: (item["bone_name"], item["frame_number"]))
-    return {
-        "status": parsed.get("status"),
-        "evaluation_mode": parsed.get("evaluation_mode"),
-        "fallback": parsed.get("fallback"),
-        "pmx_path": parsed.get("pmx_path"),
-        "pmx_sha256": parsed.get("pmx_sha256"),
-        "raw_vmd_path": parsed.get("raw_vmd_path"),
-        "raw_vmd_sha256": parsed.get("raw_vmd_sha256"),
-        "raw_bone_key_count": parsed.get("raw_bone_key_count"),
-        "raw_bone_interpolation_complete": parsed.get("raw_bone_interpolation_complete"),
-        "raw_bone_transform_complete": parsed.get("raw_bone_transform_complete"),
-        "raw_bone_interpolation": normalized_records,
-    }
-
-
-def _prepare_vmd_preserve_keys_fixture(out_dir: Path) -> Path:
-    """Create a runtime Preserve Keys copy with a non-zero raw translation key."""
-    from mmd_tools.core.vmd_data import VmdData
-
-    data = VmdData().parse_file(str(VMD_PRESERVE_KEYS_VMD))
-    target = next((frame for frame in data.bone_frames if int(frame.frame_number) == 9), None)
-    if target is None:
-        raise RuntimeError("Preserve Keys fixture has no frame 9 bone key")
-    target.position = (0.25, 0.0, -0.5)
-    output = out_dir / "fixtures" / "preserve_keys_nonzero_motion.vmd"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    data.write_file(str(output))
-    return output
-
-
-def _capture_vmd_preserve_keys_pose_oracle(root: str, frames: Iterable[int]) -> dict[str, Any]:
-    """Capture checked-frame joint world matrices for the Preserve Keys pose oracle."""
-    from maya import cmds
-
-    joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
-    indexed = []
-    for joint in joints:
-        index = _attribute_value(joint, "mmd_bone_index")
-        name = _attribute_value(joint, "mmd_bone_name")
-        if index is None or name is None:
-            continue
-        indexed.append((int(index), str(name), str(joint)))
-    indexed.sort(key=lambda item: (item[0], item[1]))
-    if not indexed:
-        raise RuntimeError("Preserve Keys pose oracle found no indexed joints")
-    pose_frames = {}
-    for frame in frames:
-        frame_number = int(frame)
-        cmds.currentTime(frame_number, edit=True)
-        entries = []
-        for index, name, joint in indexed:
-            matrix = _round_values(cmds.xform(joint, query=True, worldSpace=True, matrix=True) or [])
-            if len(matrix) != 16 or not all(math.isfinite(float(value)) for value in matrix):
-                raise RuntimeError(f"Preserve Keys pose oracle has malformed worldMatrix at frame {frame_number}")
-            entries.append({"index": index, "name": name, "world_matrix": matrix})
-        pose_frames[str(frame_number)] = entries
-    return {"joint_count": len(indexed), "frames": pose_frames}
-
-
 def _capture_vmd_bake_timeline_model_track_oracle(
     root: str,
     frames: Iterable[int],
@@ -3269,259 +3150,6 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
         },
     }
 
-
-def _run_vmd_preserve_keys_case(out_dir: Path) -> dict[str, Any]:
-    """Roundtrip an unedited imported VMD through the raw-preserving Preserve Keys path."""
-    from mmd_tools.core.vmd_data import VmdData
-    from mmd_tools.services.export_workflow_service import (
-        ExportWorkflowRequest,
-        ExportWorkflowService,
-    )
-
-    source_fixture = _prepare_vmd_preserve_keys_fixture(out_dir)
-    source_data = VmdData().parse_file(str(source_fixture))
-    source_payload = _vmd_preserve_keys_payload(source_data)
-    if not source_payload:
-        raise RuntimeError("Preserve Keys fixture has no bone keys")
-    if not any(any(abs(float(value)) > FLOAT_TOLERANCE for value in record["position"]) for record in source_payload):
-        raise RuntimeError("Preserve Keys runtime fixture has no non-zero translation key")
-    if not any(any(abs(float(value)) > FLOAT_TOLERANCE for value in record["rotation"][:3]) for record in source_payload):
-        raise RuntimeError("Preserve Keys runtime fixture has no non-zero rotation key")
-    source_root = _fresh_import(VMD_PRESERVE_KEYS_PMX)
-    source_root = _import_vmd_into_current_scene(
-        source_root,
-        VMD_PRESERVE_KEYS_PMX,
-        source_fixture,
-    )
-    source_provenance = _capture_vmd_import_provenance(source_root)
-    source_oracle = _capture_vmd_preserve_keys_pose_oracle(source_root, VMD_PRESERVE_KEYS_FRAMES)
-    output = out_dir / "motion_preserve_keys.vmd"
-    report_dir = out_dir / "report"
-    target_existed_before = output.exists()
-    result = ExportWorkflowService().execute(
-        ExportWorkflowRequest(
-            str(output),
-            {
-                "export_strategy": "preserve_keys",
-                "export_format": "vmd",
-                "require_target": True,
-                "target_model": source_root,
-                "target_identity": source_root,
-                "start_frame": min(VMD_PRESERVE_KEYS_FRAMES),
-                "end_frame": max(VMD_PRESERVE_KEYS_FRAMES),
-                "model_name": source_data.header.model_name,
-                "validation_report_dir": str(report_dir),
-                "validation_report_evidence": {
-                    "gate": "V070-EXPORT-RELEASE-GATE-1",
-                    "fixture": source_fixture.name,
-                    "export_strategy": "preserve_keys",
-                    "fresh_import": True,
-                    "oracles": ["bone_keys", "raw_interpolation", "pose", "provenance"],
-                    "raw_provenance_required": True,
-                },
-            },
-        ),
-        acknowledge_warnings=True,
-    )
-    if not result.succeeded:
-        raise RuntimeError(f"VMD Preserve Keys export failed: {result.error or result.report}")
-    if not output.exists():
-        raise AssertionError("VMD Preserve Keys export reported success without creating output")
-    exported_data = VmdData().parse_file(str(output))
-    exported_payload = _vmd_preserve_keys_payload(exported_data)
-    if not exported_payload or len(exported_payload) != len(source_payload):
-        raise AssertionError("VMD Preserve Keys output bone key count differs from source")
-    if exported_data.morph_frames or exported_data.camera_frames or exported_data.light_frames:
-        raise AssertionError("VMD Preserve Keys output contains unexpected non-bone tracks")
-    if exported_payload != source_payload:
-        raise AssertionError("VMD Preserve Keys output changed raw bone key payload")
-
-    fresh_root = _fresh_import(VMD_PRESERVE_KEYS_PMX)
-    fresh_root = _import_vmd_into_current_scene(
-        fresh_root,
-        VMD_PRESERVE_KEYS_PMX,
-        output,
-    )
-    fresh_provenance = _capture_vmd_import_provenance(fresh_root)
-    fresh_oracle = _capture_vmd_preserve_keys_pose_oracle(fresh_root, VMD_PRESERVE_KEYS_FRAMES)
-    source_sha256 = _sha256_file(source_fixture)
-    output_sha256 = _sha256_file(output)
-    pmx_sha256 = _sha256_file(VMD_PRESERVE_KEYS_PMX)
-    if source_provenance["raw_bone_interpolation"] != source_payload:
-        raise AssertionError("source import raw provenance differs from source VMD payload")
-    if fresh_provenance["raw_bone_interpolation"] != exported_payload:
-        raise AssertionError("fresh import raw provenance differs from exported VMD payload")
-    for label, provenance, vmd_sha256 in (
-        ("source", source_provenance, source_sha256),
-        ("fresh", fresh_provenance, output_sha256),
-    ):
-        if provenance.get("pmx_sha256") != pmx_sha256:
-            raise AssertionError(f"{label} Preserve Keys provenance PMX identity mismatch")
-        if provenance.get("raw_vmd_sha256") != vmd_sha256:
-            raise AssertionError(f"{label} Preserve Keys provenance VMD identity mismatch")
-        if provenance.get("raw_bone_key_count") != len(source_payload):
-            raise AssertionError(f"{label} Preserve Keys provenance key count mismatch")
-        if provenance.get("raw_bone_interpolation_complete") is not True:
-            raise AssertionError(f"{label} Preserve Keys interpolation provenance is incomplete")
-        if provenance.get("raw_bone_transform_complete") is not True:
-            raise AssertionError(f"{label} Preserve Keys transform provenance is incomplete")
-        if provenance.get("fallback") != "none":
-            raise AssertionError(f"{label} Preserve Keys provenance reports an unexpected fallback")
-    pose_failures = []
-    if source_oracle.get("joint_count") != fresh_oracle.get("joint_count"):
-        pose_failures.append("joint_count mismatch")
-    for frame in VMD_PRESERVE_KEYS_FRAMES:
-        source_joints = source_oracle["frames"].get(str(frame), [])
-        fresh_joints = fresh_oracle["frames"].get(str(frame), [])
-        if len(source_joints) != len(fresh_joints):
-            pose_failures.append(f"frame {frame} joint count mismatch")
-            continue
-        for index, (source_joint, fresh_joint) in enumerate(zip(source_joints, fresh_joints)):
-            if source_joint["index"] != fresh_joint["index"] or source_joint["name"] != fresh_joint["name"]:
-                pose_failures.append(f"frame {frame} joint {index} identity mismatch")
-                continue
-            if _compare_float_lists(source_joint["world_matrix"], fresh_joint["world_matrix"]) > FLOAT_TOLERANCE:
-                pose_failures.append(f"frame {frame} joint {index} worldMatrix mismatch")
-    if pose_failures:
-        raise AssertionError("VMD Preserve Keys pose mismatch: " + "; ".join(pose_failures))
-
-    from maya import cmds
-
-    edited_joint = next(
-        (
-            joint
-            for joint in (cmds.listRelatives(source_root, allDescendents=True, type="joint", fullPath=True) or [])
-            if _attribute_value(joint, "mmd_bone_index") == 0
-        ),
-        None,
-    )
-    if edited_joint is None:
-        raise RuntimeError("Preserve Keys edited-raw negative could not find bone index 0")
-    cmds.currentTime(9, edit=True)
-    original_translate = float(cmds.getAttr(f"{edited_joint}.translateX"))
-    original_rotate = float(cmds.getAttr(f"{edited_joint}.rotateY"))
-    cmds.setKeyframe(edited_joint, attribute="translateX", time=9, value=original_translate + 1.0)
-    cmds.setKeyframe(edited_joint, attribute="rotateY", time=9, value=original_rotate + 15.0)
-    edited_output = out_dir / "edited_preserve_keys_sentinel.vmd"
-    sentinel = b"pre-existing Preserve Keys output sentinel"
-    edited_output.parent.mkdir(parents=True, exist_ok=True)
-    edited_output.write_bytes(sentinel)
-    sentinel_before = _sha256_file(edited_output)
-    edited_result = ExportWorkflowService().execute(
-        ExportWorkflowRequest(
-            str(edited_output),
-            {
-                "export_strategy": "preserve_keys",
-                "export_format": "vmd",
-                "require_target": True,
-                "target_model": source_root,
-                "target_identity": source_root,
-                "start_frame": min(VMD_PRESERVE_KEYS_FRAMES),
-                "end_frame": max(VMD_PRESERVE_KEYS_FRAMES),
-                "model_name": source_data.header.model_name,
-            },
-        ),
-        acknowledge_warnings=True,
-    )
-    sentinel_after = _sha256_file(edited_output)
-    issue_codes = [issue.code for issue in edited_result.report.issues]
-    if edited_result.succeeded or "VMD_RAW_PROVENANCE_MISMATCH" not in issue_codes:
-        raise AssertionError("edited Preserve Keys raw provenance did not fail with stable mismatch code")
-    if sentinel_before != sentinel_after:
-        raise AssertionError("edited Preserve Keys failure changed the pre-existing output sentinel")
-    return {
-        "status": "pass",
-        "format": "vmd_preserve_keys",
-        "export_strategy": "preserve_keys",
-        "source": str(source_fixture),
-        "source_fixture": str(source_fixture),
-        "source_model": str(VMD_PRESERVE_KEYS_PMX),
-        "output": str(output),
-        "report_json": str(report_dir / "report.json"),
-        "report_md": str(report_dir / "report.md"),
-        "source_identity": {
-            "pmx_sha256": pmx_sha256,
-            "source_vmd_sha256": source_sha256,
-            "exported_vmd_sha256": output_sha256,
-        },
-        "fixture": {
-            "runtime_copy": True,
-            "original": str(VMD_PRESERVE_KEYS_VMD),
-            "nonzero_translation_frame": 9,
-            "nonzero_translation_verified": True,
-            "nonzero_rotation_verified": True,
-        },
-        "output_safety": {
-            "target_existed_before": target_existed_before,
-            "target_exists_after": output.exists(),
-            "created": not target_existed_before,
-            "overwritten": target_existed_before,
-            "preserved": True,
-            "writer_called": True,
-        },
-        "raw_provenance_required": True,
-        "bone_oracle": {
-            "source": source_payload,
-            "source_import": source_provenance["raw_bone_interpolation"],
-            "exported_file": exported_payload,
-            "fresh_import": fresh_provenance["raw_bone_interpolation"],
-            "comparison": {
-                "status": "pass",
-                "boundaries": ["source", "source_import", "exported_file", "fresh_import"],
-                "checked_frames": list(VMD_PRESERVE_KEYS_FRAMES),
-                "raw_interpolation_preserved": True,
-            },
-        },
-        "provenance": {
-            "source_import": source_provenance,
-            "fresh_import": fresh_provenance,
-            "comparison": {
-                "status": "pass",
-                "boundaries": ["source_import", "fresh_import"],
-                "pmx_identity_preserved": True,
-                "raw_vmd_identity_checked": True,
-                "raw_blocks_complete": True,
-            },
-        },
-        "pose": {
-            "source_import": source_oracle,
-            "fresh_import": fresh_oracle,
-            "comparison": {
-                "status": "pass",
-                "boundaries": ["source_import", "fresh_import"],
-                "checked_frames": list(VMD_PRESERVE_KEYS_FRAMES),
-            },
-        },
-        "edited_raw_negative": {
-            "status": "pass",
-            "issue_codes": issue_codes,
-            "expected_issue_code": "VMD_RAW_PROVENANCE_MISMATCH",
-            "writer_called": edited_result.action_result is not None,
-            "output": str(edited_output),
-            "sentinel_sha256_before": sentinel_before,
-            "sentinel_sha256_after": sentinel_after,
-            "sentinel_preserved": sentinel_before == sentinel_after,
-            "translation_edited": True,
-            "rotation_edited": True,
-        },
-        "parsed_counts": {
-            "bone_frames": len(exported_data.bone_frames),
-            "morph_frames": len(exported_data.morph_frames),
-            "camera_frames": len(exported_data.camera_frames),
-            "light_frames": len(exported_data.light_frames),
-            "shadow_frames": len(exported_data.shadow_frames),
-        },
-        "collection": {
-            "collector": "ExportWorkflowService -> VmdSceneCollector.collect",
-            "export_strategy": "preserve_keys",
-            "target_model": source_root,
-            "source_fresh_import": True,
-            "result_fresh_import": True,
-            "edited_raw_block_policy": "fail-closed",
-        },
-    }
-
-
 def _run_vmd_bake_timeline_model_tracks_case(out_dir: Path) -> dict[str, Any]:
     """Roundtrip real Bake Timeline bone, morph, and IK show/hide model tracks."""
     from mmd_tools.core.vmd_data import VmdData
@@ -3567,7 +3195,6 @@ def _run_vmd_bake_timeline_model_tracks_case(out_dir: Path) -> dict[str, Any]:
                     "fixture": VMD_BAKE_TIMELINE_MODEL_TRACK_VMD.name,
                     "fresh_import": True,
                     "oracles": ["bone_tracks", "morph_tracks", "ik_show_hide_tracks"],
-                    "bake_timeline_raw_loss_warning": True,
                 },
             },
         ),
@@ -3632,7 +3259,6 @@ def _run_vmd_bake_timeline_model_tracks_case(out_dir: Path) -> dict[str, Any]:
                 "status": "pass",
                 "boundaries": ["source_import", "exported_file", "fresh_import"],
                 "checked_frames": list(VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES),
-                "raw_key_interpolation_preserved": False,
             },
         },
         "parsed_counts": {
@@ -4000,7 +3626,6 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
             "interpolation": {
             "source": source_interpolation,
             "exported_file": exported_interpolation,
-            "raw_preserved": source_interpolation == exported_interpolation,
             "bake_timeline_normalized": source_interpolation != exported_interpolation,
             "canonical_expected": canonical_interpolation,
             "canonical_length": len(canonical_interpolation),
@@ -4012,7 +3637,6 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
             "checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES),
             "dense_checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
             "dense_status": "pass",
-            "raw_interpolation_preserved": source_interpolation == exported_interpolation,
         },
         "dense": {
             "checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
@@ -4217,19 +3841,6 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
             }
         )
     try:
-        cases.append(_run_vmd_preserve_keys_case(out_dir / "vmd-preserve-keys"))
-    except Exception as exc:
-        cases.append(
-            {
-                "status": "fail",
-                "format": "vmd_preserve_keys",
-                "source": str(VMD_PRESERVE_KEYS_VMD),
-                "source_model": str(VMD_PRESERVE_KEYS_PMX),
-                "error": f"{type(exc).__name__}: {exc}",
-                "traceback": traceback.format_exc(limit=12),
-            }
-        )
-    try:
         cases.append(_run_vmd_bake_timeline_model_tracks_case(out_dir / "vmd-bake-timeline-model-tracks"))
     except Exception as exc:
         cases.append(
@@ -4271,7 +3882,6 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
             "pmx_impulse": str(impulse_fixture),
             "pmx_flip": str(flip_fixture),
             "vmd": str(vmd_path),
-            "vmd_preserve_keys": str(VMD_PRESERVE_KEYS_VMD),
             "vmd_bake_timeline_model_tracks": str(VMD_BAKE_TIMELINE_MODEL_TRACK_VMD),
             "vmd_bake_timeline_camera_light": str(VMD_BAKE_TIMELINE_CAMERA_LIGHT_VMD),
         },

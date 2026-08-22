@@ -107,10 +107,6 @@ class ExportVmdAction:
         evidence = dict(configured_evidence)
         evidence.setdefault("target_path", str(request.file_path))
         evidence.setdefault("export_strategy", export_strategy)
-        evidence.setdefault(
-            "raw_provenance_supplied",
-            bool(request.options.get("raw_provenance", request.options.get("vmd_raw_provenance"))),
-        )
         return write_validation_report_artifacts(
             report,
             report_directory,
@@ -149,10 +145,12 @@ class ExportVmdAction:
         options: Mapping[str, Any],
     ) -> ExportValidationReport:
         """Run the configured validator with the VMD workflow options."""
+        del export_strategy
+        export_strategy = VMD_EXPORT_BAKE_TIMELINE
         frame_range = options.get("frame_range")
         if frame_range is None and "frame_start" in options and "frame_end" in options:
             frame_range = (options.get("frame_start"), options.get("frame_end"))
-        if str(export_strategy or "").lower() == VMD_EXPORT_BAKE_TIMELINE and frame_range is not None:
+        if frame_range is not None:
             try:
                 maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
                 frame_range = tuple(
@@ -163,7 +161,6 @@ class ExportVmdAction:
                 # Preserve malformed input for the validator's existing
                 # deterministic VMD_FRAME_RANGE report.
                 pass
-        raw_provenance = options.get("raw_provenance", options.get("vmd_raw_provenance"))
         try:
             parameters = inspect.signature(self._validator).parameters
         except (TypeError, ValueError):
@@ -173,8 +170,6 @@ class ExportVmdAction:
             for parameter in parameters.values()
         )
         kwargs = {}
-        if accepts_kwargs or "raw_provenance" in parameters:
-            kwargs["raw_provenance"] = raw_provenance
         if accepts_kwargs or "frame_range" in parameters:
             kwargs["frame_range"] = frame_range
         return self._validator(vmd_data, export_strategy, **kwargs)
@@ -182,19 +177,17 @@ class ExportVmdAction:
     def execute(self, request: ExportVmdRequest) -> ExportVmdResult:
         """Run VMD validation/export and convert failures into a result object."""
         # Keep derived collector state local so reusing a request cannot carry
-        # raw provenance from a previous collection into a later export.
+        # mutable options from a previous export into a later export.
         request = ExportVmdRequest(
             request.file_path,
-            dict(request.options or {}),
+            {**dict(request.options or {}), "export_strategy": VMD_EXPORT_BAKE_TIMELINE},
             animation_data=request.animation_data,
         )
         validation_report: Optional[ExportValidationReport] = None
         payload_fingerprint: Optional[str] = None
         validation_report_artifacts: Optional[ValidationReportArtifactPaths] = None
         temporary_path: Optional[str] = None
-        export_strategy = str(
-            request.options.get("export_strategy") or VMD_EXPORT_BAKE_TIMELINE
-        ).lower()
+        export_strategy = VMD_EXPORT_BAKE_TIMELINE
 
         def build_result(
             *,
@@ -226,28 +219,9 @@ class ExportVmdAction:
         try:
             animation_data = request.animation_data
             if animation_data is None:
-                if export_strategy == VMD_EXPORT_BAKE_TIMELINE:
-                    raise ValueError(
-                        "Bake Timeline VMD export requires prepared animation_data"
-                    )
-                if self._collector is None:
-                    raise ValueError("VMD export requires animation_data or a collector")
-                collector_options = dict(request.options)
-                collector_options.setdefault("export_strategy", export_strategy)
-                animation_data = self._collector(collector_options)
-            if request.options.get("raw_provenance") is None:
-                if isinstance(animation_data, Mapping):
-                    collected_provenance = animation_data.get("raw_provenance")
-                else:
-                    collected_provenance = getattr(animation_data, "raw_provenance", None)
-                if collected_provenance is not None:
-                    request.options["raw_provenance"] = collected_provenance
+                raise ValueError("Bake Timeline VMD export requires prepared animation_data")
 
             vmd_data = self._to_vmd_data(animation_data)
-            if request.options.get("raw_provenance") is None:
-                converted_provenance = getattr(vmd_data, "raw_provenance", None)
-                if converted_provenance is not None:
-                    request.options["raw_provenance"] = converted_provenance
             validation_report = self._validate(vmd_data, export_strategy, request.options)
             if validation_report.is_blocking:
                 validation_error = ExportValidationError(validation_report)

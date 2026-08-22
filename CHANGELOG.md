@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Verified the canonical PMX 2.0 IK and flag-dependent bone metadata subset through Maya export and fresh import on Maya 2024/2026.
 - Preserved PMX 2.0 additional UV channels and UV/additional-UV morph four-component metadata through fresh import, while leaving Maya UV-set runtime evaluation and visual parity outside the supported claim.
 - Standardized PMX vertex export on BDEF4. SDEF/QDEF are imported as linear skin weights without retaining their auxiliary deformation data; explicit SDEF/QDEF payloads and PMX 2.1-only Flip morphs, Impulse morphs, and soft bodies remain fail-closed.
-- Gated VMD Bake Timeline dense model/camera/light export and Preserve Keys raw preservation of bone keys plus 64-byte bone interpolation for unedited motions with matching provenance; other Preserve Keys tracks are outside the validated raw-preservation scope, Bake Timeline does not preserve raw interpolation, and self-shadow remains unsupported.
+- Standardized VMD export on the fixed Bake Timeline strategy, with the imported character scene as the sole motion authority; source-VMD identity and raw-key equivalence are no longer export contracts.
 - Added canonical MaterialTab authoring for shared toon indices and non-shared custom toon path/index, with PMX parse and Maya 2024/2026 fresh-import evidence.
 
 ## [0.6.2] - 2026-08-01

@@ -33,22 +33,22 @@ class TestValidationConsoleRendering(unittest.TestCase):
             "vmd",
             (
                 ExportValidationIssue(
-                    "VMD_RAW_PROVENANCE_MISSING",
+                    "VMD_FRAME_RANGE",
                     "fatal",
                     True,
-                    "raw_provenance",
-                    "imported raw key provenance was not supplied",
+                    "frame_range",
+                    "current scene frame range is invalid",
                 ),
             ),
-            mode="preserve_keys",
+            mode="bake_timeline",
         )
 
-        rendered = render_validation_console_text(report, {"fixture": "preserve_keys_missing_raw"})
+        rendered = render_validation_console_text(report, {"fixture": "current_scene_invalid_range"})
 
-        self.assertIn("[FATAL] VMD_RAW_PROVENANCE_MISSING", rendered)
-        self.assertIn("imported raw key provenance was not supplied", rendered)
+        self.assertIn("[FATAL] VMD_FRAME_RANGE", rendered)
+        self.assertIn("current scene frame range is invalid", rendered)
         self.assertIn("Remediation:", rendered)
-        self.assertIn("preserve_keys_missing_raw", rendered)
+        self.assertIn("current_scene_invalid_range", rendered)
 
     def test_oversized_report_shows_folded_occurrence_counts(self):
         report = ExportValidationReport(
@@ -80,11 +80,11 @@ class TestValidationConsoleRendering(unittest.TestCase):
                 "vmd",
                 (
                     ExportValidationIssue(
-                        "VMD_BAKE_TIMELINE_RAW_LOSS",
-                        "warning",
-                        False,
-                        "export_strategy",
-                        "dense bake drops imported raw keys",
+                        "VMD_FRAME_RANGE",
+                        "fatal",
+                        True,
+                        "frame_range",
+                        "current scene frame range is invalid",
                     ),
                 ),
                 mode="bake_timeline",
@@ -94,9 +94,9 @@ class TestValidationConsoleRendering(unittest.TestCase):
 
             self.assertIn("エクスポート検証コンソール", rendered)
             self.assertIn("書き出し方式: 現在のタイムラインをVMD化", rendered)
-            self.assertIn("タイトル: 現在のタイムライン書き出しによる", rendered)
-            self.assertIn("影響: 密なベイクにより", rendered)
-            self.assertIn("対処方法: 未編集のボーンモーションは「読み込んだ未編集ボーンキーを保持」", rendered)
+            self.assertIn("タイトル:", rendered)
+            self.assertIn("影響:", rendered)
+            self.assertIn("対処方法:", rendered)
         finally:
             translator.set_language(previous_language)
 

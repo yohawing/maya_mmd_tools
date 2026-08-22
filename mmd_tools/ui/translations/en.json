@@ -368,7 +368,6 @@
     "humanik_source_tooltip": "Select a characterized MMD model, or a HumanIK character already defined in the scene, as the retarget SOURCE."
   },
   "options": {
-    "vmd_preserve_keys": "Preserve unedited imported bone keys",
     "vmd_export_timeline": "Export the current timeline",
     "none": "None",
     "import_mesh": "Import Mesh",
@@ -506,7 +505,6 @@
     "motion_scale": "Motion Scale:",
     "reduce_quality": "Reduce Quality:",
     "format": "Format:",
-    "export_strategy": "Export strategy",
     "range": "Range",
     "start": "Start",
     "end": "End",
@@ -840,8 +838,8 @@
     },
     "animation": {
       "label": "Animation",
-      "impact": "The exported motion would be malformed, ambiguous, or lose raw animation provenance.",
-      "remediation": "Repair the VMD frame payload or use a supported VMD export strategy."
+      "impact": "The exported motion would be malformed or ambiguous.",
+      "remediation": "Repair the current character-scene VMD frame payload."
     },
     "physics": {
       "label": "Physics",
@@ -886,12 +884,6 @@
       "impact": "The export workflow stopped before it could produce a trustworthy result.",
       "remediation": "Review the reported exception and output path, correct the underlying problem, and retry validation or export.",
       "action": "Review export workflow failure"
-    },
-    "vmd_bake_timeline_raw_loss": {
-      "title": "Raw animation loss when exporting the current timeline",
-      "impact": "Dense baking will replace imported raw bone keys and interpolation bytes.",
-      "remediation": "For unedited bone motion, choose Preserve unedited imported bone keys, or acknowledge this loss before exporting the current timeline.",
-      "action": "Acknowledge timeline export animation loss"
     }
   }
 }

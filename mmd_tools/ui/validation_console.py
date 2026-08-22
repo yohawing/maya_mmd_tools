@@ -77,14 +77,9 @@ def render_validation_console_text(
     summary = canonical["summary"]
     display_strategy = canonical["mode"]
     if translator is not None and canonical["format"] == "vmd":
-        strategy_key = {
-            "preserve_keys": "vmd_preserve_keys",
-            "bake_timeline": "vmd_export_timeline",
-        }.get(str(display_strategy).lower())
-        if strategy_key is not None:
-            display_strategy = translator.translate(
-                f"options.{strategy_key}", default=display_strategy
-            )
+        display_strategy = translator.translate(
+            "options.vmd_export_timeline", default=display_strategy
+        )
     lines = [
         label("title", "Export Validation Console"),
         f"{label('status', 'Status')}: {canonical['status'].upper()}",

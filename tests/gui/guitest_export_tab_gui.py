@@ -24,7 +24,6 @@ from mmd_tools.validation.issue_catalog import get_issue_catalog_entry
 from mmd_tools.ui.translations import UITranslator
 from mmd_tools.validation.vmd_validator import (
     VMD_EXPORT_BAKE_TIMELINE,
-    VMD_EXPORT_PRESERVE_KEYS,
     validate_vmd_data,
 )
 from tests.common.ui_action_coverage import (
@@ -168,14 +167,10 @@ class TestExportTabGUI(GuiTestBase):
             )
             tab.pane_tabs.setCurrentIndex(1)
             self.assertTrue(tab.bake_export_check.isChecked())
+            self.assertFalse(tab.bake_export_check.isEnabled())
             self.assertEqual(tab.validate_button.text(), "アニメーションを検証")
             self.assertEqual(tab.export_button.text(), "アニメーションを書き出し")
-            bake_spy = QtSignalInvocationSpy(
-                "ExportTab.motion_bake_changed",
-                tab.bake_export_check.toggled,
-                tab.bake_export_check,
-            )
-            tab.bake_export_check.setChecked(False)
+            tab.bake_export_check.click()
             range_spy = QtSignalInvocationSpy(
                 "ExportTab.frame_range_changed", tab.frame_range_check.toggled, tab.frame_range_check
             )
@@ -191,7 +186,8 @@ class TestExportTabGUI(GuiTestBase):
             request = tab.build_request("model_ROOT")
             self.assertEqual(request.options["export_format"], "vmd")
             self.assertEqual(request.options["current_model_root"], "model_ROOT")
-            self.assertEqual(request.options["export_strategy"], "preserve_keys")
+            self.assertEqual(request.options["export_strategy"], VMD_EXPORT_BAKE_TIMELINE)
+            self.assertTrue(tab.bake_export_check.isChecked())
             self.assertEqual(request.options["frame_range"], (12, 42))
             _emit_witness(
                 "export.pane_selector",
@@ -201,15 +197,6 @@ class TestExportTabGUI(GuiTestBase):
                 "model and animation panes expose fixed PMX/VMD formats",
                 pane_spy,
                 tab.pane_tabs,
-            )
-            _emit_witness(
-                "export.motion_bake",
-                "selector",
-                "objectName=motionBakeExport",
-                "QTest.setChecked(objectName=motionBakeExport, false)",
-                "unchecked VMD bake preserves eligible imported bone keys",
-                bake_spy,
-                tab.bake_export_check,
             )
             _emit_witness(
                 "export.motion_frame_range",
@@ -273,7 +260,7 @@ class TestExportTabGUI(GuiTestBase):
         report = ExportValidationReport(
             "vmd",
             (),
-            mode=VMD_EXPORT_PRESERVE_KEYS,
+            mode=VMD_EXPORT_BAKE_TIMELINE,
         )
         workflow = _PaneSwitchWorkflow(
             report,
@@ -283,7 +270,6 @@ class TestExportTabGUI(GuiTestBase):
         presenter = ExportPresenter(tab, app_state, workflow_service=workflow)
         try:
             tab.pane_tabs.setCurrentIndex(1)
-            tab.bake_export_check.setChecked(False)
             model_page = tab._pages[tab.MODEL_PANE]
             motion_page = tab._pages[tab.MOTION_PANE]
 
@@ -311,8 +297,8 @@ class TestExportTabGUI(GuiTestBase):
         translator.set_language("en")
         tab = self._create_visible_tab()
         try:
-            issue_code = "VMD_RAW_PROVENANCE_MISSING"
-            observed = "imported raw key provenance was not supplied"
+            issue_code = "VMD_FRAME_RANGE"
+            observed = "current scene frame range is invalid"
             catalog_entry = get_issue_catalog_entry(issue_code)
             report = ExportValidationReport(
                 "vmd",
@@ -321,11 +307,11 @@ class TestExportTabGUI(GuiTestBase):
                         issue_code,
                         "fatal",
                         True,
-                        "raw_provenance",
+                        "frame_range",
                         observed,
                     ),
                 ),
-                mode="preserve_keys",
+                mode="bake_timeline",
             )
             evidence = {
                 "fixture": "gui_validation_console",
@@ -342,7 +328,7 @@ class TestExportTabGUI(GuiTestBase):
 
             console = tab.validation_console
             self.assertEqual(console.issue_list.count(), 1)
-            self.assertIn("[FATAL] VMD_RAW_PROVENANCE_MISSING", console.issue_list.item(0).text())
+            self.assertIn("[FATAL] VMD_FRAME_RANGE", console.issue_list.item(0).text())
 
             category_index = console.filter_combo.findData(catalog_entry.category)
             self.assertGreaterEqual(category_index, 0)
@@ -433,25 +419,12 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(tab.validation_console.acknowledge_check.text(), "警告を確認済みにする")
             self.assertFalse(hasattr(tab.validation_console, "save_button"))
 
-            report = validate_vmd_data(
-                VmdData(),
-                VMD_EXPORT_BAKE_TIMELINE,
-                raw_provenance={
-                    "raw_bone_interpolation": [
-                        {
-                            "bone_name": "センター",
-                            "frame_number": 0,
-                            "interpolation": [20] * 64,
-                        }
-                    ]
-                },
-            )
+            report = validate_vmd_data(VmdData(), VMD_EXPORT_BAKE_TIMELINE)
             tab.validation_console.set_report(report)
             QApplication.processEvents()
             detail = tab.validation_console.detail_text.toPlainText()
-            self.assertIn("タイトル: 現在のタイムライン書き出しによる", detail)
-            self.assertIn("影響: 密なベイクにより", detail)
-            self.assertIn("対処方法: 未編集のボーンモーションは「読み込んだ未編集ボーンキーを保持」", detail)
+            self.assertIn("書き出し方式: 現在のタイムラインをVMD化", detail)
+            self.assertIn("問題はありません", detail)
 
             translator.set_language("en")
             translate_spy = ActionInvocationSpy.wrap(
@@ -501,77 +474,6 @@ class TestExportTabGUI(GuiTestBase):
             self._delete_tab(tab)
             translator.set_language(previous_language)
 
-    def test_acknowledgeable_warning_is_forwarded_to_successful_export_route(self):
-        """Real Maya widgets route an explicit acknowledgement to export."""
-        tab = self._create_visible_tab()
-        report = ExportValidationReport(
-            "vmd",
-            (
-                ExportValidationIssue(
-                    "VMD_BAKE_TIMELINE_RAW_LOSS",
-                    "warning",
-                    False,
-                    "export_strategy",
-                    "fixture acknowledgement warning",
-                ),
-            ),
-            mode=VMD_EXPORT_PRESERVE_KEYS,
-        )
-        workflow = _WarningWorkflow(report)
-        app_state = _GuiAppState()
-        presenter = ExportPresenter(tab, app_state, workflow_service=workflow)
-        try:
-            tab.pane_tabs.setCurrentIndex(1)
-            tab.bake_export_check.setChecked(False)
-            tab.validation_console.set_report(report, {"fixture": "bake-timeline-raw-loss"})
-            QApplication.processEvents()
-
-            console = tab.validation_console
-            self.assertTrue(report.requires_warning_ack)
-            self.assertTrue(console.acknowledge_check.isEnabled())
-            self.assertIn("[WARNING] VMD_BAKE_TIMELINE_RAW_LOSS", console.issue_list.item(0).text())
-            ack_spy = QtSignalInvocationSpy(
-                "ValidationConsole.acknowledge_changed",
-                console.acknowledge_check.toggled,
-                console.acknowledge_check,
-            )
-            console.acknowledge_check.setChecked(True)
-            self.assertTrue(console.warnings_acknowledged)
-            export_spy = QtSignalInvocationSpy(
-                "ExportPresenter.export", tab.export_button.clicked, tab.export_button
-            )
-            tab.export_button.click()
-            QApplication.processEvents()
-
-            self.assertEqual(workflow.acknowledgements, [True])
-            self.assertEqual(workflow.requests[0].options["export_format"], "vmd")
-            self.assertEqual(workflow.requests[0].options["current_model_root"], "model_ROOT")
-            self.assertEqual(tab.state_label.text(), STATE_SUCCEEDED)
-            _emit_witness(
-                "export.validation_acknowledge",
-                "selector",
-                "objectName=validationAcknowledgeCheck",
-                "QTest.setChecked(objectName=validationAcknowledgeCheck, true)",
-                "warning acknowledgement forwarded and export succeeded",
-                ack_spy,
-                console.acknowledge_check,
-            )
-            _emit_witness(
-                "export.export",
-                "attribute",
-                "export_button",
-                "QTest.click(attribute=export_button)",
-                "acknowledged VMD warning reached successful export route",
-                export_spy,
-                tab.export_button,
-            )
-        finally:
-            presenter.deleteLater()
-            app = QApplication.instance()
-            if app is not None:
-                app.sendPostedEvents(presenter, QtCore.QEvent.DeferredDelete)
-            self._delete_tab(tab)
-
     def test_pane_report_ack_and_output_state_are_isolated(self):
         """Switching panes restores each report/ack/path without mixing them."""
         tab = self._create_visible_tab()
@@ -589,11 +491,10 @@ class TestExportTabGUI(GuiTestBase):
             output_spy.stop()
             model_report = ExportValidationReport(
                 "pmx",
-                (ExportValidationIssue("VMD_BAKE_TIMELINE_RAW_LOSS", "warning", False, "export_strategy", "model"),),
+                (),
                 mode="model",
             )
             tab.validation_console.set_report(model_report)
-            tab.validation_console.acknowledge_check.setChecked(True)
             self.assertTrue(tab.build_request("model_ROOT").file_path.endswith("model.pmx"))
             self.assertEqual(tab.output_path_edit.text(), "model.vmd")
             _emit_witness(
@@ -612,22 +513,21 @@ class TestExportTabGUI(GuiTestBase):
             tab.output_path_edit.setText("motion.pmx")
             motion_report = ExportValidationReport(
                 "vmd",
-                (ExportValidationIssue("VMD_BAKE_TIMELINE_RAW_LOSS", "warning", False, "export_strategy", "motion"),),
+                (),
                 mode="bake_timeline",
             )
             tab.validation_console.set_report(motion_report)
-            tab.validation_console.acknowledge_check.setChecked(True)
 
             tab.pane_tabs.setCurrentIndex(0)
             self.assertIs(tab.validation_console.report, model_report)
-            self.assertTrue(tab.validation_console.warnings_acknowledged)
+            self.assertFalse(tab.validation_console.warnings_acknowledged)
             self.assertEqual(tab.output_path_edit.text(), "model.vmd")
 
             tab.apply_scale_check.setChecked(not tab.apply_scale_check.isChecked())
             self.assertIsNone(tab.validation_console.report)
             tab.pane_tabs.setCurrentIndex(1)
             self.assertIs(tab.validation_console.report, motion_report)
-            self.assertTrue(tab.validation_console.warnings_acknowledged)
+            self.assertFalse(tab.validation_console.warnings_acknowledged)
             self.assertEqual(tab.output_path_edit.text(), "motion.pmx")
         finally:
             self._delete_tab(tab)
@@ -638,7 +538,7 @@ class TestExportTabGUI(GuiTestBase):
         try:
             report = ExportValidationReport(
                 "vmd",
-                (ExportValidationIssue("VMD_BAKE_TIMELINE_RAW_LOSS", "warning", False, "export_strategy", "x"),),
+                (),
                 mode="bake_timeline",
             )
             tab.validation_console.set_report(report)

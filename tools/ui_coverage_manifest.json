@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "gate_id": "V070-UI-COVERAGE-1",
-  "minimum_qt_case_surfaces": 227,
+  "minimum_qt_case_surfaces": 226,
   "inventory_scope": "MainWindow nine tabs; logical mutable/actionable surfaces only, with explicit exclusions for containers and read-only displays.",
   "tabs": [
     {
@@ -562,15 +562,6 @@
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
       "expected_handler": "mmd_tools.ui.tabs.export_tab.ExportTab._mark_editing"
-    },
-    {
-      "id": "export.motion_bake",
-      "tab": "export",
-      "kind": "check",
-      "selector": "objectName=motionBakeExport",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.tabs.export_tab._ExportPage._on_semantic_input_changed"
     },
     {
       "id": "export.motion_frame_range",

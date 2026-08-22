@@ -117,7 +117,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
         self.assertEqual(self.service.get("logging.level"), "WARNING")
         self.assertNotIn("log_level", self.store.data["ui"]["general"])
 
-    def test_load_and_save_settings_tab_state_preserve_keys(self):
+    def test_load_and_save_settings_tab_state(self):
         state = self.service.load_settings_tab_state()
         self.assertEqual(
             state,

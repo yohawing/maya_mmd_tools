@@ -647,30 +647,6 @@ class TestExportVmdAction(unittest.TestCase):
             self.assertEqual(exporter.calls[0][1], vmd_data)
             self.assertTrue(Path(file_path).is_file())
 
-    def test_execute_uses_collector_for_preserve_keys_when_animation_data_is_missing(self):
-        exporter = _FakeVmdExporter()
-        collected = {
-            "model_name": "CollectedModel",
-            "raw_provenance": {
-                "raw_bone_interpolation_complete": True,
-                "raw_bone_key_count": 0,
-                "raw_bone_interpolation": [],
-            },
-        }
-        options = {"target_model": "model_root", "export_strategy": "preserve_keys"}
-        action = ExportVmdAction(exporter=exporter, collector=lambda received: collected)
-
-        with tempfile.TemporaryDirectory() as directory:
-            file_path = str(Path(directory) / "out.vmd")
-            result = action.execute(ExportVmdRequest(file_path=file_path, options=options))
-
-            self.assertTrue(result.succeeded)
-            self.assertEqual(result.exported_path, file_path)
-            self.assertEqual(len(exporter.calls), 1)
-            self.assertIsInstance(exporter.calls[0][1], VmdData)
-            self.assertEqual(exporter.calls[0][1].header.model_name, "CollectedModel")
-            self.assertTrue(Path(file_path).is_file())
-
     def test_execute_reports_missing_collector_or_data(self):
         action = ExportVmdAction(exporter=_FakeVmdExporter(), collector=None)
 

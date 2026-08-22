@@ -36,9 +36,6 @@ _STREAM_SECTION_TO_RECEIPT = {
     "ik": "ik_show_hide_frames",
 }
 
-_UNSET = object()
-
-
 class PreparedVmdArtifactError(ValueError):
     """Raised when a private staged VMD artifact cannot be trusted."""
 
@@ -486,12 +483,10 @@ class PreparedVmdStageSession:
         *,
         export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
         output_verifier: Any = verify_vmd_output_streaming,
-        raw_loss_warning_required: bool = False,
         expected_frame_range: Optional[Tuple[int, int]] = None,
     ) -> None:
         self._export_strategy = export_strategy
         self._output_verifier = output_verifier
-        self._raw_loss_warning_required = bool(raw_loss_warning_required)
         self._expected_frame_range = expected_frame_range
         self._stage_directory = Path(tempfile.mkdtemp(prefix="mmd-vmd-stage-"))
         self._file_path = self._stage_directory / "prepared.vmd"
@@ -626,46 +621,25 @@ class PreparedVmdStageSession:
             self._handle_failure()
             raise
 
-    def _verification_kwargs(
-        self,
-        summary: Any,
-        *,
-        raw_loss_warning_required: Any = _UNSET,
-    ) -> dict[str, Any]:
+    def _verification_kwargs(self, summary: Any) -> dict[str, Any]:
         result = {
             "expected_counts": summary.counts,
             "expected_bounds": summary.frame_bounds,
             "expected_sha256": summary.sha256,
             "expected_size": summary.size,
-            "raw_loss_warning_required": (
-                self._raw_loss_warning_required
-                if raw_loss_warning_required is _UNSET
-                else bool(raw_loss_warning_required)
-            ),
-            # Preparation records warnings on the receipt.  Only the final
-            # publish workflow may acknowledge them.
-            "ack_warnings": False,
         }
         if self._expected_frame_range is not None:
             result["expected_frame_range"] = self._expected_frame_range
         return result
 
-    def _verify(
-        self,
-        summary: Any,
-        *,
-        raw_loss_warning_required: Any = _UNSET,
-    ) -> ExportValidationReport:
+    def _verify(self, summary: Any) -> ExportValidationReport:
         verifier = self._output_verifier
         if verifier is None:
             verifier = verify_vmd_output_streaming
         report = verifier(
             str(self._file_path),
             self._export_strategy,
-            **self._verification_kwargs(
-                summary,
-                raw_loss_warning_required=raw_loss_warning_required,
-            ),
+            **self._verification_kwargs(summary),
         )
         if not isinstance(report, ExportValidationReport):
             raise PreparedVmdArtifactError("VMD output verifier returned no validation report")
@@ -683,11 +657,7 @@ class PreparedVmdStageSession:
         if _digest_file(self._file_path) != summary.sha256:
             raise PreparedVmdArtifactError("staged VMD output changed before promotion")
 
-    def promote(
-        self,
-        *,
-        raw_loss_warning_required: Any = _UNSET,
-    ) -> PreparedVmdArtifactReceipt:
+    def promote(self) -> PreparedVmdArtifactReceipt:
         """Verify and transfer stage ownership to an immutable receipt."""
 
         if self._receipt is not None:
@@ -697,10 +667,7 @@ class PreparedVmdStageSession:
             if summary is None:
                 raise PreparedVmdArtifactError("VMD collection has not been finished")
             self._assert_summary_identity(summary)
-            report = self._verify(
-                summary,
-                raw_loss_warning_required=raw_loss_warning_required,
-            )
+            report = self._verify(summary)
             self._assert_summary_identity(summary)
             counts = {
                 receipt_name: int(summary.counts.get(stream_name, 0))

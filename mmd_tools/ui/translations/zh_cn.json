@@ -270,7 +270,6 @@
     "humanik_source_tooltip": "可将已角色化的 MMD 模型或场景中已定义的 HumanIK 角色指定为重定向 SOURCE。"
   },
   "options": {
-    "vmd_preserve_keys": "保留未编辑的导入骨骼关键帧",
     "vmd_export_timeline": "导出当前时间轴",
     "none": "无",
     "import_mesh": "导入网格",
@@ -388,7 +387,6 @@
     "enable_physics": "启用物理"
   },
   "fields": {
-    "export_strategy": "导出策略",
     "display_frame_name_jp": "日文名称:",
     "display_frame_name_en": "英文名称:",
     "special_display_frame": "特殊框（Root／表情）",

@@ -35,7 +35,6 @@ from ...services.export_workflow_service import (
 )
 from ...validation.vmd_validator import (
     VMD_EXPORT_BAKE_TIMELINE,
-    VMD_EXPORT_PRESERVE_KEYS,
 )
 
 
@@ -127,9 +126,10 @@ class _ExportPage(QWidget):
             )
             self.bake_export_check.setObjectName("motionBakeExport")
             self.bake_export_check.setChecked(True)
-            self.bake_export_check.toggled.connect(
-                self._on_semantic_input_changed
-            )
+            # Current character motion is always exported as a timeline bake.
+            # Keep this visible as a contract indicator, not a user-selectable
+            # strategy switch.
+            self.bake_export_check.setEnabled(False)
             self._motion_form.addRow(self.bake_export_check)
             # Keep the explanation available as a tooltip without spending a
             # persistent row on an already unambiguous Bake-only option.
@@ -241,7 +241,7 @@ class _ExportPage(QWidget):
         if self.pane == self.owner.MODEL_PANE:
             options["apply_scale"] = self.apply_scale_check.isChecked()
         else:
-            options["export_strategy"] = self._export_strategy()
+            options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
             if self.frame_range_check.isChecked():
                 options["frame_range"] = (
                     self.frame_start_spin.value(),
@@ -317,23 +317,17 @@ class _ExportPage(QWidget):
         self.frame_end_spin.setEnabled(enabled)
 
     def _export_strategy(self) -> str:
-        """Return the stable export strategy for the localized choice."""
+        """Return the sole VMD export strategy."""
 
         if self.pane != self.owner.MOTION_PANE:
             return ""
-        return (
-            VMD_EXPORT_BAKE_TIMELINE
-            if self.bake_export_check.isChecked()
-            else VMD_EXPORT_PRESERVE_KEYS
-        )
+        return VMD_EXPORT_BAKE_TIMELINE
 
     def set_export_strategy(self, export_strategy: str) -> None:
-        """Select an export strategy without exposing internal codes as UI copy."""
-
-        self.bake_export_check.setChecked(
-            str(export_strategy or VMD_EXPORT_BAKE_TIMELINE).lower()
-            == VMD_EXPORT_BAKE_TIMELINE
-        )
+        """Migrate legacy settings while keeping the Bake indicator fixed."""
+        del export_strategy
+        self.bake_export_check.setChecked(True)
+        self.bake_export_check.setEnabled(False)
 
     def retranslate(self) -> None:
         self.settings_group.setTitle(self.owner.tr("export", "settings"))
@@ -525,11 +519,9 @@ class ExportTab(BaseTab):
         model.apply_scale_check.setChecked(
             bool(getter(settings_keys.EXPORT_GENERAL_APPLY_SCALE, True))
         )
-        export_strategy = str(
-            getter(settings_keys.EXPORT_MOTION_STRATEGY, VMD_EXPORT_BAKE_TIMELINE)
-            or VMD_EXPORT_BAKE_TIMELINE
-        ).lower()
-        motion.set_export_strategy(export_strategy)
+        # Read the legacy key only to consume old settings; its value cannot
+        # select a second mode after the export contract was simplified.
+        motion.set_export_strategy(getter(settings_keys.EXPORT_MOTION_STRATEGY, VMD_EXPORT_BAKE_TIMELINE))
         motion.frame_range_check.setChecked(
             bool(getter(settings_keys.EXPORT_MOTION_USE_FRAME_RANGE, False))
         )
@@ -553,7 +545,7 @@ class ExportTab(BaseTab):
         model = self._pages[self.MODEL_PANE]
         motion = self._pages[self.MOTION_PANE]
         setter(settings_keys.EXPORT_GENERAL_APPLY_SCALE, model.apply_scale_check.isChecked())
-        setter(settings_keys.EXPORT_MOTION_STRATEGY, motion._export_strategy())
+        setter(settings_keys.EXPORT_MOTION_STRATEGY, VMD_EXPORT_BAKE_TIMELINE)
         setter(
             settings_keys.EXPORT_MOTION_USE_FRAME_RANGE,
             motion.frame_range_check.isChecked(),

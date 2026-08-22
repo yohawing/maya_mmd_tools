@@ -613,7 +613,7 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
 
 
 
-    def test_collector_only_batches_keyed_joints_and_ignores_raw_provenance(self):
+    def test_collector_only_batches_keyed_joints(self):
         class _Cmds:
             def ls(self, node, long=False):
                 return [str(node)]
@@ -656,10 +656,6 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         native = _Native()
         collector = VmdSceneCollector(bone_channel_sampler=native)
         collector._bake_timeline_physics_output_excluded_targets = {"sparse"}
-        raw = {
-            ("dense", 0): ((99.0, 99.0, 99.0), (0.0, 0.0, 0.0, 1.0)),
-            ("dense", 1): ((99.0, 99.0, 99.0), (0.0, 0.0, 0.0, 1.0)),
-        }
         with mock.patch.object(collector_module, "cmds", _Cmds()), mock.patch.object(
             collector_module,
             "_routed_key_times",
@@ -693,7 +689,6 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                 force_dense_sample=True,
                 dense_frame_samples=[0, 1],
                 time_converter=lambda value: value,
-                raw_bone_transforms=raw,
                 bone_channel_sampler=native,
             )
         self.assertEqual(native.joints, ("dense",))
@@ -701,7 +696,6 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0]["position"], (1.0, 1.0, 1.0))
         self.assertEqual(result[1]["position"], (2.0, 2.0, 2.0))
-        self.assertNotEqual(result[0]["position"], raw[("dense", 0)][0])
         self.assertEqual(native.samples.closed, 1)
         self.assertEqual(
             collector.diagnostics["native_sampler"]["plugin_load_status"],

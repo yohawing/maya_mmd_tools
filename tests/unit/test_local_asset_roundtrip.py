@@ -104,7 +104,7 @@ def _empty_vmd_data(**sections):
     return SimpleNamespace(**defaults)
 
 
-def test_vmd_payload_diff_requires_key_times_and_raw_interpolation():
+def test_vmd_payload_diff_reports_current_scene_motion_changes():
     data = SimpleNamespace(
         header=SimpleNamespace(model_name="model"),
         bone_frames=[_bone()],
@@ -214,11 +214,11 @@ def test_dense_warm_samples_use_distinct_outputs_and_the_prepared_source_target(
     )
     monkeypatch.setattr(
         "tools.local_asset_roundtrip._allowed_warning_codes",
-        lambda validation, export_format: (["VMD_BAKE_TIMELINE_RAW_LOSS"], []),
+        lambda validation, export_format: ([], []),
     )
     monkeypatch.setattr(
         "tools.local_asset_roundtrip._assert_execute_warnings",
-        lambda result, export_format: ["VMD_BAKE_TIMELINE_RAW_LOSS"],
+        lambda result, export_format: [],
     )
 
     prepared_token = SimpleNamespace(cache_id="prepared-token")
@@ -1098,15 +1098,14 @@ def test_manifest_requires_schema_hashes_oracle_frames_and_adjustment(tmp_path):
         _load_manifest(manifest)
 
 
-def test_only_bake_timeline_raw_loss_warning_is_acknowledgeable():
+def test_vmd_export_rejects_unexpected_warning_codes():
     allowed = SimpleNamespace(
         report=SimpleNamespace(
             issues=[
-                SimpleNamespace(code="VMD_BAKE_TIMELINE_RAW_LOSS", severity="warning"),
                 SimpleNamespace(code="OTHER_WARNING", severity="warning"),
             ]
         )
     )
-    assert _allowed_warning_codes(allowed, "vmd") == (["VMD_BAKE_TIMELINE_RAW_LOSS"], ["OTHER_WARNING"])
+    assert _allowed_warning_codes(allowed, "vmd") == ([], ["OTHER_WARNING"])
     with pytest.raises(RuntimeError, match="unexpected execute warnings"):
         _assert_execute_warnings(allowed, "pmx")
