@@ -65,6 +65,57 @@ class ExportReleaseGateTests(unittest.TestCase):
             )
         which.assert_called_once_with("python", path=project_dir)
 
+    def test_release_summary_runs_focused_tests_with_qt_python(self):
+        commands = []
+
+        def run_command(name, command, **_kwargs):
+            commands.append((name, command))
+            return {"name": name, "status": "pass", "returncode": 0}
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            RELEASE_GATE,
+            "_capture_release_provenance",
+            side_effect=_clean_release_provenance,
+        ), mock.patch.object(
+            RELEASE_GATE,
+            "_pytest_command",
+            return_value=["wrong-python", "-m", "pytest"],
+        ), mock.patch.object(
+            RELEASE_GATE,
+            "_qt_pytest_command",
+            return_value=["qt-python", "-m", "pytest"],
+        ), mock.patch.object(
+            RELEASE_GATE,
+            "_run_command",
+            side_effect=run_command,
+        ), mock.patch.object(
+            RELEASE_GATE,
+            "_run_fail_fixture_matrix",
+            return_value={"status": "pass", "fixtures": [], "report_paths": []},
+        ), mock.patch.object(
+            RELEASE_GATE,
+            "_report_consistency_step",
+            return_value={
+                "name": "report_consistency",
+                "status": "pass",
+                "checked": [],
+                "failures": [],
+            },
+        ):
+            RELEASE_GATE.build_release_summary(
+                out_dir=Path(directory) / "release",
+                maya_versions=(),
+                mmd_anim_cli=None,
+                skip_gui=True,
+                full_gui=False,
+                skip_focused_tests=False,
+            )
+
+        focused_command = next(
+            command for name, command in commands if name == "focused_tests"
+        )
+        self.assertEqual(focused_command[:3], ["qt-python", "-m", "pytest"])
+
     def test_maya_path_uses_shared_mayapy_resolver(self):
         """Release probes honor the shared environment-aware Maya resolver."""
         with mock.patch.object(

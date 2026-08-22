@@ -2750,7 +2750,7 @@ def _run_flip_policy_case(out_dir: Path) -> dict[str, Any]:
     policy_codes = [issue.code for issue in validation.report.issues]
     if validation.state != "Blocked" or not any(
         issue.code == "UNSUPPORTED_FEATURE"
-        and issue.path == "morphs[0].type"
+        and issue.path == "morphs[1].type"
         and issue.details.get("feature") == "flip"
         for issue in validation.report.issues
     ):

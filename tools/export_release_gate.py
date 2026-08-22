@@ -1746,7 +1746,7 @@ def build_release_summary(
         steps.append(
             _run_command(
                 "focused_tests",
-                [*_pytest_command(), "-q", *focused],
+                [*_qt_pytest_command(), "-q", *focused],
                 timeout=900.0,
             )
         )
