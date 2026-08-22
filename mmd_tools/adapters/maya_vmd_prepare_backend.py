@@ -40,15 +40,6 @@ class MayaVmdExportRoute:
     model_name: str = ""
 
 
-@dataclass(frozen=True)
-class MayaVmdTemporaryControlRigBake:
-    """Host lifecycle receipt for one non-destructive VMD preparation bake."""
-
-    target_model: str
-    original_state: str
-    original_owner: str
-
-
 def _field(value: Any, name: str, *aliases: str) -> Any:
     """Read a request field, including fields nested in ``options``."""
 
@@ -213,7 +204,7 @@ class MayaVmdPrepareBackend:
         return target_model, metadata
 
     def can_prepare_for_collection(self, request: Any) -> bool:
-        """Report whether this request can use the temporary Control Rig bake."""
+        """Report support for read-only EDIT/CONTROL_OWNED collection."""
 
         _target_model, metadata = self._control_rig_metadata_for_request(request)
         return bool(
@@ -223,117 +214,10 @@ class MayaVmdPrepareBackend:
         )
 
     def prepare_for_collection(self, request: Any) -> Any:
-        """Temporarily bake an EDIT-owned Control Rig for VMD collection.
+        """Leave EDIT untouched; the collector reads its authored routes."""
 
-        The collector must sample MMD-authored inputs, so an active Control
-        Rig is moved through the existing ownership transaction before route
-        discovery.  The returned receipt is consumed by
-        :meth:`restore_after_collection`; all other rig states are untouched.
-        """
-
-        options = self._validated_options(request)
-        target_model, metadata = self._control_rig_metadata_for_request(request)
-        cmds = self._cmds_api()
-        from ..core.mmd_control_rig_motion import bake_mmd_control_rig
-
-        if not isinstance(metadata, Mapping):
-            return None
-        state = str(metadata.get("state") or "")
-        owner = str(metadata.get("owner") or "")
-        if state != "EDIT" or owner != "CONTROL_OWNED":
-            return None
-        context = MayaVmdTemporaryControlRigBake(
-            target_model=target_model,
-            original_state=state,
-            original_owner=owner,
-        )
-        try:
-            frame_range = options.get("frame_range")
-            if frame_range is None and (
-                options.get("frame_start") is not None
-                and options.get("frame_end") is not None
-            ):
-                frame_range = (options["frame_start"], options["frame_end"])
-            bake_kwargs = {"cmds_module": cmds}
-            if frame_range is not None:
-                bake_kwargs["frame_range"] = frame_range
-            baked = bake_mmd_control_rig(target_model, **bake_kwargs)
-        except Exception as exc:
-            error = PrepareVmdExportError(
-                "automatic Control Rig bake failed before VMD preparation"
-            )
-            try:
-                self.restore_after_collection(context)
-            except Exception as restore_exc:
-                raise PrepareVmdExportError(
-                    f"{error}; automatic Control Rig restoration failed: {restore_exc}"
-                ) from exc
-            raise error from exc
-        try:
-            if not isinstance(baked, Mapping) or str(baked.get("state") or "") != "BAKED":
-                raise PrepareVmdExportError(
-                    "automatic Control Rig bake did not produce a BAKED MMD-owned state"
-                )
-            if str(baked.get("owner") or "") != "MMD_OWNED":
-                raise PrepareVmdExportError(
-                    "automatic Control Rig bake did not transfer ownership to the MMD rig"
-                )
-        except Exception as exc:
-            try:
-                self.restore_after_collection(context)
-            except Exception as restore_exc:
-                raise PrepareVmdExportError(
-                    f"{exc}; automatic Control Rig restoration failed: {restore_exc}"
-                ) from exc
-            raise
-        return context
-
-    def restore_after_collection(self, context: Any) -> None:
-        """Restore EDIT/CONTROL_OWNED after a temporary collection bake."""
-
-        if not isinstance(context, MayaVmdTemporaryControlRigBake):
-            raise PrepareVmdExportError("temporary Control Rig bake receipt is invalid")
-        cmds = self._cmds_api()
-        from ..core.mmd_control_rig_builder import read_mmd_control_rig_metadata
-        from ..core.mmd_control_rig_motion import enter_mmd_control_rig_edit
-
-        metadata = read_mmd_control_rig_metadata(
-            context.target_model,
-            cmds_module=cmds,
-        )
-        if not isinstance(metadata, Mapping):
-            raise PrepareVmdExportError("Control Rig metadata disappeared during VMD preparation")
-        if (
-            str(metadata.get("state") or "") == context.original_state
-            and str(metadata.get("owner") or "") == context.original_owner
-        ):
-            return
-        if (
-            str(metadata.get("state") or "") != "BAKED"
-            or str(metadata.get("owner") or "") != "MMD_OWNED"
-        ):
-            raise PrepareVmdExportError(
-                "temporary Control Rig bake no longer owns the expected BAKED MMD state"
-            )
-        try:
-            restored = enter_mmd_control_rig_edit(
-                context.target_model,
-                cmds_module=cmds,
-            )
-        except Exception as exc:
-            raise PrepareVmdExportError(
-                "automatic Control Rig restoration to EDIT failed: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
-        if not isinstance(restored, Mapping):
-            raise PrepareVmdExportError("Control Rig restoration returned invalid metadata")
-        if (
-            str(restored.get("state") or "") != context.original_state
-            or str(restored.get("owner") or "") != context.original_owner
-        ):
-            raise PrepareVmdExportError(
-                "automatic Control Rig restoration did not return EDIT/CONTROL_OWNED"
-            )
+        self._control_rig_metadata_for_request(request)
+        return None
 
     def discover(self, request: Any) -> VmdExportDiscovery:
         """Resolve the Current Model and fingerprint its dependency closure."""
