@@ -104,6 +104,20 @@ class ExportReleaseGateTests(unittest.TestCase):
                 if isinstance(key, ast.Constant) and key.value == "export_strategy"
             ],
         )
+        self.assertTrue(
+            any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "prepare_vmd"
+                for node in ast.walk(function)
+            )
+        )
+        option_names = {
+            key.value
+            for key in options.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
+        self.assertTrue({"current_model_root", "target_model"}.issubset(option_names))
 
     def test_require_build_path_rejects_paths_outside_build(self):
         with self.assertRaises(ValueError):
@@ -672,8 +686,30 @@ class ExportReleaseGateTests(unittest.TestCase):
                     "export_writer_called": False,
                 },
             )
+            sdef_case = next(case for case in report["cases"] if case["format"] == "pmx_sdef")
+            sdef_case.update(
+                status="pass",
+                output=str(root / "pmx_sdef" / "model.pmx"),
+                import_oracles={
+                    "source_sdef_vertex_count": 1,
+                    "fresh_import_vertex_count": 8,
+                    "fresh_import_skin_cluster_count": 1,
+                    "fresh_import_influence_count": 2,
+                    "fresh_import_weight_value_count": 16,
+                    "fresh_import_finite_weight_value_count": 16,
+                    "fresh_import_normalized_vertex_count": 8,
+                    "fresh_import_weight_sum_min": 1.0,
+                    "fresh_import_weight_sum_max": 1.0,
+                    "exported_vertex_count": 8,
+                    "exported_bdef4_vertex_count": 8,
+                    "exported_non_bdef4_vertex_count": 0,
+                },
+                collection={
+                    "source_fresh_import": True,
+                    "export_writer_called": True,
+                },
+            )
             for export_format, policy_code, prefix in (
-                ("pmx_sdef", "PMX_VERTEX_SDEF_UNSUPPORTED", "sdef"),
                 ("pmx_impulse", "MORPH_TYPE_UNSUPPORTED", "impulse"),
                 ("pmx_flip", "MORPH_TYPE_UNSUPPORTED", "flip"),
             ):
@@ -682,10 +718,10 @@ class ExportReleaseGateTests(unittest.TestCase):
                     status="policy-reject",
                     policy_code=policy_code,
                     import_oracles={
-                        f"source_{prefix}_{'vertex' if prefix == 'sdef' else 'morph'}_count": 1,
-                        f"fresh_import_{prefix}_{'vertex' if prefix == 'sdef' else 'morph'}_count": 1,
-                        "provenance_vertex_count" if prefix == "sdef" else "provenance_offset_count": 1,
-                        f"collected_{prefix}_{'vertex' if prefix == 'sdef' else 'morph'}_count": 1,
+                        f"source_{prefix}_morph_count": 1,
+                        f"fresh_import_{prefix}_morph_count": 1,
+                        "provenance_offset_count": 1,
+                        f"collected_{prefix}_morph_count": 1,
                     },
                     collection={
                         "source_fresh_import": True,

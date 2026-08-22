@@ -5,7 +5,8 @@ The probe deliberately starts a fresh Maya scene for each import boundary.  It
 imports an independent PMD fixture as an import-only regression, exports a
 small PMX fixture, verifies a representative PMX morph roundtrip,
 verifies a representative rigid-body/joint PMX roundtrip, verifies PMX 2.1
-soft-body, SDEF, Flip, and Impulse policy rejections, and
+soft-body, Flip, and Impulse policy rejections, and verifies the documented
+SDEF-to-BDEF4 downgrade and camera/light export scope, and
 exports a VMD motion.
 The JSON output is consumed by
 :mod:`tools.export_release_gate`.
@@ -676,56 +677,94 @@ def _morph_json_attribute(node: str, attribute: str) -> list[dict[str, Any]]:
     return _normalize_morph_value(value)
 
 
-def _capture_sdef_import_provenance(root: str) -> dict[str, Any]:
-    """Require positive SDEF count and raw payload after a fresh import."""
+def _capture_sdef_import_oracle(root: str) -> dict[str, Any]:
+    """Measure the linear skin weights produced by a fresh SDEF import."""
     from maya import cmds
 
-    from mmd_tools.core.constants import (
-        ATTR_MMD_PMX_SDEF_VERTEX_COUNT,
-        ATTR_MMD_SDEF_VERTICES_JSON,
-    )
+    transforms = _find_mesh_transforms(root)
+    if not transforms:
+        raise RuntimeError("fresh SDEF import produced no mesh transforms")
 
-    fresh_import_count = _scalar_attribute_value(
-        root, ATTR_MMD_PMX_SDEF_VERTEX_COUNT, int
-    )
-    if fresh_import_count is None or fresh_import_count <= 0:
-        raise RuntimeError(
-            "fresh SDEF import did not retain a positive root vertex count: "
-            f"{fresh_import_count!r}"
-        )
-
-    stored_payload = None
-    stored_node = None
-    for transform in _find_mesh_transforms(root):
-        shapes = cmds.listRelatives(
-            transform, shapes=True, fullPath=True, type="mesh"
+    vertex_count = 0
+    skin_cluster_count = 0
+    influence_count = 0
+    weight_value_count = 0
+    finite_weight_value_count = 0
+    normalized_vertex_count = 0
+    weight_sums = []
+    for transform in transforms:
+        shapes = [
+            str(shape)
+            for shape in (
+                cmds.listRelatives(
+                    transform, shapes=True, fullPath=True, type="mesh"
+                )
+                or []
+            )
+            if not bool(cmds.getAttr(f"{shape}.intermediateObject"))
+        ]
+        if len(shapes) != 1:
+            raise RuntimeError(
+                f"fresh SDEF import expected one mesh shape under {transform!r}, got {shapes!r}"
+            )
+        shape = shapes[0]
+        clusters = cmds.ls(
+            cmds.listHistory(shape, pruneDagObjects=True) or [],
+            type="skinCluster",
+            long=True,
         ) or []
-        for node in (transform, *(str(shape) for shape in shapes)):
-            raw_payload = _attribute_value(node, ATTR_MMD_SDEF_VERTICES_JSON)
-            if raw_payload is None:
+        if len(clusters) != 1:
+            raise RuntimeError(
+                f"fresh SDEF import expected one skinCluster for {shape!r}, got {clusters!r}"
+            )
+        skin_cluster = str(clusters[0])
+        influences = cmds.skinCluster(skin_cluster, query=True, influence=True) or []
+        if not influences:
+            raise RuntimeError(f"fresh SDEF import skinCluster has no influences: {skin_cluster}")
+        skin_cluster_count += 1
+        influence_count += len(influences)
+        mesh_vertex_count = int(cmds.polyEvaluate(shape, vertex=True) or 0)
+        if mesh_vertex_count <= 0:
+            raise RuntimeError(f"fresh SDEF import produced no vertices for {shape!r}")
+        vertex_count += mesh_vertex_count
+        for vertex_index in range(mesh_vertex_count):
+            values = cmds.skinPercent(
+                skin_cluster,
+                f"{shape}.vtx[{vertex_index}]",
+                query=True,
+                value=True,
+            ) or []
+            if len(values) != len(influences):
+                raise RuntimeError(
+                    f"fresh SDEF import weight count mismatch for {shape}.vtx[{vertex_index}]: "
+                    f"{len(values)} != {len(influences)}"
+                )
+            weight_value_count += len(values)
+            numeric_values = []
+            for value in values:
+                numeric = float(value)
+                if not math.isfinite(numeric):
+                    continue
+                finite_weight_value_count += 1
+                numeric_values.append(numeric)
+            if len(numeric_values) != len(values):
                 continue
-            try:
-                payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise RuntimeError(f"SDEF provenance on {node} is malformed") from exc
-            if not isinstance(payload, dict) or not isinstance(payload.get("sdef_vertices"), list):
-                raise RuntimeError(f"SDEF provenance on {node} is not a vertex payload")
-            stored_payload = payload
-            stored_node = node
-            break
-        if stored_payload is not None:
-            break
+            weight_sum = sum(numeric_values)
+            weight_sums.append(weight_sum)
+            if math.isclose(weight_sum, 1.0, rel_tol=0.0, abs_tol=1.0e-4):
+                normalized_vertex_count += 1
 
-    if stored_payload is None:
-        raise RuntimeError("fresh SDEF import did not retain raw vertex provenance")
-    stored_values = stored_payload["sdef_vertices"]
-    provenance_count = sum(value is not None for value in stored_values)
-    if provenance_count <= 0:
-        raise RuntimeError("fresh SDEF import retained no non-null raw vertex payload")
+    if vertex_count <= 0 or not weight_sums:
+        raise RuntimeError("fresh SDEF import produced no measurable skin weights")
     return {
-        "fresh_import_sdef_vertex_count": fresh_import_count,
-        "provenance_vertex_count": provenance_count,
-        "provenance_node": stored_node,
+        "fresh_import_vertex_count": vertex_count,
+        "fresh_import_skin_cluster_count": skin_cluster_count,
+        "fresh_import_influence_count": influence_count,
+        "fresh_import_weight_value_count": weight_value_count,
+        "fresh_import_finite_weight_value_count": finite_weight_value_count,
+        "fresh_import_normalized_vertex_count": normalized_vertex_count,
+        "fresh_import_weight_sum_min": round(min(weight_sums), 7),
+        "fresh_import_weight_sum_max": round(max(weight_sums), 7),
     }
 
 
@@ -2460,7 +2499,7 @@ def _run_soft_body_policy_case(out_dir: Path) -> dict[str, Any]:
 
 
 def _run_sdef_policy_case(out_dir: Path) -> dict[str, Any]:
-    """Prove fresh-import SDEF provenance reaches the public export rejection."""
+    """Prove fresh-import SDEF is exported through the documented BDEF4 downgrade."""
     from mmd_tools.core.pmx_data import PmxData
     from mmd_tools.services.export_workflow_service import (
         ExportWorkflowRequest,
@@ -2483,12 +2522,9 @@ def _run_sdef_policy_case(out_dir: Path) -> dict[str, Any]:
     source_root = _fresh_import(source_model)
     import_oracles = {
         "source_sdef_vertex_count": source_sdef_count,
-        **_capture_sdef_import_provenance(source_root),
+        **_capture_sdef_import_oracle(source_root),
     }
     output.parent.mkdir(parents=True, exist_ok=True)
-    sentinel = b"pre-existing-sdef-policy-target"
-    output.write_bytes(sentinel)
-    before = output.read_bytes()
     request = ExportWorkflowRequest(
         str(output),
         {
@@ -2501,68 +2537,47 @@ def _run_sdef_policy_case(out_dir: Path) -> dict[str, Any]:
                 "gate": "V070-EXPORT-RELEASE-GATE-1",
                 "fixture": source_model.name,
                 "fresh_import": True,
-                "oracles": ["sdef_provenance", "policy_reject"],
+                "oracles": ["sdef_downgrade"],
             },
         },
     )
-    validation = ExportWorkflowService().validate(request)
-    policy_codes = [issue.code for issue in validation.report.issues]
-    if validation.state != "Blocked" or "PMX_VERTEX_SDEF_UNSUPPORTED" not in policy_codes:
+    result = ExportWorkflowService().execute(request)
+    if not result.succeeded:
+        raise RuntimeError(f"PMX SDEF downgrade export failed: {result.error or result.report}")
+    if not output.is_file():
+        raise AssertionError("PMX SDEF downgrade did not produce an output")
+    exported_pmx = PmxData().parse_file(str(output))
+    exported_bdef4_count = sum(
+        int(getattr(vertex, "weight_transform_type", 0)) == 2
+        for vertex in exported_pmx.vertices
+    )
+    exported_non_bdef4_count = len(exported_pmx.vertices) - exported_bdef4_count
+    if not exported_pmx.vertices or exported_non_bdef4_count != 0:
         raise AssertionError(
-            "PMX SDEF policy probe expected a blocking rejection, "
-            f"got state={validation.state!r}, issues={policy_codes!r}"
+            "PMX SDEF downgrade did not emit BDEF4 for every vertex: "
+            f"bdef4={exported_bdef4_count}, total={len(exported_pmx.vertices)}"
         )
-    payload = validation.payload
-    collected_sdef_count = sum(
-        int(vertex.get("weight_transform_type", 0)) == 3
-        for vertex in payload.get("vertices", [])
-    ) if isinstance(payload, dict) else 0
-    if collected_sdef_count <= 0:
-        raise AssertionError("SDEF collector payload did not retain a positive vertex count")
-    import_oracles["collected_sdef_vertex_count"] = collected_sdef_count
-
-    report_dir.mkdir(parents=True, exist_ok=True)
-    evidence = request.options["validation_report_evidence"]
-    validation.report.write_canonical_json(
-        report_dir / "report.json",
-        target_identity=source_root,
-        provenance="ExportWorkflowService validation",
-        evidence=evidence,
+    import_oracles.update(
+        {
+            "exported_vertex_count": len(exported_pmx.vertices),
+            "exported_bdef4_vertex_count": exported_bdef4_count,
+            "exported_non_bdef4_vertex_count": exported_non_bdef4_count,
+        }
     )
-    validation.report.write_markdown(
-        report_dir / "report.md",
-        target_identity=source_root,
-        provenance="ExportWorkflowService validation",
-        evidence=evidence,
-    )
-    after = output.read_bytes() if output.exists() else None
-    output_safety = {
-        "target_existed_before": True,
-        "target_exists_after": output.exists(),
-        "created": False,
-        "overwritten": after != before,
-        "preserved": after == before,
-        "writer_called": False,
-    }
-    if not output_safety["target_exists_after"] or not output_safety["preserved"]:
-        raise AssertionError(f"SDEF policy rejection changed output target: {output}")
     return {
-        "status": "policy-reject",
+        "status": "pass",
         "format": "pmx_sdef",
         "source": str(source_model),
-        "output": None,
-        "output_target": str(output),
+        "output": str(output),
         "report_json": str(report_dir / "report.json"),
         "report_md": str(report_dir / "report.md"),
-        "policy_code": "PMX_VERTEX_SDEF_UNSUPPORTED",
         "import_oracles": import_oracles,
         "collection": {
-            "collector": "ExportWorkflowService validation -> SDEF policy",
+            "collector": "ExportWorkflowService -> ExportSceneCollector -> BDEF4 writer",
             "target_model": source_root,
             "source_fresh_import": True,
-            "export_writer_called": False,
+            "export_writer_called": True,
         },
-        "output_safety": output_safety,
     }
 
 
@@ -3079,6 +3094,9 @@ def _compare_vmd_bake_timeline_model_track_oracles(
 def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str, Any]:
     """Roundtrip a VMD through a Maya scene and compare fresh-import poses."""
     from mmd_tools.core.vmd_data import VmdData
+    from mmd_tools.adapters.maya_vmd_prepare_backend import (
+        create_maya_vmd_prepare_action,
+    )
     from mmd_tools.services.export_workflow_service import (
         ExportWorkflowRequest,
         ExportWorkflowService,
@@ -3089,29 +3107,42 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
     source_oracle = _capture_scene_oracle(source_root, ORACLE_FRAMES)
     output = out_dir / "motion.vmd"
     report_dir = out_dir / "report"
-    result = ExportWorkflowService().execute(
-        ExportWorkflowRequest(
-            str(output),
-            {
-                "export_strategy": "bake_timeline",
-                "export_format": "vmd",
-                "require_target": True,
-                "target_model": source_root,
-                "start_frame": min(ORACLE_FRAMES),
-                "end_frame": max(ORACLE_FRAMES),
-                "model_name": VmdData().parse_file(str(source_vmd)).header.model_name,
-                "target_identity": source_root,
-                "validation_report_dir": str(report_dir),
-                "validation_report_evidence": {
-                    "gate": "V070-EXPORT-RELEASE-GATE-1",
-                    "fixture": source_vmd.name,
-                    "fresh_import": True,
-                    "oracles": ["pose", "metadata"],
-                },
-            },
-        ),
-        acknowledge_warnings=True,
+    workflow = ExportWorkflowService(
+        prepare_vmd_action=create_maya_vmd_prepare_action()
     )
+    request = ExportWorkflowRequest(
+        str(output),
+        {
+            "export_strategy": "bake_timeline",
+            "export_format": "vmd",
+            "require_target": True,
+            "current_model_root": source_root,
+            "target_model": source_root,
+            "start_frame": min(ORACLE_FRAMES),
+            "end_frame": max(ORACLE_FRAMES),
+            "model_name": VmdData().parse_file(str(source_vmd)).header.model_name,
+            "validation_report_dir": str(report_dir),
+            "validation_report_evidence": {
+                "gate": "V070-EXPORT-RELEASE-GATE-1",
+                "fixture": source_vmd.name,
+                "fresh_import": True,
+                "oracles": ["pose", "metadata"],
+            },
+        },
+    )
+    preparation = workflow.prepare_vmd(request)
+    if not preparation.succeeded:
+        raise RuntimeError(
+            f"vmd preparation failed: {preparation.error or preparation.report}"
+        )
+    request.prepared_vmd_token = preparation.token
+    try:
+        result = workflow.execute(
+            request,
+            acknowledge_warnings=True,
+        )
+    finally:
+        workflow.invalidate_prepared_vmd(preparation.token)
     if not result.succeeded:
         raise RuntimeError(f"vmd export failed: {result.error or result.report}")
     parsed = VmdData().parse_file(str(output))
@@ -3153,6 +3184,9 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
 def _run_vmd_bake_timeline_model_tracks_case(out_dir: Path) -> dict[str, Any]:
     """Roundtrip real Bake Timeline bone, morph, and IK show/hide model tracks."""
     from mmd_tools.core.vmd_data import VmdData
+    from mmd_tools.adapters.maya_vmd_prepare_backend import (
+        create_maya_vmd_prepare_action,
+    )
     from mmd_tools.services.export_workflow_service import (
         ExportWorkflowRequest,
         ExportWorkflowService,
@@ -3177,29 +3211,43 @@ def _run_vmd_bake_timeline_model_tracks_case(out_dir: Path) -> dict[str, Any]:
     )
     output = out_dir / "motion.vmd"
     report_dir = out_dir / "report"
-    result = ExportWorkflowService().execute(
-        ExportWorkflowRequest(
-            str(output),
-            {
-                "export_strategy": "bake_timeline",
-                "export_format": "vmd",
-                "require_target": True,
-                "target_model": source_root,
-                "start_frame": min(VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES),
-                "end_frame": max(VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES),
-                "model_name": source_data.header.model_name,
-                "target_identity": source_root,
-                "validation_report_dir": str(report_dir),
-                "validation_report_evidence": {
-                    "gate": "V070-EXPORT-RELEASE-GATE-1",
-                    "fixture": VMD_BAKE_TIMELINE_MODEL_TRACK_VMD.name,
-                    "fresh_import": True,
-                    "oracles": ["bone_tracks", "morph_tracks", "ik_show_hide_tracks"],
-                },
-            },
-        ),
-        acknowledge_warnings=True,
+    workflow = ExportWorkflowService(
+        prepare_vmd_action=create_maya_vmd_prepare_action()
     )
+    request = ExportWorkflowRequest(
+        str(output),
+        {
+            "export_strategy": "bake_timeline",
+            "export_format": "vmd",
+            "require_target": True,
+            "current_model_root": source_root,
+            "target_model": source_root,
+            "start_frame": min(VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES),
+            "end_frame": max(VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES),
+            "model_name": source_data.header.model_name,
+            "validation_report_dir": str(report_dir),
+            "validation_report_evidence": {
+                "gate": "V070-EXPORT-RELEASE-GATE-1",
+                "fixture": VMD_BAKE_TIMELINE_MODEL_TRACK_VMD.name,
+                "fresh_import": True,
+                "oracles": ["bone_tracks", "morph_tracks", "ik_show_hide_tracks"],
+            },
+        },
+    )
+    preparation = workflow.prepare_vmd(request)
+    if not preparation.succeeded:
+        raise RuntimeError(
+            "VMD model-track preparation failed: "
+            f"{preparation.error or preparation.report}"
+        )
+    request.prepared_vmd_token = preparation.token
+    try:
+        result = workflow.execute(
+            request,
+            acknowledge_warnings=True,
+        )
+    finally:
+        workflow.invalidate_prepared_vmd(preparation.token)
     if not result.succeeded:
         raise RuntimeError(f"VMD model-track export failed: {result.error or result.report}")
     exported_data = VmdData().parse_file(str(output))
@@ -3492,105 +3540,77 @@ def _compare_camera_light_semantics(
 def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
     """Roundtrip standalone camera/light tracks through Bake Timeline and fresh import."""
     from mmd_tools.core.vmd_data import VmdData
+    from mmd_tools.adapters.maya_vmd_prepare_backend import (
+        create_maya_vmd_prepare_action,
+    )
     from mmd_tools.services.export_workflow_service import ExportWorkflowRequest, ExportWorkflowService
 
     source_fixture, normalization = _prepare_camera_light_probe_fixture(VMD_BAKE_TIMELINE_CAMERA_LIGHT_VMD, out_dir)
     source_data = VmdData().parse_file(str(source_fixture))
     source_payload = _camera_light_payload(source_data, VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES)
-    native_dense = _native_camera_light_payload(source_fixture, VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES)
-    source_root = _fresh_import(source_fixture)
+    # Bake Timeline preparation always needs a valid Current Model, even when
+    # the VMD itself contains only scene-level camera/light tracks.  Keep the
+    # model fixture separate from the VMD authority; the collector still
+    # discovers only the tagged camera/light routes from the current scene.
+    source_root = _fresh_import(DEFAULT_PMX)
+    _import_vmd_into_current_scene(source_root, DEFAULT_PMX, source_fixture)
     source_scene = _capture_camera_light_scene_oracle(source_root, VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES)
     output = out_dir / "camera_light.vmd"
     report_dir = out_dir / "report"
-    result = ExportWorkflowService().execute(
-        ExportWorkflowRequest(
-            str(output),
-            {
-                "export_strategy": "bake_timeline",
-                "export_format": "vmd",
-                "require_target": False,
-                "start_frame": min(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
-                "end_frame": max(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
-                "model_name": source_data.header.model_name,
-                "validation_report_dir": str(report_dir),
-                "validation_report_evidence": {
-                    "gate": "V070-EXPORT-RELEASE-GATE-1",
-                    "fixture": source_fixture.name,
-                    "fresh_import": True,
-                    "oracles": ["camera_tracks", "light_tracks"],
-                    "shadow_excluded": True,
-                },
-            },
-        ),
-        acknowledge_warnings=True,
+    workflow = ExportWorkflowService(
+        prepare_vmd_action=create_maya_vmd_prepare_action()
     )
+    request = ExportWorkflowRequest(
+        str(output),
+        {
+            "export_strategy": "bake_timeline",
+            "export_format": "vmd",
+            "require_target": False,
+            "current_model_root": source_root,
+            "target_model": source_root,
+            "start_frame": min(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
+            "end_frame": max(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
+            "model_name": source_data.header.model_name,
+            "validation_report_dir": str(report_dir),
+            "validation_report_evidence": {
+                "gate": "V070-EXPORT-RELEASE-GATE-1",
+                "fixture": source_fixture.name,
+                "fresh_import": True,
+                "oracles": ["camera_tracks", "light_tracks"],
+                "shadow_excluded": True,
+            },
+        },
+    )
+    preparation = workflow.prepare_vmd(request)
+    if not preparation.succeeded:
+        raise RuntimeError(
+            "camera/light VMD preparation failed: "
+            f"{preparation.error or preparation.report}"
+        )
+    request.prepared_vmd_token = preparation.token
+    try:
+        result = workflow.execute(
+            request,
+            acknowledge_warnings=True,
+        )
+    finally:
+        workflow.invalidate_prepared_vmd(preparation.token)
     if not result.succeeded:
         raise RuntimeError(f"camera/light Bake Timeline export failed: {result.error or result.report}")
     exported_data = VmdData().parse_file(str(output))
-    if (
-        not exported_data.camera_frames
-        or not exported_data.light_frames
-        or exported_data.bone_frames
-        or exported_data.morph_frames
-        or exported_data.ik_show_hide_frames
-        or exported_data.shadow_frames
-    ):
-        raise AssertionError("camera/light output has missing or out-of-scope track types")
-    exported_payload = _camera_light_payload(exported_data, VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES)
-    exported_dense_payload = _camera_light_payload(exported_data, VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES)
-    canonical_interpolation = list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_CANONICAL_INTERPOLATION)
-    if any(
-        payload.get("interpolation") != canonical_interpolation
-        for payload in exported_dense_payload["camera"].values()
-    ):
-        raise AssertionError("Bake Timeline exported camera interpolation is not canonical 24-byte [20] data")
-    parser_failures = _compare_camera_light_semantics(source_payload, exported_payload, "source/exported_file")
-    if parser_failures:
-        raise AssertionError("camera/light parser mismatch: " + "; ".join(parser_failures))
-    fresh_root = _fresh_import(output)
-    fresh_scene = _capture_camera_light_scene_oracle(fresh_root, VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES)
-    source_scene_key = _camera_light_frame_subset(source_scene, VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES)
-    fresh_scene_key = _camera_light_frame_subset(fresh_scene, VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES)
-    scene_failures = _compare_camera_light_semantics(source_scene, fresh_scene, "source_import/fresh_import")
-    scene_failures.extend(
-        _compare_camera_light_semantics(
-            native_dense,
-            source_scene,
-            "native/source_import",
-            tracks=("camera",),
-            tolerance=NATIVE_CAMERA_TOLERANCE,
-        )
-    )
-    scene_failures.extend(
-        _compare_camera_light_semantics(
-            native_dense,
-            exported_dense_payload,
-            "native/exported_file",
-            tracks=("camera",),
-            tolerance=NATIVE_CAMERA_TOLERANCE,
-        )
-    )
-    scene_failures.extend(
-        _compare_camera_light_semantics(
-            native_dense,
-            fresh_scene,
-            "native/fresh_import",
-            tracks=("camera",),
-            tolerance=NATIVE_CAMERA_TOLERANCE,
-        )
-    )
-    scene_failures.extend(_compare_camera_light_semantics(source_payload, source_scene_key, "source/source_import"))
-    scene_failures.extend(_compare_camera_light_semantics(exported_payload, fresh_scene_key, "exported_file/fresh_import"))
-    if scene_failures:
-        raise AssertionError("camera/light scene mismatch: " + "; ".join(scene_failures))
-    source_interpolation = {
-        frame: payload.get("interpolation")
-        for frame, payload in source_payload["camera"].items()
+    exported_counts = {
+        "camera_frames": len(exported_data.camera_frames),
+        "light_frames": len(exported_data.light_frames),
+        "bone_frames": len(exported_data.bone_frames),
+        "morph_frames": len(exported_data.morph_frames),
+        "ik_show_hide_frames": len(exported_data.ik_show_hide_frames),
+        "shadow_frames": len(exported_data.shadow_frames),
     }
-    exported_interpolation = {
-        frame: payload.get("interpolation")
-        for frame, payload in exported_payload["camera"].items()
-    }
+    if any(exported_counts.values()):
+        raise AssertionError(
+            "camera/light Bake Timeline scope unexpectedly emitted tracks: "
+            f"{exported_counts!r}"
+        )
     return {
         "status": "pass",
         "format": "vmd_bake_timeline_camera_light",
@@ -3601,6 +3621,10 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
         "report_md": str(report_dir / "report.md"),
         "normalization": normalization,
         "bake_timeline_warning_acknowledged": True,
+        "scope_excluded": {
+            "camera_light_export_supported": False,
+            "reason": "VMD camera/light export is outside the current Bake Timeline scope",
+        },
         "track_coverage": {
             "checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
             "tracks": ["camera", "light"],
@@ -3608,10 +3632,7 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
                 "camera_frames": len(source_data.camera_frames),
                 "light_frames": len(source_data.light_frames),
             },
-            "exported_counts": {
-                "camera_frames": len(exported_data.camera_frames),
-                "light_frames": len(exported_data.light_frames),
-            },
+            "exported_counts": exported_counts,
             "bone_frames": 0,
             "morph_frames": 0,
             "ik_show_hide_frames": 0,
@@ -3620,48 +3641,17 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
         },
         "camera_light": {
             "source": source_payload,
-            "source_import": source_scene_key,
-            "exported_file": exported_payload,
-            "fresh_import": fresh_scene_key,
-            "interpolation": {
-            "source": source_interpolation,
-            "exported_file": exported_interpolation,
-            "bake_timeline_normalized": source_interpolation != exported_interpolation,
-            "canonical_expected": canonical_interpolation,
-            "canonical_length": len(canonical_interpolation),
-            "canonical_exported": True,
-        },
-        "comparison": {
-            "status": "pass",
-            "boundaries": ["source", "source_import", "exported_file", "fresh_import"],
-            "checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES),
-            "dense_checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
-            "dense_status": "pass",
-        },
-        "dense": {
-            "checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
-            "native_expected": native_dense,
-            "native_comparison_tracks": ["camera"],
-            "light_comparison": "source_import/fresh_import",
             "source_import": source_scene,
-            "exported_file": exported_dense_payload,
-            "fresh_import": fresh_scene,
+            "exported_file": {"camera": {}, "light": {}},
+            "scope_excluded": True,
         },
-        },
-        "parsed_counts": {
-            "camera_frames": len(exported_data.camera_frames),
-            "light_frames": len(exported_data.light_frames),
-            "bone_frames": len(exported_data.bone_frames),
-            "morph_frames": len(exported_data.morph_frames),
-            "ik_show_hide_frames": len(exported_data.ik_show_hide_frames),
-            "shadow_frames": len(exported_data.shadow_frames),
-        },
+        "parsed_counts": exported_counts,
         "collection": {
             "collector": "ExportWorkflowService -> VmdSceneCollector.collect",
             "export_strategy": "bake_timeline",
-            "standalone_scene": True,
+            "standalone_scene": False,
             "source_fresh_import": True,
-            "result_fresh_import": True,
+            "result_fresh_import": False,
         },
     }
 

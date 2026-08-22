@@ -1148,6 +1148,51 @@ def _validate_vmd_bake_timeline_camera_light_case(case: Mapping[str, Any]) -> li
         failures.append("vmd_bake_timeline_camera_light.track_coverage.tracks mismatch")
     if coverage.get("checked_frames") != list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_DENSE_FRAMES):
         failures.append("vmd_bake_timeline_camera_light.track_coverage.checked_frames mismatch")
+
+    scope_excluded = case.get("scope_excluded")
+    if isinstance(scope_excluded, dict):
+        if scope_excluded.get("camera_light_export_supported") is not False:
+            failures.append(
+                "vmd_bake_timeline_camera_light.scope_excluded.camera_light_export_supported must be false"
+            )
+        if not isinstance(scope_excluded.get("reason"), str) or not scope_excluded["reason"].strip():
+            failures.append("vmd_bake_timeline_camera_light.scope_excluded.reason must be non-empty")
+        if coverage.get("visual_parity_claimed") is not False:
+            failures.append("vmd_bake_timeline_camera_light.track_coverage.visual_parity_claimed must be false")
+        for field in ("bone_frames", "morph_frames", "ik_show_hide_frames", "shadow_frames"):
+            if coverage.get(field) != 0:
+                failures.append(f"vmd_bake_timeline_camera_light.track_coverage.{field} must be zero")
+        source_counts = coverage.get("source_counts")
+        if not isinstance(source_counts, dict):
+            failures.append("vmd_bake_timeline_camera_light.track_coverage.source_counts_missing")
+        else:
+            for field in ("camera_frames", "light_frames"):
+                value = source_counts.get(field)
+                if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                    failures.append(f"vmd_bake_timeline_camera_light.track_coverage.source_counts.{field} must be positive")
+        exported_counts = coverage.get("exported_counts")
+        if not isinstance(exported_counts, dict):
+            failures.append("vmd_bake_timeline_camera_light.track_coverage.exported_counts_missing")
+        else:
+            for field in ("camera_frames", "light_frames", "bone_frames", "morph_frames", "ik_show_hide_frames", "shadow_frames"):
+                if exported_counts.get(field) != 0:
+                    failures.append(f"vmd_bake_timeline_camera_light.track_coverage.exported_counts.{field} must be zero")
+        normalization = case.get("normalization")
+        if not isinstance(normalization, dict):
+            failures.append("vmd_bake_timeline_camera_light.normalization_missing")
+        else:
+            excluded_shadow_frames = normalization.get("excluded_shadow_frames")
+            if isinstance(excluded_shadow_frames, bool) or not isinstance(excluded_shadow_frames, int) or excluded_shadow_frames <= 0:
+                failures.append("vmd_bake_timeline_camera_light.normalization.excluded_shadow_frames must be positive")
+            if normalization.get("shadow_support_claimed") is not False:
+                failures.append("vmd_bake_timeline_camera_light.normalization.shadow_support_claimed must be false")
+        if case.get("bake_timeline_warning_acknowledged") is not True:
+            failures.append("vmd_bake_timeline_camera_light.bake_timeline_warning_acknowledged must be true")
+        tracks = case.get("camera_light")
+        if not isinstance(tracks, dict) or tracks.get("scope_excluded") is not True:
+            failures.append("vmd_bake_timeline_camera_light.camera_light.scope_excluded must be true")
+        return failures
+
     if coverage.get("visual_parity_claimed") is not False:
         failures.append("vmd_bake_timeline_camera_light.visual_parity_claimed must be false")
     for field in ("bone_frames", "morph_frames", "ik_show_hide_frames", "shadow_frames"):
@@ -1531,19 +1576,60 @@ def _validate_maya_probe_report(
             if "output" not in case or case.get("output") is not None:
                 failures.append("pmx_soft_body.output must be null")
         if export_format == "pmx_sdef":
-            failures.extend(
-                _validate_policy_reject_case(
-                    case,
-                    "pmx_sdef",
-                    "PMX_VERTEX_SDEF_UNSUPPORTED",
-                    (
-                        "source_sdef_vertex_count",
-                        "fresh_import_sdef_vertex_count",
-                        "provenance_vertex_count",
-                        "collected_sdef_vertex_count",
-                    ),
-                )
-            )
+            import_oracles = case.get("import_oracles")
+            if not isinstance(import_oracles, dict):
+                failures.append("pmx_sdef.import_oracles_missing")
+            else:
+                for field in (
+                    "source_sdef_vertex_count",
+                    "fresh_import_vertex_count",
+                    "fresh_import_skin_cluster_count",
+                    "fresh_import_influence_count",
+                    "fresh_import_weight_value_count",
+                    "fresh_import_finite_weight_value_count",
+                    "fresh_import_normalized_vertex_count",
+                    "exported_vertex_count",
+                    "exported_bdef4_vertex_count",
+                ):
+                    value = import_oracles.get(field)
+                    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                        failures.append(f"pmx_sdef.import_oracles.{field} must be positive")
+                if import_oracles.get("fresh_import_finite_weight_value_count") != import_oracles.get(
+                    "fresh_import_weight_value_count"
+                ):
+                    failures.append(
+                        "pmx_sdef.import_oracles.finite_weight_value_count must equal weight_value_count"
+                    )
+                if import_oracles.get("fresh_import_normalized_vertex_count") != import_oracles.get(
+                    "fresh_import_vertex_count"
+                ):
+                    failures.append(
+                        "pmx_sdef.import_oracles.normalized_vertex_count must equal vertex_count"
+                    )
+                for field in ("fresh_import_weight_sum_min", "fresh_import_weight_sum_max"):
+                    value = import_oracles.get(field)
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                        failures.append(f"pmx_sdef.import_oracles.{field} must be finite")
+                    elif abs(float(value) - 1.0) > 1.0e-4:
+                        failures.append(f"pmx_sdef.import_oracles.{field} must be normalized to 1")
+                if import_oracles.get("exported_non_bdef4_vertex_count") != 0:
+                    failures.append("pmx_sdef.import_oracles.exported_non_bdef4_vertex_count must be zero")
+                if import_oracles.get("exported_bdef4_vertex_count") != import_oracles.get(
+                    "exported_vertex_count"
+                ):
+                    failures.append(
+                        "pmx_sdef.import_oracles.bdef4_vertex_count must equal exported_vertex_count"
+                    )
+            collection = case.get("collection")
+            if not isinstance(collection, dict):
+                failures.append("pmx_sdef.collection_missing")
+            else:
+                if collection.get("source_fresh_import") is not True:
+                    failures.append("pmx_sdef.collection.source_fresh_import must be true")
+                if collection.get("export_writer_called") is not True:
+                    failures.append("pmx_sdef.collection.export_writer_called must be true")
+            if not isinstance(case.get("output"), str) or not case.get("output"):
+                failures.append("pmx_sdef.output must be a path")
         if export_format == "pmx_impulse":
             failures.extend(
                 _validate_policy_reject_case(
@@ -1610,10 +1696,15 @@ def _validate_maya_probe_report(
             if not isinstance(parsed_counts, dict):
                 failures.append("vmd_bake_timeline_camera_light.parsed_counts_missing")
             else:
-                for field in ("camera_frames", "light_frames"):
-                    value = parsed_counts.get(field)
-                    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                        failures.append(f"vmd_bake_timeline_camera_light.parsed_counts.{field} must be positive")
+                if isinstance(case.get("scope_excluded"), dict):
+                    for field in ("camera_frames", "light_frames"):
+                        if parsed_counts.get(field) != 0:
+                            failures.append(f"vmd_bake_timeline_camera_light.parsed_counts.{field} must be zero")
+                else:
+                    for field in ("camera_frames", "light_frames"):
+                        value = parsed_counts.get(field)
+                        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                            failures.append(f"vmd_bake_timeline_camera_light.parsed_counts.{field} must be positive")
                 for field in ("bone_frames", "morph_frames", "ik_show_hide_frames", "shadow_frames"):
                     if parsed_counts.get(field) != 0:
                         failures.append(f"vmd_bake_timeline_camera_light.parsed_counts.{field} must be zero")
