@@ -560,7 +560,19 @@ class ExportTab(BaseTab):
     def set_result(self, result: ExportWorkflowResult) -> None:
         owner_page = self._result_owner_page
         self._result_owner_page = None
-        (owner_page if owner_page is not None else self._active_page()).set_result(result)
+        if owner_page is not None:
+            # A workflow service may synchronously touch the category selector
+            # while it is executing.  Restore the page that owns the result
+            # before publishing it; otherwise the user sees an empty console
+            # on the accidentally selected page and loses the operation
+            # context.  The owner is a page object, so this also keeps model
+            # and motion results independent when both pages exist.
+            owner_index = 0 if owner_page.pane == self.MODEL_PANE else 1
+            if self.category_stack.currentIndex() != owner_index:
+                self.category_stack.setCurrentIndex(owner_index)
+            owner_page.set_result(result)
+            return
+        self._active_page().set_result(result)
 
     def set_prepared(self, preparation) -> None:
         """Show the Motion page's reusable Bake Timeline payload state."""

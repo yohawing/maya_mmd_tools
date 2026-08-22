@@ -15,7 +15,6 @@ from mmd_tools.services.export_workflow_service import (
     ExportWorkflowResult,
     STATE_SUCCEEDED,
 )
-from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
@@ -24,7 +23,6 @@ from mmd_tools.validation.issue_catalog import get_issue_catalog_entry
 from mmd_tools.ui.translations import UITranslator
 from mmd_tools.validation.vmd_validator import (
     VMD_EXPORT_BAKE_TIMELINE,
-    validate_vmd_data,
 )
 from tests.common.ui_action_coverage import (
     ActionInvocationSpy,
@@ -59,6 +57,16 @@ class _WarningWorkflow:
         self.report = report
         self.acknowledgements = []
         self.requests = []
+
+    def prepare_vmd(self, request):
+        """Provide the Bake-only preparation boundary used by ExportPresenter."""
+        self.prepare_requests = getattr(self, "prepare_requests", [])
+        self.prepare_requests.append(request)
+        return type(
+            "_Preparation",
+            (),
+            {"succeeded": True, "token": object(), "report": self.report},
+        )()
 
     def execute(self, request, *, acknowledge_warnings=False, progress_callback=None):
         self.requests.append(request)
@@ -276,7 +284,7 @@ class TestExportTabGUI(GuiTestBase):
             tab.export_button.click()
             QApplication.processEvents()
 
-            self.assertEqual(tab.active_pane, tab.MODEL_PANE)
+            self.assertEqual(tab.active_pane, tab.MOTION_PANE)
             self.assertEqual(model_page.state_label.text(), "Editing")
             self.assertIsNone(model_page.validation_console.report)
             self.assertEqual(motion_page.state_label.text(), STATE_SUCCEEDED)
@@ -419,12 +427,26 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(tab.validation_console.acknowledge_check.text(), "警告を確認済みにする")
             self.assertFalse(hasattr(tab.validation_console, "save_button"))
 
-            report = validate_vmd_data(VmdData(), VMD_EXPORT_BAKE_TIMELINE)
+            report = ExportValidationReport(
+                "vmd",
+                (
+                    ExportValidationIssue(
+                        "VMD_FRAME_RANGE",
+                        "fatal",
+                        True,
+                        "frame_range",
+                        "現在のシーンのフレーム範囲が不正です",
+                    ),
+                ),
+                mode=VMD_EXPORT_BAKE_TIMELINE,
+            )
             tab.validation_console.set_report(report)
             QApplication.processEvents()
             detail = tab.validation_console.detail_text.toPlainText()
             self.assertIn("書き出し方式: 現在のタイムラインをVMD化", detail)
-            self.assertIn("問題はありません", detail)
+            self.assertIn("タイトル:", detail)
+            self.assertIn("影響:", detail)
+            self.assertIn("対処方法:", detail)
 
             translator.set_language("en")
             translate_spy = ActionInvocationSpy.wrap(

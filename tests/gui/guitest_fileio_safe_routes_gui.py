@@ -354,6 +354,16 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
         """The real VMD button keys the imported PMX joint and updates timeline/history."""
         root = self._import_model_from_button()
         view = self.window.import_export_tab
+        # History is intentionally filtered by the active Import category;
+        # navigate to Animation before exercising the VMD route so the
+        # production list is the one that owns this typed entry.
+        view.import_category_stack.setCurrentIndex(1)
+        QApplication.processEvents()
+        # The isolated Maya profile can still contain entries from an earlier
+        # GUI case.  Clear the shared list so the VMD import's rowsInserted
+        # witness represents this operation exactly once.
+        view.clear_history_button.click()
+        QApplication.processEvents()
         path_spy = QtSignalInvocationSpy(
             "ImportExportPresenter.import_vmd.path_changed",
             view.vmd_path_edit.textChanged,
