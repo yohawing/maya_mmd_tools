@@ -2,9 +2,9 @@
 
 [日本語ドキュメント](docs/README_ja.md)
 
-Maya MMD Tools is a tool for importing MikuMikuDance (MMD) PMD/PMX models and VMD motions into Autodesk Maya.
+Maya MMD Tools imports MikuMikuDance (MMD) PMD/PMX models and VMD motions into Autodesk Maya, provides model and animation editing workflows, and exports supported PMX 2.0 models and VMD character motion.
 
-Its long-term goal is to provide a complete workflow for editing and exporting models and animations.
+Export is published for a bounded, validated set of PMX and VMD features.
 
 ![feature](docs/assets/feature.png)
 
@@ -36,15 +36,15 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental · �
 
 | Feature | Status | Notes |
 |---|---|---|
-| Bone animation | ℹ️ | Basic MMD rigs are supported, but complex mechanisms are not. Bake mode uses [mmd-anim](https://github.com/yohawing/mmd-anim) for high-accuracy baking. |
+| Bone animation | ℹ️ | Basic MMD rigs are supported, but complex mechanisms are not. Bake Export uses [mmd-anim](https://github.com/yohawing/mmd-anim). |
 | VPD | ✅ | Drag-and-drop import only |
 | Morph animation | ℹ️ | Vertex, bone, and material morphs are supported. UV morph metadata is preserved for development round-trip, but Maya UV-set runtime evaluation remains unverified. Flip and Impulse morphs are not supported. |
-| Camera animation | ✅ | Creates and keys `mmd_camera`. Lighting drives the `mmd_light` controller. VMD camera/light export is currently unsupported; a future C++ export route is planned. Self-shadow remains unsupported. |
+| Camera animation | ✅ | Creates and keys `mmd_camera`. Lighting drives the `mmd_light` controller. VMD camera, light, and self-shadow export are unsupported. |
 | IK on/off frames | ℹ️ | Supported for import and bake. Runtime bake applies the state to the final pose; rig mode keys `mmdCcdIk.enabled`. |
 | Physics | ℹ️ | Supports Bullet-based real-time physics and physics bake. Live evaluation is off by default and can be enabled from the Physics tab. Accuracy is still limited. |
 | HumanIK / retargeting | 🧪 | Experimental support for retargeting between imported MMD models. Try it from `MMD > HumanIK (Experimental)`. |
-| Control Rig | 🧪 | A Control Rig is generated automatically based on the semi-standard bone layout. |
-| Export | ℹ️ | VMD export is available from the Export workflow. It always evaluates and bakes the current character scene over the selected timeline; imported source-VMD identity and raw key equivalence are not an export contract. Camera/light export is currently unsupported. |
+| Control Rig | 🧪 | An optional Control Rig can be generated from the semi-standard bone layout. |
+| Export | ℹ️ | VMD export always evaluates and bakes the current character scene over the selected timeline. Imported source-VMD keys, interpolation, and raw payload identity are not preserved as an export contract. Camera, light, and self-shadow export are unsupported. |
 
 ## Known Limitations
 
@@ -102,7 +102,7 @@ Confirm that `MMD > MMD Editor` appears in Maya's menu bar.
 2. The MMD Editor window opens.
 3. You can inspect and adjust settings in each tab.
 
-The UI fields follow PMX Editor conventions. Many fields are not yet implemented, so the tool should currently be considered primarily a preview tool.
+The UI follows PMX Editor conventions. Unsupported fields or data stop export validation with an actionable reason.
 
 ### Import a Model
 
@@ -113,9 +113,20 @@ If textures fail to load due to multi-byte characters in the path, enable the au
 
 ### Import Animation
 
-1. In the Import/Export tab, choose a VMD file.
+1. In the Import tab, choose a VMD file.
 2. Click `Import Animation`.
 3. The animation is applied to the matching model in the scene.
+
+### Create and Edit a Model
+
+1. In the Import tab, choose a packaged template under `Create MMD Model`.
+2. Edit the current model from the Material, Bone, Morph, and related authoring tabs.
+
+### Export a Model or Animation
+
+1. Select the model to make it the current model.
+2. In the Export tab, choose `Model` or `Animation`.
+3. Review validation, then export PMX or VMD. Animation export bakes the current timeline.
 
 ### Use HumanIK (Experimental)
 
@@ -140,4 +151,4 @@ Both are applied to reproduce the MMD-style color response (sRGB gamma-space inp
 
 ## Support
 
-If the problem is not resolved, report it on [GitHub Issues](https://github.com/yohawing/maya_mmd_tools/issues) with the following information:
+If the problem is not resolved, report it on [GitHub Issues](https://github.com/yohawing/maya_mmd_tools/issues) with the Maya and OS versions, reproduction steps, the error, and a screenshot when possible.

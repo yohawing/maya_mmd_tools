@@ -7,13 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Published a validation-gated Export workflow for the supported PMX 2.0 model and VMD character-animation scope.
+- Added Create MMD Model with packaged project-authored templates and transactional Material, Bone, and Morph authoring workflows, including shared and custom toon settings.
+- Added a Development Mode-only native VP2 RenderOverride path and diagnostics without changing the default importer or shader route.
+
 ### Changed
-- Defined the bounded v0.7 public Export scope for validation-gated PMX 2.0 and VMD output; PMD remains import-only.
-- Verified the canonical PMX 2.0 IK and flag-dependent bone metadata subset through Maya export and fresh import on Maya 2024/2026.
-- Preserved PMX 2.0 additional UV channels and UV/additional-UV morph four-component metadata through fresh import, while leaving Maya UV-set runtime evaluation and visual parity outside the supported claim.
-- Standardized PMX vertex export on BDEF4. SDEF/QDEF are imported as linear skin weights without retaining their auxiliary deformation data; explicit SDEF/QDEF payloads and PMX 2.1-only Flip morphs, Impulse morphs, and soft bodies remain fail-closed.
-- Standardized VMD export on the fixed Bake Timeline strategy, with the imported character scene as the sole motion authority; source-VMD identity and raw-key equivalence are no longer export contracts.
-- Added canonical MaterialTab authoring for shared toon indices and non-shared custom toon path/index, with PMX parse and Maya 2024/2026 fresh-import evidence.
+- Made PMD import-only and standardized PMX vertex export on BDEF4. SDEF/QDEF are imported as linear skin weights without retaining their deformation-specific auxiliary data.
+- Preserved the supported PMX 2.0 bone/IK metadata, additional UV channels, UV/additional-UV morph metadata, display data, materials, and physics data through export and fresh import. Maya UV-set deformation and complete visual parity remain outside the supported claim.
+- Standardized VMD export on a fixed timeline bake with the current character scene as the motion authority. Source-VMD keys, interpolation, and raw payload identity are not export contracts; camera, light, and self-shadow export remain unsupported.
+### Fixed
+- Exported current character motion from both Control Rig and non-Control scene routes, including validated Animation Layer and IK-owned motion.
+- Made Reset Pose restore animated rigs without authoring new keys.
+- Restored Export result and history routing, owned legacy Material Morph projection, and successful Physics Apply status reporting.
+- Kept unsupported PMX 2.1 Flip morphs, Impulse morphs, and soft bodies fail-closed instead of silently dropping them.
 
 ## [0.6.2] - 2026-08-01
 
