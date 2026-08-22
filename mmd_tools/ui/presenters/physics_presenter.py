@@ -794,6 +794,7 @@ class PhysicsPresenter:
                 self._apply_validated_joint(shape, parsed, bindings)
             self.invalidate_physics_cache()
             self._form_dirty = False
+            self.app_state.emit_status(f"Applied physics changes: {shape}")
             logger.info("Applied physics changes to '%s'", shape)
         except Exception:
             logger.error("Failed to apply physics changes to '%s'", shape, exc_info=True)
