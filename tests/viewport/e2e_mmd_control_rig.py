@@ -707,6 +707,92 @@ def _vmd_applicability_candidates(vmd_data, joint_for_name) -> list[dict[str, An
     return result
 
 
+def _canonical_warning_evidence(report: Any) -> list[dict[str, str]]:
+    """Keep warning callback evidence compact and independent of UI wording."""
+
+    return [
+        {
+            "code": str(issue.code),
+            "severity": str(issue.severity),
+            "path": str(issue.path),
+            "message": str(issue.message),
+        }
+        for issue in getattr(report, "issues", ()) or ()
+    ]
+
+
+def _report_evidence(report: Any) -> dict[str, Any] | None:
+    """Return the terminal report facts needed when one-shot publication fails."""
+
+    if report is None:
+        return None
+    status = None
+    to_dict = getattr(report, "to_dict", None)
+    if callable(to_dict):
+        status = to_dict().get("status")
+    return {
+        "status": status,
+        "format": getattr(report, "export_format", None),
+        "mode": getattr(report, "mode", None),
+        "warnings": _canonical_warning_evidence(report),
+    }
+
+
+def _approve_one_shot_export_warnings(report: Any, auto_gate: dict[str, Any]) -> bool:
+    """Record the in-call Export Anyway decision and explicitly approve it."""
+
+    acknowledgement = auto_gate.setdefault(
+        "warningAcknowledgement",
+        {"invoked": False, "approved": False, "callbackCount": 0, "warnings": []},
+    )
+    acknowledgement["invoked"] = True
+    acknowledgement["callbackCount"] = int(acknowledgement["callbackCount"]) + 1
+    acknowledgement["warnings"] = _canonical_warning_evidence(report)
+    if bool(getattr(report, "is_blocking", False)):
+        # A fatal report is never expected here, but it must not be approved if
+        # a workflow integration accidentally routes one through this callback.
+        acknowledgement["fatalRejected"] = True
+        return False
+    acknowledgement["approved"] = True
+    return True
+
+
+def _record_one_shot_terminal_evidence(
+    auto_gate: dict[str, Any], published: Any, output_path: Path
+) -> None:
+    """Record a complete one-shot terminal state before touching its output."""
+
+    report = getattr(published, "report", None)
+    error = getattr(published, "error", None)
+    succeeded = bool(getattr(published, "succeeded", False))
+    output_exists = output_path.is_file()
+    report_evidence = _report_evidence(report)
+    auto_gate.update(
+        {
+            "publishedState": getattr(published, "state", None),
+            "publishedSucceeded": succeeded,
+            "publishedError": (
+                None if error is None else f"{type(error).__name__}: {error}"
+            ),
+            "validationReport": report_evidence,
+            "phaseTimings": dict(getattr(published, "phase_timings", {}) or {}),
+            "activePhase": getattr(published, "active_phase", None),
+            "completedPhases": list(getattr(published, "completed_phases", ()) or ()),
+            "outputExists": output_exists,
+        }
+    )
+    if succeeded and output_exists:
+        return
+    reason = (
+        "automatic Bake Timeline did not publish a readable output: "
+        f"state={auto_gate['publishedState']!r}; "
+        f"succeeded={succeeded}; outputExists={output_exists}; "
+        f"error={auto_gate['publishedError']!r}; report={report_evidence!r}"
+    )
+    auto_gate["publishFailureReason"] = reason
+    raise RuntimeError(reason)
+
+
 def _record_control_rig_diagnostics(
     report: dict[str, Any],
     profile: Mapping[str, Any],
@@ -1701,6 +1787,12 @@ def run_e2e_check(
             "actualFrameRange": list(timeline_range),
             "representativeFrames": list(auto_compare_frames),
             "uiHeartbeat": [],
+            "warningAcknowledgement": {
+                "invoked": False,
+                "approved": False,
+                "callbackCount": 0,
+                "warnings": [],
+            },
         }
         report["autoBakeExport"] = auto_gate
         if auto_bake_only:
@@ -1809,8 +1901,12 @@ def run_e2e_check(
                     str(auto_output),
                     dict(auto_options),
                 ),
+                warning_callback=lambda warning_report: _approve_one_shot_export_warnings(
+                    warning_report, auto_gate
+                ),
                 progress_callback=lambda stage: auto_gate["uiHeartbeat"].append(str(stage)),
             )
+            _record_one_shot_terminal_evidence(auto_gate, published, auto_output)
             published_vmd = VmdData().parse_file(str(auto_output))
             curve_restoration_pass = True
             sentinel_payload_changed = {}
@@ -1845,9 +1941,6 @@ def run_e2e_check(
             )
             auto_gate.update(
                 {
-                    "publishedState": published.state,
-                    "phaseTimings": dict(published.phase_timings),
-                    "completedPhases": list(published.completed_phases),
                     "outputSha256": hashlib.sha256(auto_output.read_bytes()).hexdigest(),
                     "sectionCounts": {
                         "bones": len(published_vmd.bone_frames),
