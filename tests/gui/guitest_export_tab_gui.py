@@ -201,6 +201,7 @@ class TestExportTabGUI(GuiTestBase):
 
     def test_operation_cleanup_restores_the_original_page_after_tab_switch(self):
         """A model operation must not re-enable or disable the switched page."""
+        translator = UITranslator.instance()
         tab = self._create_visible_tab()
         try:
             animation_page = tab._pages[tab.MOTION_PANE]
@@ -211,9 +212,15 @@ class TestExportTabGUI(GuiTestBase):
             self.assertFalse(tab._pages[tab.MODEL_PANE].export_button.isEnabled())
 
             tab.pane_tabs.setCurrentIndex(1)
-            tab.set_state("Writing")
-            self.assertEqual(tab._pages[tab.MODEL_PANE].state_label.text(), "Writing")
-            self.assertEqual(animation_page.state_label.text(), "Editing")
+            tab.set_progress("writer")
+            self.assertEqual(
+                tab._pages[tab.MODEL_PANE].state_label.text(),
+                translator.translate("writing_temporary_file", "export_status"),
+            )
+            self.assertEqual(
+                animation_page.state_label.text(),
+                translator.translate("editing", "export_status"),
+            )
             tab.set_operation_active(False)
 
             self.assertTrue(tab._pages[tab.MODEL_PANE].export_button.isEnabled())
@@ -223,6 +230,7 @@ class TestExportTabGUI(GuiTestBase):
 
     def test_export_result_returns_to_operation_page_after_pane_switch(self):
         """An in-flight Animation result must not land on the Model page."""
+        translator = UITranslator.instance()
         tab = self._create_visible_tab()
         report = ExportValidationReport(
             "vmd",
@@ -244,9 +252,15 @@ class TestExportTabGUI(GuiTestBase):
             QApplication.processEvents()
 
             self.assertEqual(tab.active_pane, tab.MOTION_PANE)
-            self.assertEqual(model_page.state_label.text(), "Editing")
+            self.assertEqual(
+                model_page.state_label.text(),
+                translator.translate("editing", "export_status"),
+            )
             self.assertIsNone(model_page.validation_console.report)
-            self.assertEqual(motion_page.state_label.text(), STATE_SUCCEEDED)
+            self.assertEqual(
+                motion_page.state_label.text(),
+                translator.translate("completed", "export_status"),
+            )
             self.assertIs(motion_page.validation_console.report, report)
             self.assertTrue(motion_page.export_button.isEnabled())
         finally:
@@ -259,15 +273,19 @@ class TestExportTabGUI(GuiTestBase):
     def test_button_status_follows_one_shot_progress_and_terminal_result(self):
         """The button-adjacent status is translated separately from the Console."""
         translator = UITranslator.instance()
-        previous_language = translator.get_language()
-        translator.set_language("en")
         tab = self._create_visible_tab()
         try:
             expected = {
-                "scene_preflight": "Validating scene",
-                "payload_collection": "Collecting animation",
-                "writer": "Writing temporary file",
-                "report_ready": "Finalizing",
+                "scene_preflight": translator.translate(
+                    "validating_scene", "export_status"
+                ),
+                "payload_collection": translator.translate(
+                    "collecting_animation", "export_status"
+                ),
+                "writer": translator.translate(
+                    "writing_temporary_file", "export_status"
+                ),
+                "report_ready": translator.translate("finalizing", "export_status"),
             }
             for stage, label in expected.items():
                 tab.set_progress(stage)
@@ -280,10 +298,12 @@ class TestExportTabGUI(GuiTestBase):
                     {},
                 )
             )
-            self.assertEqual(tab.state_label.text(), "Completed")
+            self.assertEqual(
+                tab.state_label.text(),
+                translator.translate("completed", "export_status"),
+            )
         finally:
             self._delete_tab(tab)
-            translator.set_language(previous_language)
 
     def test_validation_console_renders_fatal_warning_and_clean_reports(self):
         """One read-only English console is the screen and Copy authority."""
