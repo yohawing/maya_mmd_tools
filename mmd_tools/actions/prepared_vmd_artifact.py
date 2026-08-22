@@ -160,7 +160,7 @@ class _VmdPartsSink:
     }
 
     def __init__(self, model_name: str) -> None:
-        # Match VmdStreamWriter's public section contract: the Bone section is
+        # Match the public VMD section contract: the Bone section is
         # open immediately, so callers may explicitly close an empty leading
         # Bone section before writing Morph frames.
         self._section_index = 0

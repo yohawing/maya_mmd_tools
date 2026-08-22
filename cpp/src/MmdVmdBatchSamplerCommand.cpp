@@ -117,29 +117,6 @@ private:
     MComputation computation_;
 };
 
-class CurrentTimeGuard final {
-public:
-    CurrentTimeGuard() : entryTime_(MAnimControl::currentTime()) {}
-
-    MStatus restore()
-    {
-        if (restored_) return restoreStatus_;
-        restoreStatus_ = MAnimControl::setCurrentTime(entryTime_);
-        restored_ = true;
-        return restoreStatus_;
-    }
-
-    ~CurrentTimeGuard()
-    {
-        if (!restored_) restore();
-    }
-
-private:
-    MTime entryTime_;
-    bool restored_ = false;
-    MStatus restoreStatus_ = MS::kSuccess;
-};
-
 std::string utf8(const MString& value)
 {
     return value.asUTF8();

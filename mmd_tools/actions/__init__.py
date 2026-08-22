@@ -15,7 +15,6 @@ _EXPORT_MODULES = {
     "ExportVmdAction": ".export_vmd_action",
     "ExportVmdRequest": ".export_vmd_action",
     "ExportVmdResult": ".export_vmd_action",
-    "FrozenVmdDataView": ".prepare_vmd_export_action",
     "ImportModelAction": ".import_model_action",
     "ImportModelRequest": ".import_model_action",
     "ImportModelResult": ".import_model_action",

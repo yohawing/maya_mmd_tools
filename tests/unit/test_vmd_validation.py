@@ -6,12 +6,12 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
-from mmd_tools.io.vmd_stream_writer import VmdStreamWriter
 from mmd_tools.validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
@@ -22,6 +22,7 @@ from mmd_tools.validation.vmd_validator import (
     verify_vmd_output,
     verify_vmd_output_streaming,
 )
+from tests.common.vmd_parts_export_oracle import export_vmd_from_parts_oracle
 
 
 def _valid_bone_frame() -> VmdBoneFrame:
@@ -32,24 +33,80 @@ def _valid_bone_frame() -> VmdBoneFrame:
     return frame
 
 
-def _write_full_stream_fixture(path: Path) -> bytes:
-    """Write one record in every canonical stream section and return bytes."""
-    writer = VmdStreamWriter(path, "モデル")
-    writer.write_bone(
-        {
-            "bone_name": "センター",
-            "frame": 4,
-            "position": (0.0, 0.0, 0.0),
-            "rotation": (0.0, 0.0, 0.0, 1.0),
-        }
+def _stream_counts(*, bones, morphs, cameras, lights, shadows, ik):
+    """Return the six canonical section counts expected by the stream verifier."""
+    return {
+        "bones": len(bones),
+        "morphs": len(morphs),
+        "cameras": len(cameras),
+        "lights": len(lights),
+        "shadows": len(shadows),
+        "ik": len(ik),
+    }
+
+
+def _stream_bounds(*, bones, morphs, cameras, lights, shadows, ik):
+    """Return canonical per-section frame bounds for the stream verifier."""
+    def bounds(frames):
+        return SimpleNamespace(
+            minimum=min(frames) if frames else None,
+            maximum=max(frames) if frames else None,
+        )
+
+    return {
+        "bones": bounds(bones),
+        "morphs": bounds(morphs),
+        "cameras": bounds(cameras),
+        "lights": bounds(lights),
+        "shadows": bounds(shadows),
+        "ik": bounds(ik),
+    }
+
+
+def _write_stream_fixture(
+    path: Path,
+    *,
+    bones=(4,),
+    morphs=(8,),
+    cameras=(12,),
+    lights=(16,),
+    shadows=(20,),
+    ik=(24,),
+    bone_name="センター",
+    morph_name="笑い",
+) -> bytes:
+    """Write a canonical all-section fixture through the shared VMD oracle."""
+    metadata = {
+        "modelName": "モデル",
+        "boneNames": [{"name": bone_name}],
+        "morphNames": [{"name": morph_name}],
+        "cameraFrames": [
+            {"frame": frame, "interpolation": bytes(24)} for frame in cameras
+        ],
+        "lightFrames": [{"frame": frame} for frame in lights],
+        "selfShadowFrames": [{"frame": frame} for frame in shadows],
+        "propertyFrames": [
+            {
+                "frame": frame,
+                "visible": True,
+                "ikStates": [{"boneName": "足IK", "enabled": True}],
+            }
+            for frame in ik
+        ],
+    }
+    data = export_vmd_from_parts_oracle(
+        metadata,
+        [0] * len(bones),
+        list(bones),
+        [0.0] * (3 * len(bones)),
+        [0.0, 0.0, 0.0, 1.0] * len(bones),
+        bytes(range(64)) * len(bones),
+        [0] * len(morphs),
+        list(morphs),
+        [0.25] * len(morphs),
     )
-    writer.write_morph({"morph_name": "笑い", "frame": 8, "value": 0.25})
-    writer.write_camera({"frame": 12})
-    writer.write_light({"frame": 16})
-    writer.write_shadow({"frame": 20})
-    writer.write_ik({"frame": 24, "visible": True, "ik_states": [("足IK", True)]})
-    writer.finish()
-    return path.read_bytes()
+    path.write_bytes(data)
+    return data
 
 
 class TestVmdValidator(unittest.TestCase):
@@ -110,28 +167,42 @@ class TestVmdValidator(unittest.TestCase):
 
         self.assertEqual(report.issues[0].code, "VMD_FRAME_COUNT_MISMATCH")
 
-    def test_streaming_verifier_matches_stream_writer_receipt(self):
+    def test_streaming_verifier_matches_canonical_export_receipt(self):
+        bones, morphs = (4,), (8,)
+        cameras, lights, shadows, ik = (), (), (), ()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stream.vmd"
-            writer = VmdStreamWriter(path, "モデル")
-            writer.write_bone(
-                {
-                    "bone_name": "センター",
-                    "frame": 4,
-                    "position": (0.0, 0.0, 0.0),
-                    "rotation": (0.0, 0.0, 0.0, 1.0),
-                }
+            source = _write_stream_fixture(
+                path,
+                bones=bones,
+                morphs=morphs,
+                cameras=cameras,
+                lights=lights,
+                shadows=shadows,
+                ik=ik,
             )
-            writer.write_morph({"morph_name": "笑い", "frame": 8, "value": 0.25})
-            summary = writer.finish()
 
             streaming = verify_vmd_output_streaming(
                 str(path),
                 VMD_EXPORT_BAKE_TIMELINE,
-                expected_counts=summary.counts,
-                expected_bounds=summary.frame_bounds,
-                expected_sha256=summary.sha256,
-                expected_size=summary.size,
+                expected_counts=_stream_counts(
+                    bones=bones,
+                    morphs=morphs,
+                    cameras=cameras,
+                    lights=lights,
+                    shadows=shadows,
+                    ik=ik,
+                ),
+                expected_bounds=_stream_bounds(
+                    bones=bones,
+                    morphs=morphs,
+                    cameras=cameras,
+                    lights=lights,
+                    shadows=shadows,
+                    ik=ik,
+                ),
+                expected_sha256=hashlib.sha256(source).hexdigest(),
+                expected_size=len(source),
             )
             legacy = verify_vmd_output(str(path), VMD_EXPORT_BAKE_TIMELINE)
 
@@ -141,9 +212,15 @@ class TestVmdValidator(unittest.TestCase):
     def test_streaming_verifier_rejects_noncanonical_global_frame_bounds(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stream.vmd"
-            writer = VmdStreamWriter(path)
-            writer.write_morph({"morph_name": "笑い", "frame": 8, "value": 0.25})
-            writer.finish()
+            _write_stream_fixture(
+                path,
+                bones=(),
+                morphs=(8,),
+                cameras=(),
+                lights=(),
+                shadows=(),
+                ik=(),
+            )
 
             report = verify_vmd_output_streaming(
                 str(path),
@@ -155,15 +232,38 @@ class TestVmdValidator(unittest.TestCase):
         self.assertIn("VMD_FRAME_RANGE", [issue.code for issue in report.issues])
 
     def test_streaming_verifier_rejects_malformed_canonical_metadata(self):
+        bones, morphs, cameras, lights, shadows, ik = (), (), (), (), (), ()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stream.vmd"
-            writer = VmdStreamWriter(path)
-            summary = writer.finish()
-            incomplete_counts = dict(summary.counts)
+            _write_stream_fixture(
+                path,
+                bones=bones,
+                morphs=morphs,
+                cameras=cameras,
+                lights=lights,
+                shadows=shadows,
+                ik=ik,
+            )
+            counts = _stream_counts(
+                bones=bones,
+                morphs=morphs,
+                cameras=cameras,
+                lights=lights,
+                shadows=shadows,
+                ik=ik,
+            )
+            incomplete_counts = dict(counts)
             incomplete_counts.pop("ik")
-            boolean_counts = dict(summary.counts)
+            boolean_counts = dict(counts)
             boolean_counts["bones"] = True
-            mapping_bounds = dict(summary.frame_bounds)
+            mapping_bounds = _stream_bounds(
+                bones=bones,
+                morphs=morphs,
+                cameras=cameras,
+                lights=lights,
+                shadows=shadows,
+                ik=ik,
+            )
             mapping_bounds["bones"] = {"minimum": None, "maximum": None}
 
             malformed = (
@@ -182,30 +282,13 @@ class TestVmdValidator(unittest.TestCase):
                     self.assertFalse(report.valid)
 
     def test_streaming_verifier_enforces_inclusive_frame_range_for_all_sections(self):
-        section_payloads = {
-            "bones": {
-                "bone_name": "センター",
-                "frame": 10,
-                "position": (0.0, 0.0, 0.0),
-                "rotation": (0.0, 0.0, 0.0, 1.0),
-            },
-            "morphs": {"morph_name": "笑い", "frame": 10, "value": 0.25},
-            "cameras": {"frame": 10},
-            "lights": {"frame": 10},
-            "shadows": {"frame": 10},
-            "ik": {"frame": 10, "visible": True, "ik_states": [("足IK", True)]},
-        }
-        for section in section_payloads:
+        section_names = ("bones", "morphs", "cameras", "lights", "shadows", "ik")
+        for section in section_names:
             for frame in (9, 11):
                 with self.subTest(section=section, frame=frame), tempfile.TemporaryDirectory() as directory:
                     path = Path(directory) / "stream.vmd"
-                    writer = VmdStreamWriter(path)
-                    for current_section, payload in section_payloads.items():
-                        current = dict(payload)
-                        if current_section == section:
-                            current["frame"] = frame
-                        writer.write_frame(current_section, current)
-                    writer.finish()
+                    frames = {name: (frame if name == section else 10,) for name in section_names}
+                    _write_stream_fixture(path, **frames)
 
                     report = verify_vmd_output_streaming(
                         str(path),
@@ -221,9 +304,15 @@ class TestVmdValidator(unittest.TestCase):
     def test_streaming_verifier_accepts_inclusive_frame_range_endpoints(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stream.vmd"
-            writer = VmdStreamWriter(path)
-            writer.write_morph({"morph_name": "笑い", "frame": 10, "value": 0.25})
-            writer.finish()
+            _write_stream_fixture(
+                path,
+                bones=(),
+                morphs=(10,),
+                cameras=(),
+                lights=(),
+                shadows=(),
+                ik=(),
+            )
 
             report = verify_vmd_output_streaming(
                 str(path),
@@ -236,8 +325,15 @@ class TestVmdValidator(unittest.TestCase):
     def test_streaming_verifier_rejects_malformed_expected_frame_range(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stream.vmd"
-            writer = VmdStreamWriter(path)
-            writer.finish()
+            _write_stream_fixture(
+                path,
+                bones=(),
+                morphs=(),
+                cameras=(),
+                lights=(),
+                shadows=(),
+                ik=(),
+            )
             for frame_range in (
                 (),
                 (1,),
@@ -263,7 +359,7 @@ class TestVmdValidator(unittest.TestCase):
     def test_streaming_verifier_rejects_truncation_in_each_section(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stream.vmd"
-            source = _write_full_stream_fixture(path)
+            source = _write_stream_fixture(path)
             # Header/model (50), then count + record for each fixed section;
             # IK has a 9-byte fixed prefix and one 21-byte state.
             record_ends = (164, 191, 256, 288, 301, 335)
@@ -275,18 +371,33 @@ class TestVmdValidator(unittest.TestCase):
                 self.assertIn("OUTPUT_PARSE_FAILED", [issue.code for issue in report.issues])
 
     def test_streaming_verifier_requires_declared_empty_tail_sections(self):
+        empty = ()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stream.vmd"
-            writer = VmdStreamWriter(path)
-            summary = writer.finish()
+            source = _write_stream_fixture(
+                path,
+                bones=empty,
+                morphs=empty,
+                cameras=empty,
+                lights=empty,
+                shadows=empty,
+                ik=empty,
+            )
             # Preserve the required bone and morph counts, but remove the four
-            # empty tail counts emitted by the canonical stream writer.
-            path.write_bytes(path.read_bytes()[:58])
+            # empty tail counts emitted by the canonical export fixture.
+            path.write_bytes(source[:58])
 
             report = verify_vmd_output_streaming(
                 str(path),
                 VMD_EXPORT_BAKE_TIMELINE,
-                expected_counts=summary.counts,
+                expected_counts=_stream_counts(
+                    bones=empty,
+                    morphs=empty,
+                    cameras=empty,
+                    lights=empty,
+                    shadows=empty,
+                    ik=empty,
+                ),
             )
 
         self.assertFalse(report.valid)
@@ -295,7 +406,7 @@ class TestVmdValidator(unittest.TestCase):
     def test_streaming_verifier_rejects_nonfinite_values_and_wire_flags(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stream.vmd"
-            source = _write_full_stream_fixture(path)
+            source = _write_stream_fixture(path)
             # Offsets are stable for the one-record fixture above.
             corruptions = (
                 (54 + 31, struct.pack("<f", float("nan")), "VMD_NON_FINITE_NUMBER"),
@@ -316,12 +427,27 @@ class TestVmdValidator(unittest.TestCase):
                 self.assertIn(code, [issue.code for issue in report.issues])
 
     def test_streaming_verifier_reports_trailing_bytes_and_metadata_mismatch(self):
+        empty = ()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stream.vmd"
-            writer = VmdStreamWriter(path)
-            summary = writer.finish()
-            path.write_bytes(path.read_bytes() + b"trailing")
-            expected_counts = dict(summary.counts)
+            source = _write_stream_fixture(
+                path,
+                bones=empty,
+                morphs=empty,
+                cameras=empty,
+                lights=empty,
+                shadows=empty,
+                ik=empty,
+            )
+            path.write_bytes(source + b"trailing")
+            expected_counts = _stream_counts(
+                bones=empty,
+                morphs=empty,
+                cameras=empty,
+                lights=empty,
+                shadows=empty,
+                ik=empty,
+            )
             expected_counts["bones"] = 1
 
             report = verify_vmd_output_streaming(
@@ -338,12 +464,20 @@ class TestVmdValidator(unittest.TestCase):
         self.assertFalse(report.valid)
 
     def test_streaming_verifier_bounds_issue_memory_for_many_invalid_records(self):
+        empty = ()
+        morphs = range(130)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "many-invalid.vmd"
-            writer = VmdStreamWriter(path)
-            for frame in range(130):
-                writer.write_morph({"morph_name": "", "frame": frame, "value": 0.0})
-            writer.finish()
+            _write_stream_fixture(
+                path,
+                bones=empty,
+                morphs=morphs,
+                cameras=empty,
+                lights=empty,
+                shadows=empty,
+                ik=empty,
+                morph_name="",
+            )
 
             report = verify_vmd_output_streaming(str(path), VMD_EXPORT_BAKE_TIMELINE)
 

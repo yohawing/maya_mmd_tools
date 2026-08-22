@@ -298,11 +298,6 @@ class NativeDenseBoneSamples:
         chunk_compound_success_covered_channel_counts: Sequence[int] = (),
         chunk_compound_fallback_group_counts: Sequence[int] = (),
         chunk_compound_fallback_covered_channel_counts: Sequence[int] = (),
-        # Legacy names are accepted only to keep direct construction by older
-        # callers safe; diagnostics always expose the explicit classified_*
-        # names so they cannot be confused with runtime outcomes.
-        chunk_compound_group_counts: Sequence[int] = (),
-        chunk_compound_covered_channel_counts: Sequence[int] = (),
     ) -> None:
         self.plan = plan
         self.strategy_counts = dict(strategy_counts)
@@ -318,19 +313,11 @@ class NativeDenseBoneSamples:
             chunk_first_timed_mplug_read_wall_secs
         )
         self.chunk_channel_loop_wall_secs = tuple(chunk_channel_loop_wall_secs)
-        classified_group_counts = (
-            chunk_classified_compound_group_counts
-            or chunk_compound_group_counts
-        )
-        classified_covered_counts = (
-            chunk_classified_compound_covered_channel_counts
-            or chunk_compound_covered_channel_counts
-        )
         self.chunk_classified_compound_group_counts = tuple(
-            int(count) for count in classified_group_counts
+            int(count) for count in chunk_classified_compound_group_counts
         )
         self.chunk_classified_compound_covered_channel_counts = tuple(
-            int(count) for count in classified_covered_counts
+            int(count) for count in chunk_classified_compound_covered_channel_counts
         )
         self.chunk_compound_success_group_counts = tuple(
             int(count) for count in chunk_compound_success_group_counts
