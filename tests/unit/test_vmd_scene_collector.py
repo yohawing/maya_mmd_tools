@@ -1923,7 +1923,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         ), mock.patch.object(
             VmdSceneCollector,
             "_recover_runtime_authoring_routes",
-            return_value=(recovered, {}),
+            return_value=recovered,
         ), mock.patch.object(
             collector_module,
             "_bake_timeline_single_key_bone_route",
@@ -1985,10 +1985,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         ), mock.patch.object(
             VmdSceneCollector,
             "_recover_runtime_authoring_routes",
-            return_value=(
-                {"translateX": ("append_runtime", "baseTranslateX")},
-                {},
-            ),
+            return_value={"translateX": ("append_runtime", "baseTranslateX")},
         ), mock.patch.object(
             collector_module,
             "_bake_timeline_single_key_bone_route",
@@ -2043,7 +2040,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             "_merge_physics_authored_input_routes",
             side_effect=merge,
         ):
-            recovered, replayable_proxy_groups = collector._recover_runtime_authoring_routes(
+            recovered = collector._recover_runtime_authoring_routes(
                 "dependency_joint",
                 "model_root",
                 initial_route,
@@ -2051,78 +2048,6 @@ class TestVmdSceneCollector(unittest.TestCase):
             )
 
         self.assertEqual(recovered, complete_route)
-        self.assertEqual(replayable_proxy_groups, {})
-
-    def test_runtime_route_recovery_preserves_authority_validated_proxy_group(self):
-        self.cmds.node_types.update(
-            {
-                "dependency_joint": "joint",
-                "accum_runtime": "mmdBoneMorphAccum",
-                "vmd_authoring_proxy": "transform",
-            }
-        )
-        proxy_route = {
-            f"rotate{axis}": ("vmd_authoring_proxy", f"rotate{axis}")
-            for axis in "XYZ"
-        }
-        accum_route = {
-            f"rotate{axis}": ("accum_runtime", f"baseRotate{axis}")
-            for axis in "XYZ"
-        }
-        classification = {
-            "runtime_nodes": ("accum_runtime",),
-            "runtime_node_types": ("mmdBoneMorphAccum",),
-        }
-        with mock.patch.object(
-            collector_module,
-            "resolve_redirected_authoring_proxy_authority",
-            return_value=(proxy_route, accum_route, True),
-        ), mock.patch.object(
-            collector_module,
-            "resolve_owned_bone_morph_base_routes",
-            return_value=SimpleNamespace(routes={"dependency_joint": accum_route}),
-        ), mock.patch.object(
-            collector_module,
-            "redirected_authority_matches",
-            side_effect=lambda current, authority: current == authority,
-        ):
-            collector = VmdSceneCollector()
-            recovered, replayable = collector._recover_runtime_authoring_routes(
-                "dependency_joint",
-                "model_root",
-                proxy_route,
-                classification,
-            )
-
-        self.assertEqual(recovered, proxy_route)
-        self.assertEqual(replayable["rotate"]["route"], proxy_route)
-        self.assertEqual(replayable["rotate"]["runtime_route"], accum_route)
-        self.assertTrue(
-            collector_module._runtime_route_group_complete(
-                recovered,
-                "rotate",
-                classification["runtime_nodes"],
-                replayable_proxy=replayable["rotate"],
-            )
-        )
-        stale = dict(replayable["rotate"])
-        stale["authority"] = {
-            f"rotate{axis}": ("stale_runtime", f"baseRotate{axis}")
-            for axis in "XYZ"
-        }
-        with mock.patch.object(
-            collector_module,
-            "redirected_authority_matches",
-            side_effect=lambda current, authority: current == authority,
-        ):
-            self.assertFalse(
-                collector_module._runtime_route_group_complete(
-                    recovered,
-                    "rotate",
-                    classification["runtime_nodes"],
-                    replayable_proxy=stale,
-                )
-            )
 
     def test_control_rig_direct_export_streams_moving_dependency_through_native_sampler(self):
         self.cmds.node_types.update(

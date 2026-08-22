@@ -1103,7 +1103,6 @@ def _runtime_route_group_complete(
     route: Mapping[str, tuple[str, str]],
     group: str,
     runtime_nodes: Sequence[str],
-    replayable_proxy: Optional[Mapping[str, Any]] = None,
 ) -> bool:
     """Validate one complete translate/rotate authoring route.
 
@@ -1121,35 +1120,7 @@ def _runtime_route_group_complete(
     if any(not isinstance(value, (tuple, list)) or len(value) != 2 for value in values):
         return False
     if any(not _runtime_route_node_matches(value[0], runtime_nodes) for value in values):
-        if not isinstance(replayable_proxy, Mapping):
-            return False
-        proxy_route = replayable_proxy.get("route")
-        runtime_route = replayable_proxy.get("runtime_route")
-        authority = replayable_proxy.get("authority")
-        if not isinstance(proxy_route, Mapping):
-            return False
-        if not isinstance(runtime_route, Mapping):
-            return False
-        if not isinstance(authority, Mapping):
-            return False
-        if any(
-            route.get(attribute) != proxy_route.get(attribute)
-            or attribute not in runtime_route
-            or attribute not in authority
-            for attribute in attrs
-        ):
-            return False
-        runtime_values = [runtime_route[attribute] for attribute in attrs]
-        if any(
-            not isinstance(value, (tuple, list))
-            or len(value) != 2
-            or not _runtime_route_node_matches(value[0], runtime_nodes)
-            for value in runtime_values
-        ):
-            return False
-        current = {attribute: runtime_route[attribute] for attribute in attrs}
-        stored_authority = {attribute: authority[attribute] for attribute in attrs}
-        return redirected_authority_matches(current, stored_authority)
+        return False
     route_nodes = {_canonical_dag_path(str(value[0])) or str(value[0]) for value in values}
     if len(route_nodes) != 1:
         return False
@@ -2967,7 +2938,7 @@ class VmdSceneCollector:
         target_model: str,
         route: Mapping[str, tuple[str, str]],
         classification: Mapping[str, Any],
-    ) -> tuple[dict[str, tuple[str, str]], dict[str, dict[str, Any]]]:
+    ) -> dict[str, tuple[str, str]]:
         """Recover importer-owned pre-runtime routes for one dependency.
 
         The visible joint is a runtime result when a supported MMD node appears
@@ -2978,7 +2949,6 @@ class VmdSceneCollector:
         """
 
         recovered = dict(route)
-        runtime_destination = dict(route)
         runtime_types = set(str(value) for value in classification.get("runtime_node_types", ()))
         runtime_nodes = tuple(str(value) for value in classification.get("runtime_nodes", ()))
         long_joint = str((cmds.ls(joint, long=True) or [joint])[0])
@@ -3006,9 +2976,7 @@ class VmdSceneCollector:
                 node = str(append.get("node") or "")
                 if node and _runtime_route_node_matches(node, runtime_nodes):
                     for logical, physical in (append.get("attr_map") or {}).items():
-                        runtime_value = (node, str(physical))
-                        recovered.setdefault(str(logical), runtime_value)
-                        runtime_destination[str(logical)] = runtime_value
+                        recovered.setdefault(str(logical), (node, str(physical)))
 
         if "mmdCcdIk" in runtime_types:
             try:
@@ -3023,12 +2991,10 @@ class VmdSceneCollector:
                     slot = -1
                 if node and slot >= 0 and _runtime_route_node_matches(node, runtime_nodes):
                     for axis in "XYZ":
-                        runtime_value = (
-                            node,
-                            f"inputRotate[{slot}].inputRotateElement{axis}",
+                        recovered.setdefault(
+                            f"rotate{axis}",
+                            (node, f"inputRotate[{slot}].inputRotateElement{axis}"),
                         )
-                        recovered.setdefault(f"rotate{axis}", runtime_value)
-                        runtime_destination[f"rotate{axis}"] = runtime_value
 
         if "mmdBoneMorphAccum" in runtime_types:
             try:
@@ -3049,16 +3015,15 @@ class VmdSceneCollector:
                     ):
                         # An accumulator is the topmost authoring surface for
                         # both compounds, even when its output feeds mmdAppend.
-                        accum_values = {
-                            str(attribute): (str(value[0]), str(value[1]))
-                            for attribute, value in accum_route.items()
-                        }
-                        recovered.update(accum_values)
-                        runtime_destination.update(accum_values)
+                        recovered.update(
+                            {
+                                str(attribute): (str(value[0]), str(value[1]))
+                                for attribute, value in accum_route.items()
+                            }
+                        )
 
         if "mmdPhysicsBoneDriver" in runtime_types:
             route_map = {long_joint: dict(recovered)}
-            before_physics = dict(recovered)
             try:
                 self._merge_physics_authored_input_routes(
                     joints=(long_joint,),
@@ -3067,51 +3032,11 @@ class VmdSceneCollector:
                     strict_bake_timeline=True,
                 )
                 recovered = dict(route_map.get(long_joint, recovered))
-                for attribute, value in recovered.items():
-                    if before_physics.get(attribute) != value:
-                        runtime_destination[attribute] = value
             except Exception:
                 # An incomplete pre-physics route is rejected by the caller;
                 # do not silently fall through to the final solver output.
                 pass
-
-        replayable_proxy_groups: dict[str, dict[str, Any]] = {}
-        proxy_route, authority, claimed = (
-            resolve_redirected_authoring_proxy_authority(joint)
-        )
-        if claimed and proxy_route and authority:
-            for group in ("translate", "rotate"):
-                attrs = tuple(f"{group}{axis}" for axis in "XYZ")
-                if any(
-                    attribute not in route
-                    or attribute not in proxy_route
-                    or attribute not in runtime_destination
-                    or attribute not in authority
-                    for attribute in attrs
-                ):
-                    continue
-                if any(route[attribute] != proxy_route[attribute] for attribute in attrs):
-                    continue
-                runtime_group = {
-                    attribute: runtime_destination[attribute] for attribute in attrs
-                }
-                authority_group = {attribute: authority[attribute] for attribute in attrs}
-                if not _runtime_route_group_complete(
-                    runtime_destination,
-                    group,
-                    runtime_nodes,
-                ):
-                    continue
-                if not redirected_authority_matches(runtime_group, authority_group):
-                    continue
-                proxy_group = {attribute: proxy_route[attribute] for attribute in attrs}
-                recovered.update(proxy_group)
-                replayable_proxy_groups[group] = {
-                    "route": proxy_group,
-                    "runtime_route": runtime_group,
-                    "authority": authority_group,
-                }
-        return recovered, replayable_proxy_groups
+        return recovered
 
     def _control_rig_direct_export_plan(
         self,
@@ -3319,7 +3244,6 @@ class VmdSceneCollector:
                 else []
             )
             classifications = []
-            replayable_proxy_groups: dict[str, dict[str, Any]] = {}
             if unresolved_channels:
                 for group in ("translate", "rotate"):
                     group_channels = tuple(
@@ -3358,18 +3282,16 @@ class VmdSceneCollector:
                     classifications.append(classification)
                     runtime_nodes = classification.get("runtime_nodes", ())
                     if runtime_nodes:
-                        route, replayable_groups = self._recover_runtime_authoring_routes(
+                        route = self._recover_runtime_authoring_routes(
                             joint,
                             target_model,
                             route,
                             classification,
                         )
-                        replayable_proxy_groups.update(replayable_groups)
                         if not _runtime_route_group_complete(
                             route,
                             group,
                             runtime_nodes,
-                            replayable_proxy=replayable_proxy_groups.get(group),
                         ):
                             message = (
                                 f"{joint}: runtime dependency output has no complete "
