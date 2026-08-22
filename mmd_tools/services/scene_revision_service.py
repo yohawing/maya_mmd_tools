@@ -352,14 +352,40 @@ class SceneRevisionService:
             return
         relevant = self._resolve_flags(self._relevant_attribute_flags, DEFAULT_RELEVANT_ATTRIBUTE_FLAGS)
         ignored = self._resolve_flags(self._ignored_attribute_flags, DEFAULT_IGNORED_ATTRIBUTE_FLAGS)
-        if message in ignored:
-            return
         if not isinstance(message, int):
             return
         relevant_mask = 0
         for flag in relevant:
             relevant_mask |= flag
-        if not (message & relevant_mask):
+        ignored_mask = 0
+        for flag in ignored:
+            ignored_mask |= flag
+        mutation_bits = message & relevant_mask
+        effective_mutation_bits = mutation_bits & ~ignored_mask
+        # AttributeMessage is a bit field.  Maya combines kAttributeEval with
+        # modifiers such as kIncomingDirection (2052 in Maya 2024), so an
+        # exact-value comparison would let evaluation callbacks through.
+        # Subtract ignored bits from the mutation mask, so Eval|Set,
+        # connection, and array-removal evidence survives when those bits are
+        # not explicitly configured as ignored.
+        if not effective_mutation_bits:
+            return
+        incoming_direction = self._resolve_flags(None, ("kIncomingDirection",))
+        array_added = self._resolve_flags(None, ("kAttributeArrayAdded",))
+        incoming_mask = next(iter(incoming_direction), 0)
+        array_added_mask = next(iter(array_added), 0)
+        # Runtime array nodes can materialize an incoming element while Maya
+        # evaluates a frame (6144 = kIncomingDirection | kAttributeArrayAdded).
+        # Connection callbacks still cover topology edits; a standalone array
+        # addition and all explicit kAttributeSet/connection messages remain
+        # mutation evidence.
+        if (
+            incoming_mask
+            and array_added_mask
+            and message & incoming_mask
+            and message & array_added_mask
+            and not (effective_mutation_bits & ~array_added_mask)
+        ):
             return
         self._bump("attribute")
 
