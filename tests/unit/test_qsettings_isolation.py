@@ -24,12 +24,38 @@ from mmd_tools.ui.qt_compat import QApplication  # noqa: E402
 from mmd_tools.ui.tabs.import_export_tab import ImportExportTab  # noqa: E402
 
 
+def _run_plain_mayapy(code):
+    """Run a Qt widget assertion outside Maya's headless QGuiApplication."""
+
+    project_root = Path(__file__).resolve().parents[2]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(project_root)
+    environment["MMD_TEST_DEFER_MAYA_INIT"] = "1"
+    environment["MAYA_SKIP_USERSETUP_PY"] = "1"
+    environment.setdefault("QT_QPA_PLATFORM", "offscreen")
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=str(project_root),
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
 class TestQSettingsIsolation(unittest.TestCase):
     """Use production widgets while proving both native scopes stay read-only."""
 
     @classmethod
     def setUpClass(cls):
-        cls.app = QApplication.instance() or QApplication([])
+        instance = QApplication.instance()
+        # Maya 2024 mayapy owns a QGuiApplication after standalone startup.
+        # Constructing QWidget subclasses on that batch application is a
+        # native crash, so widget assertions are delegated to a plain mayapy
+        # child while the surrounding contract tests remain in this suite.
+        cls._plain_mayapy = instance is not None and not isinstance(instance, QApplication)
+        cls.app = None if cls._plain_mayapy else instance or QApplication([])
 
     def setUp(self):
         self.store = isolated_settings_store("maya_mmd_tools", "ImportExportTab")
@@ -39,7 +65,8 @@ class TestQSettingsIsolation(unittest.TestCase):
     def tearDown(self):
         self.store.clear()
         self.store.sync()
-        self.app.processEvents()
+        if self.app is not None:
+            self.app.processEvents()
 
     def test_host_fingerprint_boundary_does_not_import_qt(self):
         """The outer Maya launcher can probe native stores before PySide exists."""
@@ -90,6 +117,42 @@ print("mmd_tools.ui.qt_compat" in sys.modules)
         self.assertNotEqual(before, after)
 
     def test_default_production_qsettings_uses_temp_backend_and_fixture_value(self):
+        if self._plain_mayapy:
+            before = host_native_qsettings_fingerprints()
+            try:
+                completed = _run_plain_mayapy(
+                    """
+from tests.common.qsettings_isolation import (
+    activate_qsettings_isolation,
+    host_native_qsettings_fingerprints,
+    isolated_qsettings_root,
+    isolated_settings_store,
+)
+activate_qsettings_isolation()
+from mmd_tools.ui.qt_compat import QApplication
+from mmd_tools.ui.tabs.import_export_tab import ImportExportTab
+app = QApplication.instance() or QApplication([])
+store = isolated_settings_store("maya_mmd_tools", "ImportExportTab")
+store.clear(); store.sync()
+before = host_native_qsettings_fingerprints()
+tab = ImportExportTab()
+tab.import_path_edit.setText("matrix-value")
+tab.namespace_edit.setText("matrix-value")
+store.sync()
+assert store.value("import_path") == "matrix-value"
+assert store.value("custom_namespace_name") == "matrix-value"
+assert str(isolated_qsettings_root()).replace("\\\\", "/").lower() in store.fileName().replace("\\\\", "/").lower()
+assert "HKEY_CURRENT_USER" not in store.fileName()
+tab.deleteLater(); app.processEvents()
+assert before == host_native_qsettings_fingerprints()
+"""
+                )
+            finally:
+                after = host_native_qsettings_fingerprints()
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(before, after)
+            return
+
         before = host_native_qsettings_fingerprints()
         tab = ImportExportTab()
         try:
@@ -109,6 +172,41 @@ print("mmd_tools.ui.qt_compat" in sys.modules)
         self.assertEqual(before, host_native_qsettings_fingerprints())
 
     def test_real_clear_history_click_only_clears_fixture_store(self):
+        if self._plain_mayapy:
+            before = host_native_qsettings_fingerprints()
+            try:
+                completed = _run_plain_mayapy(
+                    """
+import os
+import tempfile
+from tests.common.qsettings_isolation import activate_qsettings_isolation, host_native_qsettings_fingerprints
+activate_qsettings_isolation()
+from mmd_tools.ui.qt_compat import QApplication
+from mmd_tools.ui.tabs.import_export_tab import ImportExportTab
+app = QApplication.instance() or QApplication([])
+with tempfile.TemporaryDirectory() as directory:
+    paths = [os.path.join(directory, name) for name in ("model.pmx", "motion.vmd", "export.pmx")]
+    for path in paths:
+        with open(path, "w", encoding="utf-8"):
+            pass
+    tab = ImportExportTab()
+    view_state = tab.view_state
+    view_state.save_file_history("import", paths[0])
+    view_state.save_file_history("vmd", paths[1])
+    view_state.save_file_history("export", paths[2])
+    before = host_native_qsettings_fingerprints()
+    tab.clear_history_button.click()
+    assert view_state.load_file_history() == [{"path": paths[2], "type": "export"}]
+    tab.deleteLater(); app.processEvents()
+assert before == host_native_qsettings_fingerprints()
+"""
+                )
+            finally:
+                after = host_native_qsettings_fingerprints()
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(before, after)
+            return
+
         with tempfile.TemporaryDirectory() as directory:
             import_path = os.path.join(directory, "model.pmx")
             vmd_path = os.path.join(directory, "motion.vmd")
@@ -139,7 +237,11 @@ print("mmd_tools.ui.qt_compat" in sys.modules)
         state = activate_qsettings_isolation()
         redirected = state["redirected"]
 
-        with_parent = redirected("maya_mmd_tools", "ImportExportTab", parent=self.app)
+        with_parent = redirected(
+            "maya_mmd_tools",
+            "ImportExportTab",
+            parent=self.app or QApplication.instance(),
+        )
         self.assertIn(
             str(state["root"]).replace("\\", "/").lower(),
             with_parent.fileName().replace("\\", "/").lower(),
