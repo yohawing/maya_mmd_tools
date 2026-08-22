@@ -167,6 +167,7 @@ _ROLE_COLORS = {
     "upper_body2": 17,
     "neck": 17,
     "head": 17,
+    "both_eyes": 17,
     "left_shoulder": 6,
     "left_arm": 6,
     "left_elbow": 6,
@@ -201,6 +202,7 @@ _ROLE_PARENTS = {
     "upper_body2": "upper_body",
     "neck": "upper_body2",
     "head": "neck",
+    "both_eyes": "head",
     "left_shoulder": "upper_body2",
     "left_arm": "left_shoulder",
     # Keep the optional primary twist joints in the visible FK chain.  The
@@ -239,6 +241,7 @@ _ROLE_TEMPLATE_ALIASES = {
     "right_foot_ik_parent": "circle",
     "left_toe_ik": "toe_ik",
     "right_toe_ik": "toe_ik",
+    "both_eyes": "head",
 }
 
 _AUTO_ORIENT_SHAPE_ROLES = frozenset(
@@ -249,6 +252,7 @@ _AUTO_ORIENT_SHAPE_ROLES = frozenset(
         "upper_body2",
         "neck",
         "head",
+        "both_eyes",
         "left_shoulder",
         "left_arm",
         "left_elbow",

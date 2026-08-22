@@ -27,7 +27,9 @@ from mmd_tools.core.mmd_control_rig_builder import (
     _control_curve_template_role,
     _control_group_parent,
     _control_shape_rotation,
+    _AUTO_ORIENT_SHAPE_ROLES,
     _ROLE_PARENTS,
+    _ROLE_COLORS,
     _control_basis_rotations,
     _role_controller_scale,
     _rotate_shape_point,
@@ -142,6 +144,7 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertEqual(_control_curve_template_role("right_wrist"), "left_wrist")
         self.assertEqual(_control_curve_template_role("left_toe_ik"), "toe_ik")
         self.assertEqual(_control_curve_template_role("right_toe_ik"), "toe_ik")
+        self.assertEqual(_control_curve_template_role("both_eyes"), "head")
         toe = templates["toe_ik"][0]
         self.assertEqual(toe["degree"], 3)
         self.assertTrue(toe["periodic"])
@@ -695,6 +698,7 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
             "left_toe_ik",
             "right_toe_ik",
             "upper_body",
+            "both_eyes",
             "left_arm",
             "left_leg",
             "left_index_1",
@@ -706,6 +710,18 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
 
         self.assertFalse(spec.blockers)
         self.assertTrue(spec.can_build_mvp)
+
+    def test_both_eyes_optional_role_resolves_to_a_direct_binding(self):
+        roles = classify_mmd_control_rig("|model", [_bone(73, "両目")]).roles_by_name
+
+        self.assertEqual(roles["both_eyes"].status, STATUS_READY)
+        self.assertEqual(roles["both_eyes"].binding.input_kind, INPUT_DIRECT_CHANNEL)
+        self.assertEqual(roles["both_eyes"].binding.mmd_name, "両目")
+
+    def test_both_eyes_control_follows_head_with_head_display_policy(self):
+        self.assertEqual(_ROLE_PARENTS["both_eyes"], "head")
+        self.assertEqual(_ROLE_COLORS["both_eyes"], _ROLE_COLORS["head"])
+        self.assertIn("both_eyes", _AUTO_ORIENT_SHAPE_ROLES)
 
     def test_role_control_builder_aliases_semantic_fallback_but_keeps_model_root(self):
         facts = [_bone(0, "センター")]

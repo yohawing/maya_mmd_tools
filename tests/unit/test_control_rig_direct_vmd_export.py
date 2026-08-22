@@ -141,6 +141,31 @@ class TestControlRigDirectVmdExport(unittest.TestCase):
             },
         )
 
+    def test_both_eyes_metadata_binding_is_a_direct_export_candidate(self):
+        cmds = _Cmds()
+        control = "|model|controls|controlA"
+        joint = "|model|jointA"
+        cmds.bone_names[joint] = "両目"
+        channels = ("rotateX", "rotateY", "rotateZ")
+
+        result = _resolve(
+            cmds,
+            _metadata(
+                {"both_eyes": _binding("joint-a")},
+                _rows(control, joint, channels),
+            ),
+            {"both_eyes": control},
+        )
+
+        self.assertEqual(
+            result["candidates"][joint],
+            {
+                "boneName": "両目",
+                "selectorPlugs": tuple(f"{control}.{channel}" for channel in channels),
+                "valueRoutes": {channel: (joint, channel) for channel in channels},
+            },
+        )
+
     def test_omits_fallback_binding(self):
         result = _resolve(
             _Cmds(),
