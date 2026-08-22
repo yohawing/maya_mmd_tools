@@ -1340,7 +1340,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             ],
         )
 
-    def test_control_rig_direct_export_omits_keyless_and_unbound_bones(self):
+    def test_control_rig_direct_export_omits_keyless_defaults_and_exports_scene_keys(self):
         self.cmds.node_types.update(
             {
                 "model_root": "transform",
@@ -1353,6 +1353,8 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.cmds.children["model_root"] = ["keyless_joint", "unbound_joint"]
         self.cmds.attrs[("keyless_joint", ATTR_MMD_BONE_NAME)] = "上半身2"
         self.cmds.attrs[("unbound_joint", ATTR_MMD_BONE_NAME)] = "グルーブ"
+        self.cmds.attrs[("keyless_joint", "mmd_bone_index")] = 0
+        self.cmds.attrs[("unbound_joint", "mmd_bone_index")] = 1
         self.cmds.keys[("keyless_authored", "rotateZ")] = {0.0: 15.0, 2.0: 30.0}
         self.cmds.keys[("unbound_joint", "translateX")] = {0.0: 1.0, 2.0: 2.0}
         resolved = {
@@ -1375,6 +1377,10 @@ class TestVmdSceneCollector(unittest.TestCase):
             collector_module,
             "resolve_control_rig_direct_vmd_export_routes",
             return_value=resolved,
+        ), mock.patch.object(
+            collector_module,
+            "_build_rotation_export_context",
+            return_value={},
         ):
             collector_module.read_mmd_control_rig_metadata = lambda _model: {
                 "state": "EDIT",
@@ -1389,12 +1395,244 @@ class TestVmdSceneCollector(unittest.TestCase):
                 sampler,
             )
 
-        self.assertEqual(result["section_counts"]["bones"], 0)
+        self.assertEqual(result["section_counts"]["bones"], 3)
         self.assertEqual(
-            [frame for section, frame in sink.frames if section == "bones"],
-            [],
+            [
+                (frame["bone_name"], frame["frame_number"])
+                for section, frame in sink.frames
+                if section == "bones"
+            ],
+            [("グルーブ", 0), ("グルーブ", 1), ("グルーブ", 2)],
         )
-        self.assertEqual(sampler.bone_calls, [])
+        self.assertEqual(sampler.bone_calls[0][1], ("unbound_joint",))
+        self.assertEqual(
+            collector.diagnostics["control_rig_direct_export"]["omitted"][
+                "keyless_control"
+            ],
+            ["keyless_joint"],
+        )
+
+    def test_control_rig_direct_export_merges_control_and_scene_authored_tracks(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "parent_joint": "joint",
+                "center_joint": "joint",
+                "scene_joint": "joint",
+                "center_control": "transform",
+                "center_authored": "transform",
+            }
+        )
+        self.cmds.children["model_root"] = ["parent_joint", "scene_joint"]
+        self.cmds.children["parent_joint"] = ["center_joint"]
+        for index, (joint, bone_name) in enumerate(
+            (
+                ("parent_joint", "親"),
+                ("center_joint", "センター"),
+                ("scene_joint", "スカート"),
+            )
+        ):
+            self.cmds.attrs[(joint, ATTR_MMD_BONE_NAME)] = bone_name
+            self.cmds.attrs[(joint, "mmd_bone_index")] = index
+        self.cmds.keys[("center_control", "translateX")] = {
+            0.0: 100.0,
+            2.0: 300.0,
+        }
+        self.cmds.keys[("center_authored", "translateX")] = {
+            0.0: 1.0,
+            1.0: 2.0,
+            2.0: 3.0,
+        }
+        self.cmds.keys[("scene_joint", "translateX")] = {
+            1.0: 10.0,
+            3.0: 30.0,
+        }
+        self.cmds.node_types["scene_translate_x"] = "animCurveTL"
+        self.cmds.connections[("scene_joint", "translateX", True, False)] = [
+            "scene_translate_x.output"
+        ]
+        resolved = {
+            "modelRoot": "model_root",
+            "candidates": {
+                "center_joint": self._direct_control_rig_candidate(
+                    "center_joint",
+                    "センター",
+                    "center_control",
+                    "center_authored",
+                )
+            },
+            "ikStateRoutes": {},
+        }
+        sampler = self._timeline_sampler()
+        with mock.patch.object(
+            collector_module,
+            "resolve_control_rig_direct_vmd_export_routes",
+            return_value=resolved,
+        ), mock.patch.object(
+            VmdSceneCollector,
+            "_scene_authored_input_routes",
+            return_value={},
+        ) as scene_routes, mock.patch.object(
+            collector_module,
+            "_build_rotation_export_context",
+            return_value={},
+        ):
+            collector_module.read_mmd_control_rig_metadata = lambda _model: {
+                "state": "EDIT",
+                "owner": "CONTROL_OWNED",
+            }
+            _collector, result, sink = self._collect_to_sink(
+                {
+                    "target_model": "model_root",
+                    "export_strategy": "bake_timeline",
+                    "frame_range": (0, 3),
+                },
+                sampler,
+            )
+
+        scene_routes.assert_called_once_with(
+            ["parent_joint", "center_joint", "scene_joint"],
+            "model_root",
+            strict_bake_timeline=True,
+        )
+        bone_frames = [
+            frame for section, frame in sink.frames if section == "bones"
+        ]
+        self.assertEqual(
+            {(frame["bone_name"], frame["frame_number"]) for frame in bone_frames},
+            {
+                ("センター", 0),
+                ("センター", 1),
+                ("センター", 2),
+                ("センター", 3),
+                ("スカート", 0),
+                ("スカート", 1),
+                ("スカート", 2),
+                ("スカート", 3),
+            },
+        )
+        self.assertEqual(result["section_counts"]["bones"], len(bone_frames))
+        self.assertEqual(
+            sampler.bone_calls[0][1], ("center_joint", "scene_joint")
+        )
+        # The keyless parent is omitted, while the keyed scene track survives
+        # beside the Control-owned track without a duplicate VMD bone name.
+        diagnostics = _collector.diagnostics["control_rig_direct_export"]
+        self.assertEqual(diagnostics["selected"]["control"], ["center_joint"])
+        self.assertEqual(diagnostics["selected"]["scene_authored"], ["scene_joint"])
+        self.assertEqual(diagnostics["omitted"]["keyless_default"], ["parent_joint"])
+
+    def test_control_rig_direct_export_blocks_external_joint(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "inside_joint": "joint",
+                "outside_joint": "joint",
+            }
+        )
+        self.cmds.children["model_root"] = ["inside_joint"]
+        self.cmds.attrs[("inside_joint", ATTR_MMD_BONE_NAME)] = "内"
+        self.cmds.attrs[("outside_joint", ATTR_MMD_BONE_NAME)] = "外"
+        collector_module.read_mmd_control_rig_metadata = lambda _model: {
+            "state": "EDIT",
+            "owner": "CONTROL_OWNED",
+        }
+        with mock.patch.object(
+            collector_module,
+            "resolve_control_rig_direct_vmd_export_routes",
+            return_value={"candidates": {}, "ikStateRoutes": {}},
+        ):
+            collector = VmdSceneCollector()
+            with self.assertRaisesRegex(ValueError, "outside the selected model"):
+                collector._control_rig_direct_export_plan(
+                    "model_root", ["inside_joint", "outside_joint"]
+                )
+        self.assertEqual(
+            collector.diagnostics["control_rig_direct_export"]["blocked"][
+                "model_external"
+            ],
+            ["outside_joint"],
+        )
+
+    def test_control_rig_direct_export_accepts_validated_animation_layer(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "layered_joint": "joint",
+                "blend_tx": "animBlendNodeAdditiveDL",
+            }
+        )
+        self.cmds.children["model_root"] = ["layered_joint"]
+        self.cmds.attrs[("layered_joint", ATTR_MMD_BONE_NAME)] = "スカート"
+        self.cmds.keys[("layered_joint", "translateX")] = {0.0: 1.0, 2.0: 2.0}
+        self.cmds.connections[("layered_joint", "translateX", True, False)] = [
+            "blend_tx.output"
+        ]
+        collector_module.read_mmd_control_rig_metadata = lambda _model: {
+            "state": "EDIT",
+            "owner": "CONTROL_OWNED",
+        }
+        with mock.patch.object(
+            collector_module,
+            "resolve_control_rig_direct_vmd_export_routes",
+            return_value={"candidates": {}, "ikStateRoutes": {}},
+        ), mock.patch.object(
+            VmdSceneCollector,
+            "_scene_authored_input_routes",
+            return_value={},
+        ), mock.patch.object(
+            collector_module,
+            "_bake_timeline_single_key_bone_route",
+            return_value="layered",
+        ) as validate_layer:
+            collector = VmdSceneCollector()
+            plan = collector._control_rig_direct_export_plan(
+                "model_root", ["layered_joint"]
+            )
+
+        self.assertEqual(plan["joints"], ["layered_joint"])
+        self.assertEqual(
+            plan["diagnostics"]["selected"]["scene_authored"],
+            ["layered_joint"],
+        )
+        validate_layer.assert_called_once_with("layered_joint", {})
+
+    def test_control_rig_direct_export_blocks_unknown_dependency_output(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "dependency_joint": "joint",
+                "driver": "transform",
+            }
+        )
+        self.cmds.children["model_root"] = ["dependency_joint"]
+        self.cmds.attrs[("dependency_joint", ATTR_MMD_BONE_NAME)] = "依存"
+        self.cmds.connections[("dependency_joint", "translateX", True, False)] = [
+            "driver.output"
+        ]
+        collector_module.read_mmd_control_rig_metadata = lambda _model: {
+            "state": "EDIT",
+            "owner": "CONTROL_OWNED",
+        }
+        with mock.patch.object(
+            collector_module,
+            "resolve_control_rig_direct_vmd_export_routes",
+            return_value={"candidates": {}, "ikStateRoutes": {}},
+        ), mock.patch.object(
+            VmdSceneCollector,
+            "_scene_authored_input_routes",
+            return_value={},
+        ):
+            collector = VmdSceneCollector()
+            with self.assertRaisesRegex(ValueError, "dependency output"):
+                collector._control_rig_direct_export_plan(
+                    "model_root", ["dependency_joint"]
+                )
+        self.assertTrue(
+            collector.diagnostics["control_rig_direct_export"]["blocked"][
+                "dependency_output"
+            ]
+        )
 
     def test_direct_rotation_context_rejects_unindexed_selected_joint(self):
         self.cmds.node_types.update({"model_root": "transform", "joint": "joint"})

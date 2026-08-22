@@ -889,6 +889,10 @@ class VmdSceneCollector:
                 "dense_frame_count": len(bake_timeline_dense_frames or ()),
                 "streaming": True,
             }
+            if direct_control_rig_plan is not None:
+                self._diagnostics["route_provenance_dense_planning"][
+                    "control_rig_direct_export"
+                ] = direct_control_rig_plan["diagnostics"]
 
             begin_section = getattr(sink, "begin_section", None)
             if not callable(begin_section):
@@ -1155,14 +1159,17 @@ class VmdSceneCollector:
         keyed_times = []
         for joint in joints:
             long_name = (cmds.ls(joint, long=True) or [joint])[0]
-            if selector_key_times_by_joint is None:
+            selector_times = (
+                selector_key_times_by_joint.get(str(long_name))
+                if selector_key_times_by_joint is not None
+                else None
+            )
+            if selector_times is None:
                 keyed_times.extend(
                     _routed_key_times(joint, input_routes.get(str(long_name), {}))
                 )
             else:
-                keyed_times.extend(
-                    selector_key_times_by_joint.get(str(long_name), ())
-                )
+                keyed_times.extend(selector_times)
         for blend_shape in blend_shapes:
             morph_names = self._blendshape_morph_names(blend_shape)
             keyed_times.extend(
@@ -1321,12 +1328,15 @@ class VmdSceneCollector:
             for joint in joints:
                 long_names = cmds.ls(joint, long=True) or [joint]
                 route = input_routes.get(str(long_names[0]), {})
+                selector_times = (
+                    selector_key_times_by_joint.get(str(long_names[0]))
+                    if selector_key_times_by_joint is not None
+                    else None
+                )
                 joint_keyed = (
                     _routed_key_times(joint, route)
-                    if selector_key_times_by_joint is None
-                    else list(
-                        selector_key_times_by_joint.get(str(long_names[0]), ())
-                    )
+                    if selector_times is None
+                    else list(selector_times)
                 )
                 keyed_times_by_joint[joint] = joint_keyed
                 all_keyed.extend(joint_keyed)
@@ -2221,24 +2231,105 @@ class VmdSceneCollector:
         target_model: Optional[str],
         requested_joints: Sequence[str],
     ) -> Optional[dict[str, Any]]:
-        """Select keyed Controls while keeping MMD authored plugs as values."""
+        """Select keyed Controls and current-scene authored non-Control tracks.
+
+        Control selector keys decide whether a Control-owned joint is emitted;
+        the selector is never a value source.  Joints without a Control
+        binding use the same current-scene route resolver as ordinary Bake
+        Timeline export.  This keeps a Control Rig EDIT export complete for
+        character tracks which are intentionally not represented by a
+        Control, without reintroducing imported VMD provenance.
+        """
 
         if not target_model:
             return None
         metadata = read_mmd_control_rig_metadata(target_model)
         if not metadata or metadata.get("state") != CONTROL_RIG_EDIT:
             return None
-        resolved = resolve_control_rig_direct_vmd_export_routes(target_model)
-        requested = {
-            str((cmds.ls(joint, long=True) or [joint])[0])
-            for joint in requested_joints
+        diagnostics = {
+            "status": "planned",
+            "selected": {
+                "control": [],
+                "scene_authored": [],
+            },
+            "omitted": {
+                "keyless_control": [],
+                "keyless_default": [],
+                "duplicate_bone_name": [],
+            },
+            "blocked": {
+                "dependency_output": [],
+                "model_external": [],
+                "ownership_unknown": [],
+            },
         }
+        self._diagnostics["control_rig_direct_export"] = diagnostics
+
+        requested = []
+        requested_set = set()
+        for joint in requested_joints:
+            canonical = str((cmds.ls(joint, long=True) or [joint])[0])
+            if canonical not in requested_set:
+                requested.append(canonical)
+                requested_set.add(canonical)
+
+        # Explicit joint lists must remain model-scoped. Automatic discovery is
+        # already scoped by _find_joints, but callers may pass a mixed list.
+        model_joints = {
+            str((cmds.ls(joint, long=True) or [joint])[0])
+            for joint in self._find_joints(target_model)
+        }
+        outside = [joint for joint in requested if joint not in model_joints]
+        if outside:
+            diagnostics["blocked"]["model_external"].extend(outside)
+            diagnostics["status"] = "blocked"
+            raise ValueError(
+                "Control Rig direct VMD export requested joints outside the selected "
+                f"model: {outside}"
+            )
+
+        try:
+            resolved = resolve_control_rig_direct_vmd_export_routes(target_model)
+        except Exception as exc:
+            message = str(exc)
+            category = (
+                "model_external"
+                if "outside the target model" in message
+                or "outside the selected model" in message
+                else "ownership_unknown"
+            )
+            diagnostics["blocked"][category].append(message)
+            diagnostics["status"] = "blocked"
+            raise
+
+        try:
+            scene_routes = self._scene_authored_input_routes(
+                requested,
+                target_model,
+                strict_bake_timeline=True,
+            )
+        except ValueError as exc:
+            message = str(exc)
+            category = (
+                "model_external"
+                if "outside the selected model" in message
+                else "ownership_unknown"
+            )
+            diagnostics["blocked"][category].append(message)
+            diagnostics["status"] = "blocked"
+            raise
+
         selected_joints = []
         value_routes = {}
         selector_key_times_by_joint = {}
+        selected_bone_names = {}
+        control_candidates = {}
+
         for joint, candidate in resolved["candidates"].items():
-            if joint not in requested:
+            joint = str(joint)
+            if joint not in requested_set:
                 continue
+            control_candidates[joint] = candidate
             key_times = set()
             for plug in candidate["selectorPlugs"]:
                 node, separator, attribute = str(plug).rpartition(".")
@@ -2247,15 +2338,89 @@ class VmdSceneCollector:
                 key_times.update(_key_times(node, (attribute,)))
             key_times = sorted(key_times)
             if not key_times:
+                diagnostics["omitted"]["keyless_control"].append(joint)
                 continue
+            bone_name = str(candidate.get("boneName") or self._mmd_bone_name(joint))
+            prior = selected_bone_names.get(bone_name)
+            if prior is not None and prior != joint:
+                diagnostics["blocked"]["ownership_unknown"].append(
+                    f"duplicate VMD bone name {bone_name!r}: {prior}, {joint}"
+                )
+                diagnostics["status"] = "blocked"
+                raise ValueError(
+                    "Control Rig direct VMD export has duplicate VMD bone name: "
+                    f"{bone_name!r}"
+                )
+            selected_bone_names[bone_name] = joint
             selected_joints.append(joint)
             value_routes[joint] = dict(candidate["valueRoutes"])
             selector_key_times_by_joint[joint] = key_times
+            diagnostics["selected"]["control"].append(joint)
+
+        # The resolver's candidate set is the ownership boundary for Control
+        # joints.  A keyless Control must not fall back to its authored plug;
+        # only joints without any Control candidate are eligible here.
+        for joint in requested:
+            if joint in control_candidates:
+                continue
+            route = dict(scene_routes.get(joint, {}))
+            source_times = _routed_key_times(joint, route)
+            # Never sample a visible final output when a dependency is not
+            # represented by one of the validated authoring routes above.
+            connected_unrouted_channels = [
+                attr
+                for attr in _BONE_EXPORT_ATTRS
+                if attr not in route
+                and _incoming_connection_state(joint, (attr,), strict=True) == "some"
+            ]
+            unresolved_channels = (
+                connected_unrouted_channels
+                if connected_unrouted_channels
+                and _bake_timeline_single_key_bone_route(joint, route) is None
+                else []
+            )
+            if unresolved_channels:
+                message = (
+                    f"{joint}: unresolved dependency output channels "
+                    f"{tuple(unresolved_channels)!r}"
+                )
+                diagnostics["blocked"]["dependency_output"].append(message)
+                diagnostics["status"] = "blocked"
+                raise ValueError(
+                    "Control Rig direct VMD export cannot sample dependency output: "
+                    + message
+                )
+
+            if not source_times and not route:
+                diagnostics["omitted"]["keyless_default"].append(joint)
+                continue
+
+            bone_name = self._mmd_bone_name(joint)
+            prior = selected_bone_names.get(bone_name)
+            if prior is not None:
+                # A Control route is authoritative for the same VMD bone name.
+                if prior in control_candidates:
+                    diagnostics["omitted"]["duplicate_bone_name"].append(joint)
+                    continue
+                diagnostics["blocked"]["ownership_unknown"].append(
+                    f"duplicate VMD bone name {bone_name!r}: {prior}, {joint}"
+                )
+                diagnostics["status"] = "blocked"
+                raise ValueError(
+                    "Control Rig direct VMD export has duplicate VMD bone name: "
+                    f"{bone_name!r}"
+                )
+            selected_bone_names[bone_name] = joint
+            selected_joints.append(joint)
+            value_routes[joint] = route
+            diagnostics["selected"]["scene_authored"].append(joint)
+
         return {
             "joints": selected_joints,
             "value_routes": value_routes,
             "selector_key_times_by_joint": selector_key_times_by_joint,
             "ik_state_routes": dict(resolved.get("ikStateRoutes", {})),
+            "diagnostics": diagnostics,
         }
 
     @staticmethod
