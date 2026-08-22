@@ -71,6 +71,15 @@ class _ClassifiedIkFailureBackend(_Backend):
         raise error
 
 
+class _ClassifiedControlRigFailureBackend(_Backend):
+    def collect_to_sink(self, request, sink):
+        del request, sink
+        error = ValueError("Center direct VMD route is unresolved")
+        error.validation_issue_code = "VMD_CONTROL_RIG_ROUTE_UNRESOLVED"
+        error.validation_issue_path = "scene.control_rig.direct_vmd_export.Center.channels"
+        raise error
+
+
 class _Revisions:
     def __init__(self, revisions):
         self.revisions = iter(revisions)
@@ -329,6 +338,25 @@ class PrepareVmdExportActionTests(unittest.TestCase):
         )
         self.assertTrue(result.report.is_blocking)
         self.assertEqual(result.report.mode, "bake_timeline")
+
+    def test_classified_control_rig_collection_failure_preserves_route_report(self):
+        backend = _ClassifiedControlRigFailureBackend([_discovery()])
+        action = PrepareVmdExportAction(
+            _PreparationBoundary(backend, _Revisions(["revision-1"]))
+        )
+
+        result = action.execute(_request())
+
+        self.assertFalse(result.succeeded)
+        self.assertEqual(
+            [issue.code for issue in result.report.issues],
+            ["VMD_CONTROL_RIG_ROUTE_UNRESOLVED"],
+        )
+        self.assertEqual(
+            result.report.issues[0].path,
+            "scene.control_rig.direct_vmd_export.Center.channels",
+        )
+        self.assertIn("Center direct VMD route is unresolved", result.report.issues[0].message)
 
     def test_temporary_control_rig_restore_failure_is_fail_closed(self):
         backend = _TemporaryBakeBackend(

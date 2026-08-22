@@ -106,6 +106,21 @@ class VmdIkSceneRepresentationMissingError(ValueError):
 
     validation_issue_code = "VMD_IK_SCENE_REPRESENTATION_MISSING"
     validation_issue_path = "ik_show_hide_frames"
+
+
+class ControlRigDirectVmdExportError(ValueError):
+    """A Control Rig direct-export route could not be proven authoritative."""
+
+    validation_issue_code = "VMD_CONTROL_RIG_ROUTE_UNRESOLVED"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        path: str = "scene.control_rig.direct_vmd_export.route",
+    ) -> None:
+        self.validation_issue_path = str(path)
+        super().__init__(str(message))
 _TRANSFORM_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 _CAMERA_SHAPE_EXPORT_ATTRS = ("focalLength", "orthographic", "orthographicWidth")
 _TRACK_SELECTION_DECISIONS = (
@@ -2283,9 +2298,10 @@ class VmdSceneCollector:
         if outside:
             diagnostics["blocked"]["model_external"].extend(outside)
             diagnostics["status"] = "blocked"
-            raise ValueError(
+            raise ControlRigDirectVmdExportError(
                 "Control Rig direct VMD export requested joints outside the selected "
-                f"model: {outside}"
+                f"model: {outside}",
+                path="scene.control_rig.direct_vmd_export.model_scope",
             )
 
         try:
@@ -2300,7 +2316,10 @@ class VmdSceneCollector:
             )
             diagnostics["blocked"][category].append(message)
             diagnostics["status"] = "blocked"
-            raise
+            raise ControlRigDirectVmdExportError(
+                "Control Rig direct VMD export route resolution failed: " + message,
+                path="scene.control_rig.direct_vmd_export.resolver",
+            ) from exc
 
         try:
             scene_routes = self._scene_authored_input_routes(
@@ -2317,7 +2336,11 @@ class VmdSceneCollector:
             )
             diagnostics["blocked"][category].append(message)
             diagnostics["status"] = "blocked"
-            raise
+            raise ControlRigDirectVmdExportError(
+                "Control Rig direct VMD export authoring route resolution failed: "
+                + message,
+                path="scene.control_rig.direct_vmd_export.authoring_route",
+            ) from exc
 
         selected_joints = []
         value_routes = {}
@@ -2334,7 +2357,10 @@ class VmdSceneCollector:
             for plug in candidate["selectorPlugs"]:
                 node, separator, attribute = str(plug).rpartition(".")
                 if not separator:
-                    raise ValueError(f"invalid Control Rig selector plug: {plug}")
+                    raise ControlRigDirectVmdExportError(
+                        f"invalid Control Rig selector plug: {plug}",
+                        path="scene.control_rig.direct_vmd_export.selector_plug",
+                    )
                 key_times.update(_key_times(node, (attribute,)))
             key_times = sorted(key_times)
             if not key_times:
@@ -2347,9 +2373,10 @@ class VmdSceneCollector:
                     f"duplicate VMD bone name {bone_name!r}: {prior}, {joint}"
                 )
                 diagnostics["status"] = "blocked"
-                raise ValueError(
+                raise ControlRigDirectVmdExportError(
                     "Control Rig direct VMD export has duplicate VMD bone name: "
-                    f"{bone_name!r}"
+                    f"{bone_name!r}",
+                    path="scene.control_rig.direct_vmd_export.duplicate_bone_name",
                 )
             selected_bone_names[bone_name] = joint
             selected_joints.append(joint)
@@ -2386,9 +2413,13 @@ class VmdSceneCollector:
                 )
                 diagnostics["blocked"]["dependency_output"].append(message)
                 diagnostics["status"] = "blocked"
-                raise ValueError(
+                raise ControlRigDirectVmdExportError(
                     "Control Rig direct VMD export cannot sample dependency output: "
-                    + message
+                    + message,
+                    path=(
+                        "scene.control_rig.direct_vmd_export."
+                        f"{joint}.channels"
+                    ),
                 )
 
             if not source_times and not route:
@@ -2406,9 +2437,10 @@ class VmdSceneCollector:
                     f"duplicate VMD bone name {bone_name!r}: {prior}, {joint}"
                 )
                 diagnostics["status"] = "blocked"
-                raise ValueError(
+                raise ControlRigDirectVmdExportError(
                     "Control Rig direct VMD export has duplicate VMD bone name: "
-                    f"{bone_name!r}"
+                    f"{bone_name!r}",
+                    path="scene.control_rig.direct_vmd_export.duplicate_bone_name",
                 )
             selected_bone_names[bone_name] = joint
             selected_joints.append(joint)

@@ -423,6 +423,17 @@ class ExportPresenter(QObject):
             if is_motion
             else "model"
         )
+        lower_report = getattr(error, "report", None)
+        if isinstance(lower_report, ExportValidationReport):
+            result = ExportWorkflowResult(
+                STATE_FAILED,
+                lower_report,
+                {"output_path": getattr(request, "file_path", None)},
+                error=error,
+            )
+            self.view.set_result(result)
+            self.app_state.emit_status(f"{status_prefix}: {error}")
+            return result
         issue = ExportValidationIssue(
             "EXPORT_WORKFLOW_EXCEPTION",
             "fatal",

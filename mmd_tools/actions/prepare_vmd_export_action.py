@@ -17,7 +17,10 @@ from types import MappingProxyType
 from typing import Any, Optional, Protocol, Tuple
 
 from ..validation.snapshot import fingerprint_payload
-from ..validation.export_validator import ExportValidationIssue, ExportValidationReport
+from ..validation.export_validator import (
+    ExportValidationReport,
+    structured_export_failure_report,
+)
 from ..validation.vmd_validator import VMD_EXPORT_BAKE_TIMELINE, verify_vmd_output_streaming
 from .prepared_vmd_artifact import (
     PreparedVmdArtifactReceipt,
@@ -54,32 +57,6 @@ class PrepareVmdExportError(ValueError):
 
 class PrepareVmdExportRaceError(PrepareVmdExportError):
     """Raised when the scene changes while a payload is being collected."""
-
-
-def _structured_preparation_failure_report(
-    error: Exception,
-) -> Optional[ExportValidationReport]:
-    """Convert an explicitly classified host rejection into a blocking report."""
-
-    lower_report = getattr(error, "report", None)
-    if isinstance(lower_report, ExportValidationReport):
-        return lower_report
-    code = getattr(error, "validation_issue_code", None)
-    if not code:
-        return None
-    return ExportValidationReport(
-        "vmd",
-        (
-            ExportValidationIssue(
-                str(code),
-                "fatal",
-                True,
-                str(getattr(error, "validation_issue_path", "collector")),
-                str(error),
-            ),
-        ),
-        mode=VMD_EXPORT_BAKE_TIMELINE,
-    )
 
 
 class VmdExportPreparationBoundary(Protocol):
@@ -869,7 +846,11 @@ class PrepareVmdExportAction:
             return PrepareVmdExportResult(
                 status="failed",
                 error=exc,
-                failure_report=_structured_preparation_failure_report(exc),
+                failure_report=structured_export_failure_report(
+                    exc,
+                    "vmd",
+                    mode=VMD_EXPORT_BAKE_TIMELINE,
+                ),
             )
         except BaseException:
             # Cancellation and host-level interrupts must preserve their type

@@ -285,6 +285,29 @@ class _PrepareIkBlockedWorkflow(_Workflow):
         )
 
 
+class _PrepareControlRigBlockedWorkflow(_Workflow):
+    def prepare_vmd(self, request):
+        self.prepared.append(request)
+        report = ExportValidationReport(
+            "vmd",
+            (
+                ExportValidationIssue(
+                    "VMD_CONTROL_RIG_ROUTE_UNRESOLVED",
+                    "fatal",
+                    True,
+                    "scene.control_rig.direct_vmd_export.Center.channels",
+                    "Center direct VMD route is unresolved",
+                ),
+            ),
+            mode="bake_timeline",
+        )
+        return PrepareVmdExportResult(
+            status="failed",
+            error=ValueError("Center direct VMD route is unresolved"),
+            failure_report=report,
+        )
+
+
 class _PrepareThenFailWorkflow(_Workflow):
     def prepare_vmd(self, request):
         self.prepared.append(request)
@@ -678,6 +701,32 @@ class TestExportPresenter(unittest.TestCase):
             view.validation_console.close()
             view.validation_console.deleteLater()
             app.processEvents()
+
+    def test_control_rig_route_prepare_preserves_dedicated_report(self):
+        for operation_name in ("validate", "export"):
+            with self.subTest(operation=operation_name):
+                view = _View("vmd")
+                workflow = _PrepareControlRigBlockedWorkflow()
+                presenter = ExportPresenter(
+                    view,
+                    _AppState(),
+                    workflow_service=workflow,
+                )
+
+                result = getattr(presenter, operation_name)()
+
+                self.assertEqual(result.state, STATE_BLOCKED)
+                self.assertEqual(
+                    [issue.code for issue in result.report.issues],
+                    ["VMD_CONTROL_RIG_ROUTE_UNRESOLVED"],
+                )
+                self.assertEqual(
+                    result.report.issues[0].path,
+                    "scene.control_rig.direct_vmd_export.Center.channels",
+                )
+                self.assertNotIn("EXPORT_WORKFLOW_EXCEPTION", str(result.report))
+                self.assertEqual(workflow.validated, [])
+                self.assertEqual(workflow.executed, [])
 
 
 if __name__ == "__main__":

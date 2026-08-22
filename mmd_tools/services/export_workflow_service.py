@@ -14,6 +14,7 @@ from ..actions.publish_prepared_vmd_action import publish_prepared_vmd_artifact
 from ..validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
+    structured_export_failure_report,
 )
 from ..validation.scene_preflight import ScenePreflight
 from ..validation.snapshot import ExportValidationSnapshot
@@ -95,7 +96,11 @@ def _collect_failure_report(
         "collector",
         f"scene collector failed: {type(error).__name__}: {error}",
     )
-    lower_report = getattr(error, "report", None)
+    lower_report = structured_export_failure_report(
+        error,
+        export_format,
+        mode=export_strategy,
+    )
     if isinstance(lower_report, ExportValidationReport):
         lower_issues = tuple(lower_report.issues)
         if any(issue.code == wrapper_issue.code for issue in lower_issues):

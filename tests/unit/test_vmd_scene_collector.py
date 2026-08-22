@@ -1624,10 +1624,19 @@ class TestVmdSceneCollector(unittest.TestCase):
             return_value={},
         ):
             collector = VmdSceneCollector()
-            with self.assertRaisesRegex(ValueError, "dependency output"):
+            with self.assertRaisesRegex(ValueError, "dependency output") as raised:
                 collector._control_rig_direct_export_plan(
                     "model_root", ["dependency_joint"]
                 )
+        self.assertEqual(
+            raised.exception.validation_issue_code,
+            "VMD_CONTROL_RIG_ROUTE_UNRESOLVED",
+        )
+        self.assertEqual(
+            raised.exception.validation_issue_path,
+            "scene.control_rig.direct_vmd_export."
+            "dependency_joint.channels",
+        )
         self.assertTrue(
             collector.diagnostics["control_rig_direct_export"]["blocked"][
                 "dependency_output"

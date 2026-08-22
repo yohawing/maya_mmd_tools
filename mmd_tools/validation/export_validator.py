@@ -505,6 +505,42 @@ class ExportValidationAcknowledgementRequired(ValueError):
         )
 
 
+def structured_export_failure_report(
+    error: Exception,
+    export_format: Optional[str],
+    *,
+    mode: Optional[str] = None,
+    default_path: str = "collector",
+) -> Optional[ExportValidationReport]:
+    """Return the lower report carried by a classified export failure.
+
+    Host adapters may attach a stable issue code and path to an exception
+    without importing the workflow layer.  Keep that conversion in the
+    validation boundary so Prepare and workflow callers share one policy.
+    Existing reports remain authoritative and are returned unchanged.
+    """
+
+    lower_report = getattr(error, "report", None)
+    if isinstance(lower_report, ExportValidationReport):
+        return lower_report
+    code = getattr(error, "validation_issue_code", None)
+    if not code:
+        return None
+    return ExportValidationReport(
+        export_format,
+        (
+            ExportValidationIssue(
+                str(code),
+                "fatal",
+                True,
+                str(getattr(error, "validation_issue_path", default_path)),
+                str(error),
+            ),
+        ),
+        mode=mode,
+    )
+
+
 def _is_sequence(value: Any) -> bool:
     """Return whether *value* is a non-text sequence accepted by exporters."""
     return isinstance(value, Sequence) and not isinstance(value, _SEQUENCE_TYPES)
