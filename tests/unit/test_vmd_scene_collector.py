@@ -84,6 +84,7 @@ class FakeCmds:
         self.fail_current_time_at = None
         self.fail_restore_time = None
         self.blend_connection_pairs = {}
+        self.destination_connection_pairs = {}
         self.anim_layer_parents = {}
 
     def ls(self, pattern=None, type=None, objectsOnly=False, long=False, uuid=False):  # noqa: A002,N803
@@ -171,6 +172,8 @@ class FakeCmds:
 
     def listConnections(self, plug, source=False, destination=False, **_kwargs):  # noqa: N802,N803
         if "." not in plug:
+            if destination and not source:
+                return list(self.destination_connection_pairs.get(plug, []))
             return list(self.blend_connection_pairs.get(plug, []))
         node, attr = plug.split(".", 1)
         return list(self.connections.get((node, attr, bool(source), bool(destination)), []))
@@ -1643,6 +1646,423 @@ class TestVmdSceneCollector(unittest.TestCase):
             ]
         )
 
+    def test_unsupported_dependency_classifier_keeps_fatal_graph_reasons(self):
+        def classify(source_type, sources, destinations=()):
+            self.cmds.node_types = {
+                "model_root": "transform",
+                "dependency_joint": "joint",
+                "source": source_type,
+                "other_joint": "joint",
+            }
+            self.cmds.children = {
+                "model_root": ["dependency_joint", "other_joint"]
+            }
+            self.cmds.connections = {
+                ("dependency_joint", "translateX", True, False): list(sources),
+                ("source", "output", False, True): list(destinations),
+            }
+            return collector_module._classify_unsupported_bone_dependency(
+                "dependency_joint",
+                "model_root",
+                ("translateX",),
+            )
+
+        external = classify("transform", ("source.output",))
+        self.assertIn("external/foreign", external["reason"])
+
+        ambiguous = classify(
+            "plusMinusAverage",
+            ("source.output", "source.output2"),
+        )
+        self.assertIn("ambiguous", ambiguous["reason"])
+
+        shared = classify(
+            "plusMinusAverage",
+            ("source.output",),
+            ("dependency_joint.translateX", "other_joint.translateX"),
+        )
+        self.assertIn("shared", shared["reason"])
+
+        unknown = classify("foreignPluginNode", ("source.output",))
+        self.assertIn("unknown dependency closure node type", unknown["reason"])
+
+        self.cmds.node_types.update(
+            {
+                "source": "plusMinusAverage",
+                "downstream": "multiplyDivide",
+            }
+        )
+        self.cmds.connections.update(
+            {
+                ("dependency_joint", "translateX", True, False): [
+                    "downstream.outputX"
+                ],
+                ("downstream", "outputX", False, True): [
+                    "dependency_joint.translateX"
+                ],
+                ("source", "output", False, True): [
+                    "downstream.input1X"
+                ],
+            }
+        )
+        self.cmds.destination_connection_pairs.update(
+            {
+                "downstream": ["dependency_joint.translateX"],
+                "source": ["downstream.input1X"],
+            }
+        )
+        self.cmds.blend_connection_pairs["downstream"] = ["source.output"]
+        chain = collector_module._classify_unsupported_bone_dependency(
+            "dependency_joint",
+            "model_root",
+            ("translateX",),
+        )
+        self.assertEqual(chain["status"], "accepted")
+
+        self.cmds.node_types.update(
+            {
+                "source": "plusMinusAverage",
+                "foreign_transform": "transform",
+            }
+        )
+        self.cmds.connections.update(
+            {
+                ("dependency_joint", "translateX", True, False): [
+                    "source.output"
+                ],
+                ("source", "output", False, True): [
+                    "dependency_joint.translateX"
+                ],
+            }
+        )
+        self.cmds.destination_connection_pairs["source"] = [
+            "dependency_joint.translateX"
+        ]
+        self.cmds.blend_connection_pairs["source"] = [
+            "foreign_transform.translateX"
+        ]
+        mid_foreign = collector_module._classify_unsupported_bone_dependency(
+            "dependency_joint",
+            "model_root",
+            ("translateX",),
+        )
+        self.assertIn("external/foreign", mid_foreign["reason"])
+
+    def test_unsupported_dependency_classifier_checks_source_node_fanout(self):
+        self.cmds.node_types = {
+            "model_root": "transform",
+            "dependency_joint": "joint",
+            "other_joint": "joint",
+            "source": "plusMinusAverage",
+        }
+        self.cmds.children = {
+            "model_root": ["dependency_joint", "other_joint"]
+        }
+        self.cmds.connections = {
+            ("dependency_joint", "translateX", True, False): [
+                "source.outputX"
+            ],
+            ("source", "outputX", False, True): [
+                "dependency_joint.translateX"
+            ],
+            ("source", "outputY", False, True): [
+                "other_joint.translateX"
+            ],
+        }
+        self.cmds.destination_connection_pairs["source"] = [
+            "dependency_joint.translateX",
+            "other_joint.translateX",
+        ]
+        local_fanout = collector_module._classify_unsupported_bone_dependency(
+            "dependency_joint",
+            "model_root",
+            ("translateX",),
+        )
+        self.assertEqual(local_fanout["status"], "accepted")
+
+        self.cmds.node_types["foreign_joint"] = "joint"
+        self.cmds.connections[("source", "outputY", False, True)] = [
+            "foreign_joint.translateX"
+        ]
+        self.cmds.destination_connection_pairs["source"] = [
+            "dependency_joint.translateX",
+            "foreign_joint.translateX",
+        ]
+        foreign_fanout = collector_module._classify_unsupported_bone_dependency(
+            "dependency_joint",
+            "model_root",
+            ("translateX",),
+        )
+        self.assertIn("external/foreign", foreign_fanout["reason"])
+
+    def test_control_rig_direct_export_accepts_owned_local_dependency_bake(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "dependency_joint": "joint",
+                "local_utility": "plusMinusAverage",
+            }
+        )
+        self.cmds.children["model_root"] = ["dependency_joint"]
+        self.cmds.attrs[("dependency_joint", ATTR_MMD_BONE_NAME)] = "依存"
+        self.cmds.connections[("dependency_joint", "translateX", True, False)] = [
+            "local_utility.output1D"
+        ]
+        collector_module.read_mmd_control_rig_metadata = lambda _model: {
+            "state": "EDIT",
+            "owner": "CONTROL_OWNED",
+            "bindings": {},
+        }
+        with mock.patch.object(
+            collector_module,
+            "resolve_control_rig_direct_vmd_export_routes",
+            return_value={"candidates": {}, "ikStateRoutes": {}},
+        ), mock.patch.object(
+            VmdSceneCollector,
+            "_scene_authored_input_routes",
+            return_value={},
+        ):
+            collector = VmdSceneCollector()
+            plan = collector._control_rig_direct_export_plan(
+                "model_root", ["dependency_joint"]
+            )
+
+        self.assertEqual(plan["joints"], ["dependency_joint"])
+        self.assertEqual(
+            plan["diagnostics"]["selected"]["dependency_baked"],
+            ["dependency_joint"],
+        )
+        self.assertEqual(
+            plan["diagnostics"]["dependency_baked"][0]["reason"],
+            collector_module._UNSUPPORTED_BONE_BAKE_REASON,
+        )
+
+    def test_control_rig_direct_export_streams_moving_dependency_through_native_sampler(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "dependency_joint": "joint",
+                "local_utility": "plusMinusAverage",
+                "local_anim_curve": "animCurveTL",
+            }
+        )
+        self.cmds.children["model_root"] = ["dependency_joint"]
+        self.cmds.attrs.update(
+            {
+                ("dependency_joint", ATTR_MMD_BONE_NAME): "EyeCtrl",
+                ("dependency_joint", "mmd_bone_index"): 0,
+            }
+        )
+        self.cmds.connections[("dependency_joint", "translateX", True, False)] = [
+            "local_utility.output1D"
+        ]
+        self.cmds.blend_connection_pairs["local_utility"] = [
+            "local_anim_curve.output"
+        ]
+        self.cmds.connections[("local_anim_curve", "output", False, True)] = [
+            "local_utility.input1D[0]"
+        ]
+        self.cmds.connections[("local_utility", "output1D", False, True)] = [
+            "dependency_joint.translateX"
+        ]
+        self.cmds.destination_connection_pairs.update(
+            {
+                "local_anim_curve": ["local_utility.input1D[0]"],
+                "local_utility": ["dependency_joint.translateX"],
+            }
+        )
+        collector_module.read_mmd_control_rig_metadata = lambda _model: {
+            "state": "EDIT",
+            "owner": "CONTROL_OWNED",
+            "bindings": {},
+        }
+
+        class Samples:
+            diagnostics = {"available": True, "used": True}
+
+            def value(self, _joint, attr, frame):
+                return float(frame) if attr == "translateX" else 0.0
+
+            def close(self):
+                return None
+
+        class Sampler:
+            available = True
+
+            def __init__(self):
+                self.calls = []
+
+            def sample_dense_bone_channels(self, frames, joints, routes):
+                self.calls.append((tuple(frames), tuple(joints), routes))
+                return Samples()
+
+        sampler = Sampler()
+        with mock.patch.object(
+            collector_module,
+            "resolve_control_rig_direct_vmd_export_routes",
+            return_value={"candidates": {}, "ikStateRoutes": {}},
+        ), mock.patch.object(
+            VmdSceneCollector,
+            "_scene_authored_input_routes",
+            return_value={},
+        ), mock.patch.object(
+            collector_module,
+            "_build_rotation_export_context",
+            return_value={},
+        ):
+            collector, result, sink = self._collect_to_sink(
+                {
+                    "target_model": "model_root",
+                    "export_strategy": "bake_timeline",
+                    "frame_range": (0, 2),
+                    "bake_timeline_exact_run_reduction": False,
+                },
+                sampler,
+            )
+
+        bone_frames = [
+            frame for section, frame in sink.frames if section == "bones"
+        ]
+        self.assertEqual([frame["frame_number"] for frame in bone_frames], [0, 1, 2])
+        self.assertEqual(sampler.calls[0][1], ("dependency_joint",))
+        row = collector.diagnostics["control_rig_direct_export"]["dependency_baked"][0]
+        self.assertEqual(row["bone"], "EyeCtrl")
+        self.assertEqual(row["decision"], "dependency_baked")
+        self.assertEqual(row["frame_range"], [0, 2])
+        self.assertEqual(row["generated_key_count"], 3)
+        self.assertEqual(result["section_counts"]["bones"], 3)
+
+    def test_control_rig_direct_export_rejects_dependency_cycle(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "dependency_joint": "joint",
+                "local_utility": "plusMinusAverage",
+            }
+        )
+        self.cmds.children["model_root"] = ["dependency_joint"]
+        self.cmds.attrs[("dependency_joint", ATTR_MMD_BONE_NAME)] = "依存"
+        self.cmds.connections[("dependency_joint", "translateX", True, False)] = [
+            "local_utility.output1D"
+        ]
+        self.cmds.blend_connection_pairs["local_utility"] = [
+            "dependency_joint.translateX"
+        ]
+        collector_module.read_mmd_control_rig_metadata = lambda _model: {
+            "state": "EDIT",
+            "owner": "CONTROL_OWNED",
+            "bindings": {},
+        }
+        with mock.patch.object(
+            collector_module,
+            "resolve_control_rig_direct_vmd_export_routes",
+            return_value={"candidates": {}, "ikStateRoutes": {}},
+        ), mock.patch.object(
+            VmdSceneCollector,
+            "_scene_authored_input_routes",
+            return_value={},
+        ):
+            collector = VmdSceneCollector()
+            with self.assertRaisesRegex(ValueError, "cycle"):
+                collector._control_rig_direct_export_plan(
+                    "model_root", ["dependency_joint"]
+                )
+        self.assertIn(
+            "cycle",
+            collector.diagnostics["control_rig_direct_export"]["blocked"][
+                "dependency_output"
+            ][0],
+        )
+
+    def test_control_rig_direct_export_does_not_bake_dropped_control_candidate(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "control_joint": "joint",
+                "local_utility": "plusMinusAverage",
+            }
+        )
+        self.cmds.children["model_root"] = ["control_joint"]
+        self.cmds.attrs[("control_joint", ATTR_MMD_BONE_NAME)] = "Control"
+        self.cmds.connections[("control_joint", "translateX", True, False)] = [
+            "local_utility.output1D"
+        ]
+        collector_module.read_mmd_control_rig_metadata = lambda _model: {
+            "state": "EDIT",
+            "owner": "CONTROL_OWNED",
+            "bindings": {"control": {"joint": "control_joint"}},
+        }
+        with mock.patch.object(
+            collector_module,
+            "resolve_control_rig_direct_vmd_export_routes",
+            return_value={"candidates": {}, "ikStateRoutes": {}},
+        ), mock.patch.object(
+            VmdSceneCollector,
+            "_scene_authored_input_routes",
+            return_value={},
+        ):
+            collector = VmdSceneCollector()
+            with self.assertRaisesRegex(ValueError, "cannot hide Control-owned"):
+                collector._control_rig_direct_export_plan(
+                    "model_root", ["control_joint"]
+                )
+        self.assertTrue(
+            collector.diagnostics["control_rig_direct_export"]["blocked"][
+                "ownership_unknown"
+            ]
+        )
+
+    def test_control_rig_direct_export_reserves_keyless_control_bone_name(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "keyless_control_joint": "joint",
+                "unsupported_joint": "joint",
+                "keyless_control": "transform",
+                "local_utility": "plusMinusAverage",
+            }
+        )
+        self.cmds.children["model_root"] = [
+            "keyless_control_joint",
+            "unsupported_joint",
+        ]
+        for joint in ("keyless_control_joint", "unsupported_joint"):
+            self.cmds.attrs[(joint, ATTR_MMD_BONE_NAME)] = "same"
+        self.cmds.connections[("unsupported_joint", "translateX", True, False)] = [
+            "local_utility.output1D"
+        ]
+        resolved = {
+            "candidates": {
+                "keyless_control_joint": self._direct_control_rig_candidate(
+                    "keyless_control_joint",
+                    "same",
+                    "keyless_control",
+                    "keyless_control",
+                )
+            },
+            "ikStateRoutes": {},
+        }
+        collector_module.read_mmd_control_rig_metadata = lambda _model: {
+            "state": "EDIT",
+            "owner": "CONTROL_OWNED",
+            "bindings": {},
+        }
+        with mock.patch.object(
+            collector_module,
+            "resolve_control_rig_direct_vmd_export_routes",
+            return_value=resolved,
+        ), mock.patch.object(
+            VmdSceneCollector,
+            "_scene_authored_input_routes",
+            return_value={},
+        ):
+            collector = VmdSceneCollector()
+            with self.assertRaisesRegex(ValueError, "duplicate VMD bone name"):
+                collector._control_rig_direct_export_plan(
+                    "model_root",
+                    ["keyless_control_joint", "unsupported_joint"],
+                )
+
     def test_direct_rotation_context_rejects_unindexed_selected_joint(self):
         self.cmds.node_types.update({"model_root": "transform", "joint": "joint"})
         self.cmds.children["model_root"] = ["joint"]
@@ -2034,6 +2454,36 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(evidence[0]["reason"], "keyless_incoming_dependency")
         self.assertEqual(evidence[0]["source_key_count"], 0)
 
+    def test_bake_timeline_static_dependency_keeps_constant_policy(self):
+        self._configure_static_bone(translate_x=0.0)
+        self.cmds.node_types["constraint"] = "parentConstraint"
+        self.cmds.connections[("center_joint", "translateX", True, False)] = [
+            "constraint.output"
+        ]
+        collector = VmdSceneCollector(bone_channel_sampler=self._timeline_sampler())
+        emitted = []
+        collector.collect_bone_frames(
+            ["center_joint"],
+            0,
+            2,
+            dense_sample=True,
+            force_dense_sample=True,
+            dense_frame_samples=[0, 1, 2],
+            time_converter=lambda value: value,
+            bone_channel_sampler=self._timeline_sampler(),
+            frame_sink=emitted.append,
+            exact_run_reduction=True,
+            key_reduction_report={"input": 0, "output": 0, "witnesses": []},
+        )
+
+        self.assertEqual(emitted, [])
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        self.assertEqual(evidence[0]["decision"], "omitted_default")
+        self.assertEqual(
+            evidence[0]["reason"],
+            "unsupported_dependency_static_default",
+        )
+
     def test_bake_timeline_keyless_dependency_without_native_sampler_is_fatal(self):
         self._configure_static_bone()
         self.cmds.node_types["constraint"] = "parentConstraint"
@@ -2050,6 +2500,38 @@ class TestVmdSceneCollector(unittest.TestCase):
                 force_dense_sample=True,
                 dense_frame_samples=[0, 1, 2],
                 time_converter=lambda value: value,
+            )
+
+    def test_bake_timeline_native_nonfinite_dependency_value_is_fatal(self):
+        self._configure_static_bone()
+        self.cmds.node_types["constraint"] = "parentConstraint"
+        self.cmds.connections[("center_joint", "translateX", True, False)] = [
+            "constraint.output"
+        ]
+
+        class Samples:
+            def value(self, _joint, _attr, _frame):
+                return float("nan")
+
+            def close(self):
+                return None
+
+        class Sampler:
+            available = True
+
+            def sample_dense_bone_channels(self, _frames, _joints, _routes):
+                return Samples()
+
+        with self.assertRaisesRegex(RuntimeError, "non-finite"):
+            VmdSceneCollector(bone_channel_sampler=Sampler()).collect_bone_frames(
+                ["center_joint"],
+                0,
+                2,
+                dense_sample=True,
+                force_dense_sample=True,
+                dense_frame_samples=[0, 1, 2],
+                time_converter=lambda value: value,
+                bone_channel_sampler=Sampler(),
             )
 
     def test_bake_timeline_keyless_connection_query_failure_is_fatal(self):

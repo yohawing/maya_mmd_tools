@@ -19,6 +19,7 @@ from typing import Any, Optional, Protocol, Tuple
 from ..validation.snapshot import fingerprint_payload
 from ..validation.export_validator import (
     ExportValidationReport,
+    ExportValidationIssue,
     structured_export_failure_report,
 )
 from ..validation.vmd_validator import VMD_EXPORT_BAKE_TIMELINE, verify_vmd_output_streaming
@@ -455,6 +456,68 @@ def _freeze_diagnostics(value: Any) -> Any:
     return value
 
 
+def _augment_dependency_bake_report(
+    report: ExportValidationReport,
+    stream_metadata: Mapping[str, Any],
+) -> ExportValidationReport:
+    """Carry direct Control Rig dependency-bake evidence into validation."""
+
+    diagnostics = stream_metadata.get("diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        return report
+    direct = diagnostics.get("control_rig_direct_export")
+    if not isinstance(direct, Mapping):
+        planning = diagnostics.get("route_provenance_dense_planning")
+        direct = planning.get("control_rig_direct_export") if isinstance(planning, Mapping) else None
+    if not isinstance(direct, Mapping):
+        return report
+    rows = direct.get("dependency_baked")
+    if not isinstance(rows, (list, tuple)):
+        return report
+    issues = list(report.issues)
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        bone = str(row.get("bone") or row.get("joint") or "")
+        if not bone:
+            continue
+        frame_range = row.get("frame_range")
+        if isinstance(frame_range, (tuple, list)) and len(frame_range) == 2:
+            frame_text = f"{frame_range[0]}..{frame_range[1]}"
+        else:
+            frame_text = "unknown"
+        try:
+            generated = int(row.get("generated_key_count", 0))
+        except (TypeError, ValueError):
+            generated = 0
+        static = bool(row.get("static"))
+        severity = "info" if static else "warning"
+        decision = str(row.get("decision") or "dependency_baked")
+        issues.append(
+            ExportValidationIssue(
+                "VMD_CONTROL_RIG_ROUTE_UNRESOLVED",
+                severity,
+                False,
+                f"scene.control_rig.direct_vmd_export.{bone}.dependency_bake",
+                (
+                    f"Bone: {bone}; Frame range: {frame_text}; "
+                    f"Generated key count: {generated}; "
+                    "Reason: This bone has no dedicated Control Rig mapping, "
+                    "so its evaluated motion was baked."
+                    f" Decision: {decision}."
+                ),
+            )
+        )
+    if len(issues) == len(report.issues):
+        return report
+    return ExportValidationReport(
+        report.export_format,
+        tuple(issues),
+        mode=report.mode,
+        max_display_issues=report.max_display_issues,
+    )
+
+
 def _revision_method(boundary: Any, request: Any, discovery: VmdExportDiscovery) -> Any:
     method = getattr(boundary, "current_revision", None)
     if not callable(method):
@@ -792,7 +855,10 @@ class PrepareVmdExportAction:
                 raise PrepareVmdExportError("VMD stream session returned an invalid receipt")
             staged_artifact.validate_identity()
             self._pending_stage_session = None
-            combined_validation_report = staged_artifact.output_validation_report
+            combined_validation_report = _augment_dependency_bake_report(
+                staged_artifact.output_validation_report,
+                stream_metadata,
+            )
             payload_fingerprint = staged_artifact.sha256
             timed("artifact_stage_verify", stage_begin)
             authority = second

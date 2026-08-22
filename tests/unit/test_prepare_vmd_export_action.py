@@ -13,6 +13,7 @@ from mmd_tools.actions.prepare_vmd_export_action import (
     PrepareVmdExportAction,
     PrepareVmdExportRequest,
     VmdExportDiscovery,
+    _augment_dependency_bake_report,
     request_fingerprint,
 )
 from mmd_tools.actions.prepared_vmd_artifact import PreparedVmdArtifactReceipt
@@ -260,6 +261,44 @@ def _discovery(**changes):
 
 
 class PrepareVmdExportActionTests(unittest.TestCase):
+    def test_dependency_bake_report_warns_for_motion_and_informs_for_static(self):
+        report = _augment_dependency_bake_report(
+            ExportValidationReport("vmd", (), mode="bake_timeline"),
+            {
+                "diagnostics": {
+                    "control_rig_direct_export": {
+                        "dependency_baked": [
+                            {
+                                "bone": "EyeCtrl",
+                                "frame_range": (0, 120),
+                                "generated_key_count": 121,
+                                "decision": "dependency_baked",
+                                "static": False,
+                            },
+                            {
+                                "bone": "StaticUnsupported",
+                                "frame_range": (0, 120),
+                                "generated_key_count": 0,
+                                "decision": "omitted_default",
+                                "static": True,
+                            },
+                        ]
+                    }
+                }
+            },
+        )
+
+        self.assertTrue(report.requires_warning_ack)
+        self.assertEqual(
+            [issue.severity for issue in report.issues],
+            ["warning", "info"],
+        )
+        self.assertIn(
+            "This bone has no dedicated Control Rig mapping, so its evaluated motion was baked.",
+            report.issues[0].message,
+        )
+        self.assertIn("Generated key count: 121", report.issues[0].message)
+
     def test_temporary_control_rig_bake_restores_before_token_is_published(self):
         backend = _TemporaryBakeBackend([_discovery(), _discovery()])
         revisions = _Revisions(["baked-revision", "edit-revision"])

@@ -29,6 +29,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_CAMERA,
     ATTR_MMD_LIGHT,
+    ATTR_MMD_MODEL_ROOT,
     ATTR_MMD_MODEL_NAME,
 )
 from mmd_tools.core.mmd_control_rig_builder import (
@@ -129,6 +130,59 @@ _TRACK_SELECTION_DECISIONS = (
     "authored_sampled",
     "dependency_baked",
     "physics_output_excluded",
+)
+_UNSUPPORTED_BONE_BAKE_REASON = (
+    "This bone has no dedicated Control Rig mapping, so its evaluated motion was baked."
+)
+# A dependency bake may traverse an importer-owned Maya utility graph, but an
+# arbitrary plug-in node or an unowned graph is never a safe authority.  Keep
+# this list deliberately explicit; adding a node type is an ownership decision
+# and must come with a focused route test.
+_SUPPORTED_DEPENDENCY_NODE_TYPES = frozenset(
+    {
+        "animBlendNodeAdditiveDL",
+        "animBlendNodeAdditiveRotation",
+        "blendColors",
+        "blendWeighted",
+        "choice",
+        "composeMatrix",
+        "condition",
+        "decomposeMatrix",
+        "eulerToQuat",
+        "multMatrix",
+        "multiplyDivide",
+        "pairBlend",
+        "parentConstraint",
+        "pointConstraint",
+        "plusMinusAverage",
+        "quatToEuler",
+        "remapValue",
+        "unitConversion",
+        "aimConstraint",
+        "orientConstraint",
+        "scaleConstraint",
+        "mmdAppend",
+        "mmdBoneMorphAccum",
+        "mmdCcdIk",
+        "mmdControlRigInterop",
+        "mmdIkController",
+        "mmdMaterialMorphEval",
+        "mmdMorphController",
+        "mmdPhysicsBoneDriver",
+        "mmdPhysicsSolver",
+    }
+)
+_MAYA_DAG_NODE_TYPES = frozenset(
+    {
+        "camera",
+        "joint",
+        "light",
+        "locator",
+        "mesh",
+        "nurbsCurve",
+        "nurbsSurface",
+        "transform",
+    }
 )
 _MAX_TRACK_SELECTION_EVIDENCE = 128
 _MAX_KEY_REDUCTION_WITNESSES = 64
@@ -628,6 +682,372 @@ def _dag_path_is_under_root(node: str, root_path: str) -> bool:
     return node_path == root_path or node_path.startswith(f"{root_path}|")
 
 
+def _dependency_node_model_local(node: str, target_model: str) -> bool:
+    """Return whether a DAG node is owned by the selected model.
+
+    Maya long paths are authoritative in production.  The parent walk is a
+    small compatibility fallback for test hosts and for callers that resolved
+    a short name before this boundary; it never crosses an ambiguous parent.
+    """
+
+    root_path = _canonical_dag_path(target_model) or str(target_model)
+    if _dag_path_is_under_root(node, root_path):
+        return True
+    current = _canonical_dag_path(node) or str(node)
+    seen = set()
+    while current and current not in seen:
+        seen.add(current)
+        try:
+            parents = cmds.listRelatives(
+                current,
+                parent=True,
+                fullPath=True,
+            ) or []
+        except Exception:
+            return False
+        if isinstance(parents, (str, bytes)):
+            parents = [parents]
+        if len(parents) != 1:
+            return False
+        parent = _canonical_dag_path(str(parents[0])) or str(parents[0])
+        if parent == root_path or parent == str(target_model):
+            return True
+        current = parent
+    return False
+
+
+def _dependency_node_has_model_marker(node: str, target_model: str) -> bool:
+    """Check an explicit importer ownership marker on a DG node."""
+
+    for marker in (ATTR_MMD_MODEL_ROOT, "modelRoot"):
+        try:
+            if not cmds.attributeQuery(marker, node=node, exists=True):
+                continue
+        except Exception:
+            continue
+        plug = f"{node}.{marker}"
+        try:
+            sources = cmds.listConnections(
+                plug,
+                source=True,
+                destination=False,
+                plugs=True,
+            ) or []
+        except Exception:
+            continue
+        if isinstance(sources, (str, bytes)):
+            sources = [sources]
+        if len(sources) == 1:
+            source_node = str(sources[0]).split(".", 1)[0]
+            if _dependency_node_model_local(source_node, target_model) or (
+                _canonical_dag_path(source_node)
+                == _canonical_dag_path(target_model)
+            ):
+                return True
+            continue
+        # A few Maya message attributes are exposed as the connected node by
+        # getAttr in lightweight hosts.  Treat that value as an ownership claim
+        # only when it resolves uniquely to the selected model.
+        try:
+            value = cmds.getAttr(plug)
+        except Exception:
+            value = None
+        if value is not None and not isinstance(value, (list, tuple, dict)):
+            if str(value) in {
+                str(target_model),
+                _canonical_dag_path(target_model) or str(target_model),
+            }:
+                return True
+    return False
+
+
+def _dependency_connection_plugs(node: str, *, source: bool, destination: bool):
+    """Return a normalized Maya connection list for one node or plug."""
+
+    try:
+        values = cmds.listConnections(
+            node,
+            source=source,
+            destination=destination,
+            plugs=True,
+        ) or []
+    except Exception as exc:
+        raise ValueError(f"dependency graph query failed for {node}: {exc}") from exc
+    if isinstance(values, (str, bytes)):
+        values = [values]
+    return tuple(str(value) for value in values if str(value).strip())
+
+
+def _classify_unsupported_bone_dependency(
+    joint: str,
+    target_model: str,
+    channels: Sequence[str],
+) -> dict[str, Any]:
+    """Classify an un-routed bone graph before permitting dependency baking.
+
+    The classifier is deliberately fail-closed.  A local DAG or an explicit
+    importer-owned utility may be traversed, while external DAG nodes, shared
+    writers, duplicate writers, cycles, and unknown utility types retain a
+    dedicated fatal reason.  The returned reason is report-safe and does not
+    expose evaluated values.
+    """
+
+    joint = str(joint)
+    target_model = str(target_model)
+    root_path = _canonical_dag_path(target_model) or target_model
+    visited: set[str] = set()
+    visiting: set[str] = {joint}
+    visited_destinations: set[str] = set()
+    nodes: list[str] = []
+
+    def reject(reason: str, **extra: Any) -> dict[str, Any]:
+        return {
+            "status": "blocked",
+            "reason": str(reason),
+            "channels": tuple(str(channel) for channel in channels),
+            "nodes": tuple(nodes),
+            **extra,
+        }
+
+    def canonical(node: str) -> Optional[str]:
+        value = _canonical_dag_path(node)
+        if value:
+            return value
+        try:
+            matches = cmds.ls(node, long=True) or []
+        except Exception:
+            return None
+        if len(matches) != 1:
+            return None
+        return str(matches[0])
+
+    def inspect(source_plug: str, destination_plug: str) -> Optional[dict[str, Any]]:
+        source_node, separator, _source_attr = str(source_plug).rpartition(".")
+        destination_node = str(destination_plug).rpartition(".")[0]
+        if not separator or not source_node:
+            return reject(
+                "unknown dependency closure: source plug is invalid",
+                source=source_plug,
+            )
+        source_path = canonical(source_node)
+        if not source_path:
+            return reject(
+                "unknown dependency closure: source node is not unique",
+                source=source_plug,
+            )
+        if source_path in visiting:
+            return reject(
+                "dependency cycle detected in unsupported bone closure",
+                source=source_plug,
+            )
+        if source_path not in nodes:
+            nodes.append(source_path)
+        try:
+            node_type = str(cmds.nodeType(source_path) or "")
+        except Exception as exc:
+            return reject(
+                f"unknown dependency closure: node type query failed ({exc})",
+                source=source_plug,
+            )
+        if not node_type:
+            return reject(
+                "unknown dependency closure: node type is unavailable",
+                source=source_plug,
+            )
+
+        try:
+            destination_values = _dependency_connection_plugs(
+                source_plug,
+                source=False,
+                destination=True,
+            )
+        except ValueError as exc:
+            return reject(str(exc), source=source_plug)
+        if len(destination_values) > 1:
+            return reject(
+                "shared dependency writer has multiple destinations",
+                source=source_plug,
+                destinations=destination_values,
+            )
+        if destination_values:
+            for value in destination_values:
+                destination_path = canonical(value.rpartition(".")[0])
+                if not destination_path:
+                    return reject(
+                        "unknown dependency closure: destination node is not unique",
+                        source=source_plug,
+                    )
+                visited_destinations.add(destination_path)
+                try:
+                    destination_type = str(cmds.nodeType(destination_path) or "")
+                except Exception as exc:
+                    return reject(
+                        f"unknown dependency closure: destination type query failed ({exc})",
+                        source=source_plug,
+                    )
+                if destination_type in _MAYA_DAG_NODE_TYPES and not _dependency_node_model_local(
+                    destination_path, target_model
+                ):
+                    return reject(
+                        "external/foreign dependency writer is outside the selected model",
+                        source=source_plug,
+                        destination=destination_path,
+                    )
+                if destination_type not in _MAYA_DAG_NODE_TYPES and not (
+                    destination_type.startswith("animCurve")
+                    or destination_type in _SUPPORTED_DEPENDENCY_NODE_TYPES
+                ):
+                    return reject(
+                        "unknown dependency closure node type: " + destination_type,
+                        source=source_plug,
+                        destination=destination_path,
+                    )
+        # A source node may fan out through different output components.  An
+        # output other than the one being followed is still part of the
+        # writer's authority boundary: a foreign DAG or an unrelated DG
+        # closure must block the bake even when the selected output itself is
+        # model-local.
+        try:
+            node_destination_values = _dependency_connection_plugs(
+                source_path,
+                source=False,
+                destination=True,
+            )
+        except ValueError as exc:
+            return reject(str(exc), source=source_path)
+        for value in node_destination_values:
+            destination_path = canonical(value.rpartition(".")[0])
+            if not destination_path:
+                return reject(
+                    "unknown dependency closure: destination node is not unique",
+                    source=source_path,
+                )
+            try:
+                destination_type = str(cmds.nodeType(destination_path) or "")
+            except Exception as exc:
+                return reject(
+                    f"unknown dependency closure: destination type query failed ({exc})",
+                    source=source_path,
+                )
+            if destination_type in _MAYA_DAG_NODE_TYPES:
+                if not _dependency_node_model_local(destination_path, target_model):
+                    return reject(
+                        "external/foreign dependency writer is outside the selected model",
+                        source=source_path,
+                        destination=destination_path,
+                    )
+                continue
+            if destination_type not in _SUPPORTED_DEPENDENCY_NODE_TYPES and not (
+                destination_type.startswith("animCurve")
+            ):
+                return reject(
+                    "unknown dependency closure node type: " + destination_type,
+                    source=source_path,
+                    destination=destination_path,
+                )
+            if destination_path not in (visiting | visited):
+                return reject(
+                    "shared/foreign dependency writer leaves the selected closure",
+                    source=source_path,
+                    destination=destination_path,
+                )
+        if node_type in _MAYA_DAG_NODE_TYPES and not _dependency_node_model_local(
+            source_path, target_model
+        ):
+            return reject(
+                "external/foreign dependency writer is outside the selected model",
+                source=source_plug,
+            )
+        if node_type not in _MAYA_DAG_NODE_TYPES and not node_type.startswith("animCurve"):
+            if node_type not in _SUPPORTED_DEPENDENCY_NODE_TYPES:
+                return reject(
+                    "unknown dependency closure node type: " + node_type,
+                    source=source_plug,
+                )
+            if not _dependency_node_has_model_marker(source_path, target_model):
+                # A known utility with a local destination is still accepted:
+                # Maya utility nodes generally carry no DAG parent, and their
+                # destination locality is the ownership proof available at
+                # this boundary.  In a utility chain, the destination utility
+                # must already be in the validated downstream closure; this
+                # prevents an arbitrary DG node from becoming an owner merely
+                # because its type appears in the allowlist.
+                destination_path = canonical(destination_node)
+                destination_is_local_dag = bool(
+                    destination_path
+                    and _dependency_node_model_local(destination_path, target_model)
+                )
+                destination_is_validated_utility = bool(
+                    destination_path
+                    and destination_path in (visiting | visited)
+                )
+                if not destination_is_local_dag and not destination_is_validated_utility:
+                    return reject(
+                        "foreign dependency writer has no selected-model ownership",
+                        source=source_plug,
+                    )
+
+        if source_path in visited:
+            return None
+        visited.add(source_path)
+        # The native timeline sampler owns animCurve evaluation.  Its normal
+        # ``input`` connection is Maya's global time node, which is not part
+        # of the selected model closure and must not be mistaken for a
+        # foreign writer.
+        if node_type.startswith("animCurve"):
+            return None
+        visiting.add(source_path)
+        try:
+            try:
+                incoming = _dependency_connection_plugs(
+                    source_path,
+                    source=True,
+                    destination=False,
+                )
+            except ValueError as exc:
+                return reject(str(exc), source=source_path)
+            for upstream in incoming:
+                result = inspect(upstream, source_plug)
+                if result is not None:
+                    return result
+        finally:
+            visiting.discard(source_path)
+        return None
+
+    for channel in channels:
+        destination_plug = f"{joint}.{channel}"
+        try:
+            sources = _dependency_connection_plugs(
+                destination_plug,
+                source=True,
+                destination=False,
+            )
+        except ValueError as exc:
+            return reject(str(exc))
+        if len(sources) != 1:
+            if len(sources) > 1:
+                return reject(
+                    "ambiguous dependency writer has multiple sources",
+                    destination=destination_plug,
+                    sources=sources,
+                )
+            return reject(
+                "unknown dependency closure: incoming source disappeared",
+                destination=destination_plug,
+            )
+        result = inspect(sources[0], destination_plug)
+        if result is not None:
+            return result
+    return {
+        "status": "accepted",
+        "reason": "model_local_dependency_closure",
+        "channels": tuple(str(channel) for channel in channels),
+        "nodes": tuple(nodes),
+        "root": root_path,
+        "visited_destinations": tuple(sorted(visited_destinations)),
+    }
+
+
 def _close_native_samples(native_samples: Any) -> None:
     """Close native sample storage without requiring legacy test fakes to do so."""
 
@@ -826,10 +1246,16 @@ class VmdSceneCollector:
             "shadows": 0,
             "ik": 0,
         }
+        generated_bone_counts: dict[str, int] = {}
 
         def emit(section: str, frame: Mapping[str, Any]) -> None:
             _write_stream_frame(sink, section, frame)
             section_counts[section] += 1
+            if section == "bones":
+                bone_name = str(frame.get("bone_name") or "")
+                generated_bone_counts[bone_name] = (
+                    generated_bone_counts.get(bone_name, 0) + 1
+                )
 
         try:
             target_model = options.get("target_model") or options.get("model_root")
@@ -932,6 +1358,13 @@ class VmdSceneCollector:
                 key_reduction_report=key_reduction["sections"]["bones"],
                 selector_key_times_by_joint=selector_key_times_by_joint,
                 rotation_context_joints=rotation_context_joints,
+            )
+            self._finalize_direct_dependency_bake_diagnostics(
+                start_frame,
+                end_frame,
+                bake_timeline_dense_frames,
+                maya_time_to_vmd,
+                generated_bone_counts,
             )
             begin_section("morphs")
             self.collect_morph_frames(
@@ -1691,7 +2124,12 @@ class VmdSceneCollector:
             if use_native and native_samples is not None:
                 try:
                     scalar_native_value_read_count += 1
-                    return float(native_samples.value(joint, attr, frame_number))
+                    value = float(native_samples.value(joint, attr, frame_number))
+                    if not math.isfinite(value):
+                        raise ValueError(
+                            f"non-finite native value for {joint}.{attr}"
+                        )
+                    return value
                 except Exception as exc:
                     try:
                         _close_native_samples(native_samples)
@@ -1707,9 +2145,14 @@ class VmdSceneCollector:
                     )
                     self._emit_diagnostics()
                     raise RuntimeError(
-                        f"Bake Timeline native bone value failed for {joint}.{attr}"
+                        f"Bake Timeline native bone value failed for {joint}.{attr}: {exc}"
                     ) from exc
-            return _routed_plug_float(joint, attr, frame_number, route)
+            value = float(_routed_plug_float(joint, attr, frame_number, route))
+            if not math.isfinite(value):
+                raise RuntimeError(
+                    f"Bake Timeline bone value is non-finite for {joint}.{attr}"
+                )
+            return value
 
         try:
             for joint in joints:
@@ -1737,6 +2180,11 @@ class VmdSceneCollector:
                     len(direct_multi_key_candidates.get(bone_name, ())) == 1
                     and len(bone_output_providers.get(bone_name, ())) == 1
                     and direct_multi_key_candidates[bone_name][0][0] == long_name
+                )
+                dependency_multi_key = bool(
+                    force_dense_sample
+                    and not single_key
+                    and joint in keyless_dependency_joints
                 )
                 preserve_sparse_rotation = (
                     not force_dense_sample
@@ -1789,6 +2237,14 @@ class VmdSceneCollector:
                             raise RuntimeError(
                                 "native bone track returned invalid component arrays"
                             )
+                        if any(
+                            not math.isfinite(float(value))
+                            for component in bulk_components
+                            for value in component
+                        ):
+                            raise RuntimeError(
+                                "native bone track returned non-finite values"
+                            )
                     except BaseException as exc:
                         if native_samples is not None:
                             try:
@@ -1808,7 +2264,7 @@ class VmdSceneCollector:
                         if not isinstance(exc, Exception):
                             raise
                         raise RuntimeError(
-                            f"Bake Timeline native bone track failed for {joint}"
+                            f"Bake Timeline native bone track failed for {joint}: {exc}"
                         ) from exc
                     native_bulk_track_count += 1
                     native_bulk_track_frame_count += len(keyed_frames)
@@ -1964,7 +2420,7 @@ class VmdSceneCollector:
                         if is_default:
                             continue
                     if track_frames is not None:
-                        if direct_multi_key:
+                        if direct_multi_key or dependency_multi_key:
                             signature = (payload["position"], payload["rotation"])
                             if constant_first is None:
                                 constant_first = payload
@@ -1975,7 +2431,7 @@ class VmdSceneCollector:
                             emit_stream_payload(payload)
                     else:
                         frames.append(payload)
-                if direct_multi_key and constant_varied:
+                if (direct_multi_key or dependency_multi_key) and constant_varied:
                     # Reuse the same detached track for the bounded second pass
                     # so protected interiors retain the original semantics.
                     for _frame_number, payload in iter_payloads():
@@ -2013,6 +2469,13 @@ class VmdSceneCollector:
                             source_key_count,
                             planned_key_count,
                         )
+                    if keyless_reason:
+                        self._update_direct_dependency_bake_selection(
+                            bone_name,
+                            decision,
+                            decision in {"omitted_default", "constant_one_key"},
+                            planned_key_count,
+                        )
                 if track_frames is not None:
                     if direct_multi_key and not constant_varied and constant_first:
                         is_default = constant_signature == (
@@ -2029,6 +2492,31 @@ class VmdSceneCollector:
                         )
                         if not is_default:
                             emit_stream_payload(constant_first, reduce=False)
+                    elif dependency_multi_key and not constant_varied and constant_first:
+                        is_default = constant_signature == (
+                            (0.0, 0.0, 0.0),
+                            (0.0, 0.0, 0.0, 1.0),
+                        )
+                        decision = "omitted_default" if is_default else "constant_one_key"
+                        reason = (
+                            "unsupported_dependency_static_default"
+                            if is_default
+                            else "unsupported_dependency_static_non_default"
+                        )
+                        bone_dense_diagnostic_rows[bone_name] = (
+                            decision,
+                            reason,
+                            0,
+                            0 if is_default else 1,
+                        )
+                        self._update_direct_dependency_bake_selection(
+                            bone_name,
+                            decision,
+                            True,
+                            0 if is_default else 1,
+                        )
+                        if not is_default:
+                            emit_stream_payload(constant_first, reduce=False)
                     elif direct_multi_key and constant_varied:
                         self._record_track_selection(
                             "bone",
@@ -2036,6 +2524,21 @@ class VmdSceneCollector:
                             "authored_sampled",
                             "multiple_source_keys",
                             len(sparse_frames),
+                            len(dense_frames or ()) if dense_sample else len(sparse_frames),
+                        )
+                        if reducer is not None:
+                            reducer.finish()
+                    elif dependency_multi_key and constant_varied:
+                        bone_dense_diagnostic_rows[bone_name] = (
+                            "dependency_baked",
+                            keyless_dependency_joints[joint],
+                            0,
+                            len(dense_frames or ()) if dense_sample else len(sparse_frames),
+                        )
+                        self._update_direct_dependency_bake_selection(
+                            bone_name,
+                            "dependency_baked",
+                            False,
                             len(dense_frames or ()) if dense_sample else len(sparse_frames),
                         )
                         if reducer is not None:
@@ -2241,6 +2744,74 @@ class VmdSceneCollector:
             raise ValueError("Bake the MMD control rig before VMD export")
         return True
 
+    def _update_direct_dependency_bake_selection(
+        self,
+        bone_name: str,
+        decision: str,
+        static: bool,
+        planned_key_count: int,
+    ) -> None:
+        """Persist dependency selection without bounded evidence joins."""
+
+        diagnostics = self._diagnostics.get("control_rig_direct_export")
+        if not isinstance(diagnostics, Mapping):
+            return
+        rows = diagnostics.get("dependency_baked")
+        if not isinstance(rows, list):
+            return
+        _section, normalized_name = _normalize_track_selection_identity(
+            "bone", bone_name
+        )
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            _row_section, row_name = _normalize_track_selection_identity(
+                "bone", row.get("bone")
+            )
+            if row_name != normalized_name:
+                continue
+            row["decision"] = str(decision)
+            row["static"] = bool(static)
+            row["planned_key_count"] = max(0, int(planned_key_count))
+            return
+
+    def _finalize_direct_dependency_bake_diagnostics(
+        self,
+        start_frame: Optional[float],
+        end_frame: Optional[float],
+        dense_frames: Optional[Sequence[float]],
+        time_converter,
+        generated_bone_counts: Mapping[str, int],
+    ) -> None:
+        """Attach frame and generated-key evidence to accepted dependencies."""
+
+        diagnostics = self._diagnostics.get("control_rig_direct_export")
+        if not isinstance(diagnostics, Mapping):
+            return
+        rows = diagnostics.get("dependency_baked")
+        if not isinstance(rows, list):
+            return
+        resolved_range = None
+        if dense_frames:
+            resolved_range = (
+                _vmd_frame_number(dense_frames[0], time_converter),
+                _vmd_frame_number(dense_frames[-1], time_converter),
+            )
+        elif start_frame is not None and end_frame is not None:
+            resolved_range = (
+                _vmd_frame_number(start_frame, time_converter),
+                _vmd_frame_number(end_frame, time_converter),
+            )
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row["frame_range"] = resolved_range
+            bone_name = str(row.get("bone") or "")
+            planned = row.get("planned_key_count", 0)
+            row["generated_key_count"] = int(
+                generated_bone_counts.get(bone_name, planned or 0)
+            )
+
     def _control_rig_direct_export_plan(
         self,
         target_model: Optional[str],
@@ -2266,6 +2837,7 @@ class VmdSceneCollector:
             "selected": {
                 "control": [],
                 "scene_authored": [],
+                "dependency_baked": [],
             },
             "omitted": {
                 "keyless_control": [],
@@ -2277,6 +2849,7 @@ class VmdSceneCollector:
                 "model_external": [],
                 "ownership_unknown": [],
             },
+            "dependency_baked": [],
         }
         self._diagnostics["control_rig_direct_export"] = diagnostics
 
@@ -2363,9 +2936,6 @@ class VmdSceneCollector:
                     )
                 key_times.update(_key_times(node, (attribute,)))
             key_times = sorted(key_times)
-            if not key_times:
-                diagnostics["omitted"]["keyless_control"].append(joint)
-                continue
             bone_name = str(candidate.get("boneName") or self._mmd_bone_name(joint))
             prior = selected_bone_names.get(bone_name)
             if prior is not None and prior != joint:
@@ -2378,11 +2948,37 @@ class VmdSceneCollector:
                     f"{bone_name!r}",
                     path="scene.control_rig.direct_vmd_export.duplicate_bone_name",
                 )
+            # Reserve the name even when the selector is keyless.  A later
+            # unsupported dependency with the same VMD name must not bypass
+            # Control ownership merely because this candidate emits no track.
             selected_bone_names[bone_name] = joint
+            if not key_times:
+                diagnostics["omitted"]["keyless_control"].append(joint)
+                continue
             selected_joints.append(joint)
             value_routes[joint] = dict(candidate["valueRoutes"])
             selector_key_times_by_joint[joint] = key_times
             diagnostics["selected"]["control"].append(joint)
+
+        # Resolver candidates are the Control ownership boundary.  Preserve
+        # a fatal result when persisted metadata claims a joint but the
+        # resolver dropped it (for example a missing control or malformed
+        # fallback row); such a joint must never be hidden by dependency bake.
+        claimed_control_joints = set()
+        bindings = metadata.get("bindings", {})
+        if isinstance(bindings, Mapping):
+            for binding in bindings.values():
+                if not isinstance(binding, Mapping) or binding.get("fallback") is not None:
+                    continue
+                try:
+                    claimed = resolve_mmd_control_rig_binding_joint(cmds, binding)
+                except Exception:
+                    claimed = binding.get("joint")
+                if not claimed:
+                    continue
+                claimed = str((cmds.ls(str(claimed), long=True) or [claimed])[0])
+                if claimed in requested_set:
+                    claimed_control_joints.add(claimed)
 
         # The resolver's candidate set is the ownership boundary for Control
         # joints.  A keyless Control must not fall back to its authored plug;
@@ -2390,6 +2986,21 @@ class VmdSceneCollector:
         for joint in requested:
             if joint in control_candidates:
                 continue
+            if joint in claimed_control_joints:
+                message = (
+                    f"{joint}: Control Rig binding was dropped from the resolver "
+                    "candidate set"
+                )
+                diagnostics["blocked"]["ownership_unknown"].append(message)
+                diagnostics["status"] = "blocked"
+                raise ControlRigDirectVmdExportError(
+                    "Control Rig direct VMD export cannot hide Control-owned bone: "
+                    + message,
+                    path=(
+                        "scene.control_rig.direct_vmd_export."
+                        f"{joint}.candidate"
+                    ),
+                )
             route = dict(scene_routes.get(joint, {}))
             source_times = _routed_key_times(joint, route)
             # Never sample a visible final output when a dependency is not
@@ -2407,20 +3018,59 @@ class VmdSceneCollector:
                 else []
             )
             if unresolved_channels:
-                message = (
-                    f"{joint}: unresolved dependency output channels "
-                    f"{tuple(unresolved_channels)!r}"
+                classification = _classify_unsupported_bone_dependency(
+                    joint,
+                    target_model,
+                    unresolved_channels,
                 )
-                diagnostics["blocked"]["dependency_output"].append(message)
-                diagnostics["status"] = "blocked"
-                raise ControlRigDirectVmdExportError(
-                    "Control Rig direct VMD export cannot sample dependency output: "
-                    + message,
-                    path=(
-                        "scene.control_rig.direct_vmd_export."
-                        f"{joint}.channels"
-                    ),
+                if classification.get("status") != "accepted":
+                    reason = str(
+                        classification.get(
+                            "reason",
+                            "unknown dependency closure",
+                        )
+                    )
+                    message = (
+                        f"{joint}: unresolved dependency output channels "
+                        f"{tuple(unresolved_channels)!r}; reason: {reason}"
+                    )
+                    diagnostics["blocked"]["dependency_output"].append(message)
+                    diagnostics["status"] = "blocked"
+                    raise ControlRigDirectVmdExportError(
+                        "Control Rig direct VMD export cannot sample dependency output: "
+                        + message,
+                        path=(
+                            "scene.control_rig.direct_vmd_export."
+                            f"{joint}.channels"
+                        ),
+                    )
+                bone_name = self._mmd_bone_name(joint)
+                prior = selected_bone_names.get(bone_name)
+                if prior is not None:
+                    diagnostics["blocked"]["ownership_unknown"].append(
+                        f"duplicate VMD bone name {bone_name!r}: {prior}, {joint}"
+                    )
+                    diagnostics["status"] = "blocked"
+                    raise ControlRigDirectVmdExportError(
+                        "Control Rig direct VMD export has duplicate VMD bone name: "
+                        f"{bone_name!r}",
+                        path="scene.control_rig.direct_vmd_export.duplicate_bone_name",
+                    )
+                selected_bone_names[bone_name] = joint
+                selected_joints.append(joint)
+                value_routes[joint] = route
+                diagnostics["selected"]["dependency_baked"].append(joint)
+                diagnostics["dependency_baked"].append(
+                    {
+                        "joint": joint,
+                        "bone": bone_name,
+                        "frame_range": None,
+                        "generated_key_count": 0,
+                        "reason": _UNSUPPORTED_BONE_BAKE_REASON,
+                        "classification_reason": classification.get("reason"),
+                    }
                 )
+                continue
 
             if not source_times and not route:
                 diagnostics["omitted"]["keyless_default"].append(joint)
