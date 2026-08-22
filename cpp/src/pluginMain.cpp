@@ -276,14 +276,13 @@ MStatus initializePlugin(MObject obj)
         MGlobal::displayInfo("mmdPhysicsBoneDriver node registered (C++).");
     }
 
-    // Register the opt-in caster after the existing nodes and commands have
-    // initialized.  The E2E explicitly clears/rebinds modelEditor panels so
-    // Maya instantiates this late-added operation provider.
+    // Keep the experimental caster out of Maya's viewport renderer menu unless
+    // a dedicated E2E/developer process explicitly opts in before plug-in load.
     MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer(false);
-    const char* skipNativeCaster = std::getenv("MMD_TOOLS_CPP_SKIP_NATIVE_CASTER");
-    if (skipNativeCaster && std::string(skipNativeCaster) == "1") {
+    const char* enableNativeCaster = std::getenv("MMD_TOOLS_CPP_ENABLE_NATIVE_CASTER");
+    if (!enableNativeCaster || std::string(enableNativeCaster) != "1") {
         MGlobal::displayInfo(
-            "mmdNativeCaster override skipped by MMD_TOOLS_CPP_SKIP_NATIVE_CASTER.");
+            "mmdNativeCaster override disabled by default.");
     } else if (renderer) {
         status = plugin.registerCommand(
             "mmdNativeCasterWitness", MmdNativeCasterWitnessCommand::creator,

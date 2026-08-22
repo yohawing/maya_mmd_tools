@@ -234,7 +234,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             for call in self.plugin_main.cmds.menuItem.call_args_list
             if call[0] == ("MMDToolsSubMenu",) and call[1].get("subMenu") is True
         ]
-        self.assertEqual(len(tools_submenus), 1)
+        self.assertFalse(tools_submenus)
 
         animator_calls = [
             call
@@ -335,6 +335,27 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             ),
             self.plugin_main.cmds.menuItem.call_args_list,
         )
+
+    def test_install_menu_removes_stale_tools_submenu(self):
+        self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
+            False if kwargs.get("exists") else ["MMDToolsSubMenu"] if kwargs.get("query") else "MMD"
+        )
+        self.plugin_main.cmds.menuItem.side_effect = lambda item, **kwargs: (
+            "Tools" if kwargs.get("query") and kwargs.get("label") else item
+        )
+
+        with unittest.mock.patch(
+            "mmd_tools.ui.humanik_menu_actions.install_humanik_menu"
+        ):
+            self.plugin_main.install_mmd_menu()
+
+        self.plugin_main.cmds.deleteUI.assert_called_once_with("MMDToolsSubMenu")
+        created_tools = [
+            call
+            for call in self.plugin_main.cmds.menuItem.call_args_list
+            if not call[1].get("query") and call[1].get("label") == "Tools"
+        ]
+        self.assertFalse(created_tools)
 
     def test_humanik_action_dispatch_is_lazy(self):
         with unittest.mock.patch(

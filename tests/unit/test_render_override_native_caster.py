@@ -17,6 +17,9 @@ def test_native_caster_sources_are_registered() -> None:
     assert "MmdRenderOverride.cpp" in cmake
     assert "sMmdNativeCasterOverride = new MmdNativeCasterRenderOverride()" in plugin
     assert "registerOverride(sMmdNativeCasterOverride)" in plugin
+    assert 'std::getenv("MMD_TOOLS_CPP_ENABLE_NATIVE_CASTER")' in plugin
+    assert 'std::string(enableNativeCaster) != "1"' in plugin
+    assert "MMD_TOOLS_CPP_SKIP_NATIVE_CASTER" not in plugin
     assert "delete sMmdNativeCasterOverride" in plugin
     assert "!MmdNativeCasterRenderOverride::shutdownReady()" in plugin
     assert 'registerCommand(\n            "mmdNativeCasterWitness"' in plugin
@@ -136,6 +139,7 @@ def test_native_caster_e2e_records_negative_control() -> None:
 
     assert 'modelEditor -edit -rnm "vp2Renderer" -rom' in runner
     assert '_set_panel_override(mel, current, "mmdNativeCaster")' in runner
+    assert '"MMD_TOOLS_CPP_ENABLE_NATIVE_CASTER": "1"' in runner
     assert '_set_panel_override(mel, current, "")' in runner
     assert '"activeWitness"' in runner
     assert '"disabledWitness"' in runner

@@ -854,7 +854,6 @@ def _run_controller(config_path: Path, config: Mapping[str, Any]) -> dict[str, A
         environment = dict(os.environ)
         environment["PYTHONUTF8"] = "1"
         environment.setdefault("MMD_TOOLS_CPP_CONFIG", "Release")
-        environment.setdefault("MMD_TOOLS_CPP_SKIP_NATIVE_CASTER", "1")
         result_path = _result_path(config, prefix)
         if result_path.exists():
             result_path.unlink()

@@ -226,11 +226,6 @@ def main() -> int:
 
     plugin_path = _plugin_path()
     os.environ["PATH"] = str(plugin_path.parent) + os.pathsep + os.environ.get("PATH", "")
-    # The render override owns a live VP2 operation in standalone Maya and
-    # intentionally refuses teardown while that operation is active.  This
-    # sampler smoke is registration/unload focused, so keep that unrelated
-    # optional capability out of the process.
-    os.environ.setdefault("MMD_TOOLS_CPP_SKIP_NATIVE_CASTER", "1")
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(str(plugin_path.parent))
 

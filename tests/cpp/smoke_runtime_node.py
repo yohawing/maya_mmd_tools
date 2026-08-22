@@ -412,6 +412,15 @@ def main() -> int:
     maya.standalone.initialize(name="python")
     try:
         cmds.loadPlugin(str(plugin_path), quiet=True)
+        from maya.api import OpenMayaRender as omr
+
+        registered_commands = cmds.pluginInfo(
+            plugin_path.stem, query=True, command=True
+        ) or []
+        if "mmdNativeCasterWitness" in registered_commands:
+            raise RuntimeError("Native caster diagnostics must be disabled by default")
+        if omr.MRenderer.findRenderOverride("mmdNativeCaster") is not None:
+            raise RuntimeError("Native caster must stay out of the viewport renderer menu")
         cmds.loadPlugin(str(PYTHON_PLUGIN), quiet=True)
         node = cmds.createNode(NODE_TYPE)
         if not cmds.objExists(node):

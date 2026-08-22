@@ -303,12 +303,6 @@ def install_mmd_menu():
         parent="MMD",
     )
     cmds.menuItem(
-        "MMDToolsSubMenu",
-        label="Tools",
-        subMenu=True,
-        parent="MMD",
-    )
-    cmds.menuItem(
         "MMDAnimatorToolsetMenuItem",
         label="Animator Toolset",
         command=lambda *args: open_animator_toolset(dockable=True),

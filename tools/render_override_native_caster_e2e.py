@@ -1951,6 +1951,7 @@ def main() -> int:
     )
     env_overrides = {
         "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",
+        "MMD_TOOLS_CPP_ENABLE_NATIVE_CASTER": "1",
         "MMD_TOOLS_CPP_PLUGIN": str(plugin.resolve()),
         "PATH": os.pathsep.join((str(plugin.parent), os.environ.get("PATH", ""))),
     }

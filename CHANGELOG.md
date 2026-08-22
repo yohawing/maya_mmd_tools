@@ -10,7 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Published a validation-gated Export workflow for the supported PMX 2.0 model and VMD character-animation scope.
 - Added Create MMD Model with packaged project-authored templates and transactional Material, Bone, and Morph authoring workflows, including shared and custom toon settings.
-- Added a Development Mode-only native VP2 RenderOverride path and diagnostics without changing the default importer or shader route.
 
 ### Changed
 - Made PMD import-only and standardized PMX vertex export on BDEF4. SDEF/QDEF are imported as linear skin weights without retaining their deformation-specific auxiliary data.
