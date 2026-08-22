@@ -330,9 +330,48 @@ def _validate_binding_gate_artifact(
     step["artifact_sha256"] = _sha256(report_path)
 
 
+def _mmd_anim_release_directory() -> Path | None:
+    """Resolve Cargo's authoritative release directory, or fail closed."""
+    submodule = ROOT / "external" / "mmd-anim"
+    try:
+        completed = subprocess.run(
+            [
+                "cargo",
+                "metadata",
+                "--manifest-path",
+                str(submodule / "Cargo.toml"),
+                "--no-deps",
+                "--format-version",
+                "1",
+            ],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=30.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0 or not isinstance(completed.stdout, str):
+        return None
+    try:
+        payload = json.loads(completed.stdout)
+        target_directory = payload.get("target_directory")
+        if not isinstance(target_directory, str) or not target_directory or "\x00" in target_directory:
+            return None
+        target_path = Path(target_directory)
+    except (AttributeError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        return None
+    return target_path / "release" if target_path.is_absolute() else None
+
+
 def _mmd_anim_runtime_candidates() -> tuple[Path, ...]:
     """Return release FFI artifact candidates for supported host platforms."""
-    runtime_dir = ROOT / "external" / "mmd-anim" / "target" / "release"
+    runtime_dir = _mmd_anim_release_directory()
+    if runtime_dir is None:
+        return ()
     suffixes = {
         "Windows": ("mmd_runtime_ffi.dll",),
         "Linux": ("libmmd_runtime_ffi.so",),

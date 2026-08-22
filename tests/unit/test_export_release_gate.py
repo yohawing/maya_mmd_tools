@@ -330,9 +330,65 @@ class ExportReleaseGateTests(unittest.TestCase):
             foreign.write_bytes(b"foreign-runtime")
             with mock.patch.object(RELEASE_GATE, "ROOT", root), mock.patch.object(
                 RELEASE_GATE.platform, "system", return_value="Windows"
+            ), mock.patch.object(
+                RELEASE_GATE.subprocess,
+                "run",
+                return_value=mock.Mock(
+                    returncode=0,
+                    stdout=json.dumps(
+                        {"target_directory": str(root / "external" / "mmd-anim" / "target")}
+                    ),
+                ),
             ):
                 self.assertEqual(RELEASE_GATE._mmd_anim_runtime_candidates(), (native,))
                 self.assertEqual(RELEASE_GATE._mmd_anim_runtime_path(), native)
+
+    def test_ffi_runtime_candidates_use_cargo_metadata_target_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            cargo_target = Path(directory) / "cargo-target"
+            runtime = cargo_target / "release" / "mmd_runtime_ffi.dll"
+            local_runtime = root / "external" / "mmd-anim" / "target" / "release" / runtime.name
+            runtime.parent.mkdir(parents=True)
+            local_runtime.parent.mkdir(parents=True)
+            runtime.write_bytes(b"cargo-runtime")
+            local_runtime.write_bytes(b"stale-local-runtime")
+            metadata = mock.Mock(
+                returncode=0,
+                stdout=json.dumps({"target_directory": str(cargo_target)}),
+            )
+
+            with mock.patch.object(RELEASE_GATE, "ROOT", root), mock.patch.object(
+                RELEASE_GATE.platform, "system", return_value="Windows"
+            ), mock.patch.object(RELEASE_GATE.subprocess, "run", return_value=metadata):
+                self.assertEqual(RELEASE_GATE._mmd_anim_runtime_candidates(), (runtime,))
+                self.assertEqual(RELEASE_GATE._mmd_anim_runtime_path(), runtime)
+
+    def test_ffi_runtime_candidates_fail_closed_when_cargo_metadata_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stale = root / "external" / "mmd-anim" / "target" / "release" / "mmd_runtime_ffi.dll"
+            stale.parent.mkdir(parents=True)
+            stale.write_bytes(b"stale-runtime")
+
+            for result in (
+                mock.Mock(returncode=1, stdout=""),
+                mock.Mock(returncode=0, stdout="not-json"),
+                mock.Mock(returncode=0, stdout=json.dumps({"target_directory": "relative"})),
+                OSError("cargo unavailable"),
+            ):
+                with self.subTest(result=result), mock.patch.object(
+                    RELEASE_GATE, "ROOT", root
+                ), mock.patch.object(
+                    RELEASE_GATE.platform, "system", return_value="Windows"
+                ), mock.patch.object(
+                    RELEASE_GATE.subprocess,
+                    "run",
+                    side_effect=result if isinstance(result, OSError) else None,
+                    return_value=None if isinstance(result, OSError) else result,
+                ):
+                    self.assertEqual(RELEASE_GATE._mmd_anim_runtime_candidates(), ())
+                    self.assertIsNone(RELEASE_GATE._mmd_anim_runtime_path())
 
     def test_fail_fixture_matrix_is_green_only_when_boundaries_hold(self):
         with tempfile.TemporaryDirectory() as directory:
