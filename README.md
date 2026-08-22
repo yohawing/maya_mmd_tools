@@ -79,9 +79,8 @@ The installer copies all Maya MMD Tools files into Maya's user `modules` folder,
 1. Start Maya. If Maya is already running, restart it.
 2. Open `Window > Settings/Preferences > Plug-in Manager`.
 3. Find `mmd_tools_plugin.py`.
-4. Check `Loaded`.
-5. If you want it to load automatically, also check `Auto load`.
-6. For more MMD-like shading, also enable `dx11Shader`; `Create MMD Shader` is enabled by default.
+4. Check `Loaded`. If you want it to load automatically, also check `Auto load`.
+5. For more MMD-like shading, also check `Create MMD Shader`; it is enabled by default.
 
 ## Verify Installation
 
