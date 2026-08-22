@@ -156,7 +156,7 @@ class IkMoveWitnessTests(unittest.TestCase):
             "vmd",
             (
                 ExportValidationIssue(
-                    "VMD_FRAME_RANGE",
+                    "EXPORT_OPTIONS_INVALID",
                     "warning",
                     False,
                     "frame_range",
@@ -175,10 +175,10 @@ class IkMoveWitnessTests(unittest.TestCase):
                 "callbackCount": 1,
                 "warnings": [
                     {
-                        "code": "VMD_FRAME_RANGE",
+                        "code": "EXPORT_OPTIONS_INVALID",
                         "severity": "warning",
                         "path": "frame_range",
-                        "message": "The selected range will be exported.",
+                        "reason": "The selected range will be exported.",
                     }
                 ],
             },
@@ -232,7 +232,7 @@ class IkMoveWitnessTests(unittest.TestCase):
                     "code": "OUTPUT_WRITE_FAILED",
                     "severity": "fatal",
                     "path": "output",
-                    "message": "The temporary output could not be published.",
+                    "reason": "The temporary output could not be published.",
                 }
             ],
         )
@@ -244,7 +244,7 @@ class IkMoveWitnessTests(unittest.TestCase):
             "vmd",
             (
                 ExportValidationIssue(
-                    "SCENE_PREFLIGHT_FAILED",
+                    "SCENE_INVALID",
                     "fatal",
                     True,
                     "scene",

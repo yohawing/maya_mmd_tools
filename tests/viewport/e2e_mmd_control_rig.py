@@ -715,7 +715,7 @@ def _canonical_warning_evidence(report: Any) -> list[dict[str, str]]:
             "code": str(issue.code),
             "severity": str(issue.severity),
             "path": str(issue.path),
-            "message": str(issue.message),
+            "reason": str(issue.reason),
         }
         for issue in getattr(report, "issues", ()) or ()
     ]
