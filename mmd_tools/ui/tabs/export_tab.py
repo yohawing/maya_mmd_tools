@@ -281,7 +281,6 @@ class _ExportPage(QWidget):
         self._mark_editing()
 
     def set_result(self, result: ExportWorkflowResult) -> None:
-        previous_ack = self.validation_console.warnings_acknowledged
         self._state = result.state
         self._set_status_key(self._STATE_STATUS_KEYS.get(result.state, "blocked"))
         metadata = dict(result.metadata or {})
@@ -291,8 +290,6 @@ class _ExportPage(QWidget):
                 "payload_fingerprint", getattr(action_result, "payload_fingerprint", None)
             )
         self.validation_console.set_report(result.report, metadata)
-        if previous_ack:
-            self.validation_console.restore_acknowledgement(True)
 
     def set_state(self, state: str) -> None:
         self._state = state
@@ -593,7 +590,7 @@ class ExportTab(BaseTab):
             owner_page.set_operation_active(False)
 
     def invalidate_all_panes(self) -> None:
-        """Invalidate each page's report and acknowledgement independently."""
+        """Invalidate each page's report independently."""
         for page in self._pages.values():
             page.invalidate()
 

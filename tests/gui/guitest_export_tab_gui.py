@@ -49,64 +49,6 @@ def _emit_witness(surface_id, locator_key, locator, interaction, oracle, action_
     )
 
 
-class _WarningWorkflow:
-    """Capture the UI acknowledgement while returning a successful result."""
-
-    def __init__(self, report):
-        self.report = report
-        self.acknowledgements = []
-        self.requests = []
-
-    def execute(
-        self,
-        request,
-        *,
-        acknowledge_warnings=False,
-        warning_callback=None,
-        progress_callback=None,
-    ):
-        self.requests.append(request)
-        self.acknowledgements.append(acknowledge_warnings)
-        if progress_callback is not None:
-            for stage in (
-                "scene_preflight",
-                "payload_collection",
-                "payload_validation",
-                "report_ready",
-                "writer",
-            ):
-                progress_callback(stage)
-        return ExportWorkflowResult(
-            STATE_SUCCEEDED,
-            self.report,
-            {"output_path": "bake-timeline-warning.vmd"},
-        )
-
-
-class _PaneSwitchWorkflow(_WarningWorkflow):
-    """Switch panes while execute is in flight to reproduce GUI reentrancy."""
-
-    def __init__(self, report, switch_pane):
-        super().__init__(report)
-        self._switch_pane = switch_pane
-
-    def execute(
-        self,
-        request,
-        *,
-        acknowledge_warnings=False,
-        warning_callback=None,
-        progress_callback=None,
-    ):
-        self._switch_pane()
-        return super().execute(
-            request,
-            acknowledge_warnings=acknowledge_warnings,
-            warning_callback=warning_callback,
-            progress_callback=progress_callback,
-        )
-
-
 class _GuiAppState:
     """Minimal app-state surface needed by ExportPresenter in this test."""
 
@@ -132,6 +74,25 @@ class _GuiAppState:
     def end_progress(self, token):
         self.progress.append(("end", token, "", None))
         return True
+
+
+class _PaneSwitchWorkflow:
+    """Switch panes while execute is in flight to reproduce GUI reentrancy."""
+
+    def __init__(self, report, switch_pane):
+        self.report = report
+        self._switch_pane = switch_pane
+
+    def execute(self, request, *, warning_callback=None, progress_callback=None):
+        del request, warning_callback
+        self._switch_pane()
+        if progress_callback is not None:
+            progress_callback("report_ready")
+        return ExportWorkflowResult(
+            STATE_SUCCEEDED,
+            self.report,
+            {"output_path": "bake-timeline-warning.vmd"},
+        )
 
 
 @requires_gui
@@ -324,91 +285,68 @@ class TestExportTabGUI(GuiTestBase):
             self._delete_tab(tab)
             translator.set_language(previous_language)
 
-    def test_validation_console_renders_catalog_backed_fatal_issue(self):
-        """fatal issue のstable codeとschema-v2監査文言を表示する。"""
-        translator = UITranslator.instance()
-        previous_language = translator.get_language()
-        translator.set_language("en")
+    def test_validation_console_renders_fatal_warning_and_clean_reports(self):
+        """One read-only English console is the screen and Copy authority."""
         tab = self._create_visible_tab()
         try:
-            issue_code = "EXPORT_OPTIONS_INVALID"
-            reason = "current scene frame range is invalid"
-            action = "Choose a valid start and end frame, then retry."
-            report = ExportValidationReport(
+            console = tab.validation_console
+            fatal = ExportValidationReport(
                 "vmd",
                 (
                     ExportValidationIssue(
-                        issue_code,
+                        "EXPORT_OPTIONS_INVALID",
                         "fatal",
                         True,
                         "frame_range",
-                        reason,
-                        action,
+                        "current scene frame range is invalid",
+                        "Choose a valid start and end frame, then retry.",
                         {"start": 42, "end": 12},
                     ),
                 ),
                 mode="bake_timeline",
             )
-            evidence = {
-                "fixture": "gui_validation_console",
-                "source": "ExportTab GUI test",
-            }
-
-            report_spy = ActionInvocationSpy.wrap(
-                "ValidationConsole.set_report",
-                tab.validation_console.set_report,
-                tab.validation_console.issue_list,
-            )
-            report_spy(report, evidence)
+            console.set_report(fatal, {"fixture": "gui_validation_console"})
             QApplication.processEvents()
-
-            console = tab.validation_console
-            self.assertEqual(console.issue_list.count(), 1)
-            self.assertIn("[FATAL] EXPORT_OPTIONS_INVALID", console.issue_list.item(0).text())
-
-            code_index = console.filter_combo.findData(issue_code)
-            self.assertGreaterEqual(code_index, 0)
-            self.assertEqual(console.filter_combo.itemText(code_index), issue_code)
-            filter_spy = QtSignalInvocationSpy(
-                "ValidationConsole.filter_changed",
-                console.filter_combo.currentIndexChanged,
-                console.filter_combo,
+            fatal_text = console.console_text.toPlainText()
+            self.assertIn("Reason: current scene frame range is invalid", fatal_text)
+            self.assertIn("Action: Choose a valid start and end frame, then retry.", fatal_text)
+            self.assertIn("[FATAL] BLOCKED", fatal_text)
+            self.assertIn('Details: {"end": 12, "start": 42}', fatal_text)
+            self.assertIn("red", console.console_text.styleSheet().lower())
+            self.assertTrue(console.console_text.isReadOnly())
+            self.assertFalse(hasattr(console, "filter_combo"))
+            self.assertFalse(hasattr(console, "issue_list"))
+            self.assertFalse(hasattr(console, "detail_text"))
+            self.assertFalse(hasattr(console, "warnings_acknowledged"))
+            warning = ExportValidationReport(
+                "vmd",
+                (
+                    ExportValidationIssue(
+                        "UNSUPPORTED_FEATURE",
+                        "warning",
+                        False,
+                        "feature",
+                        "feature is not supported",
+                        "Remove the unsupported feature and retry export.",
+                    ),
+                ),
+                mode="bake_timeline",
             )
-            console.filter_combo.setCurrentIndex(code_index)
-            QApplication.processEvents()
-            self.assertEqual(console.issue_list.count(), 1)
+            console.set_report(warning)
+            self.assertIn("[WARNING] Validation report", console.console_text.toPlainText())
+            self.assertNotIn("red", console.console_text.styleSheet().lower())
 
-            detail = console.detail_text.toPlainText()
-            self.assertIn(f"Reason: {reason}", detail)
-            self.assertIn(f"Action: {action}", detail)
-            self.assertIn('Details: {"end": 12, "start": 42}', detail)
-            self.assertIn("Evidence:", detail)
-            self.assertIn("gui_validation_console", detail)
-            self.assertIn("ExportTab GUI test", detail)
-            _emit_witness(
-                "export.validation_issues",
-                "selector",
-                "objectName=validationIssueList",
-                "QTest.inspect(objectName=validationIssueList)",
-                "fatal catalog issue rendered with detail and evidence",
-                report_spy,
-                console.issue_list,
-            )
-            _emit_witness(
-                "export.validation_filter",
-                "selector",
-                "objectName=validationFilterCombo",
-                "QTest.setCurrentIndex(objectName=validationFilterCombo, stable code)",
-                "filtered fatal issue remains visible",
-                filter_spy,
-                console.filter_combo,
+            clean = ExportValidationReport("vmd", (), mode="bake_timeline")
+            console.set_report(clean)
+            self.assertEqual(
+                console.console_text.toPlainText(),
+                "[INFO] Validation passed: no errors or warnings were found.",
             )
         finally:
             self._delete_tab(tab)
-            translator.set_language(previous_language)
 
-    def test_validation_labels_and_catalog_wording_follow_japanese_translation(self):
-        """Validation controls and issue wording follow the active UI language."""
+    def test_status_controls_translate_but_console_body_stays_english(self):
+        """Workflow controls translate while the Validation Console stays English."""
         translator = UITranslator.instance()
         previous_language = translator.get_language()
         translator.set_language("ja")
@@ -439,7 +377,6 @@ class TestExportTabGUI(GuiTestBase):
                 "終了",
             )
             self.assertFalse(hasattr(tab.validation_console, "revalidate_button"))
-            self.assertEqual(tab.validation_console.acknowledge_check.text(), "警告を確認済みにする")
             self.assertFalse(hasattr(tab.validation_console, "save_button"))
 
             report = ExportValidationReport(
@@ -450,18 +387,17 @@ class TestExportTabGUI(GuiTestBase):
                         "fatal",
                         True,
                         "frame_range",
-                        "現在のシーンのフレーム範囲が不正です",
+                        "current scene frame range is invalid",
                     ),
                 ),
                 mode=VMD_EXPORT_BAKE_TIMELINE,
             )
             tab.validation_console.set_report(report)
             QApplication.processEvents()
-            detail = tab.validation_console.detail_text.toPlainText()
-            self.assertIn("書き出し方式: 現在のタイムラインをVMD化", detail)
-            self.assertIn("理由:", detail)
-            self.assertIn("対策:", detail)
-            self.assertIn("詳細:", detail)
+            english_console = tab.validation_console.console_text.toPlainText()
+            self.assertIn("Export strategy: bake_timeline", english_console)
+            self.assertIn("Reason: current scene frame range is invalid", english_console)
+            self.assertIn("Action:", english_console)
 
             translator.set_language("en")
             translate_spy = ActionInvocationSpy.wrap(
@@ -509,8 +445,8 @@ class TestExportTabGUI(GuiTestBase):
             self._delete_tab(tab)
             translator.set_language(previous_language)
 
-    def test_pane_report_ack_and_output_state_are_isolated(self):
-        """Switching panes restores each report/ack/path without mixing them."""
+    def test_pane_report_and_output_state_are_isolated(self):
+        """Switching panes restores each report/path without mixing them."""
         tab = self._create_visible_tab()
         try:
             model_output_edit = tab.output_path_edit
@@ -544,7 +480,6 @@ class TestExportTabGUI(GuiTestBase):
 
             tab.pane_tabs.setCurrentIndex(1)
             self.assertIsNone(tab.validation_console.report)
-            self.assertFalse(tab.validation_console.warnings_acknowledged)
             tab.output_path_edit.setText("motion.pmx")
             motion_report = ExportValidationReport(
                 "vmd",
@@ -555,20 +490,18 @@ class TestExportTabGUI(GuiTestBase):
 
             tab.pane_tabs.setCurrentIndex(0)
             self.assertIs(tab.validation_console.report, model_report)
-            self.assertFalse(tab.validation_console.warnings_acknowledged)
             self.assertEqual(tab.output_path_edit.text(), "model.vmd")
 
             tab.apply_scale_check.setChecked(not tab.apply_scale_check.isChecked())
             self.assertIsNone(tab.validation_console.report)
             tab.pane_tabs.setCurrentIndex(1)
             self.assertIs(tab.validation_console.report, motion_report)
-            self.assertFalse(tab.validation_console.warnings_acknowledged)
             self.assertEqual(tab.output_path_edit.text(), "motion.pmx")
         finally:
             self._delete_tab(tab)
 
     def test_current_model_change_invalidates_both_panes(self):
-        """Current Model changes clear both pane reports and acknowledgements."""
+        """Current Model changes clear both pane reports."""
         tab = self._create_visible_tab()
         try:
             report = ExportValidationReport(

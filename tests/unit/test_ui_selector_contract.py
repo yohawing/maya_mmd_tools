@@ -264,10 +264,7 @@ def test_physics_settings_and_validation_selectors(qapp):
     names += _assert_selectors(
         validation,
         (
-            ("filter_combo", "validationFilterCombo", QComboBox),
-            ("issue_list", "validationIssueList", QListWidget),
-            ("detail_text", "validationDetailEdit", QTextEdit),
-            ("acknowledge_check", "validationAcknowledgeCheck", QCheckBox),
+            ("console_text", "validationConsoleText", QTextEdit),
             ("copy_button", "validationCopyButton", QPushButton),
         ),
     )

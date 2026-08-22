@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "gate_id": "V070-UI-COVERAGE-1",
-  "minimum_qt_case_surfaces": 224,
+  "minimum_qt_case_surfaces": 222,
   "inventory_scope": "MainWindow nine tabs; logical mutable/actionable surfaces only, with explicit exclusions for containers and read-only displays.",
   "tabs": [
     {
@@ -591,40 +591,13 @@
       "expected_handler": "mmd_tools.ui.tabs.export_tab._ExportPage._on_semantic_input_changed"
     },
     {
-      "id": "export.validation_filter",
-      "tab": "export",
-      "kind": "combo",
-      "selector": "objectName=validationFilterCombo",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.validation_console.ValidationConsole._refresh_issue_list"
-    },
-    {
-      "id": "export.validation_issues",
-      "tab": "export",
-      "kind": "list",
-      "selector": "objectName=validationIssueList",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.validation_console.ValidationConsole._show_selected_issue"
-    },
-    {
-      "id": "export.validation_detail",
+      "id": "export.validation_text",
       "tab": "export",
       "kind": "read_only",
-      "selector": "objectName=validationDetailEdit",
+      "selector": "objectName=validationConsoleText",
       "disposition": "excluded",
       "reason_code": "read_only",
-      "reason": "Validation detail is read-only report output; Copy is the actionable surface."
-    },
-    {
-      "id": "export.validation_acknowledge",
-      "tab": "export",
-      "kind": "check",
-      "selector": "objectName=validationAcknowledgeCheck",
-      "disposition": "excluded",
-      "reason_code": "one_shot_warning_confirmation",
-      "reason": "Warning approval is requested synchronously by the one-shot Export action; the report checkbox is not export authority."
+      "reason": "The Validation Console is read-only report output; its fatal, warning, clean, and Copy behavior is covered by the dedicated GUI contract."
     },
     {
       "id": "export.validation_copy",
