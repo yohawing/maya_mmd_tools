@@ -619,6 +619,70 @@ def _aggregate_version_surfaces(
     return [baseline[surface_id] for surface_id in sorted(baseline)]
 
 
+def _surface_contracts_by_case(
+    manifest: Mapping[str, Any], cases_by_id: Mapping[str, Mapping[str, Any]]
+) -> Dict[str, Dict[str, Mapping[str, Any]]]:
+    """Return the manifest surface contracts grouped by their case owner."""
+    result: Dict[str, Dict[str, Mapping[str, Any]]] = {}
+    for surface in manifest.get("surfaces", []):
+        if surface.get("disposition") != "qt_case":
+            continue
+        case_id = surface.get("case_id")
+        if case_id not in cases_by_id:
+            continue
+        result.setdefault(case_id, {})[surface["id"]] = _manifest_surface_contract(surface)
+    return result
+
+
+def _merge_surface_contracts(
+    target: Dict[str, Dict[str, Any]], observed: Mapping[str, Mapping[str, Any]], *, path: str
+) -> None:
+    """Merge one evidence source while rejecting conflicting duplicate IDs."""
+    for surface_id, surface_evidence in observed.items():
+        previous = target.get(surface_id)
+        if previous is not None and previous != surface_evidence:
+            raise ValueError(f"runtime_witness_mismatch for {surface_id} in {path}")
+        target[surface_id] = dict(surface_evidence)
+
+
+def _build_headless_report_evidence(
+    report_path: Optional[Path],
+    *,
+    headless_case_ids: Iterable[str],
+    expected_surfaces: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Load fresh headless Qt witnesses emitted by this release-gate run."""
+    if report_path is None or not report_path.is_file():
+        raise ValueError(f"fresh headless UI coverage report is missing: {report_path}")
+    payload = load_json(report_path)
+    if payload.get("schema_version") != SCHEMA_VERSION or payload.get("gate_id") != GATE_ID:
+        raise ValueError(f"invalid fresh headless UI coverage report: {report_path}")
+    case_entries = _as_entries(payload.get("cases"), path=f"{report_path}.cases", errors=[])
+    observed_cases: Dict[str, Mapping[str, Any]] = {}
+    for index, evidence in enumerate(case_entries):
+        case_id = evidence.get("case_id")
+        if not isinstance(case_id, str) or not case_id:
+            raise ValueError(f"invalid headless case evidence at {report_path}.cases[{index}]")
+        if case_id in observed_cases:
+            raise ValueError(f"duplicate headless case evidence at {report_path}.cases[{index}]: {case_id}")
+        observed_cases[case_id] = evidence
+    expected_case_ids = set(headless_case_ids)
+    if set(observed_cases) != expected_case_ids:
+        raise ValueError(
+            f"headless case evidence mismatch at {report_path}: expected {sorted(expected_case_ids)}"
+        )
+    for case_id in expected_case_ids:
+        if str(observed_cases[case_id].get("status", "")).lower() not in _PASS_STATUSES:
+            raise ValueError(f"headless case evidence failed at {report_path}: {case_id}")
+        if _normalise_versions(observed_cases[case_id].get("maya_versions")):
+            raise ValueError(f"headless case evidence claims Maya versions at {report_path}: {case_id}")
+    return _collect_surface_contracts(
+        payload.get("surfaces"),
+        expected_surfaces=expected_surfaces,
+        path=f"{report_path}.surfaces",
+    )
+
+
 def build_report_from_evidence(manifest: Mapping[str, Any], repo_root: Path) -> Dict[str, Any]:
     """Build aggregate evidence from structured per-version runtime reports."""
     required_case_ids = {
@@ -627,15 +691,14 @@ def build_report_from_evidence(manifest: Mapping[str, Any], repo_root: Path) -> 
         if surface.get("disposition") == "qt_case"
     }
     cases_by_id = _entry_map(manifest.get("cases", []), "id")
-    surfaces_by_case: Dict[str, Dict[str, Mapping[str, Any]]] = {}
-    for surface in manifest.get("surfaces", []):
-        if surface.get("disposition") != "qt_case":
-            continue
-        surfaces_by_case.setdefault(surface["case_id"], {})[surface["id"]] = _manifest_surface_contract(surface)
+    surfaces_by_case = _surface_contracts_by_case(manifest, cases_by_id)
     cases = []
     per_version_surfaces: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    headless_surfaces: Dict[str, Dict[str, Any]] = {}
     for case_id in sorted(required_case_ids):
         case = cases_by_id.get(case_id, {})
+        if case.get("execution_layer") == "headless_qt":
+            raise ValueError("headless_qt evidence requires a fresh --headless-report with --batch-log")
         versions = _normalise_versions(case.get("required_maya_versions"))
         evidence_files = case.get("evidence_files")
         if not isinstance(evidence_files, Mapping):
@@ -657,14 +720,15 @@ def build_report_from_evidence(manifest: Mapping[str, Any], repo_root: Path) -> 
                 expected_surfaces=surfaces_by_case.get(case_id, {}),
                 path=f"{evidence_path}.surfaces",
             )
-            for surface_id, surface_evidence in observed.items():
-                previous = per_version_surfaces.setdefault(version, {}).get(surface_id)
-                if previous is not None and previous != surface_evidence:
-                    raise ValueError(f"runtime_witness_mismatch for {surface_id} in Maya {version}")
-                per_version_surfaces.setdefault(version, {})[surface_id] = surface_evidence
+            _merge_surface_contracts(
+                per_version_surfaces.setdefault(version, {}), observed, path=f"Maya {version}"
+            )
         cases.append({"case_id": case_id, "status": "pass", "maya_versions": versions})
 
-    surfaces = _aggregate_version_surfaces(per_version_surfaces)
+    surfaces_by_version = _aggregate_version_surfaces(per_version_surfaces)
+    surfaces = sorted(
+        [*headless_surfaces.values(), *surfaces_by_version], key=lambda surface: surface["surface_id"]
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "gate_id": GATE_ID,
@@ -675,23 +739,66 @@ def build_report_from_evidence(manifest: Mapping[str, Any], repo_root: Path) -> 
 
 
 def build_report_from_batch_logs(
-    manifest: Mapping[str, Any], batch_logs: Mapping[str, Path]
+    manifest: Mapping[str, Any],
+    batch_logs: Mapping[str, Path],
+    headless_report: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Build evidence from fresh logs carrying deterministic runtime markers."""
+    """Merge fresh headless evidence with fresh Maya GUI log evidence.
+
+    Headless Qt witnesses have no Maya-version dimension and must come from
+    the report written by this invocation's focused test command.  Only
+    real-Maya and persistence cases consume the fresh batch logs.
+    """
     required_case_ids = {
         surface["case_id"]
         for surface in manifest.get("surfaces", [])
         if surface.get("disposition") == "qt_case"
     }
     cases_by_id = _entry_map(manifest.get("cases", []), "id")
-    expected_surfaces: Dict[str, Mapping[str, Any]] = {}
-    for surface in manifest.get("surfaces", []):
-        if surface.get("disposition") != "qt_case":
-            continue
-        expected_surfaces[surface["id"]] = _manifest_surface_contract(surface)
+    surfaces_by_case = _surface_contracts_by_case(manifest, cases_by_id)
+    headless_case_ids = {
+        case_id
+        for case_id in required_case_ids
+        if cases_by_id.get(case_id, {}).get("execution_layer") == "headless_qt"
+    }
+    runtime_case_ids = {
+        case_id
+        for case_id in required_case_ids
+        if cases_by_id.get(case_id, {}).get("execution_layer") in {"real_maya", "persistence"}
+    }
+    unsupported_case_ids = required_case_ids - headless_case_ids - runtime_case_ids
+    if unsupported_case_ids:
+        raise ValueError(
+            "qt_case has unsupported execution layer: " + ", ".join(sorted(unsupported_case_ids))
+        )
+    headless_expected: Dict[str, Mapping[str, Any]] = {
+        surface_id: surface
+        for case_id in headless_case_ids
+        for surface_id, surface in surfaces_by_case.get(case_id, {}).items()
+    }
+    runtime_expected: Dict[str, Mapping[str, Any]] = {
+        surface_id: surface
+        for case_id in runtime_case_ids
+        for surface_id, surface in surfaces_by_case.get(case_id, {}).items()
+    }
+
+    headless_surfaces = _build_headless_report_evidence(
+        headless_report,
+        headless_case_ids=headless_case_ids,
+        expected_surfaces=headless_expected,
+    ) if headless_case_ids else {}
+    # CLI callers may supply a GUI log even when this manifest currently has
+    # no runtime-owned surface.  Do not let a failed run disappear merely
+    # because all inventory surfaces are headless-owned.
+    for version, log_path in batch_logs.items():
+        if not log_path.is_file() or not _evidence_passes(log_path, version):
+            raise ValueError(f"full GUI evidence failed for Maya {version}: {log_path}")
     cases = []
+    for case_id in sorted(headless_case_ids):
+        cases.append({"case_id": case_id, "status": "pass", "maya_versions": []})
+
     per_version_surfaces: Dict[str, Dict[str, Dict[str, Any]]] = {}
-    for case_id in sorted(required_case_ids):
+    for case_id in sorted(runtime_case_ids):
         case = cases_by_id.get(case_id, {})
         versions = _normalise_versions(case.get("required_maya_versions"))
         test_ids = case.get("evidence_tests")
@@ -718,7 +825,7 @@ def build_report_from_batch_logs(
     required_versions = sorted(
         {
             version
-            for case_id in required_case_ids
+            for case_id in runtime_case_ids
             for version in _normalise_versions(cases_by_id.get(case_id, {}).get("required_maya_versions"))
         }
     )
@@ -726,21 +833,35 @@ def build_report_from_batch_logs(
         log_path = batch_logs.get(version)
         if log_path is None or not log_path.is_file() or not _evidence_passes(log_path, version):
             raise ValueError(f"full GUI evidence failed for Maya {version}: {log_path}")
-        observed = _collect_surface_contracts(
-            _parse_runtime_witness_markers(
+        if runtime_expected:
+            markers = _parse_runtime_witness_markers(
                 log_path.read_text(encoding="utf-8", errors="replace"),
                 path=str(log_path),
-            ),
-            expected_surfaces=expected_surfaces,
-            path=f"{log_path} runtime witness markers",
-        )
-        per_version_surfaces[version] = observed
+            )
+            # A full log can contain markers from the headless matrix.  Those
+            # are deliberately sourced from the fresh JSON above; only
+            # the runtime-owned surface set is accepted from this log.
+            runtime_markers = [
+                marker
+                for marker in markers
+                if marker.get("surface_id") not in headless_expected
+            ]
+            observed = _collect_surface_contracts(
+                runtime_markers,
+                expected_surfaces=runtime_expected,
+                path=f"{log_path} runtime witness markers",
+            )
+            per_version_surfaces[version] = observed
 
-    surfaces = _aggregate_version_surfaces(per_version_surfaces)
+    surfaces_by_version = _aggregate_version_surfaces(per_version_surfaces)
+    surfaces = sorted(
+        [*headless_surfaces.values(), *surfaces_by_version], key=lambda surface: surface["surface_id"]
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "gate_id": GATE_ID,
-        "cases": cases,
+        "coverage": validate_manifest(manifest)["disposition_counts"],
+        "cases": sorted(cases, key=lambda case: case["case_id"]),
         "surfaces": surfaces,
     }
 
@@ -785,6 +906,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         help="generate the report from manifest-declared build artifacts",
     )
     parser.add_argument("--write-report", help="write the generated evidence report JSON")
+    parser.add_argument("--headless-report", help="fresh structured headless Qt witness report")
     parser.add_argument(
         "--batch-log",
         action="append",
@@ -803,7 +925,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         if args.write_report and not (args.from_evidence or args.batch_log):
             raise ValueError("--write-report requires --from-evidence or --batch-log")
         if args.batch_log:
-            generated = build_report_from_batch_logs(manifest, _parse_batch_logs(args.batch_log))
+            generated = build_report_from_batch_logs(
+                manifest,
+                _parse_batch_logs(args.batch_log),
+                headless_report=Path(args.headless_report) if args.headless_report else None,
+            )
             if args.write_report:
                 report_path = Path(args.write_report)
                 report_path.parent.mkdir(parents=True, exist_ok=True)

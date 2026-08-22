@@ -9,6 +9,7 @@ import pytest
 from tools.ui_coverage_gate import (
     build_report_from_batch_logs,
     build_report_from_evidence,
+    main,
     validate_manifest,
     validate_report,
 )
@@ -652,6 +653,46 @@ def _write_batch_logs(tmp_path, surface_by_version):
     return manifest, logs
 
 
+def _write_headless_report(tmp_path, manifest):
+    """Add one headless owner and its fresh structured witness report."""
+    headless_surface = _builder_surface()
+    headless_surface.update(
+        {
+            "surface_id": "import_export.headless_surface",
+            "case_id": "case.headless",
+            "selector": "objectName=headless_surface",
+        }
+    )
+    manifest["cases"].append(
+        {
+            "id": "case.headless",
+            "execution_layer": "headless_qt",
+        }
+    )
+    headless_manifest_surface = copy.deepcopy(manifest["surfaces"][0])
+    headless_manifest_surface.update(
+        {
+            "id": headless_surface["surface_id"],
+            "case_id": "case.headless",
+            "selector": headless_surface["selector"],
+        }
+    )
+    manifest["surfaces"].append(headless_manifest_surface)
+    report_path = tmp_path / "headless.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "gate_id": "V070-UI-COVERAGE-1",
+                "cases": [{"case_id": "case.headless", "status": "pass", "maya_versions": []}],
+                "surfaces": [headless_surface],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return headless_surface, report_path
+
+
 def test_batch_report_builder_aggregates_identical_runtime_witness(tmp_path):
     surface = _builder_surface()
     manifest, logs = _write_batch_logs(tmp_path, {"2024": [surface], "2026": [surface]})
@@ -660,6 +701,105 @@ def test_batch_report_builder_aggregates_identical_runtime_witness(tmp_path):
 
     assert report["surfaces"] == [surface]
     assert validate_report(manifest, report)["valid"]
+
+
+def test_batch_report_builder_merges_fresh_headless_evidence(tmp_path):
+    runtime_surface = _builder_surface()
+    manifest, logs = _write_batch_logs(
+        tmp_path, {"2024": [runtime_surface], "2026": [runtime_surface]}
+    )
+    headless_surface, headless_report = _write_headless_report(tmp_path, manifest)
+
+    report = build_report_from_batch_logs(manifest, logs, headless_report=headless_report)
+
+    assert report["surfaces"] == [headless_surface, runtime_surface]
+    assert validate_report(manifest, report)["valid"]
+
+
+def test_batch_report_builder_rejects_failed_supplied_log_for_headless_only_manifest(tmp_path):
+    manifest = _qt_case_manifest()
+    manifest["cases"][0]["execution_layer"] = "headless_qt"
+    manifest["cases"][0].pop("required_maya_versions")
+    surface = _builder_surface()
+    report_path = tmp_path / "headless.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "gate_id": "V070-UI-COVERAGE-1",
+                "cases": [{"case_id": "case.one", "status": "pass", "maya_versions": []}],
+                "surfaces": [surface],
+            }
+        ),
+        encoding="utf-8",
+    )
+    failed_log = tmp_path / "gui-2024.log"
+    failed_log.write_text(
+        "Ran 1 test in 0.1s\n//-- GUI TEST FINISHED --// status=FAIL\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="full GUI evidence failed"):
+        build_report_from_batch_logs(
+            manifest, {"2024": failed_log}, headless_report=report_path
+        )
+
+
+def test_batch_report_builder_rejects_missing_or_duplicate_headless_evidence(tmp_path):
+    runtime_surface = _builder_surface()
+    manifest, logs = _write_batch_logs(
+        tmp_path, {"2024": [runtime_surface], "2026": [runtime_surface]}
+    )
+    _, report_path = _write_headless_report(tmp_path, manifest)
+    report_path.unlink()
+
+    with pytest.raises(ValueError, match="fresh headless UI coverage report is missing"):
+        build_report_from_batch_logs(manifest, logs, headless_report=report_path)
+
+    _, report_path = _write_headless_report(tmp_path, manifest)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["surfaces"].append(copy.deepcopy(report["surfaces"][0]))
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate_runtime_witness"):
+        build_report_from_batch_logs(manifest, logs, headless_report=report_path)
+
+
+def test_batch_report_builder_requires_headless_evidence_case_owner(tmp_path):
+    runtime_surface = _builder_surface()
+    manifest, logs = _write_batch_logs(
+        tmp_path, {"2024": [runtime_surface], "2026": [runtime_surface]}
+    )
+    _, report_path = _write_headless_report(tmp_path, manifest)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["cases"][0]["case_id"] = "case.wrong"
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="headless case evidence mismatch"):
+        build_report_from_batch_logs(manifest, logs, headless_report=report_path)
+
+
+def test_batch_report_cli_reads_fresh_headless_evidence(tmp_path, capsys):
+    runtime_surface = _builder_surface()
+    manifest, logs = _write_batch_logs(
+        tmp_path, {"2024": [runtime_surface], "2026": [runtime_surface]}
+    )
+    _, headless_report = _write_headless_report(tmp_path, manifest)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = main(
+        [
+            str(manifest_path),
+            "--headless-report",
+            str(headless_report),
+            "--batch-log",
+            "2024=" + str(logs["2024"]),
+            "--batch-log",
+            "2026=" + str(logs["2026"]),
+        ]
+    )
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "pass"
 
 
 def test_batch_report_builder_rejects_missing_runtime_witness(tmp_path):

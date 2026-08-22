@@ -1839,6 +1839,9 @@ def build_release_summary(
     maya_versions = tuple(maya_versions)
     out_dir.mkdir(parents=True, exist_ok=True)
     steps: list[dict[str, Any]] = []
+    headless_ui_report = out_dir / "ui-headless.json"
+    if headless_ui_report.is_file():
+        headless_ui_report.unlink()
     if skip_focused_tests:
         steps.append(_not_run("focused_tests", "--skip-focused-tests was supplied"))
     else:
@@ -1854,6 +1857,7 @@ def build_release_summary(
             "tests/unit/test_export_scope.py",
             "tests/unit/test_gui_runner.py",
             "tests/unit/test_ui_coverage_gate.py",
+            "tests/unit/test_authoring_ui_surface_matrix.py",
             "tests/unit/test_ui_selector_contract.py",
             "tests/unit/test_vmd_scene_collector.py",
         ]
@@ -1864,6 +1868,10 @@ def build_release_summary(
             _run_command(
                 "focused_tests",
                 [*_pytest_command(), "-q", *focused],
+                env={
+                    **os.environ,
+                    "MMD_UI_COVERAGE_HEADLESS_REPORT": str(headless_ui_report),
+                },
                 timeout=900.0,
             )
         )
@@ -1930,6 +1938,8 @@ def build_release_summary(
             str(ROOT / "tools" / "ui_coverage_gate.py"),
             "--write-report",
             str(ui_coverage_report),
+            "--headless-report",
+            str(headless_ui_report),
         ]
         for version in maya_versions:
             coverage_args.extend(
