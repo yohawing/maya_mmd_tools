@@ -251,6 +251,7 @@ class TestVmdSceneCollector(unittest.TestCase):
 
     def _timeline_sampler(self):
         cmds_module = self.cmds
+        bone_routes = {}
 
         class Samples:
             @property
@@ -258,7 +259,12 @@ class TestVmdSceneCollector(unittest.TestCase):
                 return {"sample_count": len(scalar_frames)}
 
             def value(self, joint, attr, frame):
-                return float(cmds_module.getAttr(f"{joint}.{attr}", time=frame))
+                node, source_attr = bone_routes.get(joint, {}).get(
+                    attr, (joint, attr)
+                )
+                return float(
+                    cmds_module.getAttr(f"{node}.{source_attr}", time=frame)
+                )
 
             def scalar_track(self, logical_name):
                 node, attr = scalar_channels[logical_name]
@@ -283,7 +289,21 @@ class TestVmdSceneCollector(unittest.TestCase):
         class Sampler:
             available = True
 
-            def sample_dense_bone_channels(self, _frames, _joints, _routes):
+            def __init__(self):
+                self.bone_calls = []
+
+            def sample_dense_bone_channels(self, frames, joints, routes):
+                nonlocal bone_routes
+                bone_routes = {
+                    str(joint): {
+                        str(attr): (str(node), str(source_attr))
+                        for attr, (node, source_attr) in route.items()
+                    }
+                    for joint, route in routes.items()
+                }
+                self.bone_calls.append(
+                    (tuple(frames), tuple(joints), bone_routes)
+                )
                 return Samples()
 
             def sample_dense_scalar_channels(self, frames, channels):
@@ -317,6 +337,35 @@ class TestVmdSceneCollector(unittest.TestCase):
         sink = Sink()
         result = collector.collect_to_sink(options, sink)
         return collector, result, sink
+
+    @staticmethod
+    def _direct_control_rig_candidate(
+        joint,
+        bone_name,
+        control,
+        value_node,
+    ):
+        channels = (
+            "translateX",
+            "translateY",
+            "translateZ",
+            "rotateX",
+            "rotateY",
+            "rotateZ",
+        )
+        return {
+            "role": bone_name,
+            "joint": joint,
+            "boneName": bone_name,
+            "control": control,
+            "selectorPlugs": tuple(
+                f"{control}.{channel}" for channel in channels
+            ),
+            "valueRoutes": {
+                channel: (value_node, channel) for channel in channels
+            },
+            "ownedFamilies": ("translate", "rotate"),
+        }
 
     def test_collect_rejects_bake_timeline_and_directs_callers_to_streaming(self):
         with self.assertRaisesRegex(ValueError, "collect_to_sink.*prepared"):
@@ -1202,6 +1251,143 @@ class TestVmdSceneCollector(unittest.TestCase):
             "interpolation",
             next(frame for section, frame in sink.frames if section == "bones"),
         )
+
+    def test_control_rig_direct_export_uses_control_keys_only_as_selector(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "center_joint": "joint",
+                "center_control": "transform",
+                "center_authored": "transform",
+            }
+        )
+        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
+        self.cmds.keys[("center_control", "translateX")] = {
+            0.0: 100.0,
+            2.0: 300.0,
+        }
+        for channel in (
+            "translateX",
+            "translateY",
+            "translateZ",
+            "rotateX",
+            "rotateY",
+            "rotateZ",
+        ):
+            self.cmds.keys[("center_authored", channel)] = {
+                0.0: 1.0 if channel == "translateX" else 0.0,
+                1.0: 2.0 if channel == "translateX" else 0.0,
+                2.0: 3.0 if channel == "translateX" else 0.0,
+            }
+        resolved = {
+            "modelRoot": "model_root",
+            "candidates": {
+                "center_joint": self._direct_control_rig_candidate(
+                    "center_joint",
+                    "センター",
+                    "center_control",
+                    "center_authored",
+                )
+            },
+            "omittedRoles": (),
+        }
+        sampler = self._timeline_sampler()
+
+        with mock.patch.object(
+            collector_module,
+            "resolve_control_rig_direct_vmd_export_routes",
+            return_value=resolved,
+        ):
+            collector_module.read_mmd_control_rig_metadata = lambda _model: {
+                "state": "EDIT",
+                "owner": "CONTROL_OWNED",
+            }
+            _collector, result, sink = self._collect_to_sink(
+                {
+                    "target_model": "model_root",
+                    "export_strategy": "bake_timeline",
+                    "frame_range": (0, 2),
+                    "bake_timeline_exact_run_reduction": False,
+                },
+                sampler,
+            )
+
+        bone_frames = [
+            frame for section, frame in sink.frames if section == "bones"
+        ]
+        self.assertEqual(result["section_counts"]["bones"], 3)
+        self.assertEqual(
+            [frame["position"] for frame in bone_frames],
+            [(1.0, 0.0, -0.0), (2.0, 0.0, -0.0), (3.0, 0.0, -0.0)],
+        )
+        self.assertNotIn((100.0, 0.0, -0.0), [
+            frame["position"] for frame in bone_frames
+        ])
+        self.assertEqual(len(sampler.bone_calls), 1)
+        self.assertEqual(
+            sampler.bone_calls[0][2]["center_joint"]["translateX"],
+            ("center_authored", "translateX"),
+        )
+
+    def test_control_rig_direct_export_omits_keyless_and_unbound_bones(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "keyless_joint": "joint",
+                "unbound_joint": "joint",
+                "keyless_control": "transform",
+                "keyless_authored": "transform",
+            }
+        )
+        self.cmds.children["model_root"] = ["keyless_joint", "unbound_joint"]
+        self.cmds.attrs[("keyless_joint", ATTR_MMD_BONE_NAME)] = "上半身2"
+        self.cmds.attrs[("unbound_joint", ATTR_MMD_BONE_NAME)] = "グルーブ"
+        self.cmds.keys[("keyless_authored", "rotateZ")] = {0.0: 15.0, 2.0: 30.0}
+        self.cmds.keys[("unbound_joint", "translateX")] = {0.0: 1.0, 2.0: 2.0}
+        resolved = {
+            "modelRoot": "model_root",
+            "candidates": {
+                "keyless_joint": self._direct_control_rig_candidate(
+                    "keyless_joint",
+                    "上半身2",
+                    "keyless_control",
+                    "keyless_authored",
+                )
+            },
+            "omittedRoles": (
+                {"role": "groove", "reason": "fallback"},
+            ),
+        }
+        sampler = self._timeline_sampler()
+
+        with mock.patch.object(
+            collector_module,
+            "resolve_control_rig_direct_vmd_export_routes",
+            return_value=resolved,
+        ):
+            collector_module.read_mmd_control_rig_metadata = lambda _model: {
+                "state": "EDIT",
+                "owner": "CONTROL_OWNED",
+            }
+            collector, result, sink = self._collect_to_sink(
+                {
+                    "target_model": "model_root",
+                    "export_strategy": "bake_timeline",
+                    "frame_range": (0, 2),
+                },
+                sampler,
+            )
+
+        self.assertEqual(result["section_counts"]["bones"], 0)
+        self.assertEqual(
+            [frame for section, frame in sink.frames if section == "bones"],
+            [],
+        )
+        self.assertEqual(sampler.bone_calls, [])
+        selection = collector.diagnostics["track_selection"]
+        self.assertEqual(selection["counts"]["omitted_default"], 1)
+        self.assertEqual(selection["evidence"][0]["reason"], "control_keyless")
 
     def test_bake_timeline_direct_single_key_bones_avoid_native_sampling(self):
         self.cmds.node_types.update(

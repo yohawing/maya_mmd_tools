@@ -43,6 +43,9 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_BONE_MORPH_BASE,
     INPUT_IK_CONTROLLER,
 )
+from mmd_tools.core.mmd_control_rig_motion import (
+    resolve_control_rig_direct_vmd_export_routes,
+)
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 from mmd_tools.converters.bone_morph_runtime import resolve_owned_bone_morph_base_routes
@@ -1025,14 +1028,27 @@ class VmdSceneCollector:
                 end_frame,
                 maya_time_to_vmd,
             )
-            self._control_rig_dense_export(target_model)
+            direct_control_rig_plan = self._control_rig_direct_export_plan(
+                target_model,
+                joints,
+            )
+            if direct_control_rig_plan is None:
+                self._control_rig_dense_export(target_model)
             rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
             raw_marker = _read_bake_timeline_raw_loss_marker(target_model)
-            authored_routes = self._scene_authored_input_routes(
-                joints,
-                target_model,
-                strict_bake_timeline=True,
-            )
+            selector_key_times_by_joint = None
+            if direct_control_rig_plan is None:
+                authored_routes = self._scene_authored_input_routes(
+                    joints,
+                    target_model,
+                    strict_bake_timeline=True,
+                )
+            else:
+                joints = direct_control_rig_plan["joints"]
+                authored_routes = direct_control_rig_plan["value_routes"]
+                selector_key_times_by_joint = direct_control_rig_plan[
+                    "selector_key_times_by_joint"
+                ]
             bake_timeline_dense_frames = self._bake_timeline_dense_frame_samples(
                 joints,
                 blend_shapes,
@@ -1042,6 +1058,7 @@ class VmdSceneCollector:
                 authored_routes,
                 start_frame,
                 end_frame,
+                selector_key_times_by_joint=selector_key_times_by_joint,
             )
             self._diagnostics["route_provenance_dense_planning"] = {
                 "joint_count": len(joints),
@@ -1077,6 +1094,7 @@ class VmdSceneCollector:
                 exact_run_reduction=exact_run_reduction,
                 protected_vmd_frames=protected_ik_frames,
                 key_reduction_report=key_reduction["sections"]["bones"],
+                selector_key_times_by_joint=selector_key_times_by_joint,
             )
             begin_section("morphs")
             self.collect_morph_frames(
@@ -1336,14 +1354,21 @@ class VmdSceneCollector:
         input_routes: Mapping[str, Mapping[str, tuple[str, str]]],
         start_frame: Optional[float],
         end_frame: Optional[float],
+        *,
+        selector_key_times_by_joint: Optional[Mapping[str, Sequence[float]]] = None,
     ) -> Optional[list[int]]:
         """Build one Maya-time sample range shared by Bake Timeline tracks."""
         keyed_times = []
         for joint in joints:
             long_name = (cmds.ls(joint, long=True) or [joint])[0]
-            keyed_times.extend(
-                _routed_key_times(joint, input_routes.get(str(long_name), {}))
-            )
+            if selector_key_times_by_joint is None:
+                keyed_times.extend(
+                    _routed_key_times(joint, input_routes.get(str(long_name), {}))
+                )
+            else:
+                keyed_times.extend(
+                    selector_key_times_by_joint.get(str(long_name), ())
+                )
         for blend_shape in blend_shapes:
             morph_names = self._blendshape_morph_names(blend_shape)
             keyed_times.extend(
@@ -1422,6 +1447,7 @@ class VmdSceneCollector:
         exact_run_reduction: bool = False,
         protected_vmd_frames: Optional[set[int]] = None,
         key_reduction_report: Optional[dict[str, Any]] = None,
+        selector_key_times_by_joint: Optional[Mapping[str, Sequence[float]]] = None,
     ) -> list[dict]:
         """Collect keyed or one-frame-sampled local joint transforms.
 
@@ -1490,7 +1516,13 @@ class VmdSceneCollector:
             for joint in joints:
                 long_names = cmds.ls(joint, long=True) or [joint]
                 route = input_routes.get(str(long_names[0]), {})
-                joint_keyed = _routed_key_times(joint, route)
+                joint_keyed = (
+                    _routed_key_times(joint, route)
+                    if selector_key_times_by_joint is None
+                    else list(
+                        selector_key_times_by_joint.get(str(long_names[0]), ())
+                    )
+                )
                 keyed_times_by_joint[joint] = joint_keyed
                 all_keyed.extend(joint_keyed)
             if dense_frames is None:
@@ -2388,6 +2420,55 @@ class VmdSceneCollector:
         if metadata["state"] == CONTROL_RIG_EDIT:
             raise ValueError("Bake the MMD control rig before VMD export")
         return True
+
+    def _control_rig_direct_export_plan(
+        self,
+        target_model: Optional[str],
+        requested_joints: Sequence[str],
+    ) -> Optional[dict[str, Any]]:
+        """Select keyed Controls while keeping MMD authored plugs as values."""
+
+        if not target_model:
+            return None
+        metadata = read_mmd_control_rig_metadata(target_model)
+        if not metadata or metadata.get("state") != CONTROL_RIG_EDIT:
+            return None
+        resolved = resolve_control_rig_direct_vmd_export_routes(target_model)
+        requested = {
+            str((cmds.ls(joint, long=True) or [joint])[0])
+            for joint in requested_joints
+        }
+        selected_joints = []
+        value_routes = {}
+        selector_key_times_by_joint = {}
+        for joint, candidate in resolved["candidates"].items():
+            if joint not in requested:
+                continue
+            key_times = sorted(
+                {
+                    frame
+                    for plug in candidate["selectorPlugs"]
+                    for frame in _key_times(*_split_plug(plug))
+                }
+            )
+            if not key_times:
+                self._record_track_selection(
+                    "bone",
+                    candidate["boneName"],
+                    "omitted_default",
+                    "control_keyless",
+                    0,
+                    0,
+                )
+                continue
+            selected_joints.append(joint)
+            value_routes[joint] = dict(candidate["valueRoutes"])
+            selector_key_times_by_joint[joint] = key_times
+        return {
+            "joints": selected_joints,
+            "value_routes": value_routes,
+            "selector_key_times_by_joint": selector_key_times_by_joint,
+        }
 
     @staticmethod
     def _rotation_time_curve_interpolation(
@@ -3858,6 +3939,15 @@ def _key_times(node: str, attrs: Iterable[str]) -> list[float]:
             except Exception:
                 continue
     return sorted(set(times))
+
+
+def _split_plug(plug: str) -> tuple[str, tuple[str, ...]]:
+    """Split one validated Maya plug for the shared key-time helper."""
+
+    node, separator, attribute = str(plug).rpartition(".")
+    if not separator or not node or not attribute:
+        raise ValueError(f"invalid Control Rig selector plug: {plug}")
+    return node, (attribute,)
 
 
 def _upstream_anim_curves(plug: str) -> set[str]:
