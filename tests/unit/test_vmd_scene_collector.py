@@ -1427,7 +1427,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.cmds.node_types.update({"model_root": "transform", "joint": "joint"})
         self.cmds.children["model_root"] = ["joint"]
 
-        with self.assertRaisesRegex(ValueError, "unindexed selected joints"):
+        with self.assertRaisesRegex(ValueError, "unindexed selected joint"):
             collector_module._validate_direct_rotation_export_indices(
                 ["joint"], ["joint"]
             )

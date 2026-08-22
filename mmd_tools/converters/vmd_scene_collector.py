@@ -2486,13 +2486,13 @@ class VmdSceneCollector:
         for joint, candidate in resolved["candidates"].items():
             if joint not in requested:
                 continue
-            key_times = sorted(
-                {
-                    frame
-                    for plug in candidate["selectorPlugs"]
-                    for frame in _key_times(*_split_plug(plug))
-                }
-            )
+            key_times = set()
+            for plug in candidate["selectorPlugs"]:
+                node, separator, attribute = str(plug).rpartition(".")
+                if not separator:
+                    raise ValueError(f"invalid Control Rig selector plug: {plug}")
+                key_times.update(_key_times(node, (attribute,)))
+            key_times = sorted(key_times)
             if not key_times:
                 self._record_track_selection(
                     "bone",
@@ -3984,15 +3984,6 @@ def _key_times(node: str, attrs: Iterable[str]) -> list[float]:
     return sorted(set(times))
 
 
-def _split_plug(plug: str) -> tuple[str, tuple[str, ...]]:
-    """Split one validated Maya plug for the shared key-time helper."""
-
-    node, separator, attribute = str(plug).rpartition(".")
-    if not separator or not node or not attribute:
-        raise ValueError(f"invalid Control Rig selector plug: {plug}")
-    return node, (attribute,)
-
-
 def _upstream_anim_curves(plug: str) -> set[str]:
     curves = set()
     try:
@@ -4505,52 +4496,40 @@ def _validate_direct_rotation_export_indices(
 ) -> None:
     """Require an unambiguous indexed parent context for direct export."""
 
-    context = {
-        str((cmds.ls(joint, long=True) or [joint])[0]) for joint in context_joints
-    }
-    selected = {
-        str((cmds.ls(joint, long=True) or [joint])[0]) for joint in selected_joints
-    }
-    indexed = set()
-    owners = {}
-    for joint in context:
+    indices = {}
+    for joint in {
+        str((cmds.ls(item, long=True) or [item])[0]) for item in context_joints
+    }:
         if not _has_attr(joint, "mmd_bone_index"):
             continue
         index = int(cmds.getAttr(f"{joint}.mmd_bone_index"))
-        prior = owners.get(index)
+        prior = indices.get(index)
         if prior is not None and prior != joint:
             raise ValueError(
                 "direct Control Rig rotation context has duplicate bone index "
                 f"{index}: {prior}, {joint}"
             )
-        owners[index] = joint
-        indexed.add(joint)
-    missing = sorted(selected - indexed)
-    if missing:
-        raise ValueError(
-            f"direct Control Rig rotation context has unindexed selected joints: {missing!r}"
-        )
-    for joint in selected:
-        visited = set()
-        current = joint
+        indices[index] = joint
+    indexed = set(indices.values())
+    for item in selected_joints:
+        joint = str((cmds.ls(item, long=True) or [item])[0])
+        if joint not in indexed:
+            raise ValueError(
+                f"direct Control Rig rotation context has unindexed selected joint: {joint}"
+            )
         while True:
-            parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
+            parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
             if not parents:
                 break
             parent = str((cmds.ls(parents[0], long=True) or [parents[0]])[0])
             if str(cmds.nodeType(parent) or "") != "joint":
                 break
-            if parent in visited:
-                raise ValueError(
-                    f"direct Control Rig rotation context has a parent cycle: {joint}"
-                )
-            visited.add(parent)
             if parent not in indexed:
                 raise ValueError(
                     "direct Control Rig rotation context has an unindexed parent: "
                     f"{parent} -> {joint}"
                 )
-            current = parent
+            joint = parent
 
 
 def _joint_orient_quaternion(joint: str) -> om.MQuaternion:
