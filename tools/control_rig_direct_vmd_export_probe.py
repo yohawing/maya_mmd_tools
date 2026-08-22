@@ -27,6 +27,8 @@ from tests.viewport.maya_e2e_harness import run_maya_e2e  # noqa: E402
 
 REPORT_KIND = "control_rig_direct_vmd_export_probe"
 DEFAULT_POSE_TOLERANCE = 1.0e-4
+DEFAULT_SOLVER_POSE_TOLERANCE = 5.0e-3
+DEFAULT_SOLVER_AUTHORED_TOLERANCE = 1.0e-5
 MARKER = "CONTROL_RIG_DIRECT_VMD_EXPORT_PROBE_COMPLETE"
 DEFAULT_OUT = ROOT / "build" / "reports" / "control-rig-direct-vmd"
 
@@ -77,9 +79,14 @@ def load_config(path: Path) -> dict[str, Any]:
         if start < 0 or end < start:
             raise ValueError(f"config.ranges[{index}] is not an ordered non-negative range")
         raw_frames = row.get("oracle_frames", (start, (start + end) // 2, end))
-        if not isinstance(raw_frames, (list, tuple)):
-            raise ValueError(f"config.ranges[{index}].oracle_frames must be an array")
-        frames = sorted({int(frame) for frame in raw_frames})
+        if raw_frames == "all":
+            frames = list(range(start, end + 1))
+        elif isinstance(raw_frames, (list, tuple)):
+            frames = sorted({int(frame) for frame in raw_frames})
+        else:
+            raise ValueError(
+                f"config.ranges[{index}].oracle_frames must be an array or 'all'"
+            )
         if not frames or any(frame < start or frame > end for frame in frames):
             raise ValueError(f"config.ranges[{index}].oracle_frames must stay in range")
         normalized_ranges.append(
@@ -89,6 +96,24 @@ def load_config(path: Path) -> dict[str, Any]:
     result["pose_tolerance"] = float(raw.get("pose_tolerance", DEFAULT_POSE_TOLERANCE))
     if not math.isfinite(result["pose_tolerance"]) or result["pose_tolerance"] < 0:
         raise ValueError("config.pose_tolerance must be finite and non-negative")
+    result["solver_pose_tolerance"] = float(
+        raw.get("solver_pose_tolerance", DEFAULT_SOLVER_POSE_TOLERANCE)
+    )
+    if (
+        not math.isfinite(result["solver_pose_tolerance"])
+        or result["solver_pose_tolerance"] < 0
+    ):
+        raise ValueError("config.solver_pose_tolerance must be finite and non-negative")
+    result["solver_authored_tolerance"] = float(
+        raw.get("solver_authored_tolerance", DEFAULT_SOLVER_AUTHORED_TOLERANCE)
+    )
+    if (
+        not math.isfinite(result["solver_authored_tolerance"])
+        or result["solver_authored_tolerance"] < 0
+    ):
+        raise ValueError(
+            "config.solver_authored_tolerance must be finite and non-negative"
+        )
     return result
 
 
@@ -170,15 +195,19 @@ def _capture_morph_values(root: str, frames: Iterable[int]) -> dict[str, dict[st
         raise RuntimeError(f"expected one model morph controller, got {controllers!r}")
     controller = str(controllers[0])
     indices = cmds.getAttr(f"{controller}.inputWeight", multiIndices=True) or []
-    result: dict[str, dict[str, float]] = {}
-    for index in sorted(int(value) for value in indices):
-        plug = f"{controller}.inputWeight[{index}]"
-        alias = cmds.aliasAttr(plug, query=True) or str(index)
-        values = {}
-        for frame in frames:
-            cmds.currentTime(frame, edit=True)
-            values[str(int(frame))] = round(float(cmds.getAttr(plug)), 7)
-        result[str(alias)] = values
+    routes = [
+        (
+            str(cmds.aliasAttr(f"{controller}.inputWeight[{index}]", query=True) or index),
+            f"{controller}.inputWeight[{index}]",
+        )
+        for index in sorted(int(value) for value in indices)
+    ]
+    result: dict[str, dict[str, float]] = {alias: {} for alias, _plug in routes}
+    for frame in frames:
+        cmds.currentTime(frame, edit=True)
+        cmds.refresh(force=True)
+        for alias, plug in routes:
+            result[alias][str(int(frame))] = round(float(cmds.getAttr(plug)), 7)
     return result
 
 
@@ -219,6 +248,140 @@ def _capture_ik_values(root: str, frames: Iterable[int]) -> dict[str, dict[str, 
     return result
 
 
+def _capture_selected_world_matrices(
+    root: str,
+    frames: Iterable[int],
+    bone_names: set[str],
+) -> dict[str, dict[str, list[float]]]:
+    """Capture selected Control-bound joint rotations as full world matrices."""
+
+    from maya import cmds
+
+    joints_by_name: dict[str, str] = {}
+    for joint in cmds.listRelatives(
+        root, allDescendents=True, type="joint", fullPath=True
+    ) or []:
+        if not cmds.attributeQuery("mmd_bone_name", node=joint, exists=True):
+            continue
+        name = str(cmds.getAttr(f"{joint}.mmd_bone_name") or "")
+        if name not in bone_names:
+            continue
+        if name in joints_by_name:
+            raise RuntimeError(f"selected VMD bone name is ambiguous: {name}")
+        joints_by_name[name] = str(joint)
+    missing = sorted(bone_names - set(joints_by_name))
+    if missing:
+        raise RuntimeError(f"selected VMD bones are missing from scene: {missing!r}")
+    result = {}
+    for frame in frames:
+        cmds.currentTime(frame, edit=True)
+        cmds.refresh(force=True)
+        result[str(int(frame))] = {
+            name: [
+                round(float(value), 7)
+                for value in (
+                    cmds.xform(joint, query=True, worldSpace=True, matrix=True) or []
+                )
+            ]
+            for name, joint in sorted(joints_by_name.items())
+        }
+    return result
+
+
+def _capture_solver_affected_bone_names(root: str, selected: set[str]) -> set[str]:
+    """Return selected bones whose world matrices inherit native IK output."""
+
+    from maya import cmds
+
+    root_joints = {
+        str(joint)
+        for joint in (
+            cmds.listRelatives(
+                root, allDescendents=True, type="joint", fullPath=True
+            )
+            or []
+        )
+    }
+    affected = set()
+    for solver in cmds.ls(type="mmdCcdIk", long=True) or []:
+        for slot in range(64):
+            for destination in cmds.listConnections(
+                f"{solver}.outputRotate[{slot}]",
+                source=False,
+                destination=True,
+                type="joint",
+            ) or []:
+                joints = cmds.ls(destination, long=True) or [destination]
+                joint = str(joints[0])
+                if joint not in root_joints:
+                    continue
+                affected.add(joint)
+                affected.update(
+                    str(value)
+                    for value in (
+                        cmds.listRelatives(
+                            joint,
+                            allDescendents=True,
+                            type="joint",
+                            fullPath=True,
+                        )
+                        or []
+                    )
+                    if str(value) in root_joints
+                )
+    names = set()
+    for joint in affected:
+        if cmds.attributeQuery("mmd_bone_name", node=joint, exists=True):
+            name = str(cmds.getAttr(f"{joint}.mmd_bone_name") or "")
+            if name in selected:
+                names.add(name)
+    return names
+
+
+def _compare_selected_world_matrices(
+    expected: Mapping[str, Mapping[str, list[float]]],
+    actual: Mapping[str, Mapping[str, list[float]]],
+    tolerance: float,
+    *,
+    solver_affected_bones: set[str] | None = None,
+    solver_tolerance: float | None = None,
+) -> list[str]:
+    """Return failures for selected-bone world translation or rotation drift."""
+
+    failures = []
+    if set(expected) != set(actual):
+        return ["selected world-matrix frames differ"]
+    for frame, expected_bones in expected.items():
+        actual_bones = actual[frame]
+        if set(expected_bones) != set(actual_bones):
+            failures.append(f"selected world-matrix bones differ at frame {frame}")
+            continue
+        for name, expected_matrix in expected_bones.items():
+            actual_matrix = actual_bones[name]
+            difference = (
+                float("inf")
+                if len(expected_matrix) != len(actual_matrix)
+                else max(
+                    (
+                        abs(float(left) - float(right))
+                        for left, right in zip(expected_matrix, actual_matrix)
+                    ),
+                    default=0.0,
+                )
+            )
+            threshold = (
+                float(solver_tolerance)
+                if solver_tolerance is not None
+                and name in (solver_affected_bones or set())
+                else tolerance
+            )
+            if difference > threshold:
+                failures.append(
+                    f"selected world matrix frame {frame} bone {name} max error {difference:g}"
+                )
+    return failures
+
+
 def _filter_scene_pose(scene: Mapping[str, Any], bone_names: set[str]) -> dict[str, Any]:
     """Keep only the dedicated Control-bound bones in a scene pose oracle."""
 
@@ -252,11 +415,30 @@ def _capture_parity(
 ) -> dict[str, Any]:
     from tools.export_release_maya_probe import _capture_scene_oracle
 
-    scene = _capture_scene_oracle(root, frames)
+    # The shared release oracle walks every PMX joint per requested frame.
+    # Direct export gates only dedicated Control-bound bones, which are checked
+    # below as full matrices; capture shared metadata without duplicating that
+    # all-joint timeline walk.
+    scene = _capture_scene_oracle(root, () if pose_bone_names is not None else frames)
     if pose_bone_names is not None:
         scene = _filter_scene_pose(scene, pose_bone_names)
     return {
         "scene": scene,
+        "selected_world_matrices": _capture_selected_world_matrices(
+            root,
+            frames,
+            pose_bone_names or set(),
+        )
+        if pose_bone_names is not None
+        else {},
+        "solver_affected_bone_names": sorted(
+            _capture_solver_affected_bone_names(
+                root,
+                pose_bone_names or set(),
+            )
+        )
+        if pose_bone_names is not None
+        else [],
         "morph_values": _capture_morph_values(root, frames),
         "ik_values": _capture_ik_values(root, frames),
     }
@@ -266,6 +448,7 @@ def _compare_parity(
     expected: Mapping[str, Any],
     actual: Mapping[str, Any],
     tolerance: float,
+    solver_tolerance: float,
 ) -> list[str]:
     from tools.export_release_maya_probe import _compare_scene_oracles
 
@@ -276,6 +459,19 @@ def _compare_parity(
         pose_tolerance=tolerance,
         mesh=False,
         materials=False,
+    )
+    expected_solver_bones = set(expected.get("solver_affected_bone_names", []))
+    actual_solver_bones = set(actual.get("solver_affected_bone_names", []))
+    if expected_solver_bones != actual_solver_bones:
+        failures.append("solver-affected selected bone names differ")
+    failures.extend(
+        _compare_selected_world_matrices(
+            expected.get("selected_world_matrices", {}),
+            actual.get("selected_world_matrices", {}),
+            tolerance,
+            solver_affected_bones=expected_solver_bones,
+            solver_tolerance=solver_tolerance,
+        )
     )
     if expected.get("ik_values") != actual.get("ik_values"):
         failures.append("IK state parity differs")
@@ -293,11 +489,104 @@ def _compare_parity(
     return failures
 
 
+def _parity_section_status(failures: Iterable[str]) -> dict[str, bool]:
+    """Classify parity failures without reporting a contradictory section pass."""
+
+    values = list(failures)
+    return {
+        "pose": not any(
+            failure.startswith(("pose ", "selected world matrix "))
+            for failure in values
+        ),
+        "morph": not any(failure.startswith("Morph ") for failure in values),
+        "ik": "IK state parity differs" not in values,
+    }
+
+
+def _compare_solver_authored_vmd_keys(
+    source_frames: Iterable[Any],
+    output_frames: Iterable[Any],
+    solver_bone_names: set[str],
+    start_frame: int,
+    end_frame: int,
+    tolerance: float,
+) -> dict[str, Any]:
+    """Compare pre-solver VMD values at authoritative source key times."""
+
+    def index_frames(frames: Iterable[Any]) -> tuple[dict[tuple[str, int], Any], list[str]]:
+        result = {}
+        failures = []
+        for frame in frames:
+            key = (str(frame.bone_name), int(frame.frame_number))
+            if key in result:
+                failures.append(f"duplicate VMD bone frame: {key!r}")
+            result[key] = frame
+        return result, failures
+
+    source, failures = index_frames(source_frames)
+    output, output_failures = index_frames(output_frames)
+    failures.extend(output_failures)
+    checked = 0
+    max_error = 0.0
+    for key, source_frame in sorted(source.items()):
+        name, frame_number = key
+        if (
+            name not in solver_bone_names
+            or frame_number < start_frame
+            or frame_number > end_frame
+        ):
+            continue
+        checked += 1
+        output_frame = output.get(key)
+        if output_frame is None:
+            failures.append(f"solver-authored output frame is missing: {key!r}")
+            continue
+        source_position = [float(value) for value in source_frame.position]
+        output_position = [float(value) for value in output_frame.position]
+        position_error = max(
+            (
+                abs(left - right)
+                for left, right in zip(source_position, output_position)
+            ),
+            default=float("inf"),
+        )
+        source_rotation = [float(value) for value in source_frame.rotation]
+        output_rotation = [float(value) for value in output_frame.rotation]
+        direct_error = max(
+            (abs(left - right) for left, right in zip(source_rotation, output_rotation)),
+            default=float("inf"),
+        )
+        negated_error = max(
+            (abs(left + right) for left, right in zip(source_rotation, output_rotation)),
+            default=float("inf"),
+        )
+        error = max(position_error, min(direct_error, negated_error))
+        max_error = max(max_error, error)
+        if error > tolerance:
+            failures.append(
+                f"solver-authored VMD frame {frame_number} bone {name} max error {error:g}"
+            )
+    if solver_bone_names and checked == 0:
+        failures.append("solver-authored VMD comparison found no source keys")
+    return {
+        "pass": not failures,
+        "checked_source_keys": checked,
+        "max_error": max_error,
+        "tolerance": tolerance,
+        "failures": failures,
+    }
+
+
 def _plug_snapshot(plug: str) -> dict[str, Any]:
     from maya import cmds
 
+    def tangent_values(flag: str) -> list[Any]:
+        return list(cmds.keyTangent(plug, query=True, **{flag: True}) or [])
+
+    value = cmds.getAttr(plug)
     return {
         "plug": plug,
+        "value": _normalize_snapshot_value(value),
         "incoming": sorted(
             str(value)
             for value in (
@@ -315,7 +604,33 @@ def _plug_snapshot(plug: str) -> dict[str, Any]:
             float(value)
             for value in (cmds.keyframe(plug, query=True, valueChange=True) or [])
         ],
+        "tangents": {
+            flag: tangent_values(flag)
+            for flag in (
+                "inTangentType",
+                "outTangentType",
+                "inAngle",
+                "outAngle",
+                "inWeight",
+                "outWeight",
+                "weightedTangents",
+                "lock",
+                "weightLock",
+            )
+        },
     }
+
+
+def _normalize_snapshot_value(value: Any) -> Any:
+    """Normalize Maya scalar/compound values into stable JSON primitives."""
+
+    if isinstance(value, (list, tuple)):
+        return [_normalize_snapshot_value(item) for item in value]
+    if isinstance(value, float):
+        return round(value, 10)
+    if isinstance(value, (str, int, bool)) or value is None:
+        return value
+    return str(value)
 
 
 def _scene_snapshot(root: str) -> dict[str, Any]:
@@ -334,6 +649,28 @@ def _scene_snapshot(root: str) -> dict[str, Any]:
         plugs.update(
             f"{node}.{attribute}"
             for node, attribute in candidate["valueRoutes"].values()
+        )
+    plugs.update(
+        f"{node}.{attribute}"
+        for node, attribute in resolved.get("ikStateRoutes", {}).values()
+    )
+    if cmds.attributeQuery("mmd_morph_controller", node=root, exists=True):
+        controllers = cmds.listConnections(
+            f"{root}.mmd_morph_controller",
+            source=True,
+            destination=False,
+            type="mmdMorphController",
+        ) or []
+        if len(controllers) != 1:
+            raise RuntimeError(
+                f"expected one model morph controller, got {controllers!r}"
+            )
+        controller = str(controllers[0])
+        plugs.update(
+            f"{controller}.inputWeight[{int(index)}]"
+            for index in (
+                cmds.getAttr(f"{controller}.inputWeight", multiIndices=True) or []
+            )
         )
     descendants = cmds.listRelatives(root, allDescendents=True, fullPath=True) or []
     snapshot = {
@@ -456,11 +793,26 @@ def _run_range(config: Mapping[str, Any], row: Mapping[str, Any], out_dir: Path)
         frames,
         pose_bone_names=selected_control_names,
     )
-    failures = _compare_parity(expected, actual, float(config["pose_tolerance"]))
+    failures = _compare_parity(
+        expected,
+        actual,
+        float(config["pose_tolerance"]),
+        float(config["solver_pose_tolerance"]),
+    )
+    solver_authored = _compare_solver_authored_vmd_keys(
+        source_data.bone_frames,
+        parsed.bone_frames,
+        set(expected.get("solver_affected_bone_names", [])),
+        int(row["start"]),
+        int(row["end"]),
+        float(config["solver_authored_tolerance"]),
+    )
+    failures.extend(solver_authored["failures"])
     if missing_selected:
         failures.append(f"selected Control tracks missing from output: {missing_selected!r}")
     if unexpected_output:
         failures.append(f"unexpected non-Control tracks in output: {unexpected_output!r}")
+    parity_sections = _parity_section_status(failures)
     passed = scene_unchanged and not failures
     return {
         "status": "pass" if passed else "fail",
@@ -479,6 +831,7 @@ def _run_range(config: Mapping[str, Any], row: Mapping[str, Any], out_dir: Path)
             "unexpected_output_tracks": unexpected_output,
             "omitted_non_control_authored_tracks": omitted_non_control,
         },
+        "solver_authored_vmd_parity": solver_authored,
         "prepare": {
             "status": str(getattr(preparation, "status", "")),
             "token_published": True,
@@ -492,9 +845,12 @@ def _run_range(config: Mapping[str, Any], row: Mapping[str, Any], out_dir: Path)
         },
         "fresh_import_parity": {
             "pass": not failures,
-            "pose": not any(failure.startswith("pose ") for failure in failures),
-            "morph": not any(failure.startswith("Morph ") for failure in failures),
-            "ik": "IK state parity differs" not in failures,
+            **parity_sections,
+            "solver_affected_bones": sorted(
+                expected.get("solver_affected_bone_names", [])
+            ),
+            "pose_tolerance": float(config["pose_tolerance"]),
+            "solver_pose_tolerance": float(config["solver_pose_tolerance"]),
             "failures": failures[:100],
         },
     }
@@ -522,6 +878,10 @@ def maya_main(config_path: str, report_path: str, log_path: str) -> None:
                 "pmx": config["pmx"],
                 "vmd": config["vmd"],
                 "pose_tolerance": config["pose_tolerance"],
+                "solver_pose_tolerance": config["solver_pose_tolerance"],
+                "solver_authored_tolerance": config[
+                    "solver_authored_tolerance"
+                ],
             }
         )
         load_mmd_tools_plugin(ROOT)
