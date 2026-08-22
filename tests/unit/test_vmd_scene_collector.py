@@ -1837,6 +1837,218 @@ class TestVmdSceneCollector(unittest.TestCase):
             collector_module._UNSUPPORTED_BONE_BAKE_REASON,
         )
 
+    def test_unsupported_dependency_classifier_keeps_runtime_plug_provenance(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "dependency_joint": "joint",
+                "append_runtime": "mmdAppend",
+            }
+        )
+        self.cmds.children["model_root"] = ["dependency_joint"]
+        self.cmds.connections[("dependency_joint", "translateX", True, False)] = [
+            "append_runtime.outputTranslateX"
+        ]
+        self.cmds.destination_connection_pairs["append_runtime"] = [
+            "dependency_joint.translateX"
+        ]
+
+        classification = collector_module._classify_unsupported_bone_dependency(
+            "dependency_joint",
+            "model_root",
+            ("translateX",),
+        )
+
+        self.assertEqual(classification["status"], "accepted")
+        self.assertEqual(classification["runtime_node_types"], ("mmdAppend",))
+        self.assertEqual(classification["runtime_nodes"], ("append_runtime",))
+        self.assertEqual(
+            classification["plug_provenance"][0]["source"],
+            "append_runtime.outputTranslateX",
+        )
+        self.assertEqual(
+            classification["plug_provenance"][0]["destination"],
+            "dependency_joint.translateX",
+        )
+
+    def test_control_rig_direct_export_recovers_complete_runtime_compound_route(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "dependency_joint": "joint",
+                "append_runtime": "mmdAppend",
+            }
+        )
+        self.cmds.children["model_root"] = ["dependency_joint"]
+        self.cmds.attrs[("dependency_joint", ATTR_MMD_BONE_NAME)] = "依存"
+        for axis in "XYZ":
+            self.cmds.connections[
+                ("dependency_joint", f"translate{axis}", True, False)
+            ] = [f"append_runtime.outputTranslate{axis}"]
+        self.cmds.destination_connection_pairs["append_runtime"] = [
+            "dependency_joint.translateX",
+            "dependency_joint.translateY",
+            "dependency_joint.translateZ",
+        ]
+        collector_module.read_mmd_control_rig_metadata = lambda _model: {
+            "state": "EDIT",
+            "owner": "CONTROL_OWNED",
+            "bindings": {},
+        }
+        classification = {
+            "status": "accepted",
+            "reason": "model_local_dependency_closure",
+            "node_types": ("mmdAppend",),
+            "runtime_nodes": ("append_runtime",),
+            "runtime_node_types": ("mmdAppend",),
+            "plug_provenance": (),
+        }
+        recovered = {
+            "translateX": ("append_runtime", "baseTranslateX"),
+            "translateY": ("append_runtime", "baseTranslateY"),
+            "translateZ": ("append_runtime", "baseTranslateZ"),
+        }
+        with mock.patch.object(
+            collector_module,
+            "resolve_control_rig_direct_vmd_export_routes",
+            return_value={"candidates": {}, "ikStateRoutes": {}},
+        ), mock.patch.object(
+            VmdSceneCollector,
+            "_scene_authored_input_routes",
+            return_value={"dependency_joint": {"translateX": recovered["translateX"]}},
+        ), mock.patch.object(
+            collector_module,
+            "_classify_unsupported_bone_dependency",
+            return_value=classification,
+        ), mock.patch.object(
+            VmdSceneCollector,
+            "_recover_runtime_authoring_routes",
+            return_value=recovered,
+        ), mock.patch.object(
+            collector_module,
+            "_bake_timeline_single_key_bone_route",
+            return_value=None,
+        ):
+            collector = VmdSceneCollector()
+            plan = collector._control_rig_direct_export_plan(
+                "model_root", ["dependency_joint"]
+            )
+
+        self.assertEqual(plan["joints"], ["dependency_joint"])
+        self.assertEqual(plan["value_routes"]["dependency_joint"], recovered)
+        self.assertEqual(
+            plan["diagnostics"]["dependency_baked"][0]["classification_node_types"],
+            ["mmdAppend"],
+        )
+
+    def test_control_rig_direct_export_blocks_partial_runtime_compound_route(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "dependency_joint": "joint",
+                "append_runtime": "mmdAppend",
+            }
+        )
+        self.cmds.children["model_root"] = ["dependency_joint"]
+        self.cmds.attrs[("dependency_joint", ATTR_MMD_BONE_NAME)] = "依存"
+        self.cmds.connections[("dependency_joint", "translateY", True, False)] = [
+            "append_runtime.outputTranslateY"
+        ]
+        self.cmds.destination_connection_pairs["append_runtime"] = [
+            "dependency_joint.translateY"
+        ]
+        collector_module.read_mmd_control_rig_metadata = lambda _model: {
+            "state": "EDIT",
+            "owner": "CONTROL_OWNED",
+            "bindings": {},
+        }
+        classification = {
+            "status": "accepted",
+            "reason": "model_local_dependency_closure",
+            "node_types": ("mmdAppend",),
+            "runtime_nodes": ("append_runtime",),
+            "runtime_node_types": ("mmdAppend",),
+            "plug_provenance": (),
+        }
+        with mock.patch.object(
+            collector_module,
+            "resolve_control_rig_direct_vmd_export_routes",
+            return_value={"candidates": {}, "ikStateRoutes": {}},
+        ), mock.patch.object(
+            VmdSceneCollector,
+            "_scene_authored_input_routes",
+            return_value={"dependency_joint": {"translateX": ("append_runtime", "baseTranslateX")}},
+        ), mock.patch.object(
+            collector_module,
+            "_classify_unsupported_bone_dependency",
+            return_value=classification,
+        ), mock.patch.object(
+            VmdSceneCollector,
+            "_recover_runtime_authoring_routes",
+            return_value={"translateX": ("append_runtime", "baseTranslateX")},
+        ), mock.patch.object(
+            collector_module,
+            "_bake_timeline_single_key_bone_route",
+            return_value=None,
+        ):
+            collector = VmdSceneCollector()
+            with self.assertRaisesRegex(ValueError, "complete translate authoring route"):
+                collector._control_rig_direct_export_plan(
+                    "model_root", ["dependency_joint"]
+                )
+        self.assertTrue(
+            collector.diagnostics["control_rig_direct_export"]["blocked"][
+                "dependency_output"
+            ]
+        )
+
+    def test_runtime_physics_route_recovery_passes_joint_route_map(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "dependency_joint": "joint",
+                "physics_driver": "mmdPhysicsBoneDriver",
+            }
+        )
+        self.cmds.children["model_root"] = ["dependency_joint"]
+        collector = VmdSceneCollector()
+        initial_route = {
+            "translateX": ("physics_driver", "inPreTranslateX"),
+        }
+        complete_route = {
+            **initial_route,
+            "translateY": ("physics_driver", "inPreTranslateY"),
+            "translateZ": ("physics_driver", "inPreTranslateZ"),
+            "rotateX": ("physics_driver", "inPreRotateX"),
+            "rotateY": ("physics_driver", "inPreRotateY"),
+            "rotateZ": ("physics_driver", "inPreRotateZ"),
+        }
+        classification = {
+            "runtime_nodes": ("physics_driver",),
+            "runtime_node_types": ("mmdPhysicsBoneDriver",),
+        }
+
+        def merge(*, joints, target_model, routes, strict_bake_timeline):
+            self.assertEqual(joints, ("dependency_joint",))
+            self.assertEqual(target_model, "model_root")
+            self.assertTrue(strict_bake_timeline)
+            self.assertEqual(routes, {"dependency_joint": initial_route})
+            routes["dependency_joint"].update(complete_route)
+
+        with mock.patch.object(
+            collector,
+            "_merge_physics_authored_input_routes",
+            side_effect=merge,
+        ):
+            recovered = collector._recover_runtime_authoring_routes(
+                "dependency_joint",
+                "model_root",
+                initial_route,
+                classification,
+            )
+
+        self.assertEqual(recovered, complete_route)
+
     def test_control_rig_direct_export_streams_moving_dependency_through_native_sampler(self):
         self.cmds.node_types.update(
             {

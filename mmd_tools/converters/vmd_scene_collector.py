@@ -172,6 +172,19 @@ _SUPPORTED_DEPENDENCY_NODE_TYPES = frozenset(
         "mmdPhysicsSolver",
     }
 )
+_RUNTIME_DEPENDENCY_NODE_TYPES = frozenset(
+    {
+        "mmdAppend",
+        "mmdBoneMorphAccum",
+        "mmdCcdIk",
+        "mmdControlRigInterop",
+        "mmdIkController",
+        "mmdMaterialMorphEval",
+        "mmdMorphController",
+        "mmdPhysicsBoneDriver",
+        "mmdPhysicsSolver",
+    }
+)
 _MAYA_DAG_NODE_TYPES = frozenset(
     {
         "camera",
@@ -799,13 +812,32 @@ def _classify_unsupported_bone_dependency(
     visiting: set[str] = {joint}
     visited_destinations: set[str] = set()
     nodes: list[str] = []
+    node_types: dict[str, str] = {}
+    plug_provenance: list[dict[str, str]] = []
+
+    def evidence() -> dict[str, Any]:
+        runtime_nodes = sorted(
+            node for node, node_type in node_types.items()
+            if node_type in _RUNTIME_DEPENDENCY_NODE_TYPES
+        )
+        runtime_node_types = sorted(
+            {node_types[node] for node in runtime_nodes}
+        )
+        return {
+            "nodes": tuple(nodes),
+            "node_types": tuple(sorted(set(node_types.values()))),
+            "node_type_by_node": dict(sorted(node_types.items())),
+            "plug_provenance": tuple(plug_provenance),
+            "runtime_nodes": tuple(runtime_nodes),
+            "runtime_node_types": tuple(runtime_node_types),
+        }
 
     def reject(reason: str, **extra: Any) -> dict[str, Any]:
         return {
             "status": "blocked",
             "reason": str(reason),
             "channels": tuple(str(channel) for channel in channels),
-            "nodes": tuple(nodes),
+            **evidence(),
             **extra,
         }
 
@@ -854,6 +886,15 @@ def _classify_unsupported_bone_dependency(
                 "unknown dependency closure: node type is unavailable",
                 source=source_plug,
             )
+        node_types[source_path] = node_type
+        plug_provenance.append(
+            {
+                "source": str(source_plug),
+                "destination": str(destination_plug),
+                "node": source_path,
+                "node_type": node_type,
+            }
+        )
 
         try:
             destination_values = _dependency_connection_plugs(
@@ -1042,10 +1083,89 @@ def _classify_unsupported_bone_dependency(
         "status": "accepted",
         "reason": "model_local_dependency_closure",
         "channels": tuple(str(channel) for channel in channels),
-        "nodes": tuple(nodes),
+        **evidence(),
         "root": root_path,
         "visited_destinations": tuple(sorted(visited_destinations)),
     }
+
+
+def _runtime_route_node_matches(node: str, runtime_nodes: Sequence[str]) -> bool:
+    """Return whether a route source is one of the proven runtime nodes."""
+
+    node = str(node)
+    canonical = _canonical_dag_path(node) or node
+    return canonical in {str(value) for value in runtime_nodes} or node in {
+        str(value) for value in runtime_nodes
+    }
+
+
+def _runtime_route_group_complete(
+    route: Mapping[str, tuple[str, str]],
+    group: str,
+    runtime_nodes: Sequence[str],
+) -> bool:
+    """Validate one complete translate/rotate authoring route.
+
+    A runtime output is not an authoring surface.  Every component of a
+    compound must therefore come from one of the importer-owned pre-runtime
+    plugs before the native sampler is allowed to consume it.
+    """
+
+    if group not in {"translate", "rotate"}:
+        return False
+    attrs = tuple(f"{group}{axis}" for axis in "XYZ")
+    if any(attribute not in route for attribute in attrs):
+        return False
+    values = [route[attribute] for attribute in attrs]
+    if any(not isinstance(value, (tuple, list)) or len(value) != 2 for value in values):
+        return False
+    if any(not _runtime_route_node_matches(value[0], runtime_nodes) for value in values):
+        return False
+    route_nodes = {_canonical_dag_path(str(value[0])) or str(value[0]) for value in values}
+    if len(route_nodes) != 1:
+        return False
+    node_types = []
+    for node, _attribute in values:
+        try:
+            node_types.append(str(cmds.nodeType(str(node)) or ""))
+        except Exception:
+            return False
+    if any(not node_type for node_type in node_types):
+        return False
+    if group == "translate":
+        expected_by_type = {
+            "mmdAppend": "baseTranslate",
+            "mmdBoneMorphAccum": "baseTranslate",
+            "mmdPhysicsBoneDriver": "inPreTranslate",
+        }
+        for (node, attribute), node_type, axis in zip(values, node_types, "XYZ"):
+            prefix = expected_by_type.get(node_type)
+            if prefix is None or str(attribute) != f"{prefix}{axis}":
+                return False
+        return True
+    # Rotation can be supplied by a grant/accumulator, physics pre-input, or
+    # the exact mmdCcdIk input slot selected by the semantic resolver.
+    for (node, attribute), node_type, axis in zip(values, node_types, "XYZ"):
+        attribute = str(attribute)
+        if node_type in {"mmdAppend", "mmdBoneMorphAccum"}:
+            if attribute != f"baseRotate{axis}":
+                return False
+        elif node_type == "mmdPhysicsBoneDriver":
+            if attribute != f"inPreRotate{axis}":
+                return False
+        elif node_type == "mmdCcdIk":
+            prefix = "inputRotate["
+            suffix = f"].inputRotateElement{axis}"
+            if not attribute.startswith(prefix) or not attribute.endswith(suffix):
+                return False
+        else:
+            return False
+    slots = {
+        str(value[1]).split("].", 1)[0]
+        for value in values
+        if "inputRotate[" in str(value[1])
+    }
+    return len(slots) <= 1
 
 
 def _close_native_samples(native_samples: Any) -> None:
@@ -2812,6 +2932,112 @@ class VmdSceneCollector:
                 generated_bone_counts.get(bone_name, planned or 0)
             )
 
+    def _recover_runtime_authoring_routes(
+        self,
+        joint: str,
+        target_model: str,
+        route: Mapping[str, tuple[str, str]],
+        classification: Mapping[str, Any],
+    ) -> dict[str, tuple[str, str]]:
+        """Recover importer-owned pre-runtime routes for one dependency.
+
+        The visible joint is a runtime result when a supported MMD node appears
+        in the dependency closure.  Re-run the existing semantic resolvers at
+        this boundary to recover the complete compound route.  A partial route
+        is intentionally left incomplete so the caller can fail closed instead
+        of mixing authored inputs with a final evaluated component.
+        """
+
+        recovered = dict(route)
+        runtime_types = set(str(value) for value in classification.get("runtime_node_types", ()))
+        runtime_nodes = tuple(str(value) for value in classification.get("runtime_nodes", ()))
+        long_joint = str((cmds.ls(joint, long=True) or [joint])[0])
+
+        def matching(mapping: Mapping[str, Any]) -> Any:
+            for key in (long_joint, str(joint), str(joint).rsplit("|", 1)[-1]):
+                if key in mapping:
+                    return mapping[key]
+            for candidate in mapping.values():
+                if not isinstance(candidate, Mapping):
+                    continue
+                target = candidate.get("target_joint") or candidate.get("joint")
+                if target is not None and str(target) in {long_joint, str(joint)}:
+                    return candidate
+            return None
+
+        # mmdAppend and mmdCcdIk are semantic passthrough surfaces.  Keep
+        # accumulator bases ahead of append bases when both occur in a chain.
+        if "mmdAppend" in runtime_types:
+            try:
+                append = matching(collect_append_info())
+            except Exception:
+                append = None
+            if isinstance(append, Mapping):
+                node = str(append.get("node") or "")
+                if node and _runtime_route_node_matches(node, runtime_nodes):
+                    for logical, physical in (append.get("attr_map") or {}).items():
+                        recovered.setdefault(str(logical), (node, str(physical)))
+
+        if "mmdCcdIk" in runtime_types:
+            try:
+                ik = matching(collect_mmd_ik_passthrough_info())
+            except Exception:
+                ik = None
+            if isinstance(ik, Mapping):
+                node = str(ik.get("node") or "")
+                try:
+                    slot = int(ik.get("input_slot", -1))
+                except (TypeError, ValueError):
+                    slot = -1
+                if node and slot >= 0 and _runtime_route_node_matches(node, runtime_nodes):
+                    for axis in "XYZ":
+                        recovered.setdefault(
+                            f"rotate{axis}",
+                            (node, f"inputRotate[{slot}].inputRotateElement{axis}"),
+                        )
+
+        if "mmdBoneMorphAccum" in runtime_types:
+            try:
+                resolution = resolve_owned_bone_morph_base_routes((long_joint,))
+            except Exception:
+                resolution = None
+            if resolution is not None:
+                accum_route = resolution.routes.get(long_joint) or resolution.routes.get(str(joint))
+                if accum_route:
+                    accum_nodes = {
+                        str(value[0])
+                        for value in accum_route.values()
+                        if isinstance(value, (tuple, list)) and len(value) == 2
+                    }
+                    if accum_nodes and all(
+                        _runtime_route_node_matches(node, runtime_nodes)
+                        for node in accum_nodes
+                    ):
+                        # An accumulator is the topmost authoring surface for
+                        # both compounds, even when its output feeds mmdAppend.
+                        recovered.update(
+                            {
+                                str(attribute): (str(value[0]), str(value[1]))
+                                for attribute, value in accum_route.items()
+                            }
+                        )
+
+        if "mmdPhysicsBoneDriver" in runtime_types:
+            route_map = {long_joint: dict(recovered)}
+            try:
+                self._merge_physics_authored_input_routes(
+                    joints=(long_joint,),
+                    target_model=target_model,
+                    routes=route_map,
+                    strict_bake_timeline=True,
+                )
+                recovered = dict(route_map.get(long_joint, recovered))
+            except Exception:
+                # An incomplete pre-physics route is rejected by the caller;
+                # do not silently fall through to the final solver output.
+                pass
+        return recovered
+
     def _control_rig_direct_export_plan(
         self,
         target_model: Optional[str],
@@ -3017,33 +3243,71 @@ class VmdSceneCollector:
                 and _bake_timeline_single_key_bone_route(joint, route) is None
                 else []
             )
+            classifications = []
             if unresolved_channels:
-                classification = _classify_unsupported_bone_dependency(
-                    joint,
-                    target_model,
-                    unresolved_channels,
-                )
-                if classification.get("status") != "accepted":
-                    reason = str(
-                        classification.get(
-                            "reason",
-                            "unknown dependency closure",
+                for group in ("translate", "rotate"):
+                    group_channels = tuple(
+                        attribute
+                        for attribute in unresolved_channels
+                        if attribute.startswith(group)
+                    )
+                    if not group_channels:
+                        continue
+                    classification = _classify_unsupported_bone_dependency(
+                        joint,
+                        target_model,
+                        group_channels,
+                    )
+                    if classification.get("status") != "accepted":
+                        reason = str(
+                            classification.get(
+                                "reason",
+                                "unknown dependency closure",
+                            )
                         )
-                    )
-                    message = (
-                        f"{joint}: unresolved dependency output channels "
-                        f"{tuple(unresolved_channels)!r}; reason: {reason}"
-                    )
-                    diagnostics["blocked"]["dependency_output"].append(message)
-                    diagnostics["status"] = "blocked"
-                    raise ControlRigDirectVmdExportError(
-                        "Control Rig direct VMD export cannot sample dependency output: "
-                        + message,
-                        path=(
-                            "scene.control_rig.direct_vmd_export."
-                            f"{joint}.channels"
-                        ),
-                    )
+                        message = (
+                            f"{joint}: unresolved dependency output channels "
+                            f"{group_channels!r}; reason: {reason}"
+                        )
+                        diagnostics["blocked"]["dependency_output"].append(message)
+                        diagnostics["status"] = "blocked"
+                        raise ControlRigDirectVmdExportError(
+                            "Control Rig direct VMD export cannot sample dependency output: "
+                            + message,
+                            path=(
+                                "scene.control_rig.direct_vmd_export."
+                                f"{joint}.channels"
+                            ),
+                        )
+                    classifications.append(classification)
+                    runtime_nodes = classification.get("runtime_nodes", ())
+                    if runtime_nodes:
+                        route = self._recover_runtime_authoring_routes(
+                            joint,
+                            target_model,
+                            route,
+                            classification,
+                        )
+                        if not _runtime_route_group_complete(
+                            route,
+                            group,
+                            runtime_nodes,
+                        ):
+                            message = (
+                                f"{joint}: runtime dependency output has no complete "
+                                f"{group} authoring route; final evaluated output "
+                                "cannot be mixed with a partial route"
+                            )
+                            diagnostics["blocked"]["dependency_output"].append(message)
+                            diagnostics["status"] = "blocked"
+                            raise ControlRigDirectVmdExportError(
+                                "Control Rig direct VMD export cannot sample dependency output: "
+                                + message,
+                                path=(
+                                    "scene.control_rig.direct_vmd_export."
+                                    f"{joint}.{group}.authoring_route"
+                                ),
+                            )
                 bone_name = self._mmd_bone_name(joint)
                 prior = selected_bone_names.get(bone_name)
                 if prior is not None:
@@ -3067,7 +3331,28 @@ class VmdSceneCollector:
                         "frame_range": None,
                         "generated_key_count": 0,
                         "reason": _UNSUPPORTED_BONE_BAKE_REASON,
-                        "classification_reason": classification.get("reason"),
+                        "classification_reason": "; ".join(
+                            str(item.get("reason")) for item in classifications
+                        ),
+                        "classification_node_types": sorted(
+                            {
+                                str(node_type)
+                                for item in classifications
+                                for node_type in item.get("node_types", ())
+                            }
+                        ),
+                        "classification_runtime_node_types": sorted(
+                            {
+                                str(node_type)
+                                for item in classifications
+                                for node_type in item.get("runtime_node_types", ())
+                            }
+                        ),
+                        "classification_plug_provenance": [
+                            plug
+                            for item in classifications
+                            for plug in item.get("plug_provenance", ())
+                        ],
                     }
                 )
                 continue
