@@ -37,7 +37,6 @@ _ROTATE_ONLY_ROLES = frozenset(
         "upper_body2",
         "neck",
         "head",
-        "both_eyes",
         "left_shoulder",
         "left_arm",
         "left_elbow",

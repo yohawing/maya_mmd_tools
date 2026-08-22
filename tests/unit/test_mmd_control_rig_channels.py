@@ -66,7 +66,7 @@ class TestMmdControlRigChannels(unittest.TestCase):
             ("|model|joint.translate", "|model|joint.rotate"),
         )
 
-        for role in ("left_arm", "right_knee", "left_index_1", "both_eyes"):
+        for role in ("left_arm", "right_knee", "left_index_1"):
             with self.subTest(role=role):
                 policy = derive_mmd_control_rig_channel_policy(role, binding)
                 self.assertEqual(policy.allowed_families, ("rotate",))

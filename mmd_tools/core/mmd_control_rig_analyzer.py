@@ -250,7 +250,6 @@ _OPTIONAL_FK_ROLE_DEFINITIONS = (
     _RoleDefinition("upper_body2", ("上半身2",)),
     _RoleDefinition("neck", ("首",)),
     _RoleDefinition("head", ("頭",)),
-    _RoleDefinition("both_eyes", ("両目",)),
     _RoleDefinition("left_shoulder", ("左肩",)),
     _RoleDefinition("left_arm", ("左腕",)),
     _RoleDefinition("left_elbow", ("左ひじ", "左肘")),
