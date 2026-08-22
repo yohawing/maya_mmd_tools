@@ -456,6 +456,23 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
         self.assertEqual(len(presenter._registered_indices), 2)
         return tuple(presenter.all_bones)
 
+    def _visible_list_item_click_point(self, widget, item):
+        """Scroll a real row into view and return a point inside its visible area."""
+        widget.scrollToItem(item)
+        QApplication.processEvents()
+        item_rect = widget.visualItemRect(item)
+        viewport_rect = widget.viewport().rect()
+        visible_rect = item_rect.intersected(viewport_rect)
+        self.assertTrue(
+            item_rect.isValid() and not visible_rect.isEmpty(),
+            "list item is not visible after scroll: item={} viewport={} scroll={}".format(
+                item_rect,
+                viewport_rect,
+                widget.verticalScrollBar().value(),
+            ),
+        )
+        return visible_rect.center()
+
     def _register_third_bone_fixture(self):
         """Register two deterministic descendants for the IK structural case."""
         bindings = list(self._register_second_bone_fixture())
@@ -1054,15 +1071,11 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             self.assertNotEqual(item.text(), identity)
             self.assertNotIn(identity, item.text())
 
-        view.bone_list.scrollToItem(first_item)
-        QApplication.processEvents()
-        first_rect = view.bone_list.visualItemRect(first_item)
-        self.assertTrue(first_rect.isValid())
-        self.assertTrue(view.bone_list.viewport().rect().contains(first_rect.center()))
+        first_click = self._visible_list_item_click_point(view.bone_list, first_item)
         QTest.mouseClick(
             view.bone_list.viewport(),
             Qt.LeftButton,
-            pos=first_rect.center(),
+            pos=first_click,
         )
         QApplication.processEvents()
         self.assertIs(view.bone_list.currentItem(), first_item)
