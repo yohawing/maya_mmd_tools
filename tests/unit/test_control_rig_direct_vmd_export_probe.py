@@ -9,6 +9,7 @@ from tools.control_rig_direct_vmd_export_probe import (
     DEFAULT_POSE_TOLERANCE,
     _command,
     _filter_scene_pose,
+    _require_selected_control_tracks,
     load_config,
 )
 
@@ -97,6 +98,11 @@ def test_filter_scene_pose_keeps_only_control_bound_bones():
     }
     assert filtered["metadata"] == scene["metadata"]
     assert scene["pose"]["joint_count"] == 2
+
+
+def test_probe_rejects_empty_selected_control_track_oracle():
+    with pytest.raises(RuntimeError, match="no keyed Control tracks"):
+        _require_selected_control_tracks(set())
 
 
 @pytest.mark.parametrize(

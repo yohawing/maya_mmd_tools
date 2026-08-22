@@ -236,6 +236,14 @@ def _filter_scene_pose(scene: Mapping[str, Any], bone_names: set[str]) -> dict[s
     return result
 
 
+def _require_selected_control_tracks(bone_names: set[str]) -> set[str]:
+    """Fail closed instead of accepting an empty Control-pose oracle."""
+
+    if not bone_names:
+        raise RuntimeError("direct export probe found no keyed Control tracks")
+    return bone_names
+
+
 def _capture_parity(
     root: str,
     frames: list[int],
@@ -377,14 +385,16 @@ def _run_range(config: Mapping[str, Any], row: Mapping[str, Any], out_dir: Path)
     if metadata.get("state") != "EDIT" or metadata.get("owner") != "CONTROL_OWNED":
         raise RuntimeError(f"source import did not enter EDIT/CONTROL_OWNED: {metadata}")
     resolved = resolve_control_rig_direct_vmd_export_routes(root)
-    selected_control_names = {
-        str(candidate["boneName"])
-        for candidate in resolved["candidates"].values()
-        if any(
-            cmds.keyframe(plug, query=True, timeChange=True) or []
-            for plug in candidate["selectorPlugs"]
-        )
-    }
+    selected_control_names = _require_selected_control_tracks(
+        {
+            str(candidate["boneName"])
+            for candidate in resolved["candidates"].values()
+            if any(
+                cmds.keyframe(plug, query=True, timeChange=True) or []
+                for plug in candidate["selectorPlugs"]
+            )
+        }
+    )
     expected = _capture_parity(
         root,
         frames,
