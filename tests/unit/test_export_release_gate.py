@@ -964,6 +964,7 @@ class ExportReleaseGateTests(unittest.TestCase):
             provenance = summary["mmd_anim_provenance"]
             self.assertEqual(summary["status"], "fail")
             self.assertIn("focused_tests", summary["unexecuted"])
+            self.assertIn("ui_headless_tests", summary["unexecuted"])
             self.assertEqual(summary["gui_scope"], "not_run")
             self.assertIsInstance(summary["provenance"]["start"]["dirty"], bool)
             self.assertIn("end", summary["provenance"])

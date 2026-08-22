@@ -1844,6 +1844,7 @@ def build_release_summary(
         headless_ui_report.unlink()
     if skip_focused_tests:
         steps.append(_not_run("focused_tests", "--skip-focused-tests was supplied"))
+        steps.append(_not_run("ui_headless_tests", "--skip-focused-tests was supplied"))
     else:
         focused = [
             "tests/unit/test_export_workflow.py",
@@ -1857,7 +1858,6 @@ def build_release_summary(
             "tests/unit/test_export_scope.py",
             "tests/unit/test_gui_runner.py",
             "tests/unit/test_ui_coverage_gate.py",
-            "tests/unit/test_authoring_ui_surface_matrix.py",
             "tests/unit/test_ui_selector_contract.py",
             "tests/unit/test_vmd_scene_collector.py",
         ]
@@ -1868,6 +1868,17 @@ def build_release_summary(
             _run_command(
                 "focused_tests",
                 [*_pytest_command(), "-q", *focused],
+                timeout=900.0,
+            )
+        )
+        steps.append(
+            _run_command(
+                "ui_headless_tests",
+                [
+                    *_pytest_command(),
+                    "-q",
+                    "tests/unit/test_authoring_ui_surface_matrix.py",
+                ],
                 env={
                     **os.environ,
                     "MMD_UI_COVERAGE_HEADLESS_REPORT": str(headless_ui_report),
