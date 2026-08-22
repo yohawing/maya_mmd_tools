@@ -460,6 +460,20 @@ def _pytest_command() -> list[str]:
     return [sys.executable, "-m", "pytest"]
 
 
+def _qt_pytest_command() -> list[str]:
+    """Use the project Python that owns the installed Qt binding."""
+    current_dir = os.path.normcase(os.path.abspath(os.path.dirname(sys.executable)))
+    project_path = os.pathsep.join(
+        entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if entry and os.path.normcase(os.path.abspath(entry)) != current_dir
+    )
+    python = shutil.which("python", path=project_path)
+    if python:
+        return [python, "-m", "pytest"]
+    return _pytest_command()
+
+
 def _not_run(name: str, reason: str, command: list[str] | None = None) -> dict[str, Any]:
     """Record an explicit omitted step."""
     return {
@@ -1875,7 +1889,7 @@ def build_release_summary(
             _run_command(
                 "ui_headless_tests",
                 [
-                    *_pytest_command(),
+                    *_qt_pytest_command(),
                     "-q",
                     "tests/unit/test_authoring_ui_surface_matrix.py",
                 ],

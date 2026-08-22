@@ -40,6 +40,26 @@ def _clean_release_provenance(run_id=None):
 class ExportReleaseGateTests(unittest.TestCase):
     """The release summary must expose omissions and fail-closed fixtures."""
 
+    def test_qt_pytest_command_prefers_project_python(self):
+        path = RELEASE_GATE.os.pathsep.join(("C:/isolated/Scripts", "C:/Python"))
+        with mock.patch.object(
+            RELEASE_GATE.sys,
+            "executable",
+            "C:/isolated/Scripts/python.exe",
+        ), mock.patch.dict(
+            RELEASE_GATE.os.environ,
+            {"PATH": path},
+        ), mock.patch.object(
+            RELEASE_GATE.shutil,
+            "which",
+            return_value="C:/Python/python.exe",
+        ) as which:
+            self.assertEqual(
+                RELEASE_GATE._qt_pytest_command(),
+                ["C:/Python/python.exe", "-m", "pytest"],
+            )
+        which.assert_called_once_with("python", path="C:/Python")
+
     def test_maya_path_uses_shared_mayapy_resolver(self):
         """Release probes honor the shared environment-aware Maya resolver."""
         with mock.patch.object(
