@@ -7,12 +7,13 @@
 
 Control は「どのボーントラックを出すか」を決める authoring source として使う。
 VMD の姿勢値は Control transform から作らず、Control に一対一で binding された
-実在 MMD ボーンの UUID-backed `authoredPlugs` を毎フレーム評価して取得する。
+実在 MMD ボーンのVMD authoring poseを毎フレーム取得する。通常joint channelまたは
+ボーンモーフ前のbase channelであり、UUID-backed `authoredPlugs`から解決する。
 
 完了条件:
 
 - fallback ではない専用 Control の所有channelに1個以上の実keyがある実在ボーンだけを出力する。
-- Control key はトラック選択と dense frame range の根拠にだけ使用し、値は対応ボーンの VMD authoring pose から取得する。
+- Control key はトラック選択と dense frame range の根拠にだけ使用し、値は対応ボーンのボーンモーフ／solver二重適用前のauthoring poseから取得する。
 - 準標準ボーン欠損時はトラックを出さず、別 role／bone へ fallback しない。
 - 書き出し前後で Control curve payload、接続、metadata、`EDIT / CONTROL_OWNED`、current time、scene revision が不変である。
 - small fixture と YYB＋愛言葉IVを Maya 2024 GUIで書き出し、fresh Import後の姿勢・IK state・Morphが規定誤差内で一致する。
@@ -23,7 +24,7 @@ VMD の姿勢値は Control transform から作らず、Control に一対一で 
 - Control local transformを直接VMD値として使うこと。
 - MMD Rigへの一時／永続Bake、Control curve clone、snapshot復元、Undoによる復元。
 - keyのないControl、表示専用Control、fallback alias、存在しない準標準ボーンの出力。
-- final skin jointのworld poseを全ボーンへBakeすること。
+- final skin jointのworld poseを全ボーンへBakeすること。選択済み対応骨のlocal poseだけを読む。
 - Sparse／Preserve Keysの再設計、近似key reduction、solver許容値の変更。
 - Control Rig builder、manual Bake、VMD importer、native writer ABIの変更。
 
@@ -36,7 +37,7 @@ VMD の姿勢値は Control transform から作らず、Control に一対一で 
 - track selectorはmapped Control transform channelの上流animCurve／Animation Layerを調べ、1個以上の実keyがある場合だけeligibleとする。接続済み0-key curveとstatic changed valueは出力しない。キーがexport range外だけにあっても、そのcurveがrange内評価へ影響するためeligibleとする。
 - selector対象channelはchannel policyの `keyable_channels + passthrough_channels` とする。fixed-twistの非keyable passthrough X/Y上の既存curveを見落とさない。`ikEnabled`はbone track selectorと分離する。
 - Control channelのwriter graphは許可済みdirect animCurve／unitConversion／pairBlend／Animation Layer routeのいずれかで、単一かつ非曖昧でなければならない。未知writerをkeyless omitへ丸めない。
-- 各MMD `authoredPlug` の現在writerが担当Control直結、またはmetadata-owned converter chainを経由して担当Controlへ到達することを検証する。unknown／multiple／stale writerはfail-closedにする。
+- 各MMD `authoredPlug` の現在writerが担当Control直結、またはmetadata-owned converter chainを経由して担当Controlへ到達することを検証する。unknown／multiple／stale writerはfail-closedにする。ボーンモーフ対象はfinal joint値を使うとMorph sectionとの二重適用になるため、base authored channelを使う。
 - binding jointはtarget model配下のjointで、非空のMMD bone name metadataを持つことを必須とする。joint leaf-name fallbackは禁止し、selected VMD bone nameの重複はfail-closedにする。
 - bindingが所有しないtranslate／rotate familyは、対応joint側に未知のwriterがなくbind/default値である場合だけ既存joint channelを使用する。それ以外はfinal solver／Append出力を拾わずfail-closedにする。
 - 非ASCII実asset pathはUTF-8 JSONからMayaへ渡し、argvへ直接渡さない。
@@ -56,7 +57,7 @@ VMD の姿勢値は Control transform から作らず、Control に一対一で 
 
 却下。キーのないIK／Append／D／表示用ボーンまで出力し、fresh Import時の再評価と二重適用する危険がある。
 
-### D. Control keyで選択し、対応MMDボーンのauthored poseをread-only sampling
+### D. Control keyで選択し、対応MMDボーンのauthoring poseをread-only sampling
 
 採用。既存binding、native sampler、joint→VMD変換、stream writerを再利用でき、scene mutationと復元処理を持たない。
 
@@ -69,7 +70,7 @@ VMD の姿勢値は Control transform から作らず、Control に一対一で 
 - `selected_joints`: fallbackでなく、専用Controlの所有channelに1個以上の実keyがあるjoint。
 - `selector_plugs_by_joint`: Control側のUUID検証済み所有plug。collectorが既存key traversalでkey時刻を得る。
 - `selector_key_times_by_joint`: collectorがControl側から得たsource key時刻。track selectionとdense planning専用。
-- `value_routes`: jointのlogical translate/rotate channelから、UUID解決したMMD `authoredPlugs`へのroute。値sampling専用。
+- `value_routes`: jointのlogical translate/rotate channelから、UUID解決した同一MMD boneのauthoring channelへのroute。値sampling専用。
 - `ik_state_routes`: IK controller bone nameから `control.ikEnabled` へのroute。bone selectorには混ぜない。
 
 coreのread-only resolverは `selector_plugs`、`value_routes`、ownership evidenceまでを返し、key graph traversalはconverter層の既存helperへ残す。coreからconverterをimportしたり、key traversalを複製したりしない。
@@ -104,13 +105,13 @@ coreのread-only resolverは `selector_plugs`、`value_routes`、ownership evide
 
 - binding／Control／joint／key source／writer ownership censusを取得する。
 - fallback、missing、display-only、keylessを理由付きで除外する。
-- selected jointの`authoredPlugs`を0・中間・終端frameで読み、VMD frameを一時生成する。
+- selected jointのauthoring channelを0・中間・終端frameで読み、VMD frameを一時生成する。
 - production collectorはまだ変更しない。
 
 完了条件:
 
 - small fixtureで期待するbone nameだけが選ばれる。
-- Control値ではなく対応MMD authored poseを読んでいることをsentinelで証明する。
+- Control値ではなく対応MMD boneのauthoring poseを読んでいることをsentinelで証明する。ボーンモーフfixtureではfinal joint値の二重適用も検出する。
 - probe前後のcurve、接続、metadata、owner/state、current timeが完全一致する。
 - probeで再利用価値が確認できたrunnerだけをPhase 3で `tools/control_rig_direct_vmd_export_probe.py` として恒久化する。
 
@@ -234,7 +235,7 @@ python tools/control_rig_direct_vmd_export_probe.py <YYB UTF-8 config>
 
 - **Control key censusとvalue routeの混同**: APIとデータ名を分け、unitでControl値とauthored poseを意図的に異ならせる。
 - **fallback aliasの混入**: `binding.fallback is not None`を最初に除外し、duplicate claimはdedupeせずerrorにする。
-- **IK／Append final outputの混入**: direct planでは通常のscene route mergeを呼ばず、bindingのauthored plugだけを使う。
+- **IK／Append final outputの混入**: Control keyで選んだ一対一bindingのauthoring channelだけを読む。通常のscene route mergeやkeyless related boneを追加しない。
 - **Animation Layer keyの見落とし**: Control channelのupstream animCurve censusを既存helperで行う。
 - **unknown writerのsilent omit**: selector/valueの両graphでownershipを先に検証し、未知routeをkeyless扱いしない。
 - **MMD name fallback**: direct routeではMMD bone name metadataを必須とし、joint leaf名をVMD nameへ使わない。
@@ -247,7 +248,7 @@ python tools/control_rig_direct_vmd_export_probe.py <YYB UTF-8 config>
 以下のいずれかが出た時点でproduction実装を止め、planを見直す。
 
 - dedicated keyed Controlとbinding jointが一対一でない。
-- authored poseをsamplingしてもfresh Importの対応bone poseを再構成できない。
+- 対応boneのauthoring poseをsamplingしてもfresh Importの対応bone poseを再構成できない。
 - Control keyなしboneを出力しなければworld parityを満たせない。
 - value取得のためscene connection／metadata mutationが必要になる。
 - direct routeのためnative sampler／writer ABI変更が必要になる。

@@ -216,12 +216,13 @@ def resolve_control_rig_direct_vmd_export_routes(
         )
     }
     owned_nodes = _resolved_owned_node_names(cmds, metadata)
-    _ik_rows, channel_rows, _offset_rows = _resolve_edit_journal(cmds, metadata)
+    ik_rows, channel_rows, _offset_rows = _resolve_edit_journal(cmds, metadata)
     candidates: Dict[str, Dict[str, Any]] = {}
     omitted_roles = []
     claimed_controls: Dict[str, str] = {}
     claimed_names: Dict[str, str] = {}
     claimed_targets: Dict[str, str] = {}
+    ik_state_routes: Dict[str, Tuple[str, str]] = {}
 
     bindings = metadata.get("bindings")
     if not isinstance(bindings, Mapping):
@@ -309,14 +310,31 @@ def resolve_control_rig_direct_vmd_export_routes(
                     f"EDIT journal control does not match binding: {canonical_target}"
                 )
             incoming = _incoming_plugs(cmds, canonical_target)
-            if len(incoming) != 1 or not _owned_writer_reaches_control(
-                cmds,
-                incoming[0] if incoming else "",
-                set(selector_plugs),
-                owned_nodes,
-            ):
+            writer_owned = len(incoming) == 1 and _owned_writer_reaches_control(
+                cmds, incoming[0], set(selector_plugs), owned_nodes
+            )
+            layer_route = matching_rows[0].get("layerRoute")
+            if not writer_owned and isinstance(layer_route, Mapping):
+                blend_output = layer_route.get("blendOutput")
+                blend_input = layer_route.get("blend")
+                blend_sources = _incoming_plugs(cmds, str(blend_input)) if blend_input else ()
+                writer_owned = bool(
+                    len(incoming) == 1
+                    and blend_output
+                    and _canonical_plug(cmds, incoming[0])
+                    == _canonical_plug(cmds, str(blend_output))
+                    and len(blend_sources) == 1
+                    and _owned_writer_reaches_control(
+                        cmds,
+                        blend_sources[0],
+                        set(selector_plugs),
+                        owned_nodes,
+                    )
+                )
+            if not writer_owned:
                 raise MmdControlRigBuildError(
-                    f"authored plug has an unknown Control Rig writer: {canonical_target}"
+                    "authored plug has an unknown Control Rig writer: "
+                    f"{canonical_target}; incoming={incoming!r}"
                 )
             node, _separator, attribute = canonical_target.rpartition(".")
             value_routes[logical_channel] = (node, attribute)
@@ -336,6 +354,50 @@ def resolve_control_rig_direct_vmd_export_routes(
                 if any(channel.startswith(family) for channel in allowed_channels)
             ),
         }
+        if binding.get("inputKind") == INPUT_IK_CONTROLLER:
+            control_plug = _canonical_plug(cmds, f"{control}.ikEnabled")
+            solvers = tuple(
+                dict.fromkeys(
+                    _canonical_node(cmds, solver)
+                    for solver in resolve_mmd_control_rig_binding_ik_solvers(
+                        cmds, binding
+                    )
+                )
+            )
+            if not solvers:
+                raise MmdControlRigBuildError(
+                    f"IK Control Rig binding has no owned solver: {role}"
+                )
+            expected_targets = {
+                _canonical_plug(cmds, f"{solver}.enabled") for solver in solvers
+            }
+            matching_ik_rows = [
+                row
+                for row in ik_rows
+                if _canonical_plug(cmds, str(row["control"])) == control_plug
+                and _canonical_plug(cmds, str(row["target"])) in expected_targets
+            ]
+            actual_targets = {
+                _canonical_plug(cmds, str(row["target"])) for row in matching_ik_rows
+            }
+            if len(matching_ik_rows) != len(expected_targets) or actual_targets != expected_targets:
+                raise MmdControlRigBuildError(
+                    f"EDIT journal does not uniquely own IK state route: {role}"
+                )
+            for target in expected_targets:
+                incoming = tuple(
+                    _canonical_plug(cmds, source)
+                    for source in _incoming_plugs(cmds, target)
+                )
+                if incoming != (control_plug,):
+                    raise MmdControlRigBuildError(
+                        f"IK solver has an unknown Control Rig writer: {target}"
+                    )
+            if bone_name in ik_state_routes:
+                raise MmdControlRigBuildError(
+                    f"multiple Control Rig bindings claim IK state name: {bone_name}"
+                )
+            ik_state_routes[bone_name] = (control, "ikEnabled")
         claimed_controls[control] = joint
         claimed_names[bone_name] = joint
 
@@ -343,6 +405,7 @@ def resolve_control_rig_direct_vmd_export_routes(
         "modelRoot": root,
         "candidates": candidates,
         "omittedRoles": tuple(omitted_roles),
+        "ikStateRoutes": ik_state_routes,
     }
 
 
@@ -357,6 +420,22 @@ def _resolved_owned_node_names(cmds, metadata: Mapping[str, Any]) -> Set[str]:
         if len(nodes) != 1:
             raise MmdControlRigBuildError(
                 f"owned control-rig node is missing: {row['uuid']}"
+            )
+        result.add(_canonical_node_name(cmds, str(nodes[0])))
+    journal = metadata.get("journal")
+    if not isinstance(journal, Mapping):
+        raise MmdControlRigBuildError("EDIT connection journal is missing")
+    for row in journal.get("channels", ()) or ():
+        if not isinstance(row, Mapping):
+            raise MmdControlRigBuildError("invalid EDIT journal channel row")
+        reference = row.get("translateBaselineOutputRef")
+        if not isinstance(reference, Mapping) or not reference.get("nodeUuid"):
+            continue
+        nodes = cmds.ls(str(reference["nodeUuid"]), long=True) or []
+        if len(nodes) != 1:
+            raise MmdControlRigBuildError(
+                "translate baseline helper UUID is missing: "
+                f"{reference['nodeUuid']}"
             )
         result.add(_canonical_node_name(cmds, str(nodes[0])))
     return result

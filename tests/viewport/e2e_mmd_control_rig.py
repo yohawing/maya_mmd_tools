@@ -151,6 +151,38 @@ def _joint_worlds(cmds, frames: Iterable[int]) -> dict[str, dict[str, list[float
     return result
 
 
+def _joint_local_channels(
+    cmds, frames: Iterable[int]
+) -> dict[str, dict[str, dict[str, list[float]]]]:
+    """Capture evaluated local translate/rotate by stable PMX bone index."""
+
+    indexed: dict[str, str] = {}
+    for joint in cmds.ls(type="joint", long=True) or []:
+        try:
+            if not cmds.attributeQuery("mmd_bone_index", node=joint, exists=True):
+                continue
+            indexed[str(int(cmds.getAttr(f"{joint}.mmd_bone_index")))] = str(joint)
+        except (TypeError, ValueError, RuntimeError):
+            continue
+    result: dict[str, dict[str, dict[str, list[float]]]] = {}
+    for frame in frames:
+        cmds.currentTime(frame, edit=True)
+        cmds.refresh(force=True)
+        result[str(frame)] = {
+            index: {
+                "translate": [
+                    float(cmds.getAttr(f"{joint}.translate{axis}")) for axis in "XYZ"
+                ],
+                "rotate": [
+                    float(cmds.getAttr(f"{joint}.rotate{axis}")) for axis in "XYZ"
+                ],
+            }
+            for index, joint in sorted(indexed.items())
+            if cmds.objExists(joint)
+        }
+    return result
+
+
 def _ik_states(cmds, frames: Iterable[int]) -> dict[str, dict[str, bool | None]]:
     """Capture enabled state of all mmdCcdIk solvers by PMX IK name."""
 
@@ -1297,6 +1329,7 @@ def run_e2e_check(
         )
         report["autoFrameRange"]["actual"] = list(timeline_range)
         auto_source_world = {}
+        auto_source_local = {}
         auto_source_ik = {}
         auto_sentinel_indices = {}
         auto_sentinel_names = {}
@@ -1445,6 +1478,7 @@ def run_e2e_check(
             if not any(auto_curve_snapshot_before.values()):
                 raise RuntimeError("automatic export sentinel controls have no animCurves")
             auto_source_world = _joint_worlds(cmds, auto_compare_frames)
+            auto_source_local = _joint_local_channels(cmds, auto_compare_frames)
             auto_source_ik = _ik_states(cmds, auto_compare_frames)
             sentinel_effect = {
                 role: max(
@@ -1667,6 +1701,7 @@ def run_e2e_check(
             cmds.refresh(force=True)
             auto_curve_snapshot_before = _control_curve_snapshot()
             auto_source_world = _joint_worlds(cmds, auto_compare_frames)
+            auto_source_local = _joint_local_channels(cmds, auto_compare_frames)
             auto_source_ik = _ik_states(cmds, auto_compare_frames)
             auto_post_preview_payload = dict(auto_preview_payload)
 
@@ -1864,6 +1899,7 @@ def run_e2e_check(
             ):
                 raise RuntimeError("fresh VMD import failed for automatic export parity")
             fresh_world = _joint_worlds(cmds, auto_compare_frames)
+            fresh_local = _joint_local_channels(cmds, auto_compare_frames)
             fresh_ik = _ik_states(cmds, auto_compare_frames)
             if set(auto_source_world) != set(fresh_world):
                 raise RuntimeError(
@@ -1929,6 +1965,16 @@ def run_e2e_check(
                 "solverOwned": error_summary["solverOwned"],
                 "sentinelErrors": sentinel_errors,
                 "ikStatesEqual": auto_source_ik == fresh_ik,
+                "sentinelLocalChannels": {
+                    role: {
+                        str(frame): {
+                            "source": auto_source_local[str(frame)][index],
+                            "fresh": fresh_local[str(frame)][index],
+                        }
+                        for frame in auto_compare_frames
+                    }
+                    for role, index in auto_sentinel_indices.items()
+                },
                 "pass": parity_pass,
             }
             if not parity_pass:

@@ -1291,6 +1291,12 @@ class TestVmdSceneCollector(unittest.TestCase):
                 )
             },
             "omittedRoles": (),
+            "ikStateRoutes": {"左足ＩＫ": ("ik_control", "ikEnabled")},
+        }
+        self.cmds.keys[("ik_control", "ikEnabled")] = {
+            0.0: 1.0,
+            1.0: 0.0,
+            2.0: 1.0,
         }
         sampler = self._timeline_sampler()
 
@@ -1328,6 +1334,16 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(
             sampler.bone_calls[0][2]["center_joint"]["translateX"],
             ("center_authored", "translateX"),
+        )
+        ik_frames = [frame for section, frame in sink.frames if section == "ik"]
+        self.assertEqual(result["section_counts"]["ik"], 3)
+        self.assertEqual(
+            [frame["ik_states"] for frame in ik_frames],
+            [
+                [("左足ＩＫ", True)],
+                [("左足ＩＫ", False)],
+                [("左足ＩＫ", True)],
+            ],
         )
 
     def test_control_rig_direct_export_omits_keyless_and_unbound_bones(self):

@@ -60,16 +60,29 @@ class _DirectExportCmds:
         return self.node_types.get(node, "transform")
 
 
-def _binding(joint_uuid, node_uuid, *, fallback=None, channels=None):
+def _binding(
+    joint_uuid,
+    node_uuid,
+    *,
+    fallback=None,
+    channels=None,
+    input_kind="direct_channel",
+    ik_solver_uuids=None,
+):
     channels = channels or ("rotateX", "rotateY", "rotateZ")
     return {
         "jointUuid": joint_uuid,
-        "inputKind": "direct_channel",
+        "inputKind": input_kind,
         "authoredPlugs": [f"joint.{channel}" for channel in channels],
         "authoredPlugRefs": [
             {"nodeUuid": node_uuid, "attribute": channel} for channel in channels
         ],
         "fallback": fallback,
+        **(
+            {"ikSolverUuids": list(ik_solver_uuids)}
+            if ik_solver_uuids is not None
+            else {}
+        ),
     }
 
 
@@ -90,7 +103,7 @@ def _journal_rows(control, joint, channels=("rotateX", "rotateY", "rotateZ")):
     ]
 
 
-def _resolve(cmds, metadata, controls, journal_rows):
+def _resolve(cmds, metadata, controls, journal_rows, ik_rows=None):
     rig = SimpleNamespace(model_root="|model", controls=controls)
     module = "mmd_tools.core.mmd_control_rig_motion"
     with (
@@ -98,7 +111,7 @@ def _resolve(cmds, metadata, controls, journal_rows):
         mock.patch(f"{module}.inspect_mmd_control_rig", return_value=rig),
         mock.patch(
             f"{module}._resolve_edit_journal",
-            return_value=([], journal_rows, []),
+            return_value=(ik_rows or [], journal_rows, []),
         ),
     ):
         return resolve_control_rig_direct_vmd_export_routes(
@@ -214,6 +227,109 @@ class TestControlRigDirectVmdExport(unittest.TestCase):
                 {"upper_body": control},
                 _journal_rows(control, joint),
             )
+    def test_accepts_uuid_owned_translate_baseline_from_edit_journal(self):
+        cmds = _DirectExportCmds()
+        control = "|model|controls|controlA"
+        joint = "|model|jointA"
+        baseline = "center_TRANSLATE_BASELINE"
+        channels = ("translateX", "translateY", "translateZ")
+        cmds.nodes_by_uuid["baseline-uuid"] = baseline
+        cmds.node_types[baseline] = "plusMinusAverage"
+        cmds.incoming[f"{joint}.translateX"] = (f"{baseline}.output1D",)
+        cmds.incoming[baseline] = (f"{control}.translateX",)
+        for channel in channels[1:]:
+            cmds.incoming[f"{joint}.{channel}"] = (f"{control}.{channel}",)
+        metadata = _metadata(
+            {
+                "center": _binding(
+                    "joint-a-uuid",
+                    "joint-a-uuid",
+                    channels=channels,
+                )
+            }
+        )
+        metadata["journal"]["channels"] = [
+            {"translateBaselineOutputRef": {"nodeUuid": "baseline-uuid"}}
+        ]
+
+        result = _resolve(
+            cmds,
+            metadata,
+            {"center": control},
+            _journal_rows(control, joint, channels),
+        )
+
+        self.assertEqual(
+            result["candidates"][joint]["valueRoutes"]["translateX"],
+            (joint, "translateX"),
+        )
+
+    def test_uses_owned_pre_morph_value_when_authored_plug_is_internal(self):
+        cmds = _DirectExportCmds()
+        control = "|model|controls|controlA"
+        joint = "|model|jointA"
+        accum = "center_boneMorphAccum"
+        channels = ("translateX", "translateY", "translateZ")
+        cmds.nodes_by_uuid["accum-uuid"] = accum
+        cmds.node_types[accum] = "mmdBoneMorphAccum"
+        authored_channels = tuple(f"baseTranslate{axis}" for axis in "XYZ")
+        for control_channel, authored_channel in zip(channels, authored_channels):
+            cmds.incoming[f"{accum}.{authored_channel}"] = (
+                f"{control}.{control_channel}",
+            )
+        binding = _binding(
+            "joint-a-uuid",
+            "accum-uuid",
+            channels=authored_channels,
+        )
+        rows = [
+            {
+                "control": f"{control}.{control_channel}",
+                "target": f"{accum}.{authored_channel}",
+            }
+            for control_channel, authored_channel in zip(channels, authored_channels)
+        ]
+
+        result = _resolve(
+            cmds,
+            _metadata({"center": binding}),
+            {"center": control},
+            rows,
+        )
+
+        self.assertEqual(
+            result["candidates"][joint]["valueRoutes"],
+            {
+                control_channel: (accum, authored_channel)
+                for control_channel, authored_channel in zip(
+                    channels, authored_channels
+                )
+            },
+        )
+    def test_accepts_journal_validated_animation_layer_output(self):
+        cmds = _DirectExportCmds()
+        control = "|model|controls|controlA"
+        joint = "|model|jointA"
+        channels = ("rotateX", "rotateY", "rotateZ")
+        rows = _journal_rows(control, joint, channels)
+        rows[0]["layerRoute"] = {
+            "blend": "upperBodyLayer.inputBX",
+            "blendOutput": "upperBodyLayer.outputX",
+        }
+        cmds.node_types["upperBodyLayer"] = "animBlendNodeAdditiveRotation"
+        cmds.incoming[f"{joint}.rotateX"] = ("upperBodyLayer.outputX",)
+        cmds.incoming["upperBodyLayer.inputBX"] = (f"{control}.rotateX",)
+        for channel in channels[1:]:
+            cmds.incoming[f"{joint}.{channel}"] = (f"{control}.{channel}",)
+
+        result = _resolve(
+            cmds,
+            _metadata({"upper_body": _binding("joint-a-uuid", "joint-a-uuid")}),
+            {"upper_body": control},
+            rows,
+        )
+
+        self.assertEqual(result["candidates"][joint]["boneName"], "上半身")
     def test_partial_channel_family_fails_closed(self):
         cmds = _DirectExportCmds()
         control = "|model|controls|controlA"
@@ -236,3 +352,38 @@ class TestControlRigDirectVmdExport(unittest.TestCase):
                 {"upper_body": control},
                 _journal_rows(control, joint, channels),
             )
+
+    def test_resolves_control_side_ik_state_route_from_owned_solver_journal(self):
+        cmds = _DirectExportCmds()
+        control = "|model|controls|controlA"
+        joint = "|model|jointA"
+        solver = "left_leg_ik_mmdCcdIk"
+        channels = ("translateX", "translateY", "translateZ")
+        cmds.nodes_by_uuid["solver-uuid"] = solver
+        _connect_direct_value_routes(cmds, control, joint, channels)
+        cmds.incoming[f"{solver}.enabled"] = (f"{control}.ikEnabled",)
+        binding = _binding(
+            "joint-a-uuid",
+            "joint-a-uuid",
+            channels=channels,
+            input_kind="ik_controller",
+            ik_solver_uuids=("solver-uuid",),
+        )
+
+        result = _resolve(
+            cmds,
+            _metadata({"left_foot_ik": binding}),
+            {"left_foot_ik": control},
+            _journal_rows(control, joint, channels),
+            ik_rows=[
+                {
+                    "control": f"{control}.ikEnabled",
+                    "target": f"{solver}.enabled",
+                }
+            ],
+        )
+
+        self.assertEqual(
+            result["ikStateRoutes"],
+            {"上半身": (control, "ikEnabled")},
+        )
