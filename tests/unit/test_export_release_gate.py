@@ -41,24 +41,29 @@ class ExportReleaseGateTests(unittest.TestCase):
     """The release summary must expose omissions and fail-closed fixtures."""
 
     def test_qt_pytest_command_prefers_project_python(self):
-        path = RELEASE_GATE.os.pathsep.join(("C:/isolated/Scripts", "C:/Python"))
+        isolated_dir = str(Path("isolated") / "Scripts")
+        project_dir = str(Path("project") / "Python")
+        python_name = "python.exe" if RELEASE_GATE.os.name == "nt" else "python"
+        isolated_python = str(Path(isolated_dir) / python_name)
+        project_python = str(Path(project_dir) / python_name)
+        path = RELEASE_GATE.os.pathsep.join((isolated_dir, project_dir))
         with mock.patch.object(
             RELEASE_GATE.sys,
             "executable",
-            "C:/isolated/Scripts/python.exe",
+            isolated_python,
         ), mock.patch.dict(
             RELEASE_GATE.os.environ,
             {"PATH": path},
         ), mock.patch.object(
             RELEASE_GATE.shutil,
             "which",
-            return_value="C:/Python/python.exe",
+            return_value=project_python,
         ) as which:
             self.assertEqual(
                 RELEASE_GATE._qt_pytest_command(),
-                ["C:/Python/python.exe", "-m", "pytest"],
+                [project_python, "-m", "pytest"],
             )
-        which.assert_called_once_with("python", path="C:/Python")
+        which.assert_called_once_with("python", path=project_dir)
 
     def test_maya_path_uses_shared_mayapy_resolver(self):
         """Release probes honor the shared environment-aware Maya resolver."""
