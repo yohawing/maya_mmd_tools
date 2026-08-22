@@ -43,6 +43,9 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_BONE_MORPH_BASE,
     INPUT_IK_CONTROLLER,
 )
+from mmd_tools.core.mmd_control_rig_motion import (
+    resolve_control_rig_direct_vmd_export_routes,
+)
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 from mmd_tools.converters.bone_morph_runtime import resolve_owned_bone_morph_base_routes
@@ -1081,6 +1084,7 @@ class VmdSceneCollector:
         try:
             target_model = options.get("target_model") or options.get("model_root")
             joints = list(options.get("joints") or self._find_joints(target_model))
+            rotation_context_joints = list(joints)
             blend_shapes = list(
                 options.get("blend_shapes") or self._find_blend_shapes(target_model)
             )
@@ -1096,29 +1100,51 @@ class VmdSceneCollector:
             motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
             bone_bind_poses = options.get("bone_bind_poses") or {}
             maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
+            direct_control_rig_plan = self._control_rig_direct_export_plan(
+                target_model,
+                joints,
+            )
+            if direct_control_rig_plan is not None and target_model:
+                rotation_context_joints = list(self._find_joints(target_model))
+            direct_ik_routes = (
+                direct_control_rig_plan.get("ik_state_routes")
+                if direct_control_rig_plan is not None
+                else None
+            )
             protected_ik_frames = self._bake_timeline_protected_ik_frames(
                 target_model,
                 start_frame,
                 end_frame,
                 maya_time_to_vmd,
+                ik_routes_by_name=direct_ik_routes,
             )
-            self._control_rig_dense_export(target_model)
+            if direct_control_rig_plan is None:
+                self._control_rig_dense_export(target_model)
             rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
             raw_marker = _read_bake_timeline_raw_loss_marker(target_model)
             if (
                 raw_marker
                 and raw_marker.get("raw_ik_key_count", 0) > 0
+                and not direct_ik_routes
                 and not collect_ik_nodes_by_bone_name(target_model=target_model)
             ):
                 raise VmdIkSceneRepresentationMissingError(
                     "Bake Timeline cannot export source VMD IK frames because "
                     "the current model has no owned IK scene representation"
                 )
-            authored_routes = self._scene_authored_input_routes(
-                joints,
-                target_model,
-                strict_bake_timeline=True,
-            )
+            selector_key_times_by_joint = None
+            if direct_control_rig_plan is None:
+                authored_routes = self._scene_authored_input_routes(
+                    joints,
+                    target_model,
+                    strict_bake_timeline=True,
+                )
+            else:
+                joints = direct_control_rig_plan["joints"]
+                authored_routes = direct_control_rig_plan["value_routes"]
+                selector_key_times_by_joint = direct_control_rig_plan[
+                    "selector_key_times_by_joint"
+                ]
             bake_timeline_dense_frames = self._bake_timeline_dense_frame_samples(
                 joints,
                 blend_shapes,
@@ -1128,6 +1154,7 @@ class VmdSceneCollector:
                 authored_routes,
                 start_frame,
                 end_frame,
+                selector_key_times_by_joint=selector_key_times_by_joint,
             )
             self._diagnostics["route_provenance_dense_planning"] = {
                 "joint_count": len(joints),
@@ -1163,6 +1190,8 @@ class VmdSceneCollector:
                 exact_run_reduction=exact_run_reduction,
                 protected_vmd_frames=protected_ik_frames,
                 key_reduction_report=key_reduction["sections"]["bones"],
+                selector_key_times_by_joint=selector_key_times_by_joint,
+                rotation_context_joints=rotation_context_joints,
             )
             begin_section("morphs")
             self.collect_morph_frames(
@@ -1197,6 +1226,7 @@ class VmdSceneCollector:
                 dense_frame_samples=None,
                 timeline_evaluation=False,
                 frame_sink=lambda frame: emit("ik", frame),
+                ik_routes_by_name=direct_ik_routes,
             )
             self._diagnostics["section_counts"] = dict(section_counts)
             self._diagnostics["streaming"] = {
@@ -1440,14 +1470,21 @@ class VmdSceneCollector:
         input_routes: Mapping[str, Mapping[str, tuple[str, str]]],
         start_frame: Optional[float],
         end_frame: Optional[float],
+        *,
+        selector_key_times_by_joint: Optional[Mapping[str, Sequence[float]]] = None,
     ) -> Optional[list[int]]:
         """Build one Maya-time sample range shared by Bake Timeline tracks."""
         keyed_times = []
         for joint in joints:
             long_name = (cmds.ls(joint, long=True) or [joint])[0]
-            keyed_times.extend(
-                _routed_key_times(joint, input_routes.get(str(long_name), {}))
-            )
+            if selector_key_times_by_joint is None:
+                keyed_times.extend(
+                    _routed_key_times(joint, input_routes.get(str(long_name), {}))
+                )
+            else:
+                keyed_times.extend(
+                    selector_key_times_by_joint.get(str(long_name), ())
+                )
         for blend_shape in blend_shapes:
             morph_names = self._blendshape_morph_names(blend_shape)
             keyed_times.extend(
@@ -1487,17 +1524,28 @@ class VmdSceneCollector:
         start_frame: Optional[float],
         end_frame: Optional[float],
         time_converter,
+        *,
+        ik_routes_by_name: Optional[Mapping[str, tuple[str, str]]] = None,
     ) -> set[int]:
         """Return global IK key/transition frames that numeric tracks retain."""
 
         if not target_model:
             return set()
-        nodes = collect_ik_nodes_by_bone_name(target_model=target_model)
+        routes = (
+            dict(ik_routes_by_name)
+            if ik_routes_by_name is not None
+            else {
+                name: (node, "enabled")
+                for name, node in collect_ik_nodes_by_bone_name(
+                    target_model=target_model
+                ).items()
+            }
+        )
         maya_frames = _filter_frame_range(
             [
                 frame
-                for node in nodes.values()
-                for frame in _key_times(node, ("enabled",))
+                for node, attribute in routes.values()
+                for frame in _key_times(node, (attribute,))
             ],
             start_frame,
             end_frame,
@@ -1526,6 +1574,8 @@ class VmdSceneCollector:
         exact_run_reduction: bool = False,
         protected_vmd_frames: Optional[set[int]] = None,
         key_reduction_report: Optional[dict[str, Any]] = None,
+        selector_key_times_by_joint: Optional[Mapping[str, Sequence[float]]] = None,
+        rotation_context_joints: Optional[Sequence[str]] = None,
     ) -> list[dict]:
         """Collect keyed or one-frame-sampled local joint transforms.
 
@@ -1541,7 +1591,16 @@ class VmdSceneCollector:
         bone_bind_poses = bone_bind_poses or {}
         input_routes = input_routes or {}
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
-        rotation_context = _build_rotation_export_context(joints)
+        # Direct Control Rig export intentionally limits emitted tracks to keyed
+        # Controls.  Rotation conversion still needs the complete PMX parent
+        # hierarchy; otherwise a selected child is converted as if it were a
+        # root whenever its keyless parent was omitted.
+        context_joints = (
+            rotation_context_joints if rotation_context_joints is not None else joints
+        )
+        if selector_key_times_by_joint is not None:
+            _validate_direct_rotation_export_indices(context_joints, joints)
+        rotation_context = _build_rotation_export_context(context_joints)
         rotation_interpolation = rotation_interpolation or {}
         raw_bone_transforms = raw_bone_transforms or {}
         raw_bone_frames_by_name = _index_raw_bone_transform_frames(raw_bone_transforms)
@@ -1594,7 +1653,13 @@ class VmdSceneCollector:
             for joint in joints:
                 long_names = cmds.ls(joint, long=True) or [joint]
                 route = input_routes.get(str(long_names[0]), {})
-                joint_keyed = _routed_key_times(joint, route)
+                joint_keyed = (
+                    _routed_key_times(joint, route)
+                    if selector_key_times_by_joint is None
+                    else list(
+                        selector_key_times_by_joint.get(str(long_names[0]), ())
+                    )
+                )
                 keyed_times_by_joint[joint] = joint_keyed
                 all_keyed.extend(joint_keyed)
             if dense_frames is None:
@@ -2370,43 +2435,53 @@ class VmdSceneCollector:
         dense_frame_samples: Optional[Sequence[float]] = None,
         timeline_evaluation: bool = False,
         frame_sink=None,
+        ik_routes_by_name: Optional[Mapping[str, tuple[str, str]]] = None,
     ) -> list[dict]:
         """Collect keyed owned ``mmdCcdIk.enabled`` values as VMD properties."""
         if not target_model:
             return []
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
-        nodes_by_name = collect_ik_nodes_by_bone_name(target_model=target_model)
+        routes_by_name = (
+            dict(ik_routes_by_name)
+            if ik_routes_by_name is not None
+            else {
+                name: (node, "enabled")
+                for name, node in collect_ik_nodes_by_bone_name(
+                    target_model=target_model
+                ).items()
+            }
+        )
         all_keyed_frames = sorted(
             {
                 frame
-                for node in nodes_by_name.values()
-                for frame in _key_times(node, ("enabled",))
+                for node, attribute in routes_by_name.values()
+                for frame in _key_times(node, (attribute,))
             }
         )
         keyed_frames = (
             sorted(set(dense_frame_samples))
             if dense_sample
             and dense_frame_samples is not None
-            and nodes_by_name
+            and routes_by_name
             else _filter_frame_range(
                 all_keyed_frames,
                 start_frame,
                 end_frame,
             )
         )
-        if dense_sample and dense_frame_samples and nodes_by_name and not all_keyed_frames:
+        if dense_sample and dense_frame_samples and routes_by_name and not all_keyed_frames:
             first_sample = float(dense_frame_samples[0])
             if timeline_evaluation:
                 with _MayaTimelineReader() as initial_reader:
                     initial_reader.set_frame(first_sample)
                     all_enabled = all(
-                        bool(_current_plug_float(node, "enabled"))
-                        for node in nodes_by_name.values()
+                        bool(_current_plug_float(node, attribute))
+                        for node, attribute in routes_by_name.values()
                     )
             else:
                 all_enabled = all(
-                    bool(_plug_float(node, "enabled", first_sample))
-                    for node in nodes_by_name.values()
+                    bool(_plug_float(node, attribute, first_sample))
+                    for node, attribute in routes_by_name.values()
                 )
             if all_enabled:
                 # A keyless production rig defaults to enabled=True.  Dense
@@ -2427,26 +2502,26 @@ class VmdSceneCollector:
             frame_sink(payload)
         timeline_reader = _MayaTimelineReader() if timeline_evaluation else None
 
-        def read_enabled(node: str, frame: float) -> bool:
+        def read_enabled(node: str, attribute: str, frame: float) -> bool:
             if timeline_reader is not None:
                 timeline_reader.set_frame(frame)
-                return bool(_current_plug_float(node, "enabled"))
-            return bool(_plug_float(node, "enabled", frame))
+                return bool(_current_plug_float(node, attribute))
+            return bool(_plug_float(node, attribute, frame))
 
         baseline_time = _ik_baseline_time(start_frame, end_frame)
         context = timeline_reader or nullcontext()
         with context:
             if (
                 not dense_sample
-                and nodes_by_name
+                and routes_by_name
                 and baseline_time is not None
                 and baseline_time not in all_keyed_frames
             ):
                 baseline_frame = _vmd_frame_number(baseline_time, time_converter)
                 if baseline_frame >= 0:
                     baseline_states = [
-                        (name, read_enabled(node, baseline_time))
-                        for name, node in sorted(nodes_by_name.items())
+                        (name, read_enabled(node, attribute, baseline_time))
+                        for name, (node, attribute) in sorted(routes_by_name.items())
                     ]
                     # A keyless production rig has enabled=True as its default.
                     # Omitting that redundant ON section keeps the exported VMD
@@ -2470,8 +2545,8 @@ class VmdSceneCollector:
                         "frame_number": vmd_frame,
                         "visible": True,
                         "ik_states": [
-                            (name, read_enabled(node, frame))
-                            for name, node in sorted(nodes_by_name.items())
+                            (name, read_enabled(node, attribute, frame))
+                            for name, (node, attribute) in sorted(routes_by_name.items())
                         ],
                     }
                 )
@@ -2492,6 +2567,48 @@ class VmdSceneCollector:
         if metadata["state"] == CONTROL_RIG_EDIT:
             raise ValueError("Bake the MMD control rig before VMD export")
         return True
+
+    def _control_rig_direct_export_plan(
+        self,
+        target_model: Optional[str],
+        requested_joints: Sequence[str],
+    ) -> Optional[dict[str, Any]]:
+        """Select keyed Controls while keeping MMD authored plugs as values."""
+
+        if not target_model:
+            return None
+        metadata = read_mmd_control_rig_metadata(target_model)
+        if not metadata or metadata.get("state") != CONTROL_RIG_EDIT:
+            return None
+        resolved = resolve_control_rig_direct_vmd_export_routes(target_model)
+        requested = {
+            str((cmds.ls(joint, long=True) or [joint])[0])
+            for joint in requested_joints
+        }
+        selected_joints = []
+        value_routes = {}
+        selector_key_times_by_joint = {}
+        for joint, candidate in resolved["candidates"].items():
+            if joint not in requested:
+                continue
+            key_times = set()
+            for plug in candidate["selectorPlugs"]:
+                node, separator, attribute = str(plug).rpartition(".")
+                if not separator:
+                    raise ValueError(f"invalid Control Rig selector plug: {plug}")
+                key_times.update(_key_times(node, (attribute,)))
+            key_times = sorted(key_times)
+            if not key_times:
+                continue
+            selected_joints.append(joint)
+            value_routes[joint] = dict(candidate["valueRoutes"])
+            selector_key_times_by_joint[joint] = key_times
+        return {
+            "joints": selected_joints,
+            "value_routes": value_routes,
+            "selector_key_times_by_joint": selector_key_times_by_joint,
+            "ik_state_routes": dict(resolved.get("ikStateRoutes", {})),
+        }
 
     @staticmethod
     def _rotation_time_curve_interpolation(
@@ -4468,6 +4585,48 @@ def _build_rotation_export_context(
             ).rotation(asQuaternion=True),
         }
     return result
+
+
+def _validate_direct_rotation_export_indices(
+    context_joints: Sequence[str],
+    selected_joints: Sequence[str],
+) -> None:
+    """Require an unambiguous indexed parent context for direct export."""
+
+    indices = {}
+    for joint in {
+        str((cmds.ls(item, long=True) or [item])[0]) for item in context_joints
+    }:
+        if not _has_attr(joint, "mmd_bone_index"):
+            continue
+        index = int(cmds.getAttr(f"{joint}.mmd_bone_index"))
+        prior = indices.get(index)
+        if prior is not None and prior != joint:
+            raise ValueError(
+                "direct Control Rig rotation context has duplicate bone index "
+                f"{index}: {prior}, {joint}"
+            )
+        indices[index] = joint
+    indexed = set(indices.values())
+    for item in selected_joints:
+        joint = str((cmds.ls(item, long=True) or [item])[0])
+        if joint not in indexed:
+            raise ValueError(
+                f"direct Control Rig rotation context has unindexed selected joint: {joint}"
+            )
+        while True:
+            parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
+            if not parents:
+                break
+            parent = str((cmds.ls(parents[0], long=True) or [parents[0]])[0])
+            if str(cmds.nodeType(parent) or "") != "joint":
+                break
+            if parent not in indexed:
+                raise ValueError(
+                    "direct Control Rig rotation context has an unindexed parent: "
+                    f"{parent} -> {joint}"
+                )
+            joint = parent
 
 
 def _joint_orient_quaternion(joint: str) -> om.MQuaternion:
