@@ -1256,12 +1256,14 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.cmds.node_types.update(
             {
                 "model_root": "transform",
+                "parent_joint": "joint",
                 "center_joint": "joint",
                 "center_control": "transform",
                 "center_authored": "transform",
             }
         )
-        self.cmds.children["model_root"] = ["center_joint"]
+        self.cmds.children["model_root"] = ["parent_joint"]
+        self.cmds.children["parent_joint"] = ["center_joint"]
         self.cmds.attrs[("center_joint", ATTR_MMD_BONE_NAME)] = "センター"
         self.cmds.keys[("center_control", "translateX")] = {
             0.0: 100.0,
@@ -1300,10 +1302,15 @@ class TestVmdSceneCollector(unittest.TestCase):
         }
         sampler = self._timeline_sampler()
 
+        rotation_context = mock.Mock(return_value={})
         with mock.patch.object(
             collector_module,
             "resolve_control_rig_direct_vmd_export_routes",
             return_value=resolved,
+        ), mock.patch.object(
+            collector_module,
+            "_build_rotation_export_context",
+            rotation_context,
         ):
             collector_module.read_mmd_control_rig_metadata = lambda _model: {
                 "state": "EDIT",
@@ -1312,6 +1319,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             _collector, result, sink = self._collect_to_sink(
                 {
                     "target_model": "model_root",
+                    "joints": ["center_joint"],
                     "export_strategy": "bake_timeline",
                     "frame_range": (0, 2),
                     "bake_timeline_exact_run_reduction": False,
@@ -1335,6 +1343,7 @@ class TestVmdSceneCollector(unittest.TestCase):
             sampler.bone_calls[0][2]["center_joint"]["translateX"],
             ("center_authored", "translateX"),
         )
+        rotation_context.assert_called_once_with(["parent_joint", "center_joint"])
         ik_frames = [frame for section, frame in sink.frames if section == "ik"]
         self.assertEqual(result["section_counts"]["ik"], 3)
         self.assertEqual(

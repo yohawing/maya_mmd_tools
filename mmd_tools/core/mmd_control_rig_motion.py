@@ -277,10 +277,10 @@ def resolve_control_rig_direct_vmd_export_routes(
             _validate_direct_export_selector_writer(cmds, selector_plug)
 
         value_routes: Dict[str, Tuple[str, str]] = {}
-        owned_targets = _owned_authored_plugs(role, binding, cmds_module=cmds)
+        owned_targets = _expanded_authored_plugs(binding, cmds_module=cmds)
         for target in owned_targets:
             logical_channel = _control_channel_for_target(target)
-            if logical_channel not in allowed_channels:
+            if logical_channel not in _CHANNELS:
                 continue
             if logical_channel in value_routes:
                 raise MmdControlRigBuildError(
@@ -292,49 +292,71 @@ def resolve_control_rig_direct_vmd_export_routes(
                 raise MmdControlRigBuildError(
                     f"multiple Control Rig roles claim authored plug: {canonical_target}"
                 )
-            expected_control = _canonical_plug(
-                cmds,
-                f"{control}.{logical_channel}",
-            )
-            matching_rows = [
-                row
-                for row in channel_rows
-                if _canonical_plug(cmds, str(row["target"])) == canonical_target
-            ]
-            if len(matching_rows) != 1:
-                raise MmdControlRigBuildError(
-                    f"EDIT journal must contain exactly one authored route: {canonical_target}"
+            if logical_channel in allowed_channels:
+                expected_control = _canonical_plug(
+                    cmds,
+                    f"{control}.{logical_channel}",
                 )
-            if _canonical_plug(cmds, str(matching_rows[0]["control"])) != expected_control:
-                raise MmdControlRigBuildError(
-                    f"EDIT journal control does not match binding: {canonical_target}"
-                )
-            incoming = _incoming_plugs(cmds, canonical_target)
-            writer_owned = len(incoming) == 1 and _owned_writer_reaches_control(
-                cmds, incoming[0], set(selector_plugs), owned_nodes
-            )
-            layer_route = matching_rows[0].get("layerRoute")
-            if not writer_owned and isinstance(layer_route, Mapping):
-                blend_output = layer_route.get("blendOutput")
-                blend_input = layer_route.get("blend")
-                blend_sources = _incoming_plugs(cmds, str(blend_input)) if blend_input else ()
-                writer_owned = bool(
-                    len(incoming) == 1
-                    and blend_output
-                    and _canonical_plug(cmds, incoming[0])
-                    == _canonical_plug(cmds, str(blend_output))
-                    and len(blend_sources) == 1
-                    and _owned_writer_reaches_control(
-                        cmds,
-                        blend_sources[0],
-                        set(selector_plugs),
-                        owned_nodes,
+                matching_rows = [
+                    row
+                    for row in channel_rows
+                    if _canonical_plug(cmds, str(row["target"])) == canonical_target
+                ]
+                if len(matching_rows) != 1:
+                    raise MmdControlRigBuildError(
+                        "EDIT journal must contain exactly one authored route: "
+                        f"{canonical_target}"
                     )
+                if (
+                    _canonical_plug(cmds, str(matching_rows[0]["control"]))
+                    != expected_control
+                ):
+                    raise MmdControlRigBuildError(
+                        f"EDIT journal control does not match binding: {canonical_target}"
+                    )
+                incoming = _incoming_plugs(cmds, canonical_target)
+                family = (
+                    "translate" if logical_channel.startswith("translate") else "rotate"
                 )
-            if not writer_owned:
-                raise MmdControlRigBuildError(
-                    "authored plug has an unknown Control Rig writer: "
-                    f"{canonical_target}; incoming={incoming!r}"
+                family_selectors = {
+                    plug
+                    for plug in selector_plugs
+                    if plug.rsplit(".", 1)[-1].startswith(family)
+                }
+                writer_owned = len(incoming) == 1 and _owned_writer_reaches_control(
+                    cmds, incoming[0], family_selectors, owned_nodes
+                )
+                layer_route = matching_rows[0].get("layerRoute")
+                if not writer_owned and isinstance(layer_route, Mapping):
+                    blend_output = layer_route.get("blendOutput")
+                    blend_input = layer_route.get("blend")
+                    blend_sources = (
+                        _incoming_plugs(cmds, str(blend_input)) if blend_input else ()
+                    )
+                    writer_owned = bool(
+                        len(incoming) == 1
+                        and blend_output
+                        and _canonical_plug(cmds, incoming[0])
+                        == _canonical_plug(cmds, str(blend_output))
+                        and len(blend_sources) == 1
+                        and _owned_writer_reaches_control(
+                            cmds,
+                            blend_sources[0],
+                            family_selectors,
+                            owned_nodes,
+                        )
+                    )
+                if not writer_owned:
+                    raise MmdControlRigBuildError(
+                        "authored plug has an unknown Control Rig writer: "
+                        f"{canonical_target}; incoming={incoming!r}"
+                    )
+            else:
+                # A non-keyable sibling family can still be the pre-morph value
+                # authority for the same bone.  It is not a selector, but it must
+                # be sampled instead of falling back to the post-morph joint.
+                _validate_direct_export_unowned_value_writer(
+                    cmds, canonical_target, owned_nodes, joint
                 )
             node, _separator, attribute = canonical_target.rpartition(".")
             value_routes[logical_channel] = (node, attribute)
@@ -393,11 +415,13 @@ def resolve_control_rig_direct_vmd_export_routes(
                     raise MmdControlRigBuildError(
                         f"IK solver has an unknown Control Rig writer: {target}"
                     )
-            if bone_name in ik_state_routes:
-                raise MmdControlRigBuildError(
-                    f"multiple Control Rig bindings claim IK state name: {bone_name}"
-                )
-            ik_state_routes[bone_name] = (control, "ikEnabled")
+            for solver in solvers:
+                ik_name = _required_ik_bone_name(cmds, solver)
+                if ik_name in ik_state_routes:
+                    raise MmdControlRigBuildError(
+                        f"multiple Control Rig bindings claim IK state name: {ik_name}"
+                    )
+                ik_state_routes[ik_name] = (control, "ikEnabled")
         claimed_controls[control] = joint
         claimed_names[bone_name] = joint
 
@@ -449,6 +473,24 @@ def _required_mmd_bone_name(cmds, joint: str) -> str:
     name = str(cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}") or "")
     if not name:
         raise MmdControlRigBuildError(f"MMD bone name metadata is empty: {joint}")
+    return name
+
+
+def _required_ik_bone_name(cmds, solver: str) -> str:
+    """Return the solver-owned VMD IK property name without joint-name fallback."""
+
+    attribute = "mmd_ik_bone_name"
+    if not cmds.attributeQuery(attribute, node=solver, exists=True):
+        raise MmdControlRigBuildError(f"IK solver has no VMD bone name: {solver}")
+    try:
+        value = cmds.getAttr(f"{solver}.{attribute}")
+    except Exception as exc:
+        raise MmdControlRigBuildError(
+            f"could not read IK solver VMD bone name: {solver}"
+        ) from exc
+    name = str(value or "")
+    if not name:
+        raise MmdControlRigBuildError(f"IK solver has an empty VMD bone name: {solver}")
     return name
 
 
@@ -510,6 +552,53 @@ def _validate_direct_export_selector_writer(cmds, plug: str) -> None:
         )
 
 
+def _validate_direct_export_unowned_value_writer(
+    cmds,
+    target: str,
+    owned_nodes: Set[str],
+    joint: str,
+) -> None:
+    """Accept static/safe inputs and UUID-owned authoring helper outputs only."""
+
+    incoming = _incoming_plugs(cmds, target)
+    if len(incoming) > 1:
+        raise MmdControlRigBuildError(
+            f"multiple Control Rig value writers: {target}"
+        )
+    if not incoming:
+        return
+    source = incoming[0]
+    source_node = _canonical_node_name(cmds, source.split(".", 1)[0])
+    if source_node in owned_nodes or _is_binding_vmd_authoring_proxy(
+        cmds, source_node, joint
+    ):
+        _validate_direct_export_selector_writer(cmds, source)
+        return
+    _validate_direct_export_selector_writer(cmds, target)
+
+
+def _is_binding_vmd_authoring_proxy(cmds, node: str, joint: str) -> bool:
+    """Prove that a world-level VMD proxy is message-owned by this joint."""
+
+    marker = "mmd_vmd_authoring_proxy"
+    target_attribute = "mmd_vmd_authoring_target"
+    try:
+        if str(cmds.nodeType(node) or "") != "transform":
+            return False
+        if not cmds.attributeQuery(marker, node=node, exists=True) or not bool(
+            cmds.getAttr(f"{node}.{marker}")
+        ):
+            return False
+        if not cmds.attributeQuery(target_attribute, node=node, exists=True):
+            return False
+        targets = _incoming_plugs(cmds, f"{node}.{target_attribute}")
+        return len(targets) == 1 and _canonical_plug(
+            cmds, targets[0]
+        ) == _canonical_plug(cmds, f"{joint}.message")
+    except Exception:
+        return False
+
+
 def _owned_writer_reaches_control(
     cmds,
     source: str,
@@ -567,9 +656,14 @@ def _require_complete_direct_export_families(
                 f"partial Control Rig selector family: {role}.{family}"
             )
         actual = {channel for channel in value_routes if channel.startswith(family)}
-        if actual != expected:
+        complete = {f"{family}{axis}" for axis in "XYZ"}
+        if actual and actual != complete:
             raise MmdControlRigBuildError(
                 f"partial Control Rig value route: {role}.{family}"
+            )
+        if expected and actual != complete:
+            raise MmdControlRigBuildError(
+                f"missing Control Rig value route: {role}.{family}"
             )
 
 

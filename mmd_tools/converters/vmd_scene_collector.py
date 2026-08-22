@@ -1027,6 +1027,8 @@ class VmdSceneCollector:
                 target_model,
                 joints,
             )
+            if direct_control_rig_plan is not None and target_model:
+                rotation_context_joints = list(self._find_joints(target_model))
             direct_ik_routes = (
                 direct_control_rig_plan.get("ik_state_routes")
                 if direct_control_rig_plan is not None

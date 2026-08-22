@@ -31,6 +31,8 @@ class _DirectExportCmds:
             "|model|jointA": "上半身",
             "|model|jointB": "上半身2",
         }
+        self.ik_names = {}
+        self.custom_attrs = {}
         self.incoming = {}
         self.node_types = {}
 
@@ -45,12 +47,20 @@ class _DirectExportCmds:
 
     def attributeQuery(self, attribute, *, node, exists=False):
         assert exists
-        return attribute == ATTR_MMD_BONE_NAME and node in self.bone_names
+        if attribute == ATTR_MMD_BONE_NAME:
+            return node in self.bone_names
+        if attribute == "mmd_ik_bone_name":
+            return node in self.ik_names
+        return (node, attribute) in self.custom_attrs
 
     def getAttr(self, plug):
         node, attribute = plug.rsplit(".", 1)
         if attribute == ATTR_MMD_BONE_NAME:
             return self.bone_names.get(node)
+        if attribute == "mmd_ik_bone_name":
+            return self.ik_names.get(node)
+        if (node, attribute) in self.custom_attrs:
+            return self.custom_attrs[(node, attribute)]
         raise AssertionError(f"unexpected getAttr: {plug}")
 
     def listConnections(self, target, **_kwargs):
@@ -306,6 +316,132 @@ class TestControlRigDirectVmdExport(unittest.TestCase):
                 )
             },
         )
+
+    def test_rotate_selector_keeps_pre_morph_translate_value_family(self):
+        cmds = _DirectExportCmds()
+        control = "|model|controls|controlA"
+        joint = "|model|jointA"
+        accum = "upper_body_boneMorphAccum"
+        cmds.nodes_by_uuid["accum-uuid"] = accum
+        cmds.node_types[accum] = "mmdBoneMorphAccum"
+        authored_channels = tuple(
+            f"base{family}{axis}"
+            for family in ("Translate", "Rotate")
+            for axis in "XYZ"
+        )
+        rotate_channels = ("rotateX", "rotateY", "rotateZ")
+        rotate_targets = tuple(f"baseRotate{axis}" for axis in "XYZ")
+        for control_channel, target_channel in zip(
+            rotate_channels, rotate_targets
+        ):
+            cmds.incoming[f"{accum}.{target_channel}"] = (
+                f"{control}.{control_channel}",
+            )
+        rows = [
+            {
+                "control": f"{control}.{control_channel}",
+                "target": f"{accum}.{target_channel}",
+            }
+            for control_channel, target_channel in zip(
+                rotate_channels, rotate_targets
+            )
+        ]
+
+        result = _resolve(
+            cmds,
+            _metadata(
+                {
+                    "upper_body": _binding(
+                        "joint-a-uuid",
+                        "accum-uuid",
+                        channels=authored_channels,
+                        input_kind="bone_morph_base",
+                    )
+                }
+            ),
+            {"upper_body": control},
+            rows,
+        )
+
+        self.assertEqual(
+            set(result["candidates"][joint]["valueRoutes"]),
+            {
+                "translateX",
+                "translateY",
+                "translateZ",
+                "rotateX",
+                "rotateY",
+                "rotateZ",
+            },
+        )
+
+    def test_unowned_family_accepts_uuid_owned_authoring_helper(self):
+        cmds = _DirectExportCmds()
+        control = "|model|controls|controlA"
+        joint = "|model|jointA"
+        accum = "upper_body_boneMorphAccum"
+        helper = "upper_body_vmdAuthoring"
+        curve = "upper_body_translateX_curve"
+        cmds.nodes_by_uuid.update(
+            {"accum-uuid": accum, "helper-uuid": helper}
+        )
+        cmds.node_types.update(
+            {
+                accum: "mmdBoneMorphAccum",
+                helper: "transform",
+                curve: "animCurveTL",
+            }
+        )
+        authored_channels = tuple(
+            f"base{family}{axis}"
+            for family in ("Translate", "Rotate")
+            for axis in "XYZ"
+        )
+        cmds.incoming[f"{accum}.baseTranslateX"] = (f"{helper}.translateX",)
+        cmds.incoming[f"{helper}.translateX"] = (f"{curve}.output",)
+        rotate_channels = ("rotateX", "rotateY", "rotateZ")
+        rotate_targets = tuple(f"baseRotate{axis}" for axis in "XYZ")
+        for control_channel, target_channel in zip(
+            rotate_channels, rotate_targets
+        ):
+            cmds.incoming[f"{accum}.{target_channel}"] = (
+                f"{control}.{control_channel}",
+            )
+        metadata = _metadata(
+            {
+                "upper_body": _binding(
+                    "joint-a-uuid",
+                    "accum-uuid",
+                    channels=authored_channels,
+                    input_kind="bone_morph_base",
+                )
+            }
+        )
+        marker = "mmd_vmd_authoring_proxy"
+        target_attribute = "mmd_vmd_authoring_target"
+        cmds.custom_attrs[(helper, marker)] = True
+        cmds.custom_attrs[(helper, target_attribute)] = None
+        cmds.incoming[f"{helper}.{target_attribute}"] = (f"{joint}.message",)
+
+        result = _resolve(
+            cmds,
+            metadata,
+            {"upper_body": control},
+            [
+                {
+                    "control": f"{control}.{control_channel}",
+                    "target": f"{accum}.{target_channel}",
+                }
+                for control_channel, target_channel in zip(
+                    rotate_channels, rotate_targets
+                )
+            ],
+        )
+
+        self.assertEqual(
+            result["candidates"][joint]["valueRoutes"]["translateX"],
+            (accum, "baseTranslateX"),
+        )
     def test_accepts_journal_validated_animation_layer_output(self):
         cmds = _DirectExportCmds()
         control = "|model|controls|controlA"
@@ -360,6 +496,7 @@ class TestControlRigDirectVmdExport(unittest.TestCase):
         solver = "left_leg_ik_mmdCcdIk"
         channels = ("translateX", "translateY", "translateZ")
         cmds.nodes_by_uuid["solver-uuid"] = solver
+        cmds.ik_names[solver] = "左足ＩＫ"
         _connect_direct_value_routes(cmds, control, joint, channels)
         cmds.incoming[f"{solver}.enabled"] = (f"{control}.ikEnabled",)
         binding = _binding(
@@ -385,5 +522,5 @@ class TestControlRigDirectVmdExport(unittest.TestCase):
 
         self.assertEqual(
             result["ikStateRoutes"],
-            {"上半身": (control, "ikEnabled")},
+            {"左足ＩＫ": (control, "ikEnabled")},
         )
