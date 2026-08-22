@@ -642,6 +642,71 @@ def _vmd_role_diagnostics(vmd_data) -> dict[str, dict[str, Any]]:
     return dict(sorted(rows.items()))
 
 
+def _vmd_applicability_candidates(vmd_data, joint_for_name) -> list[dict[str, Any]]:
+    """Return mapped VMD keys whose values changed from that bone's first key.
+
+    A VMD key can be non-zero without being motion: imported fixtures commonly
+    repeat the authored initial pose at later non-zero frames.  Use each bone's
+    first key as its source baseline and leave the Maya world-space comparison
+    to the caller.
+    """
+
+    by_bone: dict[str, list[Any]] = {}
+    for frame in getattr(vmd_data, "bone_frames", []) or []:
+        by_bone.setdefault(str(frame.bone_name), []).append(frame)
+
+    result = []
+    for bone_name, frames in sorted(by_bone.items()):
+        ordered = sorted(frames, key=lambda item: int(item.frame_number))
+        if len(ordered) < 2:
+            continue
+        joint = joint_for_name(bone_name)
+        if not joint:
+            continue
+        baseline = ordered[0]
+        baseline_frame = int(baseline.frame_number)
+        baseline_position = [float(value) for value in baseline.position]
+        baseline_rotation = [float(value) for value in baseline.rotation]
+        for candidate in ordered[1:]:
+            candidate_frame = int(candidate.frame_number)
+            if candidate_frame <= baseline_frame:
+                continue
+            candidate_position = [float(value) for value in candidate.position]
+            candidate_rotation = [float(value) for value in candidate.rotation]
+            position_delta = max(
+                (abs(after - before) for before, after in zip(baseline_position, candidate_position)),
+                default=0.0,
+            )
+            rotation_delta = max(
+                (abs(after - before) for before, after in zip(baseline_rotation, candidate_rotation)),
+                default=0.0,
+            )
+            source_delta = max(position_delta, rotation_delta)
+            if source_delta <= MOVE_EPSILON:
+                continue
+            result.append(
+                {
+                    "bone": bone_name,
+                    "joint": str(joint),
+                    "baseline": baseline,
+                    "candidate": candidate,
+                    "baselineFrame": baseline_frame,
+                    "candidateFrame": candidate_frame,
+                    "baselinePosition": baseline_position,
+                    "baselineRotation": baseline_rotation,
+                    "candidatePosition": candidate_position,
+                    "candidateRotation": candidate_rotation,
+                    "sourcePositionMaxAbsDelta": position_delta,
+                    "sourceRotationMaxAbsDelta": rotation_delta,
+                    "sourceMaxAbsDelta": source_delta,
+                }
+            )
+            # One real source-motion witness per bone is sufficient and keeps
+            # Maya time evaluation/report size bounded for dense VMD files.
+            break
+    return result
+
+
 def _record_control_rig_diagnostics(
     report: dict[str, Any],
     profile: Mapping[str, Any],
@@ -1024,49 +1089,73 @@ def run_e2e_check(
             )
 
         sample = None
-        sample_joint = None
-        for candidate in sorted(
-            source_vmd.bone_frames,
-            key=lambda item: (int(item.frame_number), str(item.bone_name)),
+        checked_candidates = []
+        for candidate in _vmd_applicability_candidates(
+            source_vmd, lambda name: _find_joint_for_mmd_name(name, cmds)
         ):
-            has_payload = any(abs(float(value)) > MOVE_EPSILON for value in candidate.position)
-            has_payload = has_payload or abs(float(candidate.rotation[3]) - 1.0) > MOVE_EPSILON
-            if not has_payload or int(candidate.frame_number) <= 0:
-                continue
-            joint = _find_joint_for_mmd_name(candidate.bone_name, cmds)
-            if joint:
-                sample = candidate
-                sample_joint = joint
+            cmds.currentTime(candidate["baselineFrame"], edit=True)
+            cmds.refresh(force=True)
+            sample_before = _matrix(candidate["joint"], cmds)
+            cmds.currentTime(candidate["candidateFrame"], edit=True)
+            cmds.refresh(force=True)
+            sample_after = _matrix(candidate["joint"], cmds)
+            world_delta = max(
+                (abs(actual - expected) for actual, expected in zip(sample_before, sample_after)),
+                default=0.0,
+            )
+            checked_candidates.append(
+                {
+                    "bone": candidate["bone"],
+                    "baselineFrame": candidate["baselineFrame"],
+                    "candidateFrame": candidate["candidateFrame"],
+                    "sourceMaxAbsDelta": candidate["sourceMaxAbsDelta"],
+                    "worldMatrixMaxAbsDelta": world_delta,
+                }
+            )
+            if world_delta > MOVE_EPSILON:
+                sample = {**candidate, "worldMatrixMaxAbsDelta": world_delta}
                 break
-        if sample is None or sample_joint is None:
-            raise RuntimeError("fixture VMD has no non-rest keyed bone mapped to a Maya joint")
-        cmds.currentTime(0, edit=True)
-        cmds.refresh(force=True)
-        sample_before = _matrix(sample_joint, cmds)
-        cmds.currentTime(int(sample.frame_number), edit=True)
-        cmds.refresh(force=True)
-        sample_after = _matrix(sample_joint, cmds)
-        sample_delta = max(
-            (abs(actual - expected) for actual, expected in zip(sample_before, sample_after)),
-            default=0.0,
-        )
+        if sample is None:
+            report["vmdApplicability"]["checkedCandidates"] = checked_candidates
+            raise RuntimeError(
+                "fixture VMD has no mapped key with both source and world-space motion"
+            )
         report["vmdApplicability"].update(
             {
-                "sampleBone": str(sample.bone_name),
-                "sampleJoint": sample_joint,
-                "sampleFrame": int(sample.frame_number),
-                "samplePosition": [float(value) for value in sample.position],
-                "sampleRotation": [float(value) for value in sample.rotation],
-                "sampleWorldMatrixMaxAbsDelta": sample_delta,
-                "pass": sample_delta > MOVE_EPSILON,
+                "sampleBone": sample["bone"],
+                "sampleJoint": sample["joint"],
+                "sampleFrame": sample["candidateFrame"],
+                "samplePosition": sample["candidatePosition"],
+                "sampleRotation": sample["candidateRotation"],
+                "baselineFrame": sample["baselineFrame"],
+                "baselinePosition": sample["baselinePosition"],
+                "baselineRotation": sample["baselineRotation"],
+                "candidateFrame": sample["candidateFrame"],
+                "candidatePosition": sample["candidatePosition"],
+                "candidateRotation": sample["candidateRotation"],
+                "sourcePositionMaxAbsDelta": sample["sourcePositionMaxAbsDelta"],
+                "sourceRotationMaxAbsDelta": sample["sourceRotationMaxAbsDelta"],
+                "sourceMaxAbsDelta": sample["sourceMaxAbsDelta"],
+                "sampleWorldMatrixMaxAbsDelta": sample["worldMatrixMaxAbsDelta"],
+                "checkedCandidates": checked_candidates,
+                "pass": (
+                    sample["sourceMaxAbsDelta"] > MOVE_EPSILON
+                    and sample["worldMatrixMaxAbsDelta"] > MOVE_EPSILON
+                ),
             }
         )
         _log(
-            "VMD applicability: boneFrames=%d sample=%s@%d worldMatrixMaxAbsDelta=%.8f"
-            % (len(source_vmd.bone_frames), sample.bone_name, sample.frame_number, sample_delta)
+            "VMD applicability: boneFrames=%d sample=%s baseline=%d candidate=%d "
+            "sourceMaxAbsDelta=%.8f worldMatrixMaxAbsDelta=%.8f"
+            % (
+                len(source_vmd.bone_frames),
+                sample["bone"],
+                sample["baselineFrame"],
+                sample["candidateFrame"],
+                sample["sourceMaxAbsDelta"],
+                sample["worldMatrixMaxAbsDelta"],
+            )
         )
-        if sample_delta <= MOVE_EPSILON:
-            raise RuntimeError("imported VMD has keyed data but no non-rest world effect")
 
         baseline_cycle = _cycle_state("after_vmd_import", cmds)
         report["cycles"].append(baseline_cycle)
