@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tests.common.maya_stub import install_maya_stub, _is_real_maya_present
+from tests.common.maya_stub import install_maya_stub, install_qt_stub, _is_real_maya_present
 
 _real_maya = _is_real_maya_present()
 if not _real_maya:
@@ -21,7 +21,16 @@ if not _real_maya:
 # cannot bind the Windows native backend first.
 from tests.common.qsettings_isolation import activate_qsettings_isolation  # noqa: E402
 
-activate_qsettings_isolation()
+try:
+    activate_qsettings_isolation()
+except ModuleNotFoundError as exc:
+    # ``ci_unit`` deliberately runs the importable pure-Python subset without
+    # PySide.  Install the local Qt contract stub so GUI runner tests still use
+    # the same mandatory QSettings isolation path as a real Qt process.
+    if exc.name not in {"PySide2", "PySide6"}:
+        raise
+    install_qt_stub()
+    activate_qsettings_isolation()
 
 
 def _uses_real_maya_class(cls):
