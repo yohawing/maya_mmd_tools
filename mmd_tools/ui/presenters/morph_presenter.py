@@ -444,9 +444,7 @@ class MorphPresenter:
                 )
             targets = tuple(projected.runtime_targets)
             if not projected.semantic_registered:
-                expected_targets = tuple(
-                    binding.weight_plug for binding in projected.bindings
-                )
+                expected_targets = tuple(projected.runtime_targets)
                 if not expected_targets:
                     raise ValueError("runtime-only morph has no canonical preview targets")
             elif projection.controller_identity:
@@ -875,6 +873,8 @@ class MorphPresenter:
         if self._preview_coordinator is None or not self._loaded_model_root:
             raise RuntimeError("Morph preview coordinator is unavailable")
         data = self.morph_data[morph_name]
+        if self._morph_capability_cache.get(id(data)) is False:
+            raise RuntimeError("Morph projection does not support runtime preview")
         targets = tuple(data.get("runtime_targets") or ())
         if not targets and self._morph_controller:
             index = data.get("index")

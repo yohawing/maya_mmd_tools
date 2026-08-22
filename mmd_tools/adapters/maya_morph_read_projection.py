@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -244,6 +245,10 @@ class MayaMorphReadProjectionAdapter:
                     semantic_registered=False,
                 )
             )
+        if not projected:
+            legacy = self._read_legacy_controller_projection(root)
+            if legacy is not None:
+                return legacy
         return MorphBlendShapeReadProjection(
             root_identity=root,
             controller_identity="",
@@ -252,6 +257,145 @@ class MayaMorphReadProjectionAdapter:
             morphs=tuple(projected),
             owned_non_intermediate_mesh_identities=non_intermediate_meshes,
         )
+
+    def _read_legacy_controller_projection(
+        self, root: str
+    ) -> Optional[MorphBlendShapeReadProjection]:
+        """Keep controller-backed legacy metadata usable without graph lookup.
+
+        Older imported scenes can retain only ``mmdMorphData`` plus the root's
+        controller link.  Material morphs have no blendShape destination, so
+        an otherwise valid controller input must remain the preview target
+        when the optional network-node lookup has no result.
+        """
+
+        if not self._call("attribute_exists", "mmdMorphData", root):
+            return None
+        if not self._call("attribute_exists", "mmd_morph_controller", root):
+            return None
+        controllers = self._call(
+            "list_connections",
+            f"{root}.mmd_morph_controller",
+            source=True,
+            destination=False,
+        ) or ()
+        if len(controllers) != 1:
+            return None
+        controller = self._canonical_identity(controllers[0], "morph controller")
+        if not (
+            self._call("attribute_exists", "inputWeight", controller)
+            and self._call("attribute_exists", "outputWeight", controller)
+        ):
+            return None
+        if not self._legacy_controller_is_owned(root, controller):
+            return None
+        raw = self._call("get_attr", f"{root}.mmdMorphData")
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        if isinstance(parsed, dict):
+            entries = []
+            for name, value in parsed.items():
+                if not isinstance(value, dict):
+                    return None
+                entry = dict(value)
+                entry.setdefault("name_jp", name)
+                entries.append(entry)
+        elif isinstance(parsed, list):
+            entries = parsed
+        else:
+            return None
+
+        projections = []
+        seen_indices = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return None
+            index = entry.get("index")
+            if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+                return None
+            name = entry.get("name_jp") or entry.get("name") or entry.get("name_en")
+            if not isinstance(name, str) or not name or index in seen_indices:
+                return None
+            seen_indices.add(index)
+            try:
+                raw_type = int(entry.get("type", 1))
+            except (TypeError, ValueError):
+                return None
+            target = f"{controller}.inputWeight[{index}]"
+            runtime_supported = raw_type in {1, 2, 8}
+            if runtime_supported:
+                destinations = self._call(
+                    "list_connections",
+                    f"{controller}.outputWeight[{index}]",
+                    source=False,
+                    destination=True,
+                    plugs=True,
+                ) or ()
+                destinations = self._require_sequence(
+                    destinations,
+                    "legacy controller output destinations",
+                )
+                runtime_supported = bool(
+                    destinations
+                    and all(isinstance(destination, str) and destination for destination in destinations)
+                )
+            projections.append(
+                MorphBindingProjection(
+                    raw_pmx_name=name,
+                    global_morph_index=index,
+                    binding_identity=target,
+                    bindings=(),
+                    warnings=(),
+                    runtime_preview_plugs=(target,),
+                    runtime_supported=runtime_supported,
+                    unsupported_reason=(
+                        "" if runtime_supported else "runtime_output_unsupported"
+                    ),
+                    semantic_registered=False,
+                )
+            )
+        if not projections:
+            return None
+        return MorphBlendShapeReadProjection(
+            root_identity=root,
+            controller_identity=controller,
+            owned_mesh_identities=(),
+            owned_blend_shape_identities=(),
+            morphs=tuple(sorted(projections, key=lambda item: item.global_morph_index)),
+            owned_non_intermediate_mesh_identities=(),
+        )
+
+    def _legacy_controller_is_owned(self, root: str, controller: str) -> bool:
+        """Require the legacy controller to belong only to this model root."""
+
+        destinations = self._call(
+            "list_connections",
+            f"{controller}.message",
+            source=False,
+            destination=True,
+            plugs=True,
+        ) or ()
+        destinations = self._require_sequence(
+            destinations,
+            "legacy controller message destinations",
+        )
+        if len(destinations) != 1:
+            return False
+        destination = destinations[0]
+        if not isinstance(destination, str) or "." not in destination:
+            return False
+        destination_node, destination_attr = destination.rsplit(".", 1)
+        if destination_attr != "mmd_morph_controller":
+            return False
+        try:
+            return self._canonical_identity(
+                destination_node,
+                "legacy controller destination",
+            ) == root
+        except MayaMorphReadProjectionError:
+            return False
 
     @staticmethod
     def _runtime_weight_index(value: object, blend_shape: str) -> int:

@@ -911,6 +911,8 @@ class TestMorphPresenterHeadless(unittest.TestCase):
              "runtime_supported": False},))
         self.assertFalse(presenter._morph_controls_supported(presenter.morph_data["material"]))
         self.assertFalse(any(call[0] == "list_connections" for call in adapter.calls))
+        with self.assertRaisesRegex(RuntimeError, "does not support runtime preview"):
+            presenter._preview_targets_for_morph("material")
 
     def test_cached_material_capability_does_not_depend_on_shader_route(self):
         presenter, _, adapter = self._load_snapshot_rows((

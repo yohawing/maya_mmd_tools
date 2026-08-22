@@ -125,6 +125,32 @@ class FakeMayaAdapter:
         raise KeyError(plug)
 
 
+class LegacyControllerFakeMayaAdapter(FakeMayaAdapter):
+    """Minimal legacy scene with controller-backed morph metadata only."""
+
+    def __init__(self):
+        super().__init__()
+        self.meshes = []
+        self.blend_shapes = set()
+        self.connections["controller.message"] = ["|root.mmd_morph_controller"]
+        self.connections["controller.outputWeight[5]"] = ["material.weight"]
+        self.legacy_morph_data = json.dumps(
+            [{"name_jp": "Material", "index": 5, "type": 8}]
+        )
+
+    def attribute_exists(self, attr, node):
+        if attr == "mmdMorphData":
+            return node == "|root"
+        if attr in {"inputWeight", "outputWeight"}:
+            return node == "controller"
+        return super().attribute_exists(attr, node)
+
+    def get_attr(self, plug, **kwargs):
+        if plug == "|root.mmdMorphData":
+            return self.legacy_morph_data
+        return super().get_attr(plug, **kwargs)
+
+
 def _hashable(value):
     return tuple(value) if isinstance(value, list) else value
 
@@ -427,3 +453,64 @@ def test_runtime_only_projection_rejects_duplicate_alias_on_one_blendshape() -> 
 
     with pytest.raises(MayaMorphReadProjectionError, match="duplicate blendShape alias"):
         MayaMorphReadProjectionAdapter(maya).read_runtime_only_projection("root")
+
+
+def test_runtime_only_projection_uses_controller_input_for_legacy_material_metadata() -> None:
+    maya = LegacyControllerFakeMayaAdapter()
+
+    projection = MayaMorphReadProjectionAdapter(maya).read_runtime_only_projection("root")
+
+    assert projection.controller_identity == "controller"
+    assert len(projection.morphs) == 1
+    material = projection.morphs[0]
+    assert material.raw_pmx_name == "Material"
+    assert material.runtime_targets == ("controller.inputWeight[5]",)
+    assert material.runtime_supported is True
+    assert material.bindings == ()
+    assert material.semantic_registered is False
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda maya: maya.connections.__setitem__(
+            "|root.mmd_morph_controller", ["controller", "otherController"]
+        ),
+        lambda maya: setattr(maya, "legacy_morph_data", "not-json"),
+    ],
+)
+def test_runtime_only_projection_does_not_fabricate_legacy_projection(
+    mutation,
+) -> None:
+    maya = LegacyControllerFakeMayaAdapter()
+    mutation(maya)
+
+    projection = MayaMorphReadProjectionAdapter(maya).read_runtime_only_projection("root")
+
+    assert projection.controller_identity == ""
+    assert projection.morphs == ()
+
+
+def test_runtime_only_projection_rejects_controller_shared_with_foreign_root() -> None:
+    maya = LegacyControllerFakeMayaAdapter()
+    maya.connections["controller.message"] = [
+        "|root.mmd_morph_controller",
+        "|foreignRoot.mmd_morph_controller",
+    ]
+
+    projection = MayaMorphReadProjectionAdapter(maya).read_runtime_only_projection("root")
+
+    assert projection.controller_identity == ""
+    assert projection.morphs == ()
+
+
+def test_runtime_only_projection_marks_disconnected_supported_output_unsupported() -> None:
+    maya = LegacyControllerFakeMayaAdapter()
+    maya.connections.pop("controller.outputWeight[5]")
+
+    projection = MayaMorphReadProjectionAdapter(maya).read_runtime_only_projection("root")
+
+    assert projection.controller_identity == "controller"
+    assert projection.morphs[0].runtime_targets == ("controller.inputWeight[5]",)
+    assert projection.morphs[0].runtime_supported is False
+    assert projection.morphs[0].unsupported_reason == "runtime_output_unsupported"
