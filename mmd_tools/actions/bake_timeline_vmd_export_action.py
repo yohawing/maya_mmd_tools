@@ -148,7 +148,7 @@ def _augment_dependency_bake_report(
     rows = direct.get("dependency_baked")
     if not isinstance(rows, (list, tuple)):
         return report
-    issues = list(report.issues)
+    appended_issues = []
     for row in rows:
         if not isinstance(row, Mapping):
             continue
@@ -165,19 +165,24 @@ def _augment_dependency_bake_report(
             key_count = int(row.get("generated_key_count", 0))
         except (TypeError, ValueError):
             key_count = 0
-        issues.append(
+        appended_issues.append(
             ExportValidationIssue(
-                "VMD_CONTROL_RIG_ROUTE_UNRESOLVED",
+                "ROUTE_UNRESOLVED",
                 "info" if bool(row.get("static")) else "warning",
                 False,
                 f"scene.control_rig.direct_vmd_export.{bone}.dependency_bake",
                 f"Bone: {bone}; Frame range: {frame_text}; Generated key count: {key_count}; "
                 "Reason: This bone has no dedicated Control Rig mapping, so its evaluated motion was baked.",
+                details={
+                    "route": "dependency_bake",
+                    "bone": bone,
+                    "frame_range": list(frame_range) if isinstance(frame_range, (list, tuple)) and len(frame_range) == 2 else None,
+                    "generated_key_count": key_count,
+                    "aggregation_discriminator": "route",
+                },
             )
         )
-    return report if len(issues) == len(report.issues) else ExportValidationReport(
-        report.export_format, tuple(issues), mode=report.mode
-    )
+    return report.with_appended_issues(appended_issues)
 
 
 def _merge_reports(
@@ -189,9 +194,9 @@ def _merge_reports(
         return second
     if second is None or not second.issues:
         return first
-    return ExportValidationReport(
-        second.export_format or first.export_format,
-        tuple(first.issues) + tuple(second.issues),
+    return first.merged_with(
+        second,
+        export_format=second.export_format or first.export_format,
         mode=second.mode or first.mode,
     )
 
@@ -208,6 +213,11 @@ def _output_write_failure_report(error: Exception) -> ExportValidationReport:
                 True,
                 "output",
                 f"{type(error).__name__}: {error}",
+                details={
+                    "phase": "write",
+                    "exception_type": type(error).__name__,
+                    "aggregation_discriminator": "write",
+                },
             ),
         ),
         mode=VMD_EXPORT_BAKE_TIMELINE,

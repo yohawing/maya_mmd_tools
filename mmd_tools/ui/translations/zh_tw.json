@@ -675,25 +675,5 @@
     "finalizing": "正在完成",
     "completed": "已完成",
     "blocked": "已封鎖"
-  },
-  "validation": {
-    "scene_output_path_invalid": {
-      "title": "匯出位置無效",
-      "impact": "無法決定要寫入檔案的儲存位置。",
-      "remediation": "請選擇輸出檔案，然後重新準備或匯出。",
-      "action": "選擇輸出檔案"
-    },
-    "scene_output_extension_mismatch": {
-      "title": "輸出副檔名與格式不符",
-      "impact": "所選檔案無法依要求的格式寫出。",
-      "remediation": "匯出 VMD 時，請使用以 .vmd 結尾的檔名。",
-      "action": "修正輸出副檔名"
-    },
-    "export_workflow_exception": {
-      "title": "匯出流程意外失敗",
-      "impact": "匯出流程在產生可信結果之前已停止。",
-      "remediation": "請檢查回報的例外與輸出路徑，修正根本問題後重新驗證或匯出。",
-      "action": "檢查匯出流程失敗"
-    }
   }
 }

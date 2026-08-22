@@ -19,37 +19,14 @@ from .qt_compat import (
     Signal,
 )
 from ..validation.export_validator import ExportValidationReport
-from ..validation.issue_catalog import get_issue_catalog_entry
 from .translations import UITranslator
 
 
 def _issue_display_wording(issue, translator=None):
-    """Resolve catalog wording for the human-facing Console view."""
-    code = issue.code if hasattr(issue, "code") else issue["code"]
-    entry = get_issue_catalog_entry(code)
-    if translator is None:
-        return entry, entry.category, entry.title, entry.impact, entry.remediation
-
-    category = translator.translate(
-        f"validation_categories.{entry.category}.label",
-        default=entry.category,
-    )
-    impact = translator.translate(
-        entry.impact_key,
-        default=translator.translate(
-            f"validation_categories.{entry.category}.impact",
-            default=entry.impact,
-        ),
-    )
-    remediation = translator.translate(
-        entry.remediation_key,
-        default=translator.translate(
-            f"validation_categories.{entry.category}.remediation",
-            default=entry.remediation,
-        ),
-    )
-    title = translator.translate(entry.title_key, default=entry.title)
-    return entry, category, title, impact, remediation
+    """Return the v2 English reason/action without category lookup."""
+    if hasattr(issue, "code"):
+        return issue.code, issue.reason, issue.action
+    return issue["code"], issue["reason"], issue["action"]
 
 
 def render_validation_console_text(
@@ -117,12 +94,10 @@ def render_validation_console_text(
         lines.append(label("no_issues", "No validation issues."))
         return "\n".join(lines)
     for index, issue in enumerate(canonical["issues"], start=1):
-        _, category, title, impact, remediation = _issue_display_wording(issue, translator)
+        _, reason, action = _issue_display_wording(issue, translator)
         lines.extend(
             [
                 f"{index}. [{issue['severity'].upper()}] {issue['code']}",
-                f"   {label('title_label', 'Title')}: {title}",
-                f"   {label('category', 'Category')}: {category}",
                 f"   {label('path', 'Path')}: {issue['path'] or 'model_data'}",
                 f"   {label('decision', 'Decision')}: {label('block', 'BLOCK') if issue['blocking'] else label('allow', 'ALLOW')}",
             ]
@@ -137,10 +112,9 @@ def render_validation_console_text(
             )
         lines.extend(
             [
-                f"   {label('observed', 'Observed')}: {issue['observed']}",
-                f"   {label('expected', 'Expected')}: {issue['expected']}",
-                f"   {label('impact', 'Impact')}: {impact}",
-                f"   {label('remediation', 'Remediation')}: {remediation}",
+                f"   {label('reason', 'Reason')}: {reason}",
+                f"   {label('action', 'Action')}: {action}",
+                f"   {label('details', 'Details')}: {json.dumps(issue['details'], ensure_ascii=False, sort_keys=True)}",
                 f"   {label('evidence', 'Evidence')}: {json.dumps(issue['evidence'], ensure_ascii=False, sort_keys=True)}",
                 "",
             ]
@@ -204,13 +178,6 @@ class ValidationConsole(QWidget):
         """Translate one Validation Console label with an English fallback."""
         return self._translator.translate(f"validation_console.{key}", default=fallback)
 
-    def _category_label(self, category: str) -> str:
-        """Translate a catalog category label without changing its data value."""
-        return self._translator.translate(
-            f"validation_categories.{category}.label",
-            default=category,
-        )
-
     @property
     def report(self) -> Optional[ExportValidationReport]:
         """Return the currently displayed report."""
@@ -266,19 +233,14 @@ class ValidationConsole(QWidget):
         self.set_report(None, {})
 
     def _refresh_filters(self) -> None:
-        """Populate category filters from the report, preserving no policy."""
+        """Populate stable-code filters from the report."""
         current = self.filter_combo.currentData() if hasattr(self.filter_combo, "currentData") else "all"
         self.filter_combo.blockSignals(True)
         self.filter_combo.clear()
         self.filter_combo.addItem(self._tr("all", "All"), "all")
-        categories = sorted(
-            {
-                get_issue_catalog_entry(issue.code).category
-                for issue in (self._report.issues if self._report else ())
-            }
-        )
-        for category in categories:
-            self.filter_combo.addItem(self._category_label(category), category)
+        codes = sorted({issue.code for issue in (self._report.issues if self._report else ())})
+        for code in codes:
+            self.filter_combo.addItem(code, code)
         index = self.filter_combo.findData(current)
         self.filter_combo.setCurrentIndex(index if index >= 0 else 0)
         self.filter_combo.blockSignals(False)
@@ -303,10 +265,9 @@ class ValidationConsole(QWidget):
         if self._report is None:
             self.detail_text.clear()
             return
-        selected_category = self.filter_combo.currentData()
+        selected_code = self.filter_combo.currentData()
         for index, issue in enumerate(self._report.issues):
-            category = get_issue_catalog_entry(issue.code).category
-            if selected_category not in (None, "all", category):
+            if selected_code not in (None, "all", issue.code):
                 continue
             group = self._report.display_issue_groups[index]
             occurrence_suffix = (

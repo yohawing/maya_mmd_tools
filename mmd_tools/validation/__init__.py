@@ -11,11 +11,13 @@ from .export_validator import (
     ExportValidationError,
     ExportValidationIssue,
     ExportValidationReport,
+    EXPORT_VALIDATION_SCHEMA_VERSION,
     validate_export_model,
     validate_model_data,
 )
 from .issue_catalog import (
     ISSUE_CATALOG,
+    STABLE_ISSUE_CODES,
     IssueCatalogEntry,
     UnknownValidationIssueError,
     get_issue_catalog_entry,
@@ -37,10 +39,12 @@ from .vmd_validator import (
 __all__ = [
     "BoneValidator",
     "ISSUE_CATALOG",
+    "STABLE_ISSUE_CODES",
     "ExportValidationError",
     "ExportValidationAcknowledgementRequired",
     "ExportValidationIssue",
     "ExportValidationReport",
+    "EXPORT_VALIDATION_SCHEMA_VERSION",
     "ExportValidationSnapshot",
     "ScenePreflight",
     "ScenePreflightResult",

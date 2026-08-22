@@ -666,7 +666,7 @@ class TestMorphConverter(MayaTestBase):
 
         self.assertFalse(result.succeeded)
         self.assertIn(
-            "MORPH_TYPE_UNSUPPORTED",
+            "UNSUPPORTED_FEATURE",
             [issue.code for issue in result.validation_report.issues],
         )
         writer.export_pmx_model.assert_not_called()

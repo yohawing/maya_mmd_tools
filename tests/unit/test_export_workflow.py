@@ -320,7 +320,7 @@ class ExportWorkflowTests(unittest.TestCase):
             "vmd",
             (
                 ExportValidationIssue(
-                    "OUTPUT_PARSE_FAILED", "fatal", True, "output", "parser rejected sibling"
+                    "OUTPUT_VERIFY_FAILED", "fatal", True, "output", "parser rejected sibling"
                 ),
             ),
             mode="bake_timeline",
@@ -468,7 +468,7 @@ class ExportWorkflowTests(unittest.TestCase):
             "vmd",
             (
                 ExportValidationIssue(
-                    "VMD_FRAME_RANGE", "warning", False, "output", "confirm export"
+                    "OUTPUT_VERIFY_FAILED", "warning", False, "output", "confirm export"
                 ),
             ),
             mode="bake_timeline",
@@ -496,9 +496,9 @@ class ExportWorkflowTests(unittest.TestCase):
                 result.action_result.error, ExportValidationAcknowledgementRequired
             )
             self.assertEqual(
-                [issue.code for issue in result.report.issues], ["VMD_FRAME_RANGE"]
+                [issue.code for issue in result.report.issues], ["OUTPUT_VERIFY_FAILED"]
             )
-            self.assertEqual(result.report.issues[0].message, "confirm export")
+            self.assertEqual(result.report.issues[0].reason, "confirm export")
             self.assertIsNotNone(result.validation_report_artifacts)
             self.assertTrue(result.validation_report_artifacts.json_path.is_file())
             self.assertTrue(result.validation_report_artifacts.markdown_path.is_file())
@@ -512,7 +512,7 @@ class ExportWorkflowTests(unittest.TestCase):
             "vmd",
             (
                 ExportValidationIssue(
-                    "VMD_FRAME_RANGE", "warning", False, "scene", "confirm preflight"
+                    "EXPORT_OPTIONS_INVALID", "warning", False, "scene", "confirm preflight"
                 ),
             ),
             mode="bake_timeline",
@@ -535,9 +535,9 @@ class ExportWorkflowTests(unittest.TestCase):
                 result.action_result.error, ExportValidationAcknowledgementRequired
             )
             self.assertEqual(
-                [issue.code for issue in result.report.issues], ["VMD_FRAME_RANGE"]
+                [issue.code for issue in result.report.issues], ["EXPORT_OPTIONS_INVALID"]
             )
-            self.assertEqual(result.report.issues[0].message, "confirm preflight")
+            self.assertEqual(result.report.issues[0].reason, "confirm preflight")
 
     def test_one_shot_vmd_writes_final_report_artifacts_for_success_and_failure(self):
         with tempfile.TemporaryDirectory() as directory:

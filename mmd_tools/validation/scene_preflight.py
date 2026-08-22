@@ -32,9 +32,17 @@ class ScenePreflightResult:
         return self.report.valid
 
 
-def _issue(code: str, path: str, message: str) -> ExportValidationIssue:
+def _issue(
+    code: str,
+    path: str,
+    message: str,
+    *,
+    details: Optional[Mapping[str, Any]] = None,
+) -> ExportValidationIssue:
     """Create one blocking scene-boundary issue."""
-    return ExportValidationIssue(code, "fatal", True, path, message)
+    issue_details = dict(details or {})
+    issue_details.setdefault("field", path)
+    return ExportValidationIssue(code, "fatal", True, path, message, details=issue_details)
 
 
 def _normalize_format(options: Mapping[str, Any]) -> str:
@@ -148,22 +156,24 @@ class ScenePreflight:
         if export_format not in SUPPORTED_FORMATS:
             issues.append(
                 _issue(
-                    "SCENE_FORMAT_UNSUPPORTED",
+                    "EXPORT_OPTIONS_INVALID",
                     "export_format",
                     f"export format {export_format or 'empty'} is not supported by the export workflow",
+                    details={"format": export_format or "empty"},
                 )
             )
 
         if require_target and not target:
             issues.append(
                 _issue(
-                    "SCENE_TARGET_MISSING",
+                    "SCENE_INVALID",
                     "target",
                     (
                         "export requires a live Current Model"
                         if require_current_model
                         else "export requires a live Maya model, mesh, or animation target"
                     ),
+                    details={"target": target, "require_current_model": require_current_model},
                 )
             )
         elif target and self._scene_service is not None:
@@ -176,9 +186,10 @@ class ScenePreflight:
                 if not exists:
                     issues.append(
                         _issue(
-                            "SCENE_TARGET_STALE",
+                            "STALE_STATE",
                             "target",
                             f"export target {target!r} no longer exists in the Maya scene",
+                            details={"target": target},
                         )
                     )
 
@@ -187,9 +198,12 @@ class ScenePreflight:
             if frame_range is None or frame_range[0] < 0 or frame_range[1] < frame_range[0]:
                 issues.append(
                     _issue(
-                        "SCENE_FRAME_RANGE_INVALID",
+                        "EXPORT_OPTIONS_INVALID",
                         "frame_range",
                         "frame range must contain non-negative ordered start and end frames",
+                        details={
+                            "frame_range": list(frame_range) if frame_range is not None else None,
+                        },
                     )
                 )
 
@@ -201,9 +215,10 @@ class ScenePreflight:
             if not math.isfinite(frame_step) or frame_step <= 0.0:
                 issues.append(
                     _issue(
-                        "SCENE_FRAME_STEP_INVALID",
+                        "EXPORT_OPTIONS_INVALID",
                         "frame_step",
                         "frame step must be a finite positive number",
+                        details={"actual_value": repr(options.get("frame_step"))},
                     )
                 )
 
@@ -216,9 +231,10 @@ class ScenePreflight:
             if not math.isfinite(scale) or scale <= 0.0:
                 issues.append(
                     _issue(
-                        "SCENE_SCALE_INVALID",
+                        "EXPORT_OPTIONS_INVALID",
                         "scale",
                         "export scale must be a finite positive number",
+                        details={"actual_value": repr(scale_value)},
                     )
                 )
 
@@ -226,24 +242,43 @@ class ScenePreflight:
         output_path = Path(output_path_text)
         expected_extension = export_format if export_format in SUPPORTED_FORMATS else None
         if not output_path_text.strip():
-            issues.append(_issue("SCENE_OUTPUT_PATH_INVALID", "file_path", "export output path is required"))
+            issues.append(
+                _issue(
+                    "EXPORT_OPTIONS_INVALID",
+                    "file_path",
+                    "export output path is required",
+                    details={"path": output_path_text},
+                )
+            )
         elif output_path.exists() and output_path.is_dir():
-            issues.append(_issue("SCENE_OUTPUT_PATH_INVALID", "file_path", "export output path is a directory"))
+            issues.append(
+                _issue(
+                    "EXPORT_OPTIONS_INVALID",
+                    "file_path",
+                    "export output path is a directory",
+                    details={"path": output_path_text},
+                )
+            )
         elif expected_extension and output_path.suffix.lower().lstrip(".") != expected_extension:
             issues.append(
                 _issue(
-                    "SCENE_OUTPUT_EXTENSION_MISMATCH",
+                    "EXPORT_OPTIONS_INVALID",
                     "file_path",
                     f"output extension must be .{expected_extension} for {expected_extension.upper()} export",
+                    details={
+                        "expected_suffix": f".{expected_extension}",
+                        "actual_suffix": output_path.suffix.lower(),
+                    },
                 )
             )
         source_path = str(options.get("source_path") or "")
         if source_path and output_path and Path(source_path).absolute() == output_path.absolute():
             issues.append(
                 _issue(
-                    "SCENE_OUTPUT_SAME_AS_SOURCE",
+                        "EXPORT_OPTIONS_INVALID",
                     "file_path",
                     "export output must not replace the imported source asset",
+                    details={"path": output_path_text, "source_path": source_path},
                 )
             )
 
@@ -254,9 +289,10 @@ class ScenePreflight:
             except Exception as exc:
                 issues.append(
                     _issue(
-                        "SCENE_OWNER_QUERY_FAILED",
+                        "COLLECTION_FAILED",
                         "ownership",
                         f"scene ownership could not be inspected: {type(exc).__name__}",
+                        details={"phase": "ownership", "exception_type": type(exc).__name__},
                     )
                 )
         # Ownership determines which animation path may be sampled. PMX model
@@ -274,9 +310,13 @@ class ScenePreflight:
                 if owner == "CONTROL_OWNED" or state in {"EDIT", "CONVERTING"}:
                     issues.append(
                         _issue(
-                            "SCENE_OWNER_CONTROL_RIG",
+                            "OWNERSHIP_CONFLICT",
                             "ownership.control_rig",
                             "Control Rig owns the authoring path; bake or restore to MMD Rig before export",
+                            details={
+                                "owner": "control_rig",
+                                "aggregation_discriminator": "ownership_control_rig",
+                            },
                         )
                     )
             humanik = (
@@ -293,9 +333,13 @@ class ScenePreflight:
                     character = humanik.get("character")
                 issues.append(
                     _issue(
-                        "SCENE_OWNER_HUMANIK",
+                        "OWNERSHIP_CONFLICT",
                         "ownership.humanik",
                         f"HumanIK owns the export pose ({blocked}{f' on {character}' if character else ''}); bake or restore MMD Rig first",
+                        details={
+                            "owner": "humanik",
+                            "aggregation_discriminator": "ownership_humanik",
+                        },
                     )
                 )
 

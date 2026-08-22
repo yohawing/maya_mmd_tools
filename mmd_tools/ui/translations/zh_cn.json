@@ -675,25 +675,5 @@
     "finalizing": "正在完成",
     "completed": "已完成",
     "blocked": "已阻止"
-  },
-  "validation": {
-    "scene_output_path_invalid": {
-      "title": "导出位置无效",
-      "impact": "无法确定要写入文件的保存位置。",
-      "remediation": "请选择输出文件，然后重新准备或导出。",
-      "action": "选择输出文件"
-    },
-    "scene_output_extension_mismatch": {
-      "title": "输出扩展名与格式不匹配",
-      "impact": "所选文件无法按请求的格式写出。",
-      "remediation": "导出 VMD 时，请使用以 .vmd 结尾的文件名。",
-      "action": "修正输出扩展名"
-    },
-    "export_workflow_exception": {
-      "title": "导出流程意外失败",
-      "impact": "导出流程在生成可信结果之前已停止。",
-      "remediation": "请检查报告的异常和输出路径，修复根本问题后重新验证或导出。",
-      "action": "检查导出流程失败"
-    }
   }
 }

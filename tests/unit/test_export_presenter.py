@@ -104,7 +104,7 @@ class _WarningWorkflow(_Workflow):
         self.callback_results = []
         self.report = ExportValidationReport(
             "vmd",
-            (ExportValidationIssue("VMD_WARNING", "warning", False, "output", "confirm"),),
+            (ExportValidationIssue("OUTPUT_VERIFY_FAILED", "warning", False, "output", "confirm"),),
             mode="bake_timeline",
         )
 

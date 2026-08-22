@@ -1633,7 +1633,7 @@ class TestVmdSceneCollector(unittest.TestCase):
                 )
         self.assertEqual(
             raised.exception.validation_issue_code,
-            "VMD_CONTROL_RIG_ROUTE_UNRESOLVED",
+            "ROUTE_UNRESOLVED",
         )
         self.assertEqual(
             raised.exception.validation_issue_path,

@@ -20,14 +20,23 @@ MAX_ERROR_LENGTH = 256
 RuntimeFactory = Callable[[Optional[str]], Any]
 
 
-def _issue(code: str, path: str, message: str) -> ExportValidationIssue:
+def _issue(
+    code: str,
+    path: str,
+    message: str,
+    *,
+    details: Optional[Mapping[str, Any]] = None,
+) -> ExportValidationIssue:
     """Build one blocking binding issue with bounded human-facing text."""
+    issue_details = dict(details or {})
+    issue_details.setdefault("field", path)
     return ExportValidationIssue(
         code,
         "fatal",
         True,
         path,
         str(message)[:MAX_ERROR_LENGTH],
+        details=issue_details,
     )
 
 
@@ -109,9 +118,16 @@ def _verify_with_runtime(
             if expected is not None and int(expected) != actual:
                 issues.append(
                     _issue(
-                        "MMD_ANIM_BINDING_COUNT_MISMATCH",
+                        "EXTERNAL_TOOL_FAILED",
                         f"binding.model.{name}_count",
                         f"binding {name} count {actual} does not match expected {expected}",
+                        details={
+                            "tool": "mmd-anim-binding",
+                            "phase": "count",
+                            "section": name,
+                            "expected_count": int(expected),
+                            "actual_count": actual,
+                        },
                     )
                 )
 
@@ -126,10 +142,24 @@ def _verify_with_runtime(
 
             matrix_error = _finite_matrix(instance.world_matrices_f32(), bone_count)
             if matrix_error:
-                issues.append(_issue("MMD_ANIM_BINDING_MATRIX_INVALID", "binding.world_matrices", matrix_error))
+                issues.append(
+                    _issue(
+                        "EXTERNAL_TOOL_FAILED",
+                        "binding.world_matrices",
+                        matrix_error,
+                        details={"tool": "mmd-anim-binding", "phase": "matrix_readback"},
+                    )
+                )
             weight_error = _finite_weights(instance.morph_weights_f32(), morph_count)
             if weight_error:
-                issues.append(_issue("MMD_ANIM_BINDING_WEIGHT_INVALID", "binding.morph_weights", weight_error))
+                issues.append(
+                    _issue(
+                        "EXTERNAL_TOOL_FAILED",
+                        "binding.morph_weights",
+                        weight_error,
+                        details={"tool": "mmd-anim-binding", "phase": "weight_readback"},
+                    )
+                )
     return _report(issues)
 
 
@@ -160,9 +190,13 @@ def verify_mmd_anim_binding_asset(
         return _report(
             (
                 _issue(
-                    "MMD_ANIM_BINDING_INPUT_INVALID",
+                    "INPUT_INVALID",
                     "binding.input",
                     "PMX model and optional VMD motion files must exist",
+                    details={
+                        "input_kind": "model" if not model.is_file() else "motion",
+                        "path": str(model if not model.is_file() else motion),
+                    },
                 ),
             )
         )
@@ -170,18 +204,23 @@ def verify_mmd_anim_binding_asset(
         return _report(
             (
                 _issue(
-                    "MMD_ANIM_BINDING_INPUT_INVALID",
+                    "INPUT_INVALID",
                     "binding.model",
                     "mmd-anim Python binding integration accepts PMX model bytes only",
+                    details={"expected_suffix": ".pmx", "actual_suffix": model.suffix.lower()},
                 ),
             )
         )
     try:
         numeric_frame = float(frame)
     except (TypeError, ValueError, OverflowError):
-        return _report((_issue("MMD_ANIM_BINDING_INPUT_INVALID", "binding.frame", "frame must be finite"),))
+        return _report(
+            (_issue("INPUT_INVALID", "binding.frame", "frame must be finite", details={"actual_value": repr(frame)}),)
+        )
     if not math.isfinite(numeric_frame):
-        return _report((_issue("MMD_ANIM_BINDING_INPUT_INVALID", "binding.frame", "frame must be finite"),))
+        return _report(
+            (_issue("INPUT_INVALID", "binding.frame", "frame must be finite", details={"actual_value": repr(numeric_frame)}),)
+        )
 
     try:
         if runtime_factory is not None:
@@ -206,9 +245,14 @@ def verify_mmd_anim_binding_asset(
         return _report(
             (
                 _issue(
-                    "MMD_ANIM_BINDING_UNAVAILABLE",
+                    "EXTERNAL_TOOL_FAILED",
                     "binding.runtime",
                     f"mmd-anim Python binding is unavailable: {type(exc).__name__}: {exc}",
+                    details={
+                        "tool": "mmd-anim-binding",
+                        "phase": "load",
+                        "exception_type": type(exc).__name__,
+                    },
                 ),
             )
         )
@@ -216,9 +260,14 @@ def verify_mmd_anim_binding_asset(
         return _report(
             (
                 _issue(
-                    "MMD_ANIM_BINDING_RUNTIME_FAILED",
+                    "EXTERNAL_TOOL_FAILED",
                     "binding.runtime",
                     f"mmd-anim binding evaluation failed: {type(exc).__name__}: {exc}",
+                    details={
+                        "tool": "mmd-anim-binding",
+                        "phase": "evaluate",
+                        "exception_type": type(exc).__name__,
+                    },
                 ),
             )
         )

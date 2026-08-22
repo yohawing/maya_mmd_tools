@@ -19,7 +19,6 @@ from mmd_tools.validation.export_validator import (
     ExportValidationIssue,
     ExportValidationReport,
 )
-from mmd_tools.validation.issue_catalog import get_issue_catalog_entry
 from mmd_tools.ui.translations import UITranslator
 from mmd_tools.validation.vmd_validator import (
     VMD_EXPORT_BAKE_TIMELINE,
@@ -326,15 +325,15 @@ class TestExportTabGUI(GuiTestBase):
             translator.set_language(previous_language)
 
     def test_validation_console_renders_catalog_backed_fatal_issue(self):
-        """fatal issue の category と監査文言が Console に表示されることを確認する。"""
+        """fatal issue のstable codeとschema-v2監査文言を表示する。"""
         translator = UITranslator.instance()
         previous_language = translator.get_language()
         translator.set_language("en")
         tab = self._create_visible_tab()
         try:
-            issue_code = "VMD_FRAME_RANGE"
-            observed = "current scene frame range is invalid"
-            catalog_entry = get_issue_catalog_entry(issue_code)
+            issue_code = "EXPORT_OPTIONS_INVALID"
+            reason = "current scene frame range is invalid"
+            action = "Choose a valid start and end frame, then retry."
             report = ExportValidationReport(
                 "vmd",
                 (
@@ -343,7 +342,9 @@ class TestExportTabGUI(GuiTestBase):
                         "fatal",
                         True,
                         "frame_range",
-                        observed,
+                        reason,
+                        action,
+                        {"start": 42, "end": 12},
                     ),
                 ),
                 mode="bake_timeline",
@@ -363,36 +364,24 @@ class TestExportTabGUI(GuiTestBase):
 
             console = tab.validation_console
             self.assertEqual(console.issue_list.count(), 1)
-            self.assertIn("[FATAL] VMD_FRAME_RANGE", console.issue_list.item(0).text())
+            self.assertIn("[FATAL] EXPORT_OPTIONS_INVALID", console.issue_list.item(0).text())
 
-            category_index = console.filter_combo.findData(catalog_entry.category)
-            self.assertGreaterEqual(category_index, 0)
-            self.assertEqual(
-                console.filter_combo.itemText(category_index),
-                translator.translate(
-                    f"validation_categories.{catalog_entry.category}.label",
-                    default=catalog_entry.category,
-                ),
-            )
+            code_index = console.filter_combo.findData(issue_code)
+            self.assertGreaterEqual(code_index, 0)
+            self.assertEqual(console.filter_combo.itemText(code_index), issue_code)
             filter_spy = QtSignalInvocationSpy(
                 "ValidationConsole.filter_changed",
                 console.filter_combo.currentIndexChanged,
                 console.filter_combo,
             )
-            console.filter_combo.setCurrentIndex(category_index)
+            console.filter_combo.setCurrentIndex(code_index)
             QApplication.processEvents()
             self.assertEqual(console.issue_list.count(), 1)
 
             detail = console.detail_text.toPlainText()
-            category_label = translator.translate(
-                f"validation_categories.{catalog_entry.category}.label",
-                default=catalog_entry.category,
-            )
-            self.assertIn(f"Category: {category_label}", detail)
-            self.assertIn(f"Observed: {observed}", detail)
-            self.assertIn(f"Expected: {catalog_entry.expected}", detail)
-            self.assertIn(f"Impact: {catalog_entry.impact}", detail)
-            self.assertIn(f"Remediation: {catalog_entry.remediation}", detail)
+            self.assertIn(f"Reason: {reason}", detail)
+            self.assertIn(f"Action: {action}", detail)
+            self.assertIn('Details: {"end": 12, "start": 42}', detail)
             self.assertIn("Evidence:", detail)
             self.assertIn("gui_validation_console", detail)
             self.assertIn("ExportTab GUI test", detail)
@@ -409,7 +398,7 @@ class TestExportTabGUI(GuiTestBase):
                 "export.validation_filter",
                 "selector",
                 "objectName=validationFilterCombo",
-                "QTest.setCurrentIndex(objectName=validationFilterCombo, fatal category)",
+                "QTest.setCurrentIndex(objectName=validationFilterCombo, stable code)",
                 "filtered fatal issue remains visible",
                 filter_spy,
                 console.filter_combo,
@@ -457,7 +446,7 @@ class TestExportTabGUI(GuiTestBase):
                 "vmd",
                 (
                     ExportValidationIssue(
-                        "VMD_FRAME_RANGE",
+                        "EXPORT_OPTIONS_INVALID",
                         "fatal",
                         True,
                         "frame_range",
@@ -470,9 +459,9 @@ class TestExportTabGUI(GuiTestBase):
             QApplication.processEvents()
             detail = tab.validation_console.detail_text.toPlainText()
             self.assertIn("書き出し方式: 現在のタイムラインをVMD化", detail)
-            self.assertIn("タイトル:", detail)
-            self.assertIn("影響:", detail)
-            self.assertIn("対処方法:", detail)
+            self.assertIn("理由:", detail)
+            self.assertIn("対策:", detail)
+            self.assertIn("詳細:", detail)
 
             translator.set_language("en")
             translate_spy = ActionInvocationSpy.wrap(

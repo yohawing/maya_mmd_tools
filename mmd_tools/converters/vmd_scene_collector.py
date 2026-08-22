@@ -105,14 +105,14 @@ _MMD_CAMERA_AIM_ROLL_RIG_TYPE = "mmd_aim_roll"
 class VmdIkSceneRepresentationMissingError(ValueError):
     """Source IK exists but Bake Timeline has no scene-owned IK authority."""
 
-    validation_issue_code = "VMD_IK_SCENE_REPRESENTATION_MISSING"
+    validation_issue_code = "ROUTE_UNRESOLVED"
     validation_issue_path = "ik_show_hide_frames"
 
 
 class ControlRigDirectVmdExportError(ValueError):
     """A Control Rig direct-export route could not be proven authoritative."""
 
-    validation_issue_code = "VMD_CONTROL_RIG_ROUTE_UNRESOLVED"
+    validation_issue_code = "ROUTE_UNRESOLVED"
 
     def __init__(
         self,

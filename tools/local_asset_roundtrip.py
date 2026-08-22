@@ -51,6 +51,10 @@ FAILURE_CLASSIFICATIONS = (
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from mmd_tools.validation.issue_catalog import (  # noqa: E402
+    get_issue_catalog_entry,
+)
+
 
 class PhaseTimeoutError(RuntimeError):
     """Raised when a worker phase exceeds its configured wall timeout."""
@@ -1053,9 +1057,12 @@ def _report_summary(validation: Any) -> dict[str, Any]:
             "code": str(getattr(issue, "code", "")),
             "severity": str(getattr(issue, "severity", "")),
             "blocking": bool(getattr(issue, "blocking", False)),
-            "category": str(getattr(issue, "category", "")),
-            "message": str(getattr(issue, "message", "")),
-            "remediation": str(getattr(issue, "remediation", "")),
+            "path": getattr(issue, "path", None),
+            "reason": str(getattr(issue, "reason", "")),
+            "action": str(getattr(issue, "action", ""))
+            or get_issue_catalog_entry(str(getattr(issue, "code", ""))).action,
+            "details": dict(getattr(issue, "details", {}) or {}),
+            "evidence": dict(getattr(issue, "evidence", {}) or {}),
         }
         for issue in issues
     ]
@@ -1063,7 +1070,10 @@ def _report_summary(validation: Any) -> dict[str, Any]:
         "state": getattr(validation, "state", None),
         "blocking": bool(getattr(report, "is_blocking", False)),
         "issue_count": len(issues),
-        "issue_codes": [str(getattr(issue, "code", "")) for issue in issues],
+        "issue_codes": [
+            str(getattr(issue, "code", ""))
+            for issue in issues
+        ],
         "issues": issue_details,
         "severity_counts": {
             severity: sum(1 for issue in issues if getattr(issue, "severity", None) == severity)

@@ -272,7 +272,7 @@ def _validate_binding_gate_artifact(
     nested = report.get("report")
     if (
         not isinstance(nested, dict)
-        or nested.get("schema_version") != 1
+        or nested.get("schema_version") != 2
         or nested.get("status") != "ready"
         or not isinstance(nested.get("issues"), list)
         or nested["issues"]
@@ -1438,8 +1438,8 @@ def _validate_maya_probe_report(
                     failures.append("pmd_import.collection.export_writer_called must be false")
             if case.get("output") is not None:
                 failures.append("pmd_import.output must be null")
-        if export_format == "pmx_soft_body" and case.get("policy_code") != "PMX_SOFT_BODIES_UNSUPPORTED":
-            failures.append("pmx_soft_body.policy_code='PMX_SOFT_BODIES_UNSUPPORTED' expected")
+        if export_format == "pmx_soft_body" and case.get("policy_code") != "UNSUPPORTED_FEATURE":
+            failures.append("pmx_soft_body.policy_code='UNSUPPORTED_FEATURE' expected")
         if export_format == "pmx_soft_body":
             import_oracles = case.get("import_oracles")
             if not isinstance(import_oracles, dict) or int(import_oracles.get("soft_body_count", 0) or 0) <= 0:
@@ -1514,7 +1514,7 @@ def _validate_maya_probe_report(
                 _validate_policy_reject_case(
                     case,
                     "pmx_impulse",
-                    "MORPH_TYPE_UNSUPPORTED",
+                    "UNSUPPORTED_FEATURE",
                     (
                         "source_impulse_morph_count",
                         "fresh_import_impulse_morph_count",
@@ -1528,7 +1528,7 @@ def _validate_maya_probe_report(
                 _validate_policy_reject_case(
                     case,
                     "pmx_flip",
-                    "MORPH_TYPE_UNSUPPORTED",
+                    "UNSUPPORTED_FEATURE",
                     (
                         "source_flip_morph_count",
                         "fresh_import_flip_morph_count",

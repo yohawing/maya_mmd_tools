@@ -638,7 +638,7 @@ class TestPmxExporter(MayaTestBase):
         )
         self.assertFalse(result.succeeded)
         self.assertIn(
-            "PMX_SOFT_BODIES_UNSUPPORTED",
+            "UNSUPPORTED_FEATURE",
             [issue.code for issue in result.validation_report.issues],
         )
         self.assertFalse(os.path.exists(output_path))

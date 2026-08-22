@@ -575,7 +575,6 @@ class TestExportModelAction(unittest.TestCase):
         def failing_collector(_options):
             raise AuthoringExportIntegrationError(
                 "semantic data differs from the scene oracle",
-                code="AUTHORING_ORACLE_MISMATCH",
                 path="morphs[0].offsets",
             )
 
@@ -591,7 +590,10 @@ class TestExportModelAction(unittest.TestCase):
         self.assertFalse(result.succeeded)
         self.assertIsInstance(result.error, AuthoringExportIntegrationError)
         self.assertIsNotNone(result.validation_report)
-        self.assertEqual(result.validation_report.issues[0].code, "AUTHORING_ORACLE_MISMATCH")
+        self.assertEqual(result.validation_report.issues[0].code, "INPUT_INVALID")
+        self.assertEqual(
+            result.validation_report.issues[0].details["field"], "morphs[0].offsets"
+        )
 
     def test_execute_reports_unsupported_format(self):
         options = {"file_path": "out.obj", "export_format": "obj", "model_data": {"vertices": [1]}}

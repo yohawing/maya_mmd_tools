@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "gate_id": "V070-UI-COVERAGE-1",
-  "minimum_qt_case_surfaces": 226,
+  "minimum_qt_case_surfaces": 224,
   "inventory_scope": "MainWindow nine tabs; logical mutable/actionable surfaces only, with explicit exclusions for containers and read-only displays.",
   "tabs": [
     {
@@ -541,9 +541,9 @@
       "tab": "export",
       "kind": "button",
       "attribute": "validate_button",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.export_presenter.ExportPresenter.validate"
+      "disposition": "excluded",
+      "reason_code": "one_shot_export",
+      "reason": "The one-shot Export action validates and writes in one operation; no separate Validate control exists."
     },
     {
       "id": "export.export",
@@ -622,9 +622,9 @@
       "tab": "export",
       "kind": "check",
       "selector": "objectName=validationAcknowledgeCheck",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.export_presenter.ExportPresenter._on_acknowledgement_changed"
+      "disposition": "excluded",
+      "reason_code": "one_shot_warning_confirmation",
+      "reason": "Warning approval is requested synchronously by the one-shot Export action; the report checkbox is not export authority."
     },
     {
       "id": "export.validation_copy",

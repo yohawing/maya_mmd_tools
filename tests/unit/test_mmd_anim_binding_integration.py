@@ -38,11 +38,12 @@ def _blocking_binding_report():
         "pmx",
         (
             ExportValidationIssue(
-                "MMD_ANIM_BINDING_RUNTIME_FAILED",
+                "EXTERNAL_TOOL_FAILED",
                 "fatal",
                 True,
                 "binding.runtime",
                 "binding failed",
+                details={"tool": "mmd-anim-binding", "phase": "evaluate"},
             ),
         ),
         mode="binding",
@@ -110,7 +111,7 @@ class MmdAnimBindingIntegrationTest(unittest.TestCase):
             self.assertEqual(list(target.parent.glob(".*.pmx")), [])
 
         self.assertFalse(result.succeeded)
-        self.assertEqual(result.validation_report.issues[-1].code, "MMD_ANIM_BINDING_RUNTIME_FAILED")
+        self.assertEqual(result.validation_report.issues[-1].code, "EXTERNAL_TOOL_FAILED")
 
 if __name__ == "__main__":
     unittest.main()

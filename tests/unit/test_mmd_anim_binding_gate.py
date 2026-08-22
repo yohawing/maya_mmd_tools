@@ -53,11 +53,12 @@ class MmdAnimBindingGateTest(unittest.TestCase):
                 "pmx",
                 (
                     ExportValidationIssue(
-                        "MMD_ANIM_BINDING_RUNTIME_FAILED",
+                        "EXTERNAL_TOOL_FAILED",
                         "fatal",
                         True,
                         "binding.runtime",
                         "binding failed",
+                        details={"tool": "mmd-anim-binding", "phase": "evaluate"},
                     ),
                 ),
                 mode="binding",

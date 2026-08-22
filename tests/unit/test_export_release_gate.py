@@ -204,7 +204,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "model": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model.pmx"),
                         "motion": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model_test_motion.vmd"),
                         "runtime_library": str(runtime_path),
-                                "report": {"schema_version": 1, "status": "blocked", "issues": [{}]},
+                                "report": {"schema_version": 2, "status": "blocked", "issues": [{}]},
                     }
                 ),
                 encoding="utf-8",
@@ -238,7 +238,7 @@ class ExportReleaseGateTests(unittest.TestCase):
             "model": str(fake_root / "tests/data/mmt_test_model.pmx"),
             "motion": str(fake_root / "tests/data/mmt_test_model_test_motion.vmd"),
             "runtime_library": str(runtime_path),
-            "report": {"schema_version": 1, "status": "ready", "issues": []},
+            "report": {"schema_version": 2, "status": "ready", "issues": []},
         }
         for field, value, expected_error in (
             ("binding_root", str(RELEASE_GATE.ROOT / "external/mmd-anim"), "binding_root mismatch"),
@@ -692,7 +692,7 @@ class ExportReleaseGateTests(unittest.TestCase):
             )
             soft_body_case.update(
                 status="policy-reject",
-                policy_code="PMX_SOFT_BODIES_UNSUPPORTED",
+                policy_code="UNSUPPORTED_FEATURE",
                 import_oracles={"soft_body_count": 1},
                 output=None,
                 collection={
@@ -724,8 +724,8 @@ class ExportReleaseGateTests(unittest.TestCase):
                 },
             )
             for export_format, policy_code, prefix in (
-                ("pmx_impulse", "MORPH_TYPE_UNSUPPORTED", "impulse"),
-                ("pmx_flip", "MORPH_TYPE_UNSUPPORTED", "flip"),
+                ("pmx_impulse", "UNSUPPORTED_FEATURE", "impulse"),
+                ("pmx_flip", "UNSUPPORTED_FEATURE", "flip"),
             ):
                 policy_case = next(case for case in report["cases"] if case["format"] == export_format)
                 policy_case.update(
@@ -930,7 +930,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                                 "model": str(fake_root / "tests/data/mmt_test_model.pmx"),
                                 "motion": str(fake_root / "tests/data/mmt_test_model_test_motion.vmd"),
                                 "runtime_library": str(runtime_path),
-                                "report": {"schema_version": 1, "status": "ready", "issues": []},
+                                "report": {"schema_version": 2, "status": "ready", "issues": []},
                             }
                         ),
                         encoding="utf-8",
@@ -1026,7 +1026,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                                 "model": str(fake_root / "tests/data/mmt_test_model.pmx"),
                                 "motion": str(fake_root / "tests/data/mmt_test_model_test_motion.vmd"),
                                 "runtime_library": str(runtime_path),
-                                "report": {"schema_version": 1, "status": "ready", "issues": []},
+                                "report": {"schema_version": 2, "status": "ready", "issues": []},
                             }
                         ),
                         encoding="utf-8",

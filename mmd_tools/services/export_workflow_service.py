@@ -79,9 +79,9 @@ def _combine_reports(
 
     if second is None or not second.issues:
         return first
-    return ExportValidationReport(
-        export_format,
-        tuple(first.issues) + tuple(second.issues),
+    return first.merged_with(
+        second,
+        export_format=export_format,
         mode=export_strategy,
     )
 
@@ -92,17 +92,30 @@ def _collect_failure_report(
     """Keep a collector failure diagnosable without losing its lower report."""
 
     wrapper = ExportValidationIssue(
-        "SCENE_COLLECT_FAILED",
+        "COLLECTION_FAILED",
         "fatal",
         True,
         "collector",
         f"scene collector failed: {type(error).__name__}: {error}",
+        details={
+            "phase": "collection",
+            "exception_type": type(error).__name__,
+            "aggregation_discriminator": "collection",
+        },
     )
     lower = structured_export_failure_report(error, export_format, mode=export_strategy)
-    issues = tuple(getattr(lower, "issues", ()) or ())
-    if not any(issue.code == wrapper.code for issue in issues):
-        issues = (wrapper,) + issues
-    return ExportValidationReport(export_format, issues, mode=export_strategy)
+    if lower is not None and any(issue.code == wrapper.code for issue in lower.issues):
+        return lower
+    wrapper_report = ExportValidationReport(
+        export_format, (wrapper,), mode=export_strategy
+    )
+    if lower is None:
+        return wrapper_report
+    return wrapper_report.merged_with(
+        lower,
+        export_format=export_format,
+        mode=export_strategy,
+    )
 
 
 def _report_output_failure(
@@ -127,6 +140,11 @@ def _report_output_failure(
                 "export output could not be written: "
                 f"{type(error).__name__}: {error}. "
                 "Choose a writable output path and verify its permissions and length.",
+                details={
+                    "phase": "write",
+                    "exception_type": type(error).__name__,
+                    "aggregation_discriminator": "write",
+                },
             ),
         ),
         mode=export_strategy,
@@ -153,10 +171,11 @@ def _scene_report_for_control_rig(
             return report
     except Exception:
         return report
-    return ExportValidationReport(
-        report.export_format,
-        tuple(issue for issue in report.issues if issue.code != "SCENE_OWNER_CONTROL_RIG"),
-        mode=report.mode,
+    return report.filtered(
+        lambda issue: not (
+                issue.code == "OWNERSHIP_CONFLICT"
+                and issue.details.get("owner") == "control_rig"
+            ),
     )
 
 

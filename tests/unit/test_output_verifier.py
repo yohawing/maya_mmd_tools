@@ -48,9 +48,9 @@ class OutputVerifierTests(unittest.TestCase):
             empty.write_bytes(b"")
             invalid.write_bytes(b"not a pmx")
 
-            self.assertEqual(verify_model_output(str(missing), "pmx").issues[0].code, "OUTPUT_FILE_MISSING")
-            self.assertEqual(verify_model_output(str(empty), "pmx").issues[0].code, "OUTPUT_FILE_EMPTY")
-            self.assertEqual(verify_model_output(str(invalid), "pmx").issues[0].code, "OUTPUT_HEADER_INVALID")
+            self.assertEqual(verify_model_output(str(missing), "pmx").issues[0].code, "OUTPUT_VERIFY_FAILED")
+            self.assertEqual(verify_model_output(str(empty), "pmx").issues[0].code, "OUTPUT_VERIFY_FAILED")
+            self.assertEqual(verify_model_output(str(invalid), "pmx").issues[0].code, "OUTPUT_VERIFY_FAILED")
 
     def test_valid_header_with_truncated_payload_reports_parse_failure(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -60,7 +60,7 @@ class OutputVerifierTests(unittest.TestCase):
             report = verify_model_output(str(output_path), "pmx")
 
             self.assertTrue(report.is_blocking)
-            self.assertEqual(report.issues[0].code, "OUTPUT_PARSE_FAILED")
+        self.assertEqual(report.issues[0].code, "OUTPUT_VERIFY_FAILED")
 
     def test_section_count_mismatch_is_blocking(self):
         model_data = _valid_model_data()
@@ -73,8 +73,11 @@ class OutputVerifierTests(unittest.TestCase):
             report = verify_model_output(str(output_path), "pmx", expected)
 
             self.assertTrue(report.is_blocking)
-            self.assertEqual(report.issues[0].code, "OUTPUT_VERTEX_COUNT_MISMATCH")
-            self.assertIn("expected count 4", report.issues[0].message)
+            self.assertEqual(report.issues[0].code, "OUTPUT_VERIFY_FAILED")
+            self.assertIn("expected count 4", report.issues[0].reason)
+            self.assertEqual(report.issues[0].details["section"], "vertex")
+            self.assertEqual(report.issues[0].details["expected_count"], 4)
+            self.assertEqual(report.issues[0].details["actual_count"], 3)
 
     def test_explicit_empty_material_table_matches_writer_default(self):
         model_data = _valid_model_data()
@@ -92,7 +95,7 @@ class OutputVerifierTests(unittest.TestCase):
         report = verify_model_output("unused.asset", "obj")
 
         self.assertTrue(report.is_blocking)
-        self.assertEqual(report.issues[0].code, "OUTPUT_FORMAT_UNSUPPORTED")
+        self.assertEqual(report.issues[0].code, "EXPORT_OPTIONS_INVALID")
 
 
 if __name__ == "__main__":

@@ -79,7 +79,7 @@ class MmdAnimVerifierTests(unittest.TestCase):
 
         report = verify_mmd_anim_asset("fixture.pmx", runner=runner)
 
-        self.assertEqual(report.issues[0].code, "MMD_ANIM_COMMAND_FAILED")
+        self.assertEqual(report.issues[0].code, "EXTERNAL_TOOL_FAILED")
 
     def test_timeout_and_unavailable_cli_are_blocking(self):
         timeout_runner = _FakeRunner([subprocess.TimeoutExpired("mmd-anim", 1.0)])
@@ -88,8 +88,8 @@ class MmdAnimVerifierTests(unittest.TestCase):
         timeout_report = verify_mmd_anim_asset("fixture.pmx", runner=timeout_runner)
         missing_report = verify_mmd_anim_asset("fixture.pmx", runner=missing_runner)
 
-        self.assertEqual(timeout_report.issues[0].code, "MMD_ANIM_TIMEOUT")
-        self.assertEqual(missing_report.issues[0].code, "MMD_ANIM_CLI_UNAVAILABLE")
+        self.assertEqual(timeout_report.issues[0].code, "EXTERNAL_TOOL_FAILED")
+        self.assertEqual(missing_report.issues[0].code, "EXTERNAL_TOOL_FAILED")
 
     def test_invalid_json_and_diagnostics_are_blocking(self):
         invalid_runner = _FakeRunner([_completed("not-json")])
@@ -103,8 +103,8 @@ class MmdAnimVerifierTests(unittest.TestCase):
         invalid_report = verify_mmd_anim_asset("fixture.pmx", runner=invalid_runner)
         diagnostic_report = verify_mmd_anim_asset("fixture.pmx", runner=diagnostic_runner)
 
-        self.assertEqual(invalid_report.issues[0].code, "MMD_ANIM_INSPECT_JSON_INVALID")
-        self.assertEqual(diagnostic_report.issues[0].code, "MMD_ANIM_DIAGNOSTICS")
+        self.assertEqual(invalid_report.issues[0].code, "EXTERNAL_TOOL_FAILED")
+        self.assertEqual(diagnostic_report.issues[0].code, "EXTERNAL_TOOL_FAILED")
 
     def test_roundtrip_status_and_count_mismatch_are_blocking(self):
         runner = _FakeRunner(
@@ -118,7 +118,7 @@ class MmdAnimVerifierTests(unittest.TestCase):
 
         self.assertEqual(
             [issue.code for issue in report.issues],
-            ["MMD_ANIM_ROUNDTRIP_FAILED", "MMD_ANIM_COUNT_MISMATCH"],
+            ["EXTERNAL_TOOL_FAILED", "EXTERNAL_TOOL_FAILED"],
         )
 
     def test_roundtrip_invalid_json_uses_roundtrip_code(self):
@@ -126,14 +126,14 @@ class MmdAnimVerifierTests(unittest.TestCase):
 
         report = verify_mmd_anim_asset("fixture.pmx", runner=runner)
 
-        self.assertEqual(report.issues[0].code, "MMD_ANIM_ROUNDTRIP_JSON_INVALID")
+        self.assertEqual(report.issues[0].code, "EXTERNAL_TOOL_FAILED")
 
     def test_roundtrip_without_counts_is_invalid(self):
         runner = _FakeRunner([_completed({"diagnostics": []}), _completed({"status": "ok"})])
 
         report = verify_mmd_anim_asset("fixture.pmx", runner=runner)
 
-        self.assertEqual(report.issues[0].code, "MMD_ANIM_ROUNDTRIP_JSON_INVALID")
+        self.assertEqual(report.issues[0].code, "EXTERNAL_TOOL_FAILED")
 
 
 if __name__ == "__main__":

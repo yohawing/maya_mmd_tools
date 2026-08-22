@@ -88,7 +88,7 @@ class ExportPresenter(QObject):
                 {"output_path": getattr(request, "file_path", None)},
             )
         )
-        reasons = [str(issue.message) for issue in report.issues if issue.severity == "warning"]
+        reasons = [str(issue.reason) for issue in report.issues if issue.severity == "warning"]
         dialog = QMessageBox(self.view)
         dialog.setWindowTitle("Export warnings")
         dialog.setText("Validation completed with warnings.")
@@ -130,11 +130,16 @@ class ExportPresenter(QObject):
                 error=error,
             )
         issue = ExportValidationIssue(
-            "EXPORT_WORKFLOW_EXCEPTION",
+            "INTERNAL_ERROR",
             "fatal",
             True,
             "export.motion" if export_format == "vmd" else "export.model",
             f"{type(error).__name__}: {error}",
+            details={
+                "phase": "presentation",
+                "exception_type": type(error).__name__,
+                "aggregation_discriminator": "internal",
+            },
         )
         self.app_state.emit_status(f"{status_prefix}: {error}")
         return ExportWorkflowResult(

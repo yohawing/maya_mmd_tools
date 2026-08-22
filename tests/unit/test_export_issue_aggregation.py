@@ -59,7 +59,7 @@ class ExportIssueAggregationTests(unittest.TestCase):
     def test_top_groups_are_bounded_and_omitted_occurrences_are_counted(self):
         issues = tuple(
             ExportValidationIssue(
-                "FACE_TOO_SHORT",
+                "INPUT_INVALID",
                 "fatal",
                 True,
                 f"faces[0].field{min(index, 2)}",
@@ -84,7 +84,7 @@ class ExportIssueAggregationTests(unittest.TestCase):
     def test_canonical_json_and_markdown_share_aggregation_metadata(self):
         issues = tuple(
             ExportValidationIssue(
-                "FACE_TOO_SHORT",
+                "INPUT_INVALID",
                 "fatal",
                 True,
                 f"faces[{index}]",
@@ -102,6 +102,68 @@ class ExportIssueAggregationTests(unittest.TestCase):
         self.assertEqual(payload["summary"], {"fatal": 105, "warning": 0, "info": 0})
         self.assertEqual(payload["issue_aggregation"]["omitted_occurrences"], 0)
         self.assertEqual(payload["issues"][0]["occurrence_count"], 105)
+
+    def test_append_merge_and_filter_use_all_source_occurrences(self):
+        visible = tuple(
+            ExportValidationIssue(
+                "INPUT_INVALID",
+                "info",
+                False,
+                f"groups.field{index}",
+                "visible fixture",
+            )
+            for index in range(100)
+        )
+        hidden_warning = ExportValidationIssue(
+            "ROUTE_UNRESOLVED",
+            "warning",
+            False,
+            "hidden.warning",
+            "hidden warning",
+            details={"route": "dependency_bake"},
+        )
+        hidden_blocking = ExportValidationIssue(
+            "OWNERSHIP_CONFLICT",
+            "fatal",
+            True,
+            "hidden.control_rig",
+            "hidden blocking",
+            details={"owner": "control_rig"},
+        )
+        report = ExportValidationReport(
+            "vmd", visible + (hidden_warning, hidden_blocking), mode="bake_timeline"
+        )
+
+        self.assertEqual(len(report.issues), 100)
+        self.assertEqual(report.to_dict()["summary"], {"fatal": 1, "warning": 1, "info": 100})
+        self.assertTrue(report.is_blocking)
+        self.assertTrue(report.requires_warning_ack)
+        self.assertEqual(len(report.warning_issues), 1)
+        self.assertEqual(len(report.blocking_issues), 1)
+
+        appended = report.with_appended_issues(
+            (ExportValidationIssue("INPUT_INVALID", "info", False, "appended", "appended"),)
+        )
+        merged = appended.merged_with(
+            ExportValidationReport(
+                "vmd",
+                (ExportValidationIssue("INPUT_INVALID", "info", False, "merged", "merged"),),
+                mode="bake_timeline",
+            )
+        )
+        filtered = merged.filtered(
+            lambda issue: not (
+                issue.code == "OWNERSHIP_CONFLICT"
+                and issue.details.get("owner") == "control_rig"
+            )
+        )
+
+        self.assertEqual(appended.issue_aggregation.total_occurrences, 103)
+        self.assertEqual(merged.issue_aggregation.total_occurrences, 104)
+        self.assertEqual(filtered.issue_aggregation.total_occurrences, 103)
+        self.assertEqual(filtered.to_dict()["summary"], {"fatal": 0, "warning": 1, "info": 102})
+        self.assertFalse(filtered.is_blocking)
+        self.assertTrue(filtered.requires_warning_ack)
 
 
 if __name__ == "__main__":

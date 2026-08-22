@@ -2459,7 +2459,12 @@ def _run_soft_body_policy_case(out_dir: Path) -> dict[str, Any]:
     )
     validation = ExportWorkflowService().validate(request)
     policy_codes = [issue.code for issue in validation.report.issues]
-    if validation.state != "Blocked" or "PMX_SOFT_BODIES_UNSUPPORTED" not in policy_codes:
+    if validation.state != "Blocked" or not any(
+        issue.code == "UNSUPPORTED_FEATURE"
+        and issue.path == "soft_bodies"
+        and issue.details.get("feature") == "soft_bodies"
+        for issue in validation.report.issues
+    ):
         raise AssertionError(
             "PMX soft-body policy probe expected a blocking rejection, "
             f"got state={validation.state!r}, issues={policy_codes!r}"
@@ -2487,7 +2492,7 @@ def _run_soft_body_policy_case(out_dir: Path) -> dict[str, Any]:
         "output": None,
         "report_json": str(report_dir / "report.json"),
         "report_md": str(report_dir / "report.md"),
-        "policy_code": "PMX_SOFT_BODIES_UNSUPPORTED",
+        "policy_code": "UNSUPPORTED_FEATURE",
         "import_oracles": {"soft_body_count": source_soft_body_count},
         "collection": {
             "collector": "ExportWorkflowService validation -> soft-body policy",
@@ -2630,7 +2635,12 @@ def _run_impulse_policy_case(out_dir: Path) -> dict[str, Any]:
     )
     validation = ExportWorkflowService().validate(request)
     policy_codes = [issue.code for issue in validation.report.issues]
-    if validation.state != "Blocked" or "MORPH_TYPE_UNSUPPORTED" not in policy_codes:
+    if validation.state != "Blocked" or not any(
+        issue.code == "UNSUPPORTED_FEATURE"
+        and issue.path == "morphs[0].type"
+        and issue.details.get("feature") == "impulse"
+        for issue in validation.report.issues
+    ):
         raise AssertionError(
             "PMX Impulse policy probe expected a blocking rejection, "
             f"got state={validation.state!r}, issues={policy_codes!r}"
@@ -2677,7 +2687,7 @@ def _run_impulse_policy_case(out_dir: Path) -> dict[str, Any]:
         "output_target": str(output),
         "report_json": str(report_dir / "report.json"),
         "report_md": str(report_dir / "report.md"),
-        "policy_code": "MORPH_TYPE_UNSUPPORTED",
+        "policy_code": "UNSUPPORTED_FEATURE",
         "import_oracles": import_oracles,
         "collection": {
             "collector": "ExportWorkflowService validation -> Impulse policy",
@@ -2738,7 +2748,12 @@ def _run_flip_policy_case(out_dir: Path) -> dict[str, Any]:
     )
     validation = ExportWorkflowService().validate(request)
     policy_codes = [issue.code for issue in validation.report.issues]
-    if validation.state != "Blocked" or "MORPH_TYPE_UNSUPPORTED" not in policy_codes:
+    if validation.state != "Blocked" or not any(
+        issue.code == "UNSUPPORTED_FEATURE"
+        and issue.path == "morphs[0].type"
+        and issue.details.get("feature") == "flip"
+        for issue in validation.report.issues
+    ):
         raise AssertionError(
             "PMX Flip policy probe expected a blocking rejection, "
             f"got state={validation.state!r}, issues={policy_codes!r}"
@@ -2785,7 +2800,7 @@ def _run_flip_policy_case(out_dir: Path) -> dict[str, Any]:
         "output_target": str(output),
         "report_json": str(report_dir / "report.json"),
         "report_md": str(report_dir / "report.md"),
-        "policy_code": "MORPH_TYPE_UNSUPPORTED",
+        "policy_code": "UNSUPPORTED_FEATURE",
         "import_oracles": import_oracles,
         "collection": {
             "collector": "ExportWorkflowService validation -> Flip policy",

@@ -7,7 +7,6 @@ import unittest
 
 from mmd_tools.validation.export_validator import (
     ExportValidationIssue,
-    ExportValidationReport,
     validate_model_data,
 )
 from mmd_tools.validation.issue_catalog import (
@@ -62,11 +61,9 @@ class ValidationReportCatalogTests(unittest.TestCase):
         )
         issue = payload["issues"][0]
 
-        self.assertEqual(issue["code"], "FACE_TOO_SHORT")
-        self.assertEqual(issue["category"], "geometry")
-        self.assertEqual(issue["loss_policy"], "reject")
-        self.assertEqual(issue["title_key"], "validation.face_too_short.title")
-        self.assertEqual(issue["observed"], issue["message"])
+        self.assertEqual(issue["code"], "INPUT_INVALID")
+        self.assertIn("face must contain", issue["reason"])
+        self.assertTrue(issue["blocking"])
         self.assertIn("sha256:bad-face", issue["evidence"].values())
 
     def test_non_sequence_texture_payload_produces_cataloged_report(self):
@@ -80,9 +77,8 @@ class ValidationReportCatalogTests(unittest.TestCase):
         self.assertEqual(payload["status"], "blocked")
         self.assertEqual(payload["summary"]["fatal"], 1)
         issue = payload["issues"][0]
-        self.assertEqual(issue["code"], "TEXTURES_NOT_SEQUENCE")
-        self.assertEqual(issue["category"], "materials")
-        self.assertEqual(issue["title_key"], "validation.textures_not_sequence.title")
+        self.assertEqual(issue["code"], "INPUT_INVALID")
+        self.assertIn("textures", issue["reason"])
 
     def test_markdown_is_deterministic_and_keeps_audit_order(self):
         model_data = _valid_model_data()
@@ -100,11 +96,9 @@ class ValidationReportCatalogTests(unittest.TestCase):
             snapshot_fingerprint="sha256:bad-face",
             evidence={"fixture": "face-too-short"},
         ))
-        self.assertLess(markdown.index("- Observed:"), markdown.index("- Expected:"))
-        self.assertLess(markdown.index("- Expected:"), markdown.index("- Impact:"))
-        self.assertLess(markdown.index("- Impact:"), markdown.index("- Remediation:"))
-        self.assertIn("`BLOCKED`", markdown)
-        self.assertIn("`FACE_TOO_SHORT`", markdown)
+        self.assertLess(markdown.index("- Reason:"), markdown.index("- Action:"))
+        self.assertIn('"BLOCKED"', markdown)
+        self.assertIn("`INPUT_INVALID`", markdown)
         self.assertIn('"fixture": "face-too-short"', markdown)
 
     def test_report_artifacts_are_utf8_and_have_final_newline(self):
@@ -124,26 +118,15 @@ class ValidationReportCatalogTests(unittest.TestCase):
             self.assertIn("No validation issues.", markdown_text)
 
     def test_unknown_issue_code_fails_canonical_report_closed(self):
-        report = ExportValidationReport(
-            "pmx",
-            (ExportValidationIssue("UNREGISTERED", "fatal", True, "model_data", "bad"),),
-        )
-
         with self.assertRaises(UnknownValidationIssueError):
-            report.to_canonical_dict()
+            ExportValidationIssue("UNREGISTERED", "fatal", True, "model_data", "bad")
 
-    def test_catalog_uses_fixed_category_and_keys(self):
-        entry = get_issue_catalog_entry("PMX_VERTEX_SDEF_UNSUPPORTED")
+    def test_catalog_uses_reason_and_action_only(self):
+        entry = get_issue_catalog_entry("UNSUPPORTED_FEATURE")
 
-        self.assertEqual(entry.category, "geometry")
-        self.assertEqual(entry.loss_policy, "reject")
-        self.assertEqual(entry.title_key, "validation.pmx_vertex_sdef_unsupported.title")
-        self.assertEqual(entry.action_key, "validation.pmx_vertex_sdef_unsupported.action")
-        self.assertEqual(entry.impact_key, "validation.pmx_vertex_sdef_unsupported.impact")
-        self.assertEqual(
-            entry.remediation_key,
-            "validation.pmx_vertex_sdef_unsupported.remediation",
-        )
+        self.assertEqual(entry.code, "UNSUPPORTED_FEATURE")
+        self.assertTrue(entry.reason)
+        self.assertTrue(entry.action)
 
 if __name__ == "__main__":
     unittest.main()

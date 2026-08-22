@@ -216,11 +216,13 @@ def _prepare_surface(window: Any, surface: Mapping[str, Any], widget: QWidget) -
                 "pmx",
                 (
                     ExportValidationIssue(
-                        "BONES_EMPTY",
+                        "INPUT_INVALID",
                         "warning",
                         False,
                         "materials[0]",
                         "matrix warning",
+                        "Repair the test payload and retry export.",
+                        {"fixture": "authoring_ui_surface_matrix"},
                     ),
                 ),
             )

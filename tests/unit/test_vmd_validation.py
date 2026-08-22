@@ -113,6 +113,22 @@ class TestVmdValidator(unittest.TestCase):
         self.assertEqual(report.mode, VMD_EXPORT_BAKE_TIMELINE)
         self.assertEqual(report.to_dict()["status"], "ready")
 
+    def test_payload_type_and_frame_range_emit_required_v2_details(self):
+        payload_report = validate_vmd_data(object(), VMD_EXPORT_BAKE_TIMELINE)
+        self.assertEqual(
+            payload_report.issues[0].details,
+            {
+                "field": "animation_data",
+                "expected_type": "VmdData",
+                "actual_type": "object",
+            },
+        )
+
+        range_report = validate_vmd_data(
+            VmdData(), VMD_EXPORT_BAKE_TIMELINE, frame_range=(2, 1)
+        )
+        self.assertEqual(range_report.issues[0].details["frame_range"], [2, 1])
+
     def test_invalid_bone_payload_reports_all_relevant_contracts(self):
         data = VmdData()
         frame = _valid_bone_frame()
@@ -127,11 +143,11 @@ class TestVmdValidator(unittest.TestCase):
         self.assertEqual(
             codes,
             [
-                "VMD_FRAME_NEGATIVE",
-                "VMD_NON_FINITE_NUMBER",
-                "VMD_BONE_INTERPOLATION_LENGTH",
-                "VMD_QUATERNION_INVALID",
-                "VMD_FRAME_RANGE",
+                "INPUT_INVALID",
+                "INPUT_INVALID",
+                "INPUT_INVALID",
+                "INPUT_INVALID",
+                "INPUT_INVALID",
             ],
         )
         self.assertEqual(report.issues[0].path, "bone_frames[0].frame_number")
@@ -159,7 +175,18 @@ class TestVmdValidator(unittest.TestCase):
                 expected_counts={"bone_frames": 1},
             )
 
-        self.assertEqual(report.issues[0].code, "VMD_FRAME_COUNT_MISMATCH")
+        self.assertEqual(report.issues[0].code, "OUTPUT_VERIFY_FAILED")
+        self.assertEqual(
+            report.issues[0].details,
+            {
+                "section": "bone_frames",
+                "expected_count": 1,
+                "actual_count": 0,
+                "aggregation_discriminator": "output_count",
+                "field": "output.bone_frames",
+                "phase": "verify",
+            },
+        )
 
     def test_streaming_verifier_matches_canonical_export_receipt(self):
         bones, morphs = (4,), (8,)
@@ -223,7 +250,7 @@ class TestVmdValidator(unittest.TestCase):
             )
 
         self.assertFalse(report.valid)
-        self.assertIn("VMD_FRAME_RANGE", [issue.code for issue in report.issues])
+        self.assertIn("INPUT_INVALID", [issue.code for issue in report.issues])
 
     def test_streaming_verifier_rejects_malformed_canonical_metadata(self):
         bones, morphs, cameras, lights, shadows, ik = (), (), (), (), (), ()
@@ -274,6 +301,13 @@ class TestVmdValidator(unittest.TestCase):
                         **metadata,
                     )
                     self.assertFalse(report.valid)
+                    issue = report.issues[0]
+                    required_key = (
+                        "expected_bounds_contract"
+                        if "expected_bounds" in metadata
+                        else "expected_count_contract"
+                    )
+                    self.assertIn(required_key, issue.details)
 
     def test_streaming_verifier_enforces_inclusive_frame_range_for_all_sections(self):
         section_names = ("bones", "morphs", "cameras", "lights", "shadows", "ik")
@@ -291,9 +325,21 @@ class TestVmdValidator(unittest.TestCase):
                     )
 
                 self.assertFalse(report.valid)
-                range_issues = [issue for issue in report.issues if issue.code == "VMD_FRAME_RANGE"]
+                range_issues = [issue for issue in report.issues if issue.code == "OUTPUT_VERIFY_FAILED"]
                 self.assertEqual(len(range_issues), 1)
                 self.assertIn("frame_number", range_issues[0].path)
+                wire_sections = {
+                    "bones": "bone_frames",
+                    "morphs": "morph_frames",
+                    "cameras": "camera_frames",
+                    "lights": "light_frames",
+                    "shadows": "shadow_frames",
+                    "ik": "ik_show_hide_frames",
+                }
+                self.assertEqual(
+                    range_issues[0].details["section"], wire_sections[section]
+                )
+                self.assertEqual(range_issues[0].details["expected_bounds"], [10, 10])
 
     def test_streaming_verifier_accepts_inclusive_frame_range_endpoints(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -348,7 +394,7 @@ class TestVmdValidator(unittest.TestCase):
                         expected_frame_range=frame_range,
                     )
                     self.assertFalse(report.valid)
-                    self.assertIn("VMD_FRAME_RANGE", [issue.code for issue in report.issues])
+                    self.assertIn("INPUT_INVALID", [issue.code for issue in report.issues])
 
     def test_streaming_verifier_rejects_truncation_in_each_section(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -362,7 +408,7 @@ class TestVmdValidator(unittest.TestCase):
                 candidate.write_bytes(source[:end])
                 report = verify_vmd_output_streaming(str(candidate), VMD_EXPORT_BAKE_TIMELINE)
                 self.assertFalse(report.valid)
-                self.assertIn("OUTPUT_PARSE_FAILED", [issue.code for issue in report.issues])
+                self.assertIn("OUTPUT_VERIFY_FAILED", [issue.code for issue in report.issues])
 
     def test_streaming_verifier_requires_declared_empty_tail_sections(self):
         empty = ()
@@ -395,7 +441,7 @@ class TestVmdValidator(unittest.TestCase):
             )
 
         self.assertFalse(report.valid)
-        self.assertIn("OUTPUT_PARSE_FAILED", [issue.code for issue in report.issues])
+        self.assertIn("OUTPUT_VERIFY_FAILED", [issue.code for issue in report.issues])
 
     def test_streaming_verifier_rejects_nonfinite_values_and_wire_flags(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -403,13 +449,13 @@ class TestVmdValidator(unittest.TestCase):
             source = _write_stream_fixture(path)
             # Offsets are stable for the one-record fixture above.
             corruptions = (
-                (54 + 31, struct.pack("<f", float("nan")), "VMD_NON_FINITE_NUMBER"),
-                (169 + 19, struct.pack("<f", float("inf")), "VMD_NON_FINITE_NUMBER"),
-                (196 + 60, b"\x02", "VMD_PERSPECTIVE_RANGE"),
-                (293 + 4, b"\x09", "VMD_SHADOW_MODE_RANGE"),
-                (306 + 4, b"\x02", "VMD_IK_FLAG_RANGE"),
-                (306 + 9 + 20, b"\x02", "VMD_IK_FLAG_RANGE"),
-                (54, b"\x81 ", "OUTPUT_PARSE_FAILED"),
+                (54 + 31, struct.pack("<f", float("nan")), "OUTPUT_VERIFY_FAILED"),
+                (169 + 19, struct.pack("<f", float("inf")), "OUTPUT_VERIFY_FAILED"),
+                (196 + 60, b"\x02", "OUTPUT_VERIFY_FAILED"),
+                (293 + 4, b"\x09", "OUTPUT_VERIFY_FAILED"),
+                (306 + 4, b"\x02", "OUTPUT_VERIFY_FAILED"),
+                (306 + 9 + 20, b"\x02", "OUTPUT_VERIFY_FAILED"),
+                (54, b"\x81 ", "OUTPUT_VERIFY_FAILED"),
             )
             for index, (offset, payload, code) in enumerate(corruptions):
                 candidate = Path(directory) / "corrupt-{}.vmd".format(index)
@@ -453,8 +499,7 @@ class TestVmdValidator(unittest.TestCase):
             )
 
         codes = [issue.code for issue in report.issues]
-        self.assertIn("OUTPUT_PARSE_FAILED", codes)
-        self.assertIn("VMD_FRAME_COUNT_MISMATCH", codes)
+        self.assertIn("OUTPUT_VERIFY_FAILED", codes)
         self.assertFalse(report.valid)
 
     def test_streaming_verifier_bounds_issue_memory_for_many_invalid_records(self):

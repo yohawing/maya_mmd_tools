@@ -105,7 +105,7 @@ class MmdAnimBindingVerifierTest(unittest.TestCase):
             report = verify_mmd_anim_binding_asset(str(model))
         finally:
             directory.cleanup()
-        self.assertEqual(report.issues[0].code, "MMD_ANIM_BINDING_UNAVAILABLE")
+        self.assertEqual(report.issues[0].code, "EXTERNAL_TOOL_FAILED")
         self.assertTrue(report.is_blocking)
 
     def test_runtime_failure_is_blocking(self):
@@ -117,8 +117,8 @@ class MmdAnimBindingVerifierTest(unittest.TestCase):
             )
         finally:
             directory.cleanup()
-        self.assertEqual(report.issues[0].code, "MMD_ANIM_BINDING_RUNTIME_FAILED")
-        self.assertIn("RuntimeError", report.issues[0].message)
+        self.assertEqual(report.issues[0].code, "EXTERNAL_TOOL_FAILED")
+        self.assertIn("RuntimeError", report.issues[0].reason)
 
     def test_rest_pose_passes_and_closes_handles(self):
         directory, model, _motion = self._files(with_motion=False)
@@ -164,7 +164,10 @@ class MmdAnimBindingVerifierTest(unittest.TestCase):
             )
         finally:
             directory.cleanup()
-        self.assertEqual(report.issues[0].code, "MMD_ANIM_BINDING_COUNT_MISMATCH")
+        self.assertEqual(report.issues[0].code, "EXTERNAL_TOOL_FAILED")
+        self.assertEqual(report.issues[0].details["section"], "bones")
+        self.assertEqual(report.issues[0].details["expected_count"], 3)
+        self.assertEqual(report.issues[0].details["actual_count"], 2)
 
     def test_non_finite_matrix_and_wrong_length_are_blocking(self):
         directory, model, _motion = self._files(with_motion=False)
@@ -179,8 +182,8 @@ class MmdAnimBindingVerifierTest(unittest.TestCase):
             )
         finally:
             directory.cleanup()
-        self.assertEqual(non_finite.issues[0].code, "MMD_ANIM_BINDING_MATRIX_INVALID")
-        self.assertEqual(wrong_length.issues[0].code, "MMD_ANIM_BINDING_MATRIX_INVALID")
+        self.assertEqual(non_finite.issues[0].code, "EXTERNAL_TOOL_FAILED")
+        self.assertEqual(wrong_length.issues[0].code, "EXTERNAL_TOOL_FAILED")
 
     def test_non_finite_morph_weight_is_blocking_with_weight_code(self):
         directory, model, _motion = self._files(with_motion=False)
@@ -191,7 +194,7 @@ class MmdAnimBindingVerifierTest(unittest.TestCase):
             )
         finally:
             directory.cleanup()
-        self.assertEqual(report.issues[0].code, "MMD_ANIM_BINDING_WEIGHT_INVALID")
+        self.assertEqual(report.issues[0].code, "EXTERNAL_TOOL_FAILED")
 
 
 if __name__ == "__main__":

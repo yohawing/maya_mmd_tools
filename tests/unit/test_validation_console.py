@@ -28,12 +28,12 @@ class TestValidationConsoleRendering(unittest.TestCase):
         self.assertIn("Snapshot: sha256:test", rendered)
         self.assertIn("No validation issues.", rendered)
 
-    def test_issue_detail_uses_catalog_wording_and_observed_fact(self):
+    def test_issue_detail_uses_v2_reason_and_action(self):
         report = ExportValidationReport(
             "vmd",
             (
                 ExportValidationIssue(
-                    "VMD_FRAME_RANGE",
+                    "EXPORT_OPTIONS_INVALID",
                     "fatal",
                     True,
                     "frame_range",
@@ -45,9 +45,9 @@ class TestValidationConsoleRendering(unittest.TestCase):
 
         rendered = render_validation_console_text(report, {"fixture": "current_scene_invalid_range"})
 
-        self.assertIn("[FATAL] VMD_FRAME_RANGE", rendered)
+        self.assertIn("[FATAL] EXPORT_OPTIONS_INVALID", rendered)
         self.assertIn("current scene frame range is invalid", rendered)
-        self.assertIn("Remediation:", rendered)
+        self.assertIn("Action:", rendered)
         self.assertIn("current_scene_invalid_range", rendered)
 
     def test_oversized_report_shows_folded_occurrence_counts(self):
@@ -55,7 +55,7 @@ class TestValidationConsoleRendering(unittest.TestCase):
             "pmx",
             tuple(
                 ExportValidationIssue(
-                    "FACE_TOO_SHORT",
+                    "INPUT_INVALID",
                     "fatal",
                     True,
                     f"faces[{index}]",
@@ -71,7 +71,7 @@ class TestValidationConsoleRendering(unittest.TestCase):
         self.assertIn("Occurrences: 105", rendered)
         self.assertIn("Path pattern: faces[*]", rendered)
 
-    def test_localized_console_resolves_labels_and_catalog_wording(self):
+    def test_localized_console_resolves_v2_labels(self):
         translator = UITranslator.instance()
         previous_language = translator.get_language()
         translator.set_language("ja")
@@ -80,7 +80,7 @@ class TestValidationConsoleRendering(unittest.TestCase):
                 "vmd",
                 (
                     ExportValidationIssue(
-                        "VMD_FRAME_RANGE",
+                        "EXPORT_OPTIONS_INVALID",
                         "fatal",
                         True,
                         "frame_range",
@@ -94,9 +94,8 @@ class TestValidationConsoleRendering(unittest.TestCase):
 
             self.assertIn("エクスポート検証コンソール", rendered)
             self.assertIn("書き出し方式: 現在のタイムラインをVMD化", rendered)
-            self.assertIn("タイトル:", rendered)
-            self.assertIn("影響:", rendered)
-            self.assertIn("対処方法:", rendered)
+            self.assertIn("Reason:", rendered)
+            self.assertIn("Action:", rendered)
         finally:
             translator.set_language(previous_language)
 

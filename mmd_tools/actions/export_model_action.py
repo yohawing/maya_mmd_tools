@@ -286,11 +286,12 @@ class ExportModelAction:
                     export_format or None,
                     (
                         ExportValidationIssue(
-                            "EXPORT_FORMAT_UNSUPPORTED",
+                            "EXPORT_OPTIONS_INVALID",
                             "fatal",
                             True,
                             "export_format",
                             f"model export format {export_format or 'empty'} is not supported",
+                            details={"format": export_format or "empty"},
                         ),
                     ),
                 )
@@ -347,11 +348,15 @@ class ExportModelAction:
                         export_format,
                         (
                             ExportValidationIssue(
-                                "STALE_VALIDATION_SNAPSHOT",
+                                "STALE_STATE",
                                 "fatal",
                                 True,
                                 "validation_snapshot",
                                 "validation snapshot does not match the current payload or scene revision",
+                                details={
+                                    "snapshot_fingerprint": provided_snapshot.payload_fingerprint,
+                                    "aggregation_discriminator": "stale",
+                                },
                             ),
                         ),
                     )
@@ -375,11 +380,16 @@ class ExportModelAction:
                     export_format,
                     (
                         ExportValidationIssue(
-                            "STALE_VALIDATION_SNAPSHOT",
+                            "STALE_STATE",
                             "fatal",
                             True,
                             "validation_snapshot.payload_fingerprint",
                             "current payload fingerprint does not match the expected validation snapshot",
+                            details={
+                                "expected_fingerprint": str(expected_payload_fingerprint),
+                                "actual_fingerprint": payload_fingerprint,
+                                "aggregation_discriminator": "stale",
+                            },
                         ),
                     ),
                 )
@@ -412,11 +422,12 @@ class ExportModelAction:
                     export_format,
                     (
                         ExportValidationIssue(
-                            "STALE_VALIDATION_SNAPSHOT",
+                            "STALE_STATE",
                             "fatal",
                             True,
                             "validation_snapshot",
                             "payload or scene revision changed after validation",
+                            details={"aggregation_discriminator": "stale"},
                         ),
                     ),
                 )
