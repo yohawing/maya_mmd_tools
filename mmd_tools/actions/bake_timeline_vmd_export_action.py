@@ -156,11 +156,6 @@ def _augment_dependency_bake_report(
         if not bone:
             continue
         frame_range = row.get("frame_range")
-        frame_text = (
-            f"{frame_range[0]}..{frame_range[1]}"
-            if isinstance(frame_range, (list, tuple)) and len(frame_range) == 2
-            else "unknown"
-        )
         try:
             key_count = int(row.get("generated_key_count", 0))
         except (TypeError, ValueError):
@@ -171,8 +166,8 @@ def _augment_dependency_bake_report(
                 "info" if bool(row.get("static")) else "warning",
                 False,
                 f"scene.control_rig.direct_vmd_export.{bone}.dependency_bake",
-                f"Bone: {bone}; Frame range: {frame_text}; Generated key count: {key_count}; "
-                "Reason: This bone has no dedicated Control Rig mapping, so its evaluated motion was baked.",
+                "This bone has no dedicated Control Rig mapping, so its evaluated motion was baked.",
+                "Review the baked dependency keys before publishing the VMD.",
                 details={
                     "route": "dependency_bake",
                     "bone": bone,
