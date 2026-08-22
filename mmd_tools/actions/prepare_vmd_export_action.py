@@ -787,8 +787,14 @@ class PrepareVmdExportAction:
 
             collect_begin = time.perf_counter()
             model_name = first.model_name or str(_read_field(request, "model_name") or "")
+            target_path = _read_field(request, "file_path", "output_path", "output")
+            if target_path is None or str(target_path).strip() == "":
+                raise PrepareVmdExportError(
+                    "target path is required for prepared VMD collection"
+                )
             stream_session = PreparedVmdStageSession(
                 model_name,
+                target_path=str(target_path),
                 export_strategy=VMD_EXPORT_BAKE_TIMELINE,
                 output_verifier=verify_vmd_output_streaming,
             )

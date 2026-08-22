@@ -1,7 +1,10 @@
 """Unit contracts for private verified Bake Timeline VMD stages."""
 
 from array import array
+import os
 from pathlib import Path
+import shutil
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -27,6 +30,14 @@ class _StreamingVerifier:
 
 
 class PreparedVmdArtifactTests(unittest.TestCase):
+    def setUp(self):
+        self.target_parent = Path(tempfile.mkdtemp(prefix="mmd-prepared-target-"))
+        self.addCleanup(shutil.rmtree, self.target_parent, ignore_errors=True)
+
+    def _session(self, *args, **kwargs):
+        kwargs.setdefault("target_path", str(self.target_parent / "output.vmd"))
+        return PreparedVmdStageSession(*args, **kwargs)
+
     def test_parts_sink_preserves_raw_cp932_names_interpolation_and_aliases(self):
         bone_name = "センター".encode("cp932")
         morph_name = "笑い".encode("cp932")
@@ -107,7 +118,7 @@ class PreparedVmdArtifactTests(unittest.TestCase):
 
     def test_incremental_session_promotes_stream_summary_without_vmd_data(self):
         verifier = _StreamingVerifier()
-        with PreparedVmdStageSession("モデル", output_verifier=verifier) as session:
+        with self._session("モデル", output_verifier=verifier) as session:
             session.write_frame(
                 "bones",
                 {
@@ -126,31 +137,35 @@ class PreparedVmdArtifactTests(unittest.TestCase):
         self.assertEqual(receipt.section_counts["morph_frames"], 1)
         self.assertEqual(receipt.frame_bounds, (4, 8))
         self.assertFalse(receipt.output_validation_report.requires_warning_ack)
+        self.assertEqual(len(verifier.calls), 1)
         self.assertEqual(verifier.calls[0][2]["expected_counts"]["bones"], 1)
         self.assertEqual(verifier.calls[0][2]["expected_size"], receipt.size)
         self.assertEqual(verifier.calls[0][2]["expected_sha256"], receipt.sha256)
-        stage_directory = Path(receipt.stage_directory)
-        self.assertTrue(stage_directory.is_dir())
+        stage_path = Path(receipt.file_path)
+        target = Path(receipt.target_path)
+        self.assertEqual(stage_path.parent, target.parent)
+        self.assertTrue(stage_path.is_file())
         self.assertTrue(receipt.cleanup())
-        self.assertFalse(stage_directory.exists())
+        self.assertFalse(stage_path.exists())
+        self.assertTrue(target.parent.is_dir())
         self.assertFalse(receipt.cleanup())
 
     def test_incremental_session_verification_failure_removes_stage(self):
         verifier = _StreamingVerifier(blocking=True)
-        session = PreparedVmdStageSession(output_verifier=verifier)
-        stage_directory = Path(session.stage_directory)
+        session = self._session(output_verifier=verifier)
+        stage_path = Path(session.file_path)
         session.write_frame("morphs", {"morph_name": "笑い", "frame": 2, "value": 0.25})
 
         with self.assertRaisesRegex(PreparedVmdArtifactError, "verification blocked"):
             session.finish_collection()
             session.promote()
 
-        self.assertFalse(stage_directory.exists())
+        self.assertFalse(stage_path.exists())
         self.assertFalse(session.cleanup())
 
     def test_incremental_session_forwards_expected_frame_range(self):
         verifier = _StreamingVerifier()
-        with PreparedVmdStageSession(
+        with self._session(
             output_verifier=verifier,
             expected_frame_range=(4, 8),
         ) as session:
@@ -162,7 +177,7 @@ class PreparedVmdArtifactTests(unittest.TestCase):
         receipt.cleanup()
 
     def test_incremental_session_rejects_range_change_after_collection(self):
-        session = PreparedVmdStageSession()
+        session = self._session()
         session.finish_collection()
 
         with self.assertRaisesRegex(PreparedVmdArtifactError, "cannot change"):
@@ -171,18 +186,18 @@ class PreparedVmdArtifactTests(unittest.TestCase):
         session.cleanup()
 
     def test_incremental_session_frame_range_failure_removes_stage(self):
-        session = PreparedVmdStageSession(expected_frame_range=(3, 3))
-        stage_directory = Path(session.stage_directory)
+        session = self._session(expected_frame_range=(3, 3))
+        stage_path = Path(session.file_path)
         session.write_frame("morphs", {"morph_name": "笑い", "frame": 2, "value": 0.25})
 
         with self.assertRaisesRegex(PreparedVmdArtifactError, "verification blocked"):
             session.finish_collection()
             session.promote()
 
-        self.assertFalse(stage_directory.exists())
+        self.assertFalse(stage_path.exists())
 
     def test_incremental_session_default_verifier_parses_semantics_and_identity(self):
-        with PreparedVmdStageSession("モデル") as session:
+        with self._session("モデル") as session:
             session.write_frame(
                 "bones",
                 {
@@ -201,8 +216,8 @@ class PreparedVmdArtifactTests(unittest.TestCase):
         receipt.cleanup()
 
     def test_incremental_session_keyboard_interrupt_during_write_is_preserved(self):
-        session = PreparedVmdStageSession()
-        stage_directory = Path(session.stage_directory)
+        session = self._session()
+        stage_path = Path(session.file_path)
         writer = session._writer
         original = writer.write_frame
 
@@ -215,11 +230,11 @@ class PreparedVmdArtifactTests(unittest.TestCase):
                 session.write_frame("morphs", {"morph_name": "笑い", "frame": 2, "value": 0.25})
         finally:
             writer.write_frame = original
-        self.assertFalse(stage_directory.exists())
+        self.assertFalse(stage_path.exists())
 
     def test_incremental_session_keyboard_interrupt_during_finish_is_preserved(self):
-        session = PreparedVmdStageSession()
-        stage_directory = Path(session.stage_directory)
+        session = self._session()
+        stage_path = Path(session.file_path)
         writer = session._writer
         original = writer.finish
 
@@ -232,33 +247,95 @@ class PreparedVmdArtifactTests(unittest.TestCase):
                 session.finish_collection()
         finally:
             writer.finish = original
-        self.assertFalse(stage_directory.exists())
+        self.assertFalse(stage_path.exists())
+
+    def test_incremental_session_flush_failure_removes_sibling_stage(self):
+        session = self._session()
+        stage_path = Path(session.file_path)
+        session.write_frame("morphs", {"morph_name": "笑い", "frame": 2, "value": 0.25})
+
+        with patch(
+            "mmd_tools.actions.prepared_vmd_artifact.os.fsync",
+            side_effect=OSError("flush failed"),
+        ):
+            with self.assertRaisesRegex(OSError, "flush failed"):
+                session.finish_collection()
+
+        self.assertFalse(stage_path.exists())
+
+    def test_incremental_session_uses_target_parent_for_private_sibling(self):
+        target = self.target_parent / "nested" / "motion.vmd"
+        session = self._session(target_path=str(target))
+        stage_path = Path(session.file_path)
+
+        self.assertEqual(stage_path.parent, target.parent)
+        self.assertNotEqual(stage_path, target)
+        self.assertTrue(stage_path.name.startswith(".motion."))
+        self.assertTrue(stage_path.is_file())
+        session.cleanup()
+        self.assertFalse(stage_path.exists())
+
+    def test_relative_target_identity_survives_cwd_change(self):
+        original_cwd = Path.cwd()
+        session = None
+        receipt = None
+        try:
+            os.chdir(self.target_parent)
+            session = self._session(target_path="relative/nested/motion.vmd")
+            stage_path = Path(session.file_path)
+            target = self.target_parent / "relative" / "nested" / "motion.vmd"
+            neighbor = target.parent / "neighbor.txt"
+            neighbor.write_bytes(b"neighbor")
+            session.write_frame(
+                "morphs",
+                {"morph_name": "笑い", "frame": 2, "value": 0.25},
+            )
+            session.finish_collection()
+            receipt = session.promote()
+
+            self.assertTrue(Path(receipt.target_path).is_absolute())
+            self.assertEqual(Path(receipt.target_path), target)
+            self.assertEqual(stage_path.parent, target.parent)
+            self.assertTrue(target.parent.is_dir())
+            os.chdir(original_cwd)
+
+            self.assertTrue(receipt.validate_identity())
+            self.assertTrue(receipt.cleanup())
+            self.assertFalse(stage_path.exists())
+            self.assertTrue(target.parent.is_dir())
+            self.assertEqual(neighbor.read_bytes(), b"neighbor")
+        finally:
+            os.chdir(original_cwd)
+            if receipt is not None:
+                receipt.cleanup()
+            elif session is not None:
+                session.cleanup()
 
     def test_incremental_session_unfinished_context_removes_stage(self):
-        stage_directory = None
-        with PreparedVmdStageSession() as session:
-            stage_directory = Path(session.stage_directory)
+        stage_path = None
+        with self._session() as session:
+            stage_path = Path(session.file_path)
             session.write_frame("morphs", {"morph_name": "笑い", "frame": 2, "value": 0.25})
-            self.assertTrue(stage_directory.exists())
-        self.assertFalse(stage_directory.exists())
+            self.assertTrue(stage_path.exists())
+        self.assertFalse(stage_path.exists())
 
     def test_incremental_session_promotion_verifier_error_removes_stage(self):
         def verifier_error(*_args, **_kwargs):
             raise RuntimeError("verification failed")
 
-        session = PreparedVmdStageSession(output_verifier=verifier_error)
-        stage_directory = Path(session.stage_directory)
+        session = self._session(output_verifier=verifier_error)
+        stage_path = Path(session.file_path)
         session.write_frame("morphs", {"morph_name": "笑い", "frame": 2, "value": 0.25})
         session.finish_collection()
 
         with self.assertRaisesRegex(RuntimeError, "verification failed"):
             session.promote()
 
-        self.assertFalse(stage_directory.exists())
+        self.assertFalse(stage_path.exists())
 
     def test_incremental_session_tamper_before_promotion_removes_stage(self):
-        session = PreparedVmdStageSession()
-        stage_directory = Path(session.stage_directory)
+        session = self._session()
+        stage_path = Path(session.file_path)
         session.write_frame("morphs", {"morph_name": "笑い", "frame": 2, "value": 0.25})
         session.finish_collection()
         path = Path(session.file_path)
@@ -267,7 +344,7 @@ class PreparedVmdArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(PreparedVmdArtifactError, "changed"):
             session.promote()
 
-        self.assertFalse(stage_directory.exists())
+        self.assertFalse(stage_path.exists())
 
 
 if __name__ == "__main__":

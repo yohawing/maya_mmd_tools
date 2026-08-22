@@ -2,8 +2,8 @@
 
 from dataclasses import FrozenInstanceError, replace
 import hashlib
+import os
 from pathlib import Path
-import shutil
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -120,16 +120,31 @@ class _PreparationBoundary:
 class _StreamingSession:
     instances = []
 
-    def __init__(self, model_name, *, export_strategy, output_verifier, expected_frame_range=None):
+    def __init__(
+        self,
+        model_name,
+        *,
+        target_path,
+        export_strategy,
+        output_verifier,
+        expected_frame_range=None,
+    ):
         self.model_name = model_name
+        self.target_path = Path(target_path)
         self.export_strategy = export_strategy
         self.output_verifier = output_verifier
         self.expected_frame_range = expected_frame_range
         self.finished = False
         self.cleaned = False
         self.promote_warning = None
-        self.directory = Path(tempfile.mkdtemp(prefix="mmd-test-stream-"))
-        self.path = self.directory / "prepared.vmd"
+        self.target_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{self.target_path.stem}.",
+            suffix=self.target_path.suffix or ".vmd",
+            dir=str(self.target_path.parent),
+        )
+        os.close(temporary_fd)
+        self.path = Path(temporary_name)
         self.path.write_bytes(b"stream-stage")
         type(self).instances.append(self)
 
@@ -160,8 +175,9 @@ class _StreamingSession:
         report = ExportValidationReport("vmd", (), mode="bake_timeline")
         return PreparedVmdArtifactReceipt(
             schema_version=1,
-            stage_directory=str(self.directory),
+            stage_directory=str(self.target_path.parent),
             file_path=str(self.path),
+            target_path=str(self.target_path),
             sha256=digest,
             size=self.path.stat().st_size,
             section_counts={
@@ -178,7 +194,10 @@ class _StreamingSession:
 
     def cleanup(self):
         self.cleaned = True
-        shutil.rmtree(self.directory, ignore_errors=True)
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 class _StreamingBackend(_Backend):
@@ -234,6 +253,7 @@ class _TemporaryBakeBackend(_StreamingBackend):
             raise RuntimeError("restore failed")
 
 def _request(**options):
+    request_options = {"output_path": str(Path("build") / "test-prepared-output.vmd")}
     values = {
         "target_uuid": "model-uuid",
         "target_identity": "|modelRoot",
@@ -242,9 +262,12 @@ def _request(**options):
         "frame_range": (0, 30),
         "frame_step": 1,
         "scale": 0.1,
-        "options": {},
+        "options": request_options,
     }
     values.update(options)
+    if "options" in options:
+        request_options.update(options["options"])
+        values["options"] = request_options
     return PrepareVmdExportRequest(**values)
 
 
@@ -582,7 +605,7 @@ class PrepareVmdExportActionTests(unittest.TestCase):
             result = action.execute(_request())
 
         self.assertEqual(result.status, "failed")
-        self.assertFalse(TamperedSession.instances[0].directory.exists())
+        self.assertFalse(TamperedSession.instances[0].path.exists())
 
     def test_legacy_backend_is_rejected_at_construction(self):
         class LegacyBackend:

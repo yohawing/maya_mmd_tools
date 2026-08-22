@@ -485,6 +485,7 @@ class TestExportWorkflowService(unittest.TestCase):
 
         self.assertTrue(prepared.succeeded)
         self.assertEqual(lifecycle_events, ["restored"])
+        prepare_action.invalidate(prepared.token)
 
     def test_short_current_model_prepare_uses_backend_canonical_identity(self):
         backend = _VmdPrepareBackend(target_identity="|MMT_TestModel_root")
@@ -607,6 +608,7 @@ class TestExportWorkflowService(unittest.TestCase):
         self.assertIsNone(validation.payload)
         self.assertIsNone(result.payload)
         self.assertEqual(result.action_result.payload_fingerprint, token.staged_artifact.sha256)
+        prepare_action.invalidate(token)
 
     def test_prepared_vmd_export_has_no_source_equivalence_warning(self):
         backend = _VmdPrepareBackend()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -451,13 +453,19 @@ class MayaVmdPrepareBackendTests(unittest.TestCase):
 
     def test_reprepare_replaces_watch_and_invalidates_older_token(self):
         action = PrepareVmdExportAction(self.backend)
-        request = _request()
-        token = action.prepare(request)
-        self.assertEqual(len(self.service.watches), 1)
-        action.prepare(request)
-        self.assertTrue(self.service.watches[0].closed)
-        with self.assertRaisesRegex(ValueError, "token is not active"):
-            action.validate_token(request, token)
+        with tempfile.TemporaryDirectory() as directory:
+            request = _request(output_path=str(Path(directory) / "motion.vmd"))
+            token = action.prepare(request)
+            first_stage = Path(token.staged_artifact.file_path)
+            self.assertEqual(len(self.service.watches), 1)
+            replacement = action.prepare(request)
+            replacement_stage = Path(replacement.staged_artifact.file_path)
+            self.assertTrue(self.service.watches[0].closed)
+            with self.assertRaisesRegex(ValueError, "token is not active"):
+                action.validate_token(request, token)
+            self.assertFalse(first_stage.exists())
+            action.invalidate(replacement)
+            self.assertFalse(replacement_stage.exists())
 
     def test_prepare_action_rejects_caller_uuid_assertion_mismatch(self):
         action = PrepareVmdExportAction(self.backend)

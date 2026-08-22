@@ -14,7 +14,6 @@ import hashlib
 import math
 import os
 from pathlib import Path
-import shutil
 import struct
 import tempfile
 from types import MappingProxyType
@@ -406,11 +405,12 @@ def _digest_file(file_path: Path) -> str:
 
 @dataclass(frozen=True)
 class PreparedVmdArtifactReceipt:
-    """Immutable identity and lifecycle handle for one private VMD stage."""
+    """Immutable identity and lifecycle handle for one private VMD sibling."""
 
     schema_version: int
     stage_directory: str
     file_path: str
+    target_path: str
     sha256: str
     size: int
     section_counts: Mapping[str, int]
@@ -433,8 +433,14 @@ class PreparedVmdArtifactReceipt:
             raise PreparedVmdArtifactError("staged VMD artifact digest is invalid")
         path = Path(self.file_path)
         stage_directory = Path(self.stage_directory)
-        if path.parent != stage_directory:
+        target_path = Path(self.target_path)
+        if path.parent.resolve() != stage_directory.resolve():
             raise PreparedVmdArtifactError("staged VMD artifact path escaped its private directory")
+        if (
+            target_path.parent.resolve() != stage_directory.resolve()
+            or path.resolve() == target_path.resolve()
+        ):
+            raise PreparedVmdArtifactError("staged VMD artifact is not a private sibling of its target")
         if path.is_symlink() or not path.is_file():
             raise PreparedVmdArtifactError("staged VMD artifact is missing")
         actual_size = path.stat().st_size
@@ -445,12 +451,17 @@ class PreparedVmdArtifactReceipt:
         return True
 
     def cleanup(self) -> bool:
-        """Remove the exact stage file and its private temporary directory."""
+        """Remove only the exact stage file, never its target parent."""
 
         removed = False
         path = Path(self.file_path)
         directory = Path(self.stage_directory)
-        if path.parent != directory:
+        target_path = Path(self.target_path)
+        if (
+            path.parent.resolve() != directory.resolve()
+            or target_path.parent.resolve() != directory.resolve()
+            or path.resolve() == target_path.resolve()
+        ):
             return False
         try:
             if path.exists() or path.is_symlink():
@@ -460,10 +471,6 @@ class PreparedVmdArtifactReceipt:
             pass
         except OSError:
             return False
-        try:
-            directory.rmdir()
-        except (FileNotFoundError, OSError):
-            pass
         return removed
 
 
@@ -473,7 +480,7 @@ class PreparedVmdStageSession:
     The session is deliberately a small adapter around the mmd-anim typed-parts
     exporter.  It keeps only compact typed channels and low-density metadata,
     and exposes only ordered section writes.  A
-    successful ``finish`` transfers the private directory to the returned
+    successful ``finish`` transfers the private sibling to the returned
     :class:`PreparedVmdArtifactReceipt`; every other exit path removes it.
     """
 
@@ -481,6 +488,7 @@ class PreparedVmdStageSession:
         self,
         model_name: str = "",
         *,
+        target_path: str,
         export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
         output_verifier: Any = verify_vmd_output_streaming,
         expected_frame_range: Optional[Tuple[int, int]] = None,
@@ -488,8 +496,21 @@ class PreparedVmdStageSession:
         self._export_strategy = export_strategy
         self._output_verifier = output_verifier
         self._expected_frame_range = expected_frame_range
-        self._stage_directory = Path(tempfile.mkdtemp(prefix="mmd-vmd-stage-"))
-        self._file_path = self._stage_directory / "prepared.vmd"
+        # Resolve once while the caller's CWD is authoritative.  Every later
+        # stage/receipt operation uses this immutable absolute identity, so a
+        # CWD change between collection and publication cannot redirect
+        # validation or cleanup.
+        target = Path(target_path).resolve(strict=False)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary_fd, temporary_name = tempfile.mkstemp(
+            prefix=".{}.".format(target.stem),
+            suffix=target.suffix or ".vmd",
+            dir=str(target.parent),
+        )
+        os.close(temporary_fd)
+        self._target_path = target
+        self._stage_directory = target.parent
+        self._file_path = Path(temporary_name)
         self._writer: Optional[Any] = None
         self._summary: Optional[Any] = None
         self._receipt: Optional[PreparedVmdArtifactReceipt] = None
@@ -502,7 +523,7 @@ class PreparedVmdStageSession:
 
     @property
     def stage_directory(self) -> str:
-        """Return the private stage directory, including after promotion."""
+        """Return the target parent that owns the private sibling stage."""
 
         return str(self._stage_directory)
 
@@ -536,11 +557,13 @@ class PreparedVmdStageSession:
             except BaseException:
                 # Preserve the original write/finalize/cancellation exception.
                 pass
-        try:
-            shutil.rmtree(str(self._stage_directory), ignore_errors=True)
-        except BaseException:
-            # Temporary-stage cleanup must not replace the triggering error.
-            pass
+        if self._file_path.resolve() != self._target_path.resolve():
+            try:
+                if self._file_path.exists() or self._file_path.is_symlink():
+                    self._file_path.unlink()
+            except BaseException:
+                # Temporary-stage cleanup must not replace the triggering error.
+                pass
 
     def cleanup(self) -> bool:
         """Abort this pending stage; repeated calls are harmless."""
@@ -680,6 +703,7 @@ class PreparedVmdStageSession:
                 schema_version=PREPARED_VMD_ARTIFACT_SCHEMA_VERSION,
                 stage_directory=str(self._stage_directory),
                 file_path=str(self._file_path),
+                target_path=str(self._target_path),
                 sha256=summary.sha256,
                 size=summary.size,
                 section_counts=MappingProxyType(counts),
