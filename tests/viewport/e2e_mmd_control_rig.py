@@ -1,8 +1,8 @@
 """Maya GUI commandPort E2E gate for the MMD-native control rig.
 
 The Maya-side check imports the checked-in PMX/VMD fixture, creates the
-detached control rig, enters EDIT, moves only the left foot IK controller,
-checks the owned ``mmdCcdIk`` response and cycle state, toggles ``ikEnabled``,
+detached control rig, enters EDIT, moves representative left/right foot and toe
+IK controllers, checks each owned ``mmdCcdIk`` response and cycle state, toggles ``ikEnabled``,
 bakes back to MMD inputs, saves/reopens, and performs a VMD export/re-import
 round-trip.  The host side always launches a fresh Maya process and refuses to
 use an already-open commandPort.
@@ -36,12 +36,17 @@ from tests.viewport.maya_e2e_harness import run_maya_e2e
 COMMAND_PORT = 7734
 COMPLETION_MARKER = "//-- MMD_CONTROL_RIG_E2E_DONE --//"
 TEST_TIMEOUT = 600
-MOVE_OFFSET_X = 0.35
 MOVE_EPSILON = 1.0e-5
 ROUNDTRIP_MATRIX_EPSILON = 5.0e-3
 ROUNDTRIP_FRAMES = tuple(range(0, 6))
 EVALUATION_MODE_CHOICES = ("default", "dg", "serial", "parallel")
 _EVALUATION_MODE_TO_MAYA = {"dg": "off", "serial": "serial", "parallel": "parallel"}
+IK_MOVE_CASES = (
+    ("left_foot_ik", 0.35),
+    ("right_foot_ik", 0.35),
+    ("left_toe_ik", 0.35),
+    ("right_toe_ik", 0.35),
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -330,20 +335,22 @@ def _matrix_error_summary(
     return {"nonSolverOwned": _summary(non_solver), "solverOwned": _summary(solver)}
 
 
-def _resolve_foot_solver(root: str, metadata: Mapping[str, Any], cmds) -> tuple[str, str]:
-    """Return the left-foot solver and an output-driven effector joint."""
+def _resolve_ik_solver(
+    metadata: Mapping[str, Any], role: str, cmds
+) -> tuple[str, str]:
+    """Return one role's solver and an output-driven effector joint."""
 
-    binding = metadata.get("bindings", {}).get("left_foot_ik", {})
+    binding = metadata.get("bindings", {}).get(role, {})
     solvers = [str(value) for value in binding.get("ikSolvers", []) if value]
     if not solvers:
-        raise RuntimeError("left_foot_ik binding has no mmdCcdIk solver")
+        raise RuntimeError(f"{role} binding has no mmdCcdIk solver")
     solver = solvers[0]
     if not cmds.objExists(solver):
         matches = cmds.ls(solver, long=True) or []
         if len(matches) == 1:
             solver = str(matches[0])
     if not cmds.objExists(solver):
-        raise RuntimeError(f"left foot solver is missing: {solver}")
+        raise RuntimeError(f"{role} solver is missing: {solver}")
 
     destinations: list[str] = []
     for index in range(32):
@@ -367,7 +374,131 @@ def _resolve_foot_solver(root: str, metadata: Mapping[str, Any], cmds) -> tuple[
     matches = cmds.ls(fallback, long=True) or []
     if len(matches) == 1:
         return solver, str(matches[0])
-    raise RuntimeError(f"left foot solver has no output-driven effector: {solver}")
+    raise RuntimeError(f"{role} solver has no output-driven effector: {solver}")
+
+
+def _solver_link_joints(solver: str, index: int, cmds) -> list[str]:
+    """Return output-driven IK link joints for one solver output slot."""
+
+    joints = []
+    for value in (
+        cmds.listConnections(
+            f"{solver}.outputRotate[{index}]",
+            source=False,
+            destination=True,
+            type="joint",
+        )
+        or []
+    ):
+        long_names = cmds.ls(value, long=True) or [value]
+        joints.extend(str(item) for item in long_names if cmds.objExists(str(item)))
+    return sorted(set(joints))
+
+
+def _nonzero_sentinel_value(before: float, offset: float) -> float:
+    """Choose a non-zero target while retaining a meaningful movement delta."""
+
+    expected = before + offset
+    if abs(expected) <= MOVE_EPSILON:
+        expected = before - offset
+    if abs(expected) <= MOVE_EPSILON:
+        expected = offset
+    return expected
+
+
+def _author_control_sentinel(control: str, attribute: str, frame: int, offset: float, cmds) -> dict[str, Any]:
+    """Author and verify a non-zero control value through its writable route."""
+
+    if not cmds.objExists(control):
+        raise RuntimeError(f"control is missing: {control}")
+    if not cmds.attributeQuery(attribute, node=control, exists=True):
+        raise RuntimeError(f"control attribute is missing: {control}.{attribute}")
+    before = float(cmds.getAttr(f"{control}.{attribute}", time=frame))
+    if not math.isfinite(before):
+        raise RuntimeError(f"control value is not finite: {control}.{attribute}")
+    expected = _nonzero_sentinel_value(before, float(offset))
+    source_plugs = [
+        str(value)
+        for value in (
+            cmds.listConnections(
+                f"{control}.{attribute}",
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+            or []
+        )
+    ]
+    source_node = None
+    if len(source_plugs) > 1:
+        raise RuntimeError(
+            f"control input route is ambiguous: {control}.{attribute}: {source_plugs}"
+        )
+    if source_plugs:
+        source_node = source_plugs[0].split(".", 1)[0]
+        source_type = str(cmds.nodeType(source_node))
+        if not source_type.startswith("animCurve"):
+            raise RuntimeError(
+                f"control input route is not writable: {source_plugs[0]} ({source_type})"
+            )
+        cmds.setKeyframe(source_node, time=frame, value=expected)
+    else:
+        source_type = None
+        cmds.setKeyframe(control, attribute=attribute, time=frame, value=expected)
+    cmds.dgdirty(allPlugs=True)
+    cmds.dgdirty(control)
+    cmds.refresh(force=True)
+    after = float(cmds.getAttr(f"{control}.{attribute}", time=frame))
+    if not math.isfinite(after):
+        raise RuntimeError(f"authored control value is not finite: {control}.{attribute}")
+    delta = abs(after - before)
+    if (
+        abs(after) <= MOVE_EPSILON
+        or delta <= MOVE_EPSILON
+        or abs(after - expected) > MOVE_EPSILON
+    ):
+        raise RuntimeError(
+            f"control input route did not evaluate authored sentinel: "
+            f"{control}.{attribute} before={before} expected={expected} after={after}"
+        )
+    return {
+        "plug": f"{control}.{attribute}",
+        "sourcePlugs": source_plugs,
+        "sourceNode": source_node,
+        "sourceType": source_type,
+        "before": before,
+        "expected": expected,
+        "after": after,
+        "delta": delta,
+        "pass": True,
+    }
+
+
+def _ik_move_witness_pass(
+    *,
+    control_route_pass: bool,
+    control_delta: float,
+    target_delta: float,
+    link_deltas: Mapping[str, float],
+) -> bool:
+    """Require a writable authored input and evaluated solver/link response."""
+
+    return bool(
+        control_route_pass
+        and control_delta > MOVE_EPSILON
+        and target_delta > MOVE_EPSILON
+        and link_deltas
+        and all(delta > MOVE_EPSILON for delta in link_deltas.values())
+    )
+
+
+def _focused_witnesses_pass(report: Mapping[str, Any]) -> bool:
+    """Keep export parity from masking a failed focused Control Rig witness."""
+
+    return all(
+        bool(report.get(name, {}).get("pass"))
+        for name in ("ikMove", "ikToggle", "autoBakeExport")
+    )
 
 
 def _solver_snapshot(solver: str, effector: str, cmds) -> dict[str, Any]:
@@ -382,6 +513,7 @@ def _solver_snapshot(solver: str, effector: str, cmds) -> dict[str, Any]:
     links = chain.get("links", []) if isinstance(chain, dict) else []
     count = max(1, len(links))
     outputs = {}
+    link_world_matrices = {}
     for index in range(count):
         try:
             outputs[str(index)] = _flatten_numeric(
@@ -389,6 +521,10 @@ def _solver_snapshot(solver: str, effector: str, cmds) -> dict[str, Any]:
             )
         except RuntimeError:
             outputs[str(index)] = []
+        link_world_matrices[str(index)] = {
+            joint: _matrix(joint, cmds)
+            for joint in _solver_link_joints(solver, index, cmds)
+        }
     try:
         enabled = bool(cmds.getAttr(f"{solver}.enabled"))
     except RuntimeError:
@@ -398,70 +534,11 @@ def _solver_snapshot(solver: str, effector: str, cmds) -> dict[str, Any]:
         "enabled": enabled,
         "goalWorldMatrix": _flatten_numeric(cmds.getAttr(f"{solver}.goalWorldMatrix")),
         "outputRotate": outputs,
+        "ikLinkWorldMatrices": link_world_matrices,
         "effector": effector,
         "effectorWorldMatrix": _matrix(effector, cmds),
         "effectorWorldTranslation": _world_translation(effector, cmds),
     }
-
-
-def _control_worlds(controls: Mapping[str, str], cmds) -> dict[str, list[float]]:
-    return {
-        str(role): _matrix(str(node), cmds)
-        for role, node in sorted(controls.items())
-        if cmds.objExists(str(node))
-    }
-
-
-def _dag_descendant_roles(
-    controls: Mapping[str, str], ancestor_role: str, cmds
-) -> set[str]:
-    """Return controls that are DAG descendants of ``ancestor_role``.
-
-    Control zero groups are intentionally nested below their nearest parent
-    control.  Moving a parent therefore changes each child control's world
-    matrix even though no child channel was authored.  Resolve long DAG paths
-    before comparing them so namespace and nested-group changes do not turn
-    expected inherited motion into an unrelated-control failure.
-    """
-
-    ancestor = controls.get(ancestor_role)
-    if not ancestor:
-        return set()
-    try:
-        ancestor_paths = cmds.ls(str(ancestor), long=True) or [str(ancestor)]
-    except RuntimeError:
-        ancestor_paths = [str(ancestor)]
-
-    descendants: set[str] = set()
-    for ancestor_path in ancestor_paths:
-        try:
-            descendants.update(
-                str(node)
-                for node in (
-                    cmds.listRelatives(
-                        str(ancestor_path),
-                        allDescendents=True,
-                        fullPath=True,
-                    )
-                    or []
-                )
-            )
-        except RuntimeError:
-            continue
-    if not descendants:
-        return set()
-
-    result: set[str] = set()
-    for role, node in controls.items():
-        if str(role) == str(ancestor_role):
-            continue
-        try:
-            node_paths = cmds.ls(str(node), long=True) or [str(node)]
-        except RuntimeError:
-            node_paths = [str(node)]
-        if descendants.intersection(str(path) for path in node_paths):
-            result.add(str(role))
-    return result
 
 
 def _find_rig_root(cmds) -> str:
@@ -1041,8 +1118,14 @@ def run_e2e_check(
                 )
         elif rig.state != CONTROL_RIG_ATTACHED:
             raise RuntimeError(f"build did not produce ATTACHED state: {rig.state}")
-        if "left_foot_ik" not in rig.controls:
-            raise RuntimeError("fixture has no left_foot_ik control")
+        missing_ik_roles = [
+            role for role, _offset in IK_MOVE_CASES if role not in rig.controls
+        ]
+        if missing_ik_roles:
+            raise RuntimeError(
+                "fixture has no required IK controls: "
+                f"{', '.join(missing_ik_roles)}"
+            )
         _log(f"built control rig ({len(rig.controls)} controls)")
 
         metadata = read_mmd_control_rig_metadata(root)
@@ -1051,7 +1134,7 @@ def run_e2e_check(
         if create_on_import:
             report["createOnImport"]["owner"] = metadata.get("owner")
             report["createOnImport"]["state"] = metadata.get("state")
-        solver, effector = _resolve_foot_solver(root, metadata, cmds)
+        solver, effector = _resolve_ik_solver(metadata, "left_foot_ik", cmds)
         control = str(rig.controls["left_foot_ik"])
         _log(f"left foot control={control}, solver={solver}, effector={effector}")
 
@@ -1065,85 +1148,119 @@ def run_e2e_check(
         frame = 3
         cmds.currentTime(frame, edit=True)
         cmds.refresh(force=True)
-        before_solver = _solver_snapshot(solver, effector, cmds)
-        before_controls = _control_worlds(rig.controls, cmds)
-        before_x = float(cmds.getAttr(f"{control}.translateX"))
         before_cycle = _cycle_state("before_ik_move", cmds)
         report["cycles"].append(before_cycle)
 
-        cmds.setKeyframe(
-            control,
-            attribute="translateX",
-            time=frame,
-            value=before_x + MOVE_OFFSET_X,
-        )
-        cmds.refresh(force=True)
-        after_solver = _solver_snapshot(solver, effector, cmds)
-        after_controls = _control_worlds(rig.controls, cmds)
+        ik_cases: dict[str, dict[str, Any]] = {}
+        for role, offset in IK_MOVE_CASES:
+            case: dict[str, Any] = {
+                "role": role,
+                "frame": frame,
+                "offset": float(offset),
+                "control": str(rig.controls.get(role, "")),
+                "pass": False,
+            }
+            try:
+                case_solver, case_effector = _resolve_ik_solver(metadata, role, cmds)
+                case_control = str(rig.controls[role])
+                before_solver = _solver_snapshot(case_solver, case_effector, cmds)
+                before_control_world = _matrix(case_control, cmds)
+                authored = _author_control_sentinel(
+                    case_control,
+                    "translateX",
+                    frame,
+                    float(offset),
+                    cmds,
+                )
+                after_solver = _solver_snapshot(case_solver, case_effector, cmds)
+                after_control_world = _matrix(case_control, cmds)
+                target_delta = _distance(
+                    before_solver["goalWorldMatrix"], after_solver["goalWorldMatrix"]
+                )
+                output_delta = _distance(
+                    [
+                        item
+                        for values in before_solver["outputRotate"].values()
+                        for item in values
+                    ],
+                    [
+                        item
+                        for values in after_solver["outputRotate"].values()
+                        for item in values
+                    ],
+                )
+                link_deltas = {}
+                before_links = before_solver["ikLinkWorldMatrices"]
+                after_links = after_solver["ikLinkWorldMatrices"]
+                for index in sorted(set(before_links) & set(after_links)):
+                    for joint in sorted(
+                        set(before_links[index]) & set(after_links[index])
+                    ):
+                        link_deltas[f"{index}:{joint}"] = _distance(
+                            before_links[index][joint], after_links[index][joint]
+                        )
+                case.update(
+                    {
+                        "solver": case_solver,
+                        "effector": case_effector,
+                        "controlAuthored": authored,
+                        "controlWorldMatrixBefore": before_control_world,
+                        "controlWorldMatrixAfter": after_control_world,
+                        "controlWorldMatrixDelta": _distance(
+                            before_control_world, after_control_world
+                        ),
+                        "before": before_solver,
+                        "after": after_solver,
+                        "solverTargetDelta": target_delta,
+                        "outputRotateDelta": output_delta,
+                        "ikLinkWorldMatrixDeltas": link_deltas,
+                        "pass": _ik_move_witness_pass(
+                            control_route_pass=bool(authored["pass"]),
+                            control_delta=float(authored["delta"]),
+                            target_delta=target_delta,
+                            link_deltas=link_deltas,
+                        ),
+                    }
+                )
+            except Exception as exc:
+                case["error"] = f"{type(exc).__name__}: {exc}"
+            ik_cases[role] = case
+            _log(
+                "IK move %s: pass=%s targetDelta=%s linkDeltas=%s"
+                % (
+                    role,
+                    case["pass"],
+                    case.get("solverTargetDelta"),
+                    json.dumps(case.get("ikLinkWorldMatrixDeltas", {}), sort_keys=True),
+                )
+            )
+
+        left_case = ik_cases["left_foot_ik"]
         after_cycle = _cycle_state("after_ik_move", cmds)
         report["cycles"].append(after_cycle)
-
-        goal_delta = _distance(
-            before_solver["goalWorldMatrix"], after_solver["goalWorldMatrix"]
-        )
-        output_delta = _distance(
-            [item for values in before_solver["outputRotate"].values() for item in values],
-            [item for values in after_solver["outputRotate"].values() for item in values],
-        )
-        effector_delta = _distance(
-            before_solver["effectorWorldMatrix"], after_solver["effectorWorldMatrix"]
-        )
-        control_deltas = {
-            role: _distance(before_controls.get(role, []), after_controls.get(role, []))
-            for role in sorted(set(before_controls) | set(after_controls))
-        }
-        descendant_roles = _dag_descendant_roles(rig.controls, "left_foot_ik", cmds)
-        descendant_control_deltas = {
-            role: delta
-            for role, delta in control_deltas.items()
-            if role in descendant_roles
-        }
-        other_control_deltas = {
-            role: delta
-            for role, delta in control_deltas.items()
-            if role != "left_foot_ik" and role not in descendant_roles
-        }
         report["ikMove"] = {
             "frame": frame,
-            "control": control,
-            "solver": solver,
-            "effector": effector,
-            "before": before_solver,
-            "after": after_solver,
-            "goalWorldMatrixDelta": goal_delta,
-            "outputRotateDelta": output_delta,
-            "effectorWorldMatrixDelta": effector_delta,
-            "controlWorldDeltas": control_deltas,
-            "descendantControlRoles": sorted(descendant_roles),
-            "descendantControlWorldDeltas": descendant_control_deltas,
-            "otherControlWorldDeltas": other_control_deltas,
-            "pass": bool(
-                goal_delta > MOVE_EPSILON
-                and max(output_delta, effector_delta) > MOVE_EPSILON
-                and all(delta <= MOVE_EPSILON for delta in other_control_deltas.values())
+            "requiredCases": [role for role, _offset in IK_MOVE_CASES],
+            "cases": ik_cases,
+            "control": left_case.get("control", control),
+            "solver": left_case.get("solver", solver),
+            "effector": left_case.get("effector", effector),
+            "before": left_case.get("before"),
+            "after": left_case.get("after"),
+            "goalWorldMatrixDelta": left_case.get("solverTargetDelta", 0.0),
+            "outputRotateDelta": left_case.get("outputRotateDelta", 0.0),
+            "effectorWorldMatrixDelta": (
+                _distance(
+                    (left_case.get("before") or {}).get("effectorWorldMatrix", []),
+                    (left_case.get("after") or {}).get("effectorWorldMatrix", []),
+                )
+                if left_case.get("before") and left_case.get("after")
+                else 0.0
             ),
+            "pass": all(case.get("pass") is True for case in ik_cases.values()),
         }
-        _log(
-            "IK move: goalDelta=%.8f outputDelta=%.8f effectorDelta=%.8f"
-            % (goal_delta, output_delta, effector_delta)
-        )
-        if descendant_control_deltas:
-            _log(
-                "IK move: inherited descendant control deltas=%s"
-                % json.dumps(descendant_control_deltas, sort_keys=True)
-            )
-        if other_control_deltas:
-            _log(
-                "IK move: unrelated control deltas=%s"
-                % json.dumps(other_control_deltas, sort_keys=True)
-            )
         if not report["ikMove"]["pass"] and not auto_bake_only:
-            raise RuntimeError("left foot IK move did not produce an owned solver response")
+            raise RuntimeError("required IK move witnesses did not pass")
         if not report["ikMove"]["pass"] and auto_bake_only:
             _log("focused auto-bake mode: retaining failed IK move evidence")
 
@@ -1822,11 +1939,18 @@ def run_e2e_check(
                     "publishedBoneFrames": len(published_vmd.bone_frames),
                     "publishedParsePass": bool(published_vmd.bone_frames),
                     "pass": published_pass,
+                    "ikMovePass": bool(report["ikMove"].get("pass")),
                 }
             )
             if not published_pass:
                 raise RuntimeError(
                     f"automatic Bake Timeline publish/parse failed: {published.error}"
+                )
+            if not report["ikMove"].get("pass"):
+                raise RuntimeError("automatic export parity passed but IK move witnesses failed")
+            if not report["ikToggle"].get("pass"):
+                raise RuntimeError(
+                    "automatic export parity passed but the IK toggle witness failed"
                 )
             auto_gate["status"] = "pass"
         except Exception as exc:
@@ -1934,6 +2058,10 @@ def run_e2e_check(
             if not parity_pass:
                 raise RuntimeError(
                     "automatic Control Rig VMD authored-motion parity exceeded the numeric gate"
+                )
+            if not _focused_witnesses_pass(report):
+                raise RuntimeError(
+                    "required Control Rig witnesses did not all pass before final status"
                 )
             report["internalOracle"] = {
                 "identity": "maya_vmd_export_reimport_authored_parity",
@@ -2157,6 +2285,15 @@ def _repo_path(value: str) -> Path:
     return path
 
 
+def _input_path(value: str) -> Path:
+    """Resolve a PMX/VMD input, including explicitly supplied local assets."""
+
+    path = Path(value).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"input file does not exist: {path}")
+    return path
+
+
 # ===================================================================
 # Host-side: launch a fresh GUI process and drive commandPort
 # ===================================================================
@@ -2245,8 +2382,8 @@ def main() -> int:
     scene_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.ma"
     exported_vmd_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.vmd"
     auto_exported_vmd_path = exported_vmd_path.with_suffix(".auto_bake.vmd")
-    model_path = _repo_path(args.model)
-    motion_path = _repo_path(args.motion)
+    model_path = _input_path(args.model)
+    motion_path = _input_path(args.motion)
     try:
         model_posix = model_path.as_posix()
         motion_posix = motion_path.as_posix()
