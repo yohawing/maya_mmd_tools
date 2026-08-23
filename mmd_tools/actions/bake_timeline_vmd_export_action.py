@@ -142,13 +142,11 @@ def _augment_dependency_bake_report(
     diagnostics = metadata.get("diagnostics")
     if not isinstance(diagnostics, Mapping):
         return report
-    direct = diagnostics.get("control_rig_direct_export")
-    if not isinstance(direct, Mapping):
-        return report
-    rows = direct.get("dependency_baked")
-    if not isinstance(rows, (list, tuple)):
-        return report
     appended_issues = []
+    direct = diagnostics.get("control_rig_direct_export")
+    rows = direct.get("dependency_baked") if isinstance(direct, Mapping) else ()
+    if not isinstance(rows, (list, tuple)):
+        rows = ()
     for row in rows:
         if not isinstance(row, Mapping):
             continue
@@ -177,6 +175,30 @@ def _augment_dependency_bake_report(
                 },
             )
         )
+    omitted_morphs = diagnostics.get("omitted_unencodable_morphs")
+    if isinstance(omitted_morphs, Mapping):
+        names = [str(name) for name in omitted_morphs.get("names", ()) if str(name)]
+        if names:
+            appended_issues.append(
+                ExportValidationIssue(
+                    "UNSUPPORTED_FEATURE",
+                    "warning",
+                    False,
+                    "scene.morphs.vmd_name_encoding",
+                    "Some Morph tracks were omitted because standard VMD names require CP932.",
+                    "Rename these Morphs to CP932-compatible names if their animation must be retained.",
+                    details={
+                        "encoding": "cp932",
+                        "names": names,
+                        "track_count": int(omitted_morphs.get("track_count", len(names))),
+                        "frame_count": int(omitted_morphs.get("frame_count", 0)),
+                        "nonzero_frame_count": int(
+                            omitted_morphs.get("nonzero_frame_count", 0)
+                        ),
+                        "aggregation_discriminator": "morphs",
+                    },
+                )
+            )
     return report.with_appended_issues(appended_issues)
 
 

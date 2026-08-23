@@ -48,6 +48,29 @@ class DependencyBakeWarningTests(unittest.TestCase):
         self.assertIn('"frame_range": [0, 120]', rendered)
         self.assertIn('"generated_key_count": 121', rendered)
 
+    def test_unencodable_morph_omission_requires_warning_acknowledgement(self):
+        report = _augment_dependency_bake_report(
+            ExportValidationReport("vmd", ()),
+            {
+                "diagnostics": {
+                    "omitted_unencodable_morphs": {
+                        "track_count": 2,
+                        "frame_count": 6,
+                        "nonzero_frame_count": 1,
+                        "names": ["-﹏-|||", "腹显"],
+                    }
+                }
+            },
+        )
+
+        self.assertTrue(report.requires_warning_ack)
+        issue = report.issues[0]
+        self.assertEqual(issue.code, "UNSUPPORTED_FEATURE")
+        self.assertEqual(issue.severity, "warning")
+        self.assertEqual(issue.details["encoding"], "cp932")
+        self.assertEqual(issue.details["names"], ["-﹏-|||", "腹显"])
+        self.assertEqual(issue.details["nonzero_frame_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

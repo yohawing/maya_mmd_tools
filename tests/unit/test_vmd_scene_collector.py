@@ -244,11 +244,12 @@ class TestVmdSceneCollector(unittest.TestCase):
             )
         )
 
-    def test_nonzero_unencodable_morph_remains_fail_closed(self):
-        with self.assertRaisesRegex(ValueError, "cannot be represented"):
+    def test_nonzero_unencodable_morph_is_omittable(self):
+        self.assertFalse(
             collector_module._should_emit_morph_frame(
                 {"morph_name": "腹显", "frame_number": 0, "value": 0.25}
             )
+        )
 
     def test_cp932_morph_is_emitted_even_at_zero(self):
         self.assertTrue(
@@ -3663,14 +3664,14 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(evidence[0]["reason"], "keyless_controller_dependency")
         self.assertEqual(evidence[0]["source_key_count"], 0)
 
-    def test_public_bake_timeline_keyless_incoming_morph_uses_explicit_range(self):
+    def test_public_bake_timeline_omits_all_zero_dependency_morph(self):
         self._configure_static_morph()
         self.cmds.node_types["model_root"] = "transform"
         self.cmds.connections[("face_bs", "weight[0]", True, False)] = [
             "constraint.output"
         ]
 
-        _collector, _result, sink = self._collect_to_sink(
+        collector, _result, sink = self._collect_to_sink(
             {
                 "target_model": "model_root",
                 "blend_shapes": ["face_bs"],
@@ -3684,7 +3685,42 @@ class TestVmdSceneCollector(unittest.TestCase):
             frame for section, frame in sink.frames if section == "morphs"
         ]
 
-        self.assertEqual([frame["frame_number"] for frame in frames], [0, 1, 2])
+        self.assertEqual(frames, [])
+        evidence = collector.diagnostics["track_selection"]["evidence"]
+        morph_evidence = [row for row in evidence if row["section"] == "morph"]
+        self.assertEqual(morph_evidence[0]["decision"], "omitted_default")
+        self.assertEqual(morph_evidence[0]["reason"], "dense_exact_zero")
+
+    def test_public_bake_timeline_omits_unencodable_nonzero_morph_with_diagnostics(self):
+        self._configure_static_morph(0.5)
+        self.cmds.node_types["model_root"] = "transform"
+        self.cmds.aliases["face_bs.weight[0]"] = "腹显"
+        self.cmds.connections[("face_bs", "weight[0]", True, False)] = [
+            "constraint.output"
+        ]
+
+        collector, _result, sink = self._collect_to_sink(
+            {
+                "target_model": "model_root",
+                "blend_shapes": ["face_bs"],
+                "export_strategy": "bake_timeline",
+                "frame_range": (0, 2),
+            },
+            self._timeline_sampler(),
+        )
+
+        frames = [frame for section, frame in sink.frames if section == "morphs"]
+        self.assertEqual(frames, [])
+        omitted = collector.diagnostics["omitted_unencodable_morphs"]
+        self.assertEqual(omitted["names"], ["腹显"])
+        self.assertEqual(omitted["frame_count"], 3)
+        self.assertEqual(omitted["nonzero_frame_count"], 3)
+        self.assertEqual(
+            collector.diagnostics["track_selection"]["counts"][
+                "omitted_unrepresentable"
+            ],
+            1,
+        )
 
     def test_bake_timeline_keyless_morph_connection_query_failure_raises(self):
         self._configure_static_morph()

@@ -126,6 +126,7 @@ _TRANSFORM_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", 
 _CAMERA_SHAPE_EXPORT_ATTRS = ("focalLength", "orthographic", "orthographicWidth")
 _TRACK_SELECTION_DECISIONS = (
     "omitted_default",
+    "omitted_unrepresentable",
     "constant_one_key",
     "authored_sampled",
     "dependency_baked",
@@ -1202,21 +1203,13 @@ def _write_stream_frame(sink: Any, section: str, frame: Mapping[str, Any]) -> No
 
 
 def _should_emit_morph_frame(frame: Mapping[str, Any]) -> bool:
-    """Skip unrepresentable zero morphs; non-zero tracks must remain lossless."""
+    """Return whether a Morph frame has a name representable by standard VMD."""
 
     name = str(frame.get("morph_name", frame.get("name", "")))
     try:
         name.encode("cp932")
-    except UnicodeEncodeError as exc:
-        try:
-            value = float(frame.get("value", frame.get("weight", 0.0)))
-        except (TypeError, ValueError, OverflowError) as value_exc:
-            raise ValueError(f"morph {name!r} has an invalid weight") from value_exc
-        if math.isfinite(value) and abs(value) <= 1e-8:
-            return False
-        raise ValueError(
-            f"non-zero morph {name!r} cannot be represented by VMD CP932 names"
-        ) from exc
+    except UnicodeEncodeError:
+        return False
     return True
 
 
@@ -1313,7 +1306,7 @@ class VmdSceneCollector:
         report["key_counts"]["planned"] += planned_count
         report["key_counts"]["reduced"] += max(source_count - planned_count, 0)
         report["key_counts"]["added"] += max(planned_count - source_count, 0)
-        if decision == "omitted_default" and source_count > 0:
+        if decision in {"omitted_default", "omitted_unrepresentable"} and source_count > 0:
             self._source_omission_identities.add((normalized_section, normalized_name))
         if len(report["evidence"]) < _MAX_TRACK_SELECTION_EVIDENCE:
             report["evidence"].append(
@@ -1328,6 +1321,33 @@ class VmdSceneCollector:
             )
         else:
             report["evidence_omitted_count"] += 1
+
+    def _record_unencodable_morph_omission(
+        self,
+        name: str,
+        *,
+        frame_count: int,
+        nonzero_frame_count: int,
+    ) -> None:
+        """Record one bounded warning aggregate for CP932-incompatible Morph names."""
+
+        report = self._diagnostics.setdefault(
+            "omitted_unencodable_morphs",
+            {
+                "track_count": 0,
+                "frame_count": 0,
+                "nonzero_frame_count": 0,
+                "names": [],
+                "reason": "Standard VMD Morph names require CP932",
+            },
+        )
+        normalized_name = str(name)
+        if normalized_name not in report["names"]:
+            report["names"].append(normalized_name)
+            report["names"].sort()
+            report["track_count"] = len(report["names"])
+        report["frame_count"] += max(0, int(frame_count))
+        report["nonzero_frame_count"] += max(0, int(nonzero_frame_count))
 
     def collect(self, options: Optional[Mapping[str, Any]] = None) -> dict:
         """Collect and publish low-overhead timing diagnostics."""
@@ -1386,16 +1406,14 @@ class VmdSceneCollector:
             "ik": 0,
         }
         generated_bone_counts: dict[str, int] = {}
-        omitted_zero_morph_names: set[str] = set()
-        omitted_zero_morph_frames = 0
-
         def emit(section: str, frame: Mapping[str, Any]) -> None:
-            nonlocal omitted_zero_morph_frames
             if section == "morphs" and not _should_emit_morph_frame(frame):
-                omitted_zero_morph_names.add(
-                    str(frame.get("morph_name", frame.get("name", "")))
+                value = float(frame.get("value", frame.get("weight", 0.0)))
+                self._record_unencodable_morph_omission(
+                    str(frame.get("morph_name", frame.get("name", ""))),
+                    frame_count=1,
+                    nonzero_frame_count=int(value != 0.0),
                 )
-                omitted_zero_morph_frames += 1
                 return
             _write_stream_frame(sink, section, frame)
             section_counts[section] += 1
@@ -1550,12 +1568,6 @@ class VmdSceneCollector:
                 ik_routes_by_name=direct_ik_routes,
             )
             self._diagnostics["section_counts"] = dict(section_counts)
-            if omitted_zero_morph_frames:
-                self._diagnostics["omitted_zero_unencodable_morphs"] = {
-                    "frame_count": omitted_zero_morph_frames,
-                    "names": sorted(omitted_zero_morph_names),
-                    "reason": "VMD names require CP932 and zero weights have no scene effect",
-                }
             self._diagnostics["streaming"] = {
                 "enabled": True,
                 "peak_buffered_track_frames": "one_track",
@@ -4025,14 +4037,23 @@ class VmdSceneCollector:
                         str(morph_name), []
                     ).append((f"{node}.{attr}", len(ranged_source_frames)))
 
+        stream_candidate_rows: dict[
+            str, list[tuple[str, str, str, Sequence[float], bool]]
+        ] = {}
+        if frame_sink is not None and bake_timeline_dense_sampling:
+            for channel in channels:
+                if not channel[4]:
+                    stream_candidate_rows.setdefault(str(channel[2]), []).append(channel)
         stream_candidate_ids = {
             name: index
-            for index, name in enumerate(sorted(direct_multi_key_candidates))
-            if len(direct_multi_key_candidates[name]) == 1
+            for index, name in enumerate(sorted(stream_candidate_rows))
+            if len(stream_candidate_rows[name]) == 1
         }
         candidate_spool = None
         candidate_first: dict[int, tuple[int, float]] = {}
         candidate_varies: set[int] = set()
+        candidate_frame_counts: dict[int, int] = {}
+        candidate_nonzero_frame_counts: dict[int, int] = {}
         stream_last_vmd_frame: dict[str, int] = {}
         protected_by_name: dict[str, set[int]] = {}
         for _node, _attr, morph_name, ranged_source_frames, _direct_single in channels:
@@ -4086,6 +4107,23 @@ class VmdSceneCollector:
             if direct_single:
                 is_default = weight == 0.0
                 controller_direct = node in controller_nodes
+                if not _should_emit_morph_frame({"morph_name": morph_name}):
+                    self._record_unencodable_morph_omission(
+                        str(morph_name),
+                        frame_count=1,
+                        nonzero_frame_count=int(not is_default),
+                    )
+                    self._record_track_selection(
+                        "morph",
+                        morph_name,
+                        "omitted_default" if is_default else "omitted_unrepresentable",
+                        "direct_single_default"
+                        if is_default
+                        else "vmd_name_not_cp932",
+                        0 if static_keyless else len(source_frames),
+                        0,
+                    )
+                    return
                 self._record_track_selection(
                     "morph",
                     morph_name,
@@ -4268,33 +4306,77 @@ class VmdSceneCollector:
                     if not record:
                         break
                     candidate_id, frame_number, weight = struct.unpack("<Iqd", record)
+                    candidate_frame_counts[candidate_id] = (
+                        candidate_frame_counts.get(candidate_id, 0) + 1
+                    )
+                    if weight != 0.0:
+                        candidate_nonzero_frame_counts[candidate_id] = (
+                            candidate_nonzero_frame_counts.get(candidate_id, 0) + 1
+                        )
                     first = candidate_first.get(candidate_id)
                     if first is None:
                         candidate_first[candidate_id] = (frame_number, weight)
                     elif first[1] != weight:
                         candidate_varies.add(candidate_id)
                 names_by_id = {value: key for key, value in stream_candidate_ids.items()}
+                replay_candidate_ids = set()
                 for candidate_id, first in sorted(candidate_first.items()):
                     name = names_by_id[candidate_id]
-                    source_key_count = direct_multi_key_candidates[name][0][1]
-                    if candidate_id in candidate_varies:
-                        self._record_track_selection(
-                            "morph",
+                    node, attr, _name, ranged_source_frames, _direct_single = (
+                        stream_candidate_rows[name][0]
+                    )
+                    source_key_count = len(ranged_source_frames)
+                    keyless_dependency = (node, attr) in keyless_dependency_channels
+                    dependency = node in controller_nodes or keyless_dependency
+                    reason = (
+                        "keyless_incoming_dependency"
+                        if keyless_dependency
+                        else "keyless_controller_dependency"
+                        if node in controller_nodes and not ranged_source_frames
+                        else "morph_controller_route"
+                        if dependency
+                        else "multiple_source_keys"
+                    )
+                    encodable = _should_emit_morph_frame({"morph_name": name})
+                    nonzero_frame_count = candidate_nonzero_frame_counts.get(
+                        candidate_id, 0
+                    )
+                    if not encodable:
+                        self._record_unencodable_morph_omission(
                             name,
-                            "authored_sampled",
-                            "multiple_source_keys",
-                            source_key_count,
-                            len(dense_frame_samples or ()),
+                            frame_count=candidate_frame_counts.get(candidate_id, 0),
+                            nonzero_frame_count=nonzero_frame_count,
                         )
-                    elif first[1] == 0.0:
+                    if nonzero_frame_count == 0:
                         self._record_track_selection(
                             "morph",
                             name,
                             "omitted_default",
-                            "dense_exact_constant",
+                            "dense_exact_zero",
                             source_key_count,
                             0,
                         )
+                        continue
+                    if not encodable:
+                        self._record_track_selection(
+                            "morph",
+                            name,
+                            "omitted_unrepresentable",
+                            "vmd_name_not_cp932",
+                            source_key_count,
+                            0,
+                        )
+                        continue
+                    if candidate_id in candidate_varies:
+                        self._record_track_selection(
+                            "morph",
+                            name,
+                            "dependency_baked" if dependency else "authored_sampled",
+                            reason,
+                            source_key_count,
+                            len(dense_frame_samples or ()),
+                        )
+                        replay_candidate_ids.add(candidate_id)
                     else:
                         self._record_track_selection(
                             "morph",
@@ -4313,7 +4395,7 @@ class VmdSceneCollector:
                             key_reduction_report["input"] += 1
                             key_reduction_report["output"] += 1
                         frame_sink(payload)
-                if candidate_varies:
+                if replay_candidate_ids:
                     # Replay every varying candidate in one aggregate pass.
                     # Rows were already first-win deduplicated before spooling,
                     # so no per-track dense frame set is needed here.
@@ -4325,7 +4407,7 @@ class VmdSceneCollector:
                         candidate_id, frame_number, weight = struct.unpack(
                             "<Iqd", record
                         )
-                        if candidate_id not in candidate_varies:
+                        if candidate_id not in replay_candidate_ids:
                             continue
                         emit_reduced(
                             {
@@ -4343,6 +4425,8 @@ class VmdSceneCollector:
             diagnostic_rows = {}
             for node, _attr, morph_name, ranged_source_frames, direct_single in channels:
                 if direct_single:
+                    continue
+                if str(morph_name) in stream_candidate_ids:
                     continue
                 direct_multi_key = (
                     len(direct_multi_key_candidates.get(str(morph_name), ())) == 1
