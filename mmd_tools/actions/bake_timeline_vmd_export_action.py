@@ -136,12 +136,48 @@ def _discovery(value: Any, request: Any) -> VmdExportDiscovery:
     return result
 
 
+def _vmd_model_name_with_fallback(value: Any) -> tuple[str, Optional[Mapping[str, Any]]]:
+    """Return a valid CP932 VMD model name and substitution facts, if any.
+
+    VMD has no Unicode model-name field.  Preserve every representable
+    character and replace only unsupported code points (or embedded NULs)
+    with ``?`` so native encoding stays deterministic and non-empty.
+    """
+
+    original = str(value or "")
+    sanitized = original.replace("\x00", "?")
+    replacement_reason = "invalid_character" if sanitized != original else ""
+    try:
+        sanitized.encode("cp932")
+    except UnicodeEncodeError:
+        sanitized = sanitized.encode("cp932", errors="replace").decode("cp932")
+        replacement_reason = "unencodable_character"
+    if not sanitized.strip():
+        sanitized = "Model"
+        replacement_reason = "empty_name"
+    # Keep this strict assertion at the boundary so the native writer never
+    # receives an empty or malformed fallback.
+    sanitized.encode("cp932")
+    if sanitized == original:
+        return sanitized, None
+    return sanitized, {
+        "original_name": original,
+        "exported_name": sanitized,
+        "encoding": "cp932",
+        "replacement": "question_mark",
+        "reason": replacement_reason,
+    }
+
+
 def _augment_dependency_bake_report(
-    report: ExportValidationReport, metadata: Mapping[str, Any]
+    report: ExportValidationReport,
+    metadata: Mapping[str, Any],
+    *,
+    model_name_substitution: Optional[Mapping[str, Any]] = None,
 ) -> ExportValidationReport:
     diagnostics = metadata.get("diagnostics")
     if not isinstance(diagnostics, Mapping):
-        return report
+        diagnostics = {}
     appended_issues = []
     direct = diagnostics.get("control_rig_direct_export")
     rows = direct.get("dependency_baked") if isinstance(direct, Mapping) else ()
@@ -199,6 +235,21 @@ def _augment_dependency_bake_report(
                     },
                 )
             )
+    if model_name_substitution:
+        appended_issues.append(
+            ExportValidationIssue(
+                "UNSUPPORTED_FEATURE",
+                "warning",
+                False,
+                "scene.model.vmd_name_encoding",
+                "The model name contained characters that standard VMD cannot represent, so a CP932-compatible name was written.",
+                "Rename the model with CP932-compatible characters if the exact name must be retained.",
+                details={
+                    **dict(model_name_substitution),
+                    "aggregation_discriminator": "unsupported_feature",
+                },
+            )
+        )
     return report.with_appended_issues(appended_issues)
 
 
@@ -384,8 +435,11 @@ class BakeTimelineVmdExportAction:
             revision_before = _required(self._boundary.current_revision(request, first), "revision_before")
 
             phase("collect", True)
+            writer_model_name, model_name_substitution = _vmd_model_name_with_fallback(
+                first.model_name
+            )
             stage = VmdSiblingStageSession(
-                first.model_name,
+                writer_model_name,
                 target_path=str(target),
                 output_verifier=verify_vmd_output_streaming,
             )
@@ -432,7 +486,12 @@ class BakeTimelineVmdExportAction:
             output_report = stage.verify()
             phase("output_verify", False)
             report = _merge_reports(
-                initial_report, _augment_dependency_bake_report(output_report, metadata)
+                initial_report,
+                _augment_dependency_bake_report(
+                    output_report,
+                    metadata,
+                    model_name_substitution=model_name_substitution,
+                ),
             )
 
             phase("cleanup", True)

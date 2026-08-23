@@ -13,7 +13,9 @@ install_maya_stub(profile="headless")
 from mmd_tools.actions.bake_timeline_vmd_export_action import (  # noqa: E402
     BakeTimelineVmdExportAction,
     VmdExportDiscovery,
+    _vmd_model_name_with_fallback,
 )
+from mmd_tools.core.vmd_data import VmdData  # noqa: E402
 from mmd_tools.services.export_workflow_service import (  # noqa: E402
     ExportWorkflowRequest,
     ExportWorkflowService,
@@ -286,6 +288,54 @@ class ExportWorkflowTests(unittest.TestCase):
                 ["collect", "encode", "flush", "output_verify", "cleanup", "replace"],
             )
             self.assertEqual(list(Path(directory).glob(".motion.*.vmd")), [])
+
+    def test_vmd_unencodable_model_name_uses_cp932_fallback_and_warning(self):
+        class UnicodeModelBoundary(_VmdBoundary):
+            def discover(self, request):
+                result = super().discover(request)
+                return VmdExportDiscovery(
+                    scene_session_id=result.scene_session_id,
+                    target_uuid=result.target_uuid,
+                    target_identity=result.target_identity,
+                    dependency_closure_fingerprint=result.dependency_closure_fingerprint,
+                    model_name="桃川うさぴ🍑",
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "motion.vmd"
+            result = BakeTimelineVmdExportAction(
+                UnicodeModelBoundary()
+            ).execute_one_shot(
+                self._vmd_request(target),
+                acknowledge_warnings=True,
+                write_report=False,
+            )
+
+            self.assertTrue(result.succeeded, result.error)
+            self.assertTrue(target.is_file())
+            self.assertEqual(
+                VmdData().parse_file(str(target)).header.model_name,
+                "桃川うさぴ?",
+            )
+            issue = next(
+                item
+                for item in result.validation_report.issues
+                if item.path == "scene.model.vmd_name_encoding"
+            )
+            self.assertEqual(issue.severity, "warning")
+            self.assertEqual(issue.details["original_name"], "桃川うさぴ🍑")
+            self.assertEqual(issue.details["exported_name"], "桃川うさぴ?")
+            self.assertEqual(
+                issue.details["aggregation_discriminator"], "unsupported_feature"
+            )
+
+    def test_vmd_model_name_fallback_preserves_supported_characters_and_is_nonempty(self):
+        self.assertEqual(_vmd_model_name_with_fallback("桃川うさぴ"), ("桃川うさぴ", None))
+        fallback, details = _vmd_model_name_with_fallback("腹显")
+        self.assertEqual(fallback, "腹?")
+        self.assertEqual(details["replacement"], "question_mark")
+        self.assertEqual(_vmd_model_name_with_fallback("")[0], "Model")
+        self.assertEqual(_vmd_model_name_with_fallback("\x00")[0], "?")
 
     def test_prepare_vmd_is_synchronous_one_shot_headless_seam(self):
         boundary = _VmdBoundary()
