@@ -105,6 +105,13 @@ def tier2_commands(
         commands.extend(
             [
                 (
+                    f"tier2:cpp-debug-prerequisite-{maya_version}",
+                    [
+                        "uvx", "nox", "-s", "cpp_build", "--",
+                        "--maya", maya_version, "--config", "Debug",
+                    ],
+                ),
+                (
                     f"tier2:mayapy-unit-{maya_version}",
                     [
                         "uvx", "nox", "-s", "tests", "--",

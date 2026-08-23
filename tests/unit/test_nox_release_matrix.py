@@ -126,12 +126,20 @@ class ReleaseMatrixTest(unittest.TestCase):
         )
         names = [name for name, _command in commands]
         self.assertEqual(
-            names[:4],
+            names[:5],
             [
+                "tier2:cpp-debug-prerequisite-2024",
                 "tier2:mayapy-unit-2024",
                 "tier2:mayapy-integration-2024",
                 "tier2:viewport-glsl-2025",
                 "tier2:viewport-dx11-2026",
+            ],
+        )
+        self.assertEqual(
+            dict(commands)["tier2:cpp-debug-prerequisite-2024"],
+            [
+                "uvx", "nox", "-s", "cpp_build", "--",
+                "--maya", "2024", "--config", "Debug",
             ],
         )
         self.assertLess(names.index("tier2:bundled-native-smoke"), names.index("tier2:cpp-verify-2026"))
