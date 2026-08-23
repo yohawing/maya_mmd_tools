@@ -1457,8 +1457,119 @@ def _model_recipe_value(recipe: Mapping[str, Any], key: str, default: Any) -> An
     return recipe.get(key, default)
 
 
+def _apply_physics_gui_adjustment(root: str, case: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Edit one rigid-body mass through the Physics tab's production action handler."""
+
+    from types import SimpleNamespace
+
+    from maya import cmds
+
+    from mmd_tools.core.constants import PHYSICS_GROUP, RIGID_BODIES_GROUP
+    from mmd_tools.ui.presenters.physics_presenter import PhysicsPresenter
+
+    recipe = _adjustment_recipe(case)
+    requested_delta = _model_recipe_value(recipe, "physics_mass_delta", None)
+    if requested_delta is None:
+        return None
+    delta = float(requested_delta)
+    if not math.isfinite(delta) or delta == 0.0:
+        raise ValueError("physics mass adjustment requires a finite non-zero delta")
+
+    status_messages: list[str] = []
+    app_state = SimpleNamespace(
+        current_model_root=root,
+        emit_status=status_messages.append,
+    )
+    presenter = PhysicsPresenter.__new__(PhysicsPresenter)
+    presenter.app_state = app_state
+    presenter._current_kind = "rigid"
+    presenter._bone_candidates = []
+    presenter._rigid_body_candidates = []
+    presenter._form_dirty = True
+    physics_group = presenter._find_child(root, PHYSICS_GROUP)
+    rigid_body_group = presenter._find_child(physics_group, RIGID_BODIES_GROUP)
+    rigid_bodies = presenter._find_shapes(rigid_body_group, "mmdRigidBodyShape")
+    if not rigid_bodies:
+        raise ValueError("physics GUI adjustment has no rigid body")
+    shape = rigid_bodies[0][1]
+    presenter._current_shape = shape
+    values = presenter._read_rigid_body_values(shape)
+
+    before = float(cmds.getAttr(f"{shape}.mass"))
+    target = before + delta
+    if target < 0.0:
+        target = before + abs(delta)
+    if abs(target - before) <= FLOAT_TOLERANCE:
+        raise ValueError("physics mass adjustment did not produce a distinct target")
+
+    def text_control(value: Any) -> Any:
+        return SimpleNamespace(text=lambda: str(value))
+
+    def index_control(value: Any) -> Any:
+        return SimpleNamespace(currentIndex=lambda: int(value))
+
+    def value_control(value: Any) -> Any:
+        return SimpleNamespace(value=lambda: int(value))
+
+    binding = tuple(values["related_bone"])
+    presenter.view = SimpleNamespace(
+        rigid_name_edit=text_control(values["name"]),
+        rigid_name_english_edit=text_control(values["name_english"]),
+        rigid_shape_combo=index_control(values["shape"]),
+        rigid_physics_mode_combo=index_control(values["physics_mode"]),
+        rigid_shape_size_edit=text_control(values["shape_size"]),
+        rigid_position_edit=text_control(values["pmx_position"]),
+        rigid_rotation_edit=text_control(values["pmx_rotation_degrees"]),
+        rigid_collision_group_spin=value_control(values["collision_group"]),
+        rigid_collision_mask_spin=text_control(values["collision_mask"]),
+        rigid_mass_edit=text_control(target),
+        rigid_linear_damping_edit=text_control(values["linear_damping"]),
+        rigid_angular_damping_edit=text_control(values["angular_damping"]),
+        rigid_restitution_edit=text_control(values["restitution"]),
+        rigid_friction_edit=text_control(values["friction"]),
+        binding_selection=lambda key: binding if key == "rigid_related_bone" else ("", -1),
+    )
+    presenter.apply_changes()
+    applied = float(cmds.getAttr(f"{shape}.mass"))
+    if abs(applied - target) > FLOAT_TOLERANCE:
+        raise ValueError(
+            "physics GUI action handler did not persist mass: "
+            f"expected={target:.9g} actual={applied:.9g}"
+        )
+
+    cmds.undo()
+    undone = float(cmds.getAttr(f"{shape}.mass"))
+    if abs(undone - before) > FLOAT_TOLERANCE:
+        raise ValueError(
+            "physics GUI adjustment Undo did not restore mass: "
+            f"expected={before:.9g} actual={undone:.9g}"
+        )
+
+    cmds.redo()
+    redone = float(cmds.getAttr(f"{shape}.mass"))
+    if abs(redone - target) > FLOAT_TOLERANCE:
+        raise ValueError(
+            "physics GUI adjustment Redo did not restore edited mass: "
+            f"expected={target:.9g} actual={redone:.9g}"
+        )
+    return {
+        "route": "PhysicsPresenter.apply_changes (PhysicsTab Apply action handler)",
+        "view": "headless form adapter",
+        "kind": "rigid_body",
+        "field": "mass",
+        "shape": shape,
+        "pmx_index": int(cmds.getAttr(f"{shape}.pmxIndex")),
+        "before": before,
+        "requested_delta": delta,
+        "after": redone,
+        "undo_restored": True,
+        "redo_restored": True,
+        "status_messages": status_messages,
+    }
+
+
 def _apply_model_adjustment(root: str, case: Mapping[str, Any]) -> dict[str, Any]:
-    """Apply deterministic Info/Bone/Material edits through the authoring coordinator."""
+    """Apply deterministic model edits through production authoring and GUI routes."""
 
     from dataclasses import replace
 
@@ -1521,6 +1632,7 @@ def _apply_model_adjustment(root: str, case: Mapping[str, Any]) -> dict[str, Any
         raise ValueError("bone English-name sentinel did not persist")
     if abs(float(changed["material_shininess"]) - target_shininess) > FLOAT_TOLERANCE:
         raise ValueError("material shininess sentinel did not persist")
+    physics = _apply_physics_gui_adjustment(root, case)
     return {
         "before": {
             "comment": before.model.comment,
@@ -1532,6 +1644,7 @@ def _apply_model_adjustment(root: str, case: Mapping[str, Any]) -> dict[str, Any
             "bone": {"index": bone.index, "binding_identity": bone.binding_identity, "name_english": changed["bone"]},
             "material": {"index": material.index, "binding_identity": material.binding_identity, "shininess": changed["material_shininess"]},
         },
+        "physics": physics,
     }
 
 
@@ -2149,6 +2262,18 @@ def _run_pmx_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
             failures.append(f"metadata.{field} differs")
     if not adjustment.get("after", {}).get("comment"):
         failures.append("model adjustment sentinel is empty")
+    physics_adjustment = adjustment.get("physics")
+    if isinstance(physics_adjustment, Mapping):
+        rigid_body_index = int(physics_adjustment["pmx_index"])
+        if not 0 <= rigid_body_index < len(exported_data.rigid_bodies):
+            failures.append(f"exported rigid body index is missing: {rigid_body_index}")
+        else:
+            exported_mass = float(exported_data.rigid_bodies[rigid_body_index].mass)
+            if abs(exported_mass - float(physics_adjustment["after"])) > FLOAT_TOLERANCE:
+                failures.append(
+                    "exported rigid body mass differs: "
+                    f"expected {physics_adjustment['after']!r}, actual {exported_mass!r}"
+                )
     if failures:
         raise AssertionError("PMX semantic mismatch: " + "; ".join(failures[:30]))
     return {
@@ -2177,6 +2302,7 @@ def _run_pmx_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
             "morphs": True,
             "display_frames": True,
             "physics": True,
+            "physics_gui_apply_undo_redo": isinstance(physics_adjustment, Mapping),
             "index_references": True,
         },
         "parsed_counts": {
@@ -2572,6 +2698,11 @@ def _run_vmd_case(
         "source_track_resolution",
         lambda: _model_resolved_motion_track_names(source_root),
     )
+    physics_adjustment = _phase(
+        context,
+        "physics_gui_adjustment",
+        lambda: _apply_physics_gui_adjustment(source_root, case),
+    )
     adjustment = _phase(
         context,
         "motion_adjustment",
@@ -2761,6 +2892,7 @@ def _run_vmd_case(
         "export_operation": export_evidence,
         "phase_evidence": phase_evidence,
         "acknowledged_warnings": acknowledged_warnings,
+        "physics_adjustment": physics_adjustment,
         "adjustment": adjustment,
         "evaluation_frames": evaluation_frames,
         "semantic": {
@@ -2771,6 +2903,7 @@ def _run_vmd_case(
             "bake_timeline_dense_semantics": True,
             "fresh_pose": True,
             "fresh_camera_light": source_camera_oracle is not None,
+            "physics_gui_apply_undo_redo": isinstance(physics_adjustment, Mapping),
             "track_boundary_failures": track_boundary_failures,
         },
         "key_counts": {
