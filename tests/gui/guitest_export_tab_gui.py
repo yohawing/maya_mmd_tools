@@ -228,6 +228,24 @@ class TestExportTabGUI(GuiTestBase):
         finally:
             self._delete_tab(tab)
 
+    def test_operation_page_owns_format_and_extension_after_tab_switch(self):
+        """A Model click stays PMX-authoritative while another pane is visible."""
+        tab = self._create_visible_tab()
+        try:
+            tab.pane_tabs.setCurrentIndex(0)
+            tab.output_path_edit.setText("test.vmd")
+            tab.set_operation_active(True)
+
+            tab.pane_tabs.setCurrentIndex(1)
+            request = tab.build_request("model_ROOT")
+
+            self.assertEqual(request.options["export_format"], "pmx")
+            self.assertTrue(request.file_path.endswith("test.pmx"))
+            self.assertNotIn("export_strategy", request.options)
+        finally:
+            tab.set_operation_active(False)
+            self._delete_tab(tab)
+
     def test_export_result_returns_to_operation_page_after_pane_switch(self):
         """An in-flight Animation result must not land on the Model page."""
         translator = UITranslator.instance()

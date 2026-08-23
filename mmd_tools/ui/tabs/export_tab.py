@@ -550,7 +550,12 @@ class ExportTab(BaseTab):
         setter(settings_keys.EXPORT_MOTION_RANGE_INITIALIZED, True)
 
     def build_request(self, current_model_root: Optional[str] = None) -> ExportWorkflowRequest:
-        return self._active_page().build_request(current_model_root)
+        # Once an export starts, the page that owned the button click remains
+        # authoritative even if progress/UI callbacks switch the visible tab.
+        # In particular, a Model request must never become VMD merely because
+        # the Animation page becomes active before request construction.
+        owner_page = self._operation_owner_page or self._active_page()
+        return owner_page.build_request(current_model_root)
 
     def set_result(self, result: ExportWorkflowResult) -> None:
         owner_page = self._result_owner_page
