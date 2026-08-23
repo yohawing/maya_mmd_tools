@@ -6,6 +6,7 @@ import inspect
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -22,7 +23,11 @@ from tools.export_release_gate import (
     _validate_release_provenance,
     _validate_maya_probe_report,
 )
-from tools.export_release_maya_probe import _compare_scene_oracles, _run_vmd_case
+from tools.export_release_maya_probe import (
+    _bone_morph_separation_evidence,
+    _compare_scene_oracles,
+    _run_vmd_case,
+)
 
 
 def _clean_release_provenance(run_id=None):
@@ -39,6 +44,74 @@ def _clean_release_provenance(run_id=None):
 
 class ExportReleaseGateTests(unittest.TestCase):
     """The release summary must expose omissions and fail-closed fixtures."""
+
+    @staticmethod
+    def _bone_morph_separation_fixture(leaked=False):
+        bones = [
+            SimpleNamespace(name="センター"),
+            SimpleNamespace(name="腰"),
+            SimpleNamespace(name="独自補助"),
+        ]
+        morphs = [
+            SimpleNamespace(
+                name="standard",
+                morph_type=2,
+                offsets=[{"bone_index": 0}],
+            ),
+            SimpleNamespace(
+                name="semi",
+                morph_type=2,
+                offsets=[{"bone_index": 1}],
+            ),
+            SimpleNamespace(
+                name="mixed",
+                morph_type=2,
+                offsets=[{"bone_index": 0}, {"bone_index": 1}, {"bone_index": 2}],
+            ),
+        ]
+        source_morphs = [
+            SimpleNamespace(morph_name=name, frame_number=frame, value=value)
+            for name, value in (("standard", 0.75), ("semi", 0.5), ("mixed", 0.4))
+            for frame in (10,)
+        ]
+        base_frames = []
+        for name in ("センター", "腰", "独自補助"):
+            position = (0.25, 0.0, 0.0) if leaked and name == "センター" else (0.0, 0.0, 0.0)
+            base_frames.append(
+                SimpleNamespace(
+                    bone_name=name,
+                    frame_number=10,
+                    position=position,
+                    rotation=(0.0, 0.0, 0.0, 1.0),
+                )
+            )
+        return (
+            SimpleNamespace(bones=bones, morphs=morphs),
+            SimpleNamespace(bone_frames=[], morph_frames=source_morphs),
+            SimpleNamespace(bone_frames=base_frames, morph_frames=source_morphs),
+        )
+
+    def test_bone_morph_separation_accepts_standard_semi_custom_and_mixed_targets(self):
+        evidence = _bone_morph_separation_evidence(
+            *self._bone_morph_separation_fixture()
+        )
+
+        self.assertEqual(evidence["status"], "pass")
+        self.assertEqual(
+            evidence["target_categories"],
+            ["custom", "semi_standard", "standard"],
+        )
+        self.assertTrue(evidence["mixed_target_covered"])
+        self.assertEqual(evidence["source_morph_key_count"], 3)
+        self.assertEqual(evidence["preserved_morph_key_count"], 3)
+
+    def test_bone_morph_separation_rejects_deformation_in_base_bone_track(self):
+        with self.assertRaisesRegex(
+            AssertionError, "deformation leaked into exported base track"
+        ):
+            _bone_morph_separation_evidence(
+                *self._bone_morph_separation_fixture(leaked=True)
+            )
 
     def test_qt_pytest_command_prefers_project_python(self):
         isolated_dir = str(Path("isolated") / "Scripts")
@@ -709,6 +782,38 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "checked_frames": [0, 6, 10, 12, 20],
                         "raw_key_interpolation_preserved": False,
                     },
+                    "bone_morph_separation": {
+                        "status": "pass",
+                        "contract": "bone_track_is_pre_morph_and_morph_track_carries_weight",
+                        "target_categories": ["custom", "semi_standard", "standard"],
+                        "mixed_target_covered": True,
+                        "morphs": [
+                            {
+                                "name": "mixed",
+                                "targets": ["standard", "semi", "custom"],
+                            }
+                        ],
+                        "targets": [
+                            {
+                                "bone_name": "custom",
+                                "category": "custom",
+                                "selection": "omitted_default",
+                            },
+                            {
+                                "bone_name": "semi",
+                                "category": "semi_standard",
+                                "selection": "identity_base",
+                            },
+                            {
+                                "bone_name": "standard",
+                                "category": "standard",
+                                "selection": "identity_base",
+                            },
+                        ],
+                        "source_morph_key_count": 3,
+                        "preserved_morph_key_count": 3,
+                        "fresh_import_recomposition_required": True,
+                    },
                 },
             )
             camera_payload = {
@@ -951,6 +1056,18 @@ class ExportReleaseGateTests(unittest.TestCase):
                 "0": {"ik": 1},
                 "6": {"ik": 0},
             }
+
+            separation = vmd_bake_timeline_model_tracks_case["model_tracks"].pop(
+                "bone_morph_separation"
+            )
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("bone_morph_separation_missing", step["error"])
+            vmd_bake_timeline_model_tracks_case["model_tracks"][
+                "bone_morph_separation"
+            ] = separation
 
             vmd_bake_timeline_camera_light_case["parsed_counts"]["camera_frames"] = 0
             report_path.write_text(json.dumps(report), encoding="utf-8")

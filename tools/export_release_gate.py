@@ -1018,6 +1018,76 @@ def _validate_vmd_bake_timeline_model_tracks_case(case: Mapping[str, Any]) -> li
         if comparison.get("checked_frames") != [0, 6, 10, 12, 20]:
             failures.append("vmd_bake_timeline_model_tracks.model_tracks.comparison.checked_frames mismatch")
 
+    separation = tracks.get("bone_morph_separation")
+    if not isinstance(separation, dict):
+        failures.append(
+            "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation_missing"
+        )
+    else:
+        if separation.get("status") != "pass":
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.status must be pass"
+            )
+        if separation.get("contract") != (
+            "bone_track_is_pre_morph_and_morph_track_carries_weight"
+        ):
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.contract mismatch"
+            )
+        if separation.get("target_categories") != [
+            "custom",
+            "semi_standard",
+            "standard",
+        ]:
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.target_categories mismatch"
+            )
+        if separation.get("mixed_target_covered") is not True:
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.mixed_target_covered must be true"
+            )
+        if separation.get("fresh_import_recomposition_required") is not True:
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.fresh_import_recomposition_required must be true"
+            )
+        source_count = separation.get("source_morph_key_count")
+        preserved_count = separation.get("preserved_morph_key_count")
+        if (
+            isinstance(source_count, bool)
+            or not isinstance(source_count, int)
+            or source_count <= 0
+            or preserved_count != source_count
+        ):
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.morph_key_counts mismatch"
+            )
+        targets = separation.get("targets")
+        if not isinstance(targets, list) or len(targets) < 3:
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.targets missing"
+            )
+        else:
+            observed_categories = sorted(
+                {
+                    target.get("category")
+                    for target in targets
+                    if isinstance(target, dict)
+                    and isinstance(target.get("category"), str)
+                }
+            )
+            if observed_categories != ["custom", "semi_standard", "standard"]:
+                failures.append(
+                    "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.target evidence categories mismatch"
+                )
+            if any(
+                not isinstance(target, dict)
+                or target.get("selection") not in {"identity_base", "omitted_default"}
+                for target in targets
+            ):
+                failures.append(
+                    "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.target selection mismatch"
+                )
+
     for boundary in ("source", "source_import", "exported_file", "fresh_import"):
         payload = tracks.get(boundary)
         if not isinstance(payload, dict):
