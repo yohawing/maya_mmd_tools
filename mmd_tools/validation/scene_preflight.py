@@ -312,7 +312,8 @@ class ScenePreflight:
                         _issue(
                             "OWNERSHIP_CONFLICT",
                             "ownership.control_rig",
-                            "Control Rig owns the authoring path; bake or restore to MMD Rig before export",
+                            "Control Rig owns the authoring path, but its direct VMD export route could not be resolved",
+                            "Repair the Control Rig export mapping, or switch to MMD Rig only if direct export is not required.",
                             details={
                                 "owner": "control_rig",
                                 "aggregation_discriminator": "ownership_control_rig",
