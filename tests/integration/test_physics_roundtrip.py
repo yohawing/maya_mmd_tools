@@ -22,6 +22,10 @@ from tests.common.maya_coordinate_oracle import (
 )
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data.morph import PmxMorphType
+from mmd_tools.core.physics_form_validation import (
+    parse_joint_form,
+    parse_rigid_body_form,
+)
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.ui.presenters.physics_presenter import PhysicsPresenter
@@ -73,6 +77,34 @@ def _binding_names(model):
     return related_bones, joint_bodies
 
 
+class _TextControl:
+    def __init__(self, value):
+        self._value = value
+
+    def text(self):
+        return str(self._value)
+
+
+class _IndexControl:
+    def __init__(self, value):
+        self._value = int(value)
+
+    def currentIndex(self):
+        return self._value
+
+
+class _ValueControl:
+    def __init__(self, value):
+        self._value = int(value)
+
+    def value(self):
+        return self._value
+
+
+def _vector_text(values):
+    return ", ".join(str(float(value)) for value in values)
+
+
 @unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
 class TestPhysicsRoundTrip(MayaTestBase):
 
@@ -116,6 +148,255 @@ class TestPhysicsRoundTrip(MayaTestBase):
     def _set_vector(shape, attr, values):
         for axis, value in zip("XYZ", values):
             cmds.setAttr(f"{shape}.{attr}{axis}", value)
+
+    @staticmethod
+    def _rigid_apply_view(values, parsed, targets):
+        binding = tuple(values["related_bone"])
+        return SimpleNamespace(
+            rigid_name_edit=_TextControl(targets["name"]),
+            rigid_name_english_edit=_TextControl(targets["name_english"]),
+            rigid_shape_combo=_IndexControl(parsed.shape_type),
+            rigid_physics_mode_combo=_IndexControl(parsed.physics_mode),
+            rigid_shape_size_edit=_TextControl(_vector_text(targets["shape_size"])),
+            rigid_position_edit=_TextControl(_vector_text(targets["position"])),
+            rigid_rotation_edit=_TextControl(_vector_text(targets["rotation"])),
+            rigid_collision_group_spin=_ValueControl(targets["group"]),
+            rigid_collision_mask_spin=_TextControl(targets["collision_mask"]),
+            rigid_mass_edit=_TextControl(targets["mass"]),
+            rigid_linear_damping_edit=_TextControl(targets["linear_damping"]),
+            rigid_angular_damping_edit=_TextControl(targets["angular_damping"]),
+            rigid_restitution_edit=_TextControl(targets["restitution"]),
+            rigid_friction_edit=_TextControl(targets["friction"]),
+            binding_selection=lambda key: (
+                binding if key == "rigid_related_bone" else ("", -1)
+            ),
+        )
+
+    @staticmethod
+    def _joint_apply_view(values, parsed, targets):
+        bindings = {
+            "joint_body_a": tuple(values["rigid_body_a"]),
+            "joint_body_b": tuple(values["rigid_body_b"]),
+        }
+        return SimpleNamespace(
+            joint_name_edit=_TextControl(targets["name"]),
+            joint_name_english_edit=_TextControl(targets["name_english"]),
+            joint_type_combo=_IndexControl(parsed.joint_type),
+            joint_position_edit=_TextControl(_vector_text(targets["position"])),
+            joint_rotation_edit=_TextControl(_vector_text(targets["rotation"])),
+            joint_translation_min_edit=_TextControl(
+                _vector_text(targets["translation_limit_min"])
+            ),
+            joint_translation_max_edit=_TextControl(
+                _vector_text(targets["translation_limit_max"])
+            ),
+            joint_rotation_min_edit=_TextControl(
+                _vector_text(targets["rotation_limit_min"])
+            ),
+            joint_rotation_max_edit=_TextControl(
+                _vector_text(targets["rotation_limit_max"])
+            ),
+            joint_spring_translation_edit=_TextControl(
+                _vector_text(targets["spring_translation"])
+            ),
+            joint_spring_rotation_edit=_TextControl(
+                _vector_text(targets["spring_rotation"])
+            ),
+            binding_selection=lambda key: bindings.get(key, ("", -1)),
+        )
+
+    def test_production_apply_edits_drive_solver_and_survive_pmx_roundtrip(self):
+        """Connect Physics Apply, solver invalidation, Undo/Redo, and PMX export."""
+
+        root = self._import_fixture()
+        presenter = self._presenter(root)
+        presenter.app_state.emit_status = lambda _message: None
+        presenter._bone_candidates = []
+        presenter._rigid_body_candidates = []
+        presenter._form_dirty = False
+        physics_group = presenter._find_child(root, PHYSICS_GROUP)
+        rigid_group = presenter._find_child(physics_group, RIGID_BODIES_GROUP)
+        joint_group = presenter._find_child(physics_group, CONSTRAINTS_GROUP)
+        rigid_pairs = presenter._find_shapes(rigid_group, "mmdRigidBodyShape")
+        joint_pairs = presenter._find_shapes(joint_group, "mmdPhysicsJointShape")
+        rigid_shape = next(
+            shape
+            for _transform, shape in rigid_pairs
+            if int(cmds.getAttr(f"{shape}.physicsMode")) != 0
+        )
+        joint_shape = joint_pairs[0][1]
+
+        world = presenter._find_physics_world_shape()
+        self.assertIsNotNone(world)
+        solvers = presenter._world_solvers(world)
+        self.assertTrue(solvers)
+        solver = solvers[0]
+        presenter.view = SimpleNamespace()
+        presenter._on_physics_enable_changed(True)
+        self.assertTrue(cmds.getAttr(f"{world}.enable"))
+
+        cmds.currentUnit(time="film")
+        cmds.currentTime(0)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        cmds.currentTime(30)
+        baseline_matrices = tuple(cmds.getAttr(f"{solver}.outBoneMatrices"))
+        self.assertTrue(all(math.isfinite(value) for value in baseline_matrices))
+        cmds.currentTime(0)
+
+        rigid_values = presenter._read_rigid_body_values(rigid_shape)
+        rigid_parsed = parse_rigid_body_form(
+            {
+                "name": rigid_values["name"],
+                "name_english": rigid_values["name_english"],
+                "shape": rigid_values["shape"],
+                "physics_mode": rigid_values["physics_mode"],
+                "related_bone": rigid_values["related_bone"][1],
+                "shape_size": rigid_values["shape_size"],
+                "pmx_position": rigid_values["pmx_position"],
+                "pmx_rotation_degrees": rigid_values["pmx_rotation_degrees"],
+                "collision_group": rigid_values["collision_group"],
+                "collision_mask": int(str(rigid_values["collision_mask"]), 0),
+                "mass": rigid_values["mass"],
+                "linear_damping": rigid_values["linear_damping"],
+                "angular_damping": rigid_values["angular_damping"],
+                "restitution": rigid_values["restitution"],
+                "friction": rigid_values["friction"],
+            }
+        )
+        rigid_targets = {
+            "name": rigid_parsed.name + "_edited",
+            "name_english": rigid_parsed.name_english + "_edited",
+            "shape_size": tuple(value + 0.1 for value in rigid_parsed.shape_size),
+            "position": tuple(
+                value + delta
+                for value, delta in zip(rigid_parsed.pmx_position, (0.2, -0.1, 0.15))
+            ),
+            "rotation": tuple(value + 2.0 for value in rigid_parsed.pmx_rotation_degrees),
+            "group": (rigid_parsed.collision_group + 1) % 16,
+            "collision_mask": rigid_parsed.collision_mask ^ 1,
+            "mass": rigid_parsed.mass + 0.75,
+            "linear_damping": rigid_parsed.linear_damping + 0.05,
+            "angular_damping": rigid_parsed.angular_damping + 0.05,
+            "restitution": rigid_parsed.restitution + 0.05,
+            "friction": rigid_parsed.friction + 0.05,
+        }
+        rigid_version_before = int(cmds.getAttr(f"{rigid_shape}.outDescriptorVersion"))
+        presenter._current_kind = "rigid"
+        presenter._current_shape = rigid_shape
+        presenter.view = self._rigid_apply_view(rigid_values, rigid_parsed, rigid_targets)
+        presenter.apply_changes()
+        self.assertAlmostEqual(cmds.getAttr(f"{rigid_shape}.mass"), rigid_targets["mass"])
+        self.assertGreater(
+            int(cmds.getAttr(f"{rigid_shape}.outDescriptorVersion")),
+            rigid_version_before,
+        )
+        cmds.undo()
+        self.assertAlmostEqual(cmds.getAttr(f"{rigid_shape}.mass"), rigid_parsed.mass)
+        cmds.redo()
+        self.assertAlmostEqual(cmds.getAttr(f"{rigid_shape}.mass"), rigid_targets["mass"])
+
+        joint_values = presenter._read_joint_values(joint_shape)
+        joint_parsed = parse_joint_form(
+            {
+                "name": joint_values["name"],
+                "name_english": joint_values["name_english"],
+                "joint_type": joint_values["joint_type"],
+                "rigid_body_a": joint_values["rigid_body_a"][1],
+                "rigid_body_b": joint_values["rigid_body_b"][1],
+                "pmx_position": joint_values["pmx_position"],
+                "pmx_rotation_degrees": joint_values["pmx_rotation_degrees"],
+                "linear_constraint_states": "0, 0, 0",
+                "angular_constraint_states": "0, 0, 0",
+                "translation_limit_min": joint_values["translation_limit_min"],
+                "translation_limit_max": joint_values["translation_limit_max"],
+                "rotation_limit_min_degrees": joint_values["rotation_limit_min_degrees"],
+                "rotation_limit_max_degrees": joint_values["rotation_limit_max_degrees"],
+                "spring_translation": joint_values["spring_translation"],
+                "spring_rotation": joint_values["spring_rotation"],
+                "spring_translation_enabled": "0, 0, 0",
+                "spring_rotation_enabled": "0, 0, 0",
+            }
+        )
+        self.assertEqual(joint_parsed.joint_type, 0)
+        joint_targets = {
+            "name": joint_parsed.name + "_edited",
+            "name_english": joint_parsed.name_english + "_edited",
+            "position": tuple(value + 0.1 for value in joint_parsed.pmx_position),
+            "rotation": tuple(value + 1.0 for value in joint_parsed.pmx_rotation_degrees),
+            "translation_limit_min": tuple(
+                value - 0.05 for value in joint_parsed.translation_limit_min
+            ),
+            "translation_limit_max": tuple(
+                value + 0.05 for value in joint_parsed.translation_limit_max
+            ),
+            "rotation_limit_min": tuple(
+                value - 1.0 for value in joint_parsed.rotation_limit_min_degrees
+            ),
+            "rotation_limit_max": tuple(
+                value + 1.0 for value in joint_parsed.rotation_limit_max_degrees
+            ),
+            "spring_translation": tuple(
+                value + 0.25 for value in joint_parsed.spring_translation
+            ),
+            "spring_rotation": tuple(
+                value + 0.5 for value in joint_parsed.spring_rotation
+            ),
+        }
+        joint_version_before = int(cmds.getAttr(f"{joint_shape}.outDescriptorVersion"))
+        presenter._current_kind = "joint"
+        presenter._current_shape = joint_shape
+        presenter.view = self._joint_apply_view(joint_values, joint_parsed, joint_targets)
+        presenter.apply_changes()
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{joint_shape}.springRotationX"),
+            joint_targets["spring_rotation"][0],
+        )
+        self.assertGreater(
+            int(cmds.getAttr(f"{joint_shape}.outDescriptorVersion")),
+            joint_version_before,
+        )
+        cmds.undo()
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{joint_shape}.springRotationX"),
+            joint_parsed.spring_rotation[0],
+        )
+        cmds.redo()
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{joint_shape}.springRotationX"),
+            joint_targets["spring_rotation"][0],
+        )
+
+        cmds.currentTime(0)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        cmds.currentTime(30)
+        edited_matrices = tuple(cmds.getAttr(f"{solver}.outBoneMatrices"))
+        self.assertTrue(all(math.isfinite(value) for value in edited_matrices))
+        self.assertGreater(
+            max(abs(before - after) for before, after in zip(baseline_matrices, edited_matrices)),
+            1.0e-5,
+            "Applied rigid-body and joint edits must change solver output",
+        )
+
+        collected = ExportSceneCollector().collect_from_model_root(root)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_path = Path(temp_dir) / "physics_apply_roundtrip.pmx"
+            PmxExporter().export_pmx_model(str(export_path), collected)
+            exported = parse_pmx_file(str(export_path), use_native_pmx_parse=False)
+            rigid_index = int(cmds.getAttr(f"{rigid_shape}.pmxIndex"))
+            joint_index = int(cmds.getAttr(f"{joint_shape}.pmxIndex"))
+            self.assertAlmostEqual(exported.rigid_bodies[rigid_index].mass, rigid_targets["mass"])
+            self.assertAlmostEqual(
+                exported.joints[joint_index].spring_rotation[0],
+                joint_targets["spring_rotation"][0],
+            )
+            cmds.file(new=True, force=True)
+            fresh_root = self._import_fixture(export_path)
+            fresh = ExportSceneCollector().collect_from_model_root(fresh_root)
+        self.assertAlmostEqual(fresh["rigid_bodies"][rigid_index]["mass"], rigid_targets["mass"])
+        self.assertAlmostEqual(
+            fresh["joints"][joint_index]["spring_rotation"][0],
+            joint_targets["spring_rotation"][0],
+        )
 
     def test_physics_edits_survive_real_pmx_export_and_fresh_scene_reimport(self):
         source_pmx = parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
