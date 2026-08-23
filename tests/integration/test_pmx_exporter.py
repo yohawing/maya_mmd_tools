@@ -6,6 +6,7 @@ collect → export → parse round-trip for a minimum geometry.
 
 import json
 import os
+from pathlib import Path
 from typing import Optional
 from unittest.mock import patch
 
@@ -637,7 +638,7 @@ class TestPmxExporter(MayaTestBase):
         )
         self.assertFalse(result.succeeded)
         self.assertIn(
-            "PMX_SOFT_BODIES_UNSUPPORTED",
+            "UNSUPPORTED_FEATURE",
             [issue.code for issue in result.validation_report.issues],
         )
         self.assertFalse(os.path.exists(output_path))
@@ -753,10 +754,12 @@ class TestPmxExporter(MayaTestBase):
                     file_path=output_path,
                     options={"export_format": "pmx", "target_mesh": transform},
                 )
-            )
+        )
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(result.exported_path, output_path)
+        self.assertEqual(
+            Path(result.exported_path).resolve(), Path(output_path).resolve()
+        )
         self.assertTrue(os.path.exists(output_path), "PMX file was not written")
 
         pmx = _parse_pmx(output_path)

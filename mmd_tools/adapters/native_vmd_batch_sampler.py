@@ -298,11 +298,6 @@ class NativeDenseBoneSamples:
         chunk_compound_success_covered_channel_counts: Sequence[int] = (),
         chunk_compound_fallback_group_counts: Sequence[int] = (),
         chunk_compound_fallback_covered_channel_counts: Sequence[int] = (),
-        # Legacy names are accepted only to keep direct construction by older
-        # callers safe; diagnostics always expose the explicit classified_*
-        # names so they cannot be confused with runtime outcomes.
-        chunk_compound_group_counts: Sequence[int] = (),
-        chunk_compound_covered_channel_counts: Sequence[int] = (),
     ) -> None:
         self.plan = plan
         self.strategy_counts = dict(strategy_counts)
@@ -318,19 +313,11 @@ class NativeDenseBoneSamples:
             chunk_first_timed_mplug_read_wall_secs
         )
         self.chunk_channel_loop_wall_secs = tuple(chunk_channel_loop_wall_secs)
-        classified_group_counts = (
-            chunk_classified_compound_group_counts
-            or chunk_compound_group_counts
-        )
-        classified_covered_counts = (
-            chunk_classified_compound_covered_channel_counts
-            or chunk_compound_covered_channel_counts
-        )
         self.chunk_classified_compound_group_counts = tuple(
-            int(count) for count in classified_group_counts
+            int(count) for count in chunk_classified_compound_group_counts
         )
         self.chunk_classified_compound_covered_channel_counts = tuple(
-            int(count) for count in classified_covered_counts
+            int(count) for count in chunk_classified_compound_covered_channel_counts
         )
         self.chunk_compound_success_group_counts = tuple(
             int(count) for count in chunk_compound_success_group_counts
@@ -674,6 +661,23 @@ def _connections(cmds_module: Any, plug: str) -> list[str]:
     return [str(value) for value in values]
 
 
+def _source_connections_or_none(
+    cmds_module: Any, plug: str
+) -> Optional[list[str]]:
+    """Read source connections while distinguishing failure from no input."""
+
+    if cmds_module is None:
+        return None
+    method = getattr(cmds_module, "listConnections", None)
+    if not callable(method):
+        return None
+    try:
+        values = method(plug, source=True, destination=False, plugs=True) or []
+    except Exception:
+        return None
+    return [str(value) for value in values]
+
+
 def _node_type(cmds_module: Any, node: str) -> str:
     method = getattr(cmds_module, "nodeType", None) if cmds_module is not None else None
     if not callable(method):
@@ -787,13 +791,33 @@ def _has_parent_incoming(cmds_module: Any, node: str, attr: str) -> bool:
 
 
 def _direct_curve_hint(cmds_module: Any, node: str, attr: str, plug: str) -> bool:
-    incoming = _connections(cmds_module, plug)
-    if len(incoming) != 1:
+    incoming = _source_connections_or_none(cmds_module, plug)
+    if incoming is None or len(incoming) != 1:
         return False
     source_node, separator, source_attr = incoming[0].rpartition(".")
     if not separator or source_attr != "output":
         return False
-    return _node_type(cmds_module, source_node) in _DIRECT_ANIM_CURVE_TYPES
+    if _node_type(cmds_module, source_node) not in _DIRECT_ANIM_CURVE_TYPES:
+        return False
+
+    # MFnAnimCurve.evaluate() receives a time directly and therefore bypasses
+    # Maya's DG time graph.  A curve whose input is driven by anything other
+    # than the canonical global time node can contain a time remap (for
+    # example an animCurveTT Bezier curve).  Keep those routes on the timed
+    # MPlug path so the requested Timeline frame is evaluated by Maya.
+    curve_input = _source_connections_or_none(cmds_module, f"{source_node}.input")
+    if curve_input is None:
+        return False
+    if not curve_input:
+        return True
+    if len(curve_input) != 1:
+        return False
+    time_node, time_separator, time_attr = curve_input[0].rpartition(".")
+    return (
+        time_separator
+        and time_attr == "outTime"
+        and _node_type(cmds_module, time_node) == "time"
+    )
 
 
 def _static_hint(cmds_module: Any, node: str, attr: str, plug: str) -> bool:

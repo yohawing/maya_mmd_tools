@@ -38,9 +38,26 @@ _VMD_SIGNATURE = b"Vocaloid Motion Data"
 _VMD_SIGNATURE_V2 = b"Vocaloid Motion Data 0002"
 
 
-def _issue(code: str, path: str, message: str) -> ExportValidationIssue:
+def _issue(
+    code: str,
+    path: str,
+    message: str,
+    *,
+    details: Optional[Mapping[str, Any]] = None,
+) -> ExportValidationIssue:
     """Create a deterministic blocking VMD issue."""
-    return ExportValidationIssue(code, "fatal", True, path, message)
+    issue_details = dict(details or {})
+    issue_details.setdefault("field", path)
+    if code == "OUTPUT_VERIFY_FAILED":
+        issue_details.setdefault("phase", "verify")
+    return ExportValidationIssue(
+        code,
+        "fatal",
+        True,
+        path,
+        message,
+        details=issue_details,
+    )
 
 
 def _normalize_frame_range(
@@ -52,9 +69,10 @@ def _normalize_frame_range(
         return None, None
     if not isinstance(frame_range, (tuple, list)) or len(frame_range) != 2:
         return None, _issue(
-            "VMD_FRAME_RANGE",
+            "EXPORT_OPTIONS_INVALID",
             "frame_range",
             "VMD frame range must contain two integers",
+            details={"frame_range": None, "actual_type": type(frame_range).__name__},
         )
     start, end = frame_range
     if (
@@ -64,15 +82,17 @@ def _normalize_frame_range(
         or not isinstance(end, int)
     ):
         return None, _issue(
-            "VMD_FRAME_RANGE",
+            "EXPORT_OPTIONS_INVALID",
             "frame_range",
             "VMD frame range must contain two integers",
+            details={"frame_range": [repr(start), repr(end)]},
         )
     if start < 0 or end < start or end > 0xFFFFFFFF:
         return None, _issue(
-            "VMD_FRAME_RANGE",
+            "EXPORT_OPTIONS_INVALID",
             "frame_range",
             "VMD frame range must be ordered unsigned 32-bit integers",
+            details={"frame_range": [start, end]},
         )
     return (start, end), None
 
@@ -84,7 +104,7 @@ def _finite_values(values: Iterable[Any], path: str, issues: List[ExportValidati
             if not math.isfinite(float(value)):
                 issues.append(
                     _issue(
-                        "VMD_NON_FINITE_NUMBER",
+                        "INPUT_INVALID",
                         f"{path}[{index}]",
                         "VMD numeric value must be finite",
                     )
@@ -93,7 +113,7 @@ def _finite_values(values: Iterable[Any], path: str, issues: List[ExportValidati
     except (TypeError, ValueError, OverflowError):
         issues.append(
             _issue(
-                "VMD_NON_FINITE_NUMBER",
+                "INPUT_INVALID",
                 path,
                 "VMD numeric value must be a finite number",
             )
@@ -105,16 +125,16 @@ def _frame_number(frame: Any, path: str, issues: List[ExportValidationIssue]) ->
     try:
         value = int(frame.frame_number)
     except (AttributeError, TypeError, ValueError, OverflowError):
-        issues.append(_issue("VMD_FRAME_NEGATIVE", path, "VMD frame number must be a non-negative integer"))
+        issues.append(_issue("INPUT_INVALID", path, "VMD frame number must be a non-negative integer"))
         return
     if value < 0:
-        issues.append(_issue("VMD_FRAME_NEGATIVE", path, "VMD frame number must be non-negative"))
+        issues.append(_issue("INPUT_INVALID", path, "VMD frame number must be non-negative"))
 
 
 def _name(value: Any, path: str, issues: List[ExportValidationIssue]) -> None:
     """Reject nameless bone/morph entries before fixed-width encoding."""
     if not str(value or "").strip():
-        issues.append(_issue("VMD_NAME_EMPTY", path, "VMD bone or morph name must not be empty"))
+        issues.append(_issue("INPUT_INVALID", path, "VMD bone or morph name must not be empty"))
 
 
 def _interpolation(value: Any, expected: int, path: str, issues: List[ExportValidationIssue]) -> None:
@@ -126,9 +146,7 @@ def _interpolation(value: Any, expected: int, path: str, issues: List[ExportVali
     if actual != expected:
         issues.append(
             _issue(
-                "VMD_BONE_INTERPOLATION_LENGTH"
-                if expected == 64
-                else "VMD_CAMERA_INTERPOLATION_LENGTH",
+                "INPUT_INVALID",
                 path,
                 f"VMD interpolation payload must contain {expected} bytes",
             )
@@ -147,7 +165,18 @@ def validate_vmd_data(
     export_strategy = VMD_EXPORT_BAKE_TIMELINE
     issues = []
     if not isinstance(vmd_data, VmdData):
-        issues.append(_issue("OUTPUT_PARSE_FAILED", "animation_data", "VMD animation data must be VmdData"))
+        issues.append(
+            _issue(
+                "INPUT_INVALID",
+                "animation_data",
+                "VMD animation data must be VmdData",
+                details={
+                    "field": "animation_data",
+                    "expected_type": "VmdData",
+                    "actual_type": type(vmd_data).__name__,
+                },
+            )
+        )
         return ExportValidationReport("vmd", tuple(issues), mode=export_strategy)
 
 
@@ -156,10 +185,24 @@ def validate_vmd_data(
         try:
             start, end = (int(frame_range[0]), int(frame_range[1]))
         except (IndexError, TypeError, ValueError, OverflowError):
-            issues.append(_issue("VMD_FRAME_RANGE", "frame_range", "VMD frame range must contain two integers"))
+            issues.append(
+                _issue(
+                    "EXPORT_OPTIONS_INVALID",
+                    "frame_range",
+                    "VMD frame range must contain two integers",
+                    details={"frame_range": None, "actual_type": type(frame_range).__name__},
+                )
+            )
         else:
             if start < 0 or end < start:
-                issues.append(_issue("VMD_FRAME_RANGE", "frame_range", "VMD frame range must be non-negative and ordered"))
+                issues.append(
+                    _issue(
+                        "EXPORT_OPTIONS_INVALID",
+                        "frame_range",
+                        "VMD frame range must be non-negative and ordered",
+                        details={"frame_range": [start, end]},
+                    )
+                )
 
     for index, frame in enumerate(vmd_data.bone_frames):
         path = f"bone_frames[{index}]"
@@ -173,7 +216,7 @@ def validate_vmd_data(
         except (TypeError, ValueError, OverflowError):
             norm = 0.0
         if not math.isfinite(norm) or norm <= 1e-12:
-            issues.append(_issue("VMD_QUATERNION_INVALID", f"{path}.rotation", "VMD quaternion must not be zero"))
+            issues.append(_issue("INPUT_INVALID", f"{path}.rotation", "VMD quaternion must not be zero"))
 
 
     for index, frame in enumerate(vmd_data.morph_frames):
@@ -192,7 +235,7 @@ def validate_vmd_data(
         _bounded_int(
             frame.perspective,
             (0, 1),
-            "VMD_PERSPECTIVE_RANGE",
+            "INPUT_INVALID",
             f"{path}.perspective",
             "VMD perspective must be 0 or 1",
             issues,
@@ -211,7 +254,7 @@ def validate_vmd_data(
         _bounded_int(
             frame.mode,
             (0, 1, 2),
-            "VMD_SHADOW_MODE_RANGE",
+            "INPUT_INVALID",
             f"{path}.mode",
             "VMD shadow mode must be 0, 1, or 2",
             issues,
@@ -223,7 +266,7 @@ def validate_vmd_data(
         _bounded_int(
             frame.visible,
             (0, 1),
-            "VMD_IK_FLAG_RANGE",
+            "INPUT_INVALID",
             f"{path}.visible",
             "VMD visibility flag must be 0 or 1",
             issues,
@@ -233,7 +276,7 @@ def validate_vmd_data(
         except TypeError:
             issues.append(
                 _issue(
-                    "VMD_IK_FLAG_RANGE",
+                    "INPUT_INVALID",
                     f"{path}.ik_states",
                     "VMD IK states must be an iterable of name/flag pairs",
                 )
@@ -245,7 +288,7 @@ def validate_vmd_data(
             except (TypeError, ValueError):
                 issues.append(
                     _issue(
-                        "VMD_IK_FLAG_RANGE",
+                        "INPUT_INVALID",
                         f"{path}.ik_states[{state_index}]",
                         "VMD IK state must contain a name and a 0/1 flag",
                     )
@@ -255,7 +298,7 @@ def validate_vmd_data(
             _bounded_int(
                 enabled,
                 (0, 1),
-                "VMD_IK_FLAG_RANGE",
+                "INPUT_INVALID",
                 f"{path}.ik_states[{state_index}].enabled",
                 "VMD IK flag must be 0 or 1",
                 issues,
@@ -271,9 +314,14 @@ def validate_vmd_data(
                 if not start <= frame_value <= end:
                     issues.append(
                         _issue(
-                            "VMD_FRAME_RANGE",
+                            "INPUT_INVALID",
                             f"{section_name}[{index}].frame_number",
                             f"VMD frame {frame_value} is outside requested range {start}..{end}",
+                            details={
+                                "frame_range": [start, end],
+                                "actual_frame": frame_value,
+                                "section": section_name,
+                            },
                         )
                     )
 
@@ -324,7 +372,7 @@ def verify_vmd_output(
             "vmd",
             (
                 _issue(
-                    "OUTPUT_PARSE_FAILED",
+                    "OUTPUT_VERIFY_FAILED",
                     "output",
                     f"VMD output could not be parsed: {type(exc).__name__}",
                 ),
@@ -343,26 +391,58 @@ def verify_vmd_output(
         "shadow_frames": vmd_data.shadow_frames,
         "ik_show_hide_frames": vmd_data.ik_show_hide_frames,
     }
-    count_issues = list(report.issues)
+    count_issues = [
+        ExportValidationIssue(
+            "OUTPUT_VERIFY_FAILED",
+            issue.severity,
+            issue.blocking,
+            "output." + issue.path if issue.path else "output",
+            issue.reason,
+            action=issue.action,
+            details=dict(issue.details, phase="parse"),
+            evidence=issue.evidence,
+        )
+        for issue in report.issues
+    ]
     for section_name, expected in (expected_counts or {}).items():
         if section_name not in section_names:
+            count_issues.append(
+                _issue(
+                    "INPUT_INVALID",
+                    "expected_counts",
+                    f"unknown VMD count section {section_name!r}",
+                    details={"expected_count_contract": sorted(section_names)},
+                )
+            )
             continue
         try:
             expected_value = int(expected)
         except (TypeError, ValueError, OverflowError):
+            count_issues.append(
+                _issue(
+                    "INPUT_INVALID",
+                    "expected_counts",
+                    f"VMD expected count for {section_name} must be an integer",
+                    details={"expected_count_contract": sorted(section_names)},
+                )
+            )
             continue
         actual_value = len(section_names[section_name])
         if actual_value != expected_value:
             count_issues.append(
                 _issue(
-                    "VMD_FRAME_COUNT_MISMATCH",
+                    "OUTPUT_VERIFY_FAILED",
                     f"output.{section_name}",
                     f"VMD {section_name} count {actual_value} does not match expected count {expected_value}",
+                    details={
+                        "section": section_name,
+                        "expected_count": expected_value,
+                        "actual_count": actual_value,
+                        "aggregation_discriminator": "output_count",
+                    },
                 )
             )
-    if len(count_issues) != len(report.issues):
-        return ExportValidationReport("vmd", tuple(count_issues), mode=report.mode)
-    return report
+    return ExportValidationReport("vmd", tuple(count_issues), mode=report.mode)
 
 
 def _stream_issue(
@@ -370,10 +450,12 @@ def _stream_issue(
     code: str,
     path: str,
     message: str,
+    *,
+    details: Optional[Mapping[str, Any]] = None,
 ) -> None:
     """Append a bounded blocking issue for the byte-stream verifier."""
     if len(issues) < _STREAM_MAX_ISSUES:
-        issues.append(_issue(code, path, message))
+        issues.append(_issue(code, path, message, details=details))
 
 
 def _stream_name(
@@ -387,13 +469,13 @@ def _stream_name(
     except UnicodeDecodeError:
         _stream_issue(
             issues,
-            "OUTPUT_PARSE_FAILED",
+            "OUTPUT_VERIFY_FAILED",
             path,
             "VMD fixed-width name is not valid CP932",
         )
         return None
     if not name.strip():
-        _stream_issue(issues, "VMD_NAME_EMPTY", path, "VMD bone or morph name must not be empty")
+        _stream_issue(issues, "OUTPUT_VERIFY_FAILED", path, "VMD bone or morph name must not be empty")
     return name
 
 
@@ -406,7 +488,7 @@ def _stream_finite(
     if not all(math.isfinite(value) for value in values):
         _stream_issue(
             issues,
-            "VMD_NON_FINITE_NUMBER",
+            "OUTPUT_VERIFY_FAILED",
             path,
             "VMD numeric value must be finite",
         )
@@ -449,9 +531,13 @@ def verify_vmd_output_streaming(
             canonical_counts = None
             _stream_issue(
                 issues,
-                "VMD_FRAME_COUNT_MISMATCH",
+                "INPUT_INVALID",
                 "expected_counts",
                 "VMD stream counts must declare exactly six canonical unsigned 32-bit counts",
+                details={
+                    "expected_count_contract": sorted(metadata_names),
+                    "actual_type": type(expected_counts).__name__,
+                },
             )
 
     canonical_bounds: Optional[Dict[str, Tuple[Optional[int], Optional[int]]]] = None
@@ -479,30 +565,35 @@ def verify_vmd_output_streaming(
             canonical_bounds = None
             _stream_issue(
                 issues,
-                "VMD_FRAME_RANGE",
+                "INPUT_INVALID",
                 "expected_bounds",
                 "VMD stream bounds must declare six canonical minimum/maximum pairs",
+                details={
+                    "expected_bounds_contract": sorted(metadata_names),
+                    "actual_type": type(expected_bounds).__name__,
+                },
             )
 
     normalized_frame_range, frame_range_issue = _normalize_frame_range(expected_frame_range)
     if frame_range_issue is not None:
         _stream_issue(
             issues,
-            frame_range_issue.code,
+            "INPUT_INVALID",
             frame_range_issue.path,
-            frame_range_issue.message,
+            frame_range_issue.reason,
+            details=dict(frame_range_issue.details),
         )
     output_path = Path(file_path)
     if not output_path.is_file():
-        _stream_issue(issues, "OUTPUT_FILE_MISSING", "output", "temporary output file does not exist")
+        _stream_issue(issues, "OUTPUT_VERIFY_FAILED", "output", "temporary output file does not exist")
         return ExportValidationReport("vmd", tuple(issues), mode=normalized_strategy)
     try:
         file_size = output_path.stat().st_size
     except OSError:
-        _stream_issue(issues, "OUTPUT_PARSE_FAILED", "output", "VMD output size could not be read")
+        _stream_issue(issues, "OUTPUT_VERIFY_FAILED", "output", "VMD output size could not be read")
         return ExportValidationReport("vmd", tuple(issues), mode=normalized_strategy)
     if file_size == 0:
-        _stream_issue(issues, "OUTPUT_FILE_EMPTY", "output", "temporary output file is empty")
+        _stream_issue(issues, "OUTPUT_VERIFY_FAILED", "output", "temporary output file is empty")
         return ExportValidationReport("vmd", tuple(issues), mode=normalized_strategy)
 
     digest = hashlib.sha256()
@@ -523,7 +614,7 @@ def verify_vmd_output_streaming(
         if len(data) != size:
             _stream_issue(
                 issues,
-                "OUTPUT_PARSE_FAILED",
+                "OUTPUT_VERIFY_FAILED",
                 path,
                 "VMD output is truncated (expected {} bytes, got {})".format(size, len(data)),
             )
@@ -541,13 +632,19 @@ def verify_vmd_output_streaming(
             if not start <= frame_number <= end:
                 _stream_issue(
                     issues,
-                    "VMD_FRAME_RANGE",
+                    "OUTPUT_VERIFY_FAILED",
                     path + ".frame_number",
                     "VMD frame {} is outside requested range {}..{}".format(
                         frame_number,
                         start,
                         end,
                     ),
+                    details={
+                        "section": section,
+                        "expected_bounds": [start, end],
+                        "actual_bounds": [frame_number, frame_number],
+                        "aggregation_discriminator": "output_range",
+                    },
                 )
 
     def consume_remaining(handle: Any) -> None:
@@ -566,7 +663,7 @@ def verify_vmd_output_streaming(
             if len(header) != 30:
                 _stream_issue(
                     issues,
-                    "OUTPUT_PARSE_FAILED",
+                    "OUTPUT_VERIFY_FAILED",
                     "output.header",
                     "VMD output header is truncated",
                 )
@@ -576,7 +673,7 @@ def verify_vmd_output_streaming(
             ):
                 _stream_issue(
                     issues,
-                    "OUTPUT_HEADER_INVALID",
+                    "OUTPUT_VERIFY_FAILED",
                     "output.header",
                     "VMD output header is invalid",
                 )
@@ -591,7 +688,7 @@ def verify_vmd_output_streaming(
                     except UnicodeDecodeError:
                         _stream_issue(
                             issues,
-                            "OUTPUT_PARSE_FAILED",
+                            "OUTPUT_VERIFY_FAILED",
                             "output.model_name",
                             "VMD model name is not valid CP932",
                         )
@@ -606,7 +703,7 @@ def verify_vmd_output_streaming(
                             if section_index < 2 or canonical_counts is not None:
                                 _stream_issue(
                                     issues,
-                                    "OUTPUT_PARSE_FAILED",
+                                    "OUTPUT_VERIFY_FAILED",
                                     "output.{}.count".format(section),
                                     "VMD output is missing a required section count",
                                 )
@@ -614,7 +711,7 @@ def verify_vmd_output_streaming(
                         if len(count_data) != 4:
                             _stream_issue(
                                 issues,
-                                "OUTPUT_PARSE_FAILED",
+                                "OUTPUT_VERIFY_FAILED",
                                 "output.{}.count".format(section),
                                 "VMD section count is truncated",
                             )
@@ -634,7 +731,7 @@ def verify_vmd_output_streaming(
                                 if visible not in (0, 1):
                                     _stream_issue(
                                         issues,
-                                        "VMD_IK_FLAG_RANGE",
+                                        "OUTPUT_VERIFY_FAILED",
                                         path + ".visible",
                                         "VMD visibility flag must be 0 or 1",
                                     )
@@ -648,7 +745,7 @@ def verify_vmd_output_streaming(
                                     if state[20] not in (0, 1):
                                         _stream_issue(
                                             issues,
-                                            "VMD_IK_FLAG_RANGE",
+                                            "OUTPUT_VERIFY_FAILED",
                                             state_path + ".enabled",
                                             "VMD IK flag must be 0 or 1",
                                         )
@@ -671,7 +768,7 @@ def verify_vmd_output_streaming(
                                 if not math.isfinite(norm) or norm <= 1.0e-12:
                                     _stream_issue(
                                         issues,
-                                        "VMD_QUATERNION_INVALID",
+                                        "OUTPUT_VERIFY_FAILED",
                                         path + ".rotation",
                                         "VMD quaternion must not be zero",
                                     )
@@ -691,7 +788,7 @@ def verify_vmd_output_streaming(
                                 if perspective not in (0, 1):
                                     _stream_issue(
                                         issues,
-                                        "VMD_PERSPECTIVE_RANGE",
+                                        "OUTPUT_VERIFY_FAILED",
                                         path + ".perspective",
                                         "VMD perspective must be 0 or 1",
                                     )
@@ -704,7 +801,7 @@ def verify_vmd_output_streaming(
                                 if raw[4] not in (0, 1, 2):
                                     _stream_issue(
                                         issues,
-                                        "VMD_SHADOW_MODE_RANGE",
+                                        "OUTPUT_VERIFY_FAILED",
                                         path + ".mode",
                                         "VMD shadow mode must be 0, 1, or 2",
                                     )
@@ -718,7 +815,7 @@ def verify_vmd_output_streaming(
                         if trailing:
                             _stream_issue(
                                 issues,
-                                "OUTPUT_PARSE_FAILED",
+                                "OUTPUT_VERIFY_FAILED",
                                 "output.trailing_bytes",
                                 "VMD output contains trailing bytes after the final section",
                             )
@@ -726,7 +823,7 @@ def verify_vmd_output_streaming(
     except OSError as exc:
         _stream_issue(
             issues,
-            "OUTPUT_PARSE_FAILED",
+            "OUTPUT_VERIFY_FAILED",
             "output",
             "VMD output could not be read: {}".format(type(exc).__name__),
         )
@@ -736,13 +833,19 @@ def verify_vmd_output_streaming(
         if expected is not None and expected != counts[section]:
             _stream_issue(
                 issues,
-                "VMD_FRAME_COUNT_MISMATCH",
+                "OUTPUT_VERIFY_FAILED",
                 "output.{}".format(section),
                 "VMD {} count {} does not match expected count {}".format(
                     section,
                     counts[section],
                     expected,
                 ),
+                details={
+                    "section": section,
+                    "expected_count": expected,
+                    "actual_count": counts[section],
+                    "aggregation_discriminator": "output_count",
+                },
             )
     if canonical_bounds is not None:
         for section, expected in canonical_bounds.items():
@@ -750,13 +853,19 @@ def verify_vmd_output_streaming(
             if actual != expected:
                 _stream_issue(
                     issues,
-                    "VMD_FRAME_RANGE",
+                    "OUTPUT_VERIFY_FAILED",
                     "output.{}.frame_bounds".format(section),
                     "VMD {} bounds {} do not match expected bounds {}".format(
                         section,
                         actual,
                         expected,
                     ),
+                    details={
+                        "section": section,
+                        "expected_bounds": list(expected),
+                        "actual_bounds": list(actual),
+                        "aggregation_discriminator": "output_range",
+                    },
                 )
 
     actual_sha256 = digest.hexdigest()
@@ -767,7 +876,7 @@ def verify_vmd_output_streaming(
         if actual_sha256 != expected_digest:
             _stream_issue(
                 issues,
-                "OUTPUT_PARSE_FAILED",
+                "OUTPUT_VERIFY_FAILED",
                 "output.sha256",
                 "VMD output SHA-256 {} does not match expected {}".format(actual_sha256, expected_digest),
             )
@@ -779,7 +888,7 @@ def verify_vmd_output_streaming(
         if normalized_size is not None and bytes_read != normalized_size:
             _stream_issue(
                 issues,
-                "OUTPUT_PARSE_FAILED",
+                "OUTPUT_VERIFY_FAILED",
                 "output.size",
                 "VMD output size {} does not match expected {}".format(bytes_read, normalized_size),
             )

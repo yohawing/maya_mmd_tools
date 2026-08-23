@@ -51,15 +51,15 @@ def test_pmd_workflow_rejects_before_collector_and_preserves_existing_output(tmp
     assert collector.calls == 0
     assert writer.calls == 0
     assert output.read_bytes() == b"existing"
-    assert {issue.code for issue in result.report.issues} == {"SCENE_FORMAT_UNSUPPORTED"}
+    assert {issue.code for issue in result.report.issues} == {"EXPORT_OPTIONS_INVALID"}
 
 
 def test_pmd_payload_and_output_verifiers_are_canonical_unsupported():
     """Lower-level PMD calls remain fail-closed without PMD writer policy codes."""
     report = validate_model_data({}, "pmd")
     assert report.is_blocking
-    assert [issue.code for issue in report.issues] == ["EXPORT_FORMAT_UNSUPPORTED"]
+    assert [issue.code for issue in report.issues] == ["EXPORT_OPTIONS_INVALID"]
 
     output_report = verify_model_output("missing.pmd", "pmd")
     assert output_report.is_blocking
-    assert [issue.code for issue in output_report.issues] == ["OUTPUT_FORMAT_UNSUPPORTED"]
+    assert [issue.code for issue in output_report.issues] == ["EXPORT_OPTIONS_INVALID"]

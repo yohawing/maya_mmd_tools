@@ -2459,7 +2459,12 @@ def _run_soft_body_policy_case(out_dir: Path) -> dict[str, Any]:
     )
     validation = ExportWorkflowService().validate(request)
     policy_codes = [issue.code for issue in validation.report.issues]
-    if validation.state != "Blocked" or "PMX_SOFT_BODIES_UNSUPPORTED" not in policy_codes:
+    if validation.state != "Blocked" or not any(
+        issue.code == "UNSUPPORTED_FEATURE"
+        and issue.path == "soft_bodies"
+        and issue.details.get("feature") == "soft_bodies"
+        for issue in validation.report.issues
+    ):
         raise AssertionError(
             "PMX soft-body policy probe expected a blocking rejection, "
             f"got state={validation.state!r}, issues={policy_codes!r}"
@@ -2487,7 +2492,7 @@ def _run_soft_body_policy_case(out_dir: Path) -> dict[str, Any]:
         "output": None,
         "report_json": str(report_dir / "report.json"),
         "report_md": str(report_dir / "report.md"),
-        "policy_code": "PMX_SOFT_BODIES_UNSUPPORTED",
+        "policy_code": "UNSUPPORTED_FEATURE",
         "import_oracles": {"soft_body_count": source_soft_body_count},
         "collection": {
             "collector": "ExportWorkflowService validation -> soft-body policy",
@@ -2630,7 +2635,12 @@ def _run_impulse_policy_case(out_dir: Path) -> dict[str, Any]:
     )
     validation = ExportWorkflowService().validate(request)
     policy_codes = [issue.code for issue in validation.report.issues]
-    if validation.state != "Blocked" or "MORPH_TYPE_UNSUPPORTED" not in policy_codes:
+    if validation.state != "Blocked" or not any(
+        issue.code == "UNSUPPORTED_FEATURE"
+        and issue.path == "morphs[0].type"
+        and issue.details.get("feature") == "impulse"
+        for issue in validation.report.issues
+    ):
         raise AssertionError(
             "PMX Impulse policy probe expected a blocking rejection, "
             f"got state={validation.state!r}, issues={policy_codes!r}"
@@ -2677,7 +2687,7 @@ def _run_impulse_policy_case(out_dir: Path) -> dict[str, Any]:
         "output_target": str(output),
         "report_json": str(report_dir / "report.json"),
         "report_md": str(report_dir / "report.md"),
-        "policy_code": "MORPH_TYPE_UNSUPPORTED",
+        "policy_code": "UNSUPPORTED_FEATURE",
         "import_oracles": import_oracles,
         "collection": {
             "collector": "ExportWorkflowService validation -> Impulse policy",
@@ -2738,7 +2748,12 @@ def _run_flip_policy_case(out_dir: Path) -> dict[str, Any]:
     )
     validation = ExportWorkflowService().validate(request)
     policy_codes = [issue.code for issue in validation.report.issues]
-    if validation.state != "Blocked" or "MORPH_TYPE_UNSUPPORTED" not in policy_codes:
+    if validation.state != "Blocked" or not any(
+        issue.code == "UNSUPPORTED_FEATURE"
+        and issue.path == "morphs[1].type"
+        and issue.details.get("feature") == "flip"
+        for issue in validation.report.issues
+    ):
         raise AssertionError(
             "PMX Flip policy probe expected a blocking rejection, "
             f"got state={validation.state!r}, issues={policy_codes!r}"
@@ -2785,7 +2800,7 @@ def _run_flip_policy_case(out_dir: Path) -> dict[str, Any]:
         "output_target": str(output),
         "report_json": str(report_dir / "report.json"),
         "report_md": str(report_dir / "report.md"),
-        "policy_code": "MORPH_TYPE_UNSUPPORTED",
+        "policy_code": "UNSUPPORTED_FEATURE",
         "import_oracles": import_oracles,
         "collection": {
             "collector": "ExportWorkflowService validation -> Flip policy",
@@ -2946,6 +2961,164 @@ def _vmd_track_payload(data: Any, frames: Iterable[int]) -> dict[str, Any]:
     }
 
 
+def _bone_morph_separation_evidence(
+    model_data: Any,
+    source_motion: Any,
+    exported_motion: Any,
+    *,
+    tolerance: float = FLOAT_TOLERANCE,
+) -> dict[str, Any]:
+    """Prove BoneMorph offsets remain outside exported base bone tracks.
+
+    The repository fixture intentionally supplies no authored bone track for
+    any BoneMorph target.  Such tracks may be omitted or emitted densely at
+    identity, while the independent morph tracks retain every authored source
+    weight.
+    """
+
+    from mmd_tools.core.pmx_data.morph import PmxMorphType
+    from mmd_tools.validation.bone_validator import BoneValidator
+
+    def category(name: str) -> str:
+        if name in BoneValidator.STANDARD_BONES:
+            return "standard"
+        if name in BoneValidator.SEMI_STANDARD_BONES:
+            return "semi_standard"
+        return "custom"
+
+    bone_names = {
+        index: str(bone.name) for index, bone in enumerate(model_data.bones)
+    }
+    morph_rows = []
+    target_categories = set()
+    target_names = set()
+    has_mixed_target = False
+    for morph in model_data.morphs:
+        if int(morph.morph_type) != int(PmxMorphType.BoneMorph):
+            continue
+        targets = []
+        for offset in morph.offsets:
+            index = int(offset["bone_index"])
+            if index not in bone_names:
+                raise AssertionError(
+                    f"BoneMorph {morph.name!r} references missing bone index {index}"
+                )
+            name = bone_names[index]
+            target_category = category(name)
+            target_categories.add(target_category)
+            target_names.add(name)
+            targets.append(
+                {
+                    "bone_index": index,
+                    "bone_name": name,
+                    "category": target_category,
+                }
+            )
+        has_mixed_target = has_mixed_target or len(targets) > 1
+        morph_rows.append({"name": str(morph.name), "targets": targets})
+
+    required_categories = {"standard", "semi_standard", "custom"}
+    if target_categories != required_categories:
+        raise AssertionError(
+            "BoneMorph separation fixture category coverage mismatch: "
+            f"{sorted(target_categories)}"
+        )
+    if not has_mixed_target:
+        raise AssertionError("BoneMorph separation fixture has no mixed-target morph")
+    bone_morph_names = {row["name"] for row in morph_rows}
+
+    source_bone_names = {str(frame.bone_name) for frame in source_motion.bone_frames}
+    authored_target_names = sorted(target_names.intersection(source_bone_names))
+    if authored_target_names:
+        raise AssertionError(
+            "BoneMorph separation fixture must keep target base tracks unauthored: "
+            f"{authored_target_names}"
+        )
+
+    exported_by_bone: dict[str, list[Any]] = {}
+    for frame in exported_motion.bone_frames:
+        exported_by_bone.setdefault(str(frame.bone_name), []).append(frame)
+    target_evidence = []
+    for name in sorted(target_names):
+        frames = exported_by_bone.get(name, [])
+        if not frames:
+            target_evidence.append(
+                {
+                    "bone_name": name,
+                    "category": category(name),
+                    "selection": "omitted_default",
+                    "exported_base_frame_count": 0,
+                    "max_translation": 0.0,
+                    "max_rotation_vector": 0.0,
+                    "max_rotation_identity_error": 0.0,
+                }
+            )
+            continue
+        max_translation = max(
+            abs(float(value)) for frame in frames for value in frame.position
+        )
+        max_rotation_vector = max(
+            abs(float(value)) for frame in frames for value in frame.rotation[:3]
+        )
+        max_rotation_identity_error = max(
+            abs(abs(float(frame.rotation[3])) - 1.0) for frame in frames
+        )
+        if max(max_translation, max_rotation_vector, max_rotation_identity_error) > tolerance:
+            raise AssertionError(
+                f"BoneMorph deformation leaked into exported base track {name!r}"
+            )
+        target_evidence.append(
+            {
+                "bone_name": name,
+                "category": category(name),
+                "selection": "identity_base",
+                "exported_base_frame_count": len(frames),
+                "max_translation": max_translation,
+                "max_rotation_vector": max_rotation_vector,
+                "max_rotation_identity_error": max_rotation_identity_error,
+            }
+        )
+
+    def morph_values(data: Any) -> dict[tuple[str, int], float]:
+        return {
+            (str(frame.morph_name), int(frame.frame_number)): float(frame.value)
+            for frame in data.morph_frames
+            if str(frame.morph_name) in bone_morph_names
+        }
+
+    source_values = morph_values(source_motion)
+    missing_source_morphs = sorted(
+        bone_morph_names.difference(name for name, _frame in source_values)
+    )
+    if missing_source_morphs:
+        raise AssertionError(
+            f"source VMD has no weights for BoneMorphs: {missing_source_morphs}"
+        )
+    exported_values = morph_values(exported_motion)
+    missing = sorted(key for key in source_values if key not in exported_values)
+    mismatched = sorted(
+        key
+        for key, value in source_values.items()
+        if key in exported_values and abs(exported_values[key] - value) > tolerance
+    )
+    if missing or mismatched:
+        raise AssertionError(
+            "exported BoneMorph weights do not preserve source values: "
+            f"missing={missing}, mismatched={mismatched}"
+        )
+    return {
+        "status": "pass",
+        "contract": "bone_track_is_pre_morph_and_morph_track_carries_weight",
+        "target_categories": sorted(target_categories),
+        "mixed_target_covered": has_mixed_target,
+        "morphs": morph_rows,
+        "targets": target_evidence,
+        "source_morph_key_count": len(source_values),
+        "preserved_morph_key_count": len(source_values),
+        "fresh_import_recomposition_required": True,
+    }
+
+
 def _sha256_file(path: Path) -> str:
     """Return the SHA-256 identity digest for a release-probe input/output."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -3095,7 +3268,7 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
     """Roundtrip a VMD through a Maya scene and compare fresh-import poses."""
     from mmd_tools.core.vmd_data import VmdData
     from mmd_tools.adapters.maya_vmd_prepare_backend import (
-        create_maya_vmd_prepare_action,
+        create_maya_bake_timeline_vmd_action,
     )
     from mmd_tools.services.export_workflow_service import (
         ExportWorkflowRequest,
@@ -3108,7 +3281,7 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
     output = out_dir / "motion.vmd"
     report_dir = out_dir / "report"
     workflow = ExportWorkflowService(
-        prepare_vmd_action=create_maya_vmd_prepare_action()
+        vmd_action=create_maya_bake_timeline_vmd_action()
     )
     request = ExportWorkflowRequest(
         str(output),
@@ -3130,19 +3303,10 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
             },
         },
     )
-    preparation = workflow.prepare_vmd(request)
-    if not preparation.succeeded:
-        raise RuntimeError(
-            f"vmd preparation failed: {preparation.error or preparation.report}"
-        )
-    request.prepared_vmd_token = preparation.token
-    try:
-        result = workflow.execute(
-            request,
-            acknowledge_warnings=True,
-        )
-    finally:
-        workflow.invalidate_prepared_vmd(preparation.token)
+    result = workflow.execute(
+        request,
+        acknowledge_warnings=True,
+    )
     if not result.succeeded:
         raise RuntimeError(f"vmd export failed: {result.error or result.report}")
     parsed = VmdData().parse_file(str(output))
@@ -3160,6 +3324,7 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
         "export_strategy": "bake_timeline",
         "source": str(source_vmd),
         "output": str(output),
+        "output_sha256": _sha256_file(output),
         "report_json": str(report_dir / "report.json"),
         "report_md": str(report_dir / "report.md"),
         "parsed_counts": {
@@ -3185,7 +3350,7 @@ def _run_vmd_bake_timeline_model_tracks_case(out_dir: Path) -> dict[str, Any]:
     """Roundtrip real Bake Timeline bone, morph, and IK show/hide model tracks."""
     from mmd_tools.core.vmd_data import VmdData
     from mmd_tools.adapters.maya_vmd_prepare_backend import (
-        create_maya_vmd_prepare_action,
+        create_maya_bake_timeline_vmd_action,
     )
     from mmd_tools.services.export_workflow_service import (
         ExportWorkflowRequest,
@@ -3212,7 +3377,7 @@ def _run_vmd_bake_timeline_model_tracks_case(out_dir: Path) -> dict[str, Any]:
     output = out_dir / "motion.vmd"
     report_dir = out_dir / "report"
     workflow = ExportWorkflowService(
-        prepare_vmd_action=create_maya_vmd_prepare_action()
+        vmd_action=create_maya_bake_timeline_vmd_action()
     )
     request = ExportWorkflowRequest(
         str(output),
@@ -3234,26 +3399,26 @@ def _run_vmd_bake_timeline_model_tracks_case(out_dir: Path) -> dict[str, Any]:
             },
         },
     )
-    preparation = workflow.prepare_vmd(request)
-    if not preparation.succeeded:
-        raise RuntimeError(
-            "VMD model-track preparation failed: "
-            f"{preparation.error or preparation.report}"
-        )
-    request.prepared_vmd_token = preparation.token
-    try:
-        result = workflow.execute(
-            request,
-            acknowledge_warnings=True,
-        )
-    finally:
-        workflow.invalidate_prepared_vmd(preparation.token)
+    result = workflow.execute(
+        request,
+        acknowledge_warnings=True,
+    )
     if not result.succeeded:
         raise RuntimeError(f"VMD model-track export failed: {result.error or result.report}")
     exported_data = VmdData().parse_file(str(output))
     if not exported_data.bone_frames or not exported_data.morph_frames or not exported_data.ik_show_hide_frames:
         raise AssertionError("Bake Timeline output lost one or more required model-track types")
     exported_payload = _vmd_track_payload(exported_data, VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES)
+    from mmd_tools.core.mmd_parser import parse_pmx_file
+
+    separation = _bone_morph_separation_evidence(
+        parse_pmx_file(
+            str(VMD_BAKE_TIMELINE_MODEL_TRACK_PMX),
+            use_native_pmx_parse=False,
+        ),
+        source_data,
+        exported_data,
+    )
     fresh_root = _fresh_import(VMD_BAKE_TIMELINE_MODEL_TRACK_PMX, import_options=track_options)
     fresh_root = _import_vmd_into_current_scene(
         fresh_root,
@@ -3308,6 +3473,7 @@ def _run_vmd_bake_timeline_model_tracks_case(out_dir: Path) -> dict[str, Any]:
                 "boundaries": ["source_import", "exported_file", "fresh_import"],
                 "checked_frames": list(VMD_BAKE_TIMELINE_MODEL_TRACK_FRAMES),
             },
+            "bone_morph_separation": separation,
         },
         "parsed_counts": {
             "bone_frames": len(exported_data.bone_frames),
@@ -3541,7 +3707,7 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
     """Roundtrip standalone camera/light tracks through Bake Timeline and fresh import."""
     from mmd_tools.core.vmd_data import VmdData
     from mmd_tools.adapters.maya_vmd_prepare_backend import (
-        create_maya_vmd_prepare_action,
+        create_maya_bake_timeline_vmd_action,
     )
     from mmd_tools.services.export_workflow_service import ExportWorkflowRequest, ExportWorkflowService
 
@@ -3558,7 +3724,7 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
     output = out_dir / "camera_light.vmd"
     report_dir = out_dir / "report"
     workflow = ExportWorkflowService(
-        prepare_vmd_action=create_maya_vmd_prepare_action()
+        vmd_action=create_maya_bake_timeline_vmd_action()
     )
     request = ExportWorkflowRequest(
         str(output),
@@ -3581,20 +3747,10 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
             },
         },
     )
-    preparation = workflow.prepare_vmd(request)
-    if not preparation.succeeded:
-        raise RuntimeError(
-            "camera/light VMD preparation failed: "
-            f"{preparation.error or preparation.report}"
-        )
-    request.prepared_vmd_token = preparation.token
-    try:
-        result = workflow.execute(
-            request,
-            acknowledge_warnings=True,
-        )
-    finally:
-        workflow.invalidate_prepared_vmd(preparation.token)
+    result = workflow.execute(
+        request,
+        acknowledge_warnings=True,
+    )
     if not result.succeeded:
         raise RuntimeError(f"camera/light Bake Timeline export failed: {result.error or result.report}")
     exported_data = VmdData().parse_file(str(output))
@@ -3685,6 +3841,7 @@ def _import_vmd_into_current_scene(
 
 def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
     """Run all model and motion cases in one initialized Maya process."""
+    from tests.common.qsettings_isolation import activate_qsettings_isolation
     from mmd_tools.core.pmx_data import PmxData
     from maya import standalone
 
@@ -3693,6 +3850,11 @@ def run_probe(pmx_path: Path, vmd_path: Path, out_dir: Path) -> dict[str, Any]:
         standalone.initialize(name="python")
     except RuntimeError:
         pass
+    # This mayapy route constructs real production UI widgets for the
+    # release material-edit probe.  Redirect QSettings after Maya's Qt host
+    # is ready, before any such production widget construction, and keep it
+    # active until exit.
+    activate_qsettings_isolation()
     load_mmd_tools_plugin(ROOT)
     out_dir.mkdir(parents=True, exist_ok=True)
     PmxData().parse_file(str(pmx_path))

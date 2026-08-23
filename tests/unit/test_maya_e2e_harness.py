@@ -71,7 +71,7 @@ class TestMayaE2EHarness(unittest.TestCase):
             harness.maya_commandport, "wait_for_port", side_effect=record("wait")
         ), mock.patch.object(
             harness.maya_commandport, "send_python", side_effect=record("send")
-        ), mock.patch.object(
+        ) as send_python, mock.patch.object(
             harness, "monitor_result", side_effect=record("monitor", {"status": "pass"})
         ), mock.patch.object(
             harness.maya_commandport, "quit_maya", side_effect=record("quit")
@@ -96,6 +96,14 @@ class TestMayaE2EHarness(unittest.TestCase):
             )
 
         self.assertEqual({"status": "pass"}, result)
+        sent_command = next(
+            call.args[1] for call in send_python.call_args_list
+            if call.args[0] == 7788
+        )
+        self.assertLess(
+            sent_command.index("activate_qsettings_isolation()"),
+            sent_command.index("run()"),
+        )
         self.assertEqual(
             [
                 "stale",

@@ -107,26 +107,24 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
         self.assertNotIn("button selector over QStackedWidget", self.source)
 
     def test_export_pages_use_format_specific_primary_actions(self):
-        for key in (
-            '"validate_model"',
-            '"export_pmx"',
-            '"validate_animation"',
-            '"export_vmd"',
-        ):
+        for key in ('"export_pmx"', '"export_vmd"'):
             self.assertIn(key, self.source)
+        self.assertNotIn('"validate_model"', self.source)
+        self.assertNotIn('"validate_animation"', self.source)
 
-    def test_animation_validation_owns_prepare_flow_without_separate_button(self):
+    def test_animation_has_one_export_signal_without_prepare_or_validate_controls(self):
         self.assertNotIn("exportMotionPrepareButton", self.source)
         self.assertNotIn("prepare_button =", self.source)
-        self.assertIn("validate_animation", self.source)
+        self.assertNotIn("validate_button =", self.source)
+        self.assertEqual(self.source.count("export_requested = Signal()"), 2)
 
     def test_supported_languages_define_model_animation_and_format_actions(self):
         translation_dir = Path(export_tab.__file__).resolve().parents[1] / "translations"
         expected = {
-            "ja": ("モデル", "アニメーション", "モデルを検証", "モデルを書き出す", "アニメーションを検証", "アニメーションを書き出し"),
-            "en": ("Model", "Animation", "Validate Model", "Export Model", "Validate Animation", "Export Animation"),
-            "zh_cn": ("模型", "动画", "验证模型", "导出模型", "验证动画", "导出动画"),
-            "zh_tw": ("模型", "動畫", "驗證模型", "匯出模型", "驗證動畫", "匯出動畫"),
+            "ja": ("モデル", "アニメーション", "モデルを書き出す", "アニメーションを書き出し"),
+            "en": ("Model", "Animation", "Export Model", "Export Animation"),
+            "zh_cn": ("模型", "动画", "导出模型", "导出动画"),
+            "zh_tw": ("模型", "動畫", "匯出模型", "匯出動畫"),
         }
         for language, values in expected.items():
             translations = json.loads(
@@ -134,16 +132,25 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
             )
             self.assertEqual(translations["tabs"]["export_model"], values[0])
             self.assertEqual(translations["tabs"]["export_motion"], values[1])
-            self.assertEqual(translations["buttons"]["validate_model"], values[2])
-            self.assertEqual(translations["buttons"]["export_pmx"], values[3])
-            self.assertEqual(translations["buttons"]["validate_animation"], values[4])
-            self.assertEqual(translations["buttons"]["export_vmd"], values[5])
+            self.assertEqual(translations["buttons"]["export_pmx"], values[2])
+            self.assertEqual(translations["buttons"]["export_vmd"], values[3])
             self.assertIn("vmd_export_timeline", translations["options"])
             self.assertIn("vmd_bake_export", translations["checkboxes"])
             self.assertIn("vmd_bake_export_help", translations["messages"])
+            self.assertEqual(
+                set(translations["export_status"]),
+                {
+                    "editing",
+                    "validating_scene",
+                    "collecting_animation",
+                    "writing_temporary_file",
+                    "finalizing",
+                    "completed",
+                    "blocked",
+                },
+            )
             self.assertNotIn("export_strategy", translations["fields"])
             self.assertIn("animation_timeline_bake", translations["export_progress"])
-            self.assertIn("animation_prepared_payload", translations["export_progress"])
 
 
 class TestImportExportTabDevModeVisibility(unittest.TestCase):

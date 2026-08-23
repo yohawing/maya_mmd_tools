@@ -14,7 +14,6 @@ from mmd_tools.actions.export_model_action import (  # noqa: E402
     ExportModelRequest,
     _default_collect_model_data,
 )
-from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest  # noqa: E402
 from mmd_tools.actions.import_model_action import (  # noqa: E402
     OUTCOME_FATAL,
     OUTCOME_PARTIAL,
@@ -26,7 +25,6 @@ from mmd_tools.actions.import_vmd_action import (  # noqa: E402
     ImportVmdAction,
     ImportVmdRequest,
 )
-from mmd_tools.core.vmd_data import VmdData  # noqa: E402
 from mmd_tools.converters.authoring_export_bridge import (  # noqa: E402
     AuthoringExportIntegrationError,
 )
@@ -577,7 +575,6 @@ class TestExportModelAction(unittest.TestCase):
         def failing_collector(_options):
             raise AuthoringExportIntegrationError(
                 "semantic data differs from the scene oracle",
-                code="AUTHORING_ORACLE_MISMATCH",
                 path="morphs[0].offsets",
             )
 
@@ -593,7 +590,10 @@ class TestExportModelAction(unittest.TestCase):
         self.assertFalse(result.succeeded)
         self.assertIsInstance(result.error, AuthoringExportIntegrationError)
         self.assertIsNotNone(result.validation_report)
-        self.assertEqual(result.validation_report.issues[0].code, "AUTHORING_ORACLE_MISMATCH")
+        self.assertEqual(result.validation_report.issues[0].code, "INPUT_INVALID")
+        self.assertEqual(
+            result.validation_report.issues[0].details["field"], "morphs[0].offsets"
+        )
 
     def test_execute_reports_unsupported_format(self):
         options = {"file_path": "out.obj", "export_format": "obj", "model_data": {"vertices": [1]}}
@@ -620,88 +620,6 @@ class _FakePmxExporter:
     def export_pmx_model(self, file_path, model_data):
         self.calls.append((file_path, model_data))
         Path(file_path).write_bytes(b"fake pmx bytes")
-
-
-class TestExportVmdAction(unittest.TestCase):
-    """VMD export action の最小依存境界を検証する。"""
-
-    def test_execute_exports_provided_animation_data(self):
-        exporter = _FakeVmdExporter()
-        action = ExportVmdAction(exporter=exporter)
-        vmd_data = VmdData()
-
-        with tempfile.TemporaryDirectory() as directory:
-            file_path = str(Path(directory) / "out.vmd")
-            result = action.execute(
-                ExportVmdRequest(
-                    file_path=file_path,
-                    options={"export_format": "vmd"},
-                    animation_data=vmd_data,
-                )
-            )
-
-            self.assertTrue(result.succeeded)
-            self.assertEqual(result.exported_path, file_path)
-            self.assertIsNone(result.error)
-            self.assertEqual(len(exporter.calls), 1)
-            self.assertEqual(exporter.calls[0][1], vmd_data)
-            self.assertTrue(Path(file_path).is_file())
-
-    def test_execute_reports_missing_collector_or_data(self):
-        action = ExportVmdAction(exporter=_FakeVmdExporter(), collector=None)
-
-        result = action.execute(ExportVmdRequest(file_path="out.vmd", options={}))
-
-        self.assertFalse(result.succeeded)
-        self.assertIsNone(result.exported_path)
-        self.assertIsInstance(result.error, ValueError)
-
-    def test_bake_timeline_without_prepared_animation_data_never_calls_collector_or_writer(self):
-        exporter = _FakeVmdExporter()
-        collector_calls = []
-        action = ExportVmdAction(
-            exporter=exporter,
-            collector=lambda options: collector_calls.append(options),
-        )
-
-        result = action.execute(
-            ExportVmdRequest(
-                file_path="out.vmd",
-                options={"export_format": "vmd", "export_strategy": "bake_timeline"},
-            )
-        )
-
-        self.assertFalse(result.succeeded)
-        self.assertIsInstance(result.error, ValueError)
-        self.assertIn("prepared animation_data", str(result.error))
-        self.assertEqual(collector_calls, [])
-        self.assertEqual(exporter.calls, [])
-
-    def test_execute_reports_exporter_error(self):
-        class FailingExporter:
-            def export_vmd_animation(self, file_path, animation_data):
-                raise RuntimeError("boom")
-
-        action = ExportVmdAction(exporter=FailingExporter())
-
-        result = action.execute(
-            ExportVmdRequest(file_path="out.vmd", options={}, animation_data={"model_name": "Model"})
-        )
-
-        self.assertFalse(result.succeeded)
-        self.assertIsNone(result.exported_path)
-        self.assertIsInstance(result.error, RuntimeError)
-
-
-class _FakeVmdExporter:
-    """Test double that records VMD export calls."""
-
-    def __init__(self):
-        self.calls = []
-
-    def export_vmd_animation(self, file_path, animation_data):
-        self.calls.append((file_path, animation_data))
-        VmdData().write_file(file_path)
 
 
 if __name__ == "__main__":

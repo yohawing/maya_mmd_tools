@@ -23,9 +23,21 @@ def _is_sequence(value: Any) -> bool:
     return isinstance(value, Sequence) and not isinstance(value, _TEXT_SEQUENCE_TYPES)
 
 
-def _issue(code: str, path: str, message: str) -> ExportValidationIssue:
+def _issue(
+    code: str,
+    path: str,
+    message: str,
+    *,
+    details: Optional[Mapping[str, Any]] = None,
+) -> ExportValidationIssue:
     """Build one blocking external-verifier issue."""
-    return ExportValidationIssue(code, "fatal", True, path, message)
+    normalized_path = path[len("mmd_anim.") :] if path.startswith("mmd_anim.") else path
+    issue_details = {
+        "tool": "mmd-anim",
+        "phase": normalized_path.split(".", 1)[0] or "cli",
+    }
+    issue_details.update(details or {})
+    return ExportValidationIssue(code, "fatal", True, path, message, details=issue_details)
 
 
 def _triangulated_face_count(faces: Any) -> Optional[int]:
@@ -92,26 +104,26 @@ def _run_json_command(
         )
     except FileNotFoundError:
         return None, _issue(
-            "MMD_ANIM_CLI_UNAVAILABLE",
+            "EXTERNAL_TOOL_FAILED",
             "mmd_anim.cli",
             "mmd-anim CLI executable is not available",
         )
     except subprocess.TimeoutExpired:
         return None, _issue(
-            "MMD_ANIM_TIMEOUT",
+            "EXTERNAL_TOOL_FAILED",
             f"mmd_anim.{subcommand}",
             f"mmd-anim {subcommand} exceeded the configured timeout",
         )
     except OSError as exc:
         return None, _issue(
-            "MMD_ANIM_CLI_UNAVAILABLE",
+            "EXTERNAL_TOOL_FAILED",
             "mmd_anim.cli",
             f"mmd-anim CLI could not be started: {type(exc).__name__}",
         )
 
     if completed.returncode != 0:
         return None, _issue(
-            "MMD_ANIM_COMMAND_FAILED",
+            "EXTERNAL_TOOL_FAILED",
             f"mmd_anim.{subcommand}",
             f"mmd-anim {subcommand} exited with code {completed.returncode}",
         )
@@ -119,16 +131,16 @@ def _run_json_command(
         payload = json.loads(completed.stdout or "")
     except (TypeError, ValueError):
         code = (
-            "MMD_ANIM_INSPECT_JSON_INVALID"
+            "EXTERNAL_TOOL_FAILED"
             if subcommand == "inspect"
-            else "MMD_ANIM_ROUNDTRIP_JSON_INVALID"
+            else "EXTERNAL_TOOL_FAILED"
         )
         return None, _issue(code, f"mmd_anim.{subcommand}.json", "mmd-anim returned invalid JSON")
     if not isinstance(payload, Mapping):
         code = (
-            "MMD_ANIM_INSPECT_JSON_INVALID"
+            "EXTERNAL_TOOL_FAILED"
             if subcommand == "inspect"
-            else "MMD_ANIM_ROUNDTRIP_JSON_INVALID"
+            else "EXTERNAL_TOOL_FAILED"
         )
         return None, _issue(code, f"mmd_anim.{subcommand}.json", "mmd-anim JSON root must be an object")
     return payload, None
@@ -165,7 +177,7 @@ def verify_mmd_anim_asset(
     if diagnostics:
         issues.append(
             _issue(
-                "MMD_ANIM_DIAGNOSTICS",
+                "EXTERNAL_TOOL_FAILED",
                 "mmd_anim.inspect.diagnostics",
                 f"mmd-anim inspect returned {len(diagnostics)} diagnostic(s)",
             )
@@ -185,7 +197,7 @@ def verify_mmd_anim_asset(
     if roundtrip_payload.get("status") != "ok":
         issues.append(
             _issue(
-                "MMD_ANIM_ROUNDTRIP_FAILED",
+                "EXTERNAL_TOOL_FAILED",
                 "mmd_anim.roundtrip.status",
                 f"mmd-anim roundtrip status is {roundtrip_payload.get('status')!r}",
             )
@@ -196,7 +208,7 @@ def verify_mmd_anim_asset(
     if actual_counts is None:
         issues.append(
             _issue(
-                "MMD_ANIM_ROUNDTRIP_JSON_INVALID",
+                "EXTERNAL_TOOL_FAILED",
                 "mmd_anim.roundtrip.counts",
                 "mmd-anim roundtrip JSON does not contain counts",
             )
@@ -207,15 +219,20 @@ def verify_mmd_anim_asset(
             if actual is not None and actual != expected:
                 issues.append(
                     _issue(
-                        "MMD_ANIM_COUNT_MISMATCH",
+                        "EXTERNAL_TOOL_FAILED",
                         f"mmd_anim.roundtrip.counts.{name}",
                         f"mmd-anim count {actual} does not match expected count {expected}",
+                        details={
+                            "section": name,
+                            "expected_count": expected,
+                            "actual_count": actual,
+                        },
                     )
                 )
     else:
         issues.append(
             _issue(
-                "MMD_ANIM_ROUNDTRIP_JSON_INVALID",
+                "EXTERNAL_TOOL_FAILED",
                 "mmd_anim.roundtrip.counts",
                 "mmd-anim roundtrip counts must be an object",
             )

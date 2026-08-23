@@ -211,7 +211,6 @@
     "morph_create_impulse_unsupported": "无法创建 PMX 2.1 冲量变形",
     "select_vmd_target_model": "请选择目标模型，或选择 Camera Motion。",
     "export_success": "导出完成",
-    "prepare_bake_timeline_complete": "VMD 时间线烘焙准备完成",
     "error_file_not_found": "找不到文件",
     "error_invalid_file": "无效的文件格式",
     "error_no_selection": "未选择任何对象",
@@ -665,28 +664,16 @@
     "animation_timeline_bake": "动画：正在评估并准备当前时间轴",
     "animation_payload_collection": "动画：正在收集导出数据",
     "animation_payload_validation": "动画：正在验证导出数据",
-    "animation_prepared_payload": "动画：正在准备导出数据",
     "animation_report_ready": "动画：验证报告已准备就绪",
     "animation_writer": "正在导出 VMD"
   },
-  "validation": {
-    "scene_output_path_invalid": {
-      "title": "导出位置无效",
-      "impact": "无法确定要写入文件的保存位置。",
-      "remediation": "请选择输出文件，然后重新准备或导出。",
-      "action": "选择输出文件"
-    },
-    "scene_output_extension_mismatch": {
-      "title": "输出扩展名与格式不匹配",
-      "impact": "所选文件无法按请求的格式写出。",
-      "remediation": "导出 VMD 时，请使用以 .vmd 结尾的文件名。",
-      "action": "修正输出扩展名"
-    },
-    "export_workflow_exception": {
-      "title": "导出流程意外失败",
-      "impact": "导出流程在生成可信结果之前已停止。",
-      "remediation": "请检查报告的异常和输出路径，修复根本问题后重新验证或导出。",
-      "action": "检查导出流程失败"
-    }
+  "export_status": {
+    "editing": "编辑中",
+    "validating_scene": "正在验证场景",
+    "collecting_animation": "正在收集动画",
+    "writing_temporary_file": "正在写入临时文件",
+    "finalizing": "正在完成",
+    "completed": "已完成",
+    "blocked": "已阻止"
   }
 }

@@ -51,15 +51,21 @@ class _CallbackOwner:
 
 
 class _FakeNodeMessage(_CallbackOwner):
-    kAttributeAdded = 1
-    kAttributeArrayAdded = 2
-    kAttributeArrayRemoved = 4
-    kAttributeRemoved = 8
-    kAttributeRenamed = 16
-    kAttributeSet = 32
-    kConnectionBroken = 64
-    kConnectionMade = 128
-    kAttributeEval = 256
+    kConnectionMade = 1
+    kConnectionBroken = 2
+    kAttributeEval = 4
+    kAttributeSet = 8
+    kAttributeLocked = 16
+    kAttributeUnlocked = 32
+    kAttributeAdded = 64
+    kAttributeRemoved = 128
+    kAttributeRenamed = 256
+    kAttributeKeyable = 512
+    kAttributeUnkeyable = 1024
+    kIncomingDirection = 2048
+    kAttributeArrayAdded = 4096
+    kAttributeArrayRemoved = 8192
+    kOtherPlugSet = 16384
 
     def addAttributeChangedCallback(self, *args):
         return self._add("attribute", args)
@@ -200,6 +206,89 @@ class TestSceneRevisionService(unittest.TestCase):
         )
         self.assertEqual(self.service.revision, 1)
 
+    def test_attribute_eval_modifiers_and_incoming_array_materialization_are_ignored(self):
+        watch = self.service.arm([self.node])
+        callback = self.om.MNodeMessage
+
+        # Maya's callback values are bit fields: 2052 is kAttributeEval with
+        # kIncomingDirection, not a distinct enum value.
+        self.service._attribute_changed_callback(
+            callback.kAttributeEval | callback.kIncomingDirection,
+            client_data=watch,
+        )
+        self.assertEqual(self.service.revision, 0)
+        self.assertTrue(watch.usable)
+
+        # Runtime array nodes may materialize an incoming element while a
+        # frame is evaluated (6144 in Maya 2024).
+        self.service._attribute_changed_callback(
+            callback.kAttributeArrayAdded | callback.kIncomingDirection,
+            client_data=watch,
+        )
+        self.assertEqual(self.service.revision, 0)
+        self.assertTrue(watch.usable)
+
+        self.service._attribute_changed_callback(
+            callback.kAttributeArrayAdded,
+            client_data=watch,
+        )
+        self.assertEqual(self.service.revision, 1)
+        self.assertTrue(watch.stale)
+
+    def test_incoming_attribute_set_remains_mutation_evidence(self):
+        watch = self.service.arm([self.node])
+        callback = self.om.MNodeMessage
+
+        self.service._attribute_changed_callback(
+            callback.kAttributeSet | callback.kIncomingDirection,
+            client_data=watch,
+        )
+        self.assertEqual(self.service.revision, 1)
+        self.assertTrue(watch.stale)
+
+    def test_eval_plus_set_and_array_removed_remain_mutation_evidence(self):
+        callback = self.om.MNodeMessage
+
+        watch = self.service.arm([self.node])
+        self.service._attribute_changed_callback(
+            callback.kAttributeEval | callback.kAttributeSet,
+            client_data=watch,
+        )
+        self.assertEqual(self.service.revision, 1)
+        self.assertTrue(watch.stale)
+
+        watch = self.service.arm([self.node])
+        self.service._attribute_changed_callback(
+            callback.kAttributeArrayRemoved,
+            client_data=watch,
+        )
+        self.assertEqual(self.service.revision, 2)
+        self.assertTrue(watch.stale)
+
+    def test_configured_ignored_mutation_bits_do_not_fail_open(self):
+        callback = self.om.MNodeMessage
+        service = SceneRevisionService(
+            self.om,
+            self.oma,
+            ignored_attribute_flags=(callback.kAttributeSet,),
+            session_id_factory=lambda: "ignored-session",
+        )
+        watch = service.arm([self.node])
+
+        service._attribute_changed_callback(
+            callback.kAttributeSet,
+            client_data=watch,
+        )
+        self.assertEqual(service.revision, 0)
+        self.assertTrue(watch.usable)
+
+        service._attribute_changed_callback(
+            callback.kAttributeSet | callback.kAttributeArrayRemoved,
+            client_data=watch,
+        )
+        self.assertEqual(service.revision, 1)
+        self.assertTrue(watch.stale)
+
     def test_connection_dag_and_global_node_events_filter_by_uuid(self):
         watch = self.service.arm([self.node])
 
@@ -222,6 +311,21 @@ class TestSceneRevisionService(unittest.TestCase):
         self.assertEqual(self.service.revision, 2)
         self.service._node_removed_callback(self.node, fresh)
         self.assertTrue(fresh.stale)
+
+    def test_connection_made_and_broken_invalidate_matching_watch(self):
+        made = self.service.arm([self.node])
+        self.service._connection_callback(
+            _FakePlug(self.node), _FakePlug(self.other), True, made
+        )
+        self.assertEqual(self.service.revision, 1)
+        self.assertTrue(made.stale)
+
+        broken = self.service.arm([self.node])
+        self.service._connection_callback(
+            _FakePlug(self.node), _FakePlug(self.other), False, broken
+        )
+        self.assertEqual(self.service.revision, 2)
+        self.assertTrue(broken.stale)
 
     def test_anim_curve_edit_filters_by_dependency_uuid(self):
         watch = self.service.arm([self.node])

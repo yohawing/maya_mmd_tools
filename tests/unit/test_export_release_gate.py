@@ -6,6 +6,7 @@ import inspect
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -22,7 +23,11 @@ from tools.export_release_gate import (
     _validate_release_provenance,
     _validate_maya_probe_report,
 )
-from tools.export_release_maya_probe import _compare_scene_oracles, _run_vmd_case
+from tools.export_release_maya_probe import (
+    _bone_morph_separation_evidence,
+    _compare_scene_oracles,
+    _run_vmd_case,
+)
 
 
 def _clean_release_provenance(run_id=None):
@@ -39,6 +44,74 @@ def _clean_release_provenance(run_id=None):
 
 class ExportReleaseGateTests(unittest.TestCase):
     """The release summary must expose omissions and fail-closed fixtures."""
+
+    @staticmethod
+    def _bone_morph_separation_fixture(leaked=False):
+        bones = [
+            SimpleNamespace(name="センター"),
+            SimpleNamespace(name="腰"),
+            SimpleNamespace(name="独自補助"),
+        ]
+        morphs = [
+            SimpleNamespace(
+                name="standard",
+                morph_type=2,
+                offsets=[{"bone_index": 0}],
+            ),
+            SimpleNamespace(
+                name="semi",
+                morph_type=2,
+                offsets=[{"bone_index": 1}],
+            ),
+            SimpleNamespace(
+                name="mixed",
+                morph_type=2,
+                offsets=[{"bone_index": 0}, {"bone_index": 1}, {"bone_index": 2}],
+            ),
+        ]
+        source_morphs = [
+            SimpleNamespace(morph_name=name, frame_number=frame, value=value)
+            for name, value in (("standard", 0.75), ("semi", 0.5), ("mixed", 0.4))
+            for frame in (10,)
+        ]
+        base_frames = []
+        for name in ("センター", "腰", "独自補助"):
+            position = (0.25, 0.0, 0.0) if leaked and name == "センター" else (0.0, 0.0, 0.0)
+            base_frames.append(
+                SimpleNamespace(
+                    bone_name=name,
+                    frame_number=10,
+                    position=position,
+                    rotation=(0.0, 0.0, 0.0, 1.0),
+                )
+            )
+        return (
+            SimpleNamespace(bones=bones, morphs=morphs),
+            SimpleNamespace(bone_frames=[], morph_frames=source_morphs),
+            SimpleNamespace(bone_frames=base_frames, morph_frames=source_morphs),
+        )
+
+    def test_bone_morph_separation_accepts_standard_semi_custom_and_mixed_targets(self):
+        evidence = _bone_morph_separation_evidence(
+            *self._bone_morph_separation_fixture()
+        )
+
+        self.assertEqual(evidence["status"], "pass")
+        self.assertEqual(
+            evidence["target_categories"],
+            ["custom", "semi_standard", "standard"],
+        )
+        self.assertTrue(evidence["mixed_target_covered"])
+        self.assertEqual(evidence["source_morph_key_count"], 3)
+        self.assertEqual(evidence["preserved_morph_key_count"], 3)
+
+    def test_bone_morph_separation_rejects_deformation_in_base_bone_track(self):
+        with self.assertRaisesRegex(
+            AssertionError, "deformation leaked into exported base track"
+        ):
+            _bone_morph_separation_evidence(
+                *self._bone_morph_separation_fixture(leaked=True)
+            )
 
     def test_qt_pytest_command_prefers_project_python(self):
         isolated_dir = str(Path("isolated") / "Scripts")
@@ -64,6 +137,57 @@ class ExportReleaseGateTests(unittest.TestCase):
                 [project_python, "-m", "pytest"],
             )
         which.assert_called_once_with("python", path=project_dir)
+
+    def test_release_summary_runs_focused_tests_with_qt_python(self):
+        commands = []
+
+        def run_command(name, command, **_kwargs):
+            commands.append((name, command))
+            return {"name": name, "status": "pass", "returncode": 0}
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            RELEASE_GATE,
+            "_capture_release_provenance",
+            side_effect=_clean_release_provenance,
+        ), mock.patch.object(
+            RELEASE_GATE,
+            "_pytest_command",
+            return_value=["wrong-python", "-m", "pytest"],
+        ), mock.patch.object(
+            RELEASE_GATE,
+            "_qt_pytest_command",
+            return_value=["qt-python", "-m", "pytest"],
+        ), mock.patch.object(
+            RELEASE_GATE,
+            "_run_command",
+            side_effect=run_command,
+        ), mock.patch.object(
+            RELEASE_GATE,
+            "_run_fail_fixture_matrix",
+            return_value={"status": "pass", "fixtures": [], "report_paths": []},
+        ), mock.patch.object(
+            RELEASE_GATE,
+            "_report_consistency_step",
+            return_value={
+                "name": "report_consistency",
+                "status": "pass",
+                "checked": [],
+                "failures": [],
+            },
+        ):
+            RELEASE_GATE.build_release_summary(
+                out_dir=Path(directory) / "release",
+                maya_versions=(),
+                mmd_anim_cli=None,
+                skip_gui=True,
+                full_gui=False,
+                skip_focused_tests=False,
+            )
+
+        focused_command = next(
+            command for name, command in commands if name == "focused_tests"
+        )
+        self.assertEqual(focused_command[:3], ["qt-python", "-m", "pytest"])
 
     def test_maya_path_uses_shared_mayapy_resolver(self):
         """Release probes honor the shared environment-aware Maya resolver."""
@@ -129,11 +253,11 @@ class ExportReleaseGateTests(unittest.TestCase):
                 if isinstance(key, ast.Constant) and key.value == "export_strategy"
             ],
         )
-        self.assertTrue(
+        self.assertFalse(
             any(
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "prepare_vmd"
+                and node.func.attr.startswith("prepare")
                 for node in ast.walk(function)
             )
         )
@@ -204,7 +328,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "model": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model.pmx"),
                         "motion": str(RELEASE_GATE.ROOT / "tests/data/mmt_test_model_test_motion.vmd"),
                         "runtime_library": str(runtime_path),
-                                "report": {"schema_version": 1, "status": "blocked", "issues": [{}]},
+                                "report": {"schema_version": 2, "status": "blocked", "issues": [{}]},
                     }
                 ),
                 encoding="utf-8",
@@ -238,7 +362,7 @@ class ExportReleaseGateTests(unittest.TestCase):
             "model": str(fake_root / "tests/data/mmt_test_model.pmx"),
             "motion": str(fake_root / "tests/data/mmt_test_model_test_motion.vmd"),
             "runtime_library": str(runtime_path),
-            "report": {"schema_version": 1, "status": "ready", "issues": []},
+            "report": {"schema_version": 2, "status": "ready", "issues": []},
         }
         for field, value, expected_error in (
             ("binding_root", str(RELEASE_GATE.ROOT / "external/mmd-anim"), "binding_root mismatch"),
@@ -279,9 +403,65 @@ class ExportReleaseGateTests(unittest.TestCase):
             foreign.write_bytes(b"foreign-runtime")
             with mock.patch.object(RELEASE_GATE, "ROOT", root), mock.patch.object(
                 RELEASE_GATE.platform, "system", return_value="Windows"
+            ), mock.patch.object(
+                RELEASE_GATE.subprocess,
+                "run",
+                return_value=mock.Mock(
+                    returncode=0,
+                    stdout=json.dumps(
+                        {"target_directory": str(root / "external" / "mmd-anim" / "target")}
+                    ),
+                ),
             ):
                 self.assertEqual(RELEASE_GATE._mmd_anim_runtime_candidates(), (native,))
                 self.assertEqual(RELEASE_GATE._mmd_anim_runtime_path(), native)
+
+    def test_ffi_runtime_candidates_use_cargo_metadata_target_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            cargo_target = Path(directory) / "cargo-target"
+            runtime = cargo_target / "release" / "mmd_runtime_ffi.dll"
+            local_runtime = root / "external" / "mmd-anim" / "target" / "release" / runtime.name
+            runtime.parent.mkdir(parents=True)
+            local_runtime.parent.mkdir(parents=True)
+            runtime.write_bytes(b"cargo-runtime")
+            local_runtime.write_bytes(b"stale-local-runtime")
+            metadata = mock.Mock(
+                returncode=0,
+                stdout=json.dumps({"target_directory": str(cargo_target)}),
+            )
+
+            with mock.patch.object(RELEASE_GATE, "ROOT", root), mock.patch.object(
+                RELEASE_GATE.platform, "system", return_value="Windows"
+            ), mock.patch.object(RELEASE_GATE.subprocess, "run", return_value=metadata):
+                self.assertEqual(RELEASE_GATE._mmd_anim_runtime_candidates(), (runtime,))
+                self.assertEqual(RELEASE_GATE._mmd_anim_runtime_path(), runtime)
+
+    def test_ffi_runtime_candidates_fail_closed_when_cargo_metadata_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stale = root / "external" / "mmd-anim" / "target" / "release" / "mmd_runtime_ffi.dll"
+            stale.parent.mkdir(parents=True)
+            stale.write_bytes(b"stale-runtime")
+
+            for result in (
+                mock.Mock(returncode=1, stdout=""),
+                mock.Mock(returncode=0, stdout="not-json"),
+                mock.Mock(returncode=0, stdout=json.dumps({"target_directory": "relative"})),
+                OSError("cargo unavailable"),
+            ):
+                with self.subTest(result=result), mock.patch.object(
+                    RELEASE_GATE, "ROOT", root
+                ), mock.patch.object(
+                    RELEASE_GATE.platform, "system", return_value="Windows"
+                ), mock.patch.object(
+                    RELEASE_GATE.subprocess,
+                    "run",
+                    side_effect=result if isinstance(result, OSError) else None,
+                    return_value=None if isinstance(result, OSError) else result,
+                ):
+                    self.assertEqual(RELEASE_GATE._mmd_anim_runtime_candidates(), ())
+                    self.assertIsNone(RELEASE_GATE._mmd_anim_runtime_path())
 
     def test_fail_fixture_matrix_is_green_only_when_boundaries_hold(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -290,22 +470,11 @@ class ExportReleaseGateTests(unittest.TestCase):
         self.assertEqual(result["status"], "pass")
         self.assertEqual(
             {fixture["name"] for fixture in result["fixtures"]},
-            {
-                "invalid_pmx",
-                "invalid_vmd_quaternion",
-                "warning_ack_boundary",
-            },
+            {"invalid_pmx"},
         )
         for fixture in result["fixtures"]:
             self.assertEqual(fixture["status"], "pass")
-        warning_fixture = next(
-            fixture for fixture in result["fixtures"] if fixture["name"] == "warning_ack_boundary"
-        )
-        self.assertEqual(warning_fixture["first_issue_codes"], [])
-        self.assertEqual(warning_fixture["first_issue_severities"], [])
-        self.assertTrue(warning_fixture["first_succeeded"])
-        self.assertFalse(warning_fixture["first_requires_warning_ack"])
-        self.assertEqual(len(result["report_paths"]), 4)
+        self.assertEqual(len(result["report_paths"]), 1)
 
     def test_maya_probe_report_is_required_and_validated(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -613,6 +782,38 @@ class ExportReleaseGateTests(unittest.TestCase):
                         "checked_frames": [0, 6, 10, 12, 20],
                         "raw_key_interpolation_preserved": False,
                     },
+                    "bone_morph_separation": {
+                        "status": "pass",
+                        "contract": "bone_track_is_pre_morph_and_morph_track_carries_weight",
+                        "target_categories": ["custom", "semi_standard", "standard"],
+                        "mixed_target_covered": True,
+                        "morphs": [
+                            {
+                                "name": "mixed",
+                                "targets": ["standard", "semi", "custom"],
+                            }
+                        ],
+                        "targets": [
+                            {
+                                "bone_name": "custom",
+                                "category": "custom",
+                                "selection": "omitted_default",
+                            },
+                            {
+                                "bone_name": "semi",
+                                "category": "semi_standard",
+                                "selection": "identity_base",
+                            },
+                            {
+                                "bone_name": "standard",
+                                "category": "standard",
+                                "selection": "identity_base",
+                            },
+                        ],
+                        "source_morph_key_count": 3,
+                        "preserved_morph_key_count": 3,
+                        "fresh_import_recomposition_required": True,
+                    },
                 },
             )
             camera_payload = {
@@ -703,7 +904,7 @@ class ExportReleaseGateTests(unittest.TestCase):
             )
             soft_body_case.update(
                 status="policy-reject",
-                policy_code="PMX_SOFT_BODIES_UNSUPPORTED",
+                policy_code="UNSUPPORTED_FEATURE",
                 import_oracles={"soft_body_count": 1},
                 output=None,
                 collection={
@@ -735,8 +936,8 @@ class ExportReleaseGateTests(unittest.TestCase):
                 },
             )
             for export_format, policy_code, prefix in (
-                ("pmx_impulse", "MORPH_TYPE_UNSUPPORTED", "impulse"),
-                ("pmx_flip", "MORPH_TYPE_UNSUPPORTED", "flip"),
+                ("pmx_impulse", "UNSUPPORTED_FEATURE", "impulse"),
+                ("pmx_flip", "UNSUPPORTED_FEATURE", "flip"),
             ):
                 policy_case = next(case for case in report["cases"] if case["format"] == export_format)
                 policy_case.update(
@@ -856,6 +1057,18 @@ class ExportReleaseGateTests(unittest.TestCase):
                 "6": {"ik": 0},
             }
 
+            separation = vmd_bake_timeline_model_tracks_case["model_tracks"].pop(
+                "bone_morph_separation"
+            )
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            step = {"name": "maya_probe_2024", "status": "pass"}
+            self.assertEqual(_validate_maya_probe_report(step, report_path, "2024"), [])
+            self.assertEqual(step["status"], "fail")
+            self.assertIn("bone_morph_separation_missing", step["error"])
+            vmd_bake_timeline_model_tracks_case["model_tracks"][
+                "bone_morph_separation"
+            ] = separation
+
             vmd_bake_timeline_camera_light_case["parsed_counts"]["camera_frames"] = 0
             report_path.write_text(json.dumps(report), encoding="utf-8")
             step = {"name": "maya_probe_2024", "status": "pass"}
@@ -941,7 +1154,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                                 "model": str(fake_root / "tests/data/mmt_test_model.pmx"),
                                 "motion": str(fake_root / "tests/data/mmt_test_model_test_motion.vmd"),
                                 "runtime_library": str(runtime_path),
-                                "report": {"schema_version": 1, "status": "ready", "issues": []},
+                                "report": {"schema_version": 2, "status": "ready", "issues": []},
                             }
                         ),
                         encoding="utf-8",
@@ -1037,7 +1250,7 @@ class ExportReleaseGateTests(unittest.TestCase):
                                 "model": str(fake_root / "tests/data/mmt_test_model.pmx"),
                                 "motion": str(fake_root / "tests/data/mmt_test_model_test_motion.vmd"),
                                 "runtime_library": str(runtime_path),
-                                "report": {"schema_version": 1, "status": "ready", "issues": []},
+                                "report": {"schema_version": 2, "status": "ready", "issues": []},
                             }
                         ),
                         encoding="utf-8",

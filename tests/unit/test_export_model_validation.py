@@ -2,6 +2,7 @@
 
 import json
 import math
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -175,15 +176,15 @@ class TestExportModelValidation(unittest.TestCase):
 
                 self.assertEqual(
                     [(issue.code, issue.path) for issue in report.issues],
-                    [("TEXT_FIELD_TYPE", expected_path)],
+                    [("INPUT_INVALID", expected_path)],
                 )
 
     def test_pmx_material_morph_scalar_and_byte_fields_are_fail_closed(self):
         cases = (
-            ("operation_type", "0", "MORPH_FIELD_TYPE"),
-            ("operation_type", 256, "MORPH_FIELD_RANGE"),
-            ("specular_coefficient", "1.0", "NUMERIC_VALUE_TYPE"),
-            ("edge_size", None, "NUMERIC_VALUE_TYPE"),
+            ("operation_type", "0", "INPUT_INVALID"),
+            ("operation_type", 256, "INPUT_INVALID"),
+            ("specular_coefficient", "1.0", "INPUT_INVALID"),
+            ("edge_size", None, "INPUT_INVALID"),
         )
         for field_name, value, expected_code in cases:
             with self.subTest(field_name=field_name, value=value):
@@ -208,7 +209,7 @@ class TestExportModelValidation(unittest.TestCase):
         report = validate_model_data(morph_data, "pmx")
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("MORPH_FIELD_RANGE", "morphs[0].panel")],
+            [("INPUT_INVALID", "morphs[0].panel")],
         )
 
         display_data = _valid_model_data()
@@ -216,7 +217,7 @@ class TestExportModelValidation(unittest.TestCase):
         report = validate_model_data(display_data, "pmx")
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("DISPLAY_FRAME_FIELD_RANGE", "display_frames[0].special_flag")],
+            [("INPUT_INVALID", "display_frames[0].special_flag")],
         )
 
     def test_action_does_not_call_writer_when_explicit_text_is_invalid(self):
@@ -258,13 +259,13 @@ class TestExportModelValidation(unittest.TestCase):
 
     def test_pmx_vertex_payloads_not_retained_by_writer_are_blocking(self):
         cases = (
-            ("additional_uv", [[0.25, 0.5, 0.75, 1.0]], "PMX_VERTEX_ADDITIONAL_UV_UNSUPPORTED"),
-            ("sdef_c", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
-            ("sdef_r0", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
-            ("sdef_r1", [0.0, 0.0, 0.0], "PMX_VERTEX_SDEF_UNSUPPORTED"),
-            ("weight_transform_type", 3, "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED"),
-            ("weight_transform_type", 4, "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED"),
-            ("weight_transform_type", "0", "PMX_VERTEX_SKINNING_TYPE_UNSUPPORTED"),
+            ("additional_uv", [[0.25, 0.5, 0.75, 1.0]], "UNSUPPORTED_FEATURE"),
+            ("sdef_c", [0.0, 0.0, 0.0], "UNSUPPORTED_FEATURE"),
+            ("sdef_r0", [0.0, 0.0, 0.0], "UNSUPPORTED_FEATURE"),
+            ("sdef_r1", [0.0, 0.0, 0.0], "UNSUPPORTED_FEATURE"),
+            ("weight_transform_type", 3, "UNSUPPORTED_FEATURE"),
+            ("weight_transform_type", 4, "UNSUPPORTED_FEATURE"),
+            ("weight_transform_type", "0", "UNSUPPORTED_FEATURE"),
         )
         for field_name, value, expected_code in cases:
             with self.subTest(field_name=field_name, value=value):
@@ -289,10 +290,10 @@ class TestExportModelValidation(unittest.TestCase):
 
     def test_pmx_vertex_additional_uvs_reject_malformed_or_inconsistent_channels(self):
         cases = (
-            ("vertices[0].additional_uvs[0]", [[0.25, 0.5, 0.75]], "FIELD_LENGTH"),
-            ("vertices[0].additional_uvs[0][2]", [[0.25, 0.5, float("nan"), 1.0]], "NON_FINITE_NUMBER"),
-            ("vertices[1].additional_uvs", [], "PMX_VERTEX_ADDITIONAL_UV_COUNT_MISMATCH"),
-            ("vertices[0].additional_uvs", [[0.0, 0.0, 0.0, 0.0]] * 5, "FIELD_LENGTH"),
+            ("vertices[0].additional_uvs[0]", [[0.25, 0.5, 0.75]], "INPUT_INVALID"),
+            ("vertices[0].additional_uvs[0][2]", [[0.25, 0.5, float("nan"), 1.0]], "INPUT_INVALID"),
+            ("vertices[1].additional_uvs", [], "REFERENCE_INVALID"),
+            ("vertices[0].additional_uvs", [[0.0, 0.0, 0.0, 0.0]] * 5, "INPUT_INVALID"),
         )
         for path, value, expected_code in cases:
             with self.subTest(path=path, value=value):
@@ -319,11 +320,11 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("PMX_VERTEX_SEMANTIC_MISSING", "vertices[0].semantic_missing")],
+            [("COLLECTION_FAILED", "vertices[0].semantic_missing")],
         )
         self.assertEqual(
-            get_issue_catalog_entry("PMX_VERTEX_SEMANTIC_MISSING").code,
-            "PMX_VERTEX_SEMANTIC_MISSING",
+            get_issue_catalog_entry("COLLECTION_FAILED").code,
+            "COLLECTION_FAILED",
         )
 
     def test_pmx_vertex_incomplete_sdef_payload_does_not_call_writer(self):
@@ -349,7 +350,7 @@ class TestExportModelValidation(unittest.TestCase):
         self.assertFalse(result.succeeded)
         self.assertIsInstance(result.error, ExportValidationError)
         self.assertEqual(exporter.calls, [])
-        self.assertEqual(result.validation_report.issues[0].code, "PMX_VERTEX_SDEF_UNSUPPORTED")
+        self.assertEqual(result.validation_report.issues[0].code, "UNSUPPORTED_FEATURE")
 
     def test_pmx_vertex_empty_unsupported_payloads_and_bdef_type_zero_pass(self):
         for field_name, value in (
@@ -377,7 +378,7 @@ class TestExportModelValidation(unittest.TestCase):
 
                 self.assertEqual(
                     [(issue.code, issue.path) for issue in report.issues],
-                    [("BONE_WEIGHTS_LENGTH", "vertices[0].bone_weights")],
+                    [("INPUT_INVALID", "vertices[0].bone_weights")],
                 )
 
     def test_optional_vertex_fields_and_default_bone_are_allowed(self):
@@ -416,7 +417,7 @@ class TestExportModelValidation(unittest.TestCase):
                 self.assertEqual(exporter.calls, [])
                 self.assertEqual(
                     [(issue.code, issue.path) for issue in result.validation_report.issues],
-                    [("MATERIAL_FACE_COUNT_TOTAL_MISMATCH", "materials")],
+                    [("REFERENCE_INVALID", "materials")],
                 )
 
     def test_material_face_count_uses_fan_triangulated_index_count(self):
@@ -448,13 +449,13 @@ class TestExportModelValidation(unittest.TestCase):
         report = validate_model_data(model_data, "pmx")
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("MATERIAL_FACE_COUNT_EXCEEDS_GEOMETRY", "materials")],
+            [("REFERENCE_INVALID", "materials")],
         )
 
     def test_invalid_material_face_count_does_not_add_consistency_issue(self):
         for value, expected_code in (
-            ("3", "MATERIAL_FACE_COUNT_TYPE"),
-            (-1, "MATERIAL_FACE_COUNT_RANGE"),
+            ("3", "INPUT_INVALID"),
+            (-1, "INPUT_INVALID"),
         ):
             with self.subTest(value=value):
                 model_data = _valid_model_data()
@@ -484,13 +485,13 @@ class TestExportModelValidation(unittest.TestCase):
         self.assertTrue(validate_model_data(model_data, "pmx").valid)
 
         cases = (
-            ("texture_index", 2, "MATERIAL_TEXTURE_INDEX_RANGE"),
-            ("sphere_texture_index", 2, "MATERIAL_SPHERE_TEXTURE_INDEX_RANGE"),
-            ("toon_texture_index", 2, "MATERIAL_TOON_TEXTURE_INDEX_RANGE"),
-            ("texture_index", "0", "MATERIAL_TEXTURE_INDEX_TYPE"),
-            ("sphere_mode", 4, "MATERIAL_SPHERE_MODE_RANGE"),
-            ("shared_toon_flag", 2, "MATERIAL_SHARED_TOON_FLAG_RANGE"),
-            ("draw_flag", 256, "MATERIAL_DRAW_FLAG_RANGE"),
+            ("texture_index", 2, "INPUT_INVALID"),
+            ("sphere_texture_index", 2, "INPUT_INVALID"),
+            ("toon_texture_index", 2, "INPUT_INVALID"),
+            ("texture_index", "0", "INPUT_INVALID"),
+            ("sphere_mode", 4, "INPUT_INVALID"),
+            ("shared_toon_flag", 2, "INPUT_INVALID"),
+            ("draw_flag", 256, "INPUT_INVALID"),
         )
         for field_name, value, expected_code in cases:
             with self.subTest(field_name=field_name, value=value):
@@ -507,12 +508,12 @@ class TestExportModelValidation(unittest.TestCase):
         self.assertTrue(validate_model_data(shared_toon_data, "pmx").valid)
         shared_toon_data["materials"][0]["toon_texture_index"] = 10
         report = validate_model_data(shared_toon_data, "pmx")
-        self.assertEqual(report.issues[0].code, "MATERIAL_TOON_TEXTURE_INDEX_RANGE")
+        self.assertEqual(report.issues[0].code, "INPUT_INVALID")
 
         missing_shared_toon_index = _valid_model_data()
         missing_shared_toon_index["materials"][0]["shared_toon_flag"] = 1
         report = validate_model_data(missing_shared_toon_index, "pmx")
-        self.assertEqual(report.issues[0].code, "MATERIAL_TOON_TEXTURE_INDEX_MISSING")
+        self.assertEqual(report.issues[0].code, "INPUT_INVALID")
 
     def test_material_semantic_missing_blocks_with_registered_issue(self):
         model_data = _valid_model_data()
@@ -522,18 +523,18 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertFalse(report.valid)
         self.assertEqual(
-            [(issue.code, issue.path, issue.message) for issue in report.issues],
+            [(issue.code, issue.path, issue.reason) for issue in report.issues],
             [
                 (
-                    "MATERIAL_SEMANTIC_MISSING",
+                    "COLLECTION_FAILED",
                     "materials[0].semantic_missing",
                     "material semantic data is missing: texture_table",
                 )
             ],
         )
         self.assertEqual(
-            get_issue_catalog_entry("MATERIAL_SEMANTIC_MISSING").code,
-            "MATERIAL_SEMANTIC_MISSING",
+            get_issue_catalog_entry("COLLECTION_FAILED").code,
+            "COLLECTION_FAILED",
         )
 
     def test_bone_semantic_missing_blocks_with_registered_issue(self):
@@ -550,19 +551,19 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertFalse(report.valid)
         self.assertEqual(
-            [(issue.code, issue.path, issue.message) for issue in report.issues],
+            [(issue.code, issue.path, issue.reason) for issue in report.issues],
             [
                 (
-                    "PMX_BONE_SEMANTIC_MISSING",
+                    "COLLECTION_FAILED",
                     "bones[0].semantic_missing",
                     "bone semantic data is missing: connect_bone_index",
                 ),
-                ("BONE_REFERENCE_TYPE", "bones[0].connect_bone_index", "bone reference must be an integer"),
+                ("REFERENCE_INVALID", "bones[0].connect_bone_index", "bone reference must be an integer"),
             ],
         )
         self.assertEqual(
-            get_issue_catalog_entry("PMX_BONE_SEMANTIC_MISSING").code,
-            "PMX_BONE_SEMANTIC_MISSING",
+            get_issue_catalog_entry("COLLECTION_FAILED").code,
+            "COLLECTION_FAILED",
         )
 
     def test_untagged_material_without_semantic_missing_remains_valid(self):
@@ -585,7 +586,7 @@ class TestExportModelValidation(unittest.TestCase):
         report = validate_model_data(non_sequence, "pmx")
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("TEXTURES_NOT_SEQUENCE", "textures")],
+            [("INPUT_INVALID", "textures")],
         )
 
         non_string = _valid_model_data()
@@ -593,7 +594,7 @@ class TestExportModelValidation(unittest.TestCase):
         report = validate_model_data(non_string, "pmx")
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("TEXTURE_NOT_STRING", "textures[0]")],
+            [("INPUT_INVALID", "textures[0]")],
         )
 
     def test_material_face_count_boundaries_are_validated(self):
@@ -605,7 +606,7 @@ class TestExportModelValidation(unittest.TestCase):
             invalid_data = _valid_model_data()
             invalid_data["materials"][0]["face_count"] = value
             report = validate_model_data(invalid_data, "pmx")
-            self.assertEqual(report.issues[0].code, "MATERIAL_FACE_COUNT_RANGE")
+            self.assertEqual(report.issues[0].code, "INPUT_INVALID")
 
     def test_explicit_bone_parent_reference_uses_minus_one_sentinel_and_range(self):
         model_data = _valid_model_data()
@@ -618,7 +619,7 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("BONE_REFERENCE_OUT_OF_RANGE", "bones[0].parent_index")],
+            [("REFERENCE_INVALID", "bones[0].parent_index")],
         )
 
     def test_pmx_bone_ik_metadata_accepts_valid_links_and_fails_closed(self):
@@ -660,7 +661,7 @@ class TestExportModelValidation(unittest.TestCase):
         report = validate_model_data(unresolved, "pmx")
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("BONE_REFERENCE_TYPE", "bones[0].ik_target_bone_index")],
+            [("REFERENCE_INVALID", "bones[0].ik_target_bone_index")],
         )
 
         out_of_range = _valid_model_data()
@@ -676,7 +677,7 @@ class TestExportModelValidation(unittest.TestCase):
         report = validate_model_data(out_of_range, "pmx")
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("BONE_REFERENCE_OUT_OF_RANGE", "bones[0].ik_links[0].bone")],
+            [("REFERENCE_INVALID", "bones[0].ik_links[0].bone")],
         )
 
         malformed = _valid_model_data()
@@ -692,7 +693,7 @@ class TestExportModelValidation(unittest.TestCase):
         report = validate_model_data(malformed, "pmx")
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("PMX_BONE_IK_LINKS_NOT_SEQUENCE", "bones[0].ik_links")],
+            [("INPUT_INVALID", "bones[0].ik_links")],
         )
 
         missing_flag = _valid_model_data()
@@ -700,7 +701,7 @@ class TestExportModelValidation(unittest.TestCase):
         report = validate_model_data(missing_flag, "pmx")
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("PMX_IK_DATA_UNSUPPORTED", "bones[0]")],
+            [("UNSUPPORTED_FEATURE", "bones[0]")],
         )
 
         non_finite = _valid_model_data()
@@ -715,7 +716,7 @@ class TestExportModelValidation(unittest.TestCase):
         ]
         report = validate_model_data(non_finite, "pmx")
         self.assertIn(
-            ("NON_FINITE_NUMBER", "bones[0].ik_limit_angle"),
+            ("INPUT_INVALID", "bones[0].ik_limit_angle"),
             [(issue.code, issue.path) for issue in report.issues],
         )
 
@@ -727,7 +728,7 @@ class TestExportModelValidation(unittest.TestCase):
                 report = validate_model_data(model_data, "pmx")
                 self.assertEqual(
                     [(issue.code, issue.path) for issue in report.issues],
-                    [(f"PMX_{field_name.upper()}_UNSUPPORTED", field_name)],
+                    [("UNSUPPORTED_FEATURE", field_name)],
                 )
 
         for field_name, value in (
@@ -789,9 +790,9 @@ class TestExportModelValidation(unittest.TestCase):
 
     def test_pmx_uv_morph_offsets_reject_invalid_index_and_payload(self):
         cases = (
-            ({"vertex_index": 3, "uv_offset": [0.0, 0.0, 0.0, 0.0]}, "MORPH_OFFSET_INDEX_OUT_OF_RANGE"),
-            ({"vertex_index": 0, "uv_offset": [0.0, 0.0, 0.0]}, "FIELD_LENGTH"),
-            ({"vertex_index": 0, "uv_offset": [0.0, 0.0, float("nan"), 0.0]}, "NON_FINITE_NUMBER"),
+            ({"vertex_index": 3, "uv_offset": [0.0, 0.0, 0.0, 0.0]}, "REFERENCE_INVALID"),
+            ({"vertex_index": 0, "uv_offset": [0.0, 0.0, 0.0]}, "INPUT_INVALID"),
+            ({"vertex_index": 0, "uv_offset": [0.0, 0.0, float("nan"), 0.0]}, "INPUT_INVALID"),
         )
         for offset, expected_code in cases:
             with self.subTest(offset=offset):
@@ -813,7 +814,7 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("MORPH_TYPE_UNSUPPORTED", "morphs[0].type")],
+            [("UNSUPPORTED_FEATURE", "morphs[0].type")],
         )
 
         for morph_type in (9, "impulse", 10):
@@ -837,18 +838,18 @@ class TestExportModelValidation(unittest.TestCase):
 
                 self.assertEqual(
                     [(issue.code, issue.path) for issue in report.issues],
-                    [("MORPH_TYPE_UNSUPPORTED", "morphs[0].type")],
+                    [("UNSUPPORTED_FEATURE", "morphs[0].type")],
                 )
 
     def test_pmx21_flip_policy_rejects_before_payload_validation(self):
         cases = (
             (
                 {"type": "flip", "offsets": [{"morph_index": 2, "flip_rate": 0.25}]},
-                "MORPH_TYPE_UNSUPPORTED",
+                "UNSUPPORTED_FEATURE",
             ),
             (
                 {"type": "flip", "offsets": [{"morph_index": 0, "flip_rate": float("nan")}]},
-                "MORPH_TYPE_UNSUPPORTED",
+                "UNSUPPORTED_FEATURE",
             ),
         )
         for morph, expected_code in cases:
@@ -878,7 +879,7 @@ class TestExportModelValidation(unittest.TestCase):
                 self.assertEqual(exporter.calls, [])
                 self.assertEqual(
                     [(issue.code, issue.path) for issue in result.validation_report.issues],
-                    [("MORPH_TYPE_UNSUPPORTED", "morphs[0].type")],
+                    [("UNSUPPORTED_FEATURE", "morphs[0].type")],
                 )
 
     def test_pmx_morph_group_vertex_bone_and_material_references_are_range_checked(self):
@@ -898,7 +899,7 @@ class TestExportModelValidation(unittest.TestCase):
 
                 self.assertEqual(
                     [(issue.code, issue.path) for issue in report.issues],
-                    [("MORPH_OFFSET_INDEX_OUT_OF_RANGE", expected_path)],
+                    [("REFERENCE_INVALID", expected_path)],
                 )
 
     def test_pmx_material_morph_minus_one_uses_default_material_count(self):
@@ -932,8 +933,8 @@ class TestExportModelValidation(unittest.TestCase):
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
             [
-                ("MATERIALS_NOT_SEQUENCE", "materials"),
-                ("MORPHS_NOT_SEQUENCE", "morphs"),
+                ("INPUT_INVALID", "materials"),
+                ("INPUT_INVALID", "morphs"),
             ],
         )
 
@@ -959,16 +960,16 @@ class TestExportModelValidation(unittest.TestCase):
 
                 self.assertEqual(
                     [(issue.code, issue.path) for issue in report.issues],
-                    [(f"{field_name.upper()}_NOT_SEQUENCE", field_name)],
+                    [("INPUT_INVALID", field_name)],
                 )
 
     def test_pmx_display_frame_elements_and_references_are_validated(self):
         cases = (
-            ({"elements": {}}, "DISPLAY_ELEMENTS_NOT_SEQUENCE"),
-            ({"elements": [None]}, "DISPLAY_ELEMENT_NOT_MAPPING"),
-            ({"elements": [{"type": 2, "index": 0}]}, "DISPLAY_ELEMENT_TYPE_UNSUPPORTED"),
-            ({"elements": [{"type": 0, "index": "0"}]}, "DISPLAY_ELEMENT_INDEX_TYPE"),
-            ({"elements": [{"type": 0, "index": 1}]}, "DISPLAY_ELEMENT_INDEX_OUT_OF_RANGE"),
+            ({"elements": {}}, "INPUT_INVALID"),
+            ({"elements": [None]}, "INPUT_INVALID"),
+            ({"elements": [{"type": 2, "index": 0}]}, "UNSUPPORTED_FEATURE"),
+            ({"elements": [{"type": 0, "index": "0"}]}, "INPUT_INVALID"),
+            ({"elements": [{"type": 0, "index": 1}]}, "REFERENCE_INVALID"),
         )
         for frame, expected_code in cases:
             with self.subTest(expected_code=expected_code):
@@ -983,7 +984,7 @@ class TestExportModelValidation(unittest.TestCase):
         model_data["morphs"] = [{"type": "vertex", "offsets": []}]
         model_data["display_frames"] = [{"elements": [{"type": 1, "index": 1}]}]
         report = validate_model_data(model_data, "pmx")
-        self.assertEqual(report.issues[0].code, "DISPLAY_ELEMENT_INDEX_OUT_OF_RANGE")
+        self.assertEqual(report.issues[0].code, "REFERENCE_INVALID")
 
     def test_pmx_rigid_body_and_joint_payloads_pass(self):
         model_data = _valid_model_data()
@@ -1028,25 +1029,25 @@ class TestExportModelValidation(unittest.TestCase):
         rigid_model = _valid_model_data()
         rigid_model["rigid_bodies"] = [{"related_bone_index": 1}]
         report = validate_model_data(rigid_model, "pmx")
-        self.assertEqual(report.issues[0].code, "RIGID_BODY_BONE_REFERENCE_OUT_OF_RANGE")
+        self.assertEqual(report.issues[0].code, "REFERENCE_INVALID")
 
         rigid_model["rigid_bodies"] = [{"group": 256}]
         report = validate_model_data(rigid_model, "pmx")
-        self.assertEqual(report.issues[0].code, "RIGID_BODY_FIELD_RANGE")
+        self.assertEqual(report.issues[0].code, "INPUT_INVALID")
 
         rigid_model["rigid_bodies"] = [{"size": [0.0, 0.0]}]
         report = validate_model_data(rigid_model, "pmx")
-        self.assertEqual(report.issues[0].code, "FIELD_LENGTH")
+        self.assertEqual(report.issues[0].code, "INPUT_INVALID")
 
         joint_model = _valid_model_data()
         joint_model["rigid_bodies"] = [{}]
         joint_model["joints"] = [{"rigid_body_a_index": 1}]
         report = validate_model_data(joint_model, "pmx")
-        self.assertEqual(report.issues[0].code, "JOINT_RIGID_BODY_REFERENCE_OUT_OF_RANGE")
+        self.assertEqual(report.issues[0].code, "REFERENCE_INVALID")
 
         joint_model["joints"] = [{"joint_type": 256}]
         report = validate_model_data(joint_model, "pmx")
-        self.assertEqual(report.issues[0].code, "JOINT_FIELD_RANGE")
+        self.assertEqual(report.issues[0].code, "INPUT_INVALID")
 
     def test_pmx_joints_require_rigid_bodies(self):
         model_data = _valid_model_data()
@@ -1056,7 +1057,7 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertEqual(
             [(issue.code, issue.path) for issue in report.issues],
-            [("JOINTS_REQUIRE_RIGID_BODIES", "joints")],
+            [("INPUT_INVALID", "joints")],
         )
 
     def test_action_does_not_call_writer_when_display_frame_preflight_fails(self):
@@ -1095,7 +1096,7 @@ class TestExportModelValidation(unittest.TestCase):
         malformed_offsets = _valid_model_data()
         malformed_offsets["morphs"] = [{"type": "vertex", "offsets": {"vertex_index": 0}}]
         report = validate_model_data(malformed_offsets, "pmx")
-        self.assertEqual(report.issues[0].code, "MORPH_OFFSETS_NOT_SEQUENCE")
+        self.assertEqual(report.issues[0].code, "INPUT_INVALID")
 
         malformed_offset = _valid_model_data()
         malformed_offset["morphs"] = [
@@ -1104,13 +1105,13 @@ class TestExportModelValidation(unittest.TestCase):
         report = validate_model_data(malformed_offset, "pmx")
         self.assertEqual(
             [issue.code for issue in report.issues],
-            ["MORPH_OFFSET_INDEX_MISSING", "FIELD_LENGTH"],
+            ["INPUT_INVALID", "INPUT_INVALID"],
         )
 
         non_mapping_offset = _valid_model_data()
         non_mapping_offset["morphs"] = [{"type": "vertex", "offsets": [None]}]
         report = validate_model_data(non_mapping_offset, "pmx")
-        self.assertEqual(report.issues[0].code, "MORPH_OFFSET_NOT_MAPPING")
+        self.assertEqual(report.issues[0].code, "INPUT_INVALID")
 
     def test_recursive_finite_scan_covers_morph_offsets(self):
         model_data = _valid_model_data()
@@ -1123,7 +1124,7 @@ class TestExportModelValidation(unittest.TestCase):
 
         report = validate_model_data(model_data, "pmx")
 
-        self.assertIn("NON_FINITE_NUMBER", [issue.code for issue in report.issues])
+        self.assertIn("INPUT_INVALID", [issue.code for issue in report.issues])
 
     def test_recursive_scan_defers_path_construction_for_finite_payload(self):
         payload = {
@@ -1155,8 +1156,8 @@ class TestExportModelValidation(unittest.TestCase):
         self.assertEqual(
             [(issue.code, issue.path) for issue in issues],
             [
-                ("NON_FINITE_NUMBER", "values[0].bad"),
-                ("NON_FINITE_NUMBER", "values[1].bad"),
+                ("INPUT_INVALID", "values[0].bad"),
+                ("INPUT_INVALID", "values[1].bad"),
             ],
         )
 
@@ -1185,7 +1186,7 @@ class TestExportModelValidation(unittest.TestCase):
         )
 
         self.assertTrue(report.is_blocking)
-        self.assertEqual(report.issues[0].code, "FIELD_LENGTH")
+        self.assertEqual(report.issues[0].code, "INPUT_INVALID")
         self.assertEqual(report.issues[0].severity, "fatal")
         self.assertTrue(report.issues[0].blocking)
         self.assertEqual(report.issues[0].path, "vertices[0].position")
@@ -1197,8 +1198,8 @@ class TestExportModelValidation(unittest.TestCase):
         )
 
         codes = [issue.code for issue in report.issues]
-        self.assertIn("FACE_TOO_SHORT", codes)
-        self.assertIn("FACE_INDEX_OUT_OF_RANGE", codes)
+        self.assertIn("REFERENCE_INVALID", codes)
+        self.assertIn("REFERENCE_INVALID", codes)
 
     def test_non_finite_vertex_and_material_numbers_are_blocking(self):
         model_data = _valid_model_data()
@@ -1209,7 +1210,7 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertEqual(
             [issue.code for issue in report.issues],
-            ["NON_FINITE_NUMBER", "NON_FINITE_NUMBER"],
+            ["INPUT_INVALID", "INPUT_INVALID"],
         )
         self.assertTrue(all(issue.blocking for issue in report.issues))
 
@@ -1234,7 +1235,7 @@ class TestExportModelValidation(unittest.TestCase):
                 "issues",
             ],
         )
-        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["schema_version"], 2)
         self.assertEqual(payload["status"], "blocked")
         self.assertFalse(payload["requires_warning_ack"])
         self.assertEqual(payload["format"], "pmx")
@@ -1242,7 +1243,7 @@ class TestExportModelValidation(unittest.TestCase):
         self.assertEqual(payload["summary"], {"fatal": 1, "warning": 0, "info": 0})
         self.assertEqual(
             list(payload["issues"][0]),
-            ["code", "severity", "blocking", "path", "message"],
+            ["code", "severity", "blocking", "path", "reason", "action", "details", "evidence"],
         )
         self.assertEqual(payload["issues"][0]["severity"], "fatal")
         self.assertEqual(report.summary, human_summary)
@@ -1261,7 +1262,7 @@ class TestExportModelValidation(unittest.TestCase):
     def test_blocked_report_to_json_is_deterministic_and_preserves_schema(self):
         report = ExportValidationReport(
             "pmx",
-            (ExportValidationIssue("invalid_payload", "fatal", True, "model_data", "日本語"),),
+            (ExportValidationIssue("INPUT_INVALID", "fatal", True, "model_data", "日本語"),),
         )
 
         encoded = report.to_json()
@@ -1287,8 +1288,8 @@ class TestExportModelValidation(unittest.TestCase):
         report = ExportValidationReport(
             "pmx",
             (
-                ExportValidationIssue("partial_material", "warning", False, "materials[0]", "partial material"),
-                ExportValidationIssue("informational", "info", False, "model_data", "informational note"),
+                ExportValidationIssue("INPUT_INVALID", "warning", False, "materials[0]", "partial material"),
+                ExportValidationIssue("INPUT_INVALID", "info", False, "model_data", "informational note"),
             ),
         )
 
@@ -1297,8 +1298,8 @@ class TestExportModelValidation(unittest.TestCase):
         self.assertEqual(payload["status"], "warning")
         self.assertTrue(payload["requires_warning_ack"])
         self.assertEqual(payload["summary"], {"fatal": 0, "warning": 1, "info": 1})
-        self.assertEqual(payload["issues"][0]["code"], "partial_material")
-        self.assertEqual(payload["issues"][1]["code"], "informational")
+        self.assertEqual(payload["issues"][0]["code"], "INPUT_INVALID")
+        self.assertEqual(payload["issues"][1]["code"], "INPUT_INVALID")
 
     def test_out_of_range_bone_index_and_empty_explicit_bones_are_blocking(self):
         model_data = _valid_model_data()
@@ -1308,8 +1309,8 @@ class TestExportModelValidation(unittest.TestCase):
         report = validate_model_data(model_data, "pmx")
 
         codes = [issue.code for issue in report.issues]
-        self.assertIn("BONES_EMPTY", codes)
-        self.assertIn("BONE_INDEX_OUT_OF_RANGE", codes)
+        self.assertIn("INPUT_INVALID", codes)
+        self.assertIn("REFERENCE_INVALID", codes)
 
     def test_action_does_not_call_writer_when_preflight_fails(self):
         exporter = _FakeExporter()
@@ -1365,8 +1366,8 @@ class TestExportModelValidation(unittest.TestCase):
             )
             self.assertEqual(report_json["status"], "blocked")
             self.assertEqual(report_json["target_identity"], "modelRoot")
-            self.assertEqual(report_json["issues"][0]["code"], "FACE_TOO_SHORT")
-            self.assertIn("`FACE_TOO_SHORT`", result.validation_report_artifacts.markdown_path.read_text(encoding="utf-8"))
+            self.assertEqual(report_json["issues"][0]["code"], "INPUT_INVALID")
+            self.assertIn("`INPUT_INVALID`", result.validation_report_artifacts.markdown_path.read_text(encoding="utf-8"))
 
     def test_action_writes_requested_ready_validation_report_on_success(self):
         exporter = _FakeExporter()
@@ -1533,7 +1534,7 @@ class TestExportModelValidation(unittest.TestCase):
 
                 self.assertFalse(result.succeeded)
                 self.assertIsInstance(result.error, ExportValidationError)
-                self.assertEqual(result.validation_report.issues[0].code, "OUTPUT_FILE_EMPTY")
+                self.assertEqual(result.validation_report.issues[0].code, "OUTPUT_VERIFY_FAILED")
                 self.assertEqual(output_path.read_bytes(), original_bytes)
                 self.assertEqual(len(exporter.calls), 1)
                 self.assertFalse(Path(exporter.calls[0][0]).exists())
@@ -1550,7 +1551,7 @@ class TestExportModelValidation(unittest.TestCase):
                     export_format,
                     (
                         ExportValidationIssue(
-                            "OUTPUT_PARSE_FAILED",
+                "OUTPUT_VERIFY_FAILED",
                             "fatal",
                             True,
                             "output",
@@ -1572,7 +1573,7 @@ class TestExportModelValidation(unittest.TestCase):
 
             self.assertFalse(result.succeeded)
             self.assertIsInstance(result.error, ExportValidationError)
-            self.assertEqual(result.validation_report.issues[0].code, "OUTPUT_PARSE_FAILED")
+            self.assertEqual(result.validation_report.issues[0].code, "OUTPUT_VERIFY_FAILED")
             self.assertEqual(output_path.read_bytes(), original_bytes)
             self.assertFalse(Path(exporter.calls[0][0]).exists())
 
@@ -1596,7 +1597,7 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertFalse(result.succeeded)
         self.assertIsInstance(result.error, ExportValidationError)
-        self.assertEqual(result.validation_report.issues[0].code, "STALE_VALIDATION_SNAPSHOT")
+        self.assertEqual(result.validation_report.issues[0].code, "STALE_STATE")
         self.assertEqual(exporter.calls, [])
         self.assertEqual(result.payload_fingerprint, fingerprint_payload(model_data))
 
@@ -1618,7 +1619,7 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertFalse(result.succeeded)
         self.assertIsInstance(result.error, ExportValidationError)
-        self.assertIn("NON_FINITE_NUMBER", [issue.code for issue in result.validation_report.issues])
+        self.assertIn("INPUT_INVALID", [issue.code for issue in result.validation_report.issues])
         self.assertEqual(exporter.calls, [])
 
     def test_stale_validation_snapshot_blocks_writer_and_preserves_target(self):
@@ -1651,7 +1652,7 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertFalse(result.succeeded)
         self.assertIsInstance(result.error, ExportValidationError)
-        self.assertEqual(result.validation_report.issues[0].code, "STALE_VALIDATION_SNAPSHOT")
+        self.assertEqual(result.validation_report.issues[0].code, "STALE_STATE")
         self.assertEqual(exporter.calls, [])
 
     def test_mmd_anim_opt_in_failure_preserves_existing_target(self):
@@ -1679,16 +1680,16 @@ class TestExportModelValidation(unittest.TestCase):
 
         self.assertFalse(result.succeeded)
         self.assertIsInstance(result.error, ExportValidationError)
-        self.assertEqual(result.validation_report.issues[0].code, "MMD_ANIM_CLI_UNAVAILABLE")
+        self.assertEqual(result.validation_report.issues[0].code, "EXTERNAL_TOOL_FAILED")
         self.assertFalse(Path(exporter.calls[0][0]).exists())
 
-    def test_warning_report_requires_ack_before_writer(self):
+    def test_warning_cancel_removes_verified_sibling_before_publish(self):
         def warning_validator(model_data, export_format):
             return ExportValidationReport(
                 export_format,
                 (
                     ExportValidationIssue(
-                        "TEXT_FIELD_TYPE",
+                        "INPUT_INVALID",
                         "warning",
                         False,
                         "comment",
@@ -1704,17 +1705,74 @@ class TestExportModelValidation(unittest.TestCase):
             output_verifier=None,
             validator=warning_validator,
         )
-        result = action.execute(
-            ExportModelRequest(
-                file_path="out.pmx",
-                options={"export_format": "pmx", "model_data": _valid_model_data()},
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "out.pmx"
+            target.write_bytes(b"existing target")
+            sibling_exists = []
+
+            def cancel_after_verified_sibling(_report):
+                sibling_exists.append(Path(exporter.calls[0][0]).is_file())
+                return False
+
+            result = action.execute(
+                ExportModelRequest(
+                    file_path=str(target),
+                    options={
+                        "export_format": "pmx",
+                        "model_data": _valid_model_data(),
+                        "_warning_callback": cancel_after_verified_sibling,
+                    },
+                )
             )
-        )
+
+            self.assertEqual(len(exporter.calls), 1)
+            self.assertEqual(sibling_exists, [True])
+            self.assertEqual(target.read_bytes(), b"existing target")
+            self.assertEqual(list(Path(directory).glob(".out.*.pmx")), [])
 
         self.assertFalse(result.succeeded)
         self.assertIsInstance(result.error, ExportValidationAcknowledgementRequired)
         self.assertTrue(result.validation_report.requires_warning_ack)
-        self.assertEqual(exporter.calls, [])
+
+    def test_warning_callback_cannot_redirect_relative_target_with_chdir(self):
+        def warning_validator(model_data, export_format):
+            return ExportValidationReport(
+                export_format,
+                (
+                    ExportValidationIssue(
+                        "INPUT_INVALID", "warning", False, "comment", "ack me"
+                    ),
+                ),
+            )
+
+        exporter = _FakeExporter()
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as other:
+            original_cwd = Path.cwd()
+            target = Path(directory) / "relative.pmx"
+            try:
+                os.chdir(directory)
+                result = ExportModelAction(
+                    pmx_exporter=exporter,
+                    collector=None,
+                    output_verifier=None,
+                    validator=warning_validator,
+                ).execute(
+                    ExportModelRequest(
+                        "relative.pmx",
+                        {
+                            "export_format": "pmx",
+                            "model_data": _valid_model_data(),
+                            "_warning_callback": lambda _report: (os.chdir(other), True)[1],
+                        },
+                    )
+                )
+            finally:
+                os.chdir(original_cwd)
+
+            self.assertTrue(result.succeeded, result.error)
+            self.assertEqual(Path(result.exported_path), target.resolve())
+            self.assertTrue(target.is_file())
+            self.assertFalse((Path(other) / "relative.pmx").exists())
 
     def test_warning_report_exports_only_after_ack(self):
         def warning_validator(model_data, export_format):
@@ -1722,7 +1780,7 @@ class TestExportModelValidation(unittest.TestCase):
                 export_format,
                 (
                     ExportValidationIssue(
-                        "TEXT_FIELD_TYPE",
+                        "INPUT_INVALID",
                         "warning",
                         False,
                         "comment",

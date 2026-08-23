@@ -26,6 +26,7 @@
 """
 
 import sys
+from pathlib import Path
 from types import ModuleType
 from typing import Optional
 from unittest.mock import MagicMock
@@ -341,6 +342,70 @@ class _StubQTimer:
         callback()
 
 
+class _StubQSettings:
+    """Small file-keyed QSettings stand-in for pure-Python runner tests."""
+
+    NativeFormat = 0
+    IniFormat = 1
+    UserScope = 0
+    SystemScope = 1
+    _default_format = NativeFormat
+    _paths = {}
+    _stores = {}
+
+    def __init__(self, *args, **_kwargs):
+        if args and isinstance(args[0], str):
+            self._file_name = args[0]
+        else:
+            self._file_name = "stub-qsettings.ini"
+        path = Path(self._file_name)
+        if not path.exists():
+            self._stores[self._file_name] = {}
+        self._values = self._stores.setdefault(self._file_name, {})
+
+    @classmethod
+    def setDefaultFormat(cls, format_value):
+        cls._default_format = format_value
+
+    @classmethod
+    def defaultFormat(cls):
+        return cls._default_format
+
+    @classmethod
+    def setPath(cls, format_value, scope, path):
+        cls._paths[(format_value, scope)] = path
+
+    @staticmethod
+    def registerFormat(*_args, **_kwargs):
+        return _StubQSettings.IniFormat
+
+    def value(self, key, default=None):
+        return self._values.get(key, default)
+
+    def setValue(self, key, value):
+        self._values[key] = value
+
+    def contains(self, key):
+        return key in self._values
+
+    def remove(self, key):
+        self._values.pop(key, None)
+
+    def allKeys(self):
+        return list(self._values)
+
+    def clear(self):
+        self._values.clear()
+
+    def sync(self):
+        path = Path(self._file_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+
+    def fileName(self):
+        return self._file_name
+
+
 class _StubQApplication:
     """QApplication stub exposing the top-level widget query contract."""
 
@@ -397,6 +462,7 @@ def install_qt_stub() -> bool:
     for n in _QTCORE_NAMES:
         setattr(qtcore, n, _make_stub_qclass(n))
     qtcore.Qt = _StubQt  # override with constant-bearing version
+    qtcore.QSettings = _StubQSettings
     qtcore.QTimer = _StubQTimer
 
     qtgui = ModuleType("PySide6.QtGui")

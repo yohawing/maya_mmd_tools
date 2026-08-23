@@ -241,9 +241,19 @@ def _expected_bind_space_ccdik_outputs(
     goal: tuple[float, float, float],
     input_rotates_deg: list[tuple[float, float, float]] | None = None,
 ) -> list[tuple[float, float, float]]:
+    from ctypes import c_float
+
     from mmd_tools.nodes.mmd_ccd_ik_node import (
         _canonicalize_runtime_quaternion,
     )
+
+    position_quantum = c_float(2.0e-6).value
+
+    def canonicalize_runtime_position(value: float) -> float:
+        value_f32 = c_float(value).value
+        scaled = value_f32 / position_quantum
+        rounded = math.floor(scaled + 0.5) if scaled >= 0.0 else math.ceil(scaled - 0.5)
+        return c_float(rounded * position_quantum).value
 
     bones = chain["bones"]
     links = chain["links"]
@@ -304,10 +314,16 @@ def _expected_bind_space_ccdik_outputs(
             canonical = _canonicalize_runtime_quaternion((q.x, q.y, q.z, q.w))
             rotations[bone_i * 4:bone_i * 4 + 4] = canonical
 
+        positions = [canonicalize_runtime_position(value) for value in positions]
+
         goal_tfm = om.MTransformationMatrix()
         goal_tfm.setTranslation(om.MVector(*goal), om.MSpace.kTransform)
         mmd_goal = om.MTransformationMatrix(_mmd_world_to_maya_matrix(om, goal_tfm.asMatrix())).translation(om.MSpace.kWorld)
-        result = solver.solve(positions=positions, rotations=rotations, goal=[mmd_goal.x, mmd_goal.y, mmd_goal.z])
+        runtime_goal = [
+            canonicalize_runtime_position(value)
+            for value in (mmd_goal.x, mmd_goal.y, mmd_goal.z)
+        ]
+        result = solver.solve(positions=positions, rotations=rotations, goal=runtime_goal)
         if result is None:
             raise RuntimeError("MmdIkChain.solve failed in C++ IK smoke expected-value path")
         out_rots, _stats = result

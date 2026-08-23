@@ -25,7 +25,6 @@ class AuthoringExportIntegrationError(ValueError):
         self,
         message: str,
         *,
-        code: str = "AUTHORING_SPEC_INVALID",
         path: str = "",
     ) -> None:
         super().__init__(message)
@@ -33,11 +32,12 @@ class AuthoringExportIntegrationError(ValueError):
             "pmx",
             (
                 ExportValidationIssue(
-                    code=code,
-                    severity="error",
+                    code="INPUT_INVALID",
+                    severity="fatal",
                     blocking=True,
                     path=path,
-                    message=message,
+                    reason=message,
+                    details={"field": path or "authoring_spec"},
                 ),
             ),
         )

@@ -20,9 +20,19 @@ def _is_sequence(value: Any) -> bool:
     return isinstance(value, Sequence) and not isinstance(value, _TEXT_SEQUENCE_TYPES)
 
 
-def _issue(code: str, path: str, message: str) -> ExportValidationIssue:
+def _issue(
+    code: str,
+    path: str,
+    message: str,
+    *,
+    details: Optional[Mapping[str, Any]] = None,
+) -> ExportValidationIssue:
     """Build one blocking output-verifier issue."""
-    return ExportValidationIssue(code, "fatal", True, path, message)
+    issue_details = dict(details or {})
+    issue_details.setdefault("field", path)
+    if code == "OUTPUT_VERIFY_FAILED":
+        issue_details.setdefault("phase", "verify")
+    return ExportValidationIssue(code, "fatal", True, path, message, details=issue_details)
 
 
 def _expected_sequence_count(
@@ -74,6 +84,12 @@ def _compare_count(
             code,
             path,
             f"{section_name} count {actual} does not match expected count {expected}",
+            details={
+                "section": section_name,
+                "expected_count": expected,
+                "actual_count": actual,
+                "aggregation_discriminator": section_name,
+            },
         )
     )
 
@@ -105,19 +121,34 @@ def verify_model_output(
     if normalized_format != "pmx":
         issues.append(
             _issue(
-                "OUTPUT_FORMAT_UNSUPPORTED",
+                "EXPORT_OPTIONS_INVALID",
                 "format",
                 f"output verifier does not support format {normalized_format or 'empty'}",
+                details={"format": normalized_format or "empty"},
             )
         )
         return ExportValidationReport(normalized_format or None, tuple(issues))
 
     output_path = Path(file_path)
     if not output_path.is_file():
-        issues.append(_issue("OUTPUT_FILE_MISSING", "output", "temporary output file does not exist"))
+        issues.append(
+            _issue(
+                "OUTPUT_VERIFY_FAILED",
+                "output",
+                "temporary output file does not exist",
+                details={"phase": "presence", "aggregation_discriminator": "output_presence"},
+            )
+        )
         return ExportValidationReport(normalized_format, tuple(issues))
     if output_path.stat().st_size == 0:
-        issues.append(_issue("OUTPUT_FILE_EMPTY", "output", "temporary output file is empty"))
+        issues.append(
+            _issue(
+                "OUTPUT_VERIFY_FAILED",
+                "output",
+                "temporary output file is empty",
+                details={"phase": "size", "aggregation_discriminator": "output_presence"},
+            )
+        )
         return ExportValidationReport(normalized_format, tuple(issues))
 
     expected_header = b"PMX "
@@ -127,9 +158,14 @@ def verify_model_output(
     if actual_header != expected_header:
         issues.append(
             _issue(
-                "OUTPUT_HEADER_INVALID",
+                "OUTPUT_VERIFY_FAILED",
                 "output.header",
                 f"{normalized_format.upper()} output header is not {expected_header!r}",
+                details={
+                    "expected_header": expected_header.decode("ascii"),
+                    "actual_header": actual_header.hex(),
+                    "aggregation_discriminator": "output_header",
+                },
             )
         )
         return ExportValidationReport(normalized_format, tuple(issues))
@@ -139,9 +175,14 @@ def verify_model_output(
     except Exception as exc:
         issues.append(
             _issue(
-                "OUTPUT_PARSE_FAILED",
+                "OUTPUT_VERIFY_FAILED",
                 "output",
                 f"{normalized_format.upper()} output parser raised {type(exc).__name__}",
+                details={
+                    "phase": "parse",
+                    "exception_type": type(exc).__name__,
+                    "aggregation_discriminator": "output_parse",
+                },
             )
         )
         return ExportValidationReport(normalized_format, tuple(issues))
@@ -158,7 +199,7 @@ def verify_model_output(
         expected_bones = _expected_sequence_count(model_data, "bones", 1)
         _compare_count(
             issues,
-            "OUTPUT_VERTEX_COUNT_MISMATCH",
+            "OUTPUT_VERIFY_FAILED",
             "output.vertices",
             "vertex",
             expected_vertices,
@@ -166,7 +207,7 @@ def verify_model_output(
         )
         _compare_count(
             issues,
-            "OUTPUT_FACE_COUNT_MISMATCH",
+            "OUTPUT_VERIFY_FAILED",
             "output.faces",
             "triangle",
             expected_faces,
@@ -174,7 +215,7 @@ def verify_model_output(
         )
         _compare_count(
             issues,
-            "OUTPUT_MATERIAL_COUNT_MISMATCH",
+            "OUTPUT_VERIFY_FAILED",
             "output.materials",
             "material",
             expected_materials,
@@ -182,7 +223,7 @@ def verify_model_output(
         )
         _compare_count(
             issues,
-            "OUTPUT_BONE_COUNT_MISMATCH",
+            "OUTPUT_VERIFY_FAILED",
             "output.bones",
             "bone",
             expected_bones,

@@ -117,29 +117,6 @@ private:
     MComputation computation_;
 };
 
-class CurrentTimeGuard final {
-public:
-    CurrentTimeGuard() : entryTime_(MAnimControl::currentTime()) {}
-
-    MStatus restore()
-    {
-        if (restored_) return restoreStatus_;
-        restoreStatus_ = MAnimControl::setCurrentTime(entryTime_);
-        restored_ = true;
-        return restoreStatus_;
-    }
-
-    ~CurrentTimeGuard()
-    {
-        if (!restored_) restore();
-    }
-
-private:
-    MTime entryTime_;
-    bool restored_ = false;
-    MStatus restoreStatus_ = MS::kSuccess;
-};
-
 std::string utf8(const MString& value)
 {
     return value.asUTF8();
@@ -358,6 +335,26 @@ bool timeInputCurveType(MFnAnimCurve::AnimCurveType type)
            type == MFnAnimCurve::kAnimCurveTT || type == MFnAnimCurve::kAnimCurveTU;
 }
 
+bool hasOnlyGlobalTimeInput(const MPlug& input)
+{
+    MStatus status;
+    MPlugArray sources;
+    const bool connected = input.connectedTo(sources, true, false, &status);
+    if (!status) return false;
+    if (!connected || sources.length() == 0U) return true;
+    if (sources.length() != 1U) return false;
+
+    const MPlug source = sources[0];
+    MFnDependencyNode sourceNode(source.node(), &status);
+    if (!status) return false;
+    MFnAttribute sourceAttribute(source.attribute(), &status);
+    if (!status) return false;
+    const MString nodeType = sourceNode.typeName(&status);
+    if (!status || nodeType != MString("time")) return false;
+    const MString attributeName = sourceAttribute.name(&status);
+    return status && attributeName == MString("outTime");
+}
+
 bool findDirectCurve(const MPlug& plug, MPlug& output)
 {
     if (hasParentIncoming(plug)) return false;
@@ -368,6 +365,8 @@ bool findDirectCurve(const MPlug& plug, MPlug& output)
     const MPlug source = sources[0];
     MFnAnimCurve curve(source.node(), &status);
     if (!status || !timeInputCurveType(curve.animCurveType(&status)) || !status) return false;
+    const MPlug input = curve.findPlug("input", false, &status);
+    if (!status || input.isNull() || !hasOnlyGlobalTimeInput(input)) return false;
     output = curve.findPlug("output", false, &status);
     if (!status || output.isNull() || !(source.attribute() == output.attribute())) return false;
     // A direct route must have a time-input curve, not a driven animCurveU

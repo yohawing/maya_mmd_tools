@@ -1,6 +1,6 @@
-"""Maya-owned preparation boundary for user-path Bake Timeline VMD exports.
+"""Maya-owned collection boundary for one-shot Bake Timeline VMD exports.
 
-The public prepare action is intentionally Maya independent.  This adapter
+The public one-shot action is intentionally Maya independent.  This adapter
 supplies the small host-side seam it needs: resolve the Current Model, build a
 conservative dependency closure, arm a :class:`SceneRevisionService` watch,
 and stream one Bake Timeline payload.  Maya modules are imported lazily so importing
@@ -15,8 +15,8 @@ import hashlib
 import time
 from typing import Any, Optional
 
-from ..actions.prepare_vmd_export_action import (
-    PrepareVmdExportError,
+from ..actions.bake_timeline_vmd_export_action import (
+    BakeTimelineVmdExportError,
     VmdExportDiscovery,
 )
 from ..core.constants import ATTR_MMD_CONTROL_RIG_JSON, ATTR_MMD_MODEL_NAME
@@ -30,7 +30,7 @@ _BAKE_TIMELINE_EXPORT_STRATEGY = "bake_timeline"
 
 @dataclass(frozen=True)
 class MayaVmdExportRoute:
-    """The immutable host route used by one preparation operation."""
+    """The immutable host route used by one export operation."""
 
     target_model: str
     collector_options: Mapping[str, Any]
@@ -120,7 +120,7 @@ def _copy_diagnostics(value: Any) -> Any:
     return value
 
 
-class MayaVmdPrepareBackend:
+class MayaVmdExportBackend:
     """Discover, watch, and collect one Current Model-scoped Bake Timeline route.
 
     ``revision_service`` is injected in tests and in application wiring.  If
@@ -157,7 +157,7 @@ class MayaVmdPrepareBackend:
 
     @property
     def diagnostics_copy(self) -> dict[str, Any]:
-        """Alias used by preparation reports."""
+        """Alias used by export reports."""
 
         return self.diagnostics
 
@@ -193,7 +193,7 @@ class MayaVmdPrepareBackend:
                 )
             )
         except Exception as exc:
-            raise PrepareVmdExportError(
+            raise BakeTimelineVmdExportError(
                 f"could not inspect Control Rig metadata for {target_model!r}"
             ) from exc
         if not has_metadata:
@@ -271,7 +271,7 @@ class MayaVmdPrepareBackend:
 
         del request
         if not isinstance(discovery.route, MayaVmdExportRoute):
-            raise PrepareVmdExportError("Maya VMD route is missing from discovery")
+            raise BakeTimelineVmdExportError("Maya VMD route is missing from discovery")
         if self._active_watch is not None:
             close = getattr(self._active_watch, "close", None)
             if callable(close):
@@ -281,12 +281,12 @@ class MayaVmdPrepareBackend:
         service = self._service()
         arm = getattr(service, "arm", None)
         if not callable(arm):
-            raise PrepareVmdExportError("revision service does not expose arm(dependencies)")
+            raise BakeTimelineVmdExportError("revision service does not expose arm(dependencies)")
         try:
             # Keep Maya's global time driver in the discovery fingerprint, but
             # do not watch it as mutable authored scene data. Bake Timeline sampling
             # deliberately advances and restores currentTime; watching the
-            # time node would invalidate the preparation because of its own
+            # time node would invalidate collection because of its own
             # controlled Timeline evaluation. Connection/topology changes to
             # the time driver remain covered by validate-time rediscovery.
             watched_nodes = [
@@ -296,7 +296,7 @@ class MayaVmdPrepareBackend:
             ]
             dependencies = [self._resolve_mobject(node) for node in watched_nodes]
         except Exception as exc:
-            raise PrepareVmdExportError("could not resolve Maya dependency MObjects") from exc
+            raise BakeTimelineVmdExportError("could not resolve Maya dependency MObjects") from exc
         try:
             watch = arm(dependencies)
         except TypeError:
@@ -307,7 +307,7 @@ class MayaVmdPrepareBackend:
             close = getattr(watch, "close", None)
             if callable(close):
                 close()
-            raise PrepareVmdExportError("scene revision watch is disabled or closed")
+            raise BakeTimelineVmdExportError("scene revision watch is disabled or closed")
         self._active_watch = watch
         return watch
 
@@ -317,11 +317,11 @@ class MayaVmdPrepareBackend:
         del request
         watch = self._active_watch
         if watch is None or not self._watch_usable(watch):
-            raise PrepareVmdExportError("scene revision watch is disabled, closed, or stale")
+            raise BakeTimelineVmdExportError("scene revision watch is disabled, closed, or stale")
         service = self._service()
         current = getattr(service, "current_revision", None)
         if not callable(current):
-            raise PrepareVmdExportError("revision service does not expose current_revision")
+            raise BakeTimelineVmdExportError("revision service does not expose current_revision")
         try:
             revision = current()
         except TypeError:
@@ -329,11 +329,11 @@ class MayaVmdPrepareBackend:
         # current_revision() flushes queued Maya anim-curve callbacks.  Check
         # the watch afterwards, because that flush can mark it stale.
         if not self._watch_usable(watch) or not self._watch_current(watch):
-            raise PrepareVmdExportError("scene revision watch is disabled, closed, or stale")
+            raise BakeTimelineVmdExportError("scene revision watch is disabled, closed, or stale")
         if discovery.target_uuid != self._stable_uuid(discovery.target_identity):
-            raise PrepareVmdExportError("Current Model identity changed during preparation")
+            raise BakeTimelineVmdExportError("Current Model identity changed during collection")
         if not isinstance(revision, (str, int)) or str(revision).strip() == "":
-            raise PrepareVmdExportError("scene revision is unavailable")
+            raise BakeTimelineVmdExportError("scene revision is unavailable")
         return f"{revision}:{self._watch_generation}"
 
     def supports_streaming(self) -> bool:
@@ -358,11 +358,11 @@ class MayaVmdPrepareBackend:
         """
 
         if not self.supports_streaming():
-            raise PrepareVmdExportError("injected VMD collector does not support streaming")
+            raise BakeTimelineVmdExportError("injected VMD collector does not support streaming")
         collector, collector_options = self._collection_context(request)
         collect_to_sink = getattr(collector, "collect_to_sink", None)
         if not callable(collect_to_sink):
-            raise PrepareVmdExportError("VMD collector does not expose collect_to_sink(options, sink)")
+            raise BakeTimelineVmdExportError("VMD collector does not expose collect_to_sink(options, sink)")
         collect_started = time.perf_counter()
         try:
             result = collect_to_sink(collector_options, sink)
@@ -389,7 +389,7 @@ class MayaVmdPrepareBackend:
         if result is None:
             return {}
         if not isinstance(result, Mapping):
-            raise PrepareVmdExportError("streaming VMD collector must return bounded metadata")
+            raise BakeTimelineVmdExportError("streaming VMD collector must return bounded metadata")
         return _copy_diagnostics(result)
 
     def _collection_context(self, request: Any) -> tuple[Any, dict[str, Any]]:
@@ -397,13 +397,13 @@ class MayaVmdPrepareBackend:
 
         options = self._validated_options(request)
         if self._active_route is None:
-            raise PrepareVmdExportError("VMD route was not discovered before collection")
+            raise BakeTimelineVmdExportError("VMD route was not discovered before collection")
         target_model = self._resolve_target_model(options)
         if target_model != self._active_route.target_model:
-            raise PrepareVmdExportError("Current Model changed before collection")
+            raise BakeTimelineVmdExportError("Current Model changed before collection")
         watch = self._active_watch
         if watch is None or not self._watch_usable(watch):
-            raise PrepareVmdExportError("scene revision watch is disabled or stale")
+            raise BakeTimelineVmdExportError("scene revision watch is disabled or stale")
         collector = self._collector
         if collector is None:
             from ..converters.vmd_scene_collector import VmdSceneCollector
@@ -467,22 +467,22 @@ class MayaVmdPrepareBackend:
         options = _request_options(request)
         export_strategy = str(_field(options, "export_strategy") or "").lower()
         if export_strategy != _BAKE_TIMELINE_EXPORT_STRATEGY:
-            raise PrepareVmdExportError(
-                "Maya VMD preparation supports Bake Timeline only"
+            raise BakeTimelineVmdExportError(
+                "Maya VMD export supports Bake Timeline only"
             )
         if not options.get("current_model_root"):
-            raise PrepareVmdExportError("current_model_root is required for VMD preparation")
+            raise BakeTimelineVmdExportError("current_model_root is required for VMD export")
         if not options.get("target_model"):
-            raise PrepareVmdExportError("target_model is required for VMD preparation")
+            raise BakeTimelineVmdExportError("target_model is required for VMD export")
         return options
 
     def _resolve_target_model(self, options: Mapping[str, Any]) -> str:
         current = self._canonical_node(options.get("current_model_root"))
         target = self._canonical_node(options.get("target_model"))
         if current is None or target is None:
-            raise PrepareVmdExportError("Current Model target is not a unique Maya node")
+            raise BakeTimelineVmdExportError("Current Model target is not a unique Maya node")
         if current != target:
-            raise PrepareVmdExportError("target_model does not match Current Model")
+            raise BakeTimelineVmdExportError("target_model does not match Current Model")
         return current
 
     def _resolve_model_name(self, options: Mapping[str, Any], target_model: str) -> str:
@@ -519,7 +519,7 @@ class MayaVmdPrepareBackend:
             value = value()
         value = value or options.get("scene_session_id")
         if value is None or str(value).strip() == "":
-            raise PrepareVmdExportError("scene session id is unavailable")
+            raise BakeTimelineVmdExportError("scene session id is unavailable")
         return str(value)
 
     def _service(self) -> Any:
@@ -554,7 +554,7 @@ class MayaVmdPrepareBackend:
         try:
             matches = cmds.ls(str(node), long=True) or []
         except Exception as exc:
-            raise PrepareVmdExportError(f"could not resolve Maya node {node!r}") from exc
+            raise BakeTimelineVmdExportError(f"could not resolve Maya node {node!r}") from exc
         if isinstance(matches, (str, bytes)) or len(matches) != 1:
             return None
         value = matches[0]
@@ -565,9 +565,9 @@ class MayaVmdPrepareBackend:
         try:
             values = cmds.ls(node, uuid=True) or []
         except Exception as exc:
-            raise PrepareVmdExportError(f"could not resolve stable UUID for {node!r}") from exc
+            raise BakeTimelineVmdExportError(f"could not resolve stable UUID for {node!r}") from exc
         if isinstance(values, (str, bytes)) or len(values) != 1 or not values[0]:
-            raise PrepareVmdExportError(f"Maya node {node!r} has no unique UUID")
+            raise BakeTimelineVmdExportError(f"Maya node {node!r} has no unique UUID")
         return str(values[0])
 
     def _node_type(self, node: str) -> str:
@@ -577,7 +577,7 @@ class MayaVmdPrepareBackend:
         try:
             return str(node_type(node) or "")
         except Exception as exc:
-            raise PrepareVmdExportError(f"could not resolve Maya node type for {node!r}") from exc
+            raise BakeTimelineVmdExportError(f"could not resolve Maya node type for {node!r}") from exc
 
     def _dependency_closure(
         self,
@@ -597,7 +597,7 @@ class MayaVmdPrepareBackend:
             try:
                 history = cmds.listHistory(mesh_path, pruneDagObjects=True) or []
             except Exception as exc:
-                raise PrepareVmdExportError(f"could not inspect history for {mesh_path!r}") from exc
+                raise BakeTimelineVmdExportError(f"could not inspect history for {mesh_path!r}") from exc
             for history_node in history:
                 nodes.add(self._canonical_required(history_node))
 
@@ -608,7 +608,7 @@ class MayaVmdPrepareBackend:
                 try:
                     tagged = cmds.ls(f"*.{marker}", objectsOnly=True, long=True) or []
                 except Exception as exc:
-                    raise PrepareVmdExportError(f"could not discover tagged {marker} tracks") from exc
+                    raise BakeTimelineVmdExportError(f"could not discover tagged {marker} tracks") from exc
             for track in tagged:
                 track_path = self._canonical_required(track)
                 nodes.add(track_path)
@@ -653,7 +653,7 @@ class MayaVmdPrepareBackend:
                 else:
                     # A topology response that cannot identify the queried
                     # endpoint is not safe to include in the closure.
-                    raise PrepareVmdExportError(f"Maya returned ambiguous connection topology for {node!r}")
+                    raise BakeTimelineVmdExportError(f"Maya returned ambiguous connection topology for {node!r}")
                 source_uuid = self._stable_uuid(source_path)
                 destination_uuid = self._stable_uuid(destination_path)
                 topology.add((source_uuid, source_attr, destination_uuid, destination_attr))
@@ -669,16 +669,16 @@ class MayaVmdPrepareBackend:
     def _list_relatives(self, node: str, **kwargs: Any) -> list[Any]:
         method = getattr(self._cmds_api(), "listRelatives", None)
         if not callable(method):
-            raise PrepareVmdExportError("Maya listRelatives API is unavailable")
+            raise BakeTimelineVmdExportError("Maya listRelatives API is unavailable")
         try:
             return list(method(node, **kwargs) or [])
         except Exception as exc:
-            raise PrepareVmdExportError(f"could not inspect descendants for {node!r}") from exc
+            raise BakeTimelineVmdExportError(f"could not inspect descendants for {node!r}") from exc
 
     def _connection_pairs(self, node: str) -> tuple[list[tuple[str, str]], set[str]]:
         method = getattr(self._cmds_api(), "listConnections", None)
         if not callable(method):
-            raise PrepareVmdExportError("Maya listConnections API is unavailable")
+            raise BakeTimelineVmdExportError("Maya listConnections API is unavailable")
         try:
             upstream_values = method(
                 node,
@@ -694,7 +694,7 @@ class MayaVmdPrepareBackend:
                 destination=False,
             ) or []
         except Exception as exc:
-            raise PrepareVmdExportError(f"could not inspect connections for {node!r}") from exc
+            raise BakeTimelineVmdExportError(f"could not inspect connections for {node!r}") from exc
         if isinstance(upstream_values, Mapping):
             upstream_values = list(upstream_values.values())
         # Maya may return short node names from listConnections even when the
@@ -711,7 +711,7 @@ class MayaVmdPrepareBackend:
             values = [item for pair in values.items() for item in pair]
         values = list(values)
         if len(values) % 2:
-            raise PrepareVmdExportError(f"Maya returned incomplete connection topology for {node!r}")
+            raise BakeTimelineVmdExportError(f"Maya returned incomplete connection topology for {node!r}")
         return (
             [(str(values[index]), str(values[index + 1])) for index in range(0, len(values), 2)],
             upstream_plugs,
@@ -722,13 +722,13 @@ class MayaVmdPrepareBackend:
         value = str(plug)
         node, separator, attribute = value.partition(".")
         if not separator or not node or not attribute:
-            raise PrepareVmdExportError(f"Maya returned an unresolved plug {value!r}")
+            raise BakeTimelineVmdExportError(f"Maya returned an unresolved plug {value!r}")
         return node, attribute
 
     def _canonical_required(self, node: Any) -> str:
         value = self._canonical_node(node)
         if value is None:
-            raise PrepareVmdExportError(f"Maya dependency {node!r} is unresolved")
+            raise BakeTimelineVmdExportError(f"Maya dependency {node!r} is unresolved")
         return value
 
     @staticmethod
@@ -755,31 +755,31 @@ class MayaVmdPrepareBackend:
         return bool(current)
 
 
-def create_maya_vmd_prepare_action(
+def create_maya_bake_timeline_vmd_action(
     *,
     diagnostics_sink: Any = None,
     bone_channel_sampler: Any = None,
 ) -> Any:
     """Create the production backend/action pair without importing Maya.
 
-    The backend resolves ``maya.cmds`` only when a prepare operation reaches
+    The backend resolves ``maya.cmds`` only when an export operation reaches
     discovery, and the revision service imports OpenMaya only while arming a
     watch.  Keeping construction here lets the UI presenter use the real
     production action while remaining import-safe in mayapy-free tooling and
     unit-test processes.
     """
 
-    from ..actions.prepare_vmd_export_action import PrepareVmdExportAction
+    from ..actions.bake_timeline_vmd_export_action import BakeTimelineVmdExportAction
 
-    backend = MayaVmdPrepareBackend(
+    backend = MayaVmdExportBackend(
         diagnostics_sink=diagnostics_sink,
         bone_channel_sampler=bone_channel_sampler,
     )
-    return PrepareVmdExportAction(backend)
+    return BakeTimelineVmdExportAction(backend)
 
 
 __all__ = [
     "MayaVmdExportRoute",
-    "MayaVmdPrepareBackend",
-    "create_maya_vmd_prepare_action",
+    "MayaVmdExportBackend",
+    "create_maya_bake_timeline_vmd_action",
 ]

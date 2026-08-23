@@ -511,6 +511,30 @@ def main():
         if batch_cases is not None
         else new_timing_report(args.maya_version, args.test_path, args.test_filter)
     )
+
+    # Capture the native user scopes outside the Maya process.  The in-Maya
+    # runner also activates the isolated backend, but only this outer probe can
+    # prove that a timeout or forced child termination left the user's registry
+    # unchanged.
+    try:
+        from tests.common.qsettings_isolation import host_native_qsettings_fingerprints
+
+        native_qsettings_before = host_native_qsettings_fingerprints()
+        native_qsettings_error = None
+    except Exception as exc:
+        native_qsettings_before = None
+        native_qsettings_error = f"{type(exc).__name__}: {exc}"
+        logger.error("Unable to fingerprint native QSettings scopes", exc_info=True)
+    timing_report["qsettings_native_fingerprint_before"] = native_qsettings_before
+    if native_qsettings_error is not None:
+        timing_report["qsettings_isolation"] = {
+            "status": "blocked",
+            "error": native_qsettings_error,
+        }
+        timing_report["status"] = "ERROR"
+        write_timing_report(timing_report_path, timing_report)
+        write_timing_report(maya_timing_report_path, timing_report)
+        return 1
     write_timing_report(timing_report_path, timing_report)
     write_timing_report(maya_timing_report_path, timing_report)
 
@@ -524,6 +548,7 @@ def main():
     startup_started = None
     shutdown_started = None
     shutdown_failed = False
+    qsettings_verification_failed = False
     tests_dispatched = False
     tests_dispatched_started = None
     execution_timed_out = False
@@ -730,6 +755,32 @@ GuiTestRunner.run_tests_from_command(
             timing_report = read_batch_report(report_source, timing_report)
         else:
             timing_report = read_timing_report(report_source, timing_report)
+
+        try:
+            native_qsettings_after = host_native_qsettings_fingerprints()
+            qsettings_unchanged = native_qsettings_after == native_qsettings_before
+            timing_report["qsettings_native_fingerprint_before"] = native_qsettings_before
+            timing_report["qsettings_native_fingerprint_after"] = native_qsettings_after
+            timing_report["qsettings_isolation"] = {
+                "status": "passed" if qsettings_unchanged else "failed",
+                "scopes": sorted(native_qsettings_before),
+            }
+            if not qsettings_unchanged:
+                completion_status = "ERROR"
+                qsettings_verification_failed = True
+                logger.error(
+                    "Native QSettings fingerprint changed during GUI test run: before=%s after=%s",
+                    native_qsettings_before,
+                    native_qsettings_after,
+                )
+        except Exception as exc:
+            completion_status = "ERROR"
+            qsettings_verification_failed = True
+            timing_report["qsettings_isolation"] = {
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            logger.error("Unable to verify native QSettings after GUI run", exc_info=True)
         if args.attach_existing:
             # Do not trust a partial Maya report after a host timeout: only the
             # host-side completion marker proves that attached cleanup finished.
@@ -776,6 +827,9 @@ GuiTestRunner.run_tests_from_command(
                 pass
         logger.info("GUI timing report: %s", timing_report_path)
 
+    if qsettings_verification_failed:
+        logger.error("GUI test run finished with QSettings verification failure; returning nonzero.")
+        return 1
     logger.info("GUI test run finished successfully.")
     return 0
 

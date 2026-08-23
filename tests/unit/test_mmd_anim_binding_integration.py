@@ -6,8 +6,6 @@ import unittest
 from unittest.mock import patch
 
 from mmd_tools.actions.export_model_action import ExportModelAction, ExportModelRequest
-from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
-from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.validation.export_validator import ExportValidationIssue, ExportValidationReport
 
 
@@ -34,26 +32,18 @@ class _ModelExporter:
         Path(file_path).write_bytes(b"pmx bytes")
 
 
-class _VmdExporter:
-    def __init__(self):
-        self.calls = []
-
-    def export_vmd_animation(self, file_path, animation_data):
-        self.calls.append((file_path, animation_data))
-        VmdData().write_file(file_path)
-
-
 def _blocking_binding_report():
     """Return a catalog-registered blocking report for failure-path tests."""
     return ExportValidationReport(
         "pmx",
         (
             ExportValidationIssue(
-                "MMD_ANIM_BINDING_RUNTIME_FAILED",
+                "EXTERNAL_TOOL_FAILED",
                 "fatal",
                 True,
                 "binding.runtime",
                 "binding failed",
+                details={"tool": "mmd-anim-binding", "phase": "evaluate"},
             ),
         ),
         mode="binding",
@@ -121,37 +111,7 @@ class MmdAnimBindingIntegrationTest(unittest.TestCase):
             self.assertEqual(list(target.parent.glob(".*.pmx")), [])
 
         self.assertFalse(result.succeeded)
-        self.assertEqual(result.validation_report.issues[-1].code, "MMD_ANIM_BINDING_RUNTIME_FAILED")
-
-    def test_vmd_binding_opt_in_passes_model_path_and_temporary_motion(self):
-        exporter = _VmdExporter()
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "motion.vmd"
-            with patch(
-                "mmd_tools.actions.export_vmd_action.verify_mmd_anim_binding_asset",
-                return_value=ExportValidationReport("pmx", (), mode="binding"),
-            ) as verifier:
-                result = ExportVmdAction(
-                    exporter=exporter,
-                    output_verifier=None,
-                ).execute(
-                    ExportVmdRequest(
-                        str(target),
-                        {
-                            "verify_mmd_anim_binding": True,
-                            "mmd_anim_binding_model_path": "model.pmx",
-                            "mmd_anim_binding_expected_counts": {"bones": 1},
-                        },
-                        animation_data=VmdData(),
-                    )
-                )
-
-        self.assertTrue(result.succeeded)
-        args, kwargs = verifier.call_args
-        self.assertEqual(args[0], "model.pmx")
-        self.assertEqual(Path(kwargs["motion_path"]).suffix, ".vmd")
-        self.assertEqual(kwargs["expected_counts"], {"bones": 1})
-
+        self.assertEqual(result.validation_report.issues[-1].code, "EXTERNAL_TOOL_FAILED")
 
 if __name__ == "__main__":
     unittest.main()

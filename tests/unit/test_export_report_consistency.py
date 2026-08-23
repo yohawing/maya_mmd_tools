@@ -21,14 +21,14 @@ def _report_with_multiple_issues() -> ExportValidationReport:
         "pmx",
         (
             ExportValidationIssue(
-                "FACE_TOO_SHORT",
+                "INPUT_INVALID",
                 "fatal",
                 True,
                 "model_data.faces[0]",
                 "face has fewer than three indices",
             ),
             ExportValidationIssue(
-                "PMX_ADDITIONAL_UV_UNSUPPORTED",
+                "UNSUPPORTED_FEATURE",
                 "warning",
                 False,
                 "model_data.vertices[0].additional_uv",
@@ -63,9 +63,32 @@ class ExportReportConsistencyTests(unittest.TestCase):
             payload = json.loads(paths.json_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 [issue["code"] for issue in payload["issues"]],
-                ["FACE_TOO_SHORT", "PMX_ADDITIONAL_UV_UNSUPPORTED"],
+                ["INPUT_INVALID", "UNSUPPORTED_FEATURE"],
             )
             self.assertIn("Report evidence:", paths.markdown_path.read_text(encoding="utf-8"))
+
+    def test_omitted_issue_groups_preserve_full_report_status(self):
+        """Markdown parity accepts aggregation facts that include hidden issues."""
+        report = ExportValidationReport(
+            "pmx",
+            (
+                ExportValidationIssue(
+                    "INPUT_INVALID", "warning", False, "", "visible warning"
+                ),
+                ExportValidationIssue(
+                    "REFERENCE_INVALID", "fatal", True, "bones[0]", "hidden fatal"
+                ),
+            ),
+            max_display_issues=1,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            paths = write_validation_report_artifacts(report, Path(directory) / "run")
+
+            validate_report_consistency(paths.json_path, paths.markdown_path)
+
+            payload = json.loads(paths.json_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "blocked")
+            self.assertEqual(payload["issue_aggregation"]["omitted_occurrences"], 1)
 
     def test_markdown_issue_order_is_required(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -81,7 +104,7 @@ class ExportReportConsistencyTests(unittest.TestCase):
             reordered = lines[: heading_indices[0]] + second_block + first_block
             paths.markdown_path.write_text("\n".join(reordered) + "\n", encoding="utf-8")
 
-            with self.assertRaisesRegex(ReportConsistencyError, "issue 1 mismatch"):
+            with self.assertRaisesRegex(ReportConsistencyError, "projections differ"):
                 validate_report_consistency(paths.json_path, paths.markdown_path)
 
     def test_unknown_issue_code_fails_closed(self):
@@ -121,10 +144,10 @@ class ExportReportConsistencyTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ReportConsistencyError, "report field mismatch: evidence"):
+            with self.assertRaisesRegex(ReportConsistencyError, "projections differ"):
                 validate_report_consistency(paths.json_path, paths.markdown_path)
 
-    def test_catalog_wording_mismatch_is_rejected(self):
+    def test_removed_issue_field_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = _write_report_pair(Path(directory) / "run")
             payload = json.loads(paths.json_path.read_text(encoding="utf-8"))
@@ -134,19 +157,22 @@ class ExportReportConsistencyTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ReportConsistencyError, "does not match the issue catalog"):
+            with self.assertRaisesRegex(ReportConsistencyError, "removed legacy fields"):
                 validate_report_consistency(paths.json_path, paths.markdown_path)
 
-    def test_markdown_catalog_title_mismatch_is_rejected(self):
+    def test_markdown_reason_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = _write_report_pair(Path(directory) / "run")
             markdown = paths.markdown_path.read_text(encoding="utf-8")
             paths.markdown_path.write_text(
-                markdown.replace("- Title: Face Too Short", "- Title: Unapproved title"),
+                markdown.replace(
+                    '- Reason: "face has fewer than three indices"',
+                    '- Reason: "Unapproved reason"',
+                ),
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ReportConsistencyError, "title does not match the issue catalog"):
+            with self.assertRaisesRegex(ReportConsistencyError, "projections differ"):
                 validate_report_consistency(paths.json_path, paths.markdown_path)
 
     def test_cli_returns_one_for_argument_and_read_failures(self):

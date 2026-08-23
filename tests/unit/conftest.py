@@ -10,11 +10,27 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tests.common.maya_stub import install_maya_stub, _is_real_maya_present
+from tests.common.maya_stub import install_maya_stub, install_qt_stub, _is_real_maya_present
 
 _real_maya = _is_real_maya_present()
 if not _real_maya:
     install_maya_stub(profile="headless")
+
+# All headless Qt tests construct production widgets in-process.  Redirect
+# QSettings before test modules are imported so their production class aliases
+# cannot bind the Windows native backend first.
+from tests.common.qsettings_isolation import activate_qsettings_isolation  # noqa: E402
+
+try:
+    activate_qsettings_isolation()
+except ModuleNotFoundError as exc:
+    # ``ci_unit`` deliberately runs the importable pure-Python subset without
+    # PySide.  Install the local Qt contract stub so GUI runner tests still use
+    # the same mandatory QSettings isolation path as a real Qt process.
+    if exc.name not in {"PySide2", "PySide6"}:
+        raise
+    install_qt_stub()
+    activate_qsettings_isolation()
 
 
 def _uses_real_maya_class(cls):
@@ -63,11 +79,11 @@ def _install_headless_vmd_parts_oracle(monkeypatch):
     if _real_maya:
         yield
         return
-    from mmd_tools.actions import prepared_vmd_artifact
+    from mmd_tools.actions import vmd_sibling_stage
     from tests.common.vmd_parts_export_oracle import export_vmd_from_parts_oracle
 
     monkeypatch.setattr(
-        prepared_vmd_artifact,
+        vmd_sibling_stage,
         "export_vmd_from_parts",
         export_vmd_from_parts_oracle,
     )

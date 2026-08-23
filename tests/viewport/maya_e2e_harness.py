@@ -110,7 +110,24 @@ def run_maya_e2e(
                 log_ready.warning(
                     "Explorer launch is detached; commandPort ownership is guarded by the preflight only"
                 )
-        maya_commandport.send_python(port, command, label=send_label)
+        # Every commandPort probe gets the same process-level QSettings
+        # boundary before its production UI imports or widget constructors.
+        # The bootstrap is inside Maya, where PySide/Maya are available, and
+        # remains active if the probe later times out or is force-terminated.
+        settings_bootstrap = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            f"project_root = Path({str(project_root.resolve().as_posix())!r})\n"
+            "if str(project_root) not in sys.path:\n"
+            "    sys.path.insert(0, str(project_root))\n"
+            "from tests.common.qsettings_isolation import activate_qsettings_isolation\n"
+            "activate_qsettings_isolation()\n"
+        )
+        maya_commandport.send_python(
+            port,
+            settings_bootstrap + command,
+            label=send_label,
+        )
         return monitor_result(
             log_path,
             report_path,

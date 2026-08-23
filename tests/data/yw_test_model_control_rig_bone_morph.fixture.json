@@ -14,38 +14,42 @@
     "generator": "tests/data/generate_yw_test_model_control_rig_bone_morph.py",
     "source_spec": "yw_test_model_control_rig_bone_morph.json",
     "command": "python tests/data/generate_yw_test_model_control_rig_bone_morph.py",
-    "record": "PMX is produced by PmxData legacy parse/write with one explicit BoneMorph; VMD is produced by VmdExporter from semantic source data. Binary hand editing is prohibited; regeneration must be byte-identical."
+    "record": "PMX is produced by PmxData legacy parse/write with standard, semi-standard, custom, and mixed-target BoneMorphs; VMD is produced by VmdExporter from semantic source data. Binary hand editing is prohibited; regeneration must be byte-identical."
   },
   "files": [
     {
       "path": "yw_test_model_control_rig_bone_morph.pmx",
       "kind": "pmx",
-      "size": 580745,
-      "sha256": "fdbcc52364d5ece7b7e10ad0f73286bff01c2e535abf39250403c7be6ef141f7"
+      "size": 581024,
+      "sha256": "47415a669f52dac168c86a671d36c1773e2b5351f806c36bbeea19ec9a69beba"
     },
     {
       "path": "yw_test_model_control_rig_bone_morph.json",
       "kind": "source",
-      "size": 3350,
-      "sha256": "2b9ffba128ee9437c66f9b8b8acd597400c6dd265ab822da570b8879a0a3436b"
+      "size": 4839,
+      "sha256": "a787f2e364d1b0216d9409fb30502fe29dece6159114ebb2b67af8b6b10b31eb"
     },
     {
       "path": "yw_test_model_control_rig_bone_morph.vmd",
       "kind": "vmd",
-      "size": 2513,
-      "sha256": "14609a8d553279ce82e081238efa219f8a833e6fbd23f1c4b9c25400abaeb1d6"
+      "size": 2720,
+      "sha256": "7963ff61a84923cd09451186844b273337a7200df7ceaeb064c503c02cf064d4"
     }
   ],
   "motion": {
     "model_name": "YWテスト用モデル",
     "bone_frames": [0, 10, 20],
     "bone_track_count": 6,
-    "morph_name": "CR_BoneMorph",
-    "morph_frames": [0, 10, 20],
-    "morph_weights": [0.0, 0.75, 1.0],
+    "morphs": [
+      {"name": "CR_Standard", "category": "standard", "frames": [0, 10, 20], "weights": [0.0, 0.75, 1.0]},
+      {"name": "CR_Semi", "category": "semi_standard", "frames": [0, 10, 20], "weights": [0.0, 0.5, 0.8]},
+      {"name": "CR_Custom", "category": "custom", "frames": [0, 10, 20], "weights": [0.0, 0.25, 0.6]},
+      {"name": "CR_Mixed", "category": "mixed", "frames": [0, 10, 20], "weights": [0.0, 0.4, 0.9]}
+    ],
     "ik_enable_frames": [0, 6, 12, 20],
     "selection": {
-      "morph": {"name": "CR_BoneMorph", "type": "BoneMorph", "bone_name": "センター", "bone_index": 2, "translation": [0.25, 0.0, 0.0]},
+      "bone_morph_categories": ["standard", "semi_standard", "custom"],
+      "mixed_target_morph": "CR_Mixed",
       "left_foot_ik": {"name": "左足ＩＫ", "index": 9},
       "right_foot_ik": {"name": "右足ＩＫ", "index": 6},
       "left_toe_ik": {"name": "左つま先ＩＫ", "index": 10},
@@ -55,7 +59,7 @@
   "coverage": {
     "bone_morph": {
       "status": "requires_structural_scene_gate",
-      "requirements": ["PMX type=BoneMorph", "VMD name resolves PMX morph with non-zero authored weight", "legacy/direct real morph writer", "target transform delta", "export/fresh morph key and value roundtrip"]
+      "requirements": ["PMX type=BoneMorph", "standard/semi-standard/custom target coverage", "mixed-target BoneMorph coverage", "VMD bone track stores the pre-BoneMorph base", "VMD morph track preserves authored weights", "fresh import recomposes the final pose"]
     }
   }
 }

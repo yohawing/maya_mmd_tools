@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import unittest
 from pathlib import Path
 
 import maya.api.OpenMaya as om
@@ -13,9 +14,57 @@ from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_ik_enabled_animation import apply_ik_enabled_animation, collect_ik_nodes_by_bone_name
 from mmd_tools.converters.vmd_timeline import get_animation_frame_range
 from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
-from mmd_tools.nodes.mmd_ccd_ik_node import _canonicalize_runtime_quaternion
+from mmd_tools.nodes.mmd_ccd_ik_node import (
+    _RUNTIME_POSITION_QUANTUM,
+    _canonicalize_runtime_position,
+    _canonicalize_runtime_quaternion,
+)
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
+
+
+class TestRuntimeIkInputCanonicalization(unittest.TestCase):
+    """Pure numeric contracts shared by Python and C++ CCD dispatch."""
+
+    def test_position_canonicalizes_dorothy_roundtrip_noise(self):
+        """Dorothy frame-90 position/goal witnesses share native grid cells."""
+        source = (
+            3.916799545288086,
+            1.3019449673220151,
+            -6.0536792278289795,
+        )
+        fresh = (
+            3.9167994260787964,
+            1.3019448518753052,
+            -6.053679287433624,
+        )
+
+        self.assertEqual(
+            [_canonicalize_runtime_position(value) for value in source],
+            [_canonicalize_runtime_position(value) for value in fresh],
+        )
+
+    def test_position_uses_ties_away_from_zero(self):
+        """Python fallback matches C++ std::round at signed cell boundaries."""
+        half_quantum = _RUNTIME_POSITION_QUANTUM * 0.5
+
+        self.assertEqual(
+            _canonicalize_runtime_position(half_quantum),
+            _RUNTIME_POSITION_QUANTUM,
+        )
+        self.assertEqual(
+            _canonicalize_runtime_position(-half_quantum),
+            -_RUNTIME_POSITION_QUANTUM,
+        )
+        zero = _canonicalize_runtime_position(-0.0)
+        self.assertEqual(zero, 0.0)
+        self.assertEqual(math.copysign(1.0, zero), 1.0)
+
+    def test_position_preserves_non_finite_values_for_native_validation(self):
+        """Canonicalization does not raise before the native solver rejects bad input."""
+        self.assertEqual(_canonicalize_runtime_position(float("inf")), float("inf"))
+        self.assertEqual(_canonicalize_runtime_position(float("-inf")), float("-inf"))
+        self.assertTrue(math.isnan(_canonicalize_runtime_position(float("nan"))))
 
 
 class TestVmdIkAnimation(MayaTestBase):

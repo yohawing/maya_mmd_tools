@@ -12,6 +12,7 @@ from mmd_tools.validation.export_validator import (
 )
 from mmd_tools.validation.issue_catalog import UnknownValidationIssueError
 from mmd_tools.validation.report_artifacts import write_validation_report_artifacts
+from tools.export_report_consistency import validate_report_consistency
 
 
 def _valid_model_data():
@@ -64,7 +65,7 @@ class ValidationReportArtifactTests(unittest.TestCase):
                     evidence={"fixture": "face-too-short"},
                 ),
             )
-            self.assertIn("`FACE_TOO_SHORT`", markdown_text)
+            self.assertIn("`INPUT_INVALID`", markdown_text)
             self.assertIn('"fixture": "face-too-short"', markdown_text)
 
     def test_artifacts_are_byte_deterministic_for_equal_inputs(self):
@@ -90,17 +91,40 @@ class ValidationReportArtifactTests(unittest.TestCase):
             self.assertEqual(first.markdown_path.read_bytes(), second.markdown_path.read_bytes())
 
     def test_unknown_issue_code_fails_before_creating_run_directory(self):
-        report = ExportValidationReport(
-            "pmx",
-            (ExportValidationIssue("UNREGISTERED", "fatal", True, "model_data", "bad"),),
-        )
-
         with tempfile.TemporaryDirectory() as directory:
             run_directory = Path(directory) / "should-not-exist"
             with self.assertRaises(UnknownValidationIssueError):
-                write_validation_report_artifacts(report, run_directory)
+                ExportValidationIssue("UNREGISTERED", "fatal", True, "model_data", "bad")
 
             self.assertFalse(run_directory.exists())
+
+    def test_markdown_roundtrips_multiline_text_and_nullable_header_sentinels(self):
+        issue = ExportValidationIssue(
+            "INPUT_INVALID",
+            "fatal",
+            True,
+            "payload`field",
+            "first line\nsecond `line`",
+            action="repair\nthen retry with `care`",
+        )
+        cases = (
+            ("unknown", "unspecified", "unspecified"),
+            (None, None, None),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for index, (export_format, target, snapshot) in enumerate(cases):
+                with self.subTest(export_format=export_format, target=target, snapshot=snapshot):
+                    paths = write_validation_report_artifacts(
+                        ExportValidationReport(export_format, (issue,)),
+                        Path(directory) / f"case-{index}",
+                        target_identity=target,
+                        snapshot_fingerprint=snapshot,
+                        provenance="source\nwith `tick`",
+                    )
+                    validate_report_consistency(paths.json_path, paths.markdown_path)
+                    markdown = paths.markdown_path.read_text(encoding="utf-8")
+                    self.assertIn('"first line\\nsecond `line`"', markdown)
+                    self.assertIn(f"- Format: {json.dumps(export_format)}", markdown)
 
 
 if __name__ == "__main__":

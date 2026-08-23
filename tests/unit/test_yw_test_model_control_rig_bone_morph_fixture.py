@@ -11,6 +11,7 @@ from pathlib import Path
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.vmd_data import VmdData
+from mmd_tools.validation.bone_validator import BoneValidator
 from tests.common.test_fixture_provider import TestFixtureProvider
 
 
@@ -45,12 +46,27 @@ class TestYwControlRigBoneMorphFixture(unittest.TestCase):
         self.assertEqual(manifest["license"]["identifier"], "MIT")
         self.assertIn("PmxData legacy parse/write", manifest["provenance"]["record"])
         pmx = parse_pmx_file(str(self.model_path), use_native_pmx_parse=False)
-        self.assertEqual(len(pmx.morphs), 1)
-        morph = pmx.morphs[0]
-        self.assertEqual(morph.name, "CR_BoneMorph")
-        self.assertEqual(morph.morph_type, PmxMorphType.BoneMorph)
-        self.assertEqual(morph.offsets[0]["bone_index"], 2)
-        self.assertGreater(abs(float(morph.offsets[0]["translation"][0])), 0.0)
+        self.assertEqual(
+            [morph.name for morph in pmx.morphs],
+            ["CR_Standard", "CR_Semi", "CR_Custom", "CR_Mixed"],
+        )
+        self.assertTrue(
+            all(morph.morph_type == PmxMorphType.BoneMorph for morph in pmx.morphs)
+        )
+        targets = {
+            morph.name: [pmx.bones[offset["bone_index"]].name for offset in morph.offsets]
+            for morph in pmx.morphs
+        }
+        self.assertEqual(targets["CR_Standard"], ["センター"])
+        self.assertEqual(targets["CR_Semi"], ["腰"])
+        self.assertEqual(targets["CR_Custom"], ["エッジ倍率"])
+        self.assertEqual(
+            targets["CR_Mixed"], ["センター", "腰", "エッジ倍率"]
+        )
+        self.assertIn(targets["CR_Standard"][0], BoneValidator.STANDARD_BONES)
+        self.assertIn(targets["CR_Semi"][0], BoneValidator.SEMI_STANDARD_BONES)
+        self.assertNotIn(targets["CR_Custom"][0], BoneValidator.STANDARD_BONES)
+        self.assertNotIn(targets["CR_Custom"][0], BoneValidator.SEMI_STANDARD_BONES)
 
     def test_regeneration_is_byte_identical_and_morph_keys_resolve(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -66,8 +82,15 @@ class TestYwControlRigBoneMorphFixture(unittest.TestCase):
                 entry = next(item for item in self.verified["manifest"]["files"] if item["kind"] == kind)
                 self.assertEqual(hashlib.sha256(Path(path).read_bytes()).hexdigest(), entry["sha256"])
         parsed = VmdData().parse_file(str(self.vmd_path))
-        rows = [(frame.morph_name, frame.frame_number, frame.value) for frame in parsed.morph_frames]
-        self.assertEqual(rows, [("CR_BoneMorph", 0, 0.0), ("CR_BoneMorph", 10, 0.75), ("CR_BoneMorph", 20, 1.0)])
+        rows = {
+            frame.morph_name: [] for frame in parsed.morph_frames
+        }
+        for frame in parsed.morph_frames:
+            rows[frame.morph_name].append((frame.frame_number, frame.value))
+        self.assertEqual(set(rows), {"CR_Standard", "CR_Semi", "CR_Custom", "CR_Mixed"})
+        self.assertEqual(rows["CR_Standard"], [(0, 0.0), (10, 0.75), (20, 1.0)])
+        self.assertEqual([frame for frame, _value in rows["CR_Mixed"]], [0, 10, 20])
+        self.assertAlmostEqual(rows["CR_Mixed"][-1][1], 0.9)
 
     def test_provider_registers_case_explicitly(self):
         self.assertIn("yw_test_model_control_rig_bone_morph", self.provider.get_registered_fixture_names())

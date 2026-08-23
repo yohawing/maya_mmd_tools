@@ -272,7 +272,7 @@ def _validate_binding_gate_artifact(
     nested = report.get("report")
     if (
         not isinstance(nested, dict)
-        or nested.get("schema_version") != 1
+        or nested.get("schema_version") != 2
         or nested.get("status") != "ready"
         or not isinstance(nested.get("issues"), list)
         or nested["issues"]
@@ -330,9 +330,48 @@ def _validate_binding_gate_artifact(
     step["artifact_sha256"] = _sha256(report_path)
 
 
+def _mmd_anim_release_directory() -> Path | None:
+    """Resolve Cargo's authoritative release directory, or fail closed."""
+    submodule = ROOT / "external" / "mmd-anim"
+    try:
+        completed = subprocess.run(
+            [
+                "cargo",
+                "metadata",
+                "--manifest-path",
+                str(submodule / "Cargo.toml"),
+                "--no-deps",
+                "--format-version",
+                "1",
+            ],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=30.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0 or not isinstance(completed.stdout, str):
+        return None
+    try:
+        payload = json.loads(completed.stdout)
+        target_directory = payload.get("target_directory")
+        if not isinstance(target_directory, str) or not target_directory or "\x00" in target_directory:
+            return None
+        target_path = Path(target_directory)
+    except (AttributeError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        return None
+    return target_path / "release" if target_path.is_absolute() else None
+
+
 def _mmd_anim_runtime_candidates() -> tuple[Path, ...]:
     """Return release FFI artifact candidates for supported host platforms."""
-    runtime_dir = ROOT / "external" / "mmd-anim" / "target" / "release"
+    runtime_dir = _mmd_anim_release_directory()
+    if runtime_dir is None:
+        return ()
     suffixes = {
         "Windows": ("mmd_runtime_ffi.dll",),
         "Linux": ("libmmd_runtime_ffi.so",),
@@ -513,20 +552,6 @@ class _SpyModelExporter:
         self.calls.append((path, data))
         Path(path).write_bytes(b"writer-output")
 
-class _SpyVmdExporter:
-    """Writer spy for VMD fail-closed and warning-ack cases."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, Any]] = []
-
-    def to_vmd_data(self, data: Any) -> Any:
-        return data
-
-    def export_vmd_animation(self, path: str, data: Any) -> None:
-        self.calls.append((path, data))
-        Path(path).write_bytes(b"writer-output")
-
-
 def _report_evidence(directory: Path) -> dict[str, Any]:
     """Return report artifact presence and hashes for one fail fixture."""
     result: dict[str, Any] = {}
@@ -545,9 +570,6 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
 
     install_maya_stub(profile="headless")
     from mmd_tools.actions.export_model_action import ExportModelAction, ExportModelRequest
-    from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
-    from mmd_tools.core.vmd_data import VmdData
-    from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 
     fixtures: list[dict[str, Any]] = []
     report_paths: list[str] = []
@@ -598,124 +620,6 @@ def _run_fail_fixture_matrix(out_dir: Path) -> dict[str, Any]:
         )
         report_paths.append(str(case_dir / "report" / "report.json"))
 
-    invalid_vmd = VmdData()
-    frame = VmdBoneFrame()
-    frame.bone_name = "root"
-    frame.rotation = (0.0, 0.0, 0.0, 0.0)
-    invalid_vmd.bone_frames.append(frame)
-    vmd_dir = out_dir / "invalid-vmd"
-    vmd_dir.mkdir(parents=True, exist_ok=True)
-    vmd_target = vmd_dir / "existing.vmd"
-    vmd_target.write_bytes(b"preserve-existing-target")
-    vmd_before = vmd_target.read_bytes()
-    vmd_writer = _SpyVmdExporter()
-    vmd_result = ExportVmdAction(exporter=vmd_writer, output_verifier=None).execute(
-        ExportVmdRequest(
-            str(vmd_target),
-            {
-                "export_strategy": "bake_timeline",
-                "validation_report_dir": str(vmd_dir / "report"),
-                "validation_report_evidence": {
-                    "gate": "V070-EXPORT-RELEASE-GATE-1",
-                    "fixture": "invalid-vmd-quaternion",
-                    "writer_expected": "not_called",
-                    "target_expected": "preserved",
-                },
-            },
-            animation_data=invalid_vmd,
-        )
-    )
-    vmd_passed = (
-        not vmd_result.succeeded
-        and not vmd_writer.calls
-        and vmd_target.read_bytes() == vmd_before
-        and vmd_result.validation_report is not None
-        and vmd_result.validation_report.is_blocking
-    )
-    fixtures.append(
-        {
-            "name": "invalid_vmd_quaternion",
-            "status": "pass" if vmd_passed else "fail",
-            "issue_codes": [issue.code for issue in (vmd_result.validation_report.issues if vmd_result.validation_report else ())],
-            "writer_calls": len(vmd_writer.calls),
-            "target_preserved": vmd_target.read_bytes() == vmd_before,
-            "report": _report_evidence(vmd_dir / "report"),
-        }
-    )
-    report_paths.append(str(vmd_dir / "report" / "report.json"))
-
-    warning_dir = out_dir / "warning-ack"
-    warning_dir.mkdir(parents=True, exist_ok=True)
-
-    warning_writer = _SpyVmdExporter()
-    warning_target = warning_dir / "warning.vmd"
-    first = ExportVmdAction(
-        exporter=warning_writer,
-        output_verifier=None,
-    ).execute(
-        ExportVmdRequest(
-            str(warning_target),
-            {
-                "export_strategy": "bake_timeline",
-                "validation_report_dir": str(warning_dir / "report-no-ack"),
-                "validation_report_evidence": {
-                    "gate": "V070-EXPORT-RELEASE-GATE-1",
-                    "fixture": "warning-ack-boundary",
-                    "ack_expected": "not_required",
-                },
-            },
-            animation_data=VmdData(),
-        )
-    )
-    second = ExportVmdAction(
-        exporter=warning_writer,
-        output_verifier=None,
-    ).execute(
-        ExportVmdRequest(
-            str(warning_target),
-            {
-                "export_strategy": "bake_timeline",
-                "ack_warnings": True,
-                "validation_report_dir": str(warning_dir / "report-ack"),
-                "validation_report_evidence": {
-                    "gate": "V070-EXPORT-RELEASE-GATE-1",
-                    "fixture": "warning-ack-boundary",
-                    "ack_expected": "optional",
-                },
-            },
-            animation_data=VmdData(),
-        )
-    )
-    warning_passed = (
-        first.succeeded
-        and first.validation_report is not None
-        and not first.validation_report.requires_warning_ack
-        and len(warning_writer.calls) == 2
-        and second.succeeded
-    )
-    fixtures.append(
-        {
-            "name": "warning_ack_boundary",
-            "status": "pass" if warning_passed else "fail",
-            "first_succeeded": first.succeeded,
-            "second_succeeded": second.succeeded,
-            "first_requires_warning_ack": False,
-            "writer_calls": len(warning_writer.calls),
-            "first_issue_codes": [issue.code for issue in (first.validation_report.issues if first.validation_report else ())],
-            "first_issue_severities": [issue.severity for issue in (first.validation_report.issues if first.validation_report else ())],
-            "second_issue_codes": [issue.code for issue in (second.validation_report.issues if second.validation_report else ())],
-            "reports": {
-                "no_ack": _report_evidence(warning_dir / "report-no-ack"),
-                "ack": _report_evidence(warning_dir / "report-ack"),
-            },
-        }
-    )
-    report_paths.extend(
-        [
-            str(warning_dir / "report-no-ack" / "report.json"),
-            str(warning_dir / "report-ack" / "report.json"),
-        ]
-    )
     return {
         "status": "pass" if all(fixture["status"] == "pass" for fixture in fixtures) else "fail",
         "fixtures": fixtures,
@@ -1113,6 +1017,76 @@ def _validate_vmd_bake_timeline_model_tracks_case(case: Mapping[str, Any]) -> li
             failures.append("vmd_bake_timeline_model_tracks.model_tracks.comparison.boundaries mismatch")
         if comparison.get("checked_frames") != [0, 6, 10, 12, 20]:
             failures.append("vmd_bake_timeline_model_tracks.model_tracks.comparison.checked_frames mismatch")
+
+    separation = tracks.get("bone_morph_separation")
+    if not isinstance(separation, dict):
+        failures.append(
+            "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation_missing"
+        )
+    else:
+        if separation.get("status") != "pass":
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.status must be pass"
+            )
+        if separation.get("contract") != (
+            "bone_track_is_pre_morph_and_morph_track_carries_weight"
+        ):
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.contract mismatch"
+            )
+        if separation.get("target_categories") != [
+            "custom",
+            "semi_standard",
+            "standard",
+        ]:
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.target_categories mismatch"
+            )
+        if separation.get("mixed_target_covered") is not True:
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.mixed_target_covered must be true"
+            )
+        if separation.get("fresh_import_recomposition_required") is not True:
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.fresh_import_recomposition_required must be true"
+            )
+        source_count = separation.get("source_morph_key_count")
+        preserved_count = separation.get("preserved_morph_key_count")
+        if (
+            isinstance(source_count, bool)
+            or not isinstance(source_count, int)
+            or source_count <= 0
+            or preserved_count != source_count
+        ):
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.morph_key_counts mismatch"
+            )
+        targets = separation.get("targets")
+        if not isinstance(targets, list) or len(targets) < 3:
+            failures.append(
+                "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.targets missing"
+            )
+        else:
+            observed_categories = sorted(
+                {
+                    target.get("category")
+                    for target in targets
+                    if isinstance(target, dict)
+                    and isinstance(target.get("category"), str)
+                }
+            )
+            if observed_categories != ["custom", "semi_standard", "standard"]:
+                failures.append(
+                    "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.target evidence categories mismatch"
+                )
+            if any(
+                not isinstance(target, dict)
+                or target.get("selection") not in {"identity_base", "omitted_default"}
+                for target in targets
+            ):
+                failures.append(
+                    "vmd_bake_timeline_model_tracks.model_tracks.bone_morph_separation.target selection mismatch"
+                )
 
     for boundary in ("source", "source_import", "exported_file", "fresh_import"):
         payload = tracks.get(boundary)
@@ -1573,8 +1547,8 @@ def _validate_maya_probe_report(
                     failures.append("pmd_import.collection.export_writer_called must be false")
             if case.get("output") is not None:
                 failures.append("pmd_import.output must be null")
-        if export_format == "pmx_soft_body" and case.get("policy_code") != "PMX_SOFT_BODIES_UNSUPPORTED":
-            failures.append("pmx_soft_body.policy_code='PMX_SOFT_BODIES_UNSUPPORTED' expected")
+        if export_format == "pmx_soft_body" and case.get("policy_code") != "UNSUPPORTED_FEATURE":
+            failures.append("pmx_soft_body.policy_code='UNSUPPORTED_FEATURE' expected")
         if export_format == "pmx_soft_body":
             import_oracles = case.get("import_oracles")
             if not isinstance(import_oracles, dict) or int(import_oracles.get("soft_body_count", 0) or 0) <= 0:
@@ -1649,7 +1623,7 @@ def _validate_maya_probe_report(
                 _validate_policy_reject_case(
                     case,
                     "pmx_impulse",
-                    "MORPH_TYPE_UNSUPPORTED",
+                    "UNSUPPORTED_FEATURE",
                     (
                         "source_impulse_morph_count",
                         "fresh_import_impulse_morph_count",
@@ -1663,7 +1637,7 @@ def _validate_maya_probe_report(
                 _validate_policy_reject_case(
                     case,
                     "pmx_flip",
-                    "MORPH_TYPE_UNSUPPORTED",
+                    "UNSUPPORTED_FEATURE",
                     (
                         "source_flip_morph_count",
                         "fresh_import_flip_morph_count",
@@ -1881,7 +1855,7 @@ def build_release_summary(
         steps.append(
             _run_command(
                 "focused_tests",
-                [*_pytest_command(), "-q", *focused],
+                [*_qt_pytest_command(), "-q", *focused],
                 timeout=900.0,
             )
         )

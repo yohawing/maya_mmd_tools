@@ -323,7 +323,10 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                 }.get(plug, [])
 
             def nodeType(self, node):
-                return {"curve": "animCurveTA", "unit": "unitConversion"}.get(node)
+                return {
+                    "curve": "animCurveTA",
+                    "unit": "unitConversion",
+                }.get(node)
 
         routes = {
             "joint": {
@@ -338,6 +341,47 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
         self.assertEqual(hints["rotateX"], "direct_curve")
         self.assertEqual(hints["translateX"], "static")
         self.assertEqual(hints["rotateZ"], "timed_mplug")
+
+    def test_direct_curve_hint_accepts_only_unmapped_or_global_time_input(self):
+        class _HintCmds(_FakeCmds):
+            def __init__(self, input_connections):
+                super().__init__()
+                self.input_connections = input_connections
+
+            def listConnections(self, plug, **_kwargs):
+                if plug == "joint.rotateX":
+                    return ["curve.output"]
+                if plug == "curve.input":
+                    return self.input_connections
+                return []
+
+            def nodeType(self, node):
+                return {
+                    "curve": "animCurveTA",
+                    "time1": "time",
+                    "remap": "animCurveTT",
+                }.get(node)
+
+        def hint(input_connections):
+            plan = build_dense_bone_sample_plan(
+                ["joint"],
+                [0, 1],
+                input_routes={"joint": {"rotateX": ("joint", "rotateX")}},
+                cmds_module=_HintCmds(input_connections),
+            )
+            return next(
+                channel.hint
+                for channel in plan.physical_channels
+                if channel.attr == "rotateX"
+            )
+
+        self.assertEqual(hint([]), "direct_curve")
+        self.assertEqual(hint(["time1.outTime"]), "direct_curve")
+        self.assertEqual(hint(["remap.output"]), "timed_mplug")
+        self.assertEqual(
+            hint(["time1.outTime", "remap.output"]),
+            "timed_mplug",
+        )
 
     def test_scalar_plan_and_track_support_direct_array_element_curve(self):
         class _MorphCmds(_FakeCmds):

@@ -6,11 +6,6 @@ import time
 import maya.cmds as cmds
 
 
-_BATCH_QSETTINGS_SCOPES = (
-    ("yohawing", "maya_mmd_tools"),
-    ("maya_mmd_tools", "ImportExportTab"),
-)
-
 _ATTACHED_FILE_MUTATION_FLAGS = frozenset(
     {
         "new",
@@ -50,28 +45,25 @@ def _script_job_ids():
 
 def _batch_environment_snapshot():
     """Capture only identities/state needed to remove per-case additions."""
-    from mmd_tools.ui.qt_compat import QApplication, QSettings
+    from mmd_tools.ui.qt_compat import QApplication
 
     app_instance = getattr(QApplication, "instance", None)
     app = app_instance() if callable(app_instance) else None
     widgets = set(id(widget) for widget in (app.topLevelWidgets() if app is not None else []))
-    settings = []
-    for organization, application in _BATCH_QSETTINGS_SCOPES:
-        store = QSettings(organization, application)
-        settings.append(
-            (organization, application, {key: store.value(key) for key in store.allKeys()})
-        )
     return {
         "widgets": widgets,
         "maya_windows": set(cmds.lsUI(windows=True) or []),
         "script_jobs": _script_job_ids(),
-        "settings": settings,
     }
 
 
 def _restore_batch_environment(snapshot, new_scene=True):
-    """Remove only state created after *snapshot* and restore changed settings."""
-    from mmd_tools.ui.qt_compat import QApplication, QSettings
+    """Remove only Qt/Maya state created after *snapshot*.
+
+    QSettings is process-isolated before this snapshot is taken, so restoring
+    settings is neither needed nor a safety boundary for the user's store.
+    """
+    from mmd_tools.ui.qt_compat import QApplication
 
     errors = []
     app_instance = getattr(QApplication, "instance", None)
@@ -99,16 +91,6 @@ def _restore_batch_environment(snapshot, new_scene=True):
             cmds.scriptJob(kill=job_id, force=True)
         except Exception as exc:
             errors.append(f"scriptJob cleanup {job_id}: {exc}")
-
-    for organization, application, baseline in snapshot["settings"]:
-        store = QSettings(organization, application)
-        current_keys = set(store.allKeys())
-        for key in current_keys - set(baseline):
-            store.remove(key)
-        for key, value in baseline.items():
-            if key not in current_keys or store.value(key) != value:
-                store.setValue(key, value)
-        store.sync()
 
     if new_scene:
         try:
@@ -470,6 +452,7 @@ class GuiTestRunner:
         import logging
         import sys
         from pathlib import Path
+        from tests.common.qsettings_isolation import activate_qsettings_isolation
 
         # Get project root from this file's location
         project_root = Path(__file__).resolve().parent.parent.parent
@@ -506,6 +489,11 @@ class GuiTestRunner:
         attached_cleanup_acknowledged = False
 
         try:
+            # This must happen before discovery imports production widgets.
+            # The redirected backend is process-scoped and survives failures,
+            # timeouts, and forced Maya termination without touching UserScope.
+            settings_isolation = activate_qsettings_isolation()
+            print(f"QSettings test backend: {settings_isolation['root']}")
             if preserve_attached_scene:
                 attached_scene_guard = _AttachedSceneGuard()
                 attached_scene_guard.start()
@@ -663,6 +651,14 @@ class GuiTestRunner:
         import os
         from pathlib import Path
         from tests import run_gui_tests as report_helpers
+        from tests.common.qsettings_isolation import (
+            activate_qsettings_isolation,
+            reset_isolated_qsettings,
+        )
+
+        # Batch manifests bypass run_tests_from_command, so install the same
+        # process-level backend before the first snapshot or test import.
+        activate_qsettings_isolation()
 
         report_path = Path(timing_report_path)
         fallback = report_helpers.new_batch_report("unknown", cases)
@@ -694,6 +690,9 @@ class GuiTestRunner:
             try:
                 try:
                     _restore_batch_environment(snapshot, new_scene=new_scene)
+                    # Native safety is process-wide; fixture state is reset per
+                    # case so a previous case cannot leak history into this one.
+                    reset_isolated_qsettings()
                 except Exception as exc:
                     entry["status"] = "BLOCKED"
                     entry["blocked_reason"] = str(exc)
@@ -750,6 +749,14 @@ class GuiTestRunner:
                     entry["status"] = "ERROR"
                     prior_error = entry.get("cleanup_error")
                     message = f"case timing cleanup: {exc}"
+                    entry["cleanup_error"] = f"{prior_error}; {message}" if prior_error else message
+                    cleanup_errors.append(message)
+                try:
+                    reset_isolated_qsettings()
+                except Exception as exc:
+                    entry["status"] = "ERROR"
+                    prior_error = entry.get("cleanup_error")
+                    message = f"QSettings case cleanup: {exc}"
                     entry["cleanup_error"] = f"{prior_error}; {message}" if prior_error else message
                     cleanup_errors.append(message)
                 if cleanup_errors and case_report is not None:
