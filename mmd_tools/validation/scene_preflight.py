@@ -36,13 +36,22 @@ def _issue(
     code: str,
     path: str,
     message: str,
+    action: str = "",
     *,
     details: Optional[Mapping[str, Any]] = None,
 ) -> ExportValidationIssue:
     """Create one blocking scene-boundary issue."""
     issue_details = dict(details or {})
     issue_details.setdefault("field", path)
-    return ExportValidationIssue(code, "fatal", True, path, message, details=issue_details)
+    return ExportValidationIssue(
+        code,
+        "fatal",
+        True,
+        path,
+        message,
+        action=action,
+        details=issue_details,
+    )
 
 
 def _normalize_format(options: Mapping[str, Any]) -> str:

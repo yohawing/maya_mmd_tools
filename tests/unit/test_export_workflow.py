@@ -86,33 +86,6 @@ class _WarningScenePreflight:
         )
 
 
-class _ControlRigScenePreflight:
-    """Return the ownership issue produced for an EDIT Control Rig scene."""
-
-    def run(self, _options):
-        return ScenePreflightResult(
-            ExportValidationReport(
-                "vmd",
-                (
-                    ExportValidationIssue(
-                        "OWNERSHIP_CONFLICT",
-                        "fatal",
-                        True,
-                        "ownership.control_rig",
-                        "Control Rig owns the authoring path",
-                        details={"owner": "control_rig"},
-                    ),
-                ),
-                mode="bake_timeline",
-            ),
-            {
-                "format": "vmd",
-                "export_strategy": "bake_timeline",
-                "target_identity": "model_ROOT",
-            },
-        )
-
-
 class _VmdBoundary:
     def __init__(self):
         self.collect_calls = 0
@@ -358,7 +331,12 @@ class ExportWorkflowTests(unittest.TestCase):
         boundary = _DirectControlRigVmdBoundary()
         service = self._service(
             vmd_action=BakeTimelineVmdExportAction(boundary),
-            scene_preflight=_ControlRigScenePreflight(),
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {
+                    "control_rig": {"state": "EDIT", "owner": "CONTROL_OWNED"}
+                },
+            ),
         )
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "motion.vmd"
