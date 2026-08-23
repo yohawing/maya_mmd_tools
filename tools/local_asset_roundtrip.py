@@ -1127,15 +1127,42 @@ def _import_options() -> dict[str, Any]:
     }
 
 
-def _require_import_success(result: Any, action_name: str, *, require_root: bool) -> str | None:
-    """Reject partial/warning imports before an oracle can make them look valid."""
+def _is_missing_texture_import_warning(warning: Any) -> bool:
+    """Return whether a warning only reports an unavailable external texture."""
+
+    return (
+        isinstance(warning, Mapping)
+        and str(warning.get("reason", "")).casefold() == "missing_file"
+        and warning.get("resolvable") is False
+        and bool(warning.get("original_path"))
+    )
+
+
+def _require_import_success(
+    result: Any,
+    action_name: str,
+    *,
+    require_root: bool,
+    allow_missing_texture_warnings: bool = False,
+    acknowledged_warnings: list[Any] | None = None,
+) -> str | None:
+    """Reject incomplete imports except explicitly allowed missing textures."""
 
     outcome = str(getattr(result, "outcome", "") or "").casefold()
     warnings = list(getattr(result, "warnings", ()) or ())
-    if outcome != "success" or warnings:
+    allowed_warnings = (
+        [warning for warning in warnings if _is_missing_texture_import_warning(warning)]
+        if allow_missing_texture_warnings
+        else []
+    )
+    unexpected_warnings = [warning for warning in warnings if warning not in allowed_warnings]
+    accepted_partial = outcome == "partial" and bool(allowed_warnings) and not unexpected_warnings
+    if (outcome != "success" and not accepted_partial) or unexpected_warnings:
         raise RuntimeError(
             f"{action_name} did not complete cleanly: outcome={outcome!r} warnings={warnings!r}"
         )
+    if acknowledged_warnings is not None:
+        acknowledged_warnings.extend(allowed_warnings)
     root = getattr(result, "root_node", None)
     if require_root and not root:
         raise RuntimeError(f"{action_name} returned no model root")
@@ -1175,7 +1202,12 @@ def _canonical_imported_model_root(root: str) -> str:
     return canonical
 
 
-def _import_model_action(source: Path) -> str:
+def _import_model_action(
+    source: Path,
+    *,
+    allow_missing_texture_warnings: bool = False,
+    acknowledged_warnings: list[Any] | None = None,
+) -> str:
     """Import a model through the production ImportModelAction boundary."""
 
     from mmd_tools.actions.import_model_action import ImportModelAction, ImportModelRequest
@@ -1189,7 +1221,13 @@ def _import_model_action(source: Path) -> str:
     )
     if not result.succeeded:
         raise RuntimeError(f"ImportModelAction failed: {result.error or result.warnings}")
-    root = _require_import_success(result, "ImportModelAction", require_root=True)
+    root = _require_import_success(
+        result,
+        "ImportModelAction",
+        require_root=True,
+        allow_missing_texture_warnings=allow_missing_texture_warnings,
+        acknowledged_warnings=acknowledged_warnings,
+    )
     assert root is not None
     return _canonical_imported_model_root(root)
 
@@ -1831,12 +1869,17 @@ def _run_pmx_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
         exported_data,
         str(case["name"]),
     )
+    fresh_import_warnings: list[Any] = []
     fresh_root, fresh_oracle, _fresh_bones, fresh_import_bones = _phase(
         context,
         "fresh_import_oracle",
         lambda: _pmx_source_import(
             output,
-            _import_model_action,
+            lambda path: _import_model_action(
+                path,
+                allow_missing_texture_warnings=True,
+                acknowledged_warnings=fresh_import_warnings,
+            ),
             _capture_scene_oracle,
             _build_source_bone_semantics_oracle,
             _capture_bone_semantics_oracle,
@@ -1870,6 +1913,10 @@ def _run_pmx_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
         "output": str(output),
         "validation": validation_evidence,
         "acknowledged_warnings": acknowledged_warnings,
+        "fresh_import_diagnostics": {
+            "status": "acknowledged" if fresh_import_warnings else "clean",
+            "warnings": fresh_import_warnings,
+        },
         "adjustment": adjustment,
         "parser_warnings": parser_warnings,
         "parser_normalization_diagnostics": {

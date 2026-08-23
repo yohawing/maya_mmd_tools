@@ -818,6 +818,45 @@ def test_import_action_contract_rejects_partial_or_warning_results():
         _require_import_success(partial, "ImportModelAction", require_root=True)
 
 
+def test_import_action_contract_explicitly_allows_only_missing_texture_warnings():
+    missing_texture = {
+        "reason": "missing_file",
+        "resolvable": False,
+        "original_path": "textures/body.png",
+    }
+    acknowledged = []
+    partial = SimpleNamespace(
+        outcome="partial",
+        warnings=[missing_texture],
+        root_node="|root",
+    )
+
+    assert (
+        _require_import_success(
+            partial,
+            "ImportModelAction",
+            require_root=True,
+            allow_missing_texture_warnings=True,
+            acknowledged_warnings=acknowledged,
+        )
+        == "|root"
+    )
+    assert acknowledged == [missing_texture]
+
+    mixed = SimpleNamespace(
+        outcome="partial",
+        warnings=[missing_texture, {"reason": "invalid_material"}],
+        root_node="|root",
+    )
+    with pytest.raises(RuntimeError, match="did not complete cleanly"):
+        _require_import_success(
+            mixed,
+            "ImportModelAction",
+            require_root=True,
+            allow_missing_texture_warnings=True,
+        )
+
+
 class _FakeImportModelAction:
     """Injectable production-action stand-in for root identity tests."""
 
