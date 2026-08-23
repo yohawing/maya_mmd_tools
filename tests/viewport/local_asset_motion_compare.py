@@ -216,6 +216,10 @@ def _initialize_maya() -> None:
         maya.standalone.initialize(name="python")
     except RuntimeError:
         pass
+    _repo_imports()
+    from tests.common.maya_plugin_setup import load_mmd_tools_plugin
+
+    load_mmd_tools_plugin(ROOT)
 
 
 def _mesh_transforms(root: str | None = None) -> list[str]:
