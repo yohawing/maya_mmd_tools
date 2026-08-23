@@ -414,6 +414,28 @@ def _compare_numeric_field(
     )
 
 
+def _effective_vertex_influences(vertex: Any) -> list[list[float | int]]:
+    """Return skinning influences independent of the PMX BDEF encoding shape."""
+    transform_type = int(_get_field(vertex, "weight_transform_type", 0))
+    indices = list(_get_field(vertex, "bone_indices", []))
+    stored_weights = list(_get_field(vertex, "bone_weights", []))
+    if transform_type == 0:
+        weights = [1.0]
+    elif transform_type in (1, 3):
+        first_weight = float(stored_weights[0]) if stored_weights else 0.5
+        weights = [first_weight, 1.0 - first_weight]
+    else:
+        weights = [float(weight) for weight in stored_weights]
+
+    totals: dict[int, float] = {}
+    for bone_index, weight in zip(indices, weights):
+        if weight == 0.0:
+            continue
+        index = int(bone_index)
+        totals[index] = totals.get(index, 0.0) + weight
+    return [[index, totals[index]] for index in sorted(totals)]
+
+
 def _compare_pmx_supported_content(
     original: Any,
     exported: Any,
@@ -498,18 +520,9 @@ def _compare_pmx_supported_content(
             diffs,
             "vertices",
             idx,
-            "bone_indices",
-            _get_field(ov, "bone_indices"),
-            _get_field(ev, "bone_indices"),
-            tolerance,
-        )
-        _compare_numeric_field(
-            diffs,
-            "vertices",
-            idx,
-            "bone_weights",
-            _get_field(ov, "bone_weights"),
-            _get_field(ev, "bone_weights"),
+            "skin_influences",
+            _effective_vertex_influences(ov),
+            _effective_vertex_influences(ev),
             tolerance,
         )
         _compare_numeric_field(
