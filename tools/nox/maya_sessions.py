@@ -331,9 +331,23 @@ def run_control_rig_gui_e2e(
     evaluation_mode = option(args, "--evaluation-mode", "default")
     mode_suffix = "" if evaluation_mode == "default" else f"_{evaluation_mode}"
     route_suffix = "_create_on_import" if "--create-on-import" in args else ""
-    output_suffix = f"{mode_suffix}{route_suffix}"
+    focused_suffix = "_auto_bake_only" if "--auto-bake-only" in args else ""
+    frame_suffix = ""
+    if "--auto-frame-range" in args:
+        frame_index = args.index("--auto-frame-range")
+        try:
+            frame_suffix = f"_frames_{args[frame_index + 1]}_{args[frame_index + 2]}"
+        except IndexError:
+            session.error("--auto-frame-range requires START and END")
+    cpp_config = option(args, "--cpp-config", "Debug")
+    config_suffix = "" if cpp_config == "Debug" else f"_{cpp_config.lower()}"
+    output_suffix = (
+        f"{mode_suffix}{route_suffix}{focused_suffix}{frame_suffix}{config_suffix}"
+    )
     gui_report = out_dir / f"mmd_control_rig_e2e_maya{maya_version}{output_suffix}.json"
     exported_vmd = out_dir / f"mmd_control_rig_e2e_maya{maya_version}{output_suffix}.vmd"
+    if "--auto-bake-only" in args:
+        exported_vmd = exported_vmd.with_suffix(".auto_bake.vmd")
 
     session.run(
         python_executable,
@@ -380,7 +394,7 @@ def run_control_rig_gui_e2e(
         MAYA_SKIP_USERSETUP_PY="1",
         MMD_TOOLS_CPP_PLUGIN=mayapy_arg_path(
             mayapy_path,
-            root / "plug-ins" / maya_version / "Debug" / "mmd_tools_cpp.mll",
+            root / "plug-ins" / maya_version / cpp_config / "mmd_tools_cpp.mll",
         ),
         MMD_ANIM_FFI_PATH=str(ffi_path),
     )

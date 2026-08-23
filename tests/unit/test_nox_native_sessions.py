@@ -83,6 +83,65 @@ class NativeSessionsTest(unittest.TestCase):
             self.assertEqual(session.runs[1][0][1], "tests/viewport/mmd_anim_mesh_oracle_compare.py")
             self.assertEqual(session.runs[1][1]["success_codes"], (0, 1, 2))
 
+    def test_control_rig_gui_e2e_tracks_focused_report_and_auto_bake_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            out_dir = root / "build/e2e"
+            out_dir.mkdir(parents=True)
+            suffix = "_create_on_import_auto_bake_only_frames_0_120_release"
+            exported_vmd = out_dir / f"mmd_control_rig_e2e_maya2024{suffix}.auto_bake.vmd"
+            exported_vmd.write_bytes(b"vmd")
+            (root / "external/mmd-anim/target/release").mkdir(parents=True)
+            session = _FakeSession(
+                [
+                    "--maya",
+                    "2024",
+                    "--create-on-import",
+                    "--auto-bake-only",
+                    "--auto-frame-range",
+                    "0",
+                    "120",
+                    "--cpp-config",
+                    "Release",
+                ]
+            )
+            reports = []
+            mayapy = mock.Mock()
+            mayapy.exists.return_value = True
+
+            def read_report(_session, report_path, label):
+                reports.append((report_path, label))
+                if "GUI" in label:
+                    return {"status": "pass"}
+                return {"status": "passed", "comparison": {"max": 0.0}}
+
+            run_control_rig_gui_e2e(
+                session,
+                posargs=session.posargs,
+                option=_option,
+                default_maya_version="2026",
+                root=root,
+                require_build_path=lambda _session, value, _name: root / value,
+                read_probe_report=read_report,
+                clear_probe_report=lambda *_args: None,
+                mayapy=lambda _version: mayapy,
+                mayapy_env=lambda _mayapy, **values: values,
+                mayapy_arg_path=lambda _mayapy, path: str(path),
+                mayapy_script=lambda _mayapy, script: script,
+                python_executable="python.exe",
+            )
+
+            self.assertEqual(
+                reports[0][0],
+                out_dir / f"mmd_control_rig_e2e_maya2024{suffix}.json",
+            )
+            oracle_args = session.runs[1][0]
+            self.assertEqual(oracle_args[oracle_args.index("--vmd") + 1], str(exported_vmd))
+            self.assertIn(
+                str(root / "plug-ins/2024/Release/mmd_tools_cpp.mll"),
+                session.runs[1][1]["env"]["MMD_TOOLS_CPP_PLUGIN"],
+            )
+
     def test_remaining_mayapy_diagnostics_keep_scripts_and_filter_maya(self):
         runners = (
             (run_import_scale_drift_e2e, "tests/viewport/import_scale_drift_e2e.py"),
