@@ -1963,6 +1963,40 @@ def _compare_motion_morph_witness_values(
     return failures
 
 
+def _compare_motion_pose_witness(
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+) -> list[str]:
+    """Compare witness matrices within the existing Maya float tolerance."""
+
+    expected_frames = {str(key): value for key, value in expected.items()}
+    actual_frames = {str(key): value for key, value in actual.items()}
+    expected_keys = set(expected_frames)
+    actual_keys = set(actual_frames)
+    failures: list[str] = []
+    if expected_keys != actual_keys:
+        failures.append(
+            "motion witness pose frame keys differ: "
+            f"expected={sorted(expected_keys)!r} actual={sorted(actual_keys)!r}"
+        )
+    for frame in sorted(expected_keys & actual_keys, key=int):
+        expected_row = expected_frames[frame]
+        actual_row = actual_frames[frame]
+        if not isinstance(expected_row, Mapping) or not isinstance(actual_row, Mapping):
+            failures.append(f"motion witness pose at frame {frame} is malformed")
+            continue
+        for field in ("world_matrix", "skin_matrix"):
+            difference = _max_float_difference(
+                expected_row.get(field, ()), actual_row.get(field, ())
+            )
+            if difference > FLOAT_TOLERANCE:
+                failures.append(
+                    f"motion witness {field} differs at frame {frame}: "
+                    f"max_error={difference:.9g} tolerance={FLOAT_TOLERANCE:.9g}"
+                )
+    return failures
+
+
 def _export_request(
     output: Path,
     report_dir: Path,
@@ -2683,8 +2717,12 @@ def _run_vmd_case(
     actual_witness = fresh_adjustment.get("witness", {})
     if expected_witness.get("bone_index") != actual_witness.get("bone_index"):
         failures.append("motion witness bone identity differs")
-    if expected_witness.get("pose") != actual_witness.get("pose"):
-        failures.append("motion witness world/skin matrices differ")
+    failures.extend(
+        _compare_motion_pose_witness(
+            expected_witness.get("pose", {}),
+            actual_witness.get("pose", {}),
+        )
+    )
     if isinstance(expected_witness.get("morph"), Mapping):
         failures.extend(
             _compare_motion_morph_witness_values(

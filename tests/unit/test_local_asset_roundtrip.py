@@ -36,6 +36,7 @@ from tools.local_asset_roundtrip import (
     _run_worker,
     _compare_morph_structure,
     _compare_motion_morph_witness_values,
+    _compare_motion_pose_witness,
     _select_cases,
     _summary_markdown,
     _worker_failure_classification,
@@ -334,6 +335,24 @@ def test_motion_morph_witness_uses_tolerance_without_relaxing_frame_keys():
     ) == []
     assert _compare_motion_morph_witness_values({"0": 0.05}, {"1": 0.05})
     assert _compare_motion_morph_witness_values({"0": 0.05}, {"0": 0.051})
+
+
+def test_motion_pose_witness_uses_tolerance_and_reports_exact_location():
+    identity = [1.0, 0.0, 0.0, 0.0] * 4
+    within = list(identity)
+    within[5] += 0.00005
+    expected = {"895": {"world_matrix": identity, "skin_matrix": identity}}
+    actual = {"895": {"world_matrix": within, "skin_matrix": identity}}
+
+    assert _compare_motion_pose_witness(expected, actual) == []
+
+    actual["895"]["skin_matrix"] = list(identity)
+    actual["895"]["skin_matrix"][10] += 0.001
+    failures = _compare_motion_pose_witness(expected, actual)
+    assert len(failures) == 1
+    assert "skin_matrix" in failures[0]
+    assert "frame 895" in failures[0]
+    assert "max_error=" in failures[0]
 
 
 def test_dense_worker_runs_full_case_once_and_passes_warm_count(monkeypatch, tmp_path):
