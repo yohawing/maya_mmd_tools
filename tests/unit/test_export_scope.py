@@ -64,7 +64,9 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_Z_AXIS_DIRECTION,
 )
 from mmd_tools.converters.morph_converter import MorphConverter  # noqa: E402
+from mmd_tools.converters.mesh_converter import MeshConverter  # noqa: E402
 from mmd_tools.core import maya_material_utils  # noqa: E402
+from mmd_tools.core.pmx_data.morph import PmxMorphType  # noqa: E402
 
 
 class TestExportScope(unittest.TestCase):
@@ -83,6 +85,65 @@ class TestExportScope(unittest.TestCase):
         )
 
         self.assertEqual(remapped, [8, 9])
+
+    def test_model_root_remaps_uv_morph_source_vertices_with_fanout(self):
+        morphs = [
+            {
+                "type": "additional_uv1",
+                "name": "screen",
+                "offsets": [
+                    {"vertex_index": 70890, "uv_offset": [1.0, 0.0, 0.0, 0.0]},
+                ],
+            },
+            {"type": "material", "name": "material", "offsets": []},
+        ]
+
+        remapped = export_scene_collector_module._remap_vertex_indexed_morph_offsets(
+            morphs,
+            {70890: [12, 24]},
+        )
+
+        self.assertEqual(
+            [offset["vertex_index"] for offset in remapped[0]["offsets"]],
+            [12, 24],
+        )
+        self.assertIs(remapped[1], morphs[1])
+
+    def test_model_root_rejects_unavailable_uv_morph_source_vertex(self):
+        with self.assertRaisesRegex(ValueError, "unavailable source vertex 99"):
+            export_scene_collector_module._remap_vertex_indexed_morph_offsets(
+                [
+                    {
+                        "type": "uv",
+                        "name": "missing",
+                        "offsets": [{"vertex_index": 99, "uv_offset": [0.0] * 4}],
+                    }
+                ],
+                {0: [0]},
+            )
+
+    def test_uv_morph_source_vertex_is_not_welded(self):
+        vertex = SimpleNamespace(
+            position=(0.0, 0.0, 0.0),
+            bone_indices=[0],
+            bone_weights=[1.0],
+            edge_magnification=1.0,
+            additional_uvs=[],
+        )
+        morph = SimpleNamespace(
+            morph_type=PmxMorphType.UVMorph,
+            offsets=[{"vertex_index": 1}],
+        )
+
+        keys = MeshConverter.__new__(MeshConverter)._build_vertex_weld_keys(
+            [vertex, vertex],
+            [],
+            [],
+            [morph],
+        )
+
+        self.assertEqual(keys[1], ("morph_source", 1))
+        self.assertNotEqual(keys[0], keys[1])
 
     def test_model_root_restores_mixed_morph_order_without_group_morphs(self):
         """Authoring projection receives canonical PMX order for ordinary mixed morphs."""

@@ -295,29 +295,47 @@ def _project_material_texture_fields(
 
 def _overlay_morph(oracle: Mapping[str, Any], morph: Any) -> dict[str, Any]:
     result = dict(oracle)
-    if morph.morph_type == "vertex":
-        # blendShape inputTarget data is the only vertex-offset authority.
-        # The immutable spec still carries an offsets-shaped writer payload,
-        # but that value is intentionally ignored here.
+    geometry_owned_types = {
+        "vertex": ("position_offset", 3),
+        "uv": ("uv_offset", 4),
+        "additional_uv1": ("uv_offset", 4),
+        "additional_uv2": ("uv_offset", 4),
+        "additional_uv3": ("uv_offset", 4),
+        "additional_uv4": ("uv_offset", 4),
+    }
+    if morph.morph_type in geometry_owned_types:
+        # Geometry collection owns the post-weld output vertex indices. The
+        # immutable spec keeps source-PMX indices and must not overwrite that
+        # remap during semantic projection.
         oracle_offsets = oracle.get("offsets", _MISSING)
         if oracle_offsets is _MISSING:
-            _fail("vertex morph oracle is missing blendShape offsets")
-        oracle_offsets = _require_sequence(oracle_offsets, field="oracle.vertex.offsets")
+            _fail(f"{morph.morph_type} morph oracle is missing geometry offsets")
+        oracle_offsets = _require_sequence(
+            oracle_offsets,
+            field=f"oracle.{morph.morph_type}.offsets",
+        )
+        vector_field, vector_length = geometry_owned_types[morph.morph_type]
         result_offsets = []
         for offset_index, raw_offset in enumerate(oracle_offsets):
-            field = f"oracle.vertex.offsets[{offset_index}]"
+            field = f"oracle.{morph.morph_type}.offsets[{offset_index}]"
             offset = _require_mapping(raw_offset, field=field)
             _require_index(offset.get("vertex_index", _MISSING), field=f"{field}.vertex_index")
-            position = offset.get("position_offset", _MISSING)
-            if isinstance(position, (str, bytes, bytearray)) or not isinstance(position, Sequence) or len(position) != 3:
-                _fail(f"{field}.position_offset must contain exactly three numbers")
+            vector = offset.get(vector_field, _MISSING)
+            if (
+                isinstance(vector, (str, bytes, bytearray))
+                or not isinstance(vector, Sequence)
+                or len(vector) != vector_length
+            ):
+                _fail(
+                    f"{field}.{vector_field} must contain exactly {vector_length} numbers"
+                )
             if any(
                 isinstance(component, bool)
                 or not isinstance(component, (int, float))
                 or not math.isfinite(component)
-                for component in position
+                for component in vector
             ):
-                _fail(f"{field}.position_offset must contain only finite numbers")
+                _fail(f"{field}.{vector_field} must contain only finite numbers")
             result_offsets.append(dict(offset))
     else:
         result_offsets = [dict(offset) for offset in morph.offsets]

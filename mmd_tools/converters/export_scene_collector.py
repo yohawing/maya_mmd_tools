@@ -68,6 +68,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SHARED_TOON_FLAG,
     ATTR_MMD_SHININESS,
     ATTR_MMD_SPECULAR_COLOR,
+    ATTR_MMD_SOURCE_VERTEX_INDICES,
     ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_SPHERE_PATH,
     ATTR_MMD_SPHERE_TEXTURE_INDEX,
@@ -120,6 +121,33 @@ def _get_mesh_shape(node: str) -> str:
     if not shapes:
         raise ValueError(f"No mesh shape found under '{node}'")
     return shapes[0]
+
+
+def _mesh_source_vertex_indices(
+    transform: str,
+    shape: str,
+    vertex_count: int,
+) -> list[int]:
+    """Return local Maya vertex indices mapped to imported PMX source indices."""
+
+    for node in (transform, shape):
+        if not cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=node, exists=True):
+            continue
+        values = cmds.getAttr(f"{node}.{ATTR_MMD_SOURCE_VERTEX_INDICES}")
+        if not isinstance(values, (list, tuple)) or len(values) != vertex_count:
+            raise ValueError(
+                f"{node}.{ATTR_MMD_SOURCE_VERTEX_INDICES} does not match vertex count "
+                f"{vertex_count}"
+            )
+        result = []
+        for value in values:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(
+                    f"{node}.{ATTR_MMD_SOURCE_VERTEX_INDICES} contains an invalid index"
+                )
+            result.append(value)
+        return result
+    return list(range(vertex_count))
 
 
 def _get_model_name(node: str) -> str:
@@ -1098,6 +1126,50 @@ def _remap_merged_vertex_bone_indices(
         ) from exc
 
 
+_VERTEX_INDEXED_SEMANTIC_MORPH_TYPES = {
+    "uv",
+    "additional_uv1",
+    "additional_uv2",
+    "additional_uv3",
+    "additional_uv4",
+}
+
+
+def _remap_vertex_indexed_morph_offsets(
+    morphs: list[dict],
+    output_indices_by_source: dict[int, list[int]],
+) -> list[dict]:
+    """Map source-PMX UV morph indices onto collected output vertices."""
+
+    remapped = []
+    for morph in morphs:
+        if morph.get("type") not in _VERTEX_INDEXED_SEMANTIC_MORPH_TYPES:
+            remapped.append(morph)
+            continue
+        remapped_morph = dict(morph)
+        remapped_offsets = []
+        for offset_index, offset in enumerate(morph.get("offsets", ())):
+            source_index = offset.get("vertex_index") if isinstance(offset, dict) else None
+            if isinstance(source_index, bool) or not isinstance(source_index, int):
+                raise ValueError(
+                    f"morph {morph.get('name')!r} offset {offset_index} "
+                    "has invalid source vertex index"
+                )
+            output_indices = output_indices_by_source.get(source_index, ())
+            if not output_indices:
+                raise ValueError(
+                    f"morph {morph.get('name')!r} references unavailable source vertex "
+                    f"{source_index}"
+                )
+            for output_index in output_indices:
+                remapped_offset = dict(offset)
+                remapped_offset["vertex_index"] = output_index
+                remapped_offsets.append(remapped_offset)
+        remapped_morph["offsets"] = remapped_offsets
+        remapped.append(remapped_morph)
+    return remapped
+
+
 def _collect_vertex_skin_weights_api(
     skin_cluster: str,
     shape: str,
@@ -2024,6 +2096,12 @@ class ExportSceneCollector:
             "bones": bones,
             "morphs": _collect_vertex_morphs(shape),
         }
+        if _preserve_material_bindings:
+            model_data["_source_vertex_indices"] = _mesh_source_vertex_indices(
+                transform,
+                shape,
+                vertex_count,
+            )
         soft_body_payload = _read_soft_body_payload(transform, shape)
         if soft_body_payload is not None:
             model_data["soft_bodies"] = soft_body_payload
@@ -2059,6 +2137,7 @@ class ExportSceneCollector:
             if bone.get("source_joint")
         }
         source_bone_to_global = _source_bone_index_map(merged_bones)
+        output_indices_by_source: dict[int, list[int]] = {}
         vertex_offset = 0
         expected_additional_uv_count = _get_attr(
             root,
@@ -2111,6 +2190,26 @@ class ExportSceneCollector:
                     )
                 mesh_vertices.append(merged_vertex)
 
+            source_vertex_indices = mesh_data.get(
+                "_source_vertex_indices",
+                list(range(len(mesh_vertices))),
+            )
+            if (
+                not isinstance(source_vertex_indices, list)
+                or len(source_vertex_indices) != len(mesh_vertices)
+            ):
+                raise ValueError(
+                    f"mesh '{shape}' has invalid PMX source vertex provenance"
+                )
+            for local_index, source_index in enumerate(source_vertex_indices):
+                if isinstance(source_index, bool) or not isinstance(source_index, int) or source_index < 0:
+                    raise ValueError(
+                        f"mesh '{shape}' has invalid PMX source vertex provenance"
+                    )
+                output_indices_by_source.setdefault(source_index, []).append(
+                    vertex_offset + local_index
+                )
+
             merged_vertices.extend(mesh_vertices)
             mesh_faces = [
                 [index + vertex_offset for index in face]
@@ -2141,9 +2240,12 @@ class ExportSceneCollector:
         morphs = list(vertex_morphs_by_name.values())
         morph_converter = MorphConverter()
         morphs.extend(
-            morph_converter.collect_morphs_from_scene_for_export(
-                root_group=root,
-                require_contiguous=False,
+            _remap_vertex_indexed_morph_offsets(
+                morph_converter.collect_morphs_from_scene_for_export(
+                    root_group=root,
+                    require_contiguous=False,
+                ),
+                output_indices_by_source,
             )
         )
         topology_validator = getattr(

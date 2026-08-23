@@ -1449,7 +1449,15 @@ class MeshConverter:
 
         morph_vertex_indices = set()
         for morph in morphs or []:
-            if getattr(morph, "morph_type", None) != PmxMorphType.VertexMorph:
+            morph_type = getattr(morph, "morph_type", None)
+            if morph_type not in {
+                PmxMorphType.VertexMorph,
+                PmxMorphType.UVMorph,
+                PmxMorphType.AdditionalUVMorph1,
+                PmxMorphType.AdditionalUVMorph2,
+                PmxMorphType.AdditionalUVMorph3,
+                PmxMorphType.AdditionalUVMorph4,
+            }:
                 continue
             for offset in getattr(morph, "offsets", ()) or ():
                 try:

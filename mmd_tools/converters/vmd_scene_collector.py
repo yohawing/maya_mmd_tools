@@ -1201,6 +1201,25 @@ def _write_stream_frame(sink: Any, section: str, frame: Mapping[str, Any]) -> No
     method(frame)
 
 
+def _should_emit_morph_frame(frame: Mapping[str, Any]) -> bool:
+    """Skip unrepresentable zero morphs; non-zero tracks must remain lossless."""
+
+    name = str(frame.get("morph_name", frame.get("name", "")))
+    try:
+        name.encode("cp932")
+    except UnicodeEncodeError as exc:
+        try:
+            value = float(frame.get("value", frame.get("weight", 0.0)))
+        except (TypeError, ValueError, OverflowError) as value_exc:
+            raise ValueError(f"morph {name!r} has an invalid weight") from value_exc
+        if math.isfinite(value) and abs(value) <= 1e-8:
+            return False
+        raise ValueError(
+            f"non-zero morph {name!r} cannot be represented by VMD CP932 names"
+        ) from exc
+    return True
+
+
 class VmdSceneCollector:
     """Collect minimum VMD-compatible animation data from a Maya scene."""
 
@@ -1367,8 +1386,17 @@ class VmdSceneCollector:
             "ik": 0,
         }
         generated_bone_counts: dict[str, int] = {}
+        omitted_zero_morph_names: set[str] = set()
+        omitted_zero_morph_frames = 0
 
         def emit(section: str, frame: Mapping[str, Any]) -> None:
+            nonlocal omitted_zero_morph_frames
+            if section == "morphs" and not _should_emit_morph_frame(frame):
+                omitted_zero_morph_names.add(
+                    str(frame.get("morph_name", frame.get("name", "")))
+                )
+                omitted_zero_morph_frames += 1
+                return
             _write_stream_frame(sink, section, frame)
             section_counts[section] += 1
             if section == "bones":
@@ -1522,6 +1550,12 @@ class VmdSceneCollector:
                 ik_routes_by_name=direct_ik_routes,
             )
             self._diagnostics["section_counts"] = dict(section_counts)
+            if omitted_zero_morph_frames:
+                self._diagnostics["omitted_zero_unencodable_morphs"] = {
+                    "frame_count": omitted_zero_morph_frames,
+                    "names": sorted(omitted_zero_morph_names),
+                    "reason": "VMD names require CP932 and zero weights have no scene effect",
+                }
             self._diagnostics["streaming"] = {
                 "enabled": True,
                 "peak_buffered_track_frames": "one_track",

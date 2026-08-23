@@ -74,7 +74,7 @@ struct RawGeometry {
     std::vector<float>              sdefRw1;
     std::vector<float>              qdefEnabled;
     std::vector<std::vector<float>> additionalUvs;
-    std::vector<bool>                vertexMorphSources;
+    std::vector<bool>                vertexIndexedMorphSources;
 };
 
 struct WeldKey {
@@ -229,26 +229,28 @@ bool loadRawGeometry(const std::vector<uint8_t>& bytes, RawGeometry& raw)
     }
 
     const size_t sourceCount = raw.positions.size() / 3U;
-    raw.vertexMorphSources.assign(sourceCount, false);
+    raw.vertexIndexedMorphSources.assign(sourceCount, false);
     const json nonGeometry = takeJsonBuffer(
         mmd_runtime_parse_pmx_non_geometry_json(bytes.data(), bytes.size()));
     if (nonGeometry.is_object() && nonGeometry.contains("morphs") &&
         nonGeometry["morphs"].is_array()) {
         for (const json& morph : nonGeometry["morphs"]) {
-            if (!morph.is_object() || morph.value("type", std::string()) != "vertex") {
+            if (!morph.is_object()) {
                 continue;
             }
-            const auto offsets = morph.find("vertexOffsets");
-            if (offsets == morph.end() || !offsets->is_array()) {
-                continue;
-            }
-            for (const json& offset : *offsets) {
-                if (!offset.is_object()) {
+            for (const char* field : {"vertexOffsets", "uvOffsets", "additionalUvOffsets"}) {
+                const auto offsets = morph.find(field);
+                if (offsets == morph.end() || !offsets->is_array()) {
                     continue;
                 }
-                const uint32_t index = offset.value("vertexIndex", sourceCount);
-                if (index < sourceCount) {
-                    raw.vertexMorphSources[index] = true;
+                for (const json& offset : *offsets) {
+                    if (!offset.is_object()) {
+                        continue;
+                    }
+                    const uint32_t index = offset.value("vertexIndex", sourceCount);
+                    if (index < sourceCount) {
+                        raw.vertexIndexedMorphSources[index] = true;
+                    }
                 }
             }
         }
@@ -279,11 +281,11 @@ WeldKey makeWeldKey(const RawGeometry& raw, size_t sourceIndex)
                      sourceIndex * 4U, 4U);
     }
 
-    // A vertex morph is a source-vertex operation.  Keep its source vertices
-    // distinct so the later Python morph converter can address them without
-    // a fan-out map.  The bounds check also makes malformed metadata fail
-    // closed by disabling only this candidate merge.
-    if (sourceIndex < raw.vertexMorphSources.size() && raw.vertexMorphSources[sourceIndex]) {
+    // Vertex and UV morphs are source-vertex operations. Keep their source
+    // vertices distinct so semantic offsets can be remapped after topology
+    // welding without losing the addressed source index.
+    if (sourceIndex < raw.vertexIndexedMorphSources.size() &&
+        raw.vertexIndexedMorphSources[sourceIndex]) {
         key.words.push_back(0xC0FFEE01U);
         key.words.push_back(static_cast<uint32_t>(std::min(sourceIndex, sourceCount - 1U)));
     }

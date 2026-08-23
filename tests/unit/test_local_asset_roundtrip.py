@@ -32,7 +32,9 @@ from tools.local_asset_roundtrip import (
     _repetitions,
     _run_warm_vmd_export_samples,
     _skip_warm_vmd_export_samples,
+    _streamed_bake_timeline_track_boundary_diff,
     _run_worker,
+    _compare_morph_structure,
     _compare_motion_morph_witness_values,
     _select_cases,
     _summary_markdown,
@@ -42,6 +44,56 @@ from tools.local_asset_roundtrip import (
     _vmd_payload,
     _vmd_payload_diff,
 )
+
+
+def _uv_morph_oracle(source_index, local_source_indices, uv_offset=None):
+    return {
+        "morphs": [
+            {
+                "index": 0,
+                "name": "uv",
+                "name_en": "uv",
+                "type": "uv",
+                "panel": 4,
+                "offsets": [
+                    {
+                        "vertex_index": source_index,
+                        "uv_offset": uv_offset or [0.1, 0.2, 0.0, 0.0],
+                    }
+                ],
+            }
+        ],
+        "vertex_meshes": [
+            {
+                "vertex_count": len(local_source_indices),
+                "source_vertex_indices": local_source_indices,
+            }
+        ],
+        "unsupported_types": [],
+    }
+
+
+def test_morph_structure_compares_uv_offsets_by_scene_vertex_after_weld():
+    source = _uv_morph_oracle(70890, [0, 70890])
+    exported = _uv_morph_oracle(1, [0, 1])
+
+    assert _compare_morph_structure(source, exported) == []
+
+
+def test_morph_structure_rejects_uv_offset_bound_to_different_scene_vertex():
+    source = _uv_morph_oracle(70890, [0, 70890])
+    exported = _uv_morph_oracle(0, [0, 1])
+
+    assert _compare_morph_structure(source, exported) == ["morphs[0].offsets differs"]
+
+
+def test_morph_structure_rejects_uv_offset_missing_from_scene_provenance():
+    source = _uv_morph_oracle(70890, [0])
+    exported = _uv_morph_oracle(0, [0])
+
+    assert _compare_morph_structure(source, exported) == [
+        "morphs[0].offsets[0] references missing vertex 70890"
+    ]
 
 
 def test_bounded_edit_value_reverses_at_attribute_limits():
@@ -521,6 +573,52 @@ def test_bake_timeline_track_boundaries_accept_identical_dense_collected_payload
     )
 
     assert failures == {"source_to_collected": [], "collected_to_export": []}
+
+
+def test_streamed_bake_timeline_boundary_accepts_dense_output_with_matching_counts():
+    source = {
+        **_dense_bake_timeline_payload(),
+        "bone": [_dense_bake_timeline_payload()["bone"][0]],
+        "morph": [],
+    }
+    exported = _dense_bake_timeline_payload()
+
+    failures = _streamed_bake_timeline_track_boundary_diff(
+        source,
+        exported,
+        {"bone": {"センター"}, "morph": set()},
+        {
+            "bones": len(exported["bone"]),
+            "morphs": len(exported["morph"]),
+            "cameras": 0,
+            "lights": 0,
+            "shadows": 0,
+            "ik": 0,
+        },
+    )
+
+    assert failures == {"source_to_export": [], "collector_to_export": []}
+
+
+def test_streamed_bake_timeline_boundary_rejects_collector_count_mismatch():
+    payload = _dense_bake_timeline_payload()
+
+    failures = _streamed_bake_timeline_track_boundary_diff(
+        payload,
+        payload,
+        {"bone": {"センター"}, "morph": {"笑顔"}},
+        {
+            "bones": len(payload["bone"]) + 1,
+            "morphs": len(payload["morph"]),
+            "cameras": 0,
+            "lights": 0,
+            "shadows": 0,
+            "ik": 0,
+        },
+    )
+
+    assert failures["source_to_export"] == []
+    assert failures["collector_to_export"] == ["bone.count expected=4 actual=3"]
 
 
 @pytest.mark.parametrize(

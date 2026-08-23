@@ -237,6 +237,26 @@ class FakeCmds:
 class TestVmdSceneCollector(unittest.TestCase):
     """VmdSceneCollector の最小収集契約を検証する。"""
 
+    def test_zero_weight_unencodable_morph_is_omittable(self):
+        self.assertFalse(
+            collector_module._should_emit_morph_frame(
+                {"morph_name": "腹显", "frame_number": 0, "value": 0.0}
+            )
+        )
+
+    def test_nonzero_unencodable_morph_remains_fail_closed(self):
+        with self.assertRaisesRegex(ValueError, "cannot be represented"):
+            collector_module._should_emit_morph_frame(
+                {"morph_name": "腹显", "frame_number": 0, "value": 0.25}
+            )
+
+    def test_cp932_morph_is_emitted_even_at_zero(self):
+        self.assertTrue(
+            collector_module._should_emit_morph_frame(
+                {"morph_name": "まばたき", "frame_number": 0, "value": 0.0}
+            )
+        )
+
     def setUp(self):
         self.cmds = FakeCmds()
         self.original_cmds = collector_module.cmds

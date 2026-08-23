@@ -864,18 +864,36 @@ def _capture_morph_meshes(root: str) -> tuple[list[str], list[dict[str, Any]], l
             if len(vertices) != vertex_count * 3:
                 raise RuntimeError(f"mesh {shape} returned malformed object-space vertices")
             source_indices = None
-            if cmds.attributeQuery("mmd_source_vertex_indices", node=shape, exists=True):
-                source_indices = cmds.getAttr(f"{shape}.mmd_source_vertex_indices")
+            source_owner = next(
+                (
+                    node
+                    for node in (transform, shape)
+                    if cmds.attributeQuery(
+                        "mmd_source_vertex_indices", node=node, exists=True
+                    )
+                ),
+                None,
+            )
+            if source_owner is not None:
+                source_indices = cmds.getAttr(
+                    f"{source_owner}.mmd_source_vertex_indices"
+                )
                 if isinstance(source_indices, (list, tuple)) and len(source_indices) == 1:
                     source_indices = source_indices[0]
                 if not isinstance(source_indices, (list, tuple)):
-                    raise RuntimeError(f"mesh {shape} has malformed mmd_source_vertex_indices")
+                    raise RuntimeError(
+                        f"mesh {source_owner} has malformed mmd_source_vertex_indices"
+                    )
                 try:
                     source_indices = [int(index) for index in source_indices]
                 except (TypeError, ValueError) as exc:
-                    raise RuntimeError(f"mesh {shape} has non-integer source vertex indices") from exc
+                    raise RuntimeError(
+                        f"mesh {source_owner} has non-integer source vertex indices"
+                    ) from exc
                 if len(source_indices) != vertex_count:
-                    raise RuntimeError(f"mesh {shape} source vertex index count differs from vertex count")
+                    raise RuntimeError(
+                        f"mesh {source_owner} source vertex index count differs from vertex count"
+                    )
             mesh_shapes.append(str(shape))
             descriptors.append(
                 {"vertex_count": vertex_count, "source_vertex_indices": source_indices}

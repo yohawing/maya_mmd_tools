@@ -130,6 +130,30 @@ def test_vertex_offsets_are_taken_from_blendshape_oracle() -> None:
     assert projected["morphs"][0]["offsets"][0]["vertex_index"] == 1
 
 
+def test_uv_offsets_keep_collector_post_weld_vertex_indices() -> None:
+    morph = MmdMorphSpec(
+        name="UV",
+        index=0,
+        morph_type="additional_uv1",
+        offsets=({"vertex_index": 70890, "uv_offset": (1.0, 0.0, 0.0, 0.0)},),
+    )
+    oracle = _oracle(
+        morphs=[
+            {
+                "index": 0,
+                "type": "additional_uv1",
+                "offsets": [
+                    {"vertex_index": 120, "uv_offset": [1.0, 0.0, 0.0, 0.0]},
+                ],
+            }
+        ]
+    )
+
+    projected = project_authoring_spec(_spec(morphs=(morph,)), oracle)
+
+    assert projected["morphs"][0]["offsets"][0]["vertex_index"] == 120
+
+
 def test_vertex_oracle_without_explicit_index_uses_collection_position() -> None:
     morph = MmdMorphSpec(name="Vertex", index=0, morph_type="vertex", offsets=())
     oracle = _oracle(morphs=[{"type": "vertex", "offsets": []}])

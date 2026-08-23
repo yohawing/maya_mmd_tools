@@ -726,6 +726,90 @@ def _bake_timeline_track_boundary_diff(
     }
 
 
+def _streamed_bake_timeline_track_boundary_diff(
+    source_payload: Mapping[str, Any],
+    exported_payload: Mapping[str, Any],
+    required_track_names: Mapping[str, Iterable[str]],
+    collector_counts: Mapping[str, Any],
+    source_omission_commitment: Optional[Mapping[str, Any]] = None,
+) -> dict[str, list[str]]:
+    """Verify a direct streamed collector without inventing an in-memory payload."""
+
+    required_source = _required_source_vmd_payload(source_payload, required_track_names)
+    commitment_error = None
+    if source_omission_commitment is not None:
+        missing = (
+            _bake_timeline_payload_identities(required_source)
+            - _bake_timeline_payload_identities(exported_payload)
+        )
+        allowed, commitment_error = _committed_source_omissions(
+            source_omission_commitment,
+            missing,
+        )
+        required_source = dict(required_source)
+        for section in ("bone", "morph"):
+            required_source[section] = [
+                item
+                for item in required_source.get(section, ())
+                if _bake_timeline_identity(section, item.get("name")) not in allowed
+            ]
+
+    source_to_export = _vmd_bake_timeline_semantic_diff(
+        required_source,
+        exported_payload,
+    )
+    if commitment_error is not None:
+        source_to_export.insert(0, commitment_error)
+
+    collector_to_export = []
+    section_names = {
+        "bone": "bones",
+        "morph": "morphs",
+        "camera": "cameras",
+        "light": "lights",
+        "shadow": "shadows",
+        "ik": "ik",
+    }
+    for payload_section, diagnostics_section in section_names.items():
+        expected_count = collector_counts.get(diagnostics_section)
+        if (
+            isinstance(expected_count, bool)
+            or not isinstance(expected_count, int)
+            or expected_count < 0
+        ):
+            collector_to_export.append(
+                f"{diagnostics_section} collector count is missing or invalid"
+            )
+            continue
+        actual_count = len(exported_payload.get(payload_section, ()))
+        if expected_count != actual_count:
+            collector_to_export.append(
+                f"{payload_section}.count expected={expected_count} actual={actual_count}"
+            )
+    return {
+        "source_to_export": source_to_export,
+        "collector_to_export": collector_to_export,
+    }
+
+
+def _streamed_export_diagnostics(path: Path) -> tuple[dict[str, int], Mapping[str, Any] | None]:
+    """Read the completed collector counts and source-omission commitment."""
+
+    document = _read_json(path)
+    snapshot = document.get("snapshot") if isinstance(document, Mapping) else None
+    collector = snapshot.get("collector") if isinstance(snapshot, Mapping) else None
+    counts = collector.get("section_counts") if isinstance(collector, Mapping) else None
+    selection = collector.get("track_selection") if isinstance(collector, Mapping) else None
+    commitment = (
+        selection.get("source_omission_identity")
+        if isinstance(selection, Mapping)
+        else None
+    )
+    if not isinstance(counts, Mapping):
+        return {}, commitment if isinstance(commitment, Mapping) else None
+    return dict(counts), commitment if isinstance(commitment, Mapping) else None
+
+
 def _source_omission_commitment(
     export_evidence: Mapping[str, Any],
 ) -> Mapping[str, Any]:
@@ -1094,8 +1178,79 @@ def _compare_morph_structure(
         failures.append(
             f"morph count expected={len(expected_morphs)} actual={len(actual_morphs)}"
         )
+    vertex_indexed_types = {
+        "uv",
+        "additional_uv1",
+        "additional_uv2",
+        "additional_uv3",
+        "additional_uv4",
+    }
+
+    def scene_vertex_offsets(
+        offsets: Any,
+        vertex_meshes: Any,
+        *,
+        field: str,
+    ) -> list[dict[str, Any]]:
+        """Project source-PMX indices onto stable Maya mesh/local indices."""
+
+        if not isinstance(offsets, list) or not isinstance(vertex_meshes, list):
+            raise ValueError(f"{field} is missing offsets or vertex mesh provenance")
+        targets_by_source: dict[int, list[tuple[int, int]]] = {}
+        for mesh_index, descriptor in enumerate(vertex_meshes):
+            if not isinstance(descriptor, Mapping):
+                raise ValueError(f"{field} vertex mesh {mesh_index} is malformed")
+            vertex_count = descriptor.get("vertex_count")
+            source_indices = descriptor.get("source_vertex_indices")
+            if isinstance(vertex_count, bool) or not isinstance(vertex_count, int) or vertex_count < 0:
+                raise ValueError(f"{field} vertex mesh {mesh_index} has invalid vertex_count")
+            if source_indices is None:
+                if len(vertex_meshes) != 1:
+                    raise ValueError(f"{field} multiple meshes require source vertex indices")
+                source_indices = list(range(vertex_count))
+            if not isinstance(source_indices, list) or len(source_indices) != vertex_count:
+                raise ValueError(f"{field} vertex mesh {mesh_index} has invalid source indices")
+            for local_index, source_index in enumerate(source_indices):
+                if (
+                    isinstance(source_index, bool)
+                    or not isinstance(source_index, int)
+                    or source_index < 0
+                ):
+                    raise ValueError(f"{field} vertex mesh {mesh_index} has invalid source index")
+                targets_by_source.setdefault(source_index, []).append((mesh_index, local_index))
+
+        projected = []
+        for offset_index, raw_offset in enumerate(offsets):
+            if not isinstance(raw_offset, Mapping):
+                raise ValueError(f"{field}[{offset_index}] is malformed")
+            source_index = raw_offset.get("vertex_index")
+            if (
+                isinstance(source_index, bool)
+                or not isinstance(source_index, int)
+                or source_index < 0
+            ):
+                raise ValueError(f"{field}[{offset_index}] has invalid vertex_index")
+            targets = targets_by_source.get(source_index)
+            if not targets:
+                raise ValueError(f"{field}[{offset_index}] references missing vertex {source_index}")
+            payload = {key: value for key, value in raw_offset.items() if key != "vertex_index"}
+            for mesh_index, local_index in targets:
+                projected.append(
+                    {
+                        **payload,
+                        "mesh_index": mesh_index,
+                        "vertex_index": local_index,
+                    }
+                )
+        return sorted(
+            projected,
+            key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True, default=str),
+        )
+
+    expected_vertex_meshes = expected.get("vertex_meshes")
+    actual_vertex_meshes = actual.get("vertex_meshes")
     for index, (source, result) in enumerate(zip(expected_morphs, actual_morphs)):
-        for field in ("index", "name", "name_en", "type", "panel", "offsets"):
+        for field in ("index", "name", "name_en", "type", "panel"):
             if field not in source and field not in result:
                 continue
             source_value = json.dumps(
@@ -1106,6 +1261,35 @@ def _compare_morph_structure(
             )
             if source_value != result_value:
                 failures.append(f"morphs[{index}].{field} differs")
+        if "offsets" not in source and "offsets" not in result:
+            continue
+        morph_type = source.get("type")
+        try:
+            if morph_type in vertex_indexed_types and result.get("type") == morph_type:
+                source_offsets = scene_vertex_offsets(
+                    source.get("offsets"),
+                    expected_vertex_meshes,
+                    field=f"morphs[{index}].offsets",
+                )
+                result_offsets = scene_vertex_offsets(
+                    result.get("offsets"),
+                    actual_vertex_meshes,
+                    field=f"morphs[{index}].offsets",
+                )
+            else:
+                source_offsets = source.get("offsets")
+                result_offsets = result.get("offsets")
+        except ValueError as exc:
+            failures.append(str(exc))
+            continue
+        source_value = json.dumps(
+            source_offsets, ensure_ascii=False, sort_keys=True, default=str
+        )
+        result_value = json.dumps(
+            result_offsets, ensure_ascii=False, sort_keys=True, default=str
+        )
+        if source_value != result_value:
+            failures.append(f"morphs[{index}].offsets differs")
     if expected.get("unsupported_types") != actual.get("unsupported_types"):
         failures.append("morph unsupported type set differs")
     return failures
@@ -2146,8 +2330,6 @@ def _run_vmd_exports(
     from mmd_tools.core.vmd_data import VmdData
 
     try:
-        source_omissions = None
-        collected_payload = source_payload
         cold_export_phase_start = len(context.phases)
         result = _phase(
             context,
@@ -2165,11 +2347,14 @@ def _run_vmd_exports(
         )
         exported_payload = _vmd_payload(exported_data)
         adjustment["exported_tracks"] = _vmd_edit_track_witness(exported_payload, adjustment)
-        track_boundary_failures = _bake_timeline_track_boundary_diff(
+        collector_counts, source_omissions = _streamed_export_diagnostics(
+            out_dir / "export-diagnostics.live.json"
+        )
+        track_boundary_failures = _streamed_bake_timeline_track_boundary_diff(
             source_payload,
-            collected_payload,
             exported_payload,
             required_track_names,
+            collector_counts,
             source_omission_commitment=source_omissions,
         )
         parser_failures = [
@@ -2215,7 +2400,7 @@ def _run_vmd_exports(
             "acknowledged_warnings": acknowledged_warnings,
             "exported_data": exported_data,
             "exported_payload": exported_payload,
-            "collected_payload": collected_payload,
+            "collector_counts": collector_counts,
             "track_boundary_failures": track_boundary_failures,
             "parser_failures": parser_failures,
             "source_total_keys": source_total_keys,
@@ -2402,7 +2587,7 @@ def _run_vmd_case(
     acknowledged_warnings = export_result["acknowledged_warnings"]
     exported_data = export_result["exported_data"]
     exported_payload = export_result["exported_payload"]
-    collected_payload = export_result["collected_payload"]
+    collector_counts = export_result["collector_counts"]
     track_boundary_failures = export_result["track_boundary_failures"]
     parser_failures = export_result["parser_failures"]
     source_total_keys = export_result["source_total_keys"]
@@ -2546,7 +2731,16 @@ def _run_vmd_case(
         "track_counts": {
             section: {
                 "source": len(source_payload[section]),
-                "collected": len(collected_payload[section]),
+                "collected": collector_counts.get(
+                    {
+                        "bone": "bones",
+                        "morph": "morphs",
+                        "camera": "cameras",
+                        "light": "lights",
+                        "shadow": "shadows",
+                        "ik": "ik",
+                    }[section]
+                ),
                 "exported": len(exported_payload[section]),
             }
             for section in ("bone", "morph", "camera", "light", "shadow", "ik")
