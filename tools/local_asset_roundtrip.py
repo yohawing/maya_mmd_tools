@@ -1577,6 +1577,23 @@ def _morph_weight_limits(plug: str) -> tuple[float, float]:
     return minimum, maximum
 
 
+def _bounded_edit_value(
+    before: float,
+    requested_delta: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    """Apply a bounded edit, reversing direction when the requested side is clamped."""
+
+    if not math.isfinite(before) or not math.isfinite(requested_delta) or requested_delta == 0.0:
+        raise ValueError("bounded edit requires a finite value and non-zero delta")
+    for delta in (requested_delta, -requested_delta):
+        after = max(minimum, min(maximum, before + delta))
+        if abs(after - before) > FLOAT_TOLERANCE:
+            return after
+    raise ValueError("bounded edit cannot change a value within the available limits")
+
+
 def _apply_motion_adjustment(
     root: str,
     source_data: Any,
@@ -1613,9 +1630,7 @@ def _apply_motion_adjustment(
         plug = _resolve_morph_controller_input_plug(root, int(morph.index))
         before_morph = float(cmds.getAttr(plug))
         minimum, maximum = _morph_weight_limits(plug)
-        after_morph = max(minimum, min(maximum, before_morph + morph_delta))
-        if abs(after_morph - before_morph) <= FLOAT_TOLERANCE:
-            raise ValueError("motion morph edit was clamped and did not change")
+        after_morph = _bounded_edit_value(before_morph, morph_delta, minimum, maximum)
         cmds.setAttr(plug, after_morph)
         cmds.setKeyframe(plug, time=frame)
         morph_witness = {

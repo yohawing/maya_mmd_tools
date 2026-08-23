@@ -11,6 +11,7 @@ import pytest
 
 from tools.local_asset_roundtrip import (
     VMD_EXPORT_BAKE_TIMELINE_POSE_TOLERANCE,
+    _bounded_edit_value,
     _metric_snapshot,
     _classify_failure,
     _allowed_warning_codes,
@@ -41,6 +42,17 @@ from tools.local_asset_roundtrip import (
     _vmd_payload,
     _vmd_payload_diff,
 )
+
+
+def test_bounded_edit_value_reverses_at_attribute_limits():
+    assert _bounded_edit_value(1.0, 0.05, 0.0, 1.0) == pytest.approx(0.95)
+    assert _bounded_edit_value(0.0, -0.05, 0.0, 1.0) == pytest.approx(0.05)
+    assert _bounded_edit_value(0.5, 0.05, 0.0, 1.0) == pytest.approx(0.55)
+
+
+def test_bounded_edit_value_rejects_degenerate_range():
+    with pytest.raises(ValueError, match="cannot change"):
+        _bounded_edit_value(1.0, 0.05, 1.0, 1.0)
 
 
 def test_bake_timeline_pose_tolerance_covers_vmd_ccd_reconstruction_only():
