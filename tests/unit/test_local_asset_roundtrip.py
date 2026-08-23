@@ -1100,3 +1100,31 @@ def test_vmd_export_rejects_unexpected_warning_codes():
     assert _allowed_warning_codes(allowed, "vmd") == ([], ["OTHER_WARNING"])
     with pytest.raises(RuntimeError, match="unexpected execute warnings"):
         _assert_execute_warnings(allowed, "pmx")
+
+
+def test_vmd_export_accepts_only_known_name_encoding_warnings():
+    result = SimpleNamespace(
+        report=SimpleNamespace(
+            issues=[
+                SimpleNamespace(
+                    code="UNSUPPORTED_FEATURE",
+                    severity="warning",
+                    path="scene.model.vmd_name_encoding",
+                ),
+                SimpleNamespace(
+                    code="UNSUPPORTED_FEATURE",
+                    severity="warning",
+                    path="scene.morphs.vmd_name_encoding",
+                ),
+            ]
+        )
+    )
+
+    assert _allowed_warning_codes(result, "vmd") == (
+        ["UNSUPPORTED_FEATURE", "UNSUPPORTED_FEATURE"],
+        [],
+    )
+    assert _assert_execute_warnings(result, "vmd") == [
+        "UNSUPPORTED_FEATURE",
+        "UNSUPPORTED_FEATURE",
+    ]

@@ -292,17 +292,29 @@ def _allowed_warning_codes(validation: Any, export_format: str) -> tuple[list[st
 
     report = getattr(validation, "report", None)
     issues = list(getattr(report, "issues", ()) or ())
-    warning_codes = [
-        str(getattr(issue, "code", ""))
+    warnings = [
+        issue
         for issue in issues
         if str(getattr(issue, "severity", "")).casefold() == "warning"
     ]
-    del export_format
-    allowed = None
-    return (
-        [code for code in warning_codes if allowed is not None and code == allowed],
-        [code for code in warning_codes if code != allowed],
+    allowed_paths = (
+        {
+            "scene.model.vmd_name_encoding",
+            "scene.morphs.vmd_name_encoding",
+        }
+        if export_format == "vmd"
+        else set()
     )
+    acknowledged = []
+    unexpected = []
+    for issue in warnings:
+        code = str(getattr(issue, "code", ""))
+        path = str(getattr(issue, "path", ""))
+        if code == "UNSUPPORTED_FEATURE" and path in allowed_paths:
+            acknowledged.append(code)
+        else:
+            unexpected.append(code)
+    return acknowledged, unexpected
 
 
 def _assert_execute_warnings(result: Any, export_format: str) -> list[str]:
