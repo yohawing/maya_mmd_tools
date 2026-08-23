@@ -157,7 +157,7 @@ def _report_output_failure(
 def _scene_report_for_control_rig(
     report: ExportValidationReport, options: Mapping[str, Any], vmd_action: Any
 ) -> ExportValidationReport:
-    """Let the one-shot action own its temporary Control Rig bake lifecycle."""
+    """Allow ownership paths the one-shot action can collect safely."""
 
     if str(options.get("export_format") or "").lower() != "vmd":
         return report
@@ -293,10 +293,18 @@ class ExportWorkflowService:
     def _scene_preflight(self, request: ExportWorkflowRequest):
         options = self._options(request)
         scene = self.scene_preflight.run(options)
-        report = _scene_report_for_control_rig(scene.report, options, self.vmd_action)
         metadata = dict(scene.metadata)
         if metadata.get("format") == "vmd":
             metadata["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
+        # GUI requests intentionally name only ``current_model_root``.  The
+        # production VMD backend requires the equivalent ``target_model`` at
+        # every action boundary, including this read-only Control Rig
+        # capability check.  Use the same enriched options that collection
+        # receives so EDIT / CONTROL_OWNED does not remain falsely blocked.
+        action_options = self._target_options(options, metadata)
+        report = _scene_report_for_control_rig(
+            scene.report, action_options, self.vmd_action
+        )
         return options, metadata, report
 
     def _collect_model(self, request: ExportWorkflowRequest, options: Mapping[str, Any]) -> Any:

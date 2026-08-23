@@ -84,6 +84,33 @@ class _WarningScenePreflight:
         )
 
 
+class _ControlRigScenePreflight:
+    """Return the ownership issue produced for an EDIT Control Rig scene."""
+
+    def run(self, _options):
+        return ScenePreflightResult(
+            ExportValidationReport(
+                "vmd",
+                (
+                    ExportValidationIssue(
+                        "OWNERSHIP_CONFLICT",
+                        "fatal",
+                        True,
+                        "ownership.control_rig",
+                        "Control Rig owns the authoring path",
+                        details={"owner": "control_rig"},
+                    ),
+                ),
+                mode="bake_timeline",
+            ),
+            {
+                "format": "vmd",
+                "export_strategy": "bake_timeline",
+                "target_identity": "model_ROOT",
+            },
+        )
+
+
 class _VmdBoundary:
     def __init__(self):
         self.collect_calls = 0
@@ -148,6 +175,24 @@ class _TemporaryVmdBoundary(_VmdBoundary):
 
     def restore_after_collection(self, _context):
         self.restore_calls += 1
+
+
+class _DirectControlRigVmdBoundary(_VmdBoundary):
+    """Accept direct collection only with the complete Current Model route."""
+
+    def __init__(self):
+        super().__init__()
+        self.capability_options = None
+
+    def can_prepare_for_collection(self, request):
+        self.capability_options = dict(request)
+        return (
+            request.get("current_model_root") == "model_ROOT"
+            and request.get("target_model") == "model_ROOT"
+        )
+
+    def prepare_for_collection(self, _request):
+        return None
 
 
 class _ModelAction:
@@ -258,6 +303,32 @@ class ExportWorkflowTests(unittest.TestCase):
             self.assertGreaterEqual(boundary.close_calls, 1)
             self.assertTrue(target.is_file())
             self.assertEqual(list(Path(directory).glob(".motion.*.vmd")), [])
+
+    def test_gui_shaped_control_rig_request_uses_direct_vmd_collection(self):
+        boundary = _DirectControlRigVmdBoundary()
+        service = self._service(
+            vmd_action=BakeTimelineVmdExportAction(boundary),
+            scene_preflight=_ControlRigScenePreflight(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "motion.vmd"
+            result = service.execute(
+                ExportWorkflowRequest(
+                    str(target),
+                    {
+                        "export_format": "vmd",
+                        "export_strategy": "bake_timeline",
+                        "current_model_root": "model_ROOT",
+                        "require_current_model": True,
+                        "require_target": True,
+                    },
+                )
+            )
+
+        self.assertEqual(result.state, STATE_SUCCEEDED, result.error)
+        self.assertEqual(boundary.collect_calls, 1)
+        self.assertEqual(boundary.capability_options["target_model"], "model_ROOT")
+        self.assertFalse(result.report.is_blocking)
 
     def test_vmd_failure_keeps_existing_target_and_cleans_stage(self):
         class FailingBoundary(_TemporaryVmdBoundary):
