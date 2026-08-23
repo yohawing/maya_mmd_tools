@@ -57,6 +57,16 @@ class _View:
         self.invalidations += 1
 
 
+class _PmxView(_View):
+    current_export_format = "pmx"
+
+    def build_request(self, root):
+        return ExportWorkflowRequest(
+            "model.pmx",
+            {"export_format": "pmx", "current_model_root": root},
+        )
+
+
 class _AppState:
     current_model_root = "model_ROOT"
 
@@ -82,13 +92,16 @@ class _AppState:
 class _Workflow:
     def __init__(self):
         self.requests = []
+        self.progress_callbacks = []
 
     def execute(self, request, *, warning_callback=None, progress_callback=None, **_kwargs):
         self.requests.append(request)
-        progress_callback("scene_preflight")
-        progress_callback("payload_collection")
-        progress_callback("writer")
-        progress_callback("report_ready")
+        self.progress_callbacks.append(progress_callback)
+        if callable(progress_callback):
+            progress_callback("scene_preflight")
+            progress_callback("payload_collection")
+            progress_callback("writer")
+            progress_callback("report_ready")
         return ExportWorkflowResult(
             STATE_SUCCEEDED,
             ExportValidationReport("vmd", (), mode="bake_timeline"),
@@ -172,6 +185,11 @@ class ExportPresenterTests(unittest.TestCase):
         self.assertEqual(view.operation_states, [True, False])
         self.assertEqual(view.results[-1], result)
         self.assertEqual(app_state.statuses[-1], "Completed")
+        self.assertIsNone(workflow.progress_callbacks[-1])
+        self.assertEqual(
+            app_state.progress,
+            [("begin", "Validating scene"), ("end", 1)],
+        )
 
     def test_current_model_change_only_invalidates_visible_reports(self):
         view = _View()
@@ -181,6 +199,25 @@ class ExportPresenterTests(unittest.TestCase):
         app_state.current_model_changed.slots[0]("other_ROOT")
 
         self.assertEqual(view.invalidations, 1)
+
+    def test_model_export_keeps_gui_progress_updates(self):
+        view = _PmxView()
+        app_state = _AppState()
+        workflow = _Workflow()
+
+        result = ExportPresenter(view, app_state, workflow).export()
+
+        self.assertTrue(result.succeeded)
+        self.assertTrue(callable(workflow.progress_callbacks[-1]))
+        self.assertEqual(
+            [entry[2] for entry in app_state.progress if entry[0] == "update"],
+            [
+                "Validating scene",
+                "Collecting animation",
+                "Writing temporary file",
+                "Finalizing",
+            ],
+        )
 
     def test_warning_dialog_approves_or_cancels_inside_one_export_call(self):
         for approve in (True, False):

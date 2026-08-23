@@ -60,10 +60,21 @@ class ExportPresenter(QObject):
                 getattr(self.app_state, "current_model_root", None)
             )
             export_format = self._request_export_format(request, export_format)
+
+            def update_progress(stage):
+                self._update_progress(progress_token, stage)
+
+            progress_callback = None if export_format == "vmd" else update_progress
             result = self.workflow_service.execute(
                 request,
                 warning_callback=lambda report: self._confirm_warnings(report, request),
-                progress_callback=lambda stage: self._update_progress(progress_token, stage),
+                # The VMD action owns a live Maya scene watch from arm through
+                # output verification.  A GUI progress callback repaints by
+                # pumping Qt events, which can re-enter Maya and invalidate or
+                # stall that synchronous export boundary.  The busy indicator
+                # was painted by begin_progress() before the watch was armed;
+                # update it again only after execute() has closed the watch.
+                progress_callback=progress_callback,
             )
         except Exception as exc:
             logger.error("Export workflow failed before result creation: %s", exc, exc_info=True)
