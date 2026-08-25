@@ -211,11 +211,13 @@ class _FakeBodyPicker:
         self.reset_pose_clicked = _FakeSignal()
         self.select_all_clicked = _FakeSignal()
         self.clear_selection_clicked = _FakeSignal()
+        self.background_clicked = _FakeSignal()
         self.ik_toggled = _FakeSignal()
         self.ik_enable_toggle_clicked = _FakeSignal()
         self.selected_regions = []
         self.tooltip = ""
         self.additive_selection = False
+        self.subtractive_selection = False
         self.region_labels = {}
         self.region_tooltips = {}
         self.hidden_regions = set()
@@ -243,8 +245,10 @@ class _FakeFingerPicker:
         self.region_clicked = _FakeSignal()
         self.regions_selected = _FakeSignal()
         self.goto_body_clicked = _FakeSignal()
+        self.background_clicked = _FakeSignal()
         self.selected_regions = []
         self.additive_selection = False
+        self.subtractive_selection = False
         self.region_tooltips = {}
 
     def set_selected_regions(self, region_ids):
@@ -574,6 +578,10 @@ class _FakeAdapter:
             self.selected = list(nodes)
         else:
             self.selected = list(dict.fromkeys([*self.selected, *nodes]))
+
+    def deselect(self, nodes):
+        removed = set(nodes)
+        self.selected = [node for node in self.selected if node not in removed]
 
     def xform(self, node, **kwargs):
         if kwargs.get("query"):
@@ -1572,6 +1580,38 @@ class TestBodyPickerPresenter(unittest.TestCase):
 
         self.assertEqual(adapter.selected, ["head_jnt", "neck_jnt", "arm_jnt"])
 
+    def test_ctrl_rectangle_removes_regions_and_preserves_other_selection(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首", "arm_jnt": "左腕"},
+        )
+        adapter.selected = ["head_jnt", "neck_jnt", "arm_jnt", "external"]
+        adapter._long_paths["external"] = "|other|external"
+        view.body_picker.subtractive_selection = True
+
+        view.body_picker.regions_selected.emit(["neck", "left_upper_arm"])
+
+        self.assertEqual(adapter.selected, ["head_jnt", "external"])
+        self.assertEqual(view.body_picker.selected_regions, ["head"])
+
+    def test_ctrl_click_removes_owned_control_by_resolved_identity(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首"},
+        )
+        adapter.selected = ["head_jnt", "neck_control"]
+        adapter._long_paths["neck_control"] = "|test_model|ControlRig|neck_control"
+        view.body_picker.subtractive_selection = True
+
+        def preferred_control(node):
+            return "neck_control" if node == "neck_jnt" else node
+
+        with patch.object(
+            presenter, "_preferred_rig_control", side_effect=preferred_control
+        ):
+            view.body_picker.region_clicked.emit("neck")
+
+        self.assertEqual(adapter.selected, ["head_jnt"])
+        self.assertEqual(view.body_picker.selected_regions, ["head"])
+
     def test_body_picker_all_button_selects_every_model_joint(self):
         presenter, view, _, adapter = self._make_with_bones(
             bone_names={"head_jnt": "頭", "neck_jnt": "首"},
@@ -1590,6 +1630,16 @@ class TestBodyPickerPresenter(unittest.TestCase):
         view.body_picker.clear_selection_clicked.emit()
 
         self.assertEqual(adapter.selected, [])
+
+    def test_picker_background_click_clears_selection(self):
+        _presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+
+        for picker in (view.body_picker, view.finger_picker):
+            adapter.selected = ["head_jnt"]
+            picker.background_clicked.emit()
+            self.assertEqual(adapter.selected, [])
 
     def test_bone_name_map_cleared_on_model_clear(self):
         presenter, _, app_state, _ = self._make_with_bones(
@@ -1668,6 +1718,27 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         self.assertEqual(info.panel, 2)
         self.assertEqual(presenter._morph_targets["笑い"], [("blendShape1", 0)])
 
+    def test_new_vertex_morph_uses_blendshape_global_index_with_stale_root_metadata(self):
+        blend_shapes = {
+            "body_mesh": {
+                "blendShape1": {
+                    "type": "blendShape",
+                    "morph_json": {"0": {"name": "新規", "index": 19}},
+                }
+            }
+        }
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=blend_shapes,
+            morph_data=[],
+        )
+        presenter._morph_controller = "morphController"
+
+        presenter._on_morph_weight_changed("新規", 0.625)
+
+        self.assertEqual(presenter._morph_indices["新規"], 19)
+        self.assertEqual(adapter._set_attrs["morphController.inputWeight[19]"], 0.625)
+        self.assertNotIn("blendShape1.weight[0]", adapter._set_attrs)
+
     def test_morph_targets_tracked(self):
         presenter, _, _, _ = self._make_with_morphs(
             blend_shapes=SAMPLE_BLEND_SHAPES,
@@ -1679,6 +1750,47 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         presenter, _, _, _ = self._make_with_morphs(blend_shapes={})
         infos = presenter._collect_morph_infos("test_model")
         self.assertEqual(len(infos), 0)
+
+    def test_legacy_network_morph_accepts_short_and_long_root_aliases(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            model_root="MMT_TestModel_root",
+        )
+        adapter._attrs.update(
+            {
+                ("legacyMorph", "mmd_morph_type"): "bone",
+                ("legacyMorph", "mmd_model_root"): True,
+                ("legacyMorph", "mmd_morph_name"): "LegacyBone",
+            }
+        )
+        original_ls = adapter.ls
+        adapter.ls = lambda nodes=None, type=None, **kwargs: (
+            ["legacyMorph"]
+            if type == "network"
+            else original_ls(nodes, type=type, **kwargs)
+        )
+        original_connections = adapter.list_connections
+        adapter.list_connections = lambda node, **kwargs: (
+            ["|MMT_TestModel_root"]
+            if node == "legacyMorph.mmd_model_root"
+            else original_connections(node, **kwargs)
+        )
+        adapter._long_paths.update(
+            {
+                "MMT_TestModel_root": "|MMT_TestModel_root",
+                "|MMT_TestModel_root": "|MMT_TestModel_root",
+            }
+        )
+        morphs = []
+
+        presenter._collect_network_morph_targets(
+            "MMT_TestModel_root",
+            {},
+            morphs,
+            set(),
+        )
+
+        self.assertEqual([morph.name for morph in morphs], ["LegacyBone"])
+        self.assertEqual(presenter._network_morph_targets["LegacyBone"], ["legacyMorph.weight"])
 
     def test_clear_morph_tab(self):
         presenter, view, _, _ = self._make_with_morphs(
@@ -2148,6 +2260,334 @@ class TestToolsSection(unittest.TestCase):
         self.assertEqual(adapter._transforms["j1"][1], [0, 0, 0])
         self.assertEqual(adapter._transforms["j2"][1], [0, 0, 0])
         self.assertEqual(adapter._undo_chunks, ["Reset Pose"])
+
+    def test_control_owned_reset_uses_control_zero_not_joint_bind_translation(self):
+        presenter, _, _, adapter = self._make()
+
+        class FakeCmds:
+            _paths = {
+                "test_model": "|test_model",
+                "control-uuid": "|controls|center_CTRL",
+                "center_joint": "|test_model|Skeleton|center_joint",
+            }
+
+            def ls(self, node=None, long=False, uuid=False, **_kwargs):
+                if uuid:
+                    return ["model-uuid"] if node == "test_model" else []
+                if long and node in self._paths:
+                    return [self._paths[node]]
+                if long and node in self._paths.values():
+                    return [node]
+                return [node] if node else []
+
+            @staticmethod
+            def listRelatives(*_args, **_kwargs):
+                return ["center_joint"]
+
+        adapter._cmds = FakeCmds()
+        adapter._attrs[
+            ("|test_model|Skeleton|center_joint", "mmd_vmd_bind_translate")
+        ] = "[8.0, 9.0, 10.0]"
+        metadata = {
+            "owner": "CONTROL_OWNED",
+            "controls": {"center": "control-uuid"},
+            "bindings": {"center": {"jointUuid": "joint-uuid"}},
+        }
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value=metadata,
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_builder.resolve_mmd_control_rig_binding_joint",
+            return_value="center_joint",
+        ), patch.object(
+            presenter,
+            "_selected_bind_translations",
+            side_effect=AssertionError("joint bind translation must not be read"),
+        ):
+            targets, rest_translations = presenter._rest_pose_targets()
+
+        self.assertEqual(targets, ["|controls|center_CTRL"])
+        self.assertEqual(
+            rest_translations,
+            {"|controls|center_CTRL": (0.0, 0.0, 0.0)},
+        )
+
+    def test_mmd_owned_reset_resolves_bone_and_ik_role_authoring_routes(self):
+        presenter, _, _, _ = self._make()
+
+        class FakeCmds:
+            @staticmethod
+            def ls(node=None, long=False, **_kwargs):
+                return [node] if node and long else []
+
+            @staticmethod
+            def objExists(plug):
+                return plug == "solver.inputRotate[2]" or plug.startswith(
+                    "solver.inputRotate[2].inputRotateElement"
+                )
+
+        direct = SimpleNamespace(
+            joint="|model|center",
+            blocked=False,
+            input_kind="direct_channel",
+            authored_plugs=("|model|center.translate", "|model|center.rotate"),
+        )
+        solver_output = SimpleNamespace(
+            joint="|model|knee",
+            blocked=True,
+            input_kind="solver_output",
+            authored_plugs=(),
+            incoming=(
+                SimpleNamespace(
+                    source_node_type="mmdCcdIk",
+                    source_plug="solver.outputRotate[2]",
+                    destination_plug="|model|knee.rotate",
+                ),
+            ),
+        )
+        ik_children = tuple(
+            f"solver.inputRotate[2].inputRotateElement{axis}" for axis in "XYZ"
+        )
+        ik_input = SimpleNamespace(
+            joint="|model|knee",
+            blocked=False,
+            input_kind="ik_link_input",
+            authored_plugs=ik_children,
+        )
+        spec = SimpleNamespace(
+            bones=(direct, solver_output),
+            roles=(SimpleNamespace(binding=ik_input),),
+        )
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value={"owner": "MMD_OWNED"},
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig",
+            return_value=spec,
+        ):
+            routes = presenter._rest_pose_authored_plugs(
+                "|model",
+                ["|model|center", "|model|knee"],
+                FakeCmds(),
+            )
+
+        self.assertEqual(
+            routes,
+            {
+                "|model|center": (
+                    "|model|center.translate",
+                    "|model|center.rotate",
+                ),
+                "|model|knee": ik_children,
+            },
+        )
+
+    def test_solver_output_joint_routes_to_chain_bone_slot_input(self):
+        presenter, _, _, _ = self._make()
+
+        class FakeCmds:
+            @staticmethod
+            def ls(node=None, long=False, **_kwargs):
+                return [node] if node and long else []
+
+            @staticmethod
+            def objExists(plug):
+                return plug == "solver.inputRotate[8]" or plug.startswith(
+                    "solver.inputRotate[8].inputRotateElement"
+                )
+
+            @staticmethod
+            def getAttr(plug):
+                if plug == "solver.chainJson":
+                    return '{"links":[{"bone_slot":8}]}'
+                raise KeyError(plug)
+
+        direct = SimpleNamespace(
+            joint="|model|center",
+            blocked=False,
+            input_kind="direct_channel",
+            authored_plugs=("|model|center.translate", "|model|center.rotate"),
+        )
+        derived_ankle = SimpleNamespace(
+            joint="|model|right_ankle",
+            blocked=True,
+            input_kind="solver_output",
+            authored_plugs=(),
+            incoming=(
+                SimpleNamespace(
+                    source_node_type="mmdCcdIk",
+                    source_plug="solver.outputRotate[0]",
+                    destination_plug="|model|right_ankle.rotate",
+                ),
+            ),
+        )
+        spec = SimpleNamespace(bones=(direct, derived_ankle), roles=())
+        targets = ["|model|center", "|model|right_ankle"]
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value={"owner": "MMD_OWNED"},
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig",
+            return_value=spec,
+        ):
+            routes = presenter._rest_pose_authored_plugs(
+                "|model",
+                targets,
+                FakeCmds(),
+            )
+
+        self.assertEqual(
+            routes,
+            {
+                "|model|center": (
+                    "|model|center.translate",
+                    "|model|center.rotate",
+                ),
+                "|model|right_ankle": tuple(
+                    f"solver.inputRotate[8].inputRotateElement{axis}"
+                    for axis in "XYZ"
+                ),
+            },
+        )
+
+    def test_solver_output_prefers_bone_morph_role_over_inferred_input(self):
+        presenter, _, _, _ = self._make()
+
+        class FakeCmds:
+            @staticmethod
+            def ls(node=None, long=False, **_kwargs):
+                return [node] if node and long else []
+
+            @staticmethod
+            def objExists(plug):
+                return plug == "solver.inputRotate[3]" or plug.startswith(
+                    "solver.inputRotate[3].inputRotateElement"
+                )
+
+        knee = SimpleNamespace(
+            joint="|model|right_knee",
+            blocked=True,
+            input_kind="solver_output",
+            authored_plugs=(),
+            incoming=(
+                SimpleNamespace(
+                    source_node_type="mmdCcdIk",
+                    source_plug="solver.outputRotate[3]",
+                    destination_plug="|model|right_knee.rotate",
+                ),
+            ),
+        )
+        role = SimpleNamespace(
+            joint="|model|right_knee",
+            blocked=False,
+            input_kind="ik_link_input",
+            authored_plugs=("rightKneeBoneMorphAccum.baseRotate",),
+        )
+        spec = SimpleNamespace(
+            bones=(knee,),
+            roles=(SimpleNamespace(binding=role),),
+        )
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value={"owner": "MMD_OWNED"},
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig",
+            return_value=spec,
+        ):
+            routes = presenter._rest_pose_authored_plugs(
+                "|model",
+                ["|model|right_knee"],
+                FakeCmds(),
+            )
+
+        self.assertEqual(
+            routes,
+            {"|model|right_knee": ("rightKneeBoneMorphAccum.baseRotate",)},
+        )
+
+    def test_solver_output_route_ambiguity_and_missing_input_fail_closed(self):
+        presenter, _, _, _ = self._make()
+
+        class FakeCmds:
+            input_exists = True
+            chain_json = '{"links":[{"bone_slot":8}]}'
+
+            @staticmethod
+            def ls(node=None, long=False, **_kwargs):
+                return [node] if node and long else []
+
+            def objExists(self, plug):
+                return self.input_exists and (
+                    plug == "solver.inputRotate[8]"
+                    or plug.startswith("solver.inputRotate[8].inputRotateElement")
+                )
+
+            def getAttr(self, plug):
+                if plug == "solver.chainJson":
+                    return self.chain_json
+                raise KeyError(plug)
+
+        row = SimpleNamespace(
+            source_node_type="mmdCcdIk",
+            source_plug="solver.outputRotate[0]",
+            destination_plug="|model|right_ankle.rotate",
+        )
+        binding = SimpleNamespace(
+            joint="|model|right_ankle",
+            blocked=True,
+            input_kind="solver_output",
+            authored_plugs=(),
+            incoming=(row, row),
+        )
+        spec = SimpleNamespace(bones=(binding,), roles=())
+        cmds = FakeCmds()
+        with patch(
+            "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+            return_value={"owner": "MMD_OWNED"},
+        ), patch(
+            "mmd_tools.core.mmd_control_rig_analyzer.analyze_mmd_control_rig",
+            return_value=spec,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "route is ambiguous"):
+                presenter._rest_pose_authored_plugs(
+                    "|model",
+                    ["|model|right_ankle"],
+                    cmds,
+                )
+
+            binding.incoming = (row,)
+            cmds.input_exists = False
+            with self.assertRaisesRegex(RuntimeError, "input is unavailable"):
+                presenter._rest_pose_authored_plugs(
+                    "|model",
+                    ["|model|right_ankle"],
+                    cmds,
+                )
+
+            cmds.input_exists = True
+            cmds.chain_json = "{}"
+            with self.assertRaisesRegex(RuntimeError, "chain metadata is unavailable"):
+                presenter._rest_pose_authored_plugs(
+                    "|model",
+                    ["|model|right_ankle"],
+                    cmds,
+                )
+
+            cmds.chain_json = '{"links":[{"bone_slot":"8"}]}'
+            with self.assertRaisesRegex(RuntimeError, "chain metadata is unavailable"):
+                presenter._rest_pose_authored_plugs(
+                    "|model",
+                    ["|model|right_ankle"],
+                    cmds,
+                )
+
+            cmds.chain_json = '{"links":[{"bone_slot":8},{"bone_slot":8}]}'
+            with self.assertRaisesRegex(RuntimeError, "chain metadata is unavailable"):
+                presenter._rest_pose_authored_plugs(
+                    "|model",
+                    ["|model|right_ankle"],
+                    cmds,
+                )
 
     def test_reset_pose_has_no_shared_mode_state(self):
         presenter, view, _, adapter = self._make()

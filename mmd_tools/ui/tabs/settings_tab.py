@@ -43,6 +43,7 @@ class SettingsTab(BaseTab):
 
         # 各設定タブを追加
         self.settings_tabs.addTab(self._create_general_tab(), self.tr("general_settings", "tabs"))
+        self.settings_tabs.addTab(self._create_advanced_tab(), self.tr("advanced_settings", "tabs"))
 
         scroll_layout.addWidget(self.settings_tabs)
 
@@ -52,6 +53,10 @@ class SettingsTab(BaseTab):
         self.reset_settings_btn = QPushButton(self.tr("reset_to_default", "actions"))
         self.export_settings_btn = QPushButton(self.tr("export_settings", "actions"))
         self.import_settings_btn = QPushButton(self.tr("import_settings", "actions"))
+        self.save_settings_btn.setObjectName("settingsSaveButton")
+        self.reset_settings_btn.setObjectName("settingsResetButton")
+        self.export_settings_btn.setObjectName("settingsExportButton")
+        self.import_settings_btn.setObjectName("settingsImportButton")
 
         button_layout.addStretch()
         button_layout.addWidget(self.save_settings_btn)
@@ -78,10 +83,12 @@ class SettingsTab(BaseTab):
         ui_layout = QFormLayout()
 
         self.development_mode_check = QCheckBox(self.tr("development_mode", "checkboxes"))
+        self.development_mode_check.setObjectName("settingsDevelopmentModeCheck")
         ui_layout.addRow("", self.development_mode_check)
 
         # 言語選択
         self.language_combo = QComboBox()
+        self.language_combo.setObjectName("settingsLanguageCombo")
         # UITranslatorから言語リストを取得
         from ...ui.translations import UITranslator
 
@@ -93,6 +100,7 @@ class SettingsTab(BaseTab):
         ui_layout.addRow(self.language_label, self.language_combo)
 
         self.file_history_limit_spin = QSpinBox()
+        self.file_history_limit_spin.setObjectName("settingsFileHistoryLimitSpin")
         self.file_history_limit_spin.setRange(1, 100)
         self.file_history_limit_spin.setValue(20)
         self.file_history_limit_label = QLabel(self.tr("file_history_limit", "fields"))
@@ -107,9 +115,11 @@ class SettingsTab(BaseTab):
 
         command_port_layout = QHBoxLayout()
         self.command_port_spin = QSpinBox()
+        self.command_port_spin.setObjectName("settingsCommandPortSpin")
         self.command_port_spin.setRange(1, 65535)
         self.command_port_spin.setValue(3939)
         self.open_command_port_btn = QPushButton(self.tr("open_command_port", "buttons"))
+        self.open_command_port_btn.setObjectName("settingsOpenCommandPortButton")
         command_port_layout.addWidget(self.command_port_spin)
         command_port_layout.addWidget(self.open_command_port_btn)
         self.command_port_label = QLabel(self.tr("command_port", "fields"))
@@ -123,16 +133,20 @@ class SettingsTab(BaseTab):
         log_layout = QFormLayout()
 
         self.logging_enabled_check = QCheckBox(self.tr("enable_logging", "checkboxes"))
+        self.logging_enabled_check.setObjectName("settingsLoggingEnabledCheck")
         log_layout.addRow("", self.logging_enabled_check)
 
         self.log_level_combo = QComboBox()
+        self.log_level_combo.setObjectName("settingsLogLevelCombo")
         self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
         self.log_level_label = QLabel(self.tr("log_level", "fields"))
         log_layout.addRow(self.log_level_label, self.log_level_combo)
 
         log_file_layout = QHBoxLayout()
         self.log_file_path_edit = QLineEdit()
+        self.log_file_path_edit.setObjectName("settingsLogFilePathEdit")
         self.log_file_browse_btn = QPushButton(self.tr("browse", "buttons"))
+        self.log_file_browse_btn.setObjectName("settingsLogFileBrowseButton")
         self.log_file_browse_btn.setMaximumWidth(60)
         log_file_layout.addWidget(self.log_file_path_edit)
         log_file_layout.addWidget(self.log_file_browse_btn)
@@ -145,12 +159,56 @@ class SettingsTab(BaseTab):
         layout.addStretch()
         return widget
 
+    def _create_advanced_tab(self):
+        """Create the development-only native import controls."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        self.advanced_native_group = QGroupBox(
+            self.tr("advanced_settings", "groups")
+        )
+        native_layout = QVBoxLayout()
+        self.use_cpp_fast_load_check = QCheckBox(
+            self.tr("use_cpp_fast_load", "checkboxes")
+        )
+        self.use_cpp_fast_load_check.setObjectName("settingsUseCppFastLoadCheck")
+        self.use_cpp_fast_load_check.setToolTip(
+            self.tr("use_cpp_fast_load", "tooltips")
+        )
+        native_layout.addWidget(self.use_cpp_fast_load_check)
+
+        self.use_cpp_vp2_ownership_check = QCheckBox(
+            self.tr("use_cpp_vp2_ownership", "checkboxes")
+        )
+        self.use_cpp_vp2_ownership_check.setObjectName(
+            "settingsUseCppVp2OwnershipCheck"
+        )
+        self.use_cpp_vp2_ownership_check.setToolTip(
+            self.tr("use_cpp_vp2_ownership", "tooltips")
+        )
+        native_layout.addWidget(self.use_cpp_vp2_ownership_check)
+
+        self.use_cpp_rig_nodes_check = QCheckBox(
+            self.tr("use_cpp_rig_nodes", "checkboxes")
+        )
+        self.use_cpp_rig_nodes_check.setObjectName("settingsUseCppRigNodesCheck")
+        self.use_cpp_rig_nodes_check.setToolTip(
+            self.tr("use_cpp_rig_nodes", "tooltips")
+        )
+        native_layout.addWidget(self.use_cpp_rig_nodes_check)
+        self.advanced_native_group.setLayout(native_layout)
+        layout.addWidget(self.advanced_native_group)
+        layout.addStretch()
+        self.advanced_native_group.setVisible(False)
+        return widget
+
     def retranslateUi(self):
         """UIテキストを再翻訳"""
         # タブテキスト
         if hasattr(self, "settings_tabs"):
             if self.settings_tabs.count() >= 1:
                 self.settings_tabs.setTabText(0, self.tr("general_settings", "tabs"))
+            if self.settings_tabs.count() >= 2:
+                self.settings_tabs.setTabText(1, self.tr("advanced_settings", "tabs"))
 
         # ボタン
         if hasattr(self, "save_settings_btn"):
@@ -173,6 +231,8 @@ class SettingsTab(BaseTab):
             self.dev_tools_group.setTitle(self.tr("dev_tools", "groups"))
         if hasattr(self, "log_group"):
             self.log_group.setTitle(self.tr("log_settings", "groups"))
+        if hasattr(self, "advanced_native_group"):
+            self.advanced_native_group.setTitle(self.tr("advanced_settings", "groups"))
 
         # Labels
         if hasattr(self, "language_label"):
@@ -191,3 +251,12 @@ class SettingsTab(BaseTab):
             self.development_mode_check.setText(self.tr("development_mode", "checkboxes"))
         if hasattr(self, "logging_enabled_check"):
             self.logging_enabled_check.setText(self.tr("enable_logging", "checkboxes"))
+        for name, key in (
+            ("use_cpp_fast_load_check", "use_cpp_fast_load"),
+            ("use_cpp_vp2_ownership_check", "use_cpp_vp2_ownership"),
+            ("use_cpp_rig_nodes_check", "use_cpp_rig_nodes"),
+        ):
+            checkbox = getattr(self, name, None)
+            if checkbox is not None:
+                checkbox.setText(self.tr(key, "checkboxes"))
+                checkbox.setToolTip(self.tr(key, "tooltips"))

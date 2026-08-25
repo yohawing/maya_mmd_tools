@@ -24,7 +24,7 @@ from ..qt_compat import (
 )
 from ..base_tab import BaseTab
 from .translation_registry import apply_translation_registry
-from ..components.symbol_tool_button import MaterialSymbolToolButton
+from ..components.symbol_tool_button import SymbolToolButton
 
 
 class Vec3Editor(QWidget):
@@ -195,6 +195,11 @@ class CollisionGroupsEditor(QWidget):
             pass
 
 
+def _selector_stem(key):
+    """Convert an internal editor key to a stable PascalCase selector stem."""
+    return "".join(part[:1].upper() + part[1:] for part in str(key).split("_"))
+
+
 class PhysicsTab(BaseTab):
     _TRANSLATION_REGISTRY = (
         ("physics_objects_group", "setTitle", "physics_objects", "groups"),
@@ -244,19 +249,25 @@ class PhysicsTab(BaseTab):
         group_layout = QVBoxLayout()
 
         toolbar_layout = QHBoxLayout()
-        self.refresh_btn = MaterialSymbolToolButton("refresh", self.tr("refresh", "buttons"))
+        self.refresh_btn = SymbolToolButton("refresh", self.tr("refresh", "buttons"))
+        self.refresh_btn.setObjectName("physicsRefreshButton")
         self.create_btn = QPushButton(self.tr("create", "buttons"))
+        self.create_btn.setObjectName("physicsCreateButton")
         self.create_btn.setMaximumWidth(60)
         self.create_btn.setEnabled(False)
         self.duplicate_btn = QPushButton(self.tr("duplicate", "buttons"))
+        self.duplicate_btn.setObjectName("physicsDuplicateButton")
         self.duplicate_btn.setMaximumWidth(70)
         self.duplicate_btn.setEnabled(False)
         self.delete_btn = QPushButton(self.tr("delete", "buttons"))
+        self.delete_btn.setObjectName("physicsDeleteButton")
         self.delete_btn.setMaximumWidth(60)
         self.delete_btn.setEnabled(False)
         self.collider_visible_check = QCheckBox(self.tr("show_colliders", "checkboxes"))
+        self.collider_visible_check.setObjectName("physicsShowCollidersCheck")
         self.collider_visible_check.setChecked(False)
         self.physics_enable_check = QCheckBox(self.tr("enable_physics", "checkboxes"))
+        self.physics_enable_check.setObjectName("physicsEnableCheck")
         self.physics_enable_check.setChecked(False)
         self.physics_enable_check.setEnabled(False)
         toolbar_layout.addWidget(self.refresh_btn)
@@ -276,9 +287,11 @@ class PhysicsTab(BaseTab):
         rigid_layout = QVBoxLayout(rigid_tab)
         rigid_layout.setContentsMargins(0, 0, 0, 0)
         self.rigid_body_list = QListWidget()
+        self.rigid_body_list.setObjectName("rigidBodyList")
         self.rigid_body_list.setAlternatingRowColors(True)
         rigid_layout.addWidget(self.rigid_body_list)
         self.rigid_body_search_edit = QLineEdit()
+        self.rigid_body_search_edit.setObjectName("rigidBodySearchEdit")
         self.rigid_body_search_edit.setPlaceholderText(self.tr("search_rigid_bodies", "placeholders"))
         rigid_layout.addWidget(self.rigid_body_search_edit)
         self.list_tabs.addTab(rigid_tab, self.tr("rigid_bodies", "tabs"))
@@ -287,9 +300,11 @@ class PhysicsTab(BaseTab):
         joint_layout = QVBoxLayout(joint_tab)
         joint_layout.setContentsMargins(0, 0, 0, 0)
         self.joint_list = QListWidget()
+        self.joint_list.setObjectName("jointList")
         self.joint_list.setAlternatingRowColors(True)
         joint_layout.addWidget(self.joint_list)
         self.joint_search_edit = QLineEdit()
+        self.joint_search_edit.setObjectName("jointSearchEdit")
         self.joint_search_edit.setPlaceholderText(self.tr("search_joints", "placeholders"))
         joint_layout.addWidget(self.joint_search_edit)
         self.list_tabs.addTab(joint_tab, self.tr("joints", "tabs"))
@@ -323,6 +338,8 @@ class PhysicsTab(BaseTab):
         button_layout.addStretch()
         self.apply_btn = QPushButton(self.tr("apply", "buttons"))
         self.reset_btn = QPushButton(self.tr("reset", "buttons"))
+        self.apply_btn.setObjectName("physicsApplyButton")
+        self.reset_btn.setObjectName("physicsResetButton")
         self.apply_btn.setEnabled(False)
         self.reset_btn.setEnabled(False)
         button_layout.addWidget(self.apply_btn)
@@ -466,32 +483,38 @@ class PhysicsTab(BaseTab):
 
     def _line_editor(self, key, field_key):
         editor = QLineEdit()
+        editor.setObjectName(f"physics{_selector_stem(key)}Edit")
         self._physics_editors[key] = (field_key, editor)
         return editor
 
     def _int_editor(self, key, field_key, minimum, maximum):
         editor = QSpinBox()
+        editor.setObjectName(f"physics{_selector_stem(key)}Spin")
         editor.setRange(minimum, maximum)
         self._physics_editors[key] = (field_key, editor)
         return editor
 
     def _vec3_editor(self, key, field_key, minimum=-1_000_000.0, maximum=1_000_000.0, decimals=4):
         editor = Vec3Editor(minimum, maximum, decimals)
+        editor.setObjectName(f"physics{_selector_stem(key)}Edit")
         self._physics_editors[key] = (field_key, editor)
         return editor
 
     def _slider_editor(self, key, field_key, minimum, maximum, single_step=0.01):
         editor = ScalarSliderEditor(minimum, maximum, single_step)
+        editor.setObjectName(f"physics{_selector_stem(key)}Edit")
         self._physics_editors[key] = (field_key, editor)
         return editor
 
     def _collision_groups_editor(self, key, field_key, multiple=False):
         editor = CollisionGroupsEditor(multiple)
+        editor.setObjectName(f"physics{_selector_stem(key)}Edit")
         self._physics_editors[key] = (field_key, editor)
         return editor
 
     def _combo_editor(self, key, field_key, option_keys):
         editor = QComboBox()
+        editor.setObjectName(f"physics{_selector_stem(key)}Combo")
         editor.addItems([self.tr(option_key, "options") for option_key in option_keys])
         self._physics_editors[key] = (field_key, editor)
         self._combo_options[key] = tuple(option_keys)

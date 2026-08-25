@@ -45,7 +45,10 @@ def sanitize_texture_path(texture_path, texture_dir):
 
     full_texture_path = os.path.normpath(full_texture_path)
     if not os.path.exists(full_texture_path):
-        print(f"Warning: Texture file not found: {full_texture_path}")
+        # Maya's Windows stdout can remain cp932 even when the PMX path and
+        # metadata are Unicode.  Logging through the Maya-safe handler keeps a
+        # missing non-ASCII texture diagnostic from aborting the model import.
+        logger.warning("Texture file not found: %s", full_texture_path)
         return None
 
     return full_texture_path
@@ -115,7 +118,7 @@ def find_material_texture_file_node(material):
     texture_attrs = []
     if shader_type == "standardSurface":
         texture_attrs.append(f"{material}.baseColor")
-    elif shader_type == "dx11Shader":
+    elif shader_type in {"dx11Shader", "GLSLShader"}:
         if cmds.attributeQuery("MainTexture", node=material, exists=True):
             texture_attrs.append(f"{material}.MainTexture")
         if cmds.attributeQuery("DiffuseTexture", node=material, exists=True):

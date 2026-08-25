@@ -1,3 +1,4 @@
+import math
 import os
 import time
 
@@ -24,6 +25,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_TEXTURE_INDEX,
     ATTR_MMD_TEXTURE_CACHE_PATH,
     ATTR_MMD_TEXTURE_UNRESOLVED,
+    ATTR_MMD_TOON_PATH,
     ATTR_MMD_TOON_TEXTURE_INDEX,
     GEOMETRY_GROUP,
     ATTR_MMD_MATERIAL,
@@ -41,10 +43,13 @@ from mmd_tools.core.constants import (
     ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_MATERIAL_INDEX,
+    ATTR_MMD_ADDITIONAL_UVS_JSON,
+    ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
 from mmd_tools.converters.mesh_material_properties import (
     PMX_DOUBLE_SIDED_DRAW_FLAG as _PMX_DOUBLE_SIDED_DRAW_FLAG,
+    PMX_EDGE_DRAWING_DRAW_FLAG as _PMX_EDGE_DRAWING_DRAW_FLAG,
     material_is_double_sided as _material_is_double_sided,
 )
 from mmd_tools.converters.material_shader_parameters import (
@@ -98,9 +103,13 @@ _MATERIAL_NODE_FAMILY_SUFFIXES = (
     "_toon_texture",
     "_materialMorphEval",
 )
-_DX11_TECHNIQUE_BY_SIDEDNESS = {
-    False: "MMDTechnique",
-    True: "MMDTechniqueDoubleSided",
+_DX11_TECHNIQUE_BY_RENDERING = {
+    (TRANSPARENCY_MODE_OPAQUE, False): "MMDTechnique",
+    (TRANSPARENCY_MODE_CUTOUT, False): "MMDTechnique",
+    (TRANSPARENCY_MODE_BLEND, False): "MMDTechniqueTranslucent",
+    (TRANSPARENCY_MODE_OPAQUE, True): "MMDTechniqueDoubleSided",
+    (TRANSPARENCY_MODE_CUTOUT, True): "MMDTechniqueDoubleSided",
+    (TRANSPARENCY_MODE_BLEND, True): "MMDTechniqueTranslucentDoubleSided",
 }
 
 
@@ -160,6 +169,7 @@ _MIGRATED_HARDWARE_ATTRS = (
     "SpecularColor",
     "Shininess",
     "AmbientColor",
+    "ToonCoordinateOffset",
     "EdgeSize",
     "Opacity",
     "SphereMode",
@@ -202,9 +212,24 @@ _MIGRATED_MMD_ATTRS = (
     ATTR_MMD_SHARED_TOON_FLAG,
     "mmd_texture_path",
     "mmd_sphere_path",
+    ATTR_MMD_TOON_PATH,
     "mmdTransparencyMode",
     _ATTR_MMD_DOUBLE_SIDED,
 )
+
+
+def _source_texture_path(all_textures, texture_index, resolved_path):
+    """Return the PMX source path when its authoritative table index is valid."""
+    if (
+        all_textures
+        and isinstance(texture_index, int)
+        and not isinstance(texture_index, bool)
+        and 0 <= texture_index < len(all_textures)
+        and isinstance(all_textures[texture_index], str)
+        and all_textures[texture_index]
+    ):
+        return all_textures[texture_index]
+    return resolved_path
 
 
 def _copy_shader_attr_value(source, target, attr_name) -> None:
@@ -458,14 +483,15 @@ def _classify_material_transparency(material, texture_path=None) -> str:
 
 
 def _technique_for_transparency(mode: str, edge_enabled: bool, double_sided: bool = False) -> str:
-    """Select one of the two opaque DX11 techniques.
+    """Select the DX11 technique for alpha mode and sidedness.
 
-    ``mode`` and ``edge_enabled`` remain accepted for scene/UI compatibility,
-    but the renderer no longer creates transparent or no-edge variants. PMX
-    alpha metadata is preserved separately while every material uses the edge
-    pass and differs only by authored single/double-sided drawing.
+    ``edge_enabled`` remains accepted for scene/UI compatibility.  Opaque and
+    cutout materials share the depth-writing techniques; genuinely blended
+    materials use the explicit translucent technique so VP2 can composite them
+    instead of discarding their authored alpha through a no-blend state.
     """
-    return _DX11_TECHNIQUE_BY_SIDEDNESS[bool(double_sided)]
+    mode = mode if mode in TRANSPARENCY_MODES else TRANSPARENCY_MODE_OPAQUE
+    return _DX11_TECHNIQUE_BY_RENDERING[(mode, bool(double_sided))]
 
 
 def _dx11_rendering_from_technique(technique: str) -> Tuple[str, bool, bool]:
@@ -481,40 +507,75 @@ def _dx11_rendering_from_technique(technique: str) -> Tuple[str, bool, bool]:
     return mode, edge_enabled, double_sided
 
 
-def _shader_technique(shader: str) -> str:
+def _outline_attribute_exists(cmds_module, attr: str, node: str) -> bool:
+    method = getattr(type(cmds_module), "attribute_exists", None)
+    if callable(method):
+        return bool(method(cmds_module, attr, node))
+    return bool(cmds_module.attributeQuery(attr, node=node, exists=True))
+
+
+def _outline_get_attr(cmds_module, plug: str):
+    method = getattr(type(cmds_module), "get_attr", None)
+    return method(cmds_module, plug) if callable(method) else cmds_module.getAttr(plug)
+
+
+def _outline_set_attr(cmds_module, plug: str, value, **kwargs) -> None:
+    method = getattr(type(cmds_module), "set_attr", None)
+    if callable(method):
+        method(cmds_module, plug, value, **kwargs)
+    else:
+        cmds_module.setAttr(plug, value, **kwargs)
+
+
+def _outline_add_bool_attr(cmds_module, node: str, attr: str) -> None:
+    method = getattr(type(cmds_module), "add_attr", None)
+    if callable(method):
+        method(cmds_module, node, longName=attr, attributeType="bool")
+    else:
+        cmds_module.addAttr(node, longName=attr, attributeType="bool")
+
+
+def _shader_technique(shader: str, cmds_module=None) -> str:
     """Return a dx11Shader technique string if the attribute is present."""
-    if cmds.attributeQuery("technique", node=shader, exists=True):
-        return cmds.getAttr(f"{shader}.technique") or ""
+    cmds_api = cmds if cmds_module is None else cmds_module
+    if _outline_attribute_exists(cmds_api, "technique", shader):
+        return _outline_get_attr(cmds_api, f"{shader}.technique") or ""
     return ""
 
 
-def _draw_flags_double_sided_from_node(node: str) -> Optional[bool]:
+def _draw_flags_double_sided_from_node(node: str, cmds_module=None) -> Optional[bool]:
     """Read MMD draw flags from a node if present and parseable."""
-    if not cmds.attributeQuery(ATTR_MMD_DRAW_FLAGS, node=node, exists=True):
+    cmds_api = cmds if cmds_module is None else cmds_module
+    if not _outline_attribute_exists(cmds_api, ATTR_MMD_DRAW_FLAGS, node):
         return None
     try:
-        draw_flags = cmds.getAttr(f"{node}.{ATTR_MMD_DRAW_FLAGS}")
+        draw_flags = _outline_get_attr(cmds_api, f"{node}.{ATTR_MMD_DRAW_FLAGS}")
         return bool(int(draw_flags) & _PMX_DOUBLE_SIDED_DRAW_FLAG)
     except (TypeError, ValueError):
         return None
 
 
-def _store_shader_double_sided_attr(shader: str, enabled: bool) -> None:
-    """Persist dx11Shader double-sided state for UI re-application."""
-    if not cmds.attributeQuery(_ATTR_MMD_DOUBLE_SIDED, node=shader, exists=True):
-        maya_attribute_utils.set_custom_attributes(shader, {_ATTR_MMD_DOUBLE_SIDED: bool(enabled)})
-    else:
-        maya_attribute_utils.set_attribute(shader, _ATTR_MMD_DOUBLE_SIDED, bool(enabled), "bool")
+def _store_shader_double_sided_attr(shader: str, enabled: bool, cmds_module=None) -> None:
+    """Persist undoable dx11Shader double-sided state for UI re-application."""
+    cmds_api = cmds if cmds_module is None else cmds_module
+    if not _outline_attribute_exists(cmds_api, _ATTR_MMD_DOUBLE_SIDED, shader):
+        _outline_add_bool_attr(cmds_api, shader, _ATTR_MMD_DOUBLE_SIDED)
+    _outline_set_attr(cmds_api, f"{shader}.{_ATTR_MMD_DOUBLE_SIDED}", bool(enabled))
 
 
-def _shader_is_double_sided(shader: str, technique: Optional[str] = None) -> bool:
+def _shader_is_double_sided(
+    shader: str,
+    technique: Optional[str] = None,
+    cmds_module=None,
+) -> bool:
     """Return a dx11Shader's double-sided state, preferring authored draw flags."""
-    draw_flags_state = _draw_flags_double_sided_from_node(shader)
+    cmds_api = cmds if cmds_module is None else cmds_module
+    draw_flags_state = _draw_flags_double_sided_from_node(shader, cmds_api)
     if draw_flags_state is not None:
         return draw_flags_state
-    if cmds.attributeQuery(_ATTR_MMD_DOUBLE_SIDED, node=shader, exists=True):
-        return bool(cmds.getAttr(f"{shader}.{_ATTR_MMD_DOUBLE_SIDED}"))
-    technique = technique if technique is not None else _shader_technique(shader)
+    if _outline_attribute_exists(cmds_api, _ATTR_MMD_DOUBLE_SIDED, shader):
+        return bool(_outline_get_attr(cmds_api, f"{shader}.{_ATTR_MMD_DOUBLE_SIDED}"))
+    technique = technique if technique is not None else _shader_technique(shader, cmds_api)
     _, _, double_sided = _dx11_rendering_from_technique(technique)
     return double_sided
 
@@ -531,22 +592,23 @@ def _store_transparency_mode_attr(shader: str, mode: str) -> None:
     cmds.setAttr(f"{shader}.mmdTransparencyMode", mode, type="string")
 
 
-def get_transparency_mode(shader: str) -> str:
+def get_transparency_mode(shader: str, cmds_module=None) -> str:
     """Return the shader's stored transparency mode (defaults to opaque)."""
-    if cmds.attributeQuery("mmdTransparencyMode", node=shader, exists=True):
-        value = cmds.getAttr(f"{shader}.mmdTransparencyMode")
+    cmds_api = cmds if cmds_module is None else cmds_module
+    if _outline_attribute_exists(cmds_api, "mmdTransparencyMode", shader):
+        value = _outline_get_attr(cmds_api, f"{shader}.mmdTransparencyMode")
         if value in TRANSPARENCY_MODES:
             return value
     # Fall back to inferring from the currently assigned technique.
-    mode, _, _ = _dx11_rendering_from_technique(_shader_technique(shader))
+    mode, _, _ = _dx11_rendering_from_technique(_shader_technique(shader, cmds_api))
     return mode
 
 
 def apply_transparency_mode(shader: str, mode: str) -> str:
     """Re-apply a transparency mode to an existing dx11Shader (UI entry point).
 
-    Transparency metadata is retained, but rendering remains opaque/cutout and
-    the selected technique changes only when sidedness changes.
+    Opaque/cutout modes retain depth-writing rendering, while blend selects the
+    explicit translucent technique and its alpha-blended, depth-read-only pass.
     """
     if mode not in TRANSPARENCY_MODES:
         raise ValueError(f"Unknown transparency mode: {mode!r}")
@@ -569,22 +631,60 @@ def get_shader_outline_enabled(shader: str) -> bool:
     return bool(technique) and edge_enabled
 
 
-def apply_shader_outline(shader: str, enabled: bool, edge_size: Optional[float] = None) -> str:
+def expected_shader_outline_preview(
+    technique: str,
+    transparency_mode: Optional[str],
+    draw_flags: int,
+    enabled: bool,
+    edge_size: float,
+    *,
+    edge_size_exists: bool,
+) -> dict:
+    """Return the deterministic DX11 attrs produced by outline authoring."""
+    mode = (
+        transparency_mode
+        if transparency_mode in TRANSPARENCY_MODES
+        else _dx11_rendering_from_technique(technique)[0]
+    )
+    double_sided = bool(int(draw_flags) & _PMX_DOUBLE_SIDED_DRAW_FLAG)
+    result = {
+        "technique": _technique_for_transparency(mode, True, double_sided),
+        _ATTR_MMD_DOUBLE_SIDED: double_sided,
+        ATTR_MMD_SHADER_OUTLINE_ENABLED: bool(enabled),
+    }
+    if edge_size_exists:
+        result["EdgeSize"] = (
+            max(0.0, min(2.0, float(edge_size))) if enabled else 0.0
+        )
+    return result
+
+
+def apply_shader_outline(
+    shader: str,
+    enabled: bool,
+    edge_size: Optional[float] = None,
+    *,
+    cmds_module=None,
+) -> str:
     """Keep the mandatory outline pass while applying its authored size."""
-    mode = get_transparency_mode(shader)
-    double_sided = _shader_is_double_sided(shader)
+    cmds_api = cmds if cmds_module is None else cmds_module
+    mode = get_transparency_mode(shader, cmds_api)
+    double_sided = _shader_is_double_sided(shader, cmds_module=cmds_api)
     new_technique = _technique_for_transparency(mode, True, double_sided)
-    cmds.setAttr(f"{shader}.technique", new_technique, type="string")
-    _store_shader_double_sided_attr(shader, double_sided)
-    if cmds.attributeQuery("EdgeSize", node=shader, exists=True):
+    _outline_set_attr(cmds_api, f"{shader}.technique", new_technique, type="string")
+    _store_shader_double_sided_attr(shader, double_sided, cmds_api)
+    if _outline_attribute_exists(cmds_api, "EdgeSize", shader):
         if not enabled:
-            cmds.setAttr(f"{shader}.EdgeSize", 0.0)
+            _outline_set_attr(cmds_api, f"{shader}.EdgeSize", 0.0)
         elif edge_size is not None:
-            cmds.setAttr(f"{shader}.EdgeSize", max(0.0, min(2.0, float(edge_size))))
-    if not cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=shader, exists=True):
-        maya_attribute_utils.set_custom_attributes(shader, {ATTR_MMD_SHADER_OUTLINE_ENABLED: bool(enabled)})
-    else:
-        maya_attribute_utils.set_attribute(shader, ATTR_MMD_SHADER_OUTLINE_ENABLED, bool(enabled), "bool")
+            _outline_set_attr(
+                cmds_api,
+                f"{shader}.EdgeSize",
+                max(0.0, min(2.0, float(edge_size))),
+            )
+    if not _outline_attribute_exists(cmds_api, ATTR_MMD_SHADER_OUTLINE_ENABLED, shader):
+        _outline_add_bool_attr(cmds_api, shader, ATTR_MMD_SHADER_OUTLINE_ENABLED)
+    _outline_set_attr(cmds_api, f"{shader}.{ATTR_MMD_SHADER_OUTLINE_ENABLED}", bool(enabled))
     return new_technique
 
 
@@ -621,6 +721,8 @@ def _ensure_mmd_shader_uniform_attributes(shader_node, include_device_pixel_rati
         ("DiffuseColorA", om.MFnNumericData.kDouble, 1, False, 1.0),
         ("SpecularColor", om.MFnNumericData.kDouble, 3, True, (0.5, 0.5, 0.5)),
         ("AmbientColor", om.MFnNumericData.kDouble, 3, True, (0.3, 0.3, 0.3)),
+        # Explicit ramp calibration shared by the DX11 and OGSFX effects.
+        ("ToonCoordinateOffset", om.MFnNumericData.kDouble, 1, False, 0.55),
         ("EdgeColor", om.MFnNumericData.kDouble, 4, True, (0.0, 0.0, 0.0, 1.0)),
         ("EdgeColorRGB", om.MFnNumericData.kDouble, 3, True, (0.0, 0.0, 0.0)),
         ("EdgeColorA", om.MFnNumericData.kDouble, 1, False, 1.0),
@@ -634,10 +736,10 @@ def _ensure_mmd_shader_uniform_attributes(shader_node, include_device_pixel_rati
         # MMD ライト（コントローラ駆動の唯一の光源）。GUI では dx11Shader が .fx
         # から自動生成するが、standalone/テストでは生成されないため補完しておき、
         # 後段のコントローラ結線が失敗しないようにする。
-        ("MMDLightDirection", om.MFnNumericData.kDouble, 3, False, (0.5, -1.0, 0.5)),
-        ("MMDLightColor", om.MFnNumericData.kDouble, 3, True, (1.0, 1.0, 1.0)),
-        ("MmdControllerLightVector", om.MFnNumericData.kDouble, 3, False, (0.5, -1.0, 0.5)),
-        ("MmdControllerLightRgb", om.MFnNumericData.kDouble, 3, True, (1.0, 1.0, 1.0)),
+        ("MMDLightDirection", om.MFnNumericData.kDouble, 3, False, (-0.5, -1.0, -1.0)),
+        ("MMDLightColor", om.MFnNumericData.kDouble, 3, True, (154.0 / 255.0,) * 3),
+        ("MmdControllerLightVector", om.MFnNumericData.kDouble, 3, False, (-0.5, -1.0, -1.0)),
+        ("MmdControllerLightRgb", om.MFnNumericData.kDouble, 3, True, (154.0 / 255.0,) * 3),
     ]
     if include_device_pixel_ratio:
         uniforms.append(("DevicePixelRatio", om.MFnNumericData.kDouble, 1, False, 1.0))
@@ -1201,6 +1303,116 @@ class MeshConverter:
             return None
 
     @staticmethod
+    def _validate_pmx_additional_uvs(all_vertices, additional_uv_count: int) -> int:
+        """Validate the PMX base-vertex additional-UV payload before mesh creation.
+
+        Additional-UV morph offsets are intentionally outside this contract.  A
+        malformed base payload must stop import rather than being represented by
+        fabricated zero channels or silently discarded by Maya.
+        """
+        if isinstance(additional_uv_count, bool) or not isinstance(additional_uv_count, int):
+            raise ValueError("PMX additional UV count must be an integer")
+        if additional_uv_count < 0 or additional_uv_count > 4:
+            raise ValueError(
+                f"PMX additional UV count must be between 0 and 4, got {additional_uv_count}"
+            )
+
+        for vertex_index, vertex in enumerate(all_vertices):
+            raw_uvs = getattr(vertex, "additional_uvs", ())
+            if raw_uvs is None:
+                raw_uvs = ()
+            if not isinstance(raw_uvs, (list, tuple)):
+                raise ValueError(
+                    f"vertex {vertex_index} additional_uvs must be a sequence"
+                )
+            if len(raw_uvs) != additional_uv_count:
+                raise ValueError(
+                    f"vertex {vertex_index} additional_uvs count {len(raw_uvs)} "
+                    f"does not match PMX header count {additional_uv_count}"
+                )
+            for channel_index, channel in enumerate(raw_uvs):
+                if not isinstance(channel, (list, tuple)) or len(channel) != 4:
+                    raise ValueError(
+                        f"vertex {vertex_index} additional UV channel {channel_index} "
+                        "must contain exactly four values"
+                    )
+                for value_index, value in enumerate(channel):
+                    if isinstance(value, bool) or not isinstance(value, (int, float)):
+                        raise ValueError(
+                            f"vertex {vertex_index} additional UV channel "
+                            f"{channel_index}[{value_index}] must be a real number"
+                        )
+                    if not math.isfinite(float(value)):
+                        raise ValueError(
+                            f"vertex {vertex_index} additional UV channel "
+                            f"{channel_index}[{value_index}] must be finite"
+                        )
+        return additional_uv_count
+
+    @staticmethod
+    def _post_weld_source_indices(mesh_node: str, fallback_source_indices, native_welded_count) -> list[int]:
+        """Return the local-to-PMX mapping after an optional native weld."""
+        if native_welded_count is None:
+            return [int(index) for index in fallback_source_indices]
+        source_indices = maya_attribute_utils.get_int_array_attribute(
+            mesh_node,
+            ATTR_MMD_SOURCE_VERTEX_INDICES,
+        )
+        if source_indices is None:
+            raise ValueError(
+                "native UV weld did not provide mmd_source_vertex_indices"
+            )
+        return [int(index) for index in source_indices]
+
+    @staticmethod
+    def _persist_additional_uvs(
+        mesh_node: str,
+        all_vertices,
+        source_vertex_indices,
+        additional_uv_count: int,
+    ) -> None:
+        """Persist validated PMX additional UVs in deterministic local order."""
+        if additional_uv_count == 0:
+            return
+        local_uvs = []
+        for local_index, source_index in enumerate(source_vertex_indices):
+            if isinstance(source_index, bool) or not isinstance(source_index, int):
+                raise ValueError(
+                    f"local Maya vertex {local_index} has an invalid PMX source index"
+                )
+            if source_index < 0 or source_index >= len(all_vertices):
+                raise ValueError(
+                    f"local Maya vertex {local_index} maps outside PMX vertices: {source_index}"
+                )
+            local_uvs.append(
+                [
+                    [float(value) for value in channel]
+                    for channel in getattr(all_vertices[source_index], "additional_uvs", ())
+                ]
+            )
+        payload = {
+            "schema_version": 1,
+            "vertex_count": len(source_vertex_indices),
+            "source_vertex_count": len(all_vertices),
+            "channel_count": additional_uv_count,
+            "source_vertex_indices": [int(index) for index in source_vertex_indices],
+            "additional_uvs": local_uvs,
+        }
+        maya_attribute_utils.set_custom_attributes(
+            mesh_node,
+            {ATTR_MMD_PMX_ADDITIONAL_UV_COUNT: additional_uv_count},
+        )
+        if not maya_attribute_utils.write_json_attr(
+            mesh_node,
+            ATTR_MMD_ADDITIONAL_UVS_JSON,
+            payload,
+            separators=(",", ":"),
+        ):
+            raise ValueError(
+                f"failed to persist {ATTR_MMD_ADDITIONAL_UVS_JSON} on '{mesh_node}'"
+            )
+
+    @staticmethod
     def _vertex_deformation_key(vertex) -> tuple:
         """Return the PMX data that must remain per Maya vertex.
 
@@ -1210,12 +1422,8 @@ class MeshConverter:
         a topology weld from changing the imported skin result.
         """
         return (
-            int(getattr(vertex, "weight_transform_type", 0)),
             tuple(int(index) for index in getattr(vertex, "bone_indices", []) or []),
             tuple(float(weight) for weight in getattr(vertex, "bone_weights", []) or []),
-            tuple(float(value) for value in getattr(vertex, "sdef_c", ()) or ()),
-            tuple(float(value) for value in getattr(vertex, "sdef_r0", ()) or ()),
-            tuple(float(value) for value in getattr(vertex, "sdef_r1", ()) or ()),
         )
 
     def _build_vertex_weld_keys(self, all_vertices, all_faces, all_materials, morphs) -> Dict[int, tuple]:
@@ -1241,7 +1449,15 @@ class MeshConverter:
 
         morph_vertex_indices = set()
         for morph in morphs or []:
-            if getattr(morph, "morph_type", None) != PmxMorphType.VertexMorph:
+            morph_type = getattr(morph, "morph_type", None)
+            if morph_type not in {
+                PmxMorphType.VertexMorph,
+                PmxMorphType.UVMorph,
+                PmxMorphType.AdditionalUVMorph1,
+                PmxMorphType.AdditionalUVMorph2,
+                PmxMorphType.AdditionalUVMorph3,
+                PmxMorphType.AdditionalUVMorph4,
+            }:
                 continue
             for offset in getattr(morph, "offsets", ()) or ():
                 try:
@@ -1480,13 +1696,19 @@ class MeshConverter:
 
         self._add_profile_time("transparency_classify_sec", classify_start)
 
-    def convert_pmx_mesh(self, pmx_data: PmxData, root_group: str) -> Tuple[str, Union[str, List[str]]]:
+    def convert_pmx_mesh(
+        self,
+        pmx_data: PmxData,
+        root_group: str,
+        is_pmd: bool = False,
+    ) -> Tuple[str, Union[str, List[str]]]:
         """
         PMXのメッシュデータをMayaのメッシュノードに変換する。
 
         Args:
             pmx_data (pmx_parser.PmxParser): 解析されたPMXデータオブジェクト。
             root_group (str): ルートグループの名前。
+            is_pmd (bool): PMD由来のデータとしてPMD専用属性を作成するかどうか。
 
         Returns:
             str: 作成されたMayaメッシュをまとめるグループノードの名前。
@@ -1497,6 +1719,19 @@ class MeshConverter:
         all_faces = pmx_data.faces
         all_materials = pmx_data.materials
         all_textures = pmx_data.textures
+        additional_uv_count = self._validate_pmx_additional_uvs(
+            all_vertices,
+            getattr(getattr(pmx_data, "header", None), "additional_uv", 0),
+        )
+        # Keep the source PMX channel count on the model root so the collector
+        # can distinguish a normal Maya mesh from an imported mesh whose
+        # canonical per-vertex payload was deleted or became stale.
+        maya_attribute_utils.set_custom_attributes(
+            root_group,
+            {
+                ATTR_MMD_PMX_ADDITIONAL_UV_COUNT: additional_uv_count,
+            },
+        )
         self._use_cpp_uv_weld = self._cpp_uv_weld_command_available()
         if self._use_cpp_uv_weld:
             # Keep the source topology intact until the C++ command has read
@@ -1535,8 +1770,9 @@ class MeshConverter:
                 all_materials,
                 all_textures,
                 geo_group,
-                is_pmd=False,
+                is_pmd=is_pmd,
                 weld_keys=weld_keys,
+                additional_uv_count=additional_uv_count,
             )
         else:
             created_mesh = self._create_unified_mesh(
@@ -1546,7 +1782,9 @@ class MeshConverter:
                 all_materials,
                 all_textures,
                 geo_group,
+                is_pmd=is_pmd,
                 weld_keys=weld_keys,
+                additional_uv_count=additional_uv_count,
             )
 
         maya_scene_utils.select_objects(geo_group)
@@ -1594,6 +1832,7 @@ class MeshConverter:
         model_group,
         is_pmd=False,
         weld_keys=None,
+        additional_uv_count=0,
     ):
         """
         全てのメッシュを統合した単一のメッシュを作成する。
@@ -1657,6 +1896,17 @@ class MeshConverter:
         native_welded_count = self._run_cpp_uv_weld(
             created_mesh,
             mesh_data["source_vertex_indices"],
+        )
+        post_weld_source_indices = self._post_weld_source_indices(
+            created_mesh,
+            mesh_data["source_vertex_indices"],
+            native_welded_count,
+        )
+        self._persist_additional_uvs(
+            created_mesh,
+            all_vertices,
+            post_weld_source_indices,
+            additional_uv_count,
         )
         self.profile["uv_welded_vertex_count"] += (
             native_welded_count
@@ -1740,6 +1990,7 @@ class MeshConverter:
         geo_group,
         is_pmd=False,
         weld_keys=None,
+        additional_uv_count=0,
     ):
         """
         マテリアルごとに分割したメッシュを作成する。
@@ -1818,6 +2069,17 @@ class MeshConverter:
             native_welded_count = self._run_cpp_uv_weld(
                 created_mesh,
                 mesh_data["source_vertex_indices"],
+            )
+            post_weld_source_indices = self._post_weld_source_indices(
+                created_mesh,
+                mesh_data["source_vertex_indices"],
+                native_welded_count,
+            )
+            self._persist_additional_uvs(
+                created_mesh,
+                all_vertices,
+                post_weld_source_indices,
+                additional_uv_count,
             )
             self.profile["uv_welded_vertex_count"] += (
                 native_welded_count
@@ -2062,11 +2324,23 @@ class MeshConverter:
             ATTR_MMD_TOON_TEXTURE_INDEX: material.toon_texture_index,
         }
 
-        # テクスチャパスを保存
-        if texture_path:
-            custom_attrs["mmd_texture_path"] = texture_path
-        if sphere_texture_path:
-            custom_attrs["mmd_sphere_path"] = sphere_texture_path
+        # Persist PMX source-relative paths in canonical metadata.  The file
+        # nodes retain resolved paths separately, so export can match the
+        # authoritative texture table without appending a duplicate entry.
+        source_texture_path = _source_texture_path(
+            all_textures,
+            getattr(material, "texture_index", -1),
+            texture_path,
+        )
+        source_sphere_texture_path = _source_texture_path(
+            all_textures,
+            getattr(material, "sphere_texture_index", -1),
+            sphere_texture_path,
+        )
+        if source_texture_path:
+            custom_attrs["mmd_texture_path"] = source_texture_path
+        if source_sphere_texture_path:
+            custom_attrs["mmd_sphere_path"] = source_sphere_texture_path
 
         # スペキュラー関連の属性
         if hasattr(material, "specular"):
@@ -2085,7 +2359,14 @@ class MeshConverter:
             custom_attrs[ATTR_MMD_MATERIAL_NAME_EN] = ""
 
         if is_pmd:
-            custom_attrs[ATTR_MMD_EDGE_FLAG] = int(material.edge_flag)
+            # PMD is converted to a temporary PMX and parsed again before
+            # this stage, so recover the PMD semantic from the serialized PMX
+            # EDGE_DRAWING flag rather than relying on a transient attribute.
+            edge_enabled = bool(int(material.draw_flag) & _PMX_EDGE_DRAWING_DRAW_FLAG)
+            custom_attrs[ATTR_MMD_EDGE_FLAG] = int(edge_enabled)
+            # Keep Maya's display outline opt-in. Hidden alpha-zero materials
+            # frequently retain their PMD edge flag and otherwise leave a
+            # visible silhouette after the surface itself disappears.
             custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
         else:
             custom_attrs[ATTR_MMD_SPHERE_MODE] = int(material.sphere_mode)
@@ -2097,10 +2378,24 @@ class MeshConverter:
                 float(material.edge_color[3]) if len(material.edge_color) > 3 else 1.0
             )
             custom_attrs[ATTR_MMD_EDGE_SIZE] = material.edge_size
+            # PMX draw flags remain authoritative for export. This shader-only
+            # switch defaults off so transparent materials do not leave their
+            # backface outline visible in Maya.
             custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
             custom_attrs[_ATTR_MMD_DOUBLE_SIDED] = _material_is_double_sided(material)
             custom_attrs[ATTR_MMD_MEMO] = material.memo
             custom_attrs[ATTR_MMD_SHARED_TOON_FLAG] = int(material.shared_toon_flag)
+            toon_texture_index = getattr(material, "toon_texture_index", -1)
+            if (
+                material.shared_toon_flag == 0
+                and isinstance(toon_texture_index, int)
+                and not isinstance(toon_texture_index, bool)
+                and toon_texture_index >= 0
+                and all_textures
+                and toon_texture_index < len(all_textures)
+                and isinstance(all_textures[toon_texture_index], str)
+            ):
+                custom_attrs[ATTR_MMD_TOON_PATH] = all_textures[toon_texture_index]
 
         maya_attribute_utils.set_custom_attributes(
             shader,
@@ -2330,11 +2625,11 @@ class MeshConverter:
 
         # OGSFX exposes the same texture-slot contract as the DX11 effect.  The
         # previous GLSL setup stopped after scalar uniforms, leaving every
-        # material untextured even when the PMX texture paths were valid.
+        # material untextured even when the PMX/PMD texture paths were valid.
         self._connect_dx11_main_texture(shader, material, texture_path, original_texture_path)
 
         sphere_texture_path = None
-        if not is_pmd and getattr(material, "sphere_texture_index", -1) >= 0:
+        if getattr(material, "sphere_texture_index", -1) >= 0:
             sphere_index = int(material.sphere_texture_index)
             if all_textures and sphere_index < len(all_textures):
                 sphere_texture_path = all_textures[sphere_index]
@@ -2350,33 +2645,32 @@ class MeshConverter:
                     "Sphere",
                 )
 
-        if not is_pmd:
-            full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
-            if full_toon_path and os.path.exists(full_toon_path):
-                toon_original_path = ""
-                toon_source_kind = "shared_toon"
-                toon_shared_id = ""
-                if (
-                    getattr(material, "shared_toon_flag", 1) == 0
-                    and all_textures
-                    and 0 <= int(getattr(material, "toon_texture_index", -1)) < len(all_textures)
-                ):
-                    toon_original_path = all_textures[int(material.toon_texture_index)]
-                    toon_source_kind = "pmx_texture"
-                elif hasattr(material, "toon_texture_index"):
-                    toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
-                self._connect_dx11_secondary_texture(
-                    shader,
-                    material,
-                    toon_original_path,
-                    full_toon_path,
-                    "ToonTexture",
-                    "HasToonTexture",
-                    "_toon_texture",
-                    "Toon",
-                    source_kind=toon_source_kind,
-                    shared_toon_id=toon_shared_id,
-                )
+        full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
+        if full_toon_path and os.path.exists(full_toon_path):
+            toon_original_path = ""
+            toon_source_kind = "shared_toon"
+            toon_shared_id = ""
+            if (
+                getattr(material, "shared_toon_flag", 1) == 0
+                and all_textures
+                and 0 <= int(getattr(material, "toon_texture_index", -1)) < len(all_textures)
+            ):
+                toon_original_path = all_textures[int(material.toon_texture_index)]
+                toon_source_kind = "pmx_texture"
+            elif hasattr(material, "toon_texture_index"):
+                toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
+            self._connect_dx11_secondary_texture(
+                shader,
+                material,
+                toon_original_path,
+                full_toon_path,
+                "ToonTexture",
+                "HasToonTexture",
+                "_toon_texture",
+                "Toon",
+                source_kind=toon_source_kind,
+                shared_toon_id=toon_shared_id,
+            )
 
         self._apply_custom_attributes(
             shader,
@@ -2511,11 +2805,14 @@ class MeshConverter:
         # mayapy standalone では dx11Shader が .fx ファイルから uniform 属性を
         # 自動生成しないため、事前に動的アトリビュートとして作成しておく
         _ensure_dx11_uniform_attributes(shader)
-        # Prefer the accurate per-material UV-region classification computed up
-        # front; fall back to the simple diffuse-alpha rule if unavailable.
-        mode = self._transparency_modes.get(material_index)
-        if mode is None:
-            mode = _classify_material_transparency(material, texture_path)
+        # The regular import route deliberately starts every DX11 material in
+        # the opaque pass.  Maya's partially ordered transparent queue causes
+        # large MMD models to render bodies/outlines in an unstable order when
+        # only some materials are classified as blended.  Keep the authored
+        # alpha uniforms and texture alpha (the opaque technique still clips
+        # fully transparent texels), but require an explicit later edit before
+        # selecting a translucent technique.
+        mode = TRANSPARENCY_MODE_OPAQUE
         double_sided = _material_is_double_sided(material)
         technique = _technique_for_transparency(mode, True, double_sided)
         cmds.setAttr(f"{shader}.technique", technique, type="string")
@@ -2534,6 +2831,8 @@ class MeshConverter:
         if not is_pmd:
             # エッジ色
             _set_dx11_color_uniform(shader, "EdgeColor", material.edge_color)
+        # Outlines are an explicit Maya display opt-in. The authored edge size
+        # remains in metadata so the Material tab can restore it when enabled.
         maya_attribute_utils.set_attribute(shader, "EdgeSize", 0.0, "float")
 
         # スフィアモード設定
@@ -2547,9 +2846,9 @@ class MeshConverter:
         # テクスチャ設定
         self._connect_dx11_main_texture(shader, material, texture_path, original_texture_path)
 
-        # スフィアテクスチャ設定（PMXのみ）
+        # PMD-to-PMX conversion preserves sphere texture metadata as well.
         sphere_texture_path = None
-        if not is_pmd and hasattr(material, "sphere_texture_index") and material.sphere_texture_index >= 0:
+        if hasattr(material, "sphere_texture_index") and material.sphere_texture_index >= 0:
             if all_textures and material.sphere_texture_index < len(all_textures):
                 sphere_texture_path = all_textures[material.sphere_texture_index]
                 full_sphere_path = _resolve_texture_path(self.texture_dir, sphere_texture_path)
@@ -2570,39 +2869,38 @@ class MeshConverter:
                         "Sphere",
                     )
 
-        # Toon texture setting. PMX custom toon uses the regular texture table;
+        # Toon texture setting. Custom toon uses the regular texture table;
         # shared toon uses bundled toon01.bmp..toon10.bmp assets.
-        if not is_pmd:
-            full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
-            if full_toon_path and os.path.exists(full_toon_path) and cmds.attributeQuery("ToonTexture", node=shader, exists=True):
-                toon_original_path = ""
-                toon_source_kind = "shared_toon"
-                toon_shared_id = ""
-                if (
-                    hasattr(material, "shared_toon_flag")
-                    and hasattr(material, "toon_texture_index")
-                    and int(material.shared_toon_flag) == 0
-                    and all_textures
-                    and 0 <= int(material.toon_texture_index) < len(all_textures)
-                ):
-                    toon_original_path = all_textures[int(material.toon_texture_index)]
-                    toon_source_kind = "pmx_texture"
-                elif hasattr(material, "toon_texture_index"):
-                    toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
-                self._connect_dx11_secondary_texture(
-                    shader,
-                    material,
-                    toon_original_path,
-                    full_toon_path,
-                    "ToonTexture",
-                    "HasToonTexture",
-                    "_toon_texture",
-                    "Toon",
-                    source_kind=toon_source_kind,
-                    shared_toon_id=toon_shared_id,
-                )
-            elif full_toon_path:
-                cmds.warning(f"Toon texture file not found: {full_toon_path}")
+        full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
+        if full_toon_path and os.path.exists(full_toon_path) and cmds.attributeQuery("ToonTexture", node=shader, exists=True):
+            toon_original_path = ""
+            toon_source_kind = "shared_toon"
+            toon_shared_id = ""
+            if (
+                hasattr(material, "shared_toon_flag")
+                and hasattr(material, "toon_texture_index")
+                and int(material.shared_toon_flag) == 0
+                and all_textures
+                and 0 <= int(material.toon_texture_index) < len(all_textures)
+            ):
+                toon_original_path = all_textures[int(material.toon_texture_index)]
+                toon_source_kind = "pmx_texture"
+            elif hasattr(material, "toon_texture_index"):
+                toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
+            self._connect_dx11_secondary_texture(
+                shader,
+                material,
+                toon_original_path,
+                full_toon_path,
+                "ToonTexture",
+                "HasToonTexture",
+                "_toon_texture",
+                "Toon",
+                source_kind=toon_source_kind,
+                shared_toon_id=toon_shared_id,
+            )
+        elif full_toon_path:
+            cmds.warning(f"Toon texture file not found: {full_toon_path}")
 
         # カスタムアトリビュートを適用
         self._apply_custom_attributes(

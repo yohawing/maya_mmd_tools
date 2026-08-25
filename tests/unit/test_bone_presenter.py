@@ -1,14 +1,15 @@
 """BonePresenterのユニットテスト"""
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 import maya.cmds as cmds
 
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
-    ATTR_MMD_DEFORM_LAYER,
 )
+from mmd_tools.core.model_authoring_spec import MmdBoneSpec
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from tests.common.mock_ui import attach_mocks
 from tests.common.maya_test_base import MayaTestBase
 from mmd_tools.ui.presenters.bone_presenter import BonePresenter
@@ -17,6 +18,17 @@ from mmd_tools.ui.application_state import ApplicationState
 from mmd_tools.ui.translations import UITranslator
 
 UITranslator.instance().set_language("en")
+
+
+def _set_test_bone_names(joint, name_jp, name_en):
+    """Create only the Maya metadata needed by this presenter's read fixtures."""
+    for attribute, value in (
+        (ATTR_MMD_BONE_NAME, name_jp),
+        (ATTR_MMD_BONE_NAME_EN, name_en),
+    ):
+        if not cmds.attributeQuery(attribute, node=joint, exists=True):
+            cmds.addAttr(joint, longName=attribute, dataType="string")
+        cmds.setAttr(f"{joint}.{attribute}", value, type="string")
 
 
 class TestBonePresenter(MayaTestBase):
@@ -35,19 +47,17 @@ class TestBonePresenter(MayaTestBase):
             [
                 "bone_list",
                 "refresh_btn",
+                "register_joint_btn",
+                "capture_rest_btn",
+                "reindex_up_btn",
+                "reindex_down_btn",
+                "apply_reindex_btn",
+                "unregister_btn",
                 "search_edit",
                 "bone_name_jp_edit",
                 "bone_name_en_edit",
                 "parent_bone_edit",
-                "pos_x_spin",
-                "pos_y_spin",
-                "pos_z_spin",
                 "deform_layer_spin",
-                "connection_type_combo",
-                "connection_bone_edit",
-                "offset_x_spin",
-                "offset_y_spin",
-                "offset_z_spin",
                 "rotatable_check",
                 "movable_check",
                 "visible_check",
@@ -107,6 +117,12 @@ class TestBonePresenter(MayaTestBase):
             "select_grant_parent_btn",
             "apply_btn",
             "reset_btn",
+            "register_joint_btn",
+            "capture_rest_btn",
+            "reindex_up_btn",
+            "reindex_down_btn",
+            "apply_reindex_btn",
+            "unregister_btn",
         ]
         for attr in button_attrs:
             if hasattr(self.mock_view, attr):
@@ -122,7 +138,6 @@ class TestBonePresenter(MayaTestBase):
         self.mock_view.fixed_axis_check.toggled = MagicMock()
         self.mock_view.local_axis_check.toggled = MagicMock()
         self.mock_view.external_parent_check.toggled = MagicMock()
-        self.mock_view.connection_type_combo.currentIndexChanged = MagicMock()
 
         # IKリンクテーブルのモック設定
         self.mock_view.ik_links_table.rowCount.return_value = 0
@@ -137,7 +152,6 @@ class TestBonePresenter(MayaTestBase):
         self.mock_view.ik_links_table.setCurrentCell = MagicMock()
 
         # デフォルト値を設定
-        self.mock_view.connection_type_combo.currentIndex.return_value = 0
         self.mock_view.ik_enabled_check.isChecked.return_value = False
         self.mock_view.rotation_grant_check.isChecked.return_value = False
         self.mock_view.move_grant_check.isChecked.return_value = False
@@ -147,13 +161,7 @@ class TestBonePresenter(MayaTestBase):
 
         # スピンボックスのvalue関数
         spin_attrs = [
-            "pos_x_spin",
-            "pos_y_spin",
-            "pos_z_spin",
             "deform_layer_spin",
-            "offset_x_spin",
-            "offset_y_spin",
-            "offset_z_spin",
             "grant_rate_spin",
             "external_parent_key_spin",
             "fixed_axis_x_spin",
@@ -179,7 +187,6 @@ class TestBonePresenter(MayaTestBase):
             "bone_name_jp_edit",
             "bone_name_en_edit",
             "parent_bone_edit",
-            "connection_bone_edit",
             "ik_target_edit",
             "rotation_grant_parent_edit",
             "move_grant_parent_edit",
@@ -231,18 +238,9 @@ class TestBonePresenter(MayaTestBase):
         cmds.select(clear=True)
         cmds.parent(self.test_bone1, self.test_model)
 
-        # MMD属性を追加
-        self.presenter._ensure_mmd_attributes(self.test_bone1)
-        self.presenter._ensure_mmd_attributes(self.test_bone2)
-        self.presenter._ensure_mmd_attributes(self.test_bone3)
-
-        # 基本的なMMD属性を設定
-        cmds.setAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME}", "テストボーン1", type="string")
-        cmds.setAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME_EN}", "test_bone1", type="string")
-        cmds.setAttr(f"{self.test_bone2}.{ATTR_MMD_BONE_NAME}", "テストボーン2", type="string")
-        cmds.setAttr(f"{self.test_bone2}.{ATTR_MMD_BONE_NAME_EN}", "test_bone2", type="string")
-        cmds.setAttr(f"{self.test_bone3}.{ATTR_MMD_BONE_NAME}", "テストボーン3", type="string")
-        cmds.setAttr(f"{self.test_bone3}.{ATTR_MMD_BONE_NAME_EN}", "test_bone3", type="string")
+        _set_test_bone_names(self.test_bone1, "テストボーン1", "test_bone1")
+        _set_test_bone_names(self.test_bone2, "テストボーン2", "test_bone2")
+        _set_test_bone_names(self.test_bone3, "テストボーン3", "test_bone3")
 
     def tearDown(self):
         """テスト後のクリーンアップ"""
@@ -258,6 +256,68 @@ class TestBonePresenter(MayaTestBase):
         self.assertEqual(self.presenter.all_bones, [])
         self.assertFalse(self.presenter.is_updating)
 
+    def test_presenter_has_no_direct_metadata_writer(self):
+        """Bone metadata writes stay behind the injected authoring coordinator."""
+        self.assertFalse(hasattr(BonePresenter, "_ensure_mmd_attributes"))
+
+    def test_refresh_pending_detects_axis_vector_edit(self):
+        presenter = BonePresenter.__new__(BonePresenter)
+        presenter.view = self.mock_view
+        presenter.current_bone = "joint"
+        presenter._reindex_dirty = False
+        presenter._reset_plan = None
+        presenter.bone_data = {
+            "name_jp": "",
+            "name_en": "",
+            "deform_layer": 0.0,
+            "flags": 0,
+            "structural": {},
+            "fixed_axis": (0.0, 0.0, 0.0),
+            "local_axis_x": (0.0, 0.0, 0.0),
+            "local_axis_z": (0.0, 0.0, 0.0),
+        }
+        self.mock_view.fixed_axis_x_spin.value.return_value = 1.0
+        presenter._get_bone_flags = Mock(side_effect=AssertionError("pending check must not read Maya"))
+
+        self.assertTrue(presenter._has_pending_refresh_work())
+        presenter._get_bone_flags.assert_not_called()
+
+    def test_refresh_pending_is_fail_closed_when_control_read_fails(self):
+        presenter = BonePresenter.__new__(BonePresenter)
+        presenter.view = self.mock_view
+        presenter.current_bone = "joint"
+        presenter._reindex_dirty = False
+        presenter._reset_plan = None
+        presenter.bone_data = {"name_jp": "", "name_en": "", "deform_layer": 0.0, "flags": 0}
+        self.mock_view.bone_name_jp_edit.text.side_effect = RuntimeError("control unavailable")
+
+        self.assertTrue(presenter._has_pending_refresh_work())
+
+    def test_dirty_same_generation_reactivation_does_not_reload_graph(self):
+        presenter = BonePresenter.__new__(BonePresenter)
+        presenter._pending_refresh_generation = 3
+        presenter._last_refresh_generation = None
+        presenter._reindex_dirty = True
+        presenter._reset_plan = None
+        presenter.load_bones = Mock()
+
+        self.assertTrue(presenter.refresh_for_generation(3))
+        self.assertTrue(presenter.refresh_for_generation(3))
+        presenter.load_bones.assert_not_called()
+        self.assertEqual(presenter._last_refresh_generation, 3)
+
+    def test_initial_timer_does_not_bypass_pending_refresh(self):
+        presenter = BonePresenter.__new__(BonePresenter)
+        presenter.app_state = self.mock_app_state
+        presenter.app_state.refresh_generation = 3
+        presenter._pending_refresh_generation = 3
+        presenter._last_refresh_generation = None
+        presenter.load_bones = Mock()
+
+        presenter._load_initial_bones()
+
+        presenter.load_bones.assert_not_called()
+
     def test_load_bones(self):
         """ボーン読み込みのテスト"""
         # モデルルートを設定
@@ -272,9 +332,8 @@ class TestBonePresenter(MayaTestBase):
 
         # ボーンが読み込まれたことを確認
         self.assertEqual(len(self.presenter.bone_list_items), 3)
-        self.assertIn(self.test_bone1, self.presenter.bone_list_items)
-        self.assertIn(self.test_bone2, self.presenter.bone_list_items)
-        self.assertIn(self.test_bone3, self.presenter.bone_list_items)
+        long_bones = set(cmds.ls((self.test_bone1, self.test_bone2, self.test_bone3), long=True))
+        self.assertEqual(set(self.presenter.bone_list_items), long_bones)
 
         # 一覧ロード詳細は DEBUG のみ（INFO には出さない）
         expected = f"Loaded 3 bones for model: {self.test_model}"
@@ -286,7 +345,6 @@ class TestBonePresenter(MayaTestBase):
     def test_bone_flag_calculation(self):
         """ボーンフラグ計算のテスト"""
         # 各フラグを設定
-        self.mock_view.connection_type_combo.currentIndex.return_value = 1  # ボーン接続
         self.mock_view.rotatable_check.isChecked.return_value = True
         self.mock_view.movable_check.isChecked.return_value = True
         self.mock_view.visible_check.isChecked.return_value = True
@@ -295,12 +353,9 @@ class TestBonePresenter(MayaTestBase):
         self.mock_view.after_physics_check.isChecked.return_value = True
 
         # フラグを計算
-        flags = self.presenter._calculate_bone_flags()
+        flags = self.presenter._calculate_bone_flags(PmxBoneFlag.CONNECT_BONE)
 
         # 期待値を確認
-        # PmxBoneFlagの値を使用
-        from mmd_tools.core.pmx_data.bone import PmxBoneFlag
-
         expected_flags = (
             PmxBoneFlag.CONNECT_BONE
             | PmxBoneFlag.ROTATABLE
@@ -360,31 +415,38 @@ class TestBonePresenter(MayaTestBase):
         self.mock_view.ik_links_group.setVisible.assert_called_with(False)
 
     def test_apply_changes(self):
-        """変更適用のテスト"""
-        # 現在のボーンを設定
+        """Apply routes value metadata through the authoring coordinator."""
         self.presenter.current_bone = self.test_bone1
+        self.presenter.current_bone_index = 0
+        existing = MmdBoneSpec(
+            "テストボーン1",
+            name_english="test_bone1",
+            index=0,
+            binding_identity=self.test_bone1,
+        )
+        coordinator = Mock()
+        coordinator.read_bone_value.return_value = existing
+        coordinator.apply_bone_value_patch.side_effect = lambda _root, bone: bone
+        self.presenter.authoring_coordinator = coordinator
+        self.presenter.bone_data = {
+            "structural": self.presenter._structural_ui_state(existing.flags)
+        }
 
-        # UI の値を設定
         self.mock_view.bone_name_jp_edit.text.return_value = "新しい名前"
         self.mock_view.bone_name_en_edit.text.return_value = "new_name"
         self.mock_view.deform_layer_spin.value.return_value = 2
-        self.mock_view.pos_x_spin.value.return_value = 1.0
-        self.mock_view.pos_y_spin.value.return_value = 2.0
-        self.mock_view.pos_z_spin.value.return_value = 3.0
 
-        # 変更を適用
         self.presenter.apply_changes()
 
-        # 属性が更新されたことを確認
-        self.assertEqual(cmds.getAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME}"), "新しい名前")
-        self.assertEqual(cmds.getAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME_EN}"), "new_name")
-        self.assertEqual(cmds.getAttr(f"{self.test_bone1}.{ATTR_MMD_DEFORM_LAYER}"), 2)
+        coordinator.read_bone_value.assert_called_once_with(
+            self.test_model, 0, self.test_bone1
+        )
+        root, replacement = coordinator.apply_bone_value_patch.call_args[0]
+        self.assertEqual(root, self.test_model)
+        self.assertEqual(replacement.name, "新しい名前")
+        self.assertEqual(replacement.name_english, "new_name")
+        self.assertEqual(replacement.transform_layer, 2)
 
-        # 位置が更新されたことを確認
-        pos = cmds.xform(self.test_bone1, query=True, translation=True, worldSpace=True)
-        self.assertAlmostEqual(pos[0], 1.0, places=3)
-        self.assertAlmostEqual(pos[1], 2.0, places=3)
-        self.assertAlmostEqual(pos[2], 3.0, places=3)
 
     def test_grant_settings_toggle(self):
         """付与設定のトグルテスト"""
@@ -398,18 +460,6 @@ class TestBonePresenter(MayaTestBase):
         self.mock_view.move_grant_check.isChecked.return_value = False
         self.presenter.on_grant_toggled()
         self.mock_view.grant_settings_group.setVisible.assert_called_with(False)
-
-    def test_connection_type_change(self):
-        """接続タイプ変更のテスト"""
-        # 座標オフセットモード
-        self.presenter.on_connection_type_changed(0)
-        self.mock_view.offset_x_spin.setEnabled.assert_called_with(True)
-        self.mock_view.connection_bone_edit.setEnabled.assert_called_with(False)
-
-        # ボーン接続モード
-        self.presenter.on_connection_type_changed(1)
-        self.mock_view.offset_x_spin.setEnabled.assert_called_with(False)
-        self.mock_view.connection_bone_edit.setEnabled.assert_called_with(True)
 
     def test_filter_bones(self):
         """ボーン検索フィルタのテスト"""

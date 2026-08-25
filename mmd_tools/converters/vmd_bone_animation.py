@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 import math
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
@@ -70,20 +70,27 @@ def _apply_quaternion_interpolation(
     plugs: List[str],
     *,
     animation_layer: Optional[str] = None,
-) -> None:
-    """Apply Maya quaternion slerp to a keyed three-angle compound."""
+) -> bool:
+    """Apply Maya quaternion slerp to a Transform rotation track."""
     try:
         from .vmd_rotation_time_curve import _resolve_quaternion_curves
 
-        cmds.scriptEditorInfo(suppressWarnings=True)
         curves = _resolve_quaternion_curves(
             plugs,
             animation_layer=animation_layer,
             require_quaternion=False,
         )
+        cmds.scriptEditorInfo(suppressWarnings=True)
         cmds.rotationInterpolation(*curves, convert="quaternionSlerp")
+        if any(
+            cmds.rotationInterpolation(curve, query=True) != "quaternionSlerp"
+            for curve in curves
+        ):
+            raise RuntimeError("Maya did not retain quaternionSlerp on rotation curves")
+        return True
     except Exception as exc:
         context.logger.warning(f"Failed to apply quaternion interpolation to {plugs[0]}: {exc}")
+        return False
     finally:
         cmds.scriptEditorInfo(suppressWarnings=False)
 
@@ -97,6 +104,18 @@ def _has_registered_rotation_curve(frames: List) -> bool:
         if isinstance(interpolation, Mapping) and "rotation" in interpolation:
             return True
     return False
+
+
+def _is_complete_xyz_sibling_route(attributes: Tuple[str, ...]) -> bool:
+    """Return whether attributes are one ordered X/Y/Z compound sibling set."""
+    if len(attributes) != 3:
+        return False
+    stems = []
+    for attribute, axis in zip(attributes, "XYZ"):
+        if not attribute.endswith(axis):
+            return False
+        stems.append(attribute[:-1])
+    return bool(stems[0] and len(set(stems)) == 1)
 
 
 def _configure_sparse_rotation_track(
@@ -124,14 +143,16 @@ def _configure_sparse_rotation_track(
         and not rotate_redirected
         and not key_route.get("ik_solver_rotate")
     )
-    control_route_safe = (
-        bool(key_route.get("control_owned"))
-        and bool(key_route.get("quaternion_interpolation_safe"))
-    )
+    owned_rotation_route_safe = bool(key_route.get("quaternion_interpolation_safe"))
+    if registered_rotation_curve and rotate_redirected and not owned_rotation_route_safe:
+        raise VmdKeyingError(
+            "VMD semantic rotation cannot be authored across mixed or unsafe owners: "
+            f"joint={joint}; targets={rotation_targets!r}"
+        )
     quaternion_requested = (
-        registered_rotation_curve and (direct_rotation_route or control_route_safe)
+        registered_rotation_curve and (direct_rotation_route or owned_rotation_route_safe)
     ) or (
-        context.use_quaternion_interpolation and control_route_safe
+        context.use_quaternion_interpolation and owned_rotation_route_safe
     )
     if not quaternion_requested or skip_rotate:
         return None
@@ -139,22 +160,29 @@ def _configure_sparse_rotation_track(
     quaternion_plugs = None
     if not rotate_redirected:
         quaternion_plugs = [f"{joint}.{attr}" for attr in rotation_attrs]
-    elif key_route.get("control_owned"):
+    elif owned_rotation_route_safe:
         target_nodes = {target_node for target_node, _ in rotation_targets}
         target_attrs = tuple(target_attr for _, target_attr in rotation_targets)
-        if len(target_nodes) == 1 and target_attrs == rotation_attrs:
+        if len(target_nodes) == 1 and _is_complete_xyz_sibling_route(target_attrs):
             target_node = next(iter(target_nodes))
             quaternion_plugs = [
-                f"{target_node}.{attr}" for attr in rotation_attrs
+                f"{target_node}.{attr}" for attr in target_attrs
             ]
     if not quaternion_plugs:
         return None
 
-    _apply_quaternion_interpolation(
+    quaternion_applied = _apply_quaternion_interpolation(
         context,
         quaternion_plugs,
         animation_layer=animation_layer,
     )
+    if not quaternion_applied:
+        if owned_rotation_route_safe:
+            raise VmdKeyingError(
+                "VMD quaternion interpolation could not be established on owned route: "
+                f"{quaternion_plugs!r}"
+            )
+        return None
     if (
         context.use_vmd_rotation_time_curve or registered_rotation_curve
     ) and len(frames) >= 2:
@@ -262,6 +290,34 @@ def set_bone_keyframes(
     """Set legacy VMD bone keys while preserving hidden Twist channel locks."""
 
     route = key_route or {}
+    from .vmd_redirected_authoring_proxy import ensure_redirected_authoring_proxy
+
+    try:
+        redirected_proxy_route = ensure_redirected_authoring_proxy(
+            joint,
+            route.get("attr_targets", {}),
+        )
+    except Exception as exc:
+        raise VmdKeyingError(
+            "VMD bone keying blocked because a redirected authoring proxy "
+            f"could not be established: joint={joint}; error={exc}"
+        ) from exc
+    if redirected_proxy_route:
+        route = dict(route)
+        route["attr_targets"] = dict(route.get("attr_targets", {}))
+        route["attr_targets"].update(redirected_proxy_route)
+        if all(
+            channel in redirected_proxy_route
+            for channel in ("rotateX", "rotateY", "rotateZ")
+        ):
+            route["quaternion_interpolation_safe"] = True
+    blocked_channels = tuple(route.get("blocked_channels") or ())
+    if blocked_channels:
+        raise VmdKeyingError(
+            "VMD bone keying blocked because an authored input owner is unresolved: "
+            f"joint={joint}; channels={blocked_channels!r}; "
+            f"reason={route.get('block_reason') or 'authored_route_unresolved'}"
+        )
     states = []
     if route.get("fixed_axis_twist"):
         attr_targets = route.get("attr_targets", {})
@@ -327,6 +383,7 @@ def _set_bone_keyframes_impl(
         vmd_bone_name,
         context.bone_bind_poses.get(joint, (0.0, 0.0, 0.0)),
     )
+    control_owned_channels = set(key_route.get("control_owned_channels", ()))
     needs_rotation_samples = not skip_rotate or bool(key_route.get("ik_solver_rotate"))
     rotation_samples = (
         _sparse_rotation_samples(context, joint, frames, key_route)
@@ -413,6 +470,14 @@ def _set_bone_keyframes_impl(
                 "translateY": ty,
                 "translateZ": tz,
             }
+            # Control Rig EDIT owns an additive translate baseline between
+            # each controller and the joint.  Controller keys are therefore
+            # motion deltas; writing the ordinary joint-space ``bind + VMD``
+            # value here would apply the bind translation twice.  Append and
+            # other legacy routes are intentionally left absolute.
+            for index, attr in enumerate(("translateX", "translateY", "translateZ")):
+                if attr in control_owned_channels:
+                    values[attr] -= float(bind_pos[index])
             if not skip_rotate:
                 rx, ry, rz = rotation_by_time[maya_time]
                 rotation_values = {

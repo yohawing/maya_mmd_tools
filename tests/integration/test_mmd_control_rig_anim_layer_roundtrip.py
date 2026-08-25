@@ -68,8 +68,21 @@ class TestMmdControlRigAnimLayerRoundtrip(MayaTestBase):
             if row.get("layerRoute")
         )
         self.assertEqual(layer_row["layerRoute"]["curveRef"]["nodeUuid"], curve_uuid)
-        self.assertTrue(cmds.isConnected(route_before["curve"], layer_row["control"]))
-        self.assertTrue(cmds.isConnected(layer_row["control"], route_before["blend"]))
+        # Translate-authorable layer curves keep the original C source
+        # untouched and drive the controller through an owned delta duplicate
+        # D plus an additive baseline helper into inputB.
+        self.assertNotEqual(
+            layer_row["controlSource"].split(".", 1)[0],
+            route_before["curve"].split(".", 1)[0],
+        )
+        self.assertTrue(cmds.isConnected(layer_row["controlSource"], layer_row["control"]))
+        self.assertTrue(
+            cmds.isConnected(
+                layer_row["translateBaselineOutput"],
+                route_before["blend"],
+            )
+        )
+        self.assertFalse(cmds.isConnected(route_before["curve"], route_before["blend"]))
 
         restore_mmd_control_rig_attached(root)
         restored = capture_mmd_control_rig_anim_layers(cmds, root, None)

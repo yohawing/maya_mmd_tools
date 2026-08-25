@@ -237,8 +237,8 @@ _ROLE_TEMPLATE_ALIASES = {
     "waist": "circle",
     "left_foot_ik_parent": "circle",
     "right_foot_ik_parent": "circle",
-    "left_toe_ik": "circle",
-    "right_toe_ik": "circle",
+    "left_toe_ik": "toe_ik",
+    "right_toe_ik": "toe_ik",
 }
 
 _AUTO_ORIENT_SHAPE_ROLES = frozenset(

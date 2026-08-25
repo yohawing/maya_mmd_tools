@@ -6,6 +6,7 @@ import json
 import math
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import maya.api.OpenMaya as om
@@ -43,6 +44,14 @@ REQUIRED_ACCUM_ATTRS = (
 _NODE_TYPE_UNAVAILABLE = "node_type_unavailable"
 _PROBE_NODE_NAME = "__mmdBoneMorphAccum_availability_probe__"
 _ARRAY_INDEX_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\](?:\.|$)")
+
+
+@dataclass(frozen=True)
+class BoneMorphBaseRouteResolution:
+    """Owned accumulator routes plus fail-closed claims that could not resolve."""
+
+    routes: Dict[str, Dict[str, Tuple[str, str]]]
+    blocked: Dict[str, Tuple[Tuple[str, ...], str]]
 
 
 def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
@@ -83,6 +92,13 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
         joints_by_index,
         result["skipped"],
     )
+    existing_by_joint = {
+        joint: node
+        for joint, node in _collect_existing_accumulators().items()
+        if joint in set(joints_by_index.values())
+    }
+    for joint in sorted(set(existing_by_joint) - set(contributions_by_joint)):
+        _remove_accumulator(joint, existing_by_joint[joint])
     if not contributions_by_joint:
         result["skipped"].append("no_bone_morph_contributions")
         return result
@@ -109,7 +125,6 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
             )
         )
 
-    existing_by_joint = _collect_existing_accumulators()
     for joint, contributions in contributions_by_joint.items():
         node = existing_by_joint.get(joint)
         if node and _is_valid_accumulator(node):
@@ -271,6 +286,148 @@ def _is_valid_accumulator(node: str) -> bool:
         return False
 
 
+def resolve_owned_bone_morph_base_routes(
+    joints: Iterable[str],
+) -> BoneMorphBaseRouteResolution:
+    """Resolve unambiguous authored base channels for owned accumulators.
+
+    The marker and stored target alone are insufficient: a stale or copied
+    accumulator must not capture VMD keys.  Each accepted node must also own
+    both live output connections at the destination selected by the runtime
+    graph (joint, append base, or IK input).  Duplicate candidates and any
+    incomplete ownership proof are skipped fail-closed.
+    """
+    requested: Dict[str, str] = {}
+    for joint in joints:
+        canonical = _canonical_dag_path(str(joint))
+        if canonical:
+            requested[canonical] = str(joint)
+    if not requested:
+        return BoneMorphBaseRouteResolution(routes={}, blocked={})
+
+    candidates: Dict[str, List[str]] = defaultdict(list)
+    invalid_candidates: Dict[str, List[str]] = defaultdict(list)
+    try:
+        accumulators = cmds.ls(type=ACCUM_NODE_TYPE) or []
+    except Exception:
+        return BoneMorphBaseRouteResolution(routes={}, blocked={})
+    for node_value in accumulators:
+        node = str(node_value)
+        try:
+            if not cmds.attributeQuery("mmd_bone_morph_accum", node=node, exists=True):
+                continue
+            if not bool(cmds.getAttr(f"{node}.mmd_bone_morph_accum")):
+                continue
+        except Exception:
+            continue
+        try:
+            has_target = cmds.attributeQuery(
+                "mmd_target_joint", node=node, exists=True
+            )
+            target = (
+                str(cmds.getAttr(f"{node}.mmd_target_joint") or "")
+                if has_target
+                else ""
+            )
+        except Exception:
+            target = ""
+        target_matches = _canonical_dag_paths(target)
+        requested_targets = [match for match in target_matches if match in requested]
+        claimed_targets = set(requested_targets)
+        # A malformed/stale target marker can still be associated safely with
+        # the mapped joint whose live input it partially owns. This slow scan
+        # runs only on malformed candidates, never on the normal import path.
+        if len(target_matches) != 1 or len(requested_targets) != 1:
+            for canonical_joint in requested:
+                if any(
+                    _is_connected(
+                        f"{node}.output{attr_kind.capitalize()}",
+                        _destination_upstream_of_append(canonical_joint, attr_kind),
+                    )
+                    for attr_kind in ("translate", "rotate")
+                ):
+                    claimed_targets.add(canonical_joint)
+        if not claimed_targets:
+            continue
+        if (
+            len(target_matches) != 1
+            or len(requested_targets) != 1
+            or not _is_valid_accumulator(node)
+        ):
+            for claimed_target in claimed_targets:
+                invalid_candidates[claimed_target].append(node)
+            continue
+        candidates[requested_targets[0]].append(node)
+
+    routes: Dict[str, Dict[str, Tuple[str, str]]] = {}
+    blocked: Dict[str, Tuple[Tuple[str, ...], str]] = {}
+    all_channels = tuple(
+        f"{attr_kind}{axis}"
+        for attr_kind in ("translate", "rotate")
+        for axis in ("X", "Y", "Z")
+    )
+    claimed_joints = set(candidates) | set(invalid_candidates)
+    for canonical_joint in claimed_joints:
+        nodes = candidates.get(canonical_joint, [])
+        invalid_nodes = invalid_candidates.get(canonical_joint, [])
+        if invalid_nodes:
+            blocked[requested[canonical_joint]] = (
+                all_channels,
+                "invalid_or_ambiguous_bone_morph_accumulator",
+            )
+            continue
+        if len(set(nodes)) != 1:
+            blocked[requested[canonical_joint]] = (
+                all_channels,
+                "duplicate_bone_morph_accumulator",
+            )
+            continue
+        node = nodes[0]
+        ownership = (
+            (
+                "translate",
+                "baseTranslate",
+                "outputTranslate",
+            ),
+            ("rotate", "baseRotate", "outputRotate"),
+        )
+        if not all(
+            _is_connected(
+                f"{node}.{output_name}",
+                _destination_upstream_of_append(canonical_joint, attr_kind),
+            )
+            for attr_kind, _base_name, output_name in ownership
+        ):
+            blocked[requested[canonical_joint]] = (
+                all_channels,
+                "bone_morph_accumulator_output_unowned",
+            )
+            continue
+        route: Dict[str, Tuple[str, str]] = {}
+        for attr_kind, base_name, _output_name in ownership:
+            for axis in ("X", "Y", "Z"):
+                route[f"{attr_kind}{axis}"] = (node, f"{base_name}{axis}")
+        routes[requested[canonical_joint]] = route
+    return BoneMorphBaseRouteResolution(routes=routes, blocked=blocked)
+
+
+def _canonical_dag_path(node: str) -> Optional[str]:
+    """Return one unambiguous long DAG path, or ``None``."""
+    try:
+        matches = cmds.ls(node, long=True) or []
+    except Exception:
+        return None
+    return str(matches[0]) if len(matches) == 1 else None
+
+
+def _canonical_dag_paths(node: str) -> Tuple[str, ...]:
+    """Return every long DAG match for ambiguity-aware ownership checks."""
+    try:
+        return tuple(str(match) for match in (cmds.ls(node, long=True) or []))
+    except Exception:
+        return ()
+
+
 def _collect_joints_by_bone_index(root_group: str) -> Dict[int, str]:
     joints = cmds.listRelatives(root_group, allDescendents=True, type="joint", fullPath=True) or []
     if cmds.nodeType(root_group) == "joint":
@@ -382,6 +539,22 @@ def _pmx_quat_to_maya(values) -> Tuple[float, float, float, float]:
     return (-float(values[0]), -float(values[1]), float(values[2]), float(values[3]))
 
 
+def pmx_bone_offset_to_runtime_values(
+    translation: Tuple[float, float, float],
+    rotation: Tuple[float, float, float, float],
+    joint: str,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float, float]]:
+    """Convert one PMX bone offset to the accumulator's runtime basis.
+
+    This small public helper is shared by the selected-morph patch path so a
+    direct contribution update uses exactly the same handedness reflection and
+    bind-orientation conjugation as the full runtime graph builder.
+    """
+    translate = (float(translation[0]), float(translation[1]), -float(translation[2]))
+    rotate = _pmx_quat_to_joint_rotate(_pmx_quat_to_maya(rotation), joint, {})
+    return translate, rotate
+
+
 def _pmx_quat_to_joint_rotate(
     maya_quat: Tuple[float, float, float, float],
     joint: str,
@@ -446,13 +619,43 @@ def _collect_existing_accumulators() -> Dict[str, str]:
             continue
         if not cmds.attributeQuery("mmd_target_joint", node=node, exists=True):
             continue
+        if not cmds.attributeQuery("mmd_bone_morph_accum", node=node, exists=True):
+            continue
         try:
+            if not cmds.getAttr(f"{node}.mmd_bone_morph_accum"):
+                continue
             joint = cmds.getAttr(f"{node}.mmd_target_joint") or ""
         except Exception:
             continue
         if joint and cmds.objExists(joint):
             accumulators[joint] = node
     return accumulators
+
+
+def _remove_accumulator(joint: str, node: str) -> None:
+    """Restore pre-morph inputs and delete one owned accumulator."""
+    for attr_kind, base_name, output_name in (
+        ("rotate", "baseRotate", "outputRotate"),
+        ("translate", "baseTranslate", "outputTranslate"),
+    ):
+        destination = _destination_upstream_of_append(joint, attr_kind)
+        base_attr = f"{node}.{base_name}"
+        output_attr = f"{node}.{output_name}"
+        if _is_connected(output_attr, destination):
+            cmds.disconnectAttr(output_attr, destination)
+            _copy_current_compound_value(base_attr, destination)
+        for axis in ("X", "Y", "Z"):
+            base_axis = _compound_axis_plug(base_attr, axis)
+            destination_axis = _compound_axis_plug(destination, axis)
+            if not base_axis or not destination_axis:
+                continue
+            for source in cmds.listConnections(base_axis, s=True, d=False, p=True) or []:
+                cmds.disconnectAttr(source, base_axis)
+                _connect_if_needed(source, destination_axis, force=True)
+        for source in cmds.listConnections(base_attr, s=True, d=False, p=True) or []:
+            cmds.disconnectAttr(source, base_attr)
+            _connect_if_needed(source, destination, force=True)
+    cmds.delete(node)
 
 
 def _create_accumulator(joint: str) -> Optional[str]:

@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import unittest
 from pathlib import Path
 
 import maya.api.OpenMaya as om
@@ -13,9 +14,57 @@ from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_ik_enabled_animation import apply_ik_enabled_animation, collect_ik_nodes_by_bone_name
 from mmd_tools.converters.vmd_timeline import get_animation_frame_range
 from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
-from mmd_tools.nodes.mmd_ccd_ik_node import _canonicalize_runtime_quaternion
+from mmd_tools.nodes.mmd_ccd_ik_node import (
+    _RUNTIME_POSITION_QUANTUM,
+    _canonicalize_runtime_position,
+    _canonicalize_runtime_quaternion,
+)
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
+
+
+class TestRuntimeIkInputCanonicalization(unittest.TestCase):
+    """Pure numeric contracts shared by Python and C++ CCD dispatch."""
+
+    def test_position_canonicalizes_dorothy_roundtrip_noise(self):
+        """Dorothy frame-90 position/goal witnesses share native grid cells."""
+        source = (
+            3.916799545288086,
+            1.3019449673220151,
+            -6.0536792278289795,
+        )
+        fresh = (
+            3.9167994260787964,
+            1.3019448518753052,
+            -6.053679287433624,
+        )
+
+        self.assertEqual(
+            [_canonicalize_runtime_position(value) for value in source],
+            [_canonicalize_runtime_position(value) for value in fresh],
+        )
+
+    def test_position_uses_ties_away_from_zero(self):
+        """Python fallback matches C++ std::round at signed cell boundaries."""
+        half_quantum = _RUNTIME_POSITION_QUANTUM * 0.5
+
+        self.assertEqual(
+            _canonicalize_runtime_position(half_quantum),
+            _RUNTIME_POSITION_QUANTUM,
+        )
+        self.assertEqual(
+            _canonicalize_runtime_position(-half_quantum),
+            -_RUNTIME_POSITION_QUANTUM,
+        )
+        zero = _canonicalize_runtime_position(-0.0)
+        self.assertEqual(zero, 0.0)
+        self.assertEqual(math.copysign(1.0, zero), 1.0)
+
+    def test_position_preserves_non_finite_values_for_native_validation(self):
+        """Canonicalization does not raise before the native solver rejects bad input."""
+        self.assertEqual(_canonicalize_runtime_position(float("inf")), float("inf"))
+        self.assertEqual(_canonicalize_runtime_position(float("-inf")), float("-inf"))
+        self.assertTrue(math.isnan(_canonicalize_runtime_position(float("nan"))))
 
 
 class TestVmdIkAnimation(MayaTestBase):
@@ -95,6 +144,46 @@ class TestVmdIkAnimation(MayaTestBase):
         self.assertEqual(cmds.keyframe(f"{right}.enabled", query=True, time=(0, 0), valueChange=True), [1.0])
 
         cmds.delete(left, right)
+
+    def test_apply_ik_enabled_animation_without_properties_sets_default_on_without_key(self):
+        """IK propertyなしでは現在値だけをONにし、min-frame keyを作らない"""
+        node = cmds.createNode("mmdCcdIk", name="default_on_without_property_key_solver")
+        try:
+            cmds.addAttr(node, longName="mmd_ik_bone_name", dataType="string")
+            cmds.setAttr(f"{node}.mmd_ik_bone_name", "左足ＩＫ", type="string")
+            cmds.setAttr(f"{node}.enabled", False)
+
+            apply_ik_enabled_animation(self._ik_enabled_context(), create_test_vmd_data())
+
+            self.assertEqual(cmds.getAttr(f"{node}.enabled"), True)
+            self.assertFalse(cmds.keyframe(f"{node}.enabled", query=True, timeChange=True))
+        finally:
+            if cmds.objExists(node):
+                cmds.delete(node)
+
+    def test_apply_ik_enabled_animation_without_properties_preserves_connected_enabled_curve(self):
+        """IK propertyなしでも既存enabled animCurveの所有権を奪わない"""
+        node = cmds.createNode("mmdCcdIk", name="connected_default_on_solver")
+        try:
+            cmds.addAttr(node, longName="mmd_ik_bone_name", dataType="string")
+            cmds.setAttr(f"{node}.mmd_ik_bone_name", "左足ＩＫ", type="string")
+            cmds.setAttr(f"{node}.enabled", False)
+            cmds.setKeyframe(node, attribute="enabled", time=5.0, value=0)
+            initial_times = cmds.keyframe(f"{node}.enabled", query=True, timeChange=True)
+
+            apply_ik_enabled_animation(self._ik_enabled_context(), create_test_vmd_data())
+
+            self.assertEqual(
+                cmds.keyframe(f"{node}.enabled", query=True, timeChange=True),
+                initial_times,
+            )
+            self.assertEqual(
+                cmds.keyframe(f"{node}.enabled", query=True, time=(5, 5), valueChange=True),
+                [0.0],
+            )
+        finally:
+            if cmds.objExists(node):
+                cmds.delete(node)
 
     def test_apply_ik_enabled_animation_reuses_existing_animcurve_on_reimport(self):
         """再インポート時は接続済み enabled animCurve をそのまま更新する"""

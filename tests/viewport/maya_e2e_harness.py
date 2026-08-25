@@ -14,51 +14,6 @@ from tests.common import maya_commandport
 LOG_POLL_INTERVAL = 0.5
 
 
-def _seed_isolated_maya_profile(
-    maya_app_dir: Path,
-    version: str,
-    project_root: Path,
-) -> None:
-    """Allow only this checkout's Python plug-ins in the isolated Maya profile.
-
-    Maya reads the secure plug-in allowlist from ``userPrefs.mel`` during
-    startup.  The E2E harness intentionally removes its profile for every
-    run, so seed the narrow repository path before launching Maya instead of
-    relying on a trust decision persisted in the user's normal preferences.
-    """
-    plugin_dir = (project_root / "mmd_tools").resolve().as_posix()
-    # MEL strings use backslash escapes; paths are normalized to forward
-    # slashes first so only quotes/control characters need escaping here.
-    escaped_plugin_dir = (
-        plugin_dir.replace('"', '\\"')
-        .replace("\r", "\\r")
-        .replace("\n", "\\n")
-        .replace("\t", "\\t")
-    )
-    prefs = (
-        f'//Maya Preference {version} (Release 1)\n'
-        '//\n'
-        '//\n'
-        '\n'
-        'optionVar -version 3;\n'
-        '\n'
-        '// Security\n'
-        'optionVar -cat "Security"\n'
-        ' -sa "SafeModeAllowedlistPaths"\n'
-        f' -sva "SafeModeAllowedlistPaths" "{escaped_plugin_dir}"\n'
-        ';\n'
-    )
-    # English Maya uses the base profile. Japanese and Simplified Chinese
-    # builds use locale-qualified profile roots under the same version.
-    for locale_name in (None, "ja_JP", "zh_CN"):
-        version_root = maya_app_dir / version
-        if locale_name is not None:
-            version_root /= locale_name
-        prefs_path = version_root / "prefs" / "userPrefs.mel"
-        prefs_path.parent.mkdir(parents=True, exist_ok=True)
-        prefs_path.write_text(prefs, encoding="utf-8")
-
-
 def monitor_result(
     log_path: Path,
     report_path: Path,
@@ -120,6 +75,7 @@ def run_maya_e2e(
     report_error: str | None = None,
     log_ready: Any = None,
     warn_detached: bool = False,
+    env_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Launch Maya with isolated preferences, run a probe, and close it."""
     maya_commandport.remove_stale_logs(stale_paths)
@@ -133,7 +89,9 @@ def run_maya_e2e(
             raise RuntimeError(port_error or f"commandPort :{port} is already open")
         shutil.rmtree(maya_app_dir, ignore_errors=True)
         profile_owned = True
-        _seed_isolated_maya_profile(maya_app_dir, version, project_root)
+        maya_commandport.seed_isolated_maya_profile(maya_app_dir, version, project_root)
+        launch_env = dict(env_overrides or {})
+        launch_env["MAYA_APP_DIR"] = str(maya_app_dir)
         proc = maya_commandport.launch_maya(
             version=version,
             project_root=project_root,
@@ -142,7 +100,7 @@ def run_maya_e2e(
             launch_mode="explorer" if sys.platform == "win32" else "direct",
             # Never allow an automated Maya shutdown to rewrite the user's
             # pluginPrefs.mel or other Documents/maya preferences.
-            env_overrides={"MAYA_APP_DIR": str(maya_app_dir)},
+            env_overrides=launch_env,
         )
         maya_owned = True
         maya_commandport.wait_for_port(port, timeout=launch_timeout, process=proc)
@@ -152,7 +110,24 @@ def run_maya_e2e(
                 log_ready.warning(
                     "Explorer launch is detached; commandPort ownership is guarded by the preflight only"
                 )
-        maya_commandport.send_python(port, command, label=send_label)
+        # Every commandPort probe gets the same process-level QSettings
+        # boundary before its production UI imports or widget constructors.
+        # The bootstrap is inside Maya, where PySide/Maya are available, and
+        # remains active if the probe later times out or is force-terminated.
+        settings_bootstrap = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            f"project_root = Path({str(project_root.resolve().as_posix())!r})\n"
+            "if str(project_root) not in sys.path:\n"
+            "    sys.path.insert(0, str(project_root))\n"
+            "from tests.common.qsettings_isolation import activate_qsettings_isolation\n"
+            "activate_qsettings_isolation()\n"
+        )
+        maya_commandport.send_python(
+            port,
+            settings_bootstrap + command,
+            label=send_label,
+        )
         return monitor_result(
             log_path,
             report_path,

@@ -96,6 +96,7 @@ from .vmd_runtime_rig_helper import (
 )
 from .vmd_registered_sparse import registered_sparse_bone_frames
 from .vmd_runtime_provenance import (
+    build_raw_vmd_source_provenance,
     build_runtime_registration_provenance,
     store_runtime_registration_provenance,
 )
@@ -133,6 +134,7 @@ from .vmd_runtime_sources import (
     should_use_mmd_runtime_bake,
 )
 from .vmd_runtime_world_bake import bake_bone_poses_from_world_matrices, convert_mmd_world_matrix_to_maya
+from .vmd_import_route import plan_vmd_import_route
 from .vmd_reduced_pose_integration import author_reduced_pose_from_runtime_cache
 from .vmd_scene_keying import (
     batch_create_and_key_curve_arrays,
@@ -589,6 +591,7 @@ class VmdConverter:
         self._enforce_humanik_import_gate(target_model)
         registered_sparse_frames = None
         registered_sparse_provenance = None
+        raw_source_provenance = None
         runtime_bake_requested = False
         if not bake_mode and getattr(vmd_data, "bone_frames", None):
             # Resolve the imported PMX index table before any Control Rig or
@@ -638,6 +641,10 @@ class VmdConverter:
                     pmx_path=sparse_pmx_path,
                     vmd_source_path=getattr(vmd_data, "source_file", None),
                     source_bone_frames=getattr(vmd_data, "bone_frames", None) or (),
+                    source_ik_frames=getattr(
+                        vmd_data, "ik_show_hide_frames", None
+                    )
+                    or (),
                     profile=profile,
                 )
         control_rig_transaction = None
@@ -798,16 +805,39 @@ class VmdConverter:
                 import_context.pmx_path,
                 import_context.target_namespace,
             )
+            raw_source_provenance = build_raw_vmd_source_provenance(
+                vmd_bytes=vmd_bytes,
+                pmx_bytes=pmx_bytes,
+                vmd_source_path=getattr(import_context.vmd_data, "source_file", None),
+                pmx_source_path=pmx_path,
+                raw_bone_frames=getattr(import_context.vmd_data, "bone_frames", None),
+                raw_ik_frames=getattr(
+                    import_context.vmd_data, "ik_show_hide_frames", None
+                ),
+            )
+            raw_source_provenance["target_model"] = str(import_context.target_model or "")
             _emit_progress(55)
 
             runtime_success = False
-            if (not import_context.create_mmd_control_rig) and self._should_use_mmd_runtime_bake(
-                vmd_bytes,
-                pmx_bytes,
-                pmx_path,
-                live_rig_target,
-                import_context.bake_mode,
-            ):
+            runtime_bake_available = (
+                not import_context.create_mmd_control_rig
+                and self._should_use_mmd_runtime_bake(
+                    vmd_bytes,
+                    pmx_bytes,
+                    pmx_path,
+                    live_rig_target,
+                    import_context.bake_mode,
+                )
+            )
+            route_plan = plan_vmd_import_route(
+                scene_animation_only=False,
+                target_model=import_context.target_model,
+                bake_mode=import_context.bake_mode,
+                create_mmd_control_rig=import_context.create_mmd_control_rig,
+                runtime_bake_available=runtime_bake_available,
+                registered_sparse_available=registered_sparse_frames is not None,
+            )
+            if route_plan.use_runtime_bake:
                 self.logger.info("Converting with mmd-anim runtime high-precision bake path")
                 # Native physics bake is opt-in and only active when both bake_mode
                 # and use_native_physics_bake are True; otherwise existing path.
@@ -889,7 +919,7 @@ class VmdConverter:
                 if hasattr(import_context.vmd_data, "bone_frames") and import_context.vmd_data.bone_frames:
                     bone_frames = list(
                         registered_sparse_frames
-                        if registered_sparse_frames is not None
+                        if route_plan.use_registered_sparse
                         else import_context.vmd_data.bone_frames
                     )
                     if import_context.create_mmd_control_rig:
@@ -1009,6 +1039,14 @@ class VmdConverter:
                     store_runtime_registration_provenance(
                         import_context.target_model,
                         registered_sparse_provenance,
+                    )
+                )
+            elif not runtime_success and raw_source_provenance is not None:
+                raw_source_provenance["status"] = "success"
+                raw_source_provenance["scene_metadata_stored"] = (
+                    store_runtime_registration_provenance(
+                        import_context.target_model,
+                        raw_source_provenance,
                     )
                 )
             self.logger.info("VMD animation conversion completed")
@@ -2556,6 +2594,7 @@ class VmdConverter:
         vmd_source_path: Optional[str],
         profile: Optional[Dict[str, Any]],
         source_bone_frames=(),
+        source_ik_frames=(),
     ) -> Tuple[tuple, Dict[str, Any]]:
         """Build model-paired compiled sparse keys before scene mutation.
 
@@ -2633,6 +2672,8 @@ class VmdConverter:
                     else 0
                 ),
                 runtime_feature_flags=int(get_runtime_feature_flags()),
+                raw_bone_frames=source_bone_frames,
+                raw_ik_frames=source_ik_frames,
             )
             registration_profile.update(
                 {
@@ -2802,6 +2843,8 @@ class VmdConverter:
             runtime_library_path=get_runtime_library_path() if HAS_MMD_RUNTIME else None,
             runtime_abi_version=runtime_abi_version,
             runtime_feature_flags=int(get_runtime_feature_flags()) if HAS_MMD_RUNTIME else 0,
+            raw_bone_frames=getattr(vmd_data, "bone_frames", None),
+            raw_ik_frames=getattr(vmd_data, "ik_show_hide_frames", None),
         )
         registration_profile["target_model"] = str(target_model or "")
         if isinstance(profile, dict):

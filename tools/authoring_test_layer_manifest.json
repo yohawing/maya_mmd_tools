@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "inventory_id": "AUTHORING-TEST-LAYER-DEDUP-1-A",
+  "layers": {
+    "pure_unit": {
+      "purpose": "Maya and Qt independent semantics, validation, and transaction policy.",
+      "allowed_evidence": [
+        "tests/unit"
+      ]
+    },
+    "headless_qt": {
+      "purpose": "All visible selectors and interactions invoke exactly one production Action or Presenter handler.",
+      "allowed_evidence": [
+        "tests/unit",
+        "tests/gui"
+      ],
+      "not_real_maya_evidence": true
+    },
+    "real_maya": {
+      "purpose": "Canonical Maya identity, metadata, DG connections, Undo or rollback, and production modals.",
+      "requires": [
+        "maya_gui",
+        "production_main_window"
+      ],
+      "tool_allowlist": [
+        "tools/export_release_maya_probe.py"
+      ]
+    },
+    "persistence": {
+      "purpose": "Only representative save/reopen and PMX export/fresh-import state families.",
+      "requires": [
+        "maya_gui_or_release_probe",
+        "fresh_scene_boundary"
+      ]
+    }
+  },
+  "surface_coverage": {
+    "source_manifest": "tools/ui_coverage_manifest.json",
+    "source_selector": {
+      "disposition": "qt_case"
+    },
+    "expected_surface_count": 222,
+    "target_primary_layer": "headless_qt",
+    "target_owner": "headless.authoring_ui_surface_matrix",
+    "current_primary_layer": "headless_qt",
+    "current_missing_owner_cases": [],
+    "status": "complete",
+    "completion": "All 222 non-destructive qt_case surfaces are owned by one parameterized headless Qt production-surface matrix; destructive user-state actions and Maya-only semantic and persistence oracles remain separate."
+  },
+  "persistence_policy": {
+    "max_representatives_per_state_family": 1,
+    "families": {
+      "mixed_authoring_scene": "authoring.persistence.mixed_scene",
+      "material_pmx_fresh_import": "material.persistence.pmx_fresh_import",
+      "release_probe_pmx_families": "release.persistence.domain_families"
+    }
+  },
+  "contracts": [
+    {
+      "contract_id": "ui.surface.action_once",
+      "domain": "all_authoring_tabs",
+      "semantic_boundary": "selector_interaction_handler_invocation",
+      "primary_layer": "headless_qt",
+      "representative_test": "tests/unit/test_authoring_ui_surface_matrix.py::test_authoring_surface_dispatches_exactly_once",
+      "redundant_test": [],
+      "cost_evidence": {
+        "metric": "target_surface_count",
+        "value": 222,
+        "source": "tools/ui_coverage_manifest.json"
+      }
+    },
+    {
+      "contract_id": "bone.canonical_identity.same_leaf",
+      "domain": "bone",
+      "semantic_boundary": "canonical_identity_same_leaf_routing",
+      "primary_layer": "real_maya",
+      "representative_test": "tests/gui/guitest_authoring_signal_smoke_gui.py::TestAuthoringSignalSmokeGUI::test_bone_apply_routes_same_leaf_model_by_selected_long_identity",
+      "redundant_test": [],
+      "cost_evidence": {
+        "metric": "major_actions",
+        "value": 1,
+        "source": "representative_test"
+      }
+    },
+    {
+      "contract_id": "info.focus_session.undo_model_switch",
+      "domain": "info",
+      "semantic_boundary": "focus_session_undo_and_model_switch",
+      "primary_layer": "real_maya",
+      "representative_test": "tests/gui/guitest_info_undo_contract_gui.py::TestInfoUndoContractGUI::test_focus_session_immediate_write_and_undo_redo",
+      "redundant_test": [],
+      "cost_evidence": {
+        "metric": "representative_tests",
+        "value": 2,
+        "source": "tests/gui/guitest_info_undo_contract_gui.py"
+      }
+    },
+    {
+      "contract_id": "display.metadata.atomic_json_undo",
+      "domain": "display_pane",
+      "semantic_boundary": "atomic_metadata_json_undo",
+      "primary_layer": "real_maya",
+      "representative_test": "tests/gui/guitest_ui_coverage_display_physics_remaining_gui.py::TestDisplayPaneRemainingGUI::test_display_pane_remaining_surfaces",
+      "redundant_test": [],
+      "cost_evidence": {
+        "metric": "major_actions",
+        "value": 1,
+        "source": "representative_test"
+      }
+    },
+    {
+      "contract_id": "material.values.dg_undo",
+      "domain": "material",
+      "semantic_boundary": "shader_values_dg_and_undo",
+      "primary_layer": "real_maya",
+      "representative_test": "tests/gui/guitest_authoring_signal_smoke_gui.py::TestAuthoringSignalSmokeGUI::test_dx11_material_name_outline_apply_undo_redo",
+      "related_representative_tests": [
+        "tests/gui/guitest_authoring_signal_smoke_gui.py::TestAuthoringSignalSmokeGUI::test_dx11_material_diffuse_apply_undo_redo",
+        "tests/gui/guitest_authoring_signal_smoke_gui.py::TestAuthoringSignalSmokeGUI::test_dx11_material_main_texture_apply_undo_redo",
+        "tests/gui/guitest_authoring_signal_smoke_gui.py::TestAuthoringSignalSmokeGUI::test_dx11_material_sphere_texture_apply_undo_redo",
+        "tests/gui/guitest_authoring_signal_smoke_gui.py::TestAuthoringSignalSmokeGUI::test_dx11_material_sphere_texture_clear_apply_undo_redo"
+      ],
+      "redundant_test": [],
+      "cost_evidence": {
+        "metric": "representative_tests",
+        "value": 5,
+        "source": "one major material oracle per GUI test"
+      }
+    },
+    {
+      "contract_id": "morph.controller_blendshape.preview_transaction",
+      "domain": "morph",
+      "semantic_boundary": "controller_blendshape_preview_transaction",
+      "primary_layer": "real_maya",
+      "representative_test": "tests/gui/guitest_authoring_signal_smoke_gui.py::TestAuthoringSignalSmokeGUI::test_morph_preview_drag_is_one_undo_action",
+      "redundant_test": [],
+      "cost_evidence": {
+        "metric": "major_actions",
+        "value": 1,
+        "source": "representative_test"
+      }
+    },
+    {
+      "contract_id": "physics.related_bone_joint_messages",
+      "domain": "physics",
+      "semantic_boundary": "related_bone_and_joint_messages",
+      "primary_layer": "real_maya",
+      "representative_test": "tests/gui/guitest_ui_coverage_display_physics_remaining_gui.py::TestPhysicsRemainingGUI::test_physics_remaining_surfaces",
+      "related_representative_tests": [
+        "tests/gui/guitest_ui_coverage_display_physics_remaining_gui.py::TestPhysicsRemainingGUI::test_physics_joint_binding_message"
+      ],
+      "redundant_test": [],
+      "cost_evidence": {
+        "metric": "representative_actions",
+        "value": 2,
+        "source": "two independent GUI tests"
+      }
+    },
+    {
+      "contract_id": "fileio.production_modal_import",
+      "domain": "import_export",
+      "semantic_boundary": "production_modal_import_lifecycle",
+      "primary_layer": "real_maya",
+      "representative_test": "tests/gui/guitest_fileio_safe_routes_gui.py::TestFileIOSafeRoutesGUI::test_new_model_button_uses_real_modal_and_undo_redo_lifecycle",
+      "redundant_test": [],
+      "cost_evidence": {
+        "metric": "major_actions",
+        "value": 1,
+        "source": "representative_test"
+      }
+    },
+    {
+      "contract_id": "authoring.transaction.rollback_policy",
+      "domain": "shared",
+      "semantic_boundary": "transaction_rollback_policy",
+      "primary_layer": "pure_unit",
+      "representative_test": "tests/unit/test_transaction_runner.py::test_begin_failure_on_next_run_resets_started_without_rollback",
+      "redundant_test": [],
+      "cost_evidence": {
+        "metric": "dcc_processes",
+        "value": 0,
+        "source": "representative_test"
+      }
+    },
+    {
+      "contract_id": "authoring.persistence.mixed_scene",
+      "domain": "all_authoring_tabs",
+      "semantic_boundary": "mixed_scene_save_reopen",
+      "primary_layer": "persistence",
+      "state_family": "mixed_authoring_scene",
+      "representative_test": "tests/gui/guitest_authoring_signal_smoke_gui.py::TestAuthoringSignalSmokeGUI::test_authoring_signals_undo_redo_and_save_reopen",
+      "redundant_test": [],
+      "setup_domains": [
+        "material",
+        "bone",
+        "morph",
+        "display_pane"
+      ],
+      "cost_evidence": {
+        "metric": "persistence_boundaries",
+        "value": 1,
+        "source": "four authored domain mutations share one save/reopen boundary"
+      }
+    },
+    {
+      "contract_id": "material.persistence.pmx_fresh_import",
+      "domain": "material",
+      "semantic_boundary": "pmx_export_fresh_import",
+      "primary_layer": "persistence",
+      "state_family": "material_pmx_fresh_import",
+      "representative_test": "tests/gui/guitest_material_export_roundtrip_gui.py::TestMaterialExportRoundtripGUI::test_material_tab_edit_survives_pmx_fresh_import_oracle",
+      "redundant_test": [],
+      "cost_evidence": {
+        "metric": "fresh_import_representatives",
+        "value": 1,
+        "source": "persistence_policy"
+      }
+    },
+    {
+      "contract_id": "release.persistence.domain_families",
+      "domain": "bone_morph_physics",
+      "semantic_boundary": "release_probe_pmx_family_fresh_import",
+      "primary_layer": "persistence",
+      "state_family": "release_probe_pmx_families",
+      "representative_test": "tools/export_release_maya_probe.py",
+      "redundant_test": [],
+      "cost_evidence": {
+        "metric": "fresh_import_matrix_cases",
+        "value": 13,
+        "source": "docs-dev/testing.md"
+      }
+    }
+  ]
+}

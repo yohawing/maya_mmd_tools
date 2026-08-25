@@ -54,17 +54,60 @@
     {"frame": 12, "left": false, "right": false},
     {"frame": 20, "left": true, "right": false}
   ],
-  "bone_morph": {
-    "name": "CR_BoneMorph",
-    "name_english": "CR_BoneMorph",
-    "bone_name": "センター",
-    "translation": [0.25, 0.0, 0.0],
-    "rotation": [0.0, 0.0, 0.0, 1.0],
-    "panel": 4,
-    "frames": [
-      {"frame": 0, "weight": 0.0},
-      {"frame": 10, "weight": 0.75},
-      {"frame": 20, "weight": 1.0}
-    ]
-  }
+  "bone_morphs": [
+    {
+      "name": "CR_Standard",
+      "name_english": "CR_Standard",
+      "targets": [
+        {"bone_name": "センター", "category": "standard", "translation": [0.25, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}
+      ],
+      "panel": 4,
+      "frames": [
+        {"frame": 0, "weight": 0.0},
+        {"frame": 10, "weight": 0.75},
+        {"frame": 20, "weight": 1.0}
+      ]
+    },
+    {
+      "name": "CR_Semi",
+      "name_english": "CR_Semi",
+      "targets": [
+        {"bone_name": "腰", "category": "semi_standard", "translation": [0.0, 0.18, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}
+      ],
+      "panel": 4,
+      "frames": [
+        {"frame": 0, "weight": 0.0},
+        {"frame": 10, "weight": 0.5},
+        {"frame": 20, "weight": 0.8}
+      ]
+    },
+    {
+      "name": "CR_Custom",
+      "name_english": "CR_Custom",
+      "targets": [
+        {"bone_name": "エッジ倍率", "category": "custom", "translation": [0.0, 0.0, 0.12], "rotation": [0.0, 0.0, 0.0, 1.0]}
+      ],
+      "panel": 4,
+      "frames": [
+        {"frame": 0, "weight": 0.0},
+        {"frame": 10, "weight": 0.25},
+        {"frame": 20, "weight": 0.6}
+      ]
+    },
+    {
+      "name": "CR_Mixed",
+      "name_english": "CR_Mixed",
+      "targets": [
+        {"bone_name": "センター", "category": "standard", "translation": [0.05, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"bone_name": "腰", "category": "semi_standard", "translation": [0.0, 0.04, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        {"bone_name": "エッジ倍率", "category": "custom", "translation": [0.0, 0.0, 0.03], "rotation": [0.0, 0.0, 0.0, 1.0]}
+      ],
+      "panel": 4,
+      "frames": [
+        {"frame": 0, "weight": 0.0},
+        {"frame": 10, "weight": 0.4},
+        {"frame": 20, "weight": 0.9}
+      ]
+    }
+  ]
 }

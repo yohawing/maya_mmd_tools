@@ -23,6 +23,10 @@ class _FakeSceneModelService:
         self.selection_model = None
         self.info = {}
         self.raise_on_list = False
+        self.canonical = {}
+
+    def canonical_node(self, node):
+        return self.canonical.get(node, node if node in self.existing else None)
 
     def object_exists(self, node):
         return node in self.existing
@@ -42,6 +46,21 @@ class _FakeSceneModelService:
 
 
 class TestApplicationStateWithInjectedService(unittest.TestCase):
+    def test_structured_progress_ignores_stale_operation_owners(self):
+        app_state = ApplicationState(scene_model_service=_FakeSceneModelService())
+        observed = []
+        app_state.progress_state_changed.connect(observed.append)
+
+        first = app_state.begin_progress("first")
+        second = app_state.begin_progress("second")
+
+        self.assertFalse(app_state.update_progress_state(first, "stale"))
+        self.assertFalse(app_state.end_progress(first))
+        self.assertTrue(app_state.update_progress_state(second, "busy"))
+        self.assertTrue(app_state.end_progress(second))
+        self.assertEqual(observed[-1].active, False)
+        self.assertEqual(observed[-2].label, "busy")
+
     def test_constructor_accepts_scene_model_service(self):
         service = _FakeSceneModelService()
         app_state = ApplicationState(scene_model_service=service)
@@ -104,6 +123,50 @@ class TestApplicationStateWithInjectedService(unittest.TestCase):
         self.assertIsNone(app_state.current_model_root)
         signal_catcher.assert_called_with("")
 
+    def test_refresh_model_list_preserves_short_root_as_canonical_long_identity(self):
+        service = _FakeSceneModelService()
+        service.models = ["|MMT_TestModel_root"]
+        service.existing = {"MMT_TestModel_root", "|MMT_TestModel_root"}
+        service.canonical["MMT_TestModel_root"] = "|MMT_TestModel_root"
+        app_state = ApplicationState(scene_model_service=service)
+
+        app_state.current_model_root = "MMT_TestModel_root"
+        app_state.refresh_model_list()
+
+        self.assertEqual(app_state.current_model_root, "|MMT_TestModel_root")
+
+    def test_unresolved_selection_does_not_replace_valid_current_model(self):
+        service = _FakeSceneModelService()
+        service.models = ["|modelA|model_root", "|modelB|model_root"]
+        service.existing = set(service.models)
+        app_state = ApplicationState(scene_model_service=service)
+        app_state.current_model_root = service.models[0]
+        service.selection_model = None
+
+        self.assertFalse(app_state.select_model_from_maya_selection())
+        self.assertEqual(app_state.current_model_root, service.models[0])
+
+    def test_unresolved_current_identity_preserves_valid_current_model(self):
+        service = _FakeSceneModelService()
+        service.existing = {"current_root"}
+        app_state = ApplicationState(scene_model_service=service)
+        app_state.current_model_root = "current_root"
+
+        app_state.current_model_root = "ambiguous_root"
+
+        self.assertEqual(app_state.current_model_root, "current_root")
+
+    def test_unresolved_current_identity_preserves_current_when_validation_raises(self):
+        service = _FakeSceneModelService()
+        service.existing = {"current_root"}
+        app_state = ApplicationState(scene_model_service=service)
+        app_state.current_model_root = "current_root"
+        service.object_exists = Mock(side_effect=RuntimeError("Maya query failed"))
+
+        app_state.current_model_root = "ambiguous_root"
+
+        self.assertEqual(app_state.current_model_root, "current_root")
+
     def test_refresh_model_list_emits_empty_list_on_exception(self):
         service = _FakeSceneModelService()
         service.models = ["old_root"]
@@ -118,6 +181,44 @@ class TestApplicationStateWithInjectedService(unittest.TestCase):
 
         self.assertEqual(app_state.available_models, [])
         signal_catcher.assert_called_with([])
+
+    def test_explicit_refresh_failure_preserves_state_and_generation(self):
+        service = _FakeSceneModelService()
+        service.models = ["model_root"]
+        service.existing = {"model_root"}
+        app_state = ApplicationState(scene_model_service=service)
+        app_state._available_models = ["model_root"]
+        app_state._current_model_root = "model_root"
+        app_state._model_info_cache = {"model_root": {"display_name": "cached"}}
+        refresh_signal = Mock()
+        app_state.model_refresh_completed.connect(refresh_signal)
+        service.raise_on_list = True
+
+        with self.assertRaises(RuntimeError):
+            app_state.refresh_model_list(explicit=True)
+
+        self.assertEqual(app_state.available_models, ["model_root"])
+        self.assertEqual(app_state.current_model_root, "model_root")
+        self.assertEqual(app_state._model_info_cache, {"model_root": {"display_name": "cached"}})
+        self.assertEqual(app_state.refresh_generation, 0)
+        refresh_signal.assert_not_called()
+
+    def test_explicit_refresh_replacement_emits_selection_without_eager_hidden_reload(self):
+        service = _FakeSceneModelService()
+        service.models = ["new_root"]
+        service.existing = {"old_root", "new_root"}
+        app_state = ApplicationState(scene_model_service=service)
+        app_state._current_model_root = "old_root"
+        current_signal = Mock()
+        refresh_signal = Mock()
+        app_state.current_model_changed.connect(current_signal)
+        app_state.model_refresh_completed.connect(refresh_signal)
+
+        app_state.refresh_model_list(explicit=True)
+
+        current_signal.assert_called_once_with("new_root")
+        refresh_signal.assert_called_once_with(1)
+        self.assertEqual(app_state.current_model_root, "new_root")
 
     def test_get_model_info_uses_service_and_cache(self):
         service = _FakeSceneModelService()
@@ -461,7 +562,7 @@ class TestApplicationState(MayaTestBase):
         cmds.addAttr(root, ln=ATTR_MMD_MODEL_NAME_EN, dt="string")
         # find_all_mmd_modelsが検出できるようにダミー値を設定
         cmds.setAttr(f"{root}.{ATTR_MMD_MODEL_NAME}", "test", type="string")
-        return root
+        return (cmds.ls(root, long=True) or [root])[0]
 
 
 if __name__ == "__main__":

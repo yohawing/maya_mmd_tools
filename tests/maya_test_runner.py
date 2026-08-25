@@ -6,6 +6,7 @@
 """
 
 import argparse
+import ast
 import json
 import os
 import sys
@@ -92,6 +93,80 @@ def get_all_tests(suite_to_flatten):
     return tests
 
 
+def _test_module_imports_pytest(path: Path) -> bool:
+    """Return whether a test module imports pytest anywhere in its source."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError):
+        return False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name == "pytest" or alias.name.startswith("pytest.") for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module == "pytest" or module.startswith("pytest."):
+                return True
+    return False
+
+
+def _pytest_dependent_test_modules(test_dir: Path) -> set[Path]:
+    """Find pytest-owned test modules that the unittest mayapy runner cannot load.
+
+    The repository runs pytest modules through the CPython ``ci_unit`` session.
+    The Maya runner uses ``unittest`` and must not import those modules: mayapy
+    intentionally does not carry a separate pytest installation.  Test modules
+    that only import helpers from a pytest-owned module are excluded as well,
+    otherwise unittest reports them as synthetic ``_FailedTest`` errors.
+    """
+    paths = sorted(test_dir.glob("test_*.py"))
+    package_parts = test_dir.relative_to(ROOT_DIR).parts
+    package_prefix = ".".join(package_parts)
+    module_paths = {
+        alias: path
+        for path in paths
+        for alias in (path.stem, f"{package_prefix}.{path.stem}")
+    }
+    dependencies: dict[Path, set[Path]] = {path: set() for path in paths}
+    pytest_owned = {path for path in paths if _test_module_imports_pytest(path)}
+
+    for path in paths:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            imported_names: list[str] = []
+            if isinstance(node, ast.Import):
+                imported_names.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if node.level == 1:
+                    module = f"{package_prefix}.{module}" if module else package_prefix
+                elif node.level:
+                    continue
+                imported_names.append(module)
+                imported_names.extend(
+                    f"{module}.{alias.name}" for alias in node.names if module
+                )
+            for imported_name in imported_names:
+                dependency = module_paths.get(imported_name)
+                if dependency is not None and dependency is not path:
+                    dependencies[path].add(dependency)
+
+    changed = True
+    while changed:
+        changed = False
+        for path, imported_paths in dependencies.items():
+            if path in pytest_owned:
+                continue
+            if imported_paths & pytest_owned:
+                pytest_owned.add(path)
+                changed = True
+    return pytest_owned
+
+
 def discover_tests(test_type, test_filter=None):
     """テストを探索します。
 
@@ -106,9 +181,24 @@ def discover_tests(test_type, test_filter=None):
 
     print(f"Discovering '{test_type}' tests in '{test_dir}'...")
 
+    # pytest-only modules are executed by the CPython ci_unit session.  Loading
+    # them here would create unittest _FailedTest entries because mayapy does
+    # not install pytest.
+    pytest_only = _pytest_dependent_test_modules(test_dir)
+    if pytest_only:
+        skipped = ", ".join(path.name for path in sorted(pytest_only))
+        print(f"Skipping {len(pytest_only)} pytest-owned module(s) in Maya unittest runner: {skipped}")
+
     # テストを探索
     loader = unittest.TestLoader()
-    suite = loader.discover(str(test_dir), pattern="test_*.py")
+    suite = unittest.TestSuite()
+    test_dir_string = str(test_dir)
+    if test_dir_string not in sys.path:
+        sys.path.insert(0, test_dir_string)
+    for test_path in sorted(test_dir.glob("test_*.py")):
+        if test_path in pytest_only:
+            continue
+        suite.addTests(loader.loadTestsFromName(test_path.stem))
 
     if suite.countTestCases() == 0:
         print(f"No tests found in '{test_dir}'.")
@@ -162,6 +252,12 @@ def run_tests(
         test_type: 'unit' または 'integration'
         test_filter: テストをフィルタリングする文字列（オプション）
     """
+    # The mayapy unittest route does not load pytest's conftest.py.  Install
+    # the same process-level backend before plugin/test discovery can import
+    # production UI modules.
+    from tests.common.qsettings_isolation import activate_qsettings_isolation
+
+    activate_qsettings_isolation()
     plugin_name = _load_global_test_plugin() if test_type in {"unit", "integration"} else None
     try:
         # テストを探索

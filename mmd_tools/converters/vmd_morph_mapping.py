@@ -1,11 +1,17 @@
 """Morph name mapping helpers for VMD animation conversion."""
 
-import json
 from collections import defaultdict
 from typing import List, Optional, Set, Tuple
 
 import maya.cmds as cmds
 
+from ..core.morph_topology import MorphTopologyError, parse_group_topology
+
+from ..core.model_registry import (
+    ModelRegistryError,
+    REGISTRY_CATEGORY_MORPH,
+    list_model_registry_members,
+)
 from .morph_scene_metadata import (
     iter_morph_network_metadata,
     read_blendshape_morph_entries,
@@ -86,6 +92,13 @@ def _blendshape_is_owned_by_root(blend_shape: str, target_model: str, owned_dag_
 
 def _network_is_owned_by_root(node: str, target_model: str) -> bool:
     """Network morph ownership is connection-based and intentionally fail-closed."""
+    try:
+        registry_members = list_model_registry_members(target_model, REGISTRY_CATEGORY_MORPH)
+    except ModelRegistryError:
+        return False
+    if registry_members is not None:
+        return bool(_long_names([node]) & _long_names(registry_members))
+
     if not cmds.attributeQuery("mmd_model_root", node=node, exists=True):
         return False
     connected_roots = cmds.listConnections(f"{node}.mmd_model_root") or []
@@ -109,17 +122,25 @@ def morph_node_is_owned_by_root(node: str, target_model: str) -> bool:
     return False
 
 
-def _morph_controller_for_root(target_model: Optional[str]) -> Optional[str]:
+def _morph_controller_for_root(
+    target_model: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
     if (
         not target_model
         or not cmds.objExists(target_model)
         or not cmds.attributeQuery("mmd_morph_controller", node=target_model, exists=True)
     ):
-        return None
+        return None, None
     controllers = cmds.listConnections(
         f"{target_model}.mmd_morph_controller", source=True, destination=False
     ) or []
-    return controllers[0] if len(controllers) == 1 else None
+    if len(controllers) != 1:
+        return (
+            None,
+            "morph_topology:malformed:controller ownership must have exactly "
+            f"one connection, got {len(controllers)}",
+        )
+    return controllers[0], None
 
 
 def build_morph_mappings(converter, target_model: Optional[str] = None) -> None:
@@ -127,16 +148,28 @@ def build_morph_mappings(converter, target_model: Optional[str] = None) -> None:
     converter.morph_name_mapping = {}
     converter.morph_bindings = {}
     converter.morph_binding_diagnostics = []
-    controller = _morph_controller_for_root(target_model)
+    controller, ownership_diagnostic = _morph_controller_for_root(target_model)
+    if ownership_diagnostic:
+        converter.morph_binding_diagnostics.append(ownership_diagnostic)
+        raise RuntimeError(ownership_diagnostic)
     controller_topology = {}
     if controller:
         try:
             controller_topology = {
-                int(target): [(int(source), float(rate)) for source, rate in sources]
-                for target, sources in json.loads(cmds.getAttr(f"{controller}.groupTopology") or "{}").items()
+                int(target): tuple(sources)
+                for target, sources in parse_group_topology(
+                    cmds.getAttr(f"{controller}.topologyVersion"),
+                    cmds.getAttr(f"{controller}.groupTopology"),
+                ).items()
             }
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            controller_topology = {}
+        except MorphTopologyError as exc:
+            diagnostic = f"morph_topology:{exc.diagnostic.code}:{exc.diagnostic.detail}"
+            converter.morph_binding_diagnostics.append(diagnostic)
+            raise RuntimeError(diagnostic) from exc
+        except (RuntimeError, ValueError) as exc:
+            diagnostic = f"morph_topology:malformed:{exc}"
+            converter.morph_binding_diagnostics.append(diagnostic)
+            raise RuntimeError(diagnostic) from exc
 
     owned_dag_nodes = (
         _root_owned_dag_nodes(target_model)

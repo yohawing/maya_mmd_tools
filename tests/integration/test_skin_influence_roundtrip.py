@@ -1,14 +1,14 @@
-"""PMX skin influence round-trip coverage for all supported weight modes.
+"""PMX skin influence import/readback and export-policy coverage.
 
-The fixture is intentionally generated as a small real PMX binary.  Import is
-run through the production importer in both unified and material-split modes;
-the exported binary is parsed again to verify bone identity, hierarchy, and
-numeric skin weights.  Maya has no scene representation for SDEF/QDEF
-auxiliary data, so those two modes are expected to normalize to BDEF2/BDEF4.
+The fixture is intentionally generated as a small real PMX binary.  Import
+readback runs through the production importer in both unified and
+material-split modes for BDEF1/BDEF2/BDEF4/SDEF/QDEF. Maya normalizes every
+mode to skinCluster weights and public PMX export writes every vertex as BDEF4.
 """
 
 from __future__ import annotations
 
+from copy import deepcopy
 
 from maya import cmds
 
@@ -31,7 +31,7 @@ from tests.common.maya_test_base import MayaTestBase
 
 
 _WEIGHT_MODES = (0, 1, 2, 3, 4)
-_EXPECTED_EXPORT_MODES = {0: 0, 1: 1, 2: 2, 3: 1, 4: 2}
+_EXPECTED_EXPORT_MODES = {mode: 2 for mode in _WEIGHT_MODES}
 
 
 def _make_fixture() -> PmxData:
@@ -120,6 +120,11 @@ def _make_fixture() -> PmxData:
     return pmx
 
 
+def _make_exportable_fixture(source_data: PmxData) -> PmxData:
+    """Copy a source fixture; importer/exporter performs the BDEF4 downgrade."""
+    return deepcopy(source_data)
+
+
 def _weight_map(vertex) -> dict[int, float]:
     """Decode a PMX vertex to positive bone-index weights."""
     if vertex.weight_transform_type == 0:
@@ -192,12 +197,18 @@ class TestSkinInfluenceRoundtrip(MayaTestBase):
         super().setUp()
         settings.set("import.model.create_mmd_shaders", False)
 
-    def test_all_pmx_weight_modes_unified_and_material_split_roundtrip(self):
-        """All modes preserve weights; SDEF/QDEF normalize only their mode tags."""
+    def test_all_pmx_weight_modes_import_readback_and_export_policy(self):
+        """Read every PMX skin mode and export equivalent BDEF4 weights."""
         source_path = self.get_temp_filename("skin_influence_modes.pmx")
         source_data = _make_fixture()
         source_data.write_file(source_path)
         expected_vertices = parse_pmx_file(source_path, use_native_pmx_parse=False)
+        exportable_source_path = self.get_temp_filename("skin_influence_modes_exportable.pmx")
+        _make_exportable_fixture(source_data).write_file(exportable_source_path)
+        expected_export_vertices = parse_pmx_file(
+            exportable_source_path,
+            use_native_pmx_parse=False,
+        )
         previous_split = settings.get("import.model.separate_meshes_by_material", False)
 
         try:
@@ -267,18 +278,57 @@ class TestSkinInfluenceRoundtrip(MayaTestBase):
                         )
                     )
                     self.assertTrue(export_result.succeeded, export_result.status_message)
-                    exported = parse_pmx_file(
+                    exported_vertices = parse_pmx_file(
                         output_path,
+                        use_native_pmx_parse=False,
+                    ).vertices
+                    self.assertTrue(exported_vertices)
+                    self.assertTrue(
+                        all(vertex.weight_transform_type == 2 for vertex in exported_vertices)
+                    )
+
+                    cmds.file(new=True, force=True)
+                    settings.set("import.model.separate_meshes_by_material", separate)
+                    exportable_import_data = parse_pmx_file(exportable_source_path)
+                    exportable_root = import_pmx_file(
+                        exportable_import_data,
+                        exportable_source_path,
+                        options={
+                            "setup_rig": False,
+                            "setup_bone_orientation": False,
+                            "import_physics": False,
+                            "import_morphs": False,
+                        },
+                    )
+                    self.assertTrue(exportable_root and cmds.objExists(exportable_root))
+                    positive_output_path = self.get_temp_filename(
+                        f"skin_influence_modes_positive_{'split' if separate else 'unified'}.pmx"
+                    )
+                    positive_export_result = ExportModelAction().execute(
+                        ExportModelRequest(
+                            file_path=positive_output_path,
+                            options={
+                                "export_format": "pmx",
+                                "target_model": exportable_root,
+                            },
+                        )
+                    )
+                    self.assertTrue(positive_export_result.succeeded, positive_export_result.status_message)
+                    exported = parse_pmx_file(
+                        positive_output_path,
                         use_native_pmx_parse=False,
                         require_native_pmx_parse=False,
                     )
-                    self.assertEqual([bone.name for bone in exported.bones], [bone.name for bone in expected_vertices.bones])
+                    self.assertEqual(
+                        [bone.name for bone in exported.bones],
+                        [bone.name for bone in expected_vertices.bones],
+                    )
                     self.assertEqual(
                         [bone.parent_bone_index for bone in exported.bones],
                         [bone.parent_bone_index for bone in expected_vertices.bones],
                     )
                     self.assertEqual(len(exported.materials), 2)
-                    self.assertEqual(len(exported.vertices), len(expected_vertices.vertices))
+                    self.assertEqual(len(exported.vertices), len(expected_export_vertices.vertices))
 
                     unmatched_source_indices = set(range(len(expected_vertices.vertices)))
                     for exported_index, exported_vertex in enumerate(exported.vertices):
@@ -303,7 +353,9 @@ class TestSkinInfluenceRoundtrip(MayaTestBase):
                         )
                         self.assertEqual(
                             exported_vertex.weight_transform_type,
-                            _EXPECTED_EXPORT_MODES[source_vertex.weight_transform_type],
+                            _EXPECTED_EXPORT_MODES[
+                                expected_export_vertices.vertices[source_index].weight_transform_type
+                            ],
                         )
                     self.assertFalse(unmatched_source_indices)
         finally:

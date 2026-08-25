@@ -14,8 +14,6 @@ Candidate plugin paths follow the same layout as
 
 from __future__ import annotations
 
-import os
-import sys
 import json
 from pathlib import Path
 from typing import Optional
@@ -31,8 +29,9 @@ from mmd_tools.core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+    ATTR_MMD_PMX_SOFT_BODY_COUNT,
 )
-from mmd_tools.core import maya_mesh_utils, maya_name_utils
+from mmd_tools.core import cpp_plugin_locator, maya_mesh_utils, maya_name_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.native_pmx_parser import parse_pmx_native
 
@@ -61,9 +60,6 @@ class _FastSkinData:
 
 ROOT = Path(__file__).resolve().parents[2]  # project root
 
-_PLUGIN_EXTENSIONS = [".mll", ".bundle", ".so"]
-
-
 def _mmd_parsed_model_class():
     """Resolve the native parsed-model wrapper only when the fast path needs it."""
     global MmdParsedModel
@@ -75,28 +71,15 @@ def _mmd_parsed_model_class():
 
 
 def _candidate_plugin_paths() -> list[Path]:
-    """Return candidate paths for the compiled C++ plugin artifact.
+    """Return candidates from the canonical native plug-in locator."""
+    return cpp_plugin_locator.plugin_candidate_paths(
+        [ROOT], maya_version=_running_maya_major_version()
+    )
 
-    The ``MMD_TOOLS_CPP_PLUGIN`` environment variable, if set, takes
-    precedence and is returned as the sole candidate.
-    """
-    explicit = os.environ.get("MMD_TOOLS_CPP_PLUGIN")
-    if explicit:
-        return [Path(explicit)]
 
-    version = os.environ.get("MAYA_VERSION", "2024")
-    config = os.environ.get("MMD_TOOLS_CPP_CONFIG", "Debug")
-    configs = [config]
-    if config != "Release":
-        configs.append("Release")
-    if config != "Debug":
-        configs.append("Debug")
-
-    paths: list[Path] = []
-    for cfg in configs:
-        for suffix in _PLUGIN_EXTENSIONS:
-            paths.append(ROOT / "plug-ins" / version / cfg / f"mmd_tools_cpp{suffix}")
-    return paths
+def _running_maya_major_version() -> str:
+    """Return the active Maya major version without requiring an env var."""
+    return cpp_plugin_locator.running_maya_major_version(default="2024")
 
 
 # ---------------------------------------------------------------------------
@@ -106,16 +89,7 @@ def _candidate_plugin_paths() -> list[Path]:
 
 def _setup_plugin_directory(plugin_dir: Path) -> None:
     """Add *plugin_dir* to ``PATH`` (and ``add_dll_directory`` on Windows)."""
-    env_path = os.environ.get("PATH", "")
-    str_dir = str(plugin_dir)
-    if str_dir not in env_path:
-        os.environ["PATH"] = str_dir + os.pathsep + env_path
-
-    if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
-        try:
-            os.add_dll_directory(str_dir)
-        except OSError:
-            pass  # already added or not applicable
+    cpp_plugin_locator.prepare_plugin_directory(plugin_dir / "mmd_tools_cpp.mll")
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +103,7 @@ def fast_import(
     scale: float = 1.0,
     mesh_only: bool = True,
     include_morphs: bool = True,
+    vp2_ownership: bool = False,
 ) -> Optional[str]:
     """Attempt fast PMX import via the compiled C++ ``mmdFastLoad`` command.
 
@@ -148,6 +123,11 @@ def fast_import(
         If True, asks the C++ command to create PMX vertex morph
         blendShape targets. Non-vertex morph types are not created by the
         fast path.
+    vp2_ownership:
+        If True, asks the C++ command to create the opt-in ``mmdRenderShape``
+        and let the VP2 geometry override own the draw data. This is a
+        mesh-display path; it does not create a Maya mesh for skeleton or
+        blendShape post-processing.
 
     Returns
     -------
@@ -169,9 +149,6 @@ def fast_import(
         )
         return None
 
-    # --- add plugin directory to library search paths ---------------------
-    _setup_plugin_directory(plugin_path.parent)
-
     # --- import Maya commands ---------------------------------------------
     try:
         import maya.cmds as cmds
@@ -179,9 +156,14 @@ def fast_import(
         logger.debug("maya.cmds not available – falling back to Python importer.")
         return None
 
-    # --- load plugin (idempotent) -----------------------------------------
+    # --- load plugin (idempotent, exact path) ------------------------------
     try:
-        cmds.loadPlugin(str(plugin_path), quiet=True)
+        if not cpp_plugin_locator.is_plugin_loaded(plugin_path, cmds):
+            # Keep the compatibility seam for callers/tests that need to
+            # observe directory preparation, while the actual loaded-path
+            # check and load operation remain canonical.
+            _setup_plugin_directory(plugin_path.parent)
+            cpp_plugin_locator.load_plugin(plugin_path, cmds, prepare=False)
     except RuntimeError as exc:
         logger.debug("Failed to load C++ plugin: %s – falling back.", exc)
         return None
@@ -195,7 +177,18 @@ def fast_import(
 
     # --- run fast load ----------------------------------------------------
     try:
-        result = cmds.mmdFastLoad(f=filepath, n=base_name, s=scale, mo=include_morphs)
+        command_args = {
+            "f": filepath,
+            "n": base_name,
+            "s": scale,
+            "mo": include_morphs,
+        }
+        # Keep the flag absent for the normal fast-load path so an older
+        # plugin binary remains compatible.  The VP2 path is an explicit
+        # opt-in and therefore requires a plugin that supports the flag.
+        if vp2_ownership:
+            command_args["vp2Ownership"] = True
+        result = cmds.mmdFastLoad(**command_args)
     except RuntimeError as exc:
         logger.debug("mmdFastLoad failed: %s – falling back to Python importer.", exc)
         return None
@@ -219,6 +212,12 @@ def fast_import(
 
     metadata = _apply_basic_materials(filepath, mesh_node, cmds) if mesh_node else None
     _apply_fast_root_metadata(filepath, transform_node, metadata, cmds)
+    try:
+        from mmd_tools.core.model_registry import ensure_model_registry
+
+        ensure_model_registry(transform_node)
+    except Exception as exc:
+        logger.warning("Fast import ownership registry unavailable for %s: %s", transform_node, exc)
     if include_morphs and mesh_node:
         _apply_fast_morph_metadata(filepath, mesh_node, cmds)
 
@@ -572,12 +571,15 @@ def _apply_fast_root_metadata(
     metadata: Optional[dict],
     cmds_module,
 ) -> None:
-    """Preserve PMX header names/comments on a successful fast-import root."""
+    """Preserve PMX header and unsupported-section metadata on fast roots."""
     header = metadata.get("metadata") if isinstance(metadata, dict) else None
+    soft_body_count = _fast_soft_body_count(metadata)
     if not isinstance(header, dict):
         try:
             pmx = parse_pmx_native(filepath)
             header = getattr(pmx, "header", None)
+            if soft_body_count is None and pmx is not None:
+                soft_body_count = len(getattr(pmx, "soft_bodies", []) or [])
         except Exception as exc:
             logger.debug("Fast root metadata parse skipped: %s", exc)
             return
@@ -598,6 +600,26 @@ def _apply_fast_root_metadata(
         (ATTR_MMD_COMMENT_EN, "englishComment"),
     ):
         _set_fast_string_attr(cmds_module, root_node, attr, values.get(key, "") or "")
+    if soft_body_count is not None:
+        _set_fast_long_attr(cmds_module, root_node, ATTR_MMD_PMX_SOFT_BODY_COUNT, soft_body_count)
+
+
+def _fast_soft_body_count(metadata: Optional[dict]) -> Optional[int]:
+    """Read PMX soft-body count from native parsed-model metadata."""
+    if not isinstance(metadata, dict):
+        return None
+    candidates = [metadata, metadata.get("metadata")]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        counts = candidate.get("counts")
+        if not isinstance(counts, dict) or "softBodies" not in counts:
+            continue
+        value = counts["softBodies"]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        return value
+    return None
 
 
 def _create_standard_material(
@@ -945,3 +967,13 @@ def _set_fast_string_attr(cmds_module, node: str, attr: str, value: str) -> None
         cmds_module.setAttr(f"{node}.{attr}", str(value), type="string")
     except Exception as exc:
         logger.debug("Failed to preserve fast-path metadata %s.%s: %s", node, attr, exc)
+
+
+def _set_fast_long_attr(cmds_module, node: str, attr: str, value: int) -> None:
+    """Best-effort integer metadata write for fast-import roots."""
+    try:
+        if not cmds_module.attributeQuery(attr, node=node, exists=True):
+            cmds_module.addAttr(node, longName=attr, attributeType="long")
+        cmds_module.setAttr(f"{node}.{attr}", int(value))
+    except Exception as exc:
+        logger.debug("Failed to preserve fast-path integer metadata %s.%s: %s", node, attr, exc)

@@ -64,9 +64,7 @@ def setup_function_signatures(lib: CDLL) -> None:
         c_void_p,
         [POINTER(MmdRuntimeModelDescriptor)],
     )
-    set_sig(lib, "mmd_runtime_export_vmd_animation_json", MmdRuntimeFfiByteBuffer, [POINTER(c_uint8), c_size_t])
     set_sig(lib, "mmd_runtime_export_pmx_model_json", MmdRuntimeFfiByteBuffer, [POINTER(c_uint8), c_size_t])
-    set_sig(lib, "mmd_runtime_export_pmd_model_json", MmdRuntimeFfiByteBuffer, [POINTER(c_uint8), c_size_t])
     set_sig(
         lib,
         "mmd_runtime_export_pmx_from_parts",
@@ -83,6 +81,31 @@ def setup_function_signatures(lib: CDLL) -> None:
             POINTER(c_uint32),
             POINTER(c_float),
             POINTER(c_float),
+        ],
+    )
+    set_sig(
+        lib,
+        "mmd_runtime_export_vmd_from_parts",
+        MmdRuntimeFfiByteBuffer,
+        [
+            POINTER(c_uint8),
+            c_size_t,
+            POINTER(c_uint32),
+            c_size_t,
+            POINTER(c_uint32),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_uint8),
+            c_size_t,
+            POINTER(c_uint32),
+            c_size_t,
+            POINTER(c_uint32),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
         ],
     )
 

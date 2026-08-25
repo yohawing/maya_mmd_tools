@@ -120,7 +120,10 @@ def run_snapshot(
             # Physics import is irrelevant to look/shading and currently aborts
             # this model (angularDamping > 1 + a fatal logging error); skip it so
             # the snapshot reflects the same physics-off config the GUI defaults to.
-            root_node = import_mmd_file(str(model_path), options={"import_physics": False})
+            root_node = import_mmd_file(
+                str(model_path),
+                options={"import_physics": False, "import_morphs": False},
+            )
         _captured = _buf.getvalue()
         if _captured.strip():
             _log("IMPORT OUTPUT >>>\n" + _captured + "\n<<< IMPORT OUTPUT")
@@ -143,6 +146,21 @@ def run_snapshot(
             raise RuntimeError(f"DirectX11 import created a non-dx11 hardware shader: {inventory}")
         if any(str(effect).lower().endswith(".ogsfx") for _, _, effect, _ in inventory):
             raise RuntimeError(f"DirectX11 import assigned an OGSFX effect: {inventory}")
+
+        outline_state = []
+        for shader in hardware:
+            enabled = bool(cmds.getAttr(f"{shader}.mmd_shader_outline_enabled"))
+            edge_size = float(cmds.getAttr(f"{shader}.EdgeSize"))
+            outline_state.append((shader, enabled, edge_size))
+        _log(f"outline state after import: {outline_state}")
+        unexpected_outlines = [
+            item for item in outline_state if item[1] or abs(item[2]) > 1e-6
+        ]
+        if unexpected_outlines:
+            raise RuntimeError(
+                "Imported DX11 materials did not default their display outline off: "
+                f"{unexpected_outlines}"
+            )
 
         # Reproduce an existing-scene mismatch without ever assigning OGSFX to
         # D3DCompiler: swap one imported material to an unconfigured GLSL node,

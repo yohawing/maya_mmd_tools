@@ -5,8 +5,7 @@ writes a VMD file. Maya scene keyframe collection is intentionally kept outside
 this class so it can be tested separately from the binary writer.
 """
 
-import os
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping
 
 from mmd_tools.core.exceptions import MMDExportException
 from mmd_tools.core.vmd_data import VmdData
@@ -16,14 +15,10 @@ from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
 from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
 from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
 from mmd_tools.core.vmd_data.shadow_frame import VmdShadowFrame
-from mmd_tools.core.native import export_vmd_animation_json
 
 
 class VmdExporter:
     """Maya側で収集済みのアニメーションデータをVMDファイルへ書き出すクラス。"""
-
-    def __init__(self, native_exporter=export_vmd_animation_json):
-        self._native_exporter = native_exporter
 
     def export_vmd_animation(self, file_path: str, maya_data: Any) -> VmdData:
         """収集済みアニメーションデータをVMDファイルにエクスポートする。
@@ -37,15 +32,7 @@ class VmdExporter:
         """
         try:
             vmd_data = self.to_vmd_data(maya_data)
-            native_bytes = self._try_native_export(vmd_data)
-            if native_bytes is not None:
-                parent_dir = os.path.dirname(file_path)
-                if parent_dir:
-                    os.makedirs(parent_dir, exist_ok=True)
-                with open(file_path, "wb") as handle:
-                    handle.write(native_bytes)
-            else:
-                vmd_data.write_file(file_path)
+            vmd_data.write_file(file_path)
             return vmd_data
         except (ValueError, TypeError) as e:
             raise MMDExportException(f"Failed to export VMD file {file_path}: {e}") from e
@@ -59,6 +46,7 @@ class VmdExporter:
 
         vmd_data = VmdData()
         vmd_data.header.model_name = str(maya_data.get("model_name", ""))
+        vmd_data.raw_provenance = maya_data.get("raw_provenance")
         vmd_data.bone_frames = [
             self._coerce_bone_frame(frame) for frame in self._get_frames(maya_data, "bone_frames")
         ]
@@ -80,8 +68,8 @@ class VmdExporter:
         ]
         return vmd_data
 
-    def to_native_json_payload(self, vmd_data: VmdData) -> dict:
-        """``VmdData`` を mmd-anim の VmdParsedAnimation JSON shape に変換する。"""
+    def to_semantic_payload(self, vmd_data: VmdData) -> dict:
+        """``VmdData``を検証・fingerprint用のsemantic shapeへ変換する。"""
         bone_frames = [
             {
                 "boneName": frame.bone_name,
@@ -170,11 +158,6 @@ class VmdExporter:
             "selfShadowFrames": self_shadow_frames,
             "propertyFrames": property_frames,
         }
-
-    def _try_native_export(self, vmd_data: VmdData) -> Optional[bytes]:
-        if self._native_exporter is None:
-            return None
-        return self._native_exporter(self.to_native_json_payload(vmd_data))
 
     @staticmethod
     def _get_frames(data: Mapping[str, Any], key: str) -> Iterable[Any]:

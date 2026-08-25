@@ -6,6 +6,7 @@ Mayaのブレンドシェイプシステムに変換する機能を提供しま�
 """
 
 import json
+import math
 import time
 from typing import Any, Dict, List, Optional, Set, Union
 
@@ -16,8 +17,20 @@ from mmd_tools.core import maya_attribute_utils, maya_mesh_utils, maya_name_util
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
+    ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
+    ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
+    ATTR_MMD_UV_MORPH_OFFSETS_JSON,
+)
+from mmd_tools.core.morph_metadata_reader import PMX_MORPH_TYPE_NAMES
+from mmd_tools.core.morph_topology import (
+    TOPOLOGY_VERSION,
+    compute_group_topology,
+    inspect_group_topology,
+    MorphTopologyError,
+    parse_raw_offsets_json,
+    serialize_group_topology,
 )
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.converters.morph_scene_metadata import (
@@ -26,6 +39,78 @@ from mmd_tools.converters.morph_scene_metadata import (
 )
 
 _OPT_IMPORT_MORPHS = "import_morphs"
+
+
+def pmx_vertex_offset_to_maya_tuple(position_offset, scale: float = 1.0) -> tuple[float, float, float]:
+    """Convert one PMX vertex delta to Maya object-space coordinates."""
+    return (
+        float(position_offset[0]) * float(scale),
+        float(position_offset[1]) * float(scale),
+        -float(position_offset[2]) * float(scale),
+    )
+
+
+def _is_group_morph_payload(morph: Dict[str, Any]) -> bool:
+    """Return whether a morph payload expands other morph weights.
+
+    PMX Flip morph offsets use the same morph-index/rate contract as Group
+    morph offsets.  Keeping both types in this predicate is important when a
+    model-root collection restores PMX table order from provenance indices.
+    """
+    morph_type = morph.get("type", morph.get("morph_type"))
+    if isinstance(morph_type, str):
+        return morph_type.lower() in {"group", "flip"}
+    return morph_type in {
+        PmxMorphType.GroupMorph,
+        int(PmxMorphType.GroupMorph),
+        PmxMorphType.FlipMorph,
+        int(PmxMorphType.FlipMorph),
+    }
+
+
+def _order_morphs_by_index_if_grouped(
+    morphs: List[Dict[str, Any]],
+    *,
+    strip_index: bool = False,
+    require_contiguous: bool = False,
+) -> List[Dict[str, Any]]:
+    """Restore PMX morph order when Group/Flip references make indices observable.
+
+    ``index`` is an internal provenance field.  Group and Flip offsets
+    reference the PMX morph table, so silently accepting an incomplete or
+    duplicated index mapping would produce a structurally valid but
+    semantically wrong export.  Network-only payloads may omit vertex morphs
+    and therefore use non-contiguous indices; the model-root merge can require
+    a complete zero-based map with ``require_contiguous``.
+    """
+    ordered = list(morphs)
+    if require_contiguous or any(_is_group_morph_payload(morph) for morph in ordered):
+        indices = []
+        for position, morph in enumerate(ordered):
+            if "index" not in morph:
+                raise ValueError(f"Cannot restore PMX morph order: morph {position} is missing index")
+            index = morph["index"]
+            if isinstance(index, bool) or not isinstance(index, int):
+                raise ValueError(
+                    f"Cannot restore PMX morph order: morph {position} index must be a non-bool integer"
+                )
+            if index < 0:
+                raise ValueError(f"Cannot restore PMX morph order: morph {position} index must be non-negative")
+            indices.append(index)
+
+        if len(set(indices)) != len(indices):
+            raise ValueError(f"Cannot restore PMX morph order: duplicate morph indices {indices}")
+        if require_contiguous:
+            expected = set(range(len(ordered)))
+            if set(indices) != expected:
+                raise ValueError(
+                    f"Cannot restore PMX morph order: expected indices {sorted(expected)}, got {sorted(indices)}"
+                )
+        ordered.sort(key=lambda morph: morph["index"])
+
+    if strip_index:
+        return [{key: value for key, value in morph.items() if key != "index"} for morph in ordered]
+    return ordered
 
 
 def _scene_name_set() -> Set[str]:
@@ -100,11 +185,43 @@ class MorphConverter:
         bone_morph_nodes = []
         group_morph_nodes = []
         material_morph_nodes = []
+        uv_morph_nodes = []
+        flip_impulse_morph_nodes = []
+        vertex_morph_nodes = []
         converted_bone_morphs = set()
         converted_group_morphs = set()
         converted_material_morphs = set()
+        converted_uv_morphs = set()
+        converted_flip_impulse_morphs = set()
         material_vertex_sets = self._build_pmx_material_vertex_sets(pmx_data)
         skipped_vertex_morphs_by_material = 0
+
+        # Keep one semantic metadata node for every PMX vertex morph before
+        # touching any mesh.  The blendShape target is the sole authority for
+        # vertex offsets; this network node carries only the stable PMX
+        # name/index/panel/type binding metadata used by the controller and
+        # authoring registry.
+        vertex_morph_metadata = []
+        for morph_index, morph in enumerate(pmx_data.morphs):
+            if morph.morph_type != PmxMorphType.VertexMorph:
+                continue
+            offsets = self._normalize_vertex_morph_offsets(morph, morph_index)
+            vertex_morph_metadata.append((morph_index, morph, offsets))
+
+        for morph_index, morph, offsets in vertex_morph_metadata:
+            morph_name = self._raw_morph_name(morph)
+            morph_node = self._create_or_get_morph_network_node(morph_name, "vertex")
+            maya_attribute_utils.set_custom_attributes(
+                morph_node,
+                {
+                    "mmd_morph_name": str(morph_name),
+                    "mmd_morph_name_en": str(getattr(morph, "name_english", "")),
+                    "mmd_morph_type": "vertex",
+                    "mmd_morph_index": int(morph_index),
+                    "mmd_morph_panel": int(getattr(morph, "panel", 0)),
+                },
+            )
+            vertex_morph_nodes.append(morph_node)
 
         for mn in mesh_nodes:
             mesh_material_index = self._get_mesh_material_index(mn)
@@ -166,6 +283,26 @@ class MorphConverter:
                                 results.append(result)
                                 material_morph_nodes.append(result["morph_node"])
                                 self.logger.debug(f"Successfully imported material morph metadata: {morph.name}")
+                        elif PmxMorphType.UVMorph <= morph.morph_type <= PmxMorphType.AdditionalUVMorph4:
+                            if morph_index in converted_uv_morphs:
+                                continue
+                            self.logger.debug(f"Converting UV morph metadata: {morph.name}")
+                            result = self._convert_uv_morph_pmx(morph, morph_index)
+                            if result["success"]:
+                                converted_uv_morphs.add(morph_index)
+                                results.append(result)
+                                uv_morph_nodes.append(result["morph_node"])
+                                self.logger.debug(f"Successfully imported UV morph metadata: {morph.name}")
+                        elif morph.morph_type in (PmxMorphType.FlipMorph, PmxMorphType.ImpulseMorph):
+                            if morph_index in converted_flip_impulse_morphs:
+                                continue
+                            self.logger.debug(f"Converting PMX 2.1 morph metadata: {morph.name}")
+                            result = self._convert_flip_impulse_morph_pmx(morph, morph_index)
+                            if result["success"]:
+                                converted_flip_impulse_morphs.add(morph_index)
+                                results.append(result)
+                                flip_impulse_morph_nodes.append(result["morph_node"])
+                                self.logger.debug(f"Successfully imported PMX 2.1 morph metadata: {morph.name}")
                     except Exception as e:
                         self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
             finally:
@@ -180,6 +317,9 @@ class MorphConverter:
             "bone_morph_nodes": bone_morph_nodes,
             "group_morph_nodes": group_morph_nodes,
             "material_morph_nodes": material_morph_nodes,
+            "uv_morph_nodes": uv_morph_nodes,
+            "flip_impulse_morph_nodes": flip_impulse_morph_nodes,
+            "vertex_morph_nodes": vertex_morph_nodes,
             "vertex_morphs_skipped_by_material": skipped_vertex_morphs_by_material,
             "results": results,
         }
@@ -214,37 +354,22 @@ class MorphConverter:
             )
             cmds.aliasAttr(alias, input_plug)
 
-        groups = {
-            index: morph
-            for index, morph in enumerate(pmx_data.morphs)
-            if morph.morph_type == PmxMorphType.GroupMorph
-        }
-        group_rates: Dict[int, Dict[int, float]] = {}
-
-        def expand(source: int, current: int, rate: float, path: Set[int]) -> None:
-            for offset in getattr(groups[current], "offsets", []):
-                try:
-                    target = int(offset["morph_index"])
-                    next_rate = rate * float(offset.get("morph_rate", 0.0))
-                except (KeyError, TypeError, ValueError):
-                    continue
-                if target in path:
-                    continue
-                sources = group_rates.setdefault(target, {})
-                sources[source] = sources.get(source, 0.0) + next_rate
-                if target in groups:
-                    expand(source, target, next_rate, path | {target})
-
-        for group_index in groups:
-            expand(group_index, group_index, 1.0, {group_index})
-        topology = {
-            str(target): [[source, rate] for source, rate in sorted(sources.items())]
-            for target, sources in sorted(group_rates.items())
-        }
-        cmds.setAttr(f"{controller}.topologyVersion", 1, lock=True)
+        topology_rows = []
+        for index, morph in enumerate(pmx_data.morphs):
+            morph_type = {
+                PmxMorphType.GroupMorph: "group",
+                PmxMorphType.FlipMorph: "flip",
+            }.get(morph.morph_type, "leaf")
+            topology_rows.append({
+                "index": index,
+                "morph_type": morph_type,
+                "offsets": tuple(getattr(morph, "offsets", ())),
+            })
+        topology = compute_group_topology(topology_rows)
+        cmds.setAttr(f"{controller}.topologyVersion", TOPOLOGY_VERSION, lock=True)
         cmds.setAttr(
             f"{controller}.groupTopology",
-            json.dumps(topology, separators=(",", ":")),
+            serialize_group_topology(topology),
             type="string",
             lock=True,
         )
@@ -256,7 +381,12 @@ class MorphConverter:
                     destinations.setdefault(int(entry["index"]), set()).add(
                         f"{blend_shape}.weight[{int(weight_index)}]"
                     )
-        for morph_node in morph_result.get("bone_morph_nodes", []) + morph_result.get("material_morph_nodes", []):
+        for morph_node in (
+            morph_result.get("bone_morph_nodes", [])
+            + morph_result.get("material_morph_nodes", [])
+            + morph_result.get("uv_morph_nodes", [])
+            + morph_result.get("flip_impulse_morph_nodes", [])
+        ):
             index = int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
             destinations.setdefault(index, set()).add(f"{morph_node}.weight")
         for leaf_index, leaf_destinations in sorted(destinations.items()):
@@ -267,7 +397,7 @@ class MorphConverter:
 
     def _convert_group_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
         """PMXグループモーフをMayaのnetwork nodeとしてインポートする。"""
-        morph_name = morph.get_name()
+        morph_name = self._raw_morph_name(morph)
         morph_node = self._create_or_get_morph_network_node(morph_name, "group")
 
         offsets = []
@@ -356,19 +486,131 @@ class MorphConverter:
                 return True
         return False
 
-    def collect_morphs_from_scene_for_export(self) -> List[Dict[str, Any]]:
-        """シーン内の network モーフノードから exporter 用の morph dict を収集する。"""
-        morphs = []
+    @staticmethod
+    def _normalize_vertex_morph_offsets(morph, morph_index: int) -> List[Dict[str, Any]]:
+        """Validate and normalize PMX vertex offsets for semantic metadata.
 
-        for metadata in iter_morph_network_metadata(morph_types={"bone", "material"}):
+        The PMX offsets are kept in source space.  Unlike the blendShape path,
+        this metadata path must not coerce malformed values: booleans, missing
+        fields, non-finite numbers, and malformed vectors are rejected so the
+        importer cannot silently publish a lossy semantic record.
+        """
+        raw_offsets = getattr(morph, "offsets", None)
+        if not isinstance(raw_offsets, (list, tuple)):
+            raise ValueError(f"Vertex morph {morph_index} offsets must be a list")
+
+        offsets: List[Dict[str, Any]] = []
+        for offset_index, offset in enumerate(raw_offsets):
+            if not isinstance(offset, dict):
+                raise ValueError(f"Vertex morph {morph_index} offset {offset_index} must be a mapping")
+            unexpected_keys = set(offset) - {"vertex_index", "position_offset"}
+            if unexpected_keys:
+                raise ValueError(
+                    f"Vertex morph {morph_index} offset {offset_index} has unsupported fields: "
+                    f"{sorted(unexpected_keys)!r}"
+                )
+            if "vertex_index" not in offset:
+                raise ValueError(
+                    f"Vertex morph {morph_index} offset {offset_index} is missing vertex_index"
+                )
+            if "position_offset" not in offset:
+                raise ValueError(
+                    f"Vertex morph {morph_index} offset {offset_index} is missing position_offset"
+                )
+
+            vertex_index = offset["vertex_index"]
+            if isinstance(vertex_index, bool) or not isinstance(vertex_index, int) or vertex_index < 0:
+                raise ValueError(
+                    f"Vertex morph {morph_index} offset {offset_index} vertex_index "
+                    "must be a non-negative integer"
+                )
+
+            position_offset = offset["position_offset"]
+            if not isinstance(position_offset, (list, tuple)) or len(position_offset) != 3:
+                raise ValueError(
+                    f"Vertex morph {morph_index} offset {offset_index} position_offset "
+                    "must contain exactly three values"
+                )
+
+            normalized_position = []
+            for component_index, component in enumerate(position_offset):
+                if isinstance(component, bool) or not isinstance(component, (int, float)):
+                    raise ValueError(
+                        f"Vertex morph {morph_index} offset {offset_index} position_offset "
+                        f"component {component_index} must be a real number"
+                    )
+                component = float(component)
+                if not math.isfinite(component):
+                    raise ValueError(
+                        f"Vertex morph {morph_index} offset {offset_index} position_offset "
+                        f"component {component_index} must be finite"
+                    )
+                normalized_position.append(component)
+
+            offsets.append(
+                {
+                    "vertex_index": vertex_index,
+                    "position_offset": normalized_position,
+                }
+            )
+        return offsets
+
+    def collect_morphs_from_scene_for_export(
+        self,
+        root_group: Optional[str] = None,
+        *,
+        require_contiguous: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Collect exporter morph dicts from network nodes owned by a model root.
+
+        Args:
+            root_group: Optional model root used to scope the network query.
+                ``None`` preserves the legacy scene-wide query for callers that
+                do not have a model ownership boundary.
+            require_contiguous: Require a complete zero-based PMX morph index
+                table. Model-root collection sets this to ``False`` while
+                collecting the network subset before vertex morphs are merged.
+        """
+        morphs = []
+        offsets_attrs = {
+            "bone": "mmd_bone_morph_offsets_json",
+            "group": "mmd_group_morph_offsets_json",
+            "material": "mmd_material_morph_offsets_json",
+            "uv": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
+            "additional_uv1": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
+            "additional_uv2": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
+            "additional_uv3": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
+            "additional_uv4": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
+            "flip": ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
+            "impulse": ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
+        }
+
+        for metadata in iter_morph_network_metadata(
+            root_group=root_group,
+            morph_types={
+                "bone",
+                "group",
+                "material",
+                "uv",
+                "additional_uv1",
+                "additional_uv2",
+                "additional_uv3",
+                "additional_uv4",
+                "flip",
+                "impulse",
+            },
+        ):
             morph_node = metadata.node
             try:
-                offsets_attr = (
-                    "mmd_bone_morph_offsets_json"
-                    if metadata.morph_type == "bone"
-                    else "mmd_material_morph_offsets_json"
-                )
+                offsets_attr = offsets_attrs.get(metadata.morph_type)
+                if offsets_attr is None:
+                    self.logger.warning(
+                        f"skip morph node {morph_node}: unsupported morph type {metadata.morph_type!r}"
+                    )
+                    continue
                 if not cmds.attributeQuery(offsets_attr, node=morph_node, exists=True):
+                    if metadata.morph_type in {"group", "flip"}:
+                        raise ValueError(f"missing {offsets_attr} attribute")
                     self.logger.warning(
                         f"skip morph node {morph_node}: missing {offsets_attr} attribute"
                     )
@@ -376,30 +618,70 @@ class MorphConverter:
 
                 try:
                     offsets_json = cmds.getAttr(f"{morph_node}.{offsets_attr}")
-                    offsets = json.loads(offsets_json) if offsets_json else []
-                except (TypeError, json.JSONDecodeError) as e:
+                    offsets = (
+                        parse_raw_offsets_json(offsets_json)
+                        if metadata.morph_type in {"group", "flip"}
+                        else json.loads(offsets_json) if offsets_json else []
+                    )
+                except (TypeError, json.JSONDecodeError, MorphTopologyError) as e:
+                    if metadata.morph_type in {"group", "flip"}:
+                        raise ValueError(f"invalid JSON in {offsets_attr}: {e}") from e
                     self.logger.warning(f"skip morph node {morph_node}: invalid JSON in {offsets_attr}: {e}")
                     continue
 
                 if not isinstance(offsets, list):
+                    if metadata.morph_type in {"group", "flip"}:
+                        raise ValueError(
+                            f"{offsets_attr} data must be list, got {type(offsets).__name__}"
+                        )
                     self.logger.warning(
                         f"skip morph node {morph_node}: offsets data must be list, got {type(offsets).__name__}"
                     )
                     continue
 
-                morphs.append(
-                    {
-                        "type": metadata.morph_type,
-                        "name": metadata.name,
-                        "name_english": metadata.name_english,
-                        "panel": metadata.panel,
-                        "offsets": offsets,
-                    }
-                )
+                morph_payload = {
+                    "type": metadata.morph_type,
+                    "name": metadata.name,
+                    "name_english": metadata.name_english,
+                    "panel": metadata.panel,
+                    "offsets": offsets,
+                }
+                if metadata.index is not None:
+                    morph_payload["index"] = metadata.index
+                morphs.append(morph_payload)
             except Exception as e:
+                if metadata.morph_type in {"group", "flip"}:
+                    raise ValueError(
+                        f"morph_topology:malformed:{morph_node}:{e}"
+                    ) from e
                 self.logger.warning(f"skip morph node {morph_node}: {e}")
 
-        return morphs
+        return _order_morphs_by_index_if_grouped(
+            morphs,
+            require_contiguous=require_contiguous,
+        )
+
+    @staticmethod
+    def validate_controller_topology_for_export(
+        root_group: str, morphs: List[Dict[str, Any]]
+    ) -> None:
+        """Fail export closed when the derived controller cache is invalid."""
+        if not cmds.attributeQuery("mmd_morph_controller", node=root_group, exists=True):
+            return
+        controllers = cmds.listConnections(
+            f"{root_group}.mmd_morph_controller", source=True, destination=False
+        ) or []
+        if len(controllers) != 1:
+            raise ValueError("morph_topology:malformed:controller ownership is ambiguous")
+        controller = controllers[0]
+        inspection = inspect_group_topology(
+            morphs,
+            cmds.getAttr(f"{controller}.topologyVersion"),
+            cmds.getAttr(f"{controller}.groupTopology"),
+        )
+        if inspection.diagnostics:
+            diagnostic = inspection.diagnostics[0]
+            raise ValueError(f"morph_topology:{diagnostic.code}:{diagnostic.detail}")
 
     @staticmethod
     def _raw_morph_name(morph) -> str:
@@ -467,7 +749,7 @@ class MorphConverter:
         ここでは joint 変形へは接続せず、VMD morph frame がキー化できる
         `weight` と、後段評価用の offset metadata だけを作る。
         """
-        morph_name = morph.get_name()
+        morph_name = self._raw_morph_name(morph)
         morph_node = self._create_or_get_morph_network_node(morph_name, "bone")
 
         offsets = []
@@ -518,7 +800,7 @@ class MorphConverter:
         shader parameter へは接続せず、VMD morph frame がキー化できる
         `weight` と、後段評価用の offset metadata だけを作る。
         """
-        morph_name = morph.get_name()
+        morph_name = self._raw_morph_name(morph)
         morph_node = self._create_or_get_morph_network_node(morph_name, "material")
 
         offsets = []
@@ -563,6 +845,157 @@ class MorphConverter:
             "morph_name": morph_name,
             "morph_node": morph_node,
             "morph_type": "material",
+            "offset_count": len(offsets),
+        }
+
+    def _convert_uv_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
+        """Import PMX UV morphs as raw semantic metadata on a network node.
+
+        Maya does not evaluate these offsets in this slice.  The source vertex
+        index and all four offset components are kept in PMX space so the
+        exporter can write them back without inventing a UV animation path.
+        """
+        morph_type_value = int(morph.morph_type)
+        morph_type = PMX_MORPH_TYPE_NAMES.get(morph_type_value)
+        if morph_type_value < int(PmxMorphType.UVMorph) or morph_type_value > int(PmxMorphType.AdditionalUVMorph4):
+            raise ValueError(f"unsupported UV morph type: {morph_type_value}")
+        if morph_type is None:
+            raise ValueError(f"unknown UV morph type: {morph_type_value}")
+
+        morph_name = self._raw_morph_name(morph)
+        offsets = []
+        for offset_index, offset in enumerate(getattr(morph, "offsets", []) or []):
+            if not isinstance(offset, dict):
+                raise ValueError(f"UV morph offset {offset_index} must be a mapping")
+            if "vertex_index" not in offset:
+                raise ValueError(f"UV morph offset {offset_index} is missing vertex_index")
+            if "uv_offset" not in offset:
+                raise ValueError(f"UV morph offset {offset_index} is missing uv_offset")
+            vertex_index = offset["vertex_index"]
+            if isinstance(vertex_index, bool) or not isinstance(vertex_index, int) or vertex_index < 0:
+                raise ValueError(f"UV morph offset {offset_index} vertex_index must be a non-negative integer")
+            uv_offset = offset["uv_offset"]
+            if not isinstance(uv_offset, (list, tuple)) or len(uv_offset) != 4:
+                raise ValueError(f"UV morph offset {offset_index} uv_offset must contain exactly four values")
+            normalized_offset = []
+            for component in uv_offset:
+                if isinstance(component, bool) or not isinstance(component, (int, float)):
+                    raise ValueError(f"UV morph offset {offset_index} uv_offset must contain real numbers")
+                component = float(component)
+                if not math.isfinite(component):
+                    raise ValueError(f"UV morph offset {offset_index} uv_offset must contain finite numbers")
+                normalized_offset.append(component)
+            offsets.append({"vertex_index": vertex_index, "uv_offset": normalized_offset})
+
+        morph_node = self._create_or_get_morph_network_node(morph_name, morph_type)
+        maya_attribute_utils.set_custom_attributes(
+            morph_node,
+            {
+                "mmd_morph_name": str(morph_name),
+                "mmd_morph_name_en": str(getattr(morph, "name_english", "")),
+                "mmd_morph_type": morph_type,
+                "mmd_morph_index": int(morph_index),
+                "mmd_morph_panel": int(getattr(morph, "panel", 0)),
+                "mmd_uv_morph_offset_count": len(offsets),
+                ATTR_MMD_UV_MORPH_OFFSETS_JSON: json.dumps(
+                    offsets,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            },
+        )
+        return {
+            "success": True,
+            "morph_name": morph_name,
+            "morph_node": morph_node,
+            "morph_type": morph_type,
+            "offset_count": len(offsets),
+        }
+
+    def _convert_flip_impulse_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
+        """Import PMX 2.1 Flip/Impulse offsets as raw network metadata.
+
+        Maya does not evaluate these PMX 2.1 effects in this slice. Their
+        references and vectors remain in PMX space so the exporter can write
+        them back without silently converting them to an unrelated morph.
+        """
+        morph_type_value = int(morph.morph_type)
+        if morph_type_value == int(PmxMorphType.FlipMorph):
+            morph_type = "flip"
+            offsets_attr = ATTR_MMD_FLIP_MORPH_OFFSETS_JSON
+        elif morph_type_value == int(PmxMorphType.ImpulseMorph):
+            morph_type = "impulse"
+            offsets_attr = ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON
+        else:
+            raise ValueError(f"unsupported PMX 2.1 morph type: {morph_type_value}")
+
+        offsets = []
+        for offset_index, offset in enumerate(getattr(morph, "offsets", []) or []):
+            if not isinstance(offset, dict):
+                raise ValueError(f"{morph_type} morph offset {offset_index} must be a mapping")
+            if morph_type == "flip":
+                reference_key = "morph_index"
+                vector_keys = ()
+                scalar_key = "flip_rate"
+            else:
+                reference_key = "rigid_body_index"
+                vector_keys = ("impulse", "torque")
+                scalar_key = None
+
+            reference = offset.get(reference_key)
+            if isinstance(reference, bool) or not isinstance(reference, int) or reference < 0:
+                raise ValueError(
+                    f"{morph_type} morph offset {offset_index} {reference_key} must be a non-negative integer"
+                )
+            normalized = {reference_key: reference}
+            if scalar_key is not None:
+                scalar = offset.get(scalar_key)
+                if isinstance(scalar, bool) or not isinstance(scalar, (int, float)):
+                    raise ValueError(f"{morph_type} morph offset {offset_index} {scalar_key} must be a real number")
+                scalar = float(scalar)
+                if not math.isfinite(scalar):
+                    raise ValueError(f"{morph_type} morph offset {offset_index} {scalar_key} must be finite")
+                normalized[scalar_key] = scalar
+            for vector_key in vector_keys:
+                vector = offset.get(vector_key)
+                if not isinstance(vector, (list, tuple)) or len(vector) != 3:
+                    raise ValueError(
+                        f"{morph_type} morph offset {offset_index} {vector_key} must contain exactly three values"
+                    )
+                normalized_vector = []
+                for component in vector:
+                    if isinstance(component, bool) or not isinstance(component, (int, float)):
+                        raise ValueError(
+                            f"{morph_type} morph offset {offset_index} {vector_key} must contain real numbers"
+                        )
+                    component = float(component)
+                    if not math.isfinite(component):
+                        raise ValueError(
+                            f"{morph_type} morph offset {offset_index} {vector_key} must contain finite numbers"
+                        )
+                    normalized_vector.append(component)
+                normalized[vector_key] = normalized_vector
+            offsets.append(normalized)
+
+        morph_name = self._raw_morph_name(morph)
+        morph_node = self._create_or_get_morph_network_node(morph_name, morph_type)
+        maya_attribute_utils.set_custom_attributes(
+            morph_node,
+            {
+                "mmd_morph_name": str(morph_name),
+                "mmd_morph_name_en": str(getattr(morph, "name_english", "")),
+                "mmd_morph_type": morph_type,
+                "mmd_morph_index": int(morph_index),
+                "mmd_morph_panel": int(getattr(morph, "panel", 0)),
+                f"mmd_{morph_type}_morph_offset_count": len(offsets),
+                offsets_attr: json.dumps(offsets, ensure_ascii=False, separators=(",", ":")),
+            },
+        )
+        return {
+            "success": True,
+            "morph_name": morph_name,
+            "morph_node": morph_node,
+            "morph_type": morph_type,
             "offset_count": len(offsets),
         }
 
@@ -761,11 +1194,7 @@ class MorphConverter:
     @staticmethod
     def _pmx_vertex_offset_to_maya_vector(position_offset, scale: float = 1.0) -> om.MVector:
         """Return a PMX vertex morph offset converted into Maya mesh space."""
-        return om.MVector(
-            float(position_offset[0]) * scale,
-            float(position_offset[1]) * scale,
-            -float(position_offset[2]) * scale,
-        )
+        return om.MVector(*pmx_vertex_offset_to_maya_tuple(position_offset, scale))
 
     @staticmethod
     def cleanup_vertex_morph_template(template_ctx: Dict[str, Any]) -> None:

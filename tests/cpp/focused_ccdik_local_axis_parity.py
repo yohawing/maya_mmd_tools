@@ -157,6 +157,32 @@ def main() -> int:
                     f"source={source_output}; fresh={fresh_output}"
                 )
 
+            # Position channels and the goal also cross the double-to-float
+            # boundary.  Keep two one-ULP-scale variants just inside the same
+            # 2e-6 quantization cells and require bit-stable solver output.
+            # These Dorothy frame-90 witnesses straddle the narrower 1e-6
+            # boundary, so the regression also locks the chosen grid size.
+            source_translate = (3.916799545288086, 1.7541426420211792, -4.164727210998535)
+            fresh_translate = (3.9167994260787964, 1.7541426420211792, -4.164727210998535)
+            source_goal = (1.3019449673220151, 1.7247169986367226, -6.0536792278289795)
+            fresh_goal = (1.3019448518753052, 1.7247169986367226, -6.053679287433624)
+            cmds.setAttr(f"{node}.inputTranslate[1]", *source_translate, type="double3")
+            cmds.setAttr(f"{node}.goal", *source_goal, type="double3")
+            source_position_output = _output(cmds, node)
+            cmds.setAttr(f"{node}.inputTranslate[1]", *fresh_translate, type="double3")
+            cmds.setAttr(f"{node}.goal", *fresh_goal, type="double3")
+            fresh_position_output = _output(cmds, node)
+            position_stability_error = max(
+                abs(lhs - rhs)
+                for lhs, rhs in zip(source_position_output, fresh_position_output)
+            )
+            if position_stability_error > 1.0e-8:
+                raise RuntimeError(
+                    "one-ULP position/goal noise changed native CCD output: "
+                    f"max_error={position_stability_error:.12f}; "
+                    f"source={source_position_output}; fresh={fresh_position_output}"
+                )
+
             cmds.setAttr(f"{node}.inputRotate[2]", 12.0, -7.0, 3.0, type="double3")
             cmds.setAttr(f"{node}.inputRotate[1]", -4.0, 9.0, 6.0, type="double3")
             cmds.setAttr(f"{node}.enabled", False)
@@ -169,7 +195,8 @@ def main() -> int:
             print(
                 "OK: mmdCcdIk local-axis v2 dispatch parity "
                 f"(max_error={max_error:.8f}, v1_v2_delta={delta:.8f}, "
-                f"stability_error={stability_error:.12f})"
+                f"stability_error={stability_error:.12f}, "
+                f"position_stability_error={position_stability_error:.12f})"
             )
         finally:
             cmds.delete(node)

@@ -1,14 +1,14 @@
-"""One-shot Reset Pose transaction for Animator controls and MMD joints.
+"""Keyless, one-shot Reset Pose transaction.
 
-The action writes rest values at the current frame. Static channels receive
-direct values, while directly connected animation curves receive keys. Maya
-Undo is the only way to return to the previous pose; this module intentionally
-owns no temporary display mode or second-click restoration state.
+Reset Pose changes only the value evaluated at the current Maya time.  It does
+not author animation.  Connected animation therefore resumes on the next time
+change, while static channels retain the assigned rest value.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Mapping
 
 
@@ -20,6 +20,9 @@ _CHANNELS = (
     "rotateY",
     "rotateZ",
 )
+_TIME_ANIM_CURVE_TYPES = frozenset(
+    {"animCurveTA", "animCurveTL", "animCurveTT", "animCurveTU"}
+)
 
 
 class ResetPoseTransactionError(RuntimeError):
@@ -28,15 +31,15 @@ class ResetPoseTransactionError(RuntimeError):
 
 @dataclass(frozen=True)
 class _ChannelSnapshot:
+    target: str
     plug: str
     value: Any
-    writer: str | None
+    incoming: tuple[str, ...]
     locked: bool
-    writable: bool
 
 
 class ResetPoseTransaction:
-    """Apply current-frame rest values to validated model-owned transforms."""
+    """Temporarily apply rest values without editing animation keys."""
 
     def __init__(
         self,
@@ -46,6 +49,7 @@ class ResetPoseTransaction:
         model_uuid: str,
         targets: list[str],
         bind_translations: Mapping[str, tuple[float, float, float]] | None = None,
+        authored_plugs_by_target: Mapping[str, tuple[str, ...]] | None = None,
         scope_roots: tuple[str, ...] | None = None,
     ):
         self.adapter = adapter
@@ -53,6 +57,14 @@ class ResetPoseTransaction:
         self.model_uuid = str(model_uuid)
         self.targets = tuple(dict.fromkeys(str(target) for target in targets))
         self.bind_translations = dict(bind_translations or {})
+        self.authored_plugs_by_target = (
+            None
+            if authored_plugs_by_target is None
+            else {
+                str(target): tuple(str(plug) for plug in plugs)
+                for target, plugs in authored_plugs_by_target.items()
+            }
+        )
         self.scope_roots = tuple(
             dict.fromkeys(str(scope) for scope in (scope_roots or (model_root,)))
         )
@@ -60,53 +72,137 @@ class ResetPoseTransaction:
         self._applied: list[_ChannelSnapshot] = []
 
     def apply(self) -> int:
-        """Reset static values or set rest keys at the current Maya frame."""
+        """Apply a keyless current-evaluation reset and return changed targets."""
 
         cmds = self._cmds()
         self._assert_model_uuid(cmds)
         if not self.targets:
             return 0
-        self._snapshots = self._capture_channels(cmds)
-        opened = self._open_undo("Animator Reset Pose")
-        if not opened and any(snapshot.writer for snapshot in self._snapshots):
-            raise ResetPoseTransactionError(
-                "Reset Pose requires Maya Undo for animated channels"
-            )
+        snapshots = self._capture_channels(cmds)
+        self._snapshots = snapshots
+        reset_values = tuple(
+            (snapshot, self._rest_value(snapshot)) for snapshot in snapshots
+        )
+        changed = tuple(
+            (snapshot, value)
+            for snapshot, value in reset_values
+            if self._channel_value_changed(snapshot.value, value)
+        )
+        changed_targets = {snapshot.target for snapshot, _value in changed}
+        if not changed:
+            self._assert_results(cmds, reset_values)
+            return 0
+        for snapshot, _value in changed:
+            if snapshot.incoming:
+                self._assert_transient_writer(cmds, snapshot.plug, snapshot.incoming[0])
+
+        transient = tuple(item for item in changed if item[0].incoming)
+        static = tuple(item for item in changed if not item[0].incoming)
+        opened = False
         self._applied = []
         try:
-            applied_targets = set()
-            current_time = float(cmds.currentTime(query=True))
-            for snapshot in self._snapshots:
-                if not snapshot.writable:
-                    continue
-                value = self._rest_value(snapshot.plug)
+            self._write_transient_without_undo(cmds, transient)
+            opened = bool(static) and self._open_undo("Animator Reset Pose")
+            for snapshot, value in static:
+                self._assert_topology(cmds, snapshot)
                 self._applied.append(snapshot)
-                if snapshot.writer:
-                    curve = snapshot.writer.rsplit(".", 1)[0]
-                    cmds.setKeyframe(
-                        curve,
-                        time=(current_time, current_time),
-                        value=float(value),
-                    )
-                else:
-                    self._set_static(cmds, snapshot, value)
-                applied_targets.add(snapshot.plug.rsplit(".", 1)[0])
-            return len(applied_targets)
+                self._set_value(cmds, snapshot, value)
+            self._assert_results(cmds, reset_values)
         except Exception as exc:
             try:
+                static_restored_by_undo = False
                 if opened:
-                    self._close_undo(opened)
+                    self._close_undo(True)
                     opened = False
                     cmds.undo()
-                else:
-                    self._restore_static(cmds)
+                    static_restored_by_undo = True
+                self._restore_values(
+                    cmds,
+                    include_static=not static_restored_by_undo,
+                )
+                self._dirty_all(cmds)
+                self._assert_rollback(cmds)
             except Exception as rollback_error:
                 raise ResetPoseTransactionError(
                     f"Reset Pose failed and rollback was incomplete: {rollback_error}"
                 ) from exc
             raise ResetPoseTransactionError(str(exc)) from exc
+        if opened:
+            try:
+                self._close_undo(True)
+            except Exception as exc:
+                try:
+                    self._restore_values(cmds)
+                    self._dirty_all(cmds)
+                    self._assert_rollback(cmds)
+                except Exception as rollback_error:
+                    raise ResetPoseTransactionError(
+                        "Reset Pose Undo close failed and rollback was incomplete: "
+                        f"{rollback_error}"
+                    ) from exc
+                raise ResetPoseTransactionError(f"Reset Pose Undo close failed: {exc}") from exc
+        return len(changed_targets)
+
+    def _write_transient_without_undo(self, cmds, writes) -> None:
+        self._set_transient_values_without_undo(
+            cmds,
+            writes,
+            track=True,
+            validate_topology=True,
+        )
+
+    def _set_transient_values_without_undo(
+        self,
+        cmds,
+        writes,
+        *,
+        track: bool,
+        validate_topology: bool,
+    ) -> None:
+        if not writes:
+            return
+        try:
+            previous_state = bool(self.adapter.undo_info(query=True, state=True))
+        except Exception as exc:
+            raise ResetPoseTransactionError(
+                f"Reset Pose Undo state is unavailable: {exc}"
+            ) from exc
+        try:
+            if previous_state:
+                self.adapter.undo_info(stateWithoutFlush=False)
+            for snapshot, value in writes:
+                if validate_topology:
+                    self._assert_topology(cmds, snapshot)
+                if track:
+                    self._applied.append(snapshot)
+                self._set_value(cmds, snapshot, value)
         finally:
-            self._close_undo(opened)
+            if previous_state:
+                try:
+                    self.adapter.undo_info(stateWithoutFlush=True)
+                except Exception as exc:
+                    try:
+                        self.adapter.undo_info(stateWithoutFlush=True)
+                    except Exception as retry_error:
+                        raise ResetPoseTransactionError(
+                            "Reset Pose Undo state restoration failed: "
+                            f"{retry_error}"
+                        ) from exc
+                    raise ResetPoseTransactionError(
+                        f"Reset Pose Undo state restoration failed: {exc}"
+                    ) from exc
+            try:
+                restored_state = bool(
+                    self.adapter.undo_info(query=True, state=True)
+                )
+            except Exception as exc:
+                raise ResetPoseTransactionError(
+                    f"Reset Pose Undo state restoration is unavailable: {exc}"
+                ) from exc
+            if restored_state != previous_state:
+                raise ResetPoseTransactionError(
+                    "Reset Pose Undo state restoration failed"
+                )
 
     def _capture_channels(self, cmds) -> tuple[_ChannelSnapshot, ...]:
         snapshots = []
@@ -115,22 +211,10 @@ class ResetPoseTransaction:
             if len(paths) != 1:
                 raise ResetPoseTransactionError(f"ambiguous Reset Pose target: {target}")
             resolved = str(paths[0])
-            for channel in _CHANNELS:
-                plug = f"{resolved}.{channel}"
+            for plug in self._target_plugs(target, resolved):
                 try:
                     value = cmds.getAttr(plug)
-                    incoming = tuple(
-                        str(source)
-                        for source in (
-                            cmds.listConnections(
-                                plug,
-                                source=True,
-                                destination=False,
-                                plugs=True,
-                            )
-                            or []
-                        )
-                    )
+                    incoming = self._incoming(cmds, plug)
                 except Exception as exc:
                     raise ResetPoseTransactionError(
                         f"Reset Pose channel is unavailable: {plug}"
@@ -139,40 +223,116 @@ class ResetPoseTransaction:
                     raise ResetPoseTransactionError(
                         f"multiple Reset Pose writers on {plug}"
                     )
-                writer = incoming[0] if incoming else None
-                writable = (
-                    self._is_direct_anim_curve(cmds, writer)
-                    if writer
-                    else self._is_channel_settable(cmds, plug)
-                )
                 try:
                     locked = bool(cmds.getAttr(plug, lock=True))
                 except Exception:
                     locked = False
-                snapshots.append(
-                    _ChannelSnapshot(plug, value, writer, locked, writable)
-                )
+                snapshots.append(_ChannelSnapshot(resolved, plug, value, incoming, locked))
         if not snapshots:
             raise ResetPoseTransactionError("Reset Pose channels are unavailable")
         return tuple(snapshots)
 
     @staticmethod
-    def _is_direct_anim_curve(cmds, writer: str) -> bool:
+    def _assert_transient_writer(cmds, plug: str, writer: str) -> None:
+        node = writer.rsplit(".", 1)[0]
         try:
-            node = writer.rsplit(".", 1)[0]
-            return str(cmds.nodeType(node)).startswith("animCurve")
-        except Exception:
-            return False
+            writer_type = str(cmds.nodeType(node))
+        except Exception as exc:
+            raise ResetPoseTransactionError(
+                f"Reset Pose writer type is unavailable: {writer}"
+            ) from exc
+        if writer_type in _TIME_ANIM_CURVE_TYPES:
+            return
+        if writer_type.startswith("animCurve"):
+            raise ResetPoseTransactionError(
+                f"unsupported Reset Pose driven-key curve: {writer_type} ({writer})"
+            )
+        if writer_type.startswith("animBlendNode"):
+            try:
+                history = cmds.listHistory(node, pruneDagObjects=True) or []
+                history_types = tuple(
+                    (str(item), str(cmds.nodeType(item))) for item in history
+                )
+            except Exception as exc:
+                raise ResetPoseTransactionError(
+                    f"Reset Pose animation history is unavailable: {writer}"
+                ) from exc
+            curve_types = tuple(
+                curve_type
+                for _item, curve_type in history_types
+                if curve_type.startswith("animCurve")
+            )
+            if curve_types and all(
+                curve_type in _TIME_ANIM_CURVE_TYPES for curve_type in curve_types
+            ):
+                return
+            raise ResetPoseTransactionError(
+                f"unsupported static or driven-key animation blend: {writer}"
+            )
+        if writer_type == "pairBlend":
+            raise ResetPoseTransactionError(
+                f"unsupported Reset Pose pairBlend writer: {writer}"
+            )
+        raise ResetPoseTransactionError(
+            f"unsupported Reset Pose writer on {plug}: {writer_type} ({writer})"
+        )
+
+    def _target_plugs(self, target: str, resolved: str) -> tuple[str, ...]:
+        if self.authored_plugs_by_target is None:
+            return tuple(f"{resolved}.{channel}" for channel in _CHANNELS)
+        authored = None
+        for candidate in (resolved, target, resolved.rsplit("|", 1)[-1]):
+            if candidate in self.authored_plugs_by_target:
+                authored = self.authored_plugs_by_target[candidate]
+                break
+        if not authored:
+            raise ResetPoseTransactionError(
+                f"Reset Pose authored inputs are unavailable: {resolved}"
+            )
+        expanded = []
+        for plug in authored:
+            expanded.extend(self._expand_authored_plug(plug))
+        unique = tuple(dict.fromkeys(expanded))
+        if not unique:
+            raise ResetPoseTransactionError(
+                f"Reset Pose authored inputs are unavailable: {resolved}"
+            )
+        return unique
 
     @staticmethod
-    def _is_channel_settable(cmds, plug: str) -> bool:
-        try:
-            return bool(cmds.getAttr(plug, settable=True))
-        except Exception:
-            return True
+    def _expand_authored_plug(plug: str) -> tuple[str, ...]:
+        attribute = plug.rsplit(".", 1)[-1]
+        if attribute in {"translate", "rotate", "baseTranslate", "baseRotate"}:
+            return tuple(f"{plug}{axis}" for axis in "XYZ")
+        if attribute.startswith("inputRotate[") and attribute.endswith("]"):
+            index = attribute[len("inputRotate[") : -1]
+            if index.isdigit():
+                return tuple(f"{plug}.inputRotateElement{axis}" for axis in "XYZ")
+        scalar_prefixes = ("translate", "rotate", "baseTranslate", "baseRotate")
+        if attribute[-1:] in "XYZ" and attribute.startswith(scalar_prefixes):
+            return (plug,)
+        if attribute.startswith("inputRotateElement") and attribute[-1:] in "XYZ":
+            return (plug,)
+        raise ResetPoseTransactionError(
+            f"unsupported Reset Pose authored plug: {plug}"
+        )
 
     @staticmethod
-    def _set_static(cmds, snapshot: _ChannelSnapshot, value: float) -> None:
+    def _incoming(cmds, plug: str) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                str(source)
+                for source in (
+                    cmds.listConnections(
+                        plug, source=True, destination=False, plugs=True
+                    )
+                    or []
+                )
+            )
+        )
+
+    @staticmethod
+    def _set_value(cmds, snapshot: _ChannelSnapshot, value: float) -> None:
         if snapshot.locked:
             cmds.setAttr(snapshot.plug, lock=False)
         try:
@@ -181,24 +341,100 @@ class ResetPoseTransaction:
             if snapshot.locked:
                 cmds.setAttr(snapshot.plug, lock=True)
 
-    def _restore_static(self, cmds) -> None:
-        for snapshot in reversed(self._applied):
-            if snapshot.writer:
+    def _assert_results(self, cmds, reset_values) -> None:
+        for snapshot, value in reset_values:
+            self._assert_topology(cmds, snapshot)
+            if bool(cmds.getAttr(snapshot.plug, lock=True)) != snapshot.locked:
                 raise ResetPoseTransactionError(
-                    f"animated Reset Pose rollback requires Maya Undo: {snapshot.plug}"
+                    f"Reset Pose channel lock changed: {snapshot.plug}"
                 )
-            self._set_static(cmds, snapshot, snapshot.value)
+            try:
+                current = float(cmds.getAttr(snapshot.plug))
+                desired = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ResetPoseTransactionError(
+                    f"Reset Pose result is not scalar: {snapshot.plug}"
+                ) from exc
+            if not (
+                math.isfinite(current)
+                and math.isfinite(desired)
+                and math.isclose(current, desired, rel_tol=0.0, abs_tol=1.0e-6)
+            ):
+                raise ResetPoseTransactionError(
+                    f"Reset Pose result did not evaluate: {snapshot.plug}"
+                )
 
-    def _rest_value(self, plug: str) -> float:
-        attribute = plug.rsplit(".", 1)[-1]
-        if attribute.startswith("translate"):
-            node = plug.rsplit(".", 1)[0]
-            translation = self.bind_translations.get(node)
+    def _assert_topology(self, cmds, snapshot: _ChannelSnapshot) -> None:
+        if self._incoming(cmds, snapshot.plug) != snapshot.incoming:
+            raise ResetPoseTransactionError(
+                f"Reset Pose writer topology changed: {snapshot.plug}"
+            )
+
+    def _restore_values(self, cmds, *, include_static: bool = True) -> None:
+        transient = tuple(
+            (snapshot, float(snapshot.value))
+            for snapshot in reversed(self._applied)
+            if snapshot.incoming
+        )
+        self._set_transient_values_without_undo(
+            cmds,
+            transient,
+            track=False,
+            validate_topology=False,
+        )
+        if include_static:
+            for snapshot in reversed(self._applied):
+                if not snapshot.incoming:
+                    self._set_value(cmds, snapshot, float(snapshot.value))
+
+    def _assert_rollback(self, cmds) -> None:
+        for snapshot in self._applied:
+            self._assert_topology(cmds, snapshot)
+            current = float(cmds.getAttr(snapshot.plug))
+            if self._channel_value_changed(current, float(snapshot.value)):
+                raise ResetPoseTransactionError(
+                    f"Reset Pose rollback value changed: {snapshot.plug}"
+                )
+            if bool(cmds.getAttr(snapshot.plug, lock=True)) != snapshot.locked:
+                raise ResetPoseTransactionError(
+                    f"Reset Pose rollback lock changed: {snapshot.plug}"
+                )
+
+    @staticmethod
+    def _dirty_all(cmds) -> None:
+        dirty = getattr(cmds, "dgdirty", None)
+        if callable(dirty):
+            dirty(allPlugs=True)
+
+    def _rest_value(self, snapshot: _ChannelSnapshot) -> float:
+        attribute = snapshot.plug.rsplit(".", 1)[-1]
+        if attribute.startswith(("translate", "baseTranslate")):
+            translation = self.bind_translations.get(snapshot.target)
             if translation is None:
-                translation = self.bind_translations.get(node.rsplit("|", 1)[-1])
+                translation = self.bind_translations.get(
+                    snapshot.target.rsplit("|", 1)[-1]
+                )
             if translation is not None:
                 return float(translation["XYZ".index(attribute[-1])])
+            if attribute.startswith("baseTranslate") or self.authored_plugs_by_target is not None:
+                raise ResetPoseTransactionError(
+                    f"Reset Pose bind translation is unavailable: {snapshot.target}"
+                )
+            return float(snapshot.value)
         return 0.0
+
+    @staticmethod
+    def _channel_value_changed(before: Any, rest: float) -> bool:
+        try:
+            before_value = float(before)
+            rest_value = float(rest)
+        except (TypeError, ValueError):
+            return True
+        return not (
+            math.isfinite(before_value)
+            and math.isfinite(rest_value)
+            and math.isclose(before_value, rest_value, rel_tol=0.0, abs_tol=1.0e-6)
+        )
 
     def _assert_model_uuid(self, cmds) -> None:
         roots = cmds.ls(self.model_root, uuid=True) or []
@@ -211,9 +447,7 @@ class ResetPoseTransaction:
         for scope in self.scope_roots:
             paths = cmds.ls(scope, long=True) or []
             if len(paths) != 1:
-                raise ResetPoseTransactionError(
-                    f"Reset Pose scope is ambiguous: {scope}"
-                )
+                raise ResetPoseTransactionError(f"Reset Pose scope is ambiguous: {scope}")
             scope_paths.append(str(paths[0]))
         root_path = str(root_paths[0])
         if root_path not in scope_paths:
@@ -223,10 +457,7 @@ class ResetPoseTransaction:
             if len(paths) != 1:
                 raise ResetPoseTransactionError(f"ambiguous Reset Pose target: {target}")
             path = str(paths[0])
-            if not any(
-                path == scope or path.startswith(scope + "|")
-                for scope in scope_paths
-            ):
+            if not any(path == scope or path.startswith(scope + "|") for scope in scope_paths):
                 raise ResetPoseTransactionError(
                     f"Reset Pose target is outside model UUID: {target}"
                 )
@@ -246,7 +477,4 @@ class ResetPoseTransaction:
 
     def _close_undo(self, opened: bool) -> None:
         if opened:
-            try:
-                self.adapter.undo_info(closeChunk=True)
-            except Exception:
-                pass
+            self.adapter.undo_info(closeChunk=True)

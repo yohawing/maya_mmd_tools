@@ -1,7 +1,7 @@
 """PMX表示枠をモデル単位で編集するメインUIタブ。"""
 
 from ..base_tab import BaseTab
-from ..components.symbol_tool_button import MaterialSymbolToolButton
+from ..components.authoring_toolbar import AuthoringToolbar
 from ..qt_compat import (
     QCheckBox,
     QFormLayout,
@@ -38,20 +38,41 @@ class DisplayPaneTab(BaseTab):
         self.frames_group = QGroupBox()
         frames_group_layout = QVBoxLayout(self.frames_group)
         self.frame_list = QListWidget()
-        frames_group_layout.addWidget(self.frame_list, 1)
+        self.frame_list.setObjectName("displayFrameList")
         frame_toolbar = QHBoxLayout()
-        self.add_frame_btn = QPushButton()
-        self.delete_frame_btn = QPushButton()
-        self.move_frame_up_btn = QPushButton()
-        self.move_frame_down_btn = QPushButton()
-        for button in (
-            self.add_frame_btn,
-            self.delete_frame_btn,
-            self.move_frame_up_btn,
-            self.move_frame_down_btn,
-        ):
-            frame_toolbar.addWidget(button)
+        self.frame_authoring_toolbar = AuthoringToolbar(
+            actions=("create", "delete", "move_up", "move_down"),
+            labels={
+                "create": self.tr("add_frame", "buttons"),
+                "delete": self.tr("delete_frame", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            parent=self,
+        )
+        self.frame_authoring_toolbar.setObjectName("displayFrameAuthoringToolbar")
+        self.add_frame_btn = self.frame_authoring_toolbar.button("create")
+        self.delete_frame_btn = self.frame_authoring_toolbar.button("delete")
+        self.move_frame_up_btn = self.frame_authoring_toolbar.button("move_up")
+        self.move_frame_down_btn = self.frame_authoring_toolbar.button("move_down")
+        self.add_frame_btn.setObjectName("displayAddFrameButton")
+        self.delete_frame_btn.setObjectName("displayDeleteFrameButton")
+        self.move_frame_up_btn.setObjectName("displayMoveFrameUpButton")
+        self.move_frame_down_btn.setObjectName("displayMoveFrameDownButton")
+        frame_toolbar.addWidget(self.frame_authoring_toolbar)
+        self.refresh_toolbar = AuthoringToolbar(
+            actions=("refresh",),
+            labels={"refresh": self.tr("refresh", "buttons")},
+            parent=self,
+        )
+        self.refresh_toolbar.setObjectName("displayRefreshToolbar")
+        self.footer_toolbar = self.refresh_toolbar
+        self.refresh_btn = self.refresh_toolbar.button("refresh")
+        self.refresh_btn.setObjectName("displayRefreshButton")
+        frame_toolbar.addWidget(self.refresh_toolbar)
+        frame_toolbar.addStretch(1)
         frames_group_layout.addLayout(frame_toolbar)
+        frames_group_layout.addWidget(self.frame_list, 1)
         frame_layout.addWidget(self.frames_group)
         splitter.addWidget(frame_widget)
 
@@ -62,8 +83,11 @@ class DisplayPaneTab(BaseTab):
         self.properties_group = QGroupBox()
         properties_layout = QFormLayout(self.properties_group)
         self.name_jp_edit = QLineEdit()
+        self.name_jp_edit.setObjectName("displayFrameNameJpEdit")
         self.name_en_edit = QLineEdit()
+        self.name_en_edit.setObjectName("displayFrameNameEnEdit")
         self.special_frame_check = QCheckBox()
+        self.special_frame_check.setObjectName("displaySpecialFrameCheck")
         self.name_jp_label = QLabel()
         self.name_en_label = QLabel()
         properties_layout.addRow(self.name_jp_label, self.name_jp_edit)
@@ -74,28 +98,43 @@ class DisplayPaneTab(BaseTab):
         self.items_group = QGroupBox()
         items_layout = QVBoxLayout(self.items_group)
         self.item_table = QTableWidget(0, 3)
+        self.item_table.setObjectName("displayItemTable")
         self.item_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.item_table.setSelectionMode(QTableWidget.SingleSelection)
         self.item_table.verticalHeader().setVisible(False)
         self.item_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.item_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.item_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        items_layout.addWidget(self.item_table, 1)
         item_toolbar = QHBoxLayout()
-        self.add_bone_btn = QPushButton()
-        self.add_morph_btn = QPushButton()
-        self.delete_item_btn = QPushButton()
-        self.move_item_up_btn = QPushButton()
-        self.move_item_down_btn = QPushButton()
-        for button in (
-            self.add_bone_btn,
-            self.add_morph_btn,
-            self.delete_item_btn,
-            self.move_item_up_btn,
-            self.move_item_down_btn,
-        ):
-            item_toolbar.addWidget(button)
+        self.item_element_toolbar = AuthoringToolbar(
+            actions=("create",),
+            labels={"create": self.tr("add_element", "buttons")},
+            parent=self,
+        )
+        self.item_element_toolbar.setObjectName("displayItemElementToolbar")
+        self.item_authoring_toolbar = AuthoringToolbar(
+            actions=("delete", "move_up", "move_down"),
+            labels={
+                "delete": self.tr("delete_item", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            parent=self,
+        )
+        self.item_authoring_toolbar.setObjectName("displayItemAuthoringToolbar")
+        self.add_element_btn = self.item_element_toolbar.button("create")
+        self.delete_item_btn = self.item_authoring_toolbar.button("delete")
+        self.move_item_up_btn = self.item_authoring_toolbar.button("move_up")
+        self.move_item_down_btn = self.item_authoring_toolbar.button("move_down")
+        self.add_element_btn.setObjectName("displayAddElementButton")
+        self.delete_item_btn.setObjectName("displayDeleteItemButton")
+        self.move_item_up_btn.setObjectName("displayMoveItemUpButton")
+        self.move_item_down_btn.setObjectName("displayMoveItemDownButton")
+        item_toolbar.addWidget(self.item_element_toolbar)
+        item_toolbar.addWidget(self.item_authoring_toolbar)
+        item_toolbar.addStretch(1)
         items_layout.addLayout(item_toolbar)
+        items_layout.addWidget(self.item_table, 1)
         editor_layout.addWidget(self.items_group, 1)
         splitter.addWidget(editor_widget)
         splitter.setSizes([260, 520])
@@ -103,10 +142,10 @@ class DisplayPaneTab(BaseTab):
         footer = QHBoxLayout()
         self.status_label = QLabel()
         footer.addWidget(self.status_label, 1)
-        self.refresh_btn = MaterialSymbolToolButton("refresh")
         self.apply_btn = QPushButton()
         self.reset_btn = QPushButton()
-        footer.addWidget(self.refresh_btn)
+        self.apply_btn.setObjectName("displayApplyButton")
+        self.reset_btn.setObjectName("displayResetButton")
         footer.addWidget(self.apply_btn)
         footer.addWidget(self.reset_btn)
         root_layout.addLayout(footer)
@@ -116,11 +155,20 @@ class DisplayPaneTab(BaseTab):
 
     def set_editor_enabled(self, enabled: bool) -> None:
         """モデル／枠の有無に応じて編集領域を切り替える。"""
+        self.frame_list.setEnabled(enabled)
         self.properties_group.setEnabled(enabled)
         self.items_group.setEnabled(enabled)
-        self.delete_frame_btn.setEnabled(enabled)
-        self.move_frame_up_btn.setEnabled(enabled)
-        self.move_frame_down_btn.setEnabled(enabled)
+        reason = "" if enabled else self.tr("authoring_selection_required", "tooltips")
+        reason_key = "" if enabled else "authoring_selection_required"
+        self.frame_authoring_toolbar.set_action_enabled("create", enabled, reason, reason_key)
+        self.frame_authoring_toolbar.set_action_enabled(
+            "delete", enabled, reason, reason_key
+        )
+        self.frame_authoring_toolbar.set_action_enabled("move_up", enabled, reason, reason_key)
+        self.frame_authoring_toolbar.set_action_enabled("move_down", enabled, reason, reason_key)
+        for action in ("delete", "move_up", "move_down"):
+            self.item_authoring_toolbar.set_action_enabled(action, enabled, reason, reason_key)
+        self.item_element_toolbar.set_action_enabled("create", enabled, reason, reason_key)
 
     def retranslateUi(self):
         """現在の言語で表示テキストを更新する。"""
@@ -137,15 +185,30 @@ class DisplayPaneTab(BaseTab):
                 self.tr("element_index", "fields"),
             ]
         )
-        self.add_frame_btn.setText(self.tr("add_frame", "buttons"))
-        self.delete_frame_btn.setText(self.tr("delete_frame", "buttons"))
-        self.move_frame_up_btn.setText(self.tr("up", "buttons"))
-        self.move_frame_down_btn.setText(self.tr("down", "buttons"))
-        self.add_bone_btn.setText(self.tr("add_bone", "buttons"))
-        self.add_morph_btn.setText(self.tr("add_morph", "buttons"))
-        self.delete_item_btn.setText(self.tr("delete_item", "buttons"))
-        self.move_item_up_btn.setText(self.tr("up", "buttons"))
-        self.move_item_down_btn.setText(self.tr("down", "buttons"))
-        self.refresh_btn.setText(self.tr("refresh", "buttons"))
+        self.frame_authoring_toolbar.retranslate(
+            {
+                "create": self.tr("add_frame", "buttons"),
+                "delete": self.tr("delete_frame", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            reason_resolver=lambda key: self.tr(key, "tooltips"),
+        )
+        self.item_element_toolbar.retranslate(
+            {"create": self.tr("add_element", "buttons")},
+            reason_resolver=lambda key: self.tr(key, "tooltips"),
+        )
+        self.item_authoring_toolbar.retranslate(
+            {
+                "delete": self.tr("delete_item", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            reason_resolver=lambda key: self.tr(key, "tooltips"),
+        )
+        self.refresh_toolbar.retranslate(
+            {"refresh": self.tr("refresh", "buttons")},
+            reason_resolver=lambda key: self.tr(key, "tooltips"),
+        )
         self.apply_btn.setText(self.tr("apply", "buttons"))
         self.reset_btn.setText(self.tr("reset", "buttons"))

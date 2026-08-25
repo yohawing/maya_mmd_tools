@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -27,6 +28,7 @@ install_maya_stub()
 # Now safe to import the module under test
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.core.settings import settings
+from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.io import cpp_fast_importer
 from mmd_tools.io.cpp_fast_importer import (
     _apply_basic_materials,
@@ -139,6 +141,7 @@ class TestCppFastImportRouting(unittest.TestCase):
             2.5,
             {"scale": 2.5, "use_cpp_fast_load": True},
             progress_callback=None,
+            is_pmd=True,
         )
         self.assertEqual(result, "pmd_root")
 
@@ -177,6 +180,91 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_import_pmx.assert_not_called()
         self.assertEqual(result, "cpp_root")
         self.assertEqual(progress, [5, 10, 90])
+
+    @patch("mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_native_color_management")
+    @patch("mmd_tools.io.mmd_importer.fast_import")
+    def test_native_vp2_import_sets_native_color_management(
+        self,
+        mock_fast: MagicMock,
+        mock_setup_color_management: MagicMock,
+    ):
+        """The UI-owned native VP2 route selects its gamma-space output mode."""
+        mock_fast.return_value = "cpp_root"
+
+        result = import_mmd_file(
+            "model.pmx",
+            options={
+                "scale": 1.0,
+                "use_cpp_fast_load": True,
+                "use_cpp_vp2_ownership": True,
+            },
+        )
+
+        mock_fast.assert_called_once_with(
+            "model.pmx",
+            base_name="model",
+            scale=1.0,
+            mesh_only=True,
+            include_morphs=True,
+            vp2_ownership=True,
+        )
+        mock_setup_color_management.assert_called_once_with()
+        self.assertEqual(result, "cpp_root")
+
+    @patch("mmd_tools.io.mmd_importer.fast_import", return_value=None)
+    @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
+    @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
+    def test_native_vp2_failure_blocks_python_mesh_fallback(
+        self,
+        mock_import_pmx: MagicMock,
+        mock_parse: MagicMock,
+        mock_fast: MagicMock,
+    ):
+        """An explicit VP2 request must not silently become an ordinary mesh."""
+        options = {
+            "scale": 1.0,
+            "use_cpp_fast_load": True,
+            "use_cpp_vp2_ownership": True,
+        }
+
+        with self.assertRaisesRegex(MMDImportException, "Python mesh fallback is blocked"):
+            import_mmd_file("model.pmx", options=options)
+
+        mock_fast.assert_called_once()
+        mock_parse.assert_not_called()
+        mock_import_pmx.assert_not_called()
+        self.assertEqual(
+            options["profile"]["native_import"],
+            {
+                "requested": True,
+                "route": "cpp_fast_load_vp2",
+                "status": "failed",
+                "fallback": "blocked",
+                "code": "NATIVE_VP2_OWNERSHIP_UNAVAILABLE",
+                "reason": "fast importer returned no model root",
+            },
+        )
+
+    @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
+    @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
+    def test_native_vp2_request_with_fast_load_disabled_is_fail_closed(
+        self,
+        mock_import_pmx: MagicMock,
+        mock_parse: MagicMock,
+    ):
+        """A lost Fast Load flag must not turn a VP2 request into Python import."""
+        options = {
+            "scale": 1.0,
+            "use_cpp_fast_load": False,
+            "use_cpp_vp2_ownership": True,
+        }
+
+        with self.assertRaisesRegex(MMDImportException, "C\\+\\+ Fast Load is disabled"):
+            import_mmd_file("model.pmx", options=options)
+
+        mock_parse.assert_not_called()
+        mock_import_pmx.assert_not_called()
+        self.assertEqual(options["profile"]["native_import"]["fallback"], "blocked")
 
     # ------------------------------------------------------------------
     # Scenario 3: option enabled + fast import fails → fallback
@@ -312,6 +400,39 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
         self.assertEqual(result, "cpp_root")
+
+    @patch("mmd_tools.io.mmd_importer.fast_import")
+    @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
+    @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
+    def test_fast_import_vp2_ownership_passes_render_override_flag(
+        self,
+        mock_import_pmx: MagicMock,
+        mock_parse: MagicMock,
+        mock_fast: MagicMock,
+    ):
+        """The UI RenderOverride opt-in is forwarded to the native importer."""
+        mock_fast.return_value = "cpp_render_root"
+
+        result = import_mmd_file(
+            "model.pmx",
+            options={
+                "scale": 1.0,
+                "use_cpp_fast_load": True,
+                "use_cpp_vp2_ownership": True,
+            },
+        )
+
+        mock_fast.assert_called_once_with(
+            "model.pmx",
+            base_name="model",
+            scale=1.0,
+            mesh_only=True,
+            include_morphs=True,
+            vp2_ownership=True,
+        )
+        mock_parse.assert_not_called()
+        mock_import_pmx.assert_not_called()
+        self.assertEqual(result, "cpp_render_root")
 
     # ------------------------------------------------------------------
     # Scenario 6: .pmd files: fast import is never attempted
@@ -959,6 +1080,41 @@ class TestFastMorphMetadata(unittest.TestCase):
 
         morph_metadata.assert_not_called()
 
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_root_metadata")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials")
+    @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
+    @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
+    def test_vp2_ownership_passes_only_when_explicitly_enabled(
+        self,
+        _setup,
+        candidates,
+        basic_materials,
+        root_metadata,
+    ):
+        import sys
+
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+        candidates.return_value = [plugin_path]
+        basic_materials.return_value = None
+        cmds_mod = sys.modules["maya.cmds"]
+        with patch.object(Path, "exists", return_value=True), patch.object(
+            cmds_mod, "loadPlugin", create=True
+        ) as load_plugin, patch.object(
+            cmds_mod, "mmdFastLoad", create=True, return_value=["root"]
+        ) as fast_load:
+            result = fast_import("model.pmx", vp2_ownership=True)
+
+        self.assertEqual(result, "root")
+        load_plugin.assert_called_once()
+        fast_load.assert_called_once_with(
+            f="model.pmx",
+            n="mmd_fast_model",
+            s=1.0,
+            mo=True,
+            vp2Ownership=True,
+        )
+        root_metadata.assert_called_once()
+
     def test_standard_material_preserves_raw_names(self):
         cmds = MagicMock()
         cmds.ls.return_value = []
@@ -1017,6 +1173,30 @@ class TestFastMorphMetadata(unittest.TestCase):
         self.assertEqual(empty_writes["empty_root.mmd_comment"], "")
         self.assertEqual(empty_writes["empty_root.mmd_comment_en"], "")
 
+    def test_root_metadata_preserves_soft_body_count(self):
+        """Fast-import roots retain unsupported PMX 2.1 soft-body provenance."""
+        cmds = MagicMock()
+        cmds.attributeQuery.return_value = False
+        metadata = {
+            "metadata": {
+                "name": "Model",
+                "englishName": "Model",
+                "comment": "",
+                "englishComment": "",
+                "counts": {"softBodies": 2},
+            }
+        }
+
+        _apply_fast_root_metadata("model.pmx", "root", metadata, cmds)
+
+        soft_body_writes = [
+            call
+            for call in cmds.setAttr.call_args_list
+            if call[0] and call[0][0] == "root.mmd_pmx_soft_body_count"
+        ]
+        self.assertEqual(len(soft_body_writes), 1)
+        self.assertEqual(soft_body_writes[0][0][1], 2)
+
     @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native")
     def test_root_metadata_native_parser_fallback_is_called_once(self, mock_parse_native):
         mock_parse_native.return_value = SimpleNamespace(
@@ -1073,6 +1253,7 @@ class TestCppFastImporterDebugLogging(unittest.TestCase):
         )
         self.assertIn(expected, debug_messages)
         self.assertNotIn(expected, info_messages)
+
 
     def test_success_completion_uses_debug_not_info(self):
         """Successful internal completion is DEBUG-only."""
@@ -1137,6 +1318,36 @@ class TestCppFastImporterDebugLogging(unittest.TestCase):
         )
         self.assertIn(expected, debug_messages)
         self.assertNotIn(expected, info_messages)
+
+
+class TestCppPluginLocatorIntegration(unittest.TestCase):
+    """Version-specific native overrides use the shared locator contract."""
+
+    def test_version_specific_config_precedes_generic_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(cpp_fast_importer, "ROOT", root), patch.object(
+                cpp_fast_importer, "_running_maya_major_version", return_value="2026"
+            ), patch.dict(
+                "os.environ",
+                {
+                    "MMD_TOOLS_CPP_PLUGIN_2026": "",
+                    "MMD_TOOLS_CPP_PLUGIN": "",
+                    "MMD_TOOLS_CPP_CONFIG_2026": "Release",
+                    "MMD_TOOLS_CPP_CONFIG": "Debug",
+                },
+                clear=False,
+            ):
+                candidates = cpp_fast_importer._candidate_plugin_paths()
+
+        self.assertEqual(
+            candidates[:3],
+            [
+                root / "plug-ins" / "2026" / "Release" / "mmd_tools_cpp.mll",
+                root / "plug-ins" / "2026" / "Release" / "mmd_tools_cpp.bundle",
+                root / "plug-ins" / "2026" / "Release" / "mmd_tools_cpp.so",
+            ],
+        )
 
 
 if __name__ == "__main__":

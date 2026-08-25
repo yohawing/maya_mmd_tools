@@ -15,6 +15,7 @@ from ...core.constants import (
 )
 from ...core.display_frame_resolver import PickerGroup, resolve_display_frames
 from ...core.logger import get_logger
+from ...core.maya_identity import same_node_identity
 from ...core.mmd_bone_names import normalize_mmd_bone_name
 from ...core.mmd_control_rig_builder import inspect_mmd_control_rig
 from ...core.morph_metadata_reader import (
@@ -23,6 +24,10 @@ from ...core.morph_metadata_reader import (
     categorize_morphs,
     parse_blendshape_morph_entries,
     morph_info_from_presenter_entry,
+)
+from ...core.model_registry import (
+    REGISTRY_CATEGORY_MORPH,
+    list_model_registry_members_from_adapter,
 )
 from ...core.visibility_state import (
     VisibilityState,
@@ -152,6 +157,9 @@ class AnimationPresenter:
             self.view.body_picker.select_all_clicked.connect(self.on_select_all)
         if hasattr(self.view.body_picker, "clear_selection_clicked"):
             self.view.body_picker.clear_selection_clicked.connect(self.on_clear_clicked)
+        for picker in (self.view.body_picker, self.view.finger_picker):
+            if hasattr(picker, "background_clicked"):
+                picker.background_clicked.connect(self.on_clear_clicked)
         if hasattr(self.view.body_picker, "ik_toggled"):
             self.view.body_picker.ik_toggled.connect(self.on_ik_toggled)
         if hasattr(self.view.body_picker, "ik_enable_toggle_clicked"):
@@ -530,26 +538,43 @@ class AnimationPresenter:
 
     def on_body_region_clicked(self, region_id: str):
         self._select_picker_regions(
-            [region_id], picker="body", additive=self.view.body_picker.additive_selection
+            [region_id],
+            picker="body",
+            additive=self.view.body_picker.additive_selection,
+            subtractive=getattr(self.view.body_picker, "subtractive_selection", False),
         )
 
     def on_body_regions_selected(self, region_ids: list[str]):
         self._select_picker_regions(
-            region_ids, picker="body", additive=self.view.body_picker.additive_selection
+            region_ids,
+            picker="body",
+            additive=self.view.body_picker.additive_selection,
+            subtractive=getattr(self.view.body_picker, "subtractive_selection", False),
         )
 
     def on_finger_region_clicked(self, region_id: str):
         self._select_picker_regions(
-            [region_id], picker="finger", additive=self.view.finger_picker.additive_selection
+            [region_id],
+            picker="finger",
+            additive=self.view.finger_picker.additive_selection,
+            subtractive=getattr(self.view.finger_picker, "subtractive_selection", False),
         )
 
     def on_finger_regions_selected(self, region_ids: list[str]):
         self._select_picker_regions(
-            region_ids, picker="finger", additive=self.view.finger_picker.additive_selection
+            region_ids,
+            picker="finger",
+            additive=self.view.finger_picker.additive_selection,
+            subtractive=getattr(self.view.finger_picker, "subtractive_selection", False),
         )
 
     def _select_picker_regions(
-        self, region_ids: list[str], *, picker: str, additive: bool = False
+        self,
+        region_ids: list[str],
+        *,
+        picker: str,
+        additive: bool = False,
+        subtractive: bool = False,
     ) -> None:
         """Resolve one or more picker regions and update the UI before Maya blocks."""
 
@@ -581,6 +606,9 @@ class AnimationPresenter:
                 pass
             return
         try:
+            if subtractive:
+                self._deselect_nodes(joints)
+                return
             accepted = self._select_nodes(joints, replace=not additive)
             if not accepted:
                 self._set_status("no_selectable_bones")
@@ -666,6 +694,27 @@ class AnimationPresenter:
         # guard the requested candidates, then preserve the current selection.
         if accepted:
             self._write_selection(accepted, replace=replace)
+        self._sync_picker_to_actual_selection()
+        return accepted
+
+    def _deselect_nodes(self, nodes: list[str]) -> list[str]:
+        """Remove resolved picker targets while preserving every other selection."""
+
+        accepted = []
+        seen_paths = set()
+        for node in nodes:
+            path = self._resolve_selection_path(node)
+            if path is None or path in seen_paths:
+                continue
+            seen_paths.add(path)
+            accepted.append(node)
+
+        if accepted:
+            deselect_fast = getattr(self.maya_adapter, "deselect_fast", None)
+            if callable(deselect_fast):
+                deselect_fast(accepted)
+            else:
+                self.maya_adapter.deselect(accepted)
         self._sync_picker_to_actual_selection()
         return accepted
 
@@ -1857,7 +1906,10 @@ class AnimationPresenter:
                 info = metadata.get(global_index) if isinstance(global_index, int) else None
                 info = info or metadata_by_name.get(raw_name)
                 if info is None:
-                    info = MorphInfo(raw_name, "", 4, "vertex", weight_index)
+                    resolved_index = global_index if isinstance(global_index, int) else weight_index
+                    info = MorphInfo(raw_name, "", 4, "vertex", resolved_index)
+                if isinstance(global_index, int):
+                    self._morph_indices[info.name] = global_index
                 self._morph_targets.setdefault(info.name, []).append((bs_node, weight_index))
                 if info.name not in seen_names:
                     seen_names.add(info.name)
@@ -1891,16 +1943,28 @@ class AnimationPresenter:
         seen_names: set[str],
     ) -> None:
         try:
-            network_nodes = self.maya_adapter.ls(type="network") or []
+            registry_members = list_model_registry_members_from_adapter(
+                self.maya_adapter,
+                model_root,
+                REGISTRY_CATEGORY_MORPH,
+            )
+            network_nodes = (
+                registry_members
+                if registry_members is not None
+                else self.maya_adapter.ls(type="network") or []
+            )
         except Exception:
             return
         for node in network_nodes:
             try:
                 if not self.maya_adapter.attribute_exists("mmd_morph_type", node):
                     continue
-                if self.maya_adapter.attribute_exists("mmd_model_root", node):
+                if registry_members is None and self.maya_adapter.attribute_exists("mmd_model_root", node):
                     roots = self.maya_adapter.list_connections(f"{node}.mmd_model_root") or []
-                    if roots and model_root not in roots:
+                    if roots and not any(
+                        same_node_identity(self.maya_adapter, model_root, root)
+                        for root in roots
+                    ):
                         continue
                 name = self.maya_adapter.get_attr(f"{node}.mmd_morph_name") or node
                 index = -1
@@ -2312,12 +2376,27 @@ class AnimationPresenter:
             roots = cmds.ls(root, uuid=True) if root else []
             if not root or len(roots) != 1:
                 raise RuntimeError("MMD model UUID is unavailable")
+            authored_plugs_by_target = self._rest_pose_authored_plugs(
+                root,
+                targets,
+                cmds,
+            )
+            if authored_plugs_by_target is not None:
+                routed_targets = []
+                for target in targets:
+                    paths = cmds.ls(target, long=True) or []
+                    if len(paths) == 1 and str(paths[0]) in authored_plugs_by_target:
+                        routed_targets.append(str(paths[0]))
+                if not routed_targets:
+                    raise RuntimeError("Reset Pose has no authored semantic targets")
+                targets = routed_targets
             transaction = ResetPoseTransaction(
                 self.maya_adapter,
                 model_root=root,
                 model_uuid=str(roots[0]),
                 targets=targets,
                 bind_translations=bind_translations,
+                authored_plugs_by_target=authored_plugs_by_target,
                 scope_roots=self._rest_pose_scope_roots(root, cmds),
             )
             count = transaction.apply()
@@ -2363,7 +2442,6 @@ class AnimationPresenter:
             )
 
             targets = []
-            bound_joints = []
             for role, control_uuid in (metadata.get("controls") or {}).items():
                 control_paths = cmds.ls(control_uuid, long=True) or []
                 binding = (metadata.get("bindings") or {}).get(role)
@@ -2379,13 +2457,155 @@ class AnimationPresenter:
                 bound = str(bound_paths[0])
                 if target not in targets:
                     targets.append(target)
-                if bound not in bound_joints:
-                    bound_joints.append(bound)
             targets = self._selected_or_all_reset_targets(targets, cmds)
-            return targets, self._selected_bind_translations(bound_joints)
+            # Controllers are authored relative to their ZERO groups. A bound
+            # joint's bind translation is in a different local basis and must
+            # never be applied to its controller.
+            return targets, {target: (0.0, 0.0, 0.0) for target in targets}
         except Exception:
             logger.debug("Rest Pose target resolution failed", exc_info=True)
             return [], {}
+
+    @staticmethod
+    def _rest_pose_authored_plugs(
+        root: str,
+        targets: list[str],
+        cmds,
+    ) -> dict[str, tuple[str, ...]] | None:
+        """Resolve MMD-owned semantic joints to their safe authoring inputs."""
+
+        from ...core.mmd_control_rig_analyzer import (
+            INPUT_SOLVER_OUTPUT,
+            analyze_mmd_control_rig,
+        )
+        from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+        metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds) or {}
+        owner = str(metadata.get("owner") or "MMD_OWNED")
+        if owner == "CONTROL_OWNED":
+            return None
+        if owner != "MMD_OWNED":
+            raise RuntimeError(f"unsupported Reset Pose owner: {owner}")
+        spec = analyze_mmd_control_rig(root, cmds_module=cmds)
+        bindings = {str(binding.joint): binding for binding in spec.bones}
+        role_bindings = {}
+        for role in spec.roles:
+            binding = role.binding
+            if binding is None or binding.blocked or not binding.authored_plugs:
+                continue
+            role_bindings.setdefault(str(binding.joint), []).append(binding)
+        result = {}
+        for target in targets:
+            paths = cmds.ls(target, long=True) or []
+            if len(paths) != 1:
+                raise RuntimeError(f"ambiguous Reset Pose target: {target}")
+            resolved = str(paths[0])
+            binding = bindings.get(resolved)
+            candidates = []
+            if binding is not None and not binding.blocked and binding.authored_plugs:
+                candidates.append(tuple(str(plug) for plug in binding.authored_plugs))
+            candidates.extend(
+                tuple(str(plug) for plug in role_binding.authored_plugs)
+                for role_binding in role_bindings.get(resolved, ())
+            )
+            if (
+                not candidates
+                and binding is not None
+                and binding.input_kind == INPUT_SOLVER_OUTPUT
+            ):
+                candidates.append(
+                    AnimationPresenter._rest_pose_solver_input_route(
+                        binding,
+                        resolved,
+                        cmds,
+                    )
+                )
+            routes = tuple(dict.fromkeys(candidates))
+            if len(routes) != 1:
+                raise RuntimeError(
+                    f"Reset Pose authoring route is unavailable: {resolved}"
+                )
+            result[resolved] = routes[0]
+        return result
+
+    @staticmethod
+    def _rest_pose_solver_input_route(
+        binding,
+        target: str,
+        cmds,
+    ) -> tuple[str, ...]:
+        """Map one CCD output index through chain metadata to its bone-slot input."""
+
+        rows = [
+            row
+            for row in binding.incoming
+            if str(row.source_node_type) == "mmdCcdIk"
+        ]
+        if len(rows) != 1:
+            raise RuntimeError(
+                f"Reset Pose solver output route is ambiguous: {target}"
+            )
+        row = rows[0]
+        if str(row.destination_plug) != f"{target}.rotate":
+            raise RuntimeError(
+                f"Reset Pose solver output destination is unsupported: {target}"
+            )
+        source = str(row.source_plug)
+        node, separator, attribute = source.rpartition(".")
+        prefix = "outputRotate["
+        if (
+            not separator
+            or not node
+            or not attribute.startswith(prefix)
+            or not attribute.endswith("]")
+        ):
+            raise RuntimeError(
+                f"Reset Pose solver output index is unavailable: {target}"
+            )
+        index = attribute[len(prefix) : -1]
+        if not index.isdigit():
+            raise RuntimeError(
+                f"Reset Pose solver output index is unavailable: {target}"
+            )
+        try:
+            chain = json.loads(cmds.getAttr(f"{node}.chainJson"))
+            links = chain["links"]
+            if not isinstance(links, list):
+                raise TypeError("links must be a list")
+            slots = []
+            for link in links:
+                if not isinstance(link, dict):
+                    raise TypeError("link must be an object")
+                slot = link["bone_slot"]
+                if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0:
+                    raise ValueError("bone_slot must be a non-negative integer")
+                slots.append(slot)
+            if len(set(slots)) != len(slots):
+                raise ValueError("bone_slot values must be unique")
+            slot = slots[int(index)]
+        except (
+            KeyError,
+            IndexError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise RuntimeError(
+                f"Reset Pose solver chain metadata is unavailable: {target}"
+            ) from exc
+        compound = f"{node}.inputRotate[{slot}]"
+        children = tuple(
+            f"{compound}.inputRotateElement{axis}" for axis in "XYZ"
+        )
+        exists = getattr(cmds, "objExists", None)
+        if not callable(exists) or not exists(compound) or not all(
+            exists(child) for child in children
+        ):
+            raise RuntimeError(
+                f"Reset Pose solver input is unavailable: {target}"
+            )
+        return children
 
     def _selected_or_all_reset_targets(self, targets: list[str], cmds) -> list[str]:
         """Use a valid model-owned selection, otherwise the complete model."""

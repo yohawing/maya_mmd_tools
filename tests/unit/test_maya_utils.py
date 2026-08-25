@@ -43,6 +43,15 @@ class TestMayaUtils(MayaTestBase):
         self.assertIsNotNone(uv_coords)
         self.assertEqual(len(uv_coords), 8)
 
+        selection = om.MSelectionList()
+        selection.add(shape)
+        mesh_fn = om.MFnMesh(selection.getDagPath(0))
+        self.assertEqual(tuple(mesh_fn.getUVSetNames()), ("map1",))
+        self.assertEqual(mesh_fn.currentUVSetName(), "map1")
+        self.assertEqual(mesh_fn.numUVs("map1"), len(uvs) // 2)
+        _, assigned_uv_ids = mesh_fn.getAssignedUVs("map1")
+        self.assertEqual(len(assigned_uv_ids), len(face_uv_connects))
+
     def test_create_mesh_with_authored_vertex_normals_locks_valid_entries(self):
         """有効な頂点法線は正規化して保持し、Mayaの再計算から保護する。"""
         vertices = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
@@ -480,9 +489,11 @@ class TestMayaUtils(MayaTestBase):
 
         # 検索
         mmd_models = SceneModelService(cmds_module=cmds).list_mmd_models()
+        model1_long = (cmds.ls(model1, long=True) or [model1])[0]
+        model2_long = (cmds.ls(model2, long=True) or [model2])[0]
 
-        self.assertIn(model1, mmd_models)
-        self.assertIn(model2, mmd_models)
+        self.assertIn(model1_long, mmd_models)
+        self.assertIn(model2_long, mmd_models)
         self.assertNotIn(not_mmd, mmd_models)
         self.assertEqual(len(mmd_models), 2)
 

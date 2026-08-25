@@ -6,19 +6,26 @@ from unittest.mock import MagicMock
 
 from maya import cmds
 
+from mmd_tools.actions.export_model_action import ExportModelAction, ExportModelRequest
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.io.pmx_exporter import PmxExporter
+from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
+    ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
+    ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
+    ATTR_MMD_UV_MORPH_OFFSETS_JSON,
 )
+from mmd_tools.core.logger import get_logger
 from mmd_tools.core.settings import settings
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
+from mmd_tools.io.model_import_pipeline import ModelImportPipeline
 
 
 class TestMorphConverter(MayaTestBase):
@@ -190,6 +197,156 @@ class TestMorphConverter(MayaTestBase):
 
         cmds.delete(mesh_name, morph_node)
 
+    def test_flip_morph_expands_target_weight_through_controller(self):
+        """PMX Flip は Group と同じ rate 展開で頂点 morph を実際に駆動する。"""
+        mesh_name = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = "vertex_target"
+            name_english = "vertex_target"
+            panel = 4
+            morph_type = PmxMorphType.VertexMorph
+            offsets = [{"vertex_index": 0, "position_offset": (0.8, 0.0, 0.0)}]
+
+            def get_name(self):
+                return self.name
+
+        class FakeFlipMorph:
+            name = "flip_target"
+            name_english = "flip_target"
+            panel = 4
+            morph_type = PmxMorphType.FlipMorph
+            offsets = [{"morph_index": 0, "flip_rate": 0.25}]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {"morphs": [FakeVertexMorph(), FakeFlipMorph()]},
+        )()
+
+        converter = MorphConverter()
+        result = converter.convert_pmx_morphs(fake_data, mesh_name)
+        controller_root = cmds.group(empty=True, name="flip_controller_root")
+        controller = converter.build_morph_controller(fake_data, controller_root, result)
+
+        self.assertTrue(controller)
+        self.assertEqual(
+            json.loads(cmds.getAttr(f"{controller}.groupTopology")),
+            {"0": [[1, 0.25]]},
+        )
+
+        cmds.setAttr(f"{controller}.inputWeight[1]", 1.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{controller}.outputWeight[0]"), 0.25, places=6)
+        blend_shape = result["blend_shape_nodes"][0]
+        self.assertAlmostEqual(cmds.getAttr(f"{blend_shape}.weight[0]"), 0.25, places=6)
+        shape = (cmds.listRelatives(mesh_name, shapes=True, fullPath=True) or [])[0]
+        self.assertAlmostEqual(cmds.pointPosition(f"{shape}.vtx[0]", local=True)[0], 0.2, places=6)
+
+        cmds.delete(mesh_name, controller_root, *result["flip_impulse_morph_nodes"], *result["blend_shape_nodes"])
+
+    def test_flip_morph_roundtrip_drives_vertex_after_fresh_import(self):
+        """Exported PMX Flip morphs must drive a vertex after a fresh import."""
+        base_position = (0.25, -0.5, 0.75)
+        position_offset = (0.8, 0.1, 0.2)
+        flip_rate = 0.5
+        out_pmx = self.get_temp_filename("flip_vertex_roundtrip.pmx")
+
+        PmxExporter().export_pmx_model(
+            out_pmx,
+            {
+                "model_name": "FlipVertexRoundtrip",
+                "vertices": [
+                    {"position": list(base_position), "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                    {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                    {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+                ],
+                "faces": [[0, 1, 2]],
+                "morphs": [
+                    {
+                        "type": "vertex",
+                        "name": "vertex_target",
+                        "name_english": "vertex_target",
+                        "panel": 4,
+                        "offsets": [{"vertex_index": 0, "position_offset": list(position_offset)}],
+                    },
+                    {
+                        "type": "flip",
+                        "name": "flip_target",
+                        "name_english": "flip_target",
+                        "panel": 4,
+                        "offsets": [{"morph_index": 0, "flip_rate": flip_rate}],
+                    },
+                ],
+            },
+        )
+
+        exported = parse_pmx_file(
+            out_pmx,
+            use_native_pmx_parse=False,
+            require_native_pmx_parse=False,
+        )
+        self.assertEqual(
+            [int(morph.morph_type) for morph in exported.morphs],
+            [int(PmxMorphType.VertexMorph), int(PmxMorphType.FlipMorph)],
+        )
+        self.assertEqual(exported.morphs[1].offsets, [{"morph_index": 0, "flip_rate": flip_rate}])
+
+        cmds.file(new=True, force=True)
+        fresh_root = import_mmd_file(
+            out_pmx,
+            options={
+                "create_mmd_shaders": False,
+                "import_morphs": True,
+                "import_physics": False,
+                "setup_rig": False,
+                "setup_bone_orientation": False,
+                "use_cpp_fast_load": False,
+                "use_native_pmx_parse": False,
+                "require_native_pmx_parse": False,
+            },
+        )
+        self.assertIsNotNone(fresh_root)
+
+        controllers = cmds.listConnections(
+            f"{fresh_root}.mmd_morph_controller",
+            source=True,
+            destination=False,
+        ) or []
+        self.assertEqual(len(controllers), 1)
+        controller = controllers[0]
+        self.assertEqual(
+            json.loads(cmds.getAttr(f"{controller}.groupTopology")),
+            {"0": [[1, flip_rate]]},
+        )
+
+        mesh_shapes = [
+            shape
+            for shape in (
+                cmds.listRelatives(
+                    fresh_root,
+                    allDescendents=True,
+                    type="mesh",
+                    fullPath=True,
+                )
+                or []
+            )
+            if not cmds.getAttr(f"{shape}.intermediateObject")
+        ]
+        self.assertEqual(len(mesh_shapes), 1)
+
+        cmds.setAttr(f"{controller}.inputWeight[1]", 1.0)
+        expected_position = (
+            base_position[0] + position_offset[0] * flip_rate,
+            base_position[1] + position_offset[1] * flip_rate,
+            -base_position[2] - position_offset[2] * flip_rate,
+        )
+        actual_position = cmds.pointPosition(f"{mesh_shapes[0]}.vtx[0]", local=True)
+        for actual, expected in zip(actual_position, expected_position):
+            self.assertAlmostEqual(actual, expected, places=6)
+
     def test_convert_pmx_material_morph_metadata(self):
         """PMX MaterialMorph が network node として import されることをテストする。"""
         mesh_name = self._create_test_mesh()
@@ -241,6 +398,280 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(offsets[0]["diffuse"], [0.1, 0.2, 0.3, 0.4])
 
         cmds.delete(mesh_name, morph_node)
+
+    def test_convert_pmx_uv_morph_metadata_and_collect_for_export(self):
+        """PMX UV morph offsets survive Maya metadata storage and root-scoped collection."""
+        mesh_name = self._create_test_mesh()
+        root_group = cmds.group(empty=True, name="uv_morph_root")
+
+        class FakeUVMorph:
+            name = "追加UV笑い"
+            name_english = "additional_uv_smile"
+            panel = 4
+            morph_type = PmxMorphType.AdditionalUVMorph2
+            offsets = [
+                {
+                    "vertex_index": 2,
+                    "uv_offset": (0.1, -0.2, 0.3, -0.4),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type("FakePmxData", (), {"morphs": [FakeUVMorph()]})()
+
+        morph_converter = MorphConverter()
+        result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 1)
+        uv_nodes = result.get("uv_morph_nodes", [])
+        self.assertEqual(len(uv_nodes), 1)
+        morph_node = uv_nodes[0]
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_type"), "additional_uv2")
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_uv_morph_offset_count"), 1)
+        self.assertEqual(
+            json.loads(cmds.getAttr(f"{morph_node}.{ATTR_MMD_UV_MORPH_OFFSETS_JSON}")),
+            [{"vertex_index": 2, "uv_offset": [0.1, -0.2, 0.3, -0.4]}],
+        )
+
+        pipeline = ModelImportPipeline(
+            logger=get_logger(__name__),
+            filepath="<test fixture>",
+            scale=1.0,
+            options={},
+        )
+        model_registry = pipeline.create_model_registry(root_group)
+        pipeline.connect_morph_nodes_to_root(
+            root_group,
+            result,
+            model_registry=model_registry,
+        )
+        collected = MorphConverter().collect_morphs_from_scene_for_export(root_group=root_group)
+        self.assertEqual(
+            collected,
+            [
+                {
+                    "type": "additional_uv2",
+                    "name": "追加UV笑い",
+                    "name_english": "additional_uv_smile",
+                    "panel": 4,
+                    "offsets": [{"vertex_index": 2, "uv_offset": [0.1, -0.2, 0.3, -0.4]}],
+                    "index": 0,
+                }
+            ],
+        )
+
+        out_pmx = self.get_temp_filename("uv_morph_roundtrip.pmx")
+        PmxExporter().export_pmx_model(
+            out_pmx,
+            {
+                "model_name": "UvMorphRoundtrip",
+                "vertices": [
+                    {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                    {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                    {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+                ],
+                "faces": [[0, 1, 2]],
+                "morphs": collected,
+            },
+        )
+        roundtripped = parse_pmx_file(
+            out_pmx,
+            use_native_pmx_parse=False,
+            require_native_pmx_parse=False,
+        )
+        self.assertEqual(len(roundtripped.morphs), 1)
+        self.assertEqual(int(roundtripped.morphs[0].morph_type), int(PmxMorphType.AdditionalUVMorph2))
+        self.assertEqual(roundtripped.morphs[0].offsets[0]["vertex_index"], 2)
+        for actual, expected in zip(
+            roundtripped.morphs[0].offsets[0]["uv_offset"],
+            (0.1, -0.2, 0.3, -0.4),
+        ):
+            self.assertAlmostEqual(actual, expected)
+
+        cmds.delete(mesh_name, morph_node, root_group)
+
+    def test_convert_pmx21_flip_impulse_metadata_and_collect_for_export(self):
+        """PMX 2.1 morph metadata survives network storage and PMX export."""
+        mesh_name = self._create_test_mesh()
+        root_group = cmds.group(empty=True, name="pmx21_morph_root")
+
+        class FakeFlipMorph:
+            name = "Flip metadata"
+            name_english = "flip_metadata"
+            panel = 4
+            morph_type = PmxMorphType.FlipMorph
+            offsets = [{"morph_index": 1, "flip_rate": 0.25}]
+
+            def get_name(self):
+                return self.name
+
+        class FakeImpulseMorph:
+            name = "Impulse metadata"
+            name_english = "impulse_metadata"
+            panel = 4
+            morph_type = PmxMorphType.ImpulseMorph
+            offsets = [
+                {
+                    "rigid_body_index": 0,
+                    "impulse": (0.1, -0.2, 0.3),
+                    "torque": (-0.4, 0.5, -0.6),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {"morphs": [FakeFlipMorph(), FakeImpulseMorph()]},
+        )()
+
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh_name)
+
+        self.assertTrue(result.get("success", False))
+        nodes = result.get("flip_impulse_morph_nodes", [])
+        self.assertEqual(len(nodes), 2)
+        flip_node, impulse_node = nodes
+        self.assertEqual(cmds.getAttr(f"{flip_node}.mmd_morph_type"), "flip")
+        self.assertEqual(cmds.getAttr(f"{flip_node}.mmd_flip_morph_offset_count"), 1)
+        self.assertEqual(
+            json.loads(cmds.getAttr(f"{flip_node}.{ATTR_MMD_FLIP_MORPH_OFFSETS_JSON}")),
+            [{"morph_index": 1, "flip_rate": 0.25}],
+        )
+        self.assertEqual(cmds.getAttr(f"{impulse_node}.mmd_morph_type"), "impulse")
+        self.assertEqual(cmds.getAttr(f"{impulse_node}.mmd_impulse_morph_offset_count"), 1)
+        self.assertEqual(
+            json.loads(cmds.getAttr(f"{impulse_node}.{ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON}")),
+            [
+                {
+                    "rigid_body_index": 0,
+                    "impulse": [0.1, -0.2, 0.3],
+                    "torque": [-0.4, 0.5, -0.6],
+                }
+            ],
+        )
+
+        pipeline = ModelImportPipeline(
+            logger=get_logger(__name__),
+            filepath="<test fixture>",
+            scale=1.0,
+            options={},
+        )
+        model_registry = pipeline.create_model_registry(root_group)
+        pipeline.connect_morph_nodes_to_root(root_group, result, model_registry=model_registry)
+        collected = MorphConverter().collect_morphs_from_scene_for_export(root_group=root_group)
+        self.assertEqual(
+            collected,
+            [
+                {
+                    "type": "flip",
+                    "name": "Flip metadata",
+                    "name_english": "flip_metadata",
+                    "panel": 4,
+                    "offsets": [{"morph_index": 1, "flip_rate": 0.25}],
+                    "index": 0,
+                },
+                {
+                    "type": "impulse",
+                    "name": "Impulse metadata",
+                    "name_english": "impulse_metadata",
+                    "panel": 4,
+                    "offsets": [
+                        {
+                            "rigid_body_index": 0,
+                            "impulse": [0.1, -0.2, 0.3],
+                            "torque": [-0.4, 0.5, -0.6],
+                        }
+                    ],
+                    "index": 1,
+                },
+            ],
+        )
+
+        out_pmx = self.get_temp_filename("pmx21_morph_roundtrip.pmx")
+        PmxExporter().export_pmx_model(
+            out_pmx,
+            {
+                "model_name": "Pmx21MorphRoundtrip",
+                "vertices": [
+                    {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                    {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                    {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+                ],
+                "faces": [[0, 1, 2]],
+                "rigid_bodies": [{"name": "ImpulseBody"}],
+                "morphs": collected,
+            },
+        )
+        roundtripped = parse_pmx_file(
+            out_pmx,
+            use_native_pmx_parse=False,
+            require_native_pmx_parse=False,
+        )
+        self.assertAlmostEqual(roundtripped.header.version, 2.1, places=6)
+        self.assertEqual([int(morph.morph_type) for morph in roundtripped.morphs], [9, 10])
+        self.assertEqual(roundtripped.morphs[0].offsets[0]["morph_index"], 1)
+        self.assertEqual(roundtripped.morphs[1].offsets[0]["rigid_body_index"], 0)
+
+        cmds.file(new=True, force=True)
+        fresh_root = import_mmd_file(
+            str(out_pmx),
+            options={
+                "create_mmd_shaders": False,
+                "import_physics": False,
+                "setup_rig": False,
+                "use_native_pmx_parse": False,
+                "require_native_pmx_parse": False,
+            },
+        )
+        self.assertIsNotNone(fresh_root)
+        fresh_collected = MorphConverter().collect_morphs_from_scene_for_export(
+            root_group=fresh_root
+        )
+        self.assertEqual(len(fresh_collected), len(collected))
+        for actual, expected in zip(fresh_collected, collected):
+            self.assertEqual(
+                {key: actual[key] for key in ("type", "name", "name_english", "panel", "index")},
+                {key: expected[key] for key in ("type", "name", "name_english", "panel", "index")},
+            )
+            self.assertEqual(len(actual["offsets"]), len(expected["offsets"]))
+            for actual_offset, expected_offset in zip(actual["offsets"], expected["offsets"]):
+                self.assertEqual(
+                    {key: actual_offset[key] for key in actual_offset if key not in ("flip_rate", "impulse", "torque")},
+                    {key: expected_offset[key] for key in expected_offset if key not in ("flip_rate", "impulse", "torque")},
+                )
+                if "flip_rate" in expected_offset:
+                    self.assertAlmostEqual(actual_offset["flip_rate"], expected_offset["flip_rate"], places=6)
+                for vector_key in ("impulse", "torque"):
+                    if vector_key in expected_offset:
+                        for actual_component, expected_component in zip(
+                            actual_offset[vector_key], expected_offset[vector_key]
+                        ):
+                            self.assertAlmostEqual(actual_component, expected_component, places=6)
+
+        output_path = self.get_temp_filename("pmx21_morph_public_rejected.pmx")
+        sentinel = b"existing output must survive"
+        Path(output_path).write_bytes(sentinel)
+        writer = MagicMock()
+        result = ExportModelAction(pmx_exporter=writer).execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmx", "target_model": fresh_root},
+            )
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIn(
+            "UNSUPPORTED_FEATURE",
+            [issue.code for issue in result.validation_report.issues],
+        )
+        writer.export_pmx_model.assert_not_called()
+        self.assertEqual(Path(output_path).read_bytes(), sentinel)
+
 
     def test_hazardous_network_names_and_controller_aliases_are_safe_and_unique(self):
         """Material/morph names with namespaces and punctuation stay addressable."""
@@ -454,6 +885,20 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(result.get("morphs_converted"), 2)
         self.assertEqual(result.get("vertex_morphs_skipped_by_material"), 2)
         self.assertEqual(len(result.get("blend_shape_nodes", [])), 2)
+        vertex_nodes = result.get("vertex_morph_nodes", [])
+        self.assertEqual(len(vertex_nodes), 2)
+        self.assertEqual(len(set(vertex_nodes)), 2)
+        self.assertEqual(
+            [cmds.getAttr(f"{node}.mmd_morph_index") for node in vertex_nodes],
+            [0, 1],
+        )
+        self.assertFalse(
+            cmds.attributeQuery(
+                "mmd_vertex_morph_offsets_raw_json",
+                node=vertex_nodes[0],
+                exists=True,
+            )
+        )
 
         mesh_a_aliases = cmds.aliasAttr(result["blend_shape_nodes"][0], query=True) or []
         mesh_b_aliases = cmds.aliasAttr(result["blend_shape_nodes"][1], query=True) or []
@@ -461,6 +906,58 @@ class TestMorphConverter(MayaTestBase):
         self.assertNotIn("mat1_only", mesh_a_aliases)
         self.assertIn("mat1_only", mesh_b_aliases)
         self.assertNotIn("mat0_only", mesh_b_aliases)
+
+    def test_vertex_morph_metadata_rejects_malformed_offsets(self):
+        """Malformed source offsets fail before the per-mesh preview path can skip them."""
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = "malformed_vertex"
+            name_english = ""
+            panel = 1
+            morph_type = PmxMorphType.VertexMorph
+            offsets = [{"vertex_index": True, "position_offset": (0.1, 0.0, 0.0)}]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {"faces": [], "materials": [], "morphs": [FakeVertexMorph()]},
+        )()
+
+        with self.assertRaises(ValueError):
+            MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+    def test_vertex_morph_metadata_rejects_unknown_offset_fields(self):
+        """Unknown fields are not silently discarded from the semantic record."""
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = "unknown_field_vertex"
+            name_english = ""
+            panel = 1
+            morph_type = PmxMorphType.VertexMorph
+            offsets = [
+                {
+                    "vertex_index": 0,
+                    "position_offset": (0.0, 0.0, 0.0),
+                    "unexpected": 1,
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {"faces": [], "materials": [], "morphs": [FakeVertexMorph()]},
+        )()
+
+        with self.assertRaises(ValueError):
+            MorphConverter().convert_pmx_morphs(fake_data, mesh)
 
     def test_compact_material_split_mesh_maps_vertex_morph_source_indices(self):
         """compact split mesh では PMX source vertex index を local vertex index に写して morph を適用する。"""
@@ -786,22 +1283,43 @@ class TestMorphConverter(MayaTestBase):
             def get_name(self):
                 return self.name
 
+        class FakeGroupMorph:
+            name = "グループ笑い"
+            name_english = "group_smile"
+            panel = 4
+            morph_type = PmxMorphType.GroupMorph
+            offsets = [{"morph_index": 0, "morph_rate": 0.5}]
+
+            def get_name(self):
+                return self.name
+
         fake_data = type(
             "FakePmxData",
             (),
-            {"morphs": [FakeBoneMorph(), FakeMaterialMorph()]},
+            {"morphs": [FakeBoneMorph(), FakeGroupMorph(), FakeMaterialMorph()]},
         )()
 
         morph_converter = MorphConverter()
         result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
         self.assertTrue(result.get("success", False))
-        self.assertEqual(result.get("morphs_converted"), 2)
+        self.assertEqual(result.get("morphs_converted"), 3)
         self.assertEqual(len(result.get("bone_morph_nodes", [])), 1)
+        self.assertEqual(len(result.get("group_morph_nodes", [])), 1)
         self.assertEqual(len(result.get("material_morph_nodes", [])), 1)
 
         collected_morphs = morph_converter.collect_morphs_from_scene_for_export()
-        self.assertEqual(len(collected_morphs), 2)
+        self.assertEqual(len(collected_morphs), 3)
         self.assertTrue(any(m["type"] == "bone" and m["name"] == "ボーン笑い" for m in collected_morphs))
+        self.assertTrue(
+            any(
+                m["type"] == "group"
+                and m["name"] == "グループ笑い"
+                and m["name_english"] == "group_smile"
+                and m["panel"] == 4
+                and m["offsets"] == [{"morph_index": 0, "morph_rate": 0.5}]
+                for m in collected_morphs
+            )
+        )
         self.assertTrue(
             any(
                 m["type"] == "material"
@@ -834,15 +1352,53 @@ class TestMorphConverter(MayaTestBase):
             use_native_pmx_parse=False,
             require_native_pmx_parse=False,
         )
-        self.assertEqual(len(pmx.morphs), 2)
+        self.assertEqual(len(pmx.morphs), 3)
         self.assertTrue(any(int(m.morph_type) == 2 for m in pmx.morphs))
+        group_morph = next(m for m in pmx.morphs if m.name == "グループ笑い")
+        self.assertEqual(int(group_morph.morph_type), int(PmxMorphType.GroupMorph))
+        self.assertEqual(group_morph.offsets[0]["morph_index"], 0)
+        self.assertAlmostEqual(group_morph.offsets[0]["morph_rate"], 0.5)
         self.assertTrue(any(int(m.morph_type) == 8 for m in pmx.morphs))
 
         cmds.delete(
             mesh_name,
             *(result.get("bone_morph_nodes", [])),
+            *(result.get("group_morph_nodes", [])),
             *(result.get("material_morph_nodes", [])),
         )
+
+    def test_export_collection_rejects_malformed_group_authority(self):
+        mesh_name = self._create_test_mesh()
+
+        class FakeGroupMorph:
+            name = "broken_group"
+            name_english = ""
+            panel = 4
+            morph_type = PmxMorphType.GroupMorph
+            offsets = [{"morph_index": 0, "morph_rate": 0.5}]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type("FakePmxData", (), {"morphs": [FakeGroupMorph()]})()
+        converter = MorphConverter()
+        result = converter.convert_pmx_morphs(fake_data, mesh_name)
+        group_node = result["group_morph_nodes"][0]
+        cmds.setAttr(
+            f"{group_node}.mmd_group_morph_offsets_json",
+            "{broken",
+            type="string",
+        )
+
+        with self.assertRaisesRegex(ValueError, "morph_topology:malformed"):
+            converter.collect_morphs_from_scene_for_export()
+        cmds.setAttr(
+            f"{group_node}.mmd_group_morph_offsets_json",
+            '[{"morph_index":0,"morph_index":1,"morph_rate":0.5}]',
+            type="string",
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate raw offset field"):
+            converter.collect_morphs_from_scene_for_export()
 
     def test_simple_blendshape_creation(self):
         """シンプルなblendShape作成のテスト（Mayaの基本機能確認）"""

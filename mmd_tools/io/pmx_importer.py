@@ -3,13 +3,14 @@ PMXファイルをMayaシーンにインポートするためのモジュール�
 """
 
 import json
+import math
 import os
 import time
 from typing import Any, Callable, Dict, Optional
 
 from maya import cmds
 
-from mmd_tools.core import maya_name_utils
+from mmd_tools.core import maya_attribute_utils, maya_name_utils
 from mmd_tools.core.exceptions import MMDImportException
 
 from ..converters import BoneConverter, MeshConverter, MorphConverter
@@ -21,15 +22,28 @@ from ..core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_MORPH_DATA,
+    ATTR_MMD_PMX_SOFT_BODY_COUNT,
+    ATTR_MMD_TEXTURE_TABLE_JSON,
 )
 from ..core.display_frame_metadata import display_frames_to_json
 from ..core.namespace_utils import NamespaceUtils
 
 # ロガーを取得
 logger = get_logger("mmd_tools.io.pmx_importer")
+
+
+def _require_effective_import_scale(value: Any) -> float:
+    """Return a finite positive PMX-to-Maya scale before scene mutation."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise MMDImportException("PMX import scale must be a finite positive number")
+    scale = float(value)
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise MMDImportException("PMX import scale must be a finite positive number")
+    return scale
 
 
 def _validate_morph_runtime_requirements(morph_converter: Any, pmx_data: Any) -> None:
@@ -83,12 +97,38 @@ def _serialize_pmx_morph_data(morphs: Any) -> str:
     return json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
 
 
+def _serialize_pmx_texture_table(textures: Any) -> str:
+    """Serialize the authoritative PMX texture table for the model root."""
+    if not isinstance(textures, (list, tuple)):
+        return "[]"
+    return json.dumps(
+        [str(texture_path) for texture_path in textures],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _pmx_soft_body_count(pmx_data: Any) -> int:
+    """Resolve imported PMX soft-body count before scene conversion.
+
+    Soft bodies are not represented by Maya's current physics importer.  The
+    count is nevertheless retained as root/mesh provenance so model export
+    can reject the unsupported section instead of silently dropping it.
+    """
+    try:
+        return len(getattr(pmx_data, "soft_bodies", []) or [])
+    except Exception as exc:
+        logger.error("Failed to inspect PMX soft-body section", exc_info=True)
+        raise MMDImportException("Failed to inspect PMX soft-body section") from exc
+
+
 def import_pmx_file(
     parser: Any,
     filepath: str,
     scale: float = 1.0,
     options: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Callable[[int], None]] = None,
+    is_pmd: bool = False,
 ) -> Optional[str]:
     """
     PMXファイルをMayaシーンにインポートします。
@@ -99,6 +139,7 @@ def import_pmx_file(
         scale (float): スケール値（互換性のため）
         options (dict): インポートオプション
         progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
+        is_pmd (bool): PMDから変換されたデータとしてPMD専用属性を作成するかどうか。
 
     Returns:
         str: 作成したモデルルートノード名。
@@ -106,6 +147,7 @@ def import_pmx_file(
     Raises:
         MMDImportException: PMX/PMD 変換済みデータのインポートに失敗した場合。
     """
+    scale = _require_effective_import_scale(scale)
     if options is None:
         options = {}
     pipeline = ModelImportPipeline(
@@ -121,6 +163,12 @@ def import_pmx_file(
     logger.debug("Scale factor: %f", scale)
 
     model_name = maya_name_utils.sanitize_text(parser.header.get_name())
+    soft_body_count = _pmx_soft_body_count(parser)
+    if soft_body_count:
+        logger.warning(
+            "PMX import retained unsupported soft-body provenance: count=%d",
+            soft_body_count,
+        )
     namespace = pipeline.resolve_namespace(model_name, custom_namespace=options.get("custom_namespace"))
     bone_converter = BoneConverter()
     morph_converter = MorphConverter(scale=scale)
@@ -141,6 +189,7 @@ def import_pmx_file(
                 {
                     ATTR_MMD_MODEL_NAME: parser.header.model_name,
                     ATTR_MMD_MODEL_NAME_EN: parser.header.model_name_english,
+                    ATTR_MMD_IMPORT_SCALE: scale,
                     ATTR_MMD_COMMENT: parser.header.comment,
                     ATTR_MMD_COMMENT_EN: parser.header.comment_english,
                     ATTR_MMD_DISPLAY_FRAMES_JSON: display_frames_to_json(
@@ -149,25 +198,43 @@ def import_pmx_file(
                     ATTR_MMD_MORPH_DATA: _serialize_pmx_morph_data(
                         getattr(parser, "morphs", [])
                     ),
+                    ATTR_MMD_PMX_SOFT_BODY_COUNT: soft_body_count,
+                    ATTR_MMD_TEXTURE_TABLE_JSON: _serialize_pmx_texture_table(
+                        getattr(parser, "textures", [])
+                    ),
                     # Phase 1: runtime bake で VMD インポート時に PMX ソースを容易に見つけるため
                     "mmd_source_file": filepath,
                 },
             )
+            model_registry = pipeline.create_model_registry(root_group)
 
             # メッシュを変換
             logger.debug("Converting mesh...")
             mesh_converter = MeshConverter(filepath, scale=scale)
             phase_start = time.perf_counter()
-            mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group)
+            mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group, is_pmd=is_pmd)
+            pipeline.connect_shader_nodes_to_root(
+                root_group,
+                mesh_converter.created_shaders,
+                model_registry=model_registry,
+            )
             pipeline.connect_texture_nodes_to_root(
                 root_group,
                 mesh_converter.created_texture_file_nodes,
+                model_registry=model_registry,
             )
             pipeline.record_phase("mesh_conversion_sec", phase_start)
             pipeline.emit_progress(35)
 
             # mesh_name が list かどうかで分岐
             mesh_names = mesh_name if isinstance(mesh_name, list) else [mesh_name]
+            if soft_body_count:
+                for mesh_node in mesh_names:
+                    if mesh_node and cmds.objExists(mesh_node):
+                        maya_attribute_utils.set_custom_attributes(
+                            mesh_node,
+                            {ATTR_MMD_PMX_SOFT_BODY_COUNT: soft_body_count},
+                        )
             logger.debug("Mesh conversion complete: group=%s, name=%s", mesh_group, mesh_name)
 
             logger.debug("Converting morphs...")
@@ -178,7 +245,11 @@ def import_pmx_file(
             logger.debug("Morph conversion complete")
 
             # network morph ノードをモデルルートに message 接続で紐付ける
-            pipeline.connect_morph_nodes_to_root(root_group, morph_result)
+            pipeline.connect_morph_nodes_to_root(
+                root_group,
+                morph_result,
+                model_registry=model_registry,
+            )
             morph_converter.build_morph_controller(parser, root_group, morph_result)
 
             # ボーンを変換
@@ -218,6 +289,7 @@ def import_pmx_file(
                 parser=parser,
                 maya_joints=maya_joints,
                 root_group=root_group,
+                model_registry=model_registry,
             )
 
             # MMD ライトコントローラ（操作可能なヌル）を作成（get-or-create）。
@@ -246,7 +318,7 @@ def import_pmx_file(
             # MMD ライトコントローラを各 dx11Shader に結線（uniform 生成後）。
             pipeline.wire_light_controller(mesh_converter, light_ctrl)
 
-            # Color Management を MMD 向けに整える（CM の enable は触らない）。
+            # Python MMD shader output requires the CM-on/de-gamma contract.
             pipeline.setup_view()
             if pipeline.profile is not None:
                 pipeline.profile["phase_timings"] = pipeline.phase_timings

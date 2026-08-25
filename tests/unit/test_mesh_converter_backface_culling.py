@@ -9,11 +9,13 @@ from tests.common.maya_stub import install_maya_stub
 install_maya_stub()
 
 from mmd_tools.converters.mesh_converter import (  # noqa: E402
+    MeshConverter,
     TRANSPARENCY_MODE_BLEND,
     TRANSPARENCY_MODE_CUTOUT,
     TRANSPARENCY_MODE_OPAQUE,
     _dx11_rendering_from_technique,
     _material_is_double_sided,
+    _source_texture_path,
     _set_mesh_double_sided,
     _technique_for_transparency,
     apply_shader_outline,
@@ -25,6 +27,61 @@ from mmd_tools.converters.mesh_material_properties import material_has_outline  
 
 
 class TestMaterialIsDoubleSided(unittest.TestCase):
+    def test_source_texture_path_prefers_authoritative_table_index(self):
+        self.assertEqual(
+            _source_texture_path(
+                ["textures/sphere.spa", "textures/body.png"],
+                1,
+                "C:/resolved/body.png",
+            ),
+            "textures/body.png",
+        )
+        self.assertEqual(
+            _source_texture_path(
+                ["textures/sphere.spa"],
+                4,
+                "C:/resolved/body.png",
+            ),
+            "C:/resolved/body.png",
+        )
+
+    def test_custom_attributes_store_table_source_paths_for_main_and_sphere(self):
+        material = SimpleNamespace(
+            material_index=0,
+            name="body",
+            name_english="Body",
+            diffuse=(1.0, 1.0, 1.0, 1.0),
+            ambient=(0.0, 0.0, 0.0),
+            specular=(0.0, 0.0, 0.0),
+            specular_coefficient=0.0,
+            toon_texture_index=-1,
+            draw_flag=0,
+            edge_color=(0.0, 0.0, 0.0, 1.0),
+            edge_size=0.0,
+            sphere_mode=1,
+            sphere_texture_index=0,
+            texture_index=1,
+            memo="",
+            shared_toon_flag=1,
+        )
+        converter = MeshConverter.__new__(MeshConverter)
+
+        with patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ) as set_custom_attributes:
+            converter._apply_custom_attributes(
+                "shader1",
+                material,
+                ["textures/sphere.spa", "textures/body.png"],
+                is_pmd=False,
+                texture_path="C:/resolved/body.png",
+                sphere_texture_path="C:/resolved/sphere.spa",
+            )
+
+        attrs = set_custom_attributes.call_args[0][1]
+        self.assertEqual(attrs["mmd_texture_path"], "textures/body.png")
+        self.assertEqual(attrs["mmd_sphere_path"], "textures/sphere.spa")
+
     def test_draw_flag_bit0_enabled(self):
         self.assertTrue(_material_is_double_sided(SimpleNamespace(draw_flag=0x01)))
 
@@ -47,6 +104,120 @@ class TestMaterialIsDoubleSided(unittest.TestCase):
     def test_outline_uses_pmd_edge_flag(self):
         self.assertTrue(material_has_outline(SimpleNamespace(edge_flag=1), is_pmd=True))
         self.assertFalse(material_has_outline(SimpleNamespace(edge_flag=0), is_pmd=True))
+
+    def test_imported_custom_outline_state_defaults_off_without_losing_pmx_edge_data(self):
+        material = SimpleNamespace(
+            material_index=0,
+            name="outline",
+            name_english="outline",
+            diffuse=(1.0, 1.0, 1.0, 1.0),
+            ambient=(0.0, 0.0, 0.0),
+            specular=(0.0, 0.0, 0.0),
+            specular_coefficient=0.0,
+            toon_texture_index=-1,
+            draw_flag=0x11,
+            edge_color=(0.0, 0.0, 0.0, 1.0),
+            edge_size=2.5,
+            sphere_mode=0,
+            sphere_texture_index=-1,
+            texture_index=-1,
+            memo="",
+            shared_toon_flag=1,
+        )
+        converter = MeshConverter.__new__(MeshConverter)
+
+        with patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ) as set_custom_attributes:
+            converter._apply_custom_attributes("shader1", material, [], is_pmd=False)
+
+        attrs = set_custom_attributes.call_args[0][1]
+        self.assertEqual(attrs["mmd_edge_size"], 2.5)
+        self.assertEqual(attrs["mmd_draw_flags"], 0x11)
+        self.assertFalse(attrs["mmd_shader_outline_enabled"])
+
+    def test_imported_setup_disables_hardware_outline_by_default(self):
+        material = SimpleNamespace(
+            diffuse=(1.0, 1.0, 1.0, 1.0),
+            ambient=(0.0, 0.0, 0.0),
+            specular=(0.0, 0.0, 0.0),
+            specular_coefficient=0.0,
+            draw_flag=0x11,
+            edge_color=(0.0, 0.0, 0.0, 1.0),
+            edge_size=2.5,
+            sphere_mode=0,
+            sphere_texture_index=-1,
+            texture_index=-1,
+            toon_texture_index=-1,
+            shared_toon_flag=1,
+        )
+        converter = MeshConverter.__new__(MeshConverter)
+        converter._transparency_modes = {}
+        converter.texture_dir = ""
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter._ensure_dx11_uniform_attributes"
+        ), patch(
+            "mmd_tools.converters.mesh_converter._set_dx11_color_uniform"
+        ), patch.object(converter, "_connect_dx11_main_texture"), patch.object(
+            converter, "_apply_custom_attributes"
+        ), patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ) as set_attribute:
+            mock_cmds.attributeQuery.return_value = True
+            mock_cmds.listConnections.return_value = []
+            converter._setup_dx11_shader(
+                "shader1",
+                material,
+                texture_path=None,
+                all_textures=[],
+                is_pmd=False,
+            )
+
+        set_attribute.assert_any_call("shader1", "EdgeSize", 0.0, "float")
+
+    def test_imported_dx11_material_starts_opaque_even_when_classified_blend(self):
+        """Automatic import must not mix a subset of materials into VP2 transparency."""
+        material = SimpleNamespace(
+            diffuse=(1.0, 1.0, 1.0, 0.5),
+            ambient=(0.0, 0.0, 0.0),
+            specular=(0.0, 0.0, 0.0),
+            specular_coefficient=0.0,
+            draw_flag=0x01,
+            edge_color=(0.0, 0.0, 0.0, 1.0),
+            edge_size=0.0,
+            sphere_mode=0,
+            sphere_texture_index=-1,
+            texture_index=-1,
+            toon_texture_index=-1,
+            shared_toon_flag=1,
+        )
+        converter = MeshConverter.__new__(MeshConverter)
+        converter._transparency_modes = {0: TRANSPARENCY_MODE_BLEND}
+        converter.texture_dir = ""
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter._ensure_dx11_uniform_attributes"
+        ), patch(
+            "mmd_tools.converters.mesh_converter._set_dx11_color_uniform"
+        ), patch.object(converter, "_connect_dx11_main_texture"), patch.object(
+            converter, "_apply_custom_attributes"
+        ), patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ):
+            mock_cmds.attributeQuery.return_value = True
+            mock_cmds.listConnections.return_value = []
+            converter._setup_dx11_shader(
+                "shader1",
+                material,
+                texture_path=None,
+                all_textures=[],
+                is_pmd=False,
+                material_index=0,
+            )
+
+        mock_cmds.setAttr.assert_any_call("shader1.technique", "MMDTechniqueDoubleSided", type="string")
+        mock_cmds.setAttr.assert_any_call("shader1.mmdTransparencyMode", TRANSPARENCY_MODE_OPAQUE, type="string")
 
 
 class TestSetMeshDoubleSided(unittest.TestCase):
@@ -88,22 +259,23 @@ class TestDx11TechniqueSelection(unittest.TestCase):
         cases = [
             (TRANSPARENCY_MODE_OPAQUE, True, False, "MMDTechnique"),
             (TRANSPARENCY_MODE_CUTOUT, True, False, "MMDTechnique"),
-            (TRANSPARENCY_MODE_BLEND, True, False, "MMDTechnique"),
+            (TRANSPARENCY_MODE_BLEND, True, False, "MMDTechniqueTranslucent"),
             (TRANSPARENCY_MODE_OPAQUE, False, False, "MMDTechnique"),
             (TRANSPARENCY_MODE_CUTOUT, False, False, "MMDTechnique"),
-            (TRANSPARENCY_MODE_BLEND, False, False, "MMDTechnique"),
+            (TRANSPARENCY_MODE_BLEND, False, False, "MMDTechniqueTranslucent"),
             (TRANSPARENCY_MODE_OPAQUE, True, True, "MMDTechniqueDoubleSided"),
             (TRANSPARENCY_MODE_CUTOUT, True, True, "MMDTechniqueDoubleSided"),
-            (TRANSPARENCY_MODE_BLEND, True, True, "MMDTechniqueDoubleSided"),
+            (TRANSPARENCY_MODE_BLEND, True, True, "MMDTechniqueTranslucentDoubleSided"),
             (TRANSPARENCY_MODE_OPAQUE, False, True, "MMDTechniqueDoubleSided"),
             (TRANSPARENCY_MODE_CUTOUT, False, True, "MMDTechniqueDoubleSided"),
-            (TRANSPARENCY_MODE_BLEND, False, True, "MMDTechniqueDoubleSided"),
+            (TRANSPARENCY_MODE_BLEND, False, True, "MMDTechniqueTranslucentDoubleSided"),
         ]
 
         for mode, edge_enabled, double_sided, expected in cases:
             with self.subTest(mode=mode, edge_enabled=edge_enabled, double_sided=double_sided):
                 self.assertEqual(_technique_for_transparency(mode, edge_enabled, double_sided), expected)
-                self.assertEqual(_dx11_rendering_from_technique(expected), (TRANSPARENCY_MODE_OPAQUE, True, double_sided))
+                expected_mode = TRANSPARENCY_MODE_BLEND if mode == TRANSPARENCY_MODE_BLEND else TRANSPARENCY_MODE_OPAQUE
+                self.assertEqual(_dx11_rendering_from_technique(expected), (expected_mode, True, double_sided))
 
     def test_get_transparency_mode_accepts_double_sided_suffix(self):
         cases = [
@@ -122,9 +294,7 @@ class TestDx11TechniqueSelection(unittest.TestCase):
                 self.assertEqual(get_transparency_mode("shader1"), expected)
 
     def test_apply_transparency_mode_preserves_double_sided_technique_state(self):
-        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
-        ) as mock_set_custom_attributes:
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
             mock_cmds.attributeQuery.side_effect = lambda *args, **kwargs: args[0] == "technique"
             mock_cmds.getAttr.return_value = "MMDTechniqueNoEdgeDoubleSided"
 
@@ -132,7 +302,10 @@ class TestDx11TechniqueSelection(unittest.TestCase):
 
         self.assertEqual(technique, "MMDTechniqueDoubleSided")
         mock_cmds.setAttr.assert_any_call("shader1.technique", technique, type="string")
-        mock_set_custom_attributes.assert_called_once_with("shader1", {"mmdDoubleSided": True})
+        mock_cmds.addAttr.assert_any_call(
+            "shader1", longName="mmdDoubleSided", attributeType="bool"
+        )
+        mock_cmds.setAttr.assert_any_call("shader1.mmdDoubleSided", True)
 
     def test_apply_shader_outline_prefers_draw_flags_for_double_sided_state(self):
         def attribute_exists(*args, **kwargs):
@@ -150,7 +323,7 @@ class TestDx11TechniqueSelection(unittest.TestCase):
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ) as mock_set_custom_attributes, patch(
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
-        ):
+        ) as mock_set_attribute:
             mock_cmds.attributeQuery.side_effect = attribute_exists
             mock_cmds.getAttr.side_effect = get_attr
 
@@ -158,25 +331,43 @@ class TestDx11TechniqueSelection(unittest.TestCase):
 
         self.assertEqual(technique, "MMDTechniqueDoubleSided")
         mock_cmds.setAttr.assert_any_call("shader1.technique", technique, type="string")
-        mock_set_custom_attributes.assert_called_once_with("shader1", {"mmdDoubleSided": True})
+        mock_cmds.addAttr.assert_called_once_with(
+            "shader1", longName="mmdDoubleSided", attributeType="bool"
+        )
+        mock_cmds.setAttr.assert_any_call("shader1.mmdDoubleSided", True)
+        mock_cmds.setAttr.assert_any_call("shader1.mmd_shader_outline_enabled", True)
+        mock_set_custom_attributes.assert_not_called()
+        mock_set_attribute.assert_not_called()
 
     def test_disabling_outline_keeps_technique_and_suppresses_edge_size(self):
         def attribute_exists(*args, **kwargs):
-            return args[0] in {"technique", "EdgeSize", "mmd_shader_outline_enabled"}
+            return args[0] in {
+                "technique",
+                "EdgeSize",
+                "mmd_shader_outline_enabled",
+                "mmdDoubleSided",
+            }
+
+        def get_attr(plug):
+            return False if plug.endswith(".mmdDoubleSided") else "MMDTechnique"
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch(
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
-        ):
+        ) as mock_set_custom_attributes:
             mock_cmds.attributeQuery.side_effect = attribute_exists
-            mock_cmds.getAttr.return_value = "MMDTechnique"
+            mock_cmds.getAttr.side_effect = get_attr
 
             technique = apply_shader_outline("shader1", False, edge_size=1.5)
 
         self.assertEqual(technique, "MMDTechnique")
         mock_cmds.setAttr.assert_any_call("shader1.EdgeSize", 0.0)
-        mock_set_attribute.assert_any_call("shader1", "mmd_shader_outline_enabled", False, "bool")
+        mock_cmds.setAttr.assert_any_call("shader1.mmdDoubleSided", False)
+        mock_cmds.setAttr.assert_any_call("shader1.mmd_shader_outline_enabled", False)
+        mock_cmds.addAttr.assert_not_called()
+        mock_set_attribute.assert_not_called()
+        mock_set_custom_attributes.assert_not_called()
 
     def test_disabling_outline_without_size_still_suppresses_edge(self):
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(

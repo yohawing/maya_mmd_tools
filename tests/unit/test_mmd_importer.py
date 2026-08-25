@@ -233,15 +233,31 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
             require_native_pmx_parse=True,
         )
 
+    def test_pmd_import_forwards_pmd_material_semantics(self):
+        parsed_data = object()
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
+            with patch(
+                "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
+                return_value="model_root",
+            ) as importer:
+                result = import_mmd_file("model.pmd", options={})
+
+        self.assertEqual(result, "model_root")
+        self.assertTrue(importer.call_args.kwargs["is_pmd"])
+
     def test_pmx_import_requires_native_parse_by_default(self):
         parsed_data = object()
+        self._saved_dev = settings.get("ui.general.development_mode", False)
         self._saved_require_native = settings.get("import.native.require_native_pmx_parse")
-        settings.set("import.native.require_native_pmx_parse", True)
         try:
+            settings.set("ui.general.development_mode", True)
+            settings.set("import.native.require_native_pmx_parse", True)
             with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data) as parse_file:
                 with patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file", return_value="model_root"):
                     result = import_mmd_file("model.pmx", options={})
         finally:
+            settings.set("ui.general.development_mode", self._saved_dev)
             settings.set("import.native.require_native_pmx_parse", self._saved_require_native)
 
         self.assertEqual(result, "model_root")

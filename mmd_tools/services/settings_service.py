@@ -174,7 +174,17 @@ class SettingsService:
     def export_settings_data(self):
         """Return the JSON-exportable settings categories."""
         all_settings = self.data
-        return {category: all_settings.get(category, {}) for category in _SETTINGS_EXPORT_CATEGORIES}
+        exported = {
+            category: copy.deepcopy(all_settings.get(category, {}))
+            for category in _SETTINGS_EXPORT_CATEGORIES
+        }
+        # ``export.general.export_format`` was a dead PMX/PMD selector.  Drop
+        # it from exported settings so stale PMD values cannot become a future
+        # export authority when a settings file is migrated.
+        export_general = exported.get("export", {}).get("general")
+        if isinstance(export_general, dict):
+            export_general.pop("export_format", None)
+        return exported
 
     def write_settings_json(self, file_path):
         """Write exportable settings to a JSON file."""
@@ -201,6 +211,15 @@ class SettingsService:
                 # the former animation-scoped value during JSON import.
                 model_settings.setdefault("create_mmd_control_rig", animation_settings["create_mmd_control_rig"])
                 animation_settings.pop("create_mmd_control_rig", None)
+
+        export_settings = normalized_data.get("export")
+        if isinstance(export_settings, dict):
+            export_general = export_settings.get("general")
+            if isinstance(export_general, dict):
+                # Legacy PMD/PMX export-format persistence is no longer part
+                # of the public settings contract.  The current Export tab
+                # owns its PMX/VMD choice, so never persist this stale key.
+                export_general.pop("export_format", None)
 
         for category in _SETTINGS_EXPORT_CATEGORIES:
             if category in normalized_data:
@@ -250,9 +269,15 @@ class SettingsService:
             "target_model": target_model,
         }
 
-    def build_pmx_import_options(self, custom_namespace=None):
-        """Build PMX/PMD import options from persisted settings."""
-        is_dev = self.is_development_mode()
+    def build_pmx_import_options(self, custom_namespace=None, *, development_mode=None):
+        """Build PMX/PMD import options from persisted settings.
+
+        Args:
+            custom_namespace: Optional namespace requested by the importer UI.
+            development_mode: Optional effective mode override for development
+                harnesses. Normal UI callers leave this unset.
+        """
+        is_dev = self.is_development_mode() if development_mode is None else bool(development_mode)
         opts = {
             "scale": self.resolve_import_scale(),
             "use_namespace": self.get(setting_keys.IMPORT_GENERAL_USE_NAMESPACE, False),
@@ -272,19 +297,41 @@ class SettingsService:
         }
         if not is_dev:
             opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
-        opts["use_cpp_fast_load"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False)
-        opts["cpp_fast_load_mesh_only"] = self.get(setting_keys.IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY, True)
-        opts["use_cpp_rig_nodes"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES, False)
+        if is_dev:
+            opts["use_cpp_fast_load"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False)
+            opts["cpp_fast_load_mesh_only"] = self.get(
+                setting_keys.IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY,
+                True,
+            )
+            opts["use_cpp_vp2_ownership"] = self.get(
+                setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP,
+                False,
+            )
+            opts["use_native_pmx_parse"] = True
+            opts["require_native_pmx_parse"] = self.get(
+                setting_keys.IMPORT_NATIVE_REQUIRE_NATIVE_PMX_PARSE,
+                False,
+            )
+            opts["use_cpp_rig_nodes"] = self.get(
+                setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES,
+                False,
+            )
+        else:
+            # Native import is experimental. Hidden checkboxes are not a
+            # sufficient boundary because their persisted values can remain
+            # enabled after Development Mode is turned off.
+            opts.update(
+                {
+                    "use_cpp_fast_load": False,
+                    "cpp_fast_load_mesh_only": True,
+                    "use_cpp_vp2_ownership": False,
+                    "use_native_pmx_parse": False,
+                    "require_native_pmx_parse": False,
+                    "use_cpp_rig_nodes": False,
+                }
+            )
         return opts
 
     def should_show_texture_issue_dialog(self):
         """Return whether post-import texture issue diagnostics should be shown."""
         return self.get(setting_keys.IMPORT_MODEL_SHOW_TEXTURE_ISSUE_DIALOG, True)
-
-    def build_export_options(self, file_path):
-        """Build PMX/PMD export options from persisted settings."""
-        return {
-            "file_path": file_path,
-            "export_format": self.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx"),
-            "apply_scale": self.get(setting_keys.EXPORT_GENERAL_APPLY_SCALE, True),
-        }

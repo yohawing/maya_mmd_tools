@@ -1,3 +1,5 @@
+"""Morph preview and coordinator-gated semantic authoring tab widgets."""
+
 from ..qt_compat import (
     QWidget,
     QVBoxLayout,
@@ -15,8 +17,10 @@ from ..qt_compat import (
     QTabWidget,
     QSplitter,
     QCheckBox,
+    QMenu,
 )
 from ..base_tab import BaseTab
+from ..components.authoring_toolbar import AuthoringToolbar
 from .translation_registry import apply_translation_registry
 
 
@@ -44,6 +48,7 @@ class MorphTab(BaseTab):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("MorphTab")
+        self.create_morph_type_provider = None
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
@@ -63,6 +68,7 @@ class MorphTab(BaseTab):
         splitter.setSizes([350, 650])
 
         main_layout.addWidget(splitter)
+        self.set_work_material_controls(False)
 
     def _create_morph_list_section(self):
         """モーフリストセクションを作成"""
@@ -76,14 +82,50 @@ class MorphTab(BaseTab):
 
         # ツールバー
         toolbar_layout = QHBoxLayout()
-        self.refresh_morphs_btn = QPushButton(self.tr("refresh", "buttons"))
-        self.refresh_morphs_btn.setMaximumWidth(60)
-        toolbar_layout.addWidget(self.refresh_morphs_btn)
+        self.morph_refresh_toolbar = AuthoringToolbar(
+            actions=("refresh",),
+            labels={"refresh": self.tr("refresh", "buttons")},
+            parent=self,
+        )
+        self.morph_refresh_toolbar.setObjectName("morphRefreshToolbar")
+        self.refresh_morphs_btn = self.morph_refresh_toolbar.button("refresh")
+        self.refresh_morphs_btn.setObjectName("morphRefreshButton")
+        toolbar_layout.addWidget(self.morph_refresh_toolbar)
+        self.topology_diagnostic_label = QLabel("")
+        self.topology_diagnostic_label.setObjectName("morphTopologyDiagnosticLabel")
+        self.repair_topology_btn = QPushButton(self.tr("repair_topology", "buttons"))
+        self.repair_topology_btn.setObjectName("morphRepairTopologyButton")
+        self.repair_topology_btn.setVisible(False)
+        self.repair_topology_btn.setEnabled(False)
+        self.topology_diagnostic_label.setVisible(False)
+        toolbar_layout.addWidget(self.topology_diagnostic_label)
+        toolbar_layout.addWidget(self.repair_topology_btn)
+        self.morph_authoring_toolbar = AuthoringToolbar(
+            actions=("create", "delete", "move_up", "move_down"),
+            labels={
+                "create": self.tr("create", "buttons"),
+                "delete": self.tr("delete", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            parent=self,
+        )
+        self.morph_authoring_toolbar.setObjectName("morphAuthoringToolbar")
+        self.create_morph_btn = self.morph_authoring_toolbar.button("create")
+        self.delete_morph_btn = self.morph_authoring_toolbar.button("delete")
+        self.move_morph_up_btn = self.morph_authoring_toolbar.button("move_up")
+        self.move_morph_down_btn = self.morph_authoring_toolbar.button("move_down")
+        self.create_morph_btn.setObjectName("morphCreateButton")
+        self.delete_morph_btn.setObjectName("morphDeleteButton")
+        self.move_morph_up_btn.setObjectName("morphMoveUpButton")
+        self.move_morph_down_btn.setObjectName("morphMoveDownButton")
+        toolbar_layout.addWidget(self.morph_authoring_toolbar)
         toolbar_layout.addStretch()
         morph_list_layout.addLayout(toolbar_layout)
 
         # モーフリスト
         self.morph_list = QListWidget()
+        self.morph_list.setObjectName("morphList")
         self.morph_list.setAlternatingRowColors(True)
         morph_list_layout.addWidget(self.morph_list)
 
@@ -92,6 +134,7 @@ class MorphTab(BaseTab):
         self.search_label = QLabel(self.tr("search", "fields"))
         search_layout.addWidget(self.search_label)
         self.search_edit = QLineEdit()
+        self.search_edit.setObjectName("morphSearchEdit")
         self.search_edit.setPlaceholderText(self.tr("search_morph_name", "placeholders"))
         search_layout.addWidget(self.search_edit)
         morph_list_layout.addLayout(search_layout)
@@ -114,6 +157,7 @@ class MorphTab(BaseTab):
         self.detail_tabs.addTab(self._create_basic_info_tab(), self.tr("basic_information", "tabs"))
 
         layout.addWidget(self.detail_tabs)
+        layout.addWidget(self._create_work_material_controls())
 
         # プレビューセクション
         self.preview_group = QGroupBox(self.tr("preview", "groups"))
@@ -139,9 +183,11 @@ class MorphTab(BaseTab):
         self.advanced_group = QGroupBox(self.tr("advanced_settings", "groups"))
         advanced_layout = QFormLayout()
         self.invert_check = QCheckBox(self.tr("invert_value", "checkboxes"))
+        self.invert_check.setObjectName("morphInvertCheck")
         advanced_layout.addRow("", self.invert_check)
 
         self.multiplier_spin = QDoubleSpinBox()
+        self.multiplier_spin.setObjectName("morphMultiplierSpin")
         self.multiplier_spin.setRange(-10.0, 10.0)
         self.multiplier_spin.setValue(1.0)
         self.multiplier_spin.setSingleStep(0.1)
@@ -154,6 +200,8 @@ class MorphTab(BaseTab):
         reset_layout = QHBoxLayout()
         self.reset_slider_btn = QPushButton(self.tr("reset", "buttons"))
         self.reset_all_btn = QPushButton(self.tr("reset_all", "actions"))
+        self.reset_slider_btn.setObjectName("morphResetSliderButton")
+        self.reset_all_btn.setObjectName("morphResetAllButton")
         reset_layout.addStretch()
         reset_layout.addWidget(self.reset_slider_btn)
         reset_layout.addWidget(self.reset_all_btn)
@@ -166,11 +214,44 @@ class MorphTab(BaseTab):
         button_layout = QHBoxLayout()
         self.apply_btn = QPushButton(self.tr("apply", "buttons"))
         self.reset_btn = QPushButton(self.tr("reset", "buttons"))
+        self.apply_btn.setObjectName("morphApplyButton")
+        self.reset_btn.setObjectName("morphResetButton")
         button_layout.addStretch()
         button_layout.addWidget(self.apply_btn)
         button_layout.addWidget(self.reset_btn)
         layout.addLayout(button_layout)
 
+        return widget
+
+    def _create_work_material_controls(self):
+        """Create the material-morph work shader controls.
+
+        Raw offset JSON is intentionally not part of the user-facing morph
+        tab.  Material morph editing remains available through the dedicated
+        temporary work-material workflow below the semantic details.
+        """
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        work_layout = QHBoxLayout()
+        self.work_offset_combo = QComboBox()
+        self.work_offset_combo.setObjectName("morphWorkOffsetCombo")
+        self.create_work_material_btn = QPushButton(
+            self.tr("create_work_material", "buttons")
+        )
+        self.create_work_material_btn.setObjectName("morphCreateWorkMaterialButton")
+        self.apply_work_material_btn = QPushButton(
+            self.tr("apply_work_material", "buttons")
+        )
+        self.apply_work_material_btn.setObjectName("morphApplyWorkMaterialButton")
+        self.clear_work_material_btn = QPushButton(
+            self.tr("clear_work_material", "buttons")
+        )
+        self.clear_work_material_btn.setObjectName("morphClearWorkMaterialButton")
+        work_layout.addWidget(self.work_offset_combo)
+        work_layout.addWidget(self.create_work_material_btn)
+        work_layout.addWidget(self.apply_work_material_btn)
+        work_layout.addWidget(self.clear_work_material_btn)
+        layout.addLayout(work_layout)
         return widget
 
     def _create_basic_info_tab(self):
@@ -180,7 +261,9 @@ class MorphTab(BaseTab):
 
         # モーフ名
         self.morph_name_jp_edit = QLineEdit()
+        self.morph_name_jp_edit.setObjectName("morphNameJpEdit")
         self.morph_name_en_edit = QLineEdit()
+        self.morph_name_en_edit.setObjectName("morphNameEnEdit")
         self.morph_name_jp_label = QLabel(self.tr("morph_name_jp", "fields"))
         self.morph_name_en_label = QLabel(self.tr("morph_name_en", "fields"))
         layout.addRow(self.morph_name_jp_label, self.morph_name_jp_edit)
@@ -189,6 +272,7 @@ class MorphTab(BaseTab):
         # パネル
         panel_layout = QHBoxLayout()
         self.panel_combo = QComboBox()
+        self.panel_combo.setObjectName("morphPanelCombo")
         self.panel_combo.addItems(
             [
                 self.tr("none", "morph_panels"),
@@ -204,6 +288,7 @@ class MorphTab(BaseTab):
 
         # モーフタイプ
         self.morph_type_combo = QComboBox()
+        self.morph_type_combo.setObjectName("morphTypeCombo")
         self.morph_type_combo.addItems(
             [
                 self.tr("vertex", "morph_types"),
@@ -249,13 +334,101 @@ class MorphTab(BaseTab):
             widget.setEnabled(enabled)
             widget.setToolTip(tooltip)
 
+    def set_authoring_controls_enabled(self, enabled, tooltip="", reason_key=""):
+        """Enable semantic authoring separately from preview weights."""
+        for widget in (
+            self.morph_name_jp_edit,
+            self.morph_name_en_edit,
+            self.panel_combo,
+            self.morph_type_combo,
+            self.apply_btn,
+        ):
+            widget.setEnabled(enabled)
+            widget.setToolTip(tooltip)
+        for action in ("create", "delete", "move_up", "move_down"):
+            self.morph_authoring_toolbar.set_action_enabled(action, enabled, tooltip, reason_key)
+
+    def set_work_material_controls(self, enabled, offsets=(), tooltip=""):
+        """Populate work-offset choices and gate temporary material actions."""
+        self.work_offset_combo.blockSignals(True)
+        self.work_offset_combo.clear()
+        for offset_index, label in offsets:
+            self.work_offset_combo.addItem(label, offset_index)
+        self.work_offset_combo.blockSignals(False)
+        active = bool(enabled and self.work_offset_combo.count())
+        for widget in (
+            self.work_offset_combo,
+            self.create_work_material_btn,
+            self.apply_work_material_btn,
+            self.clear_work_material_btn,
+        ):
+            widget.setEnabled(active)
+            widget.setToolTip(tooltip)
+
+    def set_topology_repair_state(self, diagnostic="", repairable=False):
+        """Show the compact explicit repair action only for a diagnostic."""
+        visible = bool(diagnostic)
+        self.topology_diagnostic_label.setText(
+            self.tr("topology_issue", "labels") if visible else ""
+        )
+        self.topology_diagnostic_label.setToolTip(diagnostic)
+        self.topology_diagnostic_label.setVisible(visible)
+        self.repair_topology_btn.setVisible(visible)
+        self.repair_topology_btn.setEnabled(bool(visible and repairable))
+        self.repair_topology_btn.setToolTip(
+            self.tr("repair_topology", "tooltips")
+            if repairable
+            else diagnostic
+        )
+
+    def choose_create_morph_type(self, capabilities):
+        """Show creation-only morph types and return the selected PMX type."""
+        if callable(self.create_morph_type_provider):
+            return self.create_morph_type_provider(tuple(capabilities))
+        menu = QMenu(self)
+        for morph_type, enabled, reason in capabilities:
+            label = "UV" if morph_type == "uv" else self.tr(morph_type, "morph_types")
+            action = menu.addAction(label if enabled or not reason else f"{label} — {reason}")
+            action.setData(morph_type)
+            action.setEnabled(bool(enabled))
+            action.setToolTip(reason)
+            action.setStatusTip(reason)
+        execute = getattr(menu, "exec", None) or getattr(menu, "exec_", None)
+        if not callable(execute):
+            return None
+        selected = execute(
+            self.create_morph_btn.mapToGlobal(
+                self.create_morph_btn.rect().bottomLeft()
+            )
+        )
+        value = selected.data() if selected is not None else None
+        return value if isinstance(value, str) else None
+
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
 
+        self.morph_refresh_toolbar.retranslate(
+            {"refresh": self.tr("refresh", "buttons")},
+            reason_resolver=lambda key: self.tr(key, "tooltips"),
+        )
+        self.morph_authoring_toolbar.retranslate(
+            {
+                "create": self.tr("create", "buttons"),
+                "delete": self.tr("delete", "buttons"),
+                "move_up": self.tr("up", "buttons"),
+                "move_down": self.tr("down", "buttons"),
+            },
+            reason_resolver=lambda key: self.tr(key, "tooltips"),
+        )
+
         # Tab widget texts
         if self.detail_tabs.count() >= 1:
             self.detail_tabs.setTabText(0, self.tr("basic_information", "tabs"))
+        self.create_work_material_btn.setText(self.tr("create_work_material", "buttons"))
+        self.apply_work_material_btn.setText(self.tr("apply_work_material", "buttons"))
+        self.clear_work_material_btn.setText(self.tr("clear_work_material", "buttons"))
+        self.repair_topology_btn.setText(self.tr("repair_topology", "buttons"))
 
         # ComboBox items - Panel
         self.panel_combo.clear()

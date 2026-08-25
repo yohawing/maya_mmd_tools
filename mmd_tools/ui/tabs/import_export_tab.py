@@ -21,6 +21,7 @@ from ..qt_compat import (
     QColor,
 )
 from ..base_tab import BaseTab
+from ..components.category_stack import CategoryStack
 from ..import_export_view_state import ImportExportViewState
 from ...core import settings_keys as setting_keys
 from ...services.settings_service import SettingsService, normalize_reduce_bake_quality
@@ -41,13 +42,7 @@ class ImportExportTab(BaseTab):
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
 
-        # スプリッターを作成（横方向）
-        splitter = QSplitter(Qt.Horizontal)
-
         # 左側：設定セクション（フラット）
-        left_scroll = QScrollArea()
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.left_widget = QWidget()
         model_settings_layout = QVBoxLayout(self.left_widget)
 
@@ -214,20 +209,6 @@ class ImportExportTab(BaseTab):
         self.physics_group.setLayout(physics_layout)
         model_settings_layout.addWidget(self.physics_group)
 
-        # Other Settings Group (dev-only advanced toggles)
-        self.other_group = QGroupBox(self.tr("other", "groups"))
-        other_layout = QVBoxLayout()
-
-        self.use_cpp_rig_nodes_check = self._bind_checkbox(
-            "use_cpp_rig_nodes",
-            setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES,
-            False,
-            other_layout,
-            tooltip_key="use_cpp_rig_nodes",
-        )
-
-        self.other_group.setLayout(other_layout)
-
         # Animation Import Settings
         self.animation_settings_group = QGroupBox(self.tr("animation", "tabs"))
         anim_settings_layout = QVBoxLayout()
@@ -318,45 +299,9 @@ class ImportExportTab(BaseTab):
         self.animation_settings_group.setLayout(anim_settings_layout)
         model_settings_layout.addWidget(self.animation_settings_group)
 
-        # Other group at the bottom (dev-only)
-        model_settings_layout.addWidget(self.other_group)
-
         model_settings_layout.addStretch()
 
-        # Export Settings
-        self._export_settings_tab = QScrollArea()
-        self._export_settings_tab.setWidgetResizable(True)
-        self._export_settings_tab.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        export_settings_widget = QWidget()
-        export_settings_layout = QVBoxLayout(export_settings_widget)
-
-        # Export format
-        format_layout = QHBoxLayout()
-        self.format_label = QLabel(self.tr("format", "fields"))
-        format_layout.addWidget(self.format_label)
-        self.export_format_combo = QComboBox()
-        # PMD エクスポートは実装済みだが、UI ではリリース対象形式だけを表示する。
-        self.export_format_combo.addItems(["pmx", "vmd"])
-        current_format = self.settings_service.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx")
-        self.export_format_combo.setCurrentText(current_format)
-        self.export_format_combo.currentTextChanged.connect(self._on_export_format_changed)
-        format_layout.addWidget(self.export_format_combo)
-        format_layout.addStretch()
-        export_settings_layout.addLayout(format_layout)
-
-        # Apply scale checkbox
-        self.apply_scale_check = self._bind_checkbox(
-            "apply_scale", setting_keys.EXPORT_GENERAL_APPLY_SCALE, True, export_settings_layout
-        )
-
-        export_settings_layout.addStretch()
-        self._export_settings_tab.setWidget(export_settings_widget)
-        model_settings_layout.addWidget(self._export_settings_tab)
-
-        # 右側：インポート/エクスポートセクション
-        right_scroll = QScrollArea()
-        right_scroll.setWidgetResizable(True)
-        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 右側：インポートセクション
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
 
@@ -381,6 +326,10 @@ class ImportExportTab(BaseTab):
         # Import button with new file checkbox
         import_button_layout = QHBoxLayout()
         self.import_button = QPushButton(self.tr("import_model", "actions"))
+        self.new_model_button = QPushButton(self.tr("new_mmd_model", "actions"))
+        # The presenter enables this only when the action and packaged
+        # template metadata are both available.
+        self.new_model_button.setEnabled(False)
         self.new_file_check = QCheckBox(self.tr("new_file", "checkboxes"))
         # NewFileチェックボックスの状態を読み込み
         saved_new_file = self.view_state.get("new_file_check", "false")
@@ -388,9 +337,11 @@ class ImportExportTab(BaseTab):
         # 状態が変更されたら保存
         self.new_file_check.toggled.connect(lambda checked: self.view_state.set("new_file_check", str(checked)))
         import_button_layout.addWidget(self.import_button)
-        import_button_layout.addWidget(self.new_file_check)
+        import_button_layout.addWidget(self.new_model_button)
         import_button_layout.addStretch()
         model_import_layout.addRow(import_button_layout)
+        # This is a model-import setting, not a third primary action.
+        model_layout.addWidget(self.new_file_check)
 
         self.model_import_group.setLayout(model_import_layout)
         right_layout.addWidget(self.model_import_group)
@@ -418,7 +369,9 @@ class ImportExportTab(BaseTab):
             lambda v: self.settings_service.set(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, v)
         )
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
-        animation_layout.addRow(self.clear_existing_motion_check)
+        # Keep motion cleanup with the VMD evaluation settings, not beside the
+        # primary Import Motion action.
+        anim_settings_layout.addWidget(self.clear_existing_motion_check)
 
         self.import_vmd_button = QPushButton(self.tr("import_animation", "actions"))
         animation_layout.addRow(self.import_vmd_button)
@@ -426,76 +379,174 @@ class ImportExportTab(BaseTab):
         self.animation_group.setLayout(animation_layout)
         right_layout.addWidget(self.animation_group)
 
-        # Export Group
-        self.export_group = QGroupBox(self.tr("export", "buttons"))
-        export_layout = QFormLayout()
-
-        self.export_path_edit = QLineEdit()
-        saved_export_path = self.view_state.get("export_path", "")
-        self.export_path_edit.setText(saved_export_path)
-        self.export_path_button = QPushButton(self.tr("browse", "buttons"))
-        export_path_layout = QHBoxLayout()
-        export_path_layout.addWidget(self.export_path_edit)
-        export_path_layout.addWidget(self.export_path_button)
-        self.export_path_label = QLabel(self.tr("file_path", "labels"))
-        export_layout.addRow(self.export_path_label, export_path_layout)
-
-        self.export_path_edit.textChanged.connect(lambda text: self.view_state.set("export_path", text))
-
-        self.export_button = QPushButton(self.tr("export", "buttons"))
-        export_layout.addRow(self.export_button)
-
-        self.export_group.setLayout(export_layout)
-        right_layout.addWidget(self.export_group)
-
         # 統合履歴表示エリア
         self._setup_unified_history_area(right_layout)
 
         right_layout.addStretch()
 
-        # スクロールエリアにウィジェットを設定
-        right_scroll.setWidget(right_widget)
-
-        # 左側のスクロールエリアにタブウィジェットを設定
-        left_scroll.setWidget(self.left_widget)
-
-        # スプリッターに左右のウィジェットを追加
-        splitter.addWidget(left_scroll)
-        splitter.addWidget(right_scroll)
-
-        # 初期のスプリッター比率を設定（左:右 = 1:2）
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-
-        main_layout.addWidget(splitter)
+        self._build_category_stack(main_layout, model_settings_layout, right_layout)
 
         # import_models is always ON in behavior; checkbox removed from UI.
         self.import_models_check.setVisible(False)
 
         # Dev-only controls: shown only when development_mode=True.
-        # Export UI/entry is also develop-mode only (export_group via _apply_export_visibility).
         self._dev_only_widgets = [
             self.scale_row,
             self.disable_backface_culling_check,
             self.texture_row,
             self.uv_row,
             self.morph_group,
-            self.other_group,
-            self.use_cpp_rig_nodes_check,
             self.motion_scale_row,
             self.vmd_rotation_time_curve_check,
-            self._export_settings_tab,
         ]
         self._apply_dev_mode_visibility()
 
-    def _bind_checkbox(self, tr_key, settings_key, default, layout, tooltip_key=None):
+    @staticmethod
+    def _take_layout_widget(layout, widget):
+        """Detach one existing widget so it can be placed in a category page."""
+        for index in range(layout.count()):
+            item = layout.itemAt(index)
+            if item is not None and item.widget() is widget:
+                layout.takeAt(index)
+                widget.setParent(None)
+                return widget
+        raise RuntimeError("ImportExportTab layout widget was not found")
+
+    def _make_scroll(self, widgets, object_name):
+        """Create a consistent scroll page without changing widget ownership."""
+        scroll = QScrollArea()
+        scroll.setObjectName(object_name)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        for widget in widgets:
+            layout.addWidget(widget)
+        layout.addStretch()
+        scroll.setWidget(content)
+        return scroll, layout
+
+    def _make_category_page(self, category, title, settings_widgets, workflow_widgets):
+        """Build one full-width page with a heading and optional workflow pane."""
+        page = QWidget()
+        page.setObjectName(f"import{category.title()}Page")
+        page_layout = QVBoxLayout(page)
+        header = QLabel(title, page)
+        header.setObjectName(f"import{category.title()}PageHeader")
+        header.setProperty("headingLevel", 2)
+        page_layout.addWidget(header)
+        if workflow_widgets is None:
+            settings_scroll, _ = self._make_scroll(settings_widgets, f"import{category.title()}SettingsScroll")
+            page_layout.addWidget(settings_scroll, 1)
+            return page, None
+        settings_scroll, _ = self._make_scroll(settings_widgets, f"import{category.title()}SettingsScroll")
+        workflow_scroll, workflow_layout = self._make_scroll(
+            workflow_widgets, f"import{category.title()}WorkflowScroll"
+        )
+        splitter = QSplitter(Qt.Horizontal, page)
+        splitter.setObjectName(f"import{category.title()}PageSplitter")
+        splitter.addWidget(settings_scroll)
+        splitter.addWidget(workflow_scroll)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([300, 600])
+        page_layout.addWidget(splitter, 1)
+        return page, workflow_layout
+
+    def _build_category_stack(self, main_layout, settings_layout, workflow_layout):
+        """Move existing controls into Model/Animation full-page stacks."""
+        self.import_category_stack = CategoryStack(
+            ("model", "animation"),
+            {
+                "model": self.tr("model", "groups"),
+                "animation": self.tr("animation", "tabs"),
+            },
+            "importCategoryStack",
+            self,
+        )
+        self._active_import_category = "model"
+
+        self._take_layout_widget(settings_layout, self.scale_row)
+        for widget in (
+            self.general_group,
+            self.model_group,
+            self.morph_group,
+            self.physics_group,
+        ):
+            self._take_layout_widget(settings_layout, widget)
+        self._take_layout_widget(settings_layout, self.animation_settings_group)
+        self._take_layout_widget(workflow_layout, self.model_import_group)
+        self._take_layout_widget(workflow_layout, self.animation_group)
+        self._take_layout_widget(workflow_layout, self.history_group)
+
+        model_page, model_workflow_layout = self._make_category_page(
+            "Model",
+            self.tr("model", "groups"),
+            [
+                self.scale_row,
+                self.general_group,
+                self.model_group,
+                self.morph_group,
+                self.physics_group,
+            ],
+            [self.model_import_group],
+        )
+        animation_page, animation_workflow_layout = self._make_category_page(
+            "Animation",
+            self.tr("animation", "tabs"),
+            [self.animation_settings_group],
+            [self.animation_group],
+        )
+        self.import_category_stack.add_page("model", model_page)
+        self.import_category_stack.add_page("animation", animation_page)
+        self._import_workflow_layouts = {
+            "model": model_workflow_layout,
+            "animation": animation_workflow_layout,
+        }
+        self.import_category_stack.currentChanged.connect(
+            self._on_import_stack_index_changed
+        )
+        self._place_history_group("model")
+        main_layout.addWidget(self.import_category_stack)
+
+    def _place_history_group(self, category):
+        """Place the shared history view on the active page and filter it."""
+        self._active_import_category = category
+        layout = self._import_workflow_layouts.get(category)
+        if layout is None:
+            self.history_group.hide()
+        else:
+            self.history_group.show()
+            layout.insertWidget(max(0, layout.count() - 1), self.history_group)
+        self.refresh_unified_history()
+
+    def _on_import_stack_index_changed(self, index):
+        """Keep the typed file history aligned with a clicked import tab."""
+        categories = ("model", "animation")
+        try:
+            category = categories[int(index)]
+        except (IndexError, TypeError, ValueError):
+            return
+        self._place_history_group(category)
+
+    def _bind_checkbox(
+        self, tr_key, settings_key, default, layout, tooltip_key=None, on_change=None
+    ):
         cb = QCheckBox(self.tr(tr_key, "checkboxes"))
         cb.setChecked(self.settings_service.get(settings_key, default))
-        cb.toggled.connect(lambda v, k=settings_key: self.settings_service.set(k, v))
+        if on_change is None:
+            def on_change(key, value):
+                self.settings_service.set(key, value)
+
+        cb.toggled.connect(lambda v, k=settings_key: on_change(k, v))
         if tooltip_key:
             cb.setToolTip(self.tr(tooltip_key, "tooltips"))
         layout.addWidget(cb)
         return cb
+
+    def _on_setting_changed(self, settings_key, value):
+        """Persist a visible setting without routing it through an import action."""
+        self.settings_service.set(settings_key, value)
 
     def _sync_native_physics_bake_enabled(self, bake_mode_enabled):
         """Native physics bake is a VMD bake-mode option, not a model import option."""
@@ -566,8 +617,6 @@ class ImportExportTab(BaseTab):
         # Import scale: normal mode displays 1.0 without overwriting the persisted value.
         self._sync_import_scale_control(is_dev)
         self._sync_reduce_bake_quality_control()
-        # Export entry also depends on develop mode.
-        self._apply_export_visibility()
 
     def _sync_import_scale_control(self, is_dev):
         """Sync scale spin display for the current mode without clobbering settings.
@@ -606,19 +655,6 @@ class ImportExportTab(BaseTab):
         finally:
             self.reduce_quality_slider.blockSignals(blocked)
 
-    def _on_export_format_changed(self, export_format):
-        """エクスポート形式を保存し、利用可能な export UI だけを表示する。"""
-        self.settings_service.set(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, export_format)
-        self._apply_export_visibility()
-
-    def _apply_export_visibility(self):
-        """Develop モードかつ対応済み export 形式のときだけ export UI を表示する。"""
-        if not hasattr(self, "export_group"):
-            return
-        is_dev = self.settings_service.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
-        export_format = self.settings_service.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx")
-        self.export_group.setVisible(bool(is_dev) and export_format in {"pmx", "vmd"})
-
     def get_custom_namespace(self):
         """カスタムnamespace名を取得"""
         if (
@@ -644,14 +680,10 @@ class ImportExportTab(BaseTab):
             self.vmd_fps_label.setText(self.tr("vmd_fps", "fields"))
         if hasattr(self, "motion_scale_label"):
             self.motion_scale_label.setText(self.tr("motion_scale", "fields"))
-        if hasattr(self, "format_label"):
-            self.format_label.setText(self.tr("format", "fields"))
         if hasattr(self, "import_path_label"):
             self.import_path_label.setText(self.tr("file_path", "labels"))
         if hasattr(self, "vmd_file_label"):
             self.vmd_file_label.setText(self.tr("vmd_file", "fields"))
-        if hasattr(self, "export_path_label"):
-            self.export_path_label.setText(self.tr("file_path", "labels"))
 
 
         # GroupBoxes
@@ -663,14 +695,10 @@ class ImportExportTab(BaseTab):
             self.morph_group.setTitle(self.tr("morph", "groups"))
         if hasattr(self, "physics_group"):
             self.physics_group.setTitle(self.tr("physics_settings", "groups"))
-        if hasattr(self, "other_group"):
-            self.other_group.setTitle(self.tr("other", "groups"))
         if hasattr(self, "model_import_group"):
             self.model_import_group.setTitle(self.tr("model_import", "groups"))
         if hasattr(self, "animation_group"):
             self.animation_group.setTitle(self.tr("animation_import", "groups"))
-        if hasattr(self, "export_group"):
-            self.export_group.setTitle(self.tr("export", "buttons"))
         if hasattr(self, "history_group"):
             self.history_group.setTitle(self.tr("file_history", "groups"))
         if hasattr(self, "clear_history_button"):
@@ -700,8 +728,6 @@ class ImportExportTab(BaseTab):
             self.vmd_rotation_time_curve_check.setText(
                 self.tr("vmd_rotation_time_curve", "checkboxes")
             )
-        self.use_cpp_rig_nodes_check.setText(self.tr("use_cpp_rig_nodes", "checkboxes"))
-        self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
 
         # Tooltips
@@ -724,7 +750,6 @@ class ImportExportTab(BaseTab):
             self.vmd_rotation_time_curve_check.setToolTip(
                 self.tr("vmd_rotation_time_curve", "tooltips")
             )
-        self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
         if hasattr(self, "animation_start_frame"):
             self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))
         self.vmd_fps_combo.setToolTip(self.tr("vmd_fps", "tooltips"))
@@ -733,14 +758,26 @@ class ImportExportTab(BaseTab):
         # Buttons
         self.import_path_button.setText(self.tr("browse", "buttons"))
         self.vmd_path_button.setText(self.tr("browse", "buttons"))
-        self.export_path_button.setText(self.tr("browse", "buttons"))
         self.import_button.setText(self.tr("import_model", "actions"))
+        self.new_model_button.setText(self.tr("new_mmd_model", "actions"))
         self.import_vmd_button.setText(self.tr("import_animation", "actions"))
-        self.export_button.setText(self.tr("export", "buttons"))
 
         # Tab widget texts
         if hasattr(self, "animation_settings_group"):
             self.animation_settings_group.setTitle(self.tr("animation", "tabs"))
+        if hasattr(self, "import_category_stack"):
+            labels = {
+                "model": self.tr("model", "groups"),
+                "animation": self.tr("animation", "tabs"),
+            }
+            self.import_category_stack.retranslate(labels)
+            for category, key in (
+                ("Model", "model"),
+                ("Animation", "animation"),
+            ):
+                header = self.findChild(QLabel, f"import{category}PageHeader")
+                if header is not None:
+                    header.setText(labels[key])
 
     def _setup_unified_history_area(self, layout):
         """統合履歴表示エリアを設定"""
@@ -776,12 +813,10 @@ class ImportExportTab(BaseTab):
             self.import_path_edit.setText(file_path)
         elif file_type == "vmd":
             self.vmd_path_edit.setText(file_path)
-        elif file_type == "export":
-            self.export_path_edit.setText(file_path)
 
     def _clear_all_history(self):
-        """すべての履歴をクリア"""
-        self.view_state.clear_file_history()
+        """Importタブで表示するモデル／VMD履歴だけをクリアする。"""
+        self.view_state.clear_file_history(("import", "vmd"))
         self.refresh_unified_history()
 
     def refresh_unified_history(self):
@@ -789,12 +824,18 @@ class ImportExportTab(BaseTab):
         self.unified_history_list.clear()
 
         history_limit = self.settings_service.resolve_file_history_limit()
-        all_items = self.view_state.load_file_history(history_limit)
-        display_prefixes = {
-            "import": "Model",
-            "vmd": "Animation",
-            "export": "Export",
-        }
+        # Export history may still exist in legacy QSettings for rollback, but
+        # this Import tab deliberately ignores it. The dedicated Export tab
+        # owns all export history and output controls.
+        active_type = {"model": "import", "animation": "vmd"}.get(
+            getattr(self, "_active_import_category", "model")
+        )
+        all_items = [
+            item
+            for item in self.view_state.load_file_history(history_limit)
+            if item.get("type") == active_type
+        ]
+        display_prefixes = {"import": "Model", "vmd": "Animation"}
 
         # リストに追加（最新のものから表示）
         for item_data in all_items:
@@ -809,8 +850,6 @@ class ImportExportTab(BaseTab):
                 item.setForeground(QColor(100, 200, 255))  # 水色
             elif item_data["type"] == "vmd":
                 item.setForeground(QColor(255, 200, 100))  # オレンジ
-            elif item_data["type"] == "export":
-                item.setForeground(QColor(100, 255, 100))  # 緑
 
             self.unified_history_list.addItem(item)
 
@@ -823,11 +862,5 @@ class ImportExportTab(BaseTab):
     def add_vmd_path_to_history(self, path):
         """アニメーションパスを履歴に追加"""
         self.view_state.save_file_history("vmd", path)
-        # 履歴リストを更新
-        self.refresh_unified_history()
-
-    def add_export_path_to_history(self, path):
-        """エクスポートパスを履歴に追加"""
-        self.view_state.save_file_history("export", path)
         # 履歴リストを更新
         self.refresh_unified_history()

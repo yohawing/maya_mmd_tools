@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 import maya.api.OpenMaya as om
 import maya.api.OpenMayaAnim as oma
 
-from mmd_tools.core.constants import ATTR_MMD_CONTROL_RIG_JSON
+from mmd_tools.core.constants import ATTR_MMD_BONE_NAME, ATTR_MMD_CONTROL_RIG_JSON
 from mmd_tools.core.humanik_utils import maya_cmds
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_ATTACHED,
@@ -48,6 +48,7 @@ from mmd_tools.core.mmd_control_rig_basis import (
 )
 from mmd_tools.core.mmd_control_rig_channels import (
     ROTATE_CHANNELS,
+    TRANSLATE_CHANNELS,
     derive_mmd_control_rig_channel_policy,
 )
 from mmd_tools.core.mmd_control_rig_anim_layers import (
@@ -72,6 +73,60 @@ _SAFE_ANIMATION_NODES = frozenset({"pairBlend", "unitConversion"})
 ROUTE_SAME_BASIS = "same_basis"
 ROUTE_SAMPLED = "sampled"
 ROUTE_UNSUPPORTED = "unsupported"
+
+
+def _normalize_dense_frame_range(frame_range) -> Optional[Tuple[float, float]]:
+    """Normalize an optional inclusive range for temporary dense sampling."""
+
+    if frame_range is None:
+        return None
+    try:
+        values = list(frame_range)
+        if len(values) != 2:
+            raise ValueError("expected exactly two values")
+        start, end = (float(value) for value in values)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise MmdControlRigBuildError(
+            "automatic Control Rig bake frame_range must contain two numbers"
+        ) from exc
+    if not math.isfinite(start) or not math.isfinite(end) or start > end:
+        raise MmdControlRigBuildError(
+            "automatic Control Rig bake frame_range must be finite and ordered"
+        )
+    return start, end
+
+
+def _dense_sample_times(times, frame_range=None) -> List[float]:
+    """Build a dense sample grid, optionally clipped to an inclusive range.
+
+    The source curves are deliberately left untouched by this helper.  When a
+    range is supplied, only the grid used for evaluated samples is clipped;
+    authored keys outside the range remain available for the restoration
+    journal and for any existing destination curve.
+    """
+
+    source_times = sorted({float(time) for time in (times or [])})
+    if frame_range is None:
+        if not source_times:
+            return []
+        first = math.floor(min(source_times))
+        last = math.ceil(max(source_times))
+        return sorted(
+            set(source_times)
+            | {float(frame) for frame in range(first, last + 1)}
+        )
+
+    start, end = _normalize_dense_frame_range(frame_range)
+
+    clipped = {time for time in source_times if start <= time <= end}
+    first = math.ceil(start)
+    last = math.floor(end)
+    if first <= last:
+        clipped.update(float(frame) for frame in range(first, last + 1))
+    # Preserve non-integral requested endpoints as well.  This keeps the
+    # inclusive contract meaningful for callers that use sub-frame ranges.
+    clipped.update((start, end))
+    return sorted(clipped)
 
 
 def control_rig_edit_routes_for_joints(joints, *, cmds_module=None) -> Dict[str, Dict[str, Tuple[str, str]]]:
@@ -113,6 +168,253 @@ def control_rig_edit_routes_for_joints(joints, *, cmds_module=None) -> Dict[str,
                 if channel in _CHANNELS:
                     routes.setdefault(joint, {})[channel] = (control, channel)
     return routes
+
+
+def resolve_control_rig_direct_vmd_export_routes(
+    model_root: str,
+    *,
+    cmds_module=None,
+) -> Dict[str, Any]:
+    """Resolve read-only Control-selector and MMD-value routes in EDIT.
+
+    Controls decide whether a VMD bone track exists; they are never the value
+    authority returned by this function.  Values are read from the UUID-backed
+    authored plugs recorded for the corresponding MMD joint.  Fallback roles
+    are intentionally omitted instead of being aliased to another bone.
+
+    ``inspect_mmd_control_rig`` validates the persisted ownership topology.
+    Actual key discovery remains a converter responsibility.
+    """
+
+    cmds = cmds_module or maya_cmds()
+    metadata = read_mmd_control_rig_metadata(model_root, cmds_module=cmds)
+    if metadata is None:
+        raise MmdControlRigBuildError("MMD Control Rig metadata is missing")
+    if (
+        metadata.get("state") != CONTROL_RIG_EDIT
+        or metadata.get("owner") != CONTROL_RIG_CONTROL_OWNED
+    ):
+        raise MmdControlRigBuildError(
+            "direct VMD export requires EDIT / CONTROL_OWNED"
+        )
+    rig = inspect_mmd_control_rig(model_root, cmds_module=cmds)
+    if rig is None:
+        raise MmdControlRigBuildError("MMD Control Rig ownership is missing")
+
+    root = _canonical_node(cmds, rig.model_root)
+    descendants = set(
+        cmds.listRelatives(
+            root,
+            allDescendents=True,
+            type="joint",
+            fullPath=True,
+        )
+        or []
+    )
+    ik_rows, channel_rows, _offset_rows = _resolve_edit_journal(cmds, metadata)
+    candidates: Dict[str, Dict[str, Any]] = {}
+    claimed_names: Dict[str, str] = {}
+    ik_state_routes: Dict[str, Tuple[str, str]] = {}
+
+    bindings = metadata.get("bindings")
+    if not isinstance(bindings, Mapping):
+        raise MmdControlRigBuildError("control-rig bindings metadata is invalid")
+    for role_value, binding in sorted(bindings.items()):
+        role = str(role_value)
+        if not isinstance(binding, Mapping):
+            raise MmdControlRigBuildError(f"invalid Control Rig binding: {role}")
+        if binding.get("fallback") is not None:
+            continue
+
+        control = rig.controls.get(role)
+        if not control:
+            raise MmdControlRigBuildError(f"missing owned control for {role}")
+        control = _canonical_node(cmds, str(control))
+        joint = _canonical_node(
+            cmds,
+            resolve_mmd_control_rig_binding_joint(cmds, binding),
+        )
+        if joint not in descendants:
+            raise MmdControlRigBuildError(
+                f"Control Rig binding joint is outside the target model: {role}"
+            )
+        if joint in candidates:
+            raise MmdControlRigBuildError(
+                f"multiple Control Rig roles claim one joint: {joint}"
+            )
+
+        bone_name = _required_mmd_bone_name(cmds, joint)
+        if bone_name in claimed_names:
+            raise MmdControlRigBuildError(
+                f"multiple Control Rig joints claim VMD bone name: {bone_name}"
+            )
+
+        policy = derive_mmd_control_rig_channel_policy(role, binding)
+        allowed_channels = tuple(
+            dict.fromkeys(policy.keyable_channels + policy.passthrough_channels)
+        )
+        if not allowed_channels:
+            raise MmdControlRigBuildError(
+                f"Control Rig binding exposes no authored channels: {role}"
+            )
+        selector_plugs = tuple(f"{control}.{channel}" for channel in allowed_channels)
+
+        value_routes: Dict[str, Tuple[str, str]] = {}
+        for target in _expanded_authored_plugs(binding, cmds_module=cmds):
+            logical_channel = _control_channel_for_target(target)
+            if logical_channel not in _CHANNELS:
+                continue
+            if logical_channel in value_routes:
+                raise MmdControlRigBuildError(
+                    f"duplicate authored channel: {role}.{logical_channel}"
+                )
+            canonical_target = _canonical_plug(cmds, target)
+            if logical_channel in allowed_channels:
+                expected_control = _canonical_plug(
+                    cmds, f"{control}.{logical_channel}"
+                )
+                matching_rows = [
+                    row
+                    for row in channel_rows
+                    if _canonical_plug(cmds, str(row["target"])) == canonical_target
+                ]
+                if len(matching_rows) != 1 or _canonical_plug(
+                    cmds, str(matching_rows[0]["control"])
+                ) != expected_control:
+                    raise MmdControlRigBuildError(
+                        f"EDIT journal route mismatch: {canonical_target}"
+                    )
+                incoming = cmds.listConnections(
+                    canonical_target,
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                ) or []
+                if len(incoming) != 1 or not _plug_reaches_control(
+                    cmds, str(incoming[0]), expected_control
+                ):
+                    raise MmdControlRigBuildError(
+                        f"Control Rig writer mismatch: {canonical_target}"
+                    )
+            node, _separator, attribute = canonical_target.rpartition(".")
+            value_routes[logical_channel] = (node, attribute)
+
+        _require_complete_direct_export_families(role, allowed_channels, value_routes)
+        candidates[joint] = {
+            "boneName": bone_name,
+            "selectorPlugs": selector_plugs,
+            "valueRoutes": value_routes,
+        }
+        if binding.get("inputKind") == INPUT_IK_CONTROLLER:
+            control_plug = _canonical_plug(cmds, f"{control}.ikEnabled")
+            solvers = tuple(
+                dict.fromkeys(
+                    _canonical_node(cmds, solver)
+                    for solver in resolve_mmd_control_rig_binding_ik_solvers(
+                        cmds, binding
+                    )
+                )
+            )
+            if not solvers:
+                raise MmdControlRigBuildError(
+                    f"IK Control Rig binding has no owned solver: {role}"
+                )
+            expected_targets = {
+                _canonical_plug(cmds, f"{solver}.enabled") for solver in solvers
+            }
+            matching_rows = [
+                row
+                for row in ik_rows
+                if _canonical_plug(cmds, str(row["control"])) == control_plug
+                and _canonical_plug(cmds, str(row["target"])) in expected_targets
+            ]
+            if len(matching_rows) != len(expected_targets) or {
+                _canonical_plug(cmds, str(row["target"])) for row in matching_rows
+            } != expected_targets:
+                raise MmdControlRigBuildError(
+                    f"EDIT journal IK route mismatch: {role}"
+                )
+            for solver in solvers:
+                incoming = cmds.listConnections(
+                    f"{solver}.enabled",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                ) or []
+                if tuple(_canonical_plug(cmds, str(plug)) for plug in incoming) != (
+                    control_plug,
+                ):
+                    raise MmdControlRigBuildError(
+                        f"IK solver writer mismatch: {solver}.enabled"
+                    )
+                ik_name = _required_ik_bone_name(cmds, solver)
+                if ik_name in ik_state_routes:
+                    raise MmdControlRigBuildError(
+                        f"multiple Control Rig bindings claim IK state name: {ik_name}"
+                    )
+                ik_state_routes[ik_name] = (control, "ikEnabled")
+        claimed_names[bone_name] = joint
+
+    return {
+        "candidates": candidates,
+        "ikStateRoutes": ik_state_routes,
+    }
+
+
+def _required_mmd_bone_name(cmds, joint: str) -> str:
+    """Read the authoritative VMD name without a Maya leaf-name fallback."""
+
+    if not cmds.attributeQuery(ATTR_MMD_BONE_NAME, node=joint, exists=True):
+        raise MmdControlRigBuildError(f"MMD bone name metadata is missing: {joint}")
+    name = str(cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}") or "")
+    if not name:
+        raise MmdControlRigBuildError(f"MMD bone name metadata is empty: {joint}")
+    return name
+
+
+def _required_ik_bone_name(cmds, solver: str) -> str:
+    """Return the solver-owned VMD IK property name without joint-name fallback."""
+
+    attribute = "mmd_ik_bone_name"
+    if not cmds.attributeQuery(attribute, node=solver, exists=True):
+        raise MmdControlRigBuildError(f"IK solver has no VMD bone name: {solver}")
+    try:
+        value = cmds.getAttr(f"{solver}.{attribute}")
+    except Exception as exc:
+        raise MmdControlRigBuildError(
+            f"could not read IK solver VMD bone name: {solver}"
+        ) from exc
+    name = str(value or "")
+    if not name:
+        raise MmdControlRigBuildError(f"IK solver has an empty VMD bone name: {solver}")
+    return name
+
+
+def _require_complete_direct_export_families(
+    role: str,
+    allowed_channels: Tuple[str, ...],
+    value_routes: Mapping[str, Tuple[str, str]],
+) -> None:
+    for family in ("translate", "rotate"):
+        expected = {
+            channel for channel in allowed_channels if channel.startswith(family)
+        }
+        if expected and expected != {
+            f"{family}{axis}" for axis in "XYZ"
+        }:
+            raise MmdControlRigBuildError(
+                f"partial Control Rig selector family: {role}.{family}"
+            )
+        actual = {channel for channel in value_routes if channel.startswith(family)}
+        complete = {f"{family}{axis}" for axis in "XYZ"}
+        if actual and actual != complete:
+            raise MmdControlRigBuildError(
+                f"partial Control Rig value route: {role}.{family}"
+            )
+        if expected and actual != complete:
+            raise MmdControlRigBuildError(
+                f"missing Control Rig value route: {role}.{family}"
+            )
 
 
 def control_rig_edit_authoring_bases_for_joints(
@@ -355,6 +657,12 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
         )
     except MmdControlRigAnimLayerError as exc:
         raise MmdControlRigBuildError(str(exc)) from exc
+    layer_blend_plugs = tuple(
+        str(route["blend"])
+        for route in (layer_journal.get("routes", {}) or {}).values()
+        if isinstance(route, Mapping) and route.get("blend")
+    )
+    transaction_plugs = tuple(sorted(set(transaction_plugs) | set(layer_blend_plugs)))
     _assert_bake_route_supported(
         cmds,
         metadata,
@@ -415,7 +723,31 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                             f"unsupported control-rig route: {target} ({', '.join(route_reasons)})"
                         )
                     control_plug = f"{control}.{channel}"
+                    channel_policy = derive_mmd_control_rig_channel_policy(
+                        str(role), binding
+                    )
+                    translate_authorable = channel in channel_policy.keyable_channels and (
+                        channel in TRANSLATE_CHANNELS
+                    )
                     layer_route = layer_journal.get("routes", {}).get(target)
+                    if translate_authorable and layer_route is not None:
+                        layer_blend = layer_route.get("blend")
+                        if not layer_route.get("curve") or not layer_blend:
+                            raise MmdControlRigBuildError(
+                                "translate animation-layer route has no direct curve/blend input: "
+                                f"{target}"
+                            )
+                        baseline = _target_value_at_time(
+                            cmds,
+                            str(layer_blend),
+                            display_reference_time,
+                        )
+                    else:
+                        baseline = (
+                            _target_value_at_time(cmds, target, display_reference_time)
+                            if translate_authorable
+                            else None
+                        )
                     if layer_route is not None:
                         incoming_control = [
                             str(source)
@@ -435,91 +767,40 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                                 f"foreign animation-layer controller source: {control_plug}"
                             )
                         value = float(cmds.getAttr(target))
-                        apply_mmd_control_rig_anim_layer_route(
-                            cmds,
-                            layer_route,
-                            control_plug,
-                            operations,
-                        )
-                        journal["channels"].append(
-                            _journal_plug_row(
-                                cmds,
-                                source=layer_source,
-                                control=control_plug,
-                                target=target,
-                                value=value,
-                                control_source=layer_source,
-                                route_class=ROUTE_SAMPLED,
-                                route_reasons=("anim_layer",),
-                                layer_route=layer_route,
-                                authoring_basis=metadata.get("authoringBases", {}).get(role),
-                                twist_controller=bool(
-                                    metadata.get("bindings", {})
-                                    .get(role, {})
-                                    .get("twistController")
-                                ),
-                                fixed_axis_twist=_is_fixed_axis_twist_role(
-                                    role,
-                                    binding,
-                                ),
+                        if translate_authorable:
+                            control_source, baseline_node, baseline_target = (
+                                _connect_layer_translate_baseline(
+                                    cmds,
+                                    layer_route,
+                                    control_plug,
+                                    float(baseline),
+                                    operations,
+                                    created_curve_nodes,
+                                    existing_control_source=_existing_control_curve(
+                                        cmds,
+                                        curve_representations,
+                                        target,
+                                    ),
+                                )
                             )
-                        )
-                        _record_curve_representation(
-                            curve_representations,
-                            target,
-                            layer_source,
-                            layer_source,
+                        else:
+                            control_source = layer_source
+                            apply_mmd_control_rig_anim_layer_route(
+                                cmds,
+                                layer_route,
+                                control_plug,
+                                operations,
+                            )
+                        row = _journal_plug_row(
                             cmds,
-                        )
-                        continue
-                    incoming = cmds.listConnections(
-                        target, source=True, destination=False, plugs=True
-                    ) or []
-                    if len(incoming) > 1:
-                        raise MmdControlRigBuildError(f"multiple incoming sources: {target}")
-                    control_incoming = cmds.listConnections(
-                        control_plug, source=True, destination=False, plugs=True
-                    ) or []
-                    if control_incoming:
-                        raise MmdControlRigBuildError(f"control channel already driven: {control_plug}")
-
-                    value = float(cmds.getAttr(target))
-                    source = str(incoming[0]) if incoming else None
-                    control_source = _existing_control_curve(
-                        cmds, curve_representations, target
-                    )
-                    if source and control_source is None:
-                        control_source = _duplicate_animation_source(
-                            cmds, source, created_curve_nodes
-                        )
-                    elif source and control_source is not None:
-                        # A previous EDIT/BAKE cycle already owns a detached
-                        # controller representation. Reuse its UUID-backed
-                        # curve instead of growing a new node each cycle.
-                        pass
-                    if source is not None:
-                        _require_animation_source(cmds, source, target)
-                        cmds.disconnectAttr(source, target)
-                        operations.append(("connect", source, target))
-                        if control_source:
-                            if cmds.isConnected(control_source, control_plug):
-                                cmds.disconnectAttr(control_source, control_plug)
-                            cmds.connectAttr(control_source, control_plug, force=False)
-                            operations.append(("disconnect", control_source, control_plug))
-                    else:
-                        cmds.setAttr(control_plug, value)
-                    cmds.connectAttr(control_plug, target, force=False)
-                    operations.append(("disconnect", control_plug, target))
-                    journal["channels"].append(
-                        _journal_plug_row(
-                            cmds,
-                            source=source,
+                            source=layer_source,
                             control=control_plug,
                             target=target,
                             value=value,
                             control_source=control_source,
-                            route_class=route_class,
-                            route_reasons=route_reasons,
+                            route_class=ROUTE_SAMPLED,
+                            route_reasons=("anim_layer",),
+                            layer_route=layer_route,
                             authoring_basis=metadata.get("authoringBases", {}).get(role),
                             twist_controller=bool(
                                 metadata.get("bindings", {})
@@ -531,7 +812,142 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                                 binding,
                             ),
                         )
+                        if translate_authorable:
+                            row["translateBaseline"] = float(baseline)
+                            row["translateReferenceTime"] = float(display_reference_time)
+                            row["translateBaselineOutput"] = f"{baseline_node}.output1D"
+                            row["translateBaselineOutputRef"] = {
+                                "nodeUuid": str((cmds.ls(baseline_node, uuid=True) or [""])[0]),
+                                "attribute": "output1D",
+                            }
+                            row["translateBaselineTarget"] = baseline_target
+                            row["translateBaselineTargetRef"] = _plug_reference(
+                                cmds,
+                                baseline_target,
+                            )
+                        journal["channels"].append(row)
+                        _record_curve_representation(
+                            curve_representations,
+                            target,
+                            layer_source,
+                            control_source,
+                            cmds,
+                        )
+                        continue
+                    incoming = cmds.listConnections(
+                        target, source=True, destination=False, plugs=True
+                    ) or []
+                    if len(incoming) > 1:
+                        raise MmdControlRigBuildError(f"multiple incoming sources: {target}")
+                    control_source = _existing_control_curve(
+                        cmds, curve_representations, target
                     )
+                    control_incoming = [
+                        str(source)
+                        for source in (
+                            cmds.listConnections(
+                                control_plug,
+                                source=True,
+                                destination=False,
+                                plugs=True,
+                            )
+                            or []
+                        )
+                    ]
+                    if control_incoming:
+                        recorded_source = (
+                            _canonical_plug(cmds, control_source)
+                            if control_source
+                            else None
+                        )
+                        live_sources = [
+                            _canonical_plug(cmds, source)
+                            for source in control_incoming
+                        ]
+                        if len(live_sources) != 1 or live_sources[0] != recorded_source:
+                            raise MmdControlRigBuildError(
+                                f"control channel already driven: {control_plug}"
+                            )
+                        # Older non-identity basis bakes retained the detached
+                        # CONTROL representation on the controller. Its UUID is
+                        # already authoritative in curveRepresentations, so it
+                        # is safe to detach and reuse. Rollback reconnects the
+                        # exact legacy edge if a later step fails.
+                        cmds.disconnectAttr(control_incoming[0], control_plug)
+                        operations.append(("connect", control_incoming[0], control_plug))
+
+                    value = float(cmds.getAttr(target))
+                    source = str(incoming[0]) if incoming else None
+                    duplicated_control_source = False
+                    if source and control_source is None:
+                        control_source = _duplicate_animation_source(
+                            cmds, source, created_curve_nodes
+                        )
+                        duplicated_control_source = True
+                    elif source and control_source is not None:
+                        # A previous EDIT/BAKE cycle already owns a detached
+                        # controller representation. Reuse its UUID-backed
+                        # curve instead of growing a new node each cycle.
+                        pass
+                    if source is not None:
+                        _require_animation_source(cmds, source, target)
+                        cmds.disconnectAttr(source, target)
+                        operations.append(("connect", source, target))
+                        if control_source:
+                            if duplicated_control_source and baseline is not None:
+                                _offset_animation_curve_values(
+                                    cmds,
+                                    control_source,
+                                    -baseline,
+                                )
+                            if cmds.isConnected(control_source, control_plug):
+                                cmds.disconnectAttr(control_source, control_plug)
+                            cmds.connectAttr(control_source, control_plug, force=False)
+                            operations.append(("disconnect", control_source, control_plug))
+                    else:
+                        cmds.setAttr(control_plug, value)
+                    row = _journal_plug_row(
+                        cmds,
+                        source=source,
+                        control=control_plug,
+                        target=target,
+                        value=value,
+                        control_source=control_source,
+                        route_class=route_class,
+                        route_reasons=route_reasons,
+                        authoring_basis=metadata.get("authoringBases", {}).get(role),
+                        twist_controller=bool(
+                            metadata.get("bindings", {})
+                            .get(role, {})
+                            .get("twistController")
+                        ),
+                        fixed_axis_twist=_is_fixed_axis_twist_role(
+                            role,
+                            binding,
+                        ),
+                    )
+                    if baseline is not None:
+                        if control_source is None:
+                            cmds.setAttr(control_plug, 0.0)
+                        baseline_node = _connect_translate_baseline(
+                            cmds,
+                            control_plug,
+                            target,
+                            baseline,
+                            operations,
+                        )
+                        created_curve_nodes.append(baseline_node)
+                        row["translateBaseline"] = baseline
+                        row["translateReferenceTime"] = float(display_reference_time)
+                        row["translateBaselineOutput"] = f"{baseline_node}.output1D"
+                        row["translateBaselineOutputRef"] = {
+                            "nodeUuid": str((cmds.ls(baseline_node, uuid=True) or [""])[0]),
+                            "attribute": "output1D",
+                        }
+                    else:
+                        cmds.connectAttr(control_plug, target, force=False)
+                        operations.append(("disconnect", control_plug, target))
+                    journal["channels"].append(row)
                     _record_curve_representation(
                         curve_representations,
                         target,
@@ -738,10 +1154,13 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
                 converter.get("decompose"),
             )
             if node
-        ),
+        ) + _translate_baseline_nodes(ik_rows + channel_rows),
     ):
         for row in reversed(ik_rows):
             if row.get("layerRoute"):
+                if row.get("translateBaselineOutput"):
+                    _disconnect_translate_baseline(cmds, row)
+                    _disconnect_layer_control_source(cmds, row)
                 restore_mmd_control_rig_anim_layer_route(
                     cmds,
                     row["layerRoute"],
@@ -749,6 +1168,7 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
                 )
                 continue
             source, target = row["control"], row["target"]
+            _disconnect_translate_baseline(cmds, row)
             if cmds.isConnected(source, target):
                 cmds.disconnectAttr(source, target)
             _disconnect_owned_rotation_writer(cmds, target, rotation_converters)
@@ -762,6 +1182,9 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
                 cmds.setAttr(target, bool(row["value"]))
         for row in reversed(channel_rows):
             if row.get("layerRoute"):
+                if row.get("translateBaselineOutput"):
+                    _disconnect_translate_baseline(cmds, row)
+                    _disconnect_layer_control_source(cmds, row)
                 restore_mmd_control_rig_anim_layer_route(
                     cmds,
                     row["layerRoute"],
@@ -769,6 +1192,7 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
                 )
                 continue
             control, target = row["control"], row["target"]
+            _disconnect_translate_baseline(cmds, row)
             if cmds.isConnected(control, target):
                 cmds.disconnectAttr(control, target)
             _disconnect_owned_rotation_writer(cmds, target, rotation_converters)
@@ -791,8 +1215,9 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
                 row["activeOwner"] = CONTROL_RIG_MMD_OWNED
         metadata["state"] = CONTROL_RIG_ATTACHED
         metadata["owner"] = CONTROL_RIG_MMD_OWNED
-        _write_metadata(cmds, root, metadata)
         _remove_rotation_converters(cmds, rotation_converters)
+        _write_metadata(cmds, root, metadata)
+        _remove_translate_baseline_nodes(cmds, ik_rows + channel_rows)
     return metadata
 
 
@@ -816,8 +1241,17 @@ def restore_and_remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> 
         return remove_mmd_control_rig(model_root, cmds_module=cmds)
 
 
-def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]:
-    """Commit controller animation edges back to MMD authored inputs."""
+def bake_mmd_control_rig(
+    model_root: str,
+    *,
+    cmds_module=None,
+    frame_range=None,
+) -> Dict[str, Any]:
+    """Commit controller animation edges back to MMD authored inputs.
+
+    ``frame_range`` limits only temporary dense evaluation.  The default
+    ``None`` retains the historical manual-bake behavior.
+    """
     cmds = cmds_module or maya_cmds()
     root = _canonical_node(cmds, model_root)
     metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds)
@@ -828,6 +1262,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
         raise MmdControlRigBuildError(
             f"cannot bake MMD control rig while motion owner is {metadata.get('owner')}"
         )
+    dense_frame_range = _normalize_dense_frame_range(frame_range)
     ik_rows, channel_rows, offset_rows = _resolve_edit_journal(cmds, metadata)
     layer_journal = metadata.get("animLayerJournal")
     _assert_bake_route_supported(
@@ -883,6 +1318,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
             cmds,
             group,
             sources_by_control,
+            frame_range=dense_frame_range,
         )
         for group in rotation_groups
         if _rotation_group_requires_live_target_sampling(group)
@@ -912,7 +1348,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 converter.get("decompose"),
             )
             if node
-        ),
+        ) + _translate_baseline_nodes(rows),
     ):
         mmd_sources_by_control = {}
         for row in reversed(ik_rows):
@@ -921,6 +1357,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 row,
                 sources_by_control[row["control"]],
                 created_curve_nodes=created_curve_nodes,
+                frame_range=dense_frame_range,
             )
         _disconnect_rotation_converters(cmds, rotation_converters)
         grouped_rows = {id(row) for group in rotation_groups for row in group}
@@ -936,6 +1373,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 evaluated_target_samples=live_target_samples_by_group.get(
                     id(group[0])
                 ),
+                frame_range=dense_frame_range,
             )
             mmd_sources_by_control.update(group_sources)
         for row in reversed(channel_rows):
@@ -946,6 +1384,7 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 row,
                 sources_by_control[row["control"]],
                 created_curve_nodes=created_curve_nodes,
+                frame_range=dense_frame_range,
             )
         _restore_offsets(cmds, offset_rows, strict=True)
         _drop_rotation_converter_nodes(metadata, rotation_converters)
@@ -976,8 +1415,9 @@ def bake_mmd_control_rig(model_root: str, *, cmds_module=None) -> Dict[str, Any]
                 row["activeOwner"] = CONTROL_RIG_MMD_OWNED
         metadata["state"] = CONTROL_RIG_BAKED
         metadata["owner"] = CONTROL_RIG_MMD_OWNED
-        _write_metadata(cmds, root, metadata)
         _remove_rotation_converters(cmds, rotation_converters)
+        _write_metadata(cmds, root, metadata)
+        _remove_translate_baseline_nodes(cmds, rows)
     return metadata
 
 
@@ -1071,6 +1511,11 @@ def _edit_exit_transaction(
         for row in rows
         for key in ("control", "target")
     }
+    transaction_plugs.update(
+        str(row["translateBaselineTarget"])
+        for row in rows
+        if row.get("translateBaselineTarget")
+    )
     transaction_plugs.update(str(row["control"]) for row in offset_rows)
     plug_states = _capture_plug_states(cmds, transaction_plugs)
     metadata_before = _raw_metadata(cmds, root)
@@ -1499,6 +1944,26 @@ def _resolve_journal_plug_row(cmds, row: Mapping[str, Any]) -> Dict[str, Any]:
         if control_source
         else None
     )
+    baseline_output = row.get("translateBaselineOutput")
+    resolved["translateBaselineOutput"] = (
+        _resolve_plug_reference(
+            cmds,
+            row.get("translateBaselineOutputRef"),
+            "translate baseline helper",
+        )
+        if baseline_output
+        else None
+    )
+    baseline_target = row.get("translateBaselineTarget")
+    resolved["translateBaselineTarget"] = (
+        _resolve_plug_reference(
+            cmds,
+            row.get("translateBaselineTargetRef"),
+            "translate baseline target",
+        )
+        if baseline_target
+        else None
+    )
     layer_route = row.get("layerRoute")
     if layer_route:
         try:
@@ -1912,6 +2377,298 @@ def _zero_control_display_offsets(
     finally:
         if restore_time is not None:
             cmds.currentTime(restore_time, edit=True)
+
+
+def _target_value_at_time(cmds, target: str, reference_time: float) -> float:
+    """Read one authored target at the display reference without changing time."""
+
+    try:
+        return float(cmds.getAttr(target, time=float(reference_time)))
+    except (TypeError, RuntimeError):
+        # Lightweight command doubles and a few Maya compound plugs do not
+        # accept the optional time keyword.  The caller already owns the
+        # reference-time transaction in those environments.
+        return float(cmds.getAttr(target))
+
+
+def _connect_translate_baseline(
+    cmds,
+    control_plug: str,
+    target: str,
+    baseline: float,
+    operations: List[Tuple[str, str, str]],
+) -> str:
+    """Route a delta-valued control channel through an owned additive helper."""
+
+    node = None
+    try:
+        node = str(
+            cmds.createNode(
+                "plusMinusAverage",
+                name=f"{control_plug.split('.', 1)[0].rsplit('|', 1)[-1]}_TRANSLATE_BASELINE",
+            )
+        )
+        cmds.setAttr(f"{node}.operation", 1)
+        cmds.setAttr(f"{node}.input1D[1]", float(baseline))
+        input_plug = f"{node}.input1D[0]"
+        output_plug = f"{node}.output1D"
+        cmds.connectAttr(control_plug, input_plug, force=False)
+        operations.append(("disconnect", control_plug, input_plug))
+        cmds.connectAttr(output_plug, target, force=False)
+        operations.append(("disconnect", output_plug, target))
+        return node
+    except Exception:
+        if node and cmds.objExists(node):
+            try:
+                cmds.delete(node)
+            except Exception:
+                pass
+        raise
+
+
+def _connect_layer_translate_baseline(
+    cmds,
+    layer_route: Mapping[str, Any],
+    control_plug: str,
+    baseline: float,
+    operations: List[Tuple[str, str, str]],
+    created_curve_nodes: List[str],
+    existing_control_source: Optional[str] = None,
+) -> Tuple[str, str, str]:
+    """Route a duplicated layer curve as a controller delta.
+
+    The animLayer curve remains the authoritative absolute source.  Only its
+    owned duplicate is shifted, while the additive helper restores the
+    absolute value at the animLayer ``inputB`` destination.
+    """
+
+    route = resolve_mmd_control_rig_anim_layer_route(cmds, layer_route)
+    curve = route.get("curve")
+    blend = route.get("blend")
+    if not curve or not blend:
+        raise MmdControlRigBuildError(
+            f"translate animation-layer route is missing curve/blend: {control_plug}"
+        )
+    incoming_control = [
+        str(value)
+        for value in (
+            cmds.listConnections(
+                control_plug,
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+            or []
+        )
+    ]
+    if incoming_control:
+        raise MmdControlRigBuildError(
+            f"foreign animation-layer controller source: {control_plug}"
+        )
+    incoming_blend = [
+        str(value)
+        for value in (
+            cmds.listConnections(
+                blend,
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+            or []
+        )
+    ]
+    if incoming_blend != [curve]:
+        raise MmdControlRigBuildError(
+            f"foreign animation-layer blend source: {blend}"
+        )
+    control_source = existing_control_source
+    if control_source is None:
+        control_source = _duplicate_animation_source(cmds, curve, created_curve_nodes)
+        _offset_animation_curve_values(cmds, control_source, -float(baseline))
+    elif str(control_source).split(".", 1)[0] == str(curve).split(".", 1)[0]:
+        raise MmdControlRigBuildError(
+            f"animation-layer controller source aliases original curve: {curve}"
+        )
+    cmds.disconnectAttr(curve, blend)
+    operations.append(("connect", curve, blend))
+    cmds.connectAttr(control_source, control_plug, force=False)
+    operations.append(("disconnect", control_source, control_plug))
+    baseline_node = _connect_translate_baseline(
+        cmds,
+        control_plug,
+        blend,
+        baseline,
+        operations,
+    )
+    created_curve_nodes.append(baseline_node)
+    return str(control_source), str(baseline_node), str(blend)
+
+
+def _offset_animation_curve_values(cmds, source: str, offset: float) -> None:
+    """Shift a newly-owned curve while preserving key and tangent payload."""
+
+    node = str(source).split(".", 1)[0]
+    if not str(cmds.nodeType(node)).startswith("animCurve"):
+        raise MmdControlRigBuildError(f"translate control source is not an animCurve: {source}")
+    payload = _capture_animation_curve_payload(cmds, node)
+    if payload.get("captureFailed"):
+        raise MmdControlRigBuildError(
+            f"could not capture translate control curve payload: {source}"
+        )
+    keys = payload.get("keys") or ()
+    if not keys:
+        return
+    _clear_animation_curve_keys(cmds, node)
+    for key in keys:
+        value = key.get("value")
+        if value is None:
+            continue
+        cmds.setKeyframe(
+            node,
+            time=float(key.get("time", 0.0)),
+            value=float(value) + float(offset),
+        )
+    _restore_animation_curve_payload(cmds, node, payload)
+
+
+def _translate_baseline(row: Mapping[str, Any]) -> float:
+    """Return a persisted translate baseline, defaulting to legacy zero."""
+
+    value = row.get("translateBaseline")
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
+
+
+def _translate_baseline_output(row: Mapping[str, Any]) -> Optional[str]:
+    """Resolve the helper output recorded on a translate journal row."""
+
+    output = row.get("translateBaselineOutput")
+    return str(output) if output else None
+
+
+def _translate_reference_time(row: Mapping[str, Any]) -> Optional[float]:
+    """Return the persisted display reference used to center a delta curve."""
+
+    value = row.get("translateReferenceTime")
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _recenter_translate_control_source(
+    cmds,
+    row: Mapping[str, Any],
+    control_source: Optional[str],
+) -> None:
+    """Shift an owned translate curve so its display-reference value is zero."""
+
+    if not row.get("translateBaselineOutput") or not control_source:
+        return
+    reference_time = _translate_reference_time(row)
+    if reference_time is None:
+        return
+    node = str(control_source).split(".", 1)[0]
+    if not str(cmds.nodeType(node)).startswith("animCurve"):
+        return
+    try:
+        value = float(cmds.getAttr(control_source, time=reference_time))
+    except (TypeError, RuntimeError):
+        value = float(cmds.getAttr(control_source))
+    if not math.isfinite(value) or abs(value) <= 1.0e-12:
+        return
+    _offset_animation_curve_values(cmds, control_source, -value)
+
+
+def _disconnect_translate_baseline(cmds, row: Mapping[str, Any]) -> None:
+    """Disconnect one owned additive writer before restoring/baking a target."""
+
+    output = _translate_baseline_output(row)
+    target = row.get("translateBaselineTarget") or row.get("target")
+    if output and target:
+        destinations = [
+            _canonical_plug(cmds, str(value))
+            for value in (
+                cmds.listConnections(
+                    output,
+                    source=False,
+                    destination=True,
+                    plugs=True,
+                )
+                or []
+            )
+        ]
+        if destinations != [_canonical_plug(cmds, str(target))]:
+            raise MmdControlRigBuildError(
+                f"foreign translate baseline fan-out: {output}"
+            )
+        incoming = [
+            _canonical_plug(cmds, str(value))
+            for value in (
+                cmds.listConnections(
+                    target,
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or []
+            )
+        ]
+        if incoming != [_canonical_plug(cmds, str(output))]:
+            raise MmdControlRigBuildError(
+                f"foreign translate baseline writer: {target}"
+            )
+        cmds.disconnectAttr(output, target)
+
+
+def _disconnect_layer_control_source(cmds, row: Mapping[str, Any]) -> None:
+    """Disconnect the owned duplicate layer curve, rejecting foreign writers."""
+
+    control = row.get("control")
+    expected = row.get("controlSource")
+    if not control or not expected:
+        raise MmdControlRigBuildError(
+            f"translate animation-layer control source is missing: {control}"
+        )
+    incoming = [
+        str(value)
+        for value in (
+            cmds.listConnections(
+                control,
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+            or []
+        )
+    ]
+    if incoming != [expected]:
+        raise MmdControlRigBuildError(
+            f"foreign animation-layer controller source: {control}"
+        )
+    if cmds.isConnected(expected, control):
+        cmds.disconnectAttr(expected, control)
+
+
+def _translate_baseline_nodes(rows) -> Tuple[str, ...]:
+    nodes = []
+    for row in rows or ():
+        output = _translate_baseline_output(row)
+        if output:
+            node = str(output).split(".", 1)[0]
+            if node not in nodes:
+                nodes.append(node)
+    return tuple(nodes)
+
+
+def _remove_translate_baseline_nodes(cmds, rows) -> None:
+    for node in _translate_baseline_nodes(rows):
+        if cmds.objExists(node):
+            cmds.delete(node)
 
 
 def _curve_representations(metadata: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -2972,6 +3729,8 @@ def _capture_live_target_rotation_samples(
     cmds,
     rows: List[Mapping[str, Any]],
     sources_by_control: Mapping[str, Optional[str]],
+    *,
+    frame_range=None,
 ):
     """Capture dense raw solver inputs while the live basis converter exists."""
 
@@ -2994,11 +3753,8 @@ def _capture_live_target_rotation_samples(
             )
         }
     )
-    if times:
-        first = math.floor(min(times))
-        last = math.ceil(max(times))
-        times = sorted({*times, *(float(frame) for frame in range(first, last + 1))})
-    else:
+    times = _dense_sample_times(times, frame_range)
+    if not times:
         times = [float(cmds.currentTime(query=True))]
     return [
         (
@@ -3020,6 +3776,7 @@ def _commit_control_rotation_group(
     created_curve_nodes=None,
     quaternion_interpolation: Optional[bool] = None,
     evaluated_target_samples=None,
+    frame_range=None,
 ) -> Dict[str, Optional[str]]:
     """Bake one sparse three-axis rotation compound without scalar teardown.
 
@@ -3066,6 +3823,7 @@ def _commit_control_rotation_group(
             {row["control"]: source for row, source in zip(rows, control_sources)},
             created_curve_nodes=created_curve_nodes,
             evaluated_samples=evaluated_target_samples,
+            frame_range=frame_range,
         )
 
     # A non-identity authoring basis cannot be represented by copying Euler
@@ -3095,6 +3853,7 @@ def _commit_control_rotation_group(
                 basis.to_dict(),
                 created_curve_nodes=created_curve_nodes,
                 quaternion_interpolation=preserve_quaternion,
+                frame_range=frame_range,
             )
 
     if not standard_rotate_targets:
@@ -3103,6 +3862,7 @@ def _commit_control_rotation_group(
             rows,
             {row["control"]: source for row, source in zip(rows, control_sources)},
             created_curve_nodes=created_curve_nodes,
+            frame_range=frame_range,
         )
 
     # Disconnect all three control edges first.  This keeps the compound
@@ -3194,6 +3954,7 @@ def _sample_control_rotation_group_passthrough(
     *,
     created_curve_nodes=None,
     evaluated_samples=None,
+    frame_range=None,
 ) -> Dict[str, Optional[str]]:
     """Bake evaluated XYZ values into a non-transform rotation compound.
 
@@ -3223,11 +3984,8 @@ def _sample_control_rotation_group_passthrough(
             )
         }
     )
-    if times:
-        first = math.floor(min(times))
-        last = math.ceil(max(times))
-        times = sorted({*times, *(float(frame) for frame in range(first, last + 1))})
-    else:
+    times = _dense_sample_times(times, frame_range)
+    if not times:
         times = [float(cmds.currentTime(query=True))]
     samples = list(evaluated_samples) if evaluated_samples is not None else [
         (
@@ -3320,6 +4078,7 @@ def _sample_control_rotation_group_to_bone(
     *,
     created_curve_nodes=None,
     quaternion_interpolation: bool = False,
+    frame_range=None,
 ) -> Dict[str, Optional[str]]:
     """Sample a complete controller XYZ group through the basis inverse.
 
@@ -3351,9 +4110,12 @@ def _sample_control_rotation_group_to_bone(
         except Exception:
             times = [0.0]
     elif not quaternion_interpolation:
-        first = math.floor(min(times))
-        last = math.ceil(max(times))
-        times = sorted({*times, *(float(frame) for frame in range(first, last + 1))})
+        times = _dense_sample_times(times, frame_range)
+    elif frame_range is not None:
+        start, end = _normalize_dense_frame_range(frame_range)
+        times = [time for time in times if start <= time <= end]
+        if not times:
+            times = [start, end]
     samples = []
     try:
         control_rotate_order = int(cmds.getAttr(f"{control_node}.rotateOrder"))
@@ -3462,6 +4224,16 @@ def _sample_control_rotation_group_to_bone(
             raise MmdControlRigBuildError(
                 f"could not create basis-converted MMD rotation curve: {target_plug}"
             ) from exc
+    # The CONTROL representation remains UUID-addressable for the next EDIT,
+    # but BAKED/MMD_OWNED must not leave it connected to the controller. The
+    # generic re-entry path treats any live controller writer as foreign; this
+    # matches the scalar and quaternion bake paths, which already detach it.
+    for row, control_source in zip(
+        (rows_by_attr[attr] for attr in attrs),
+        sources,
+    ):
+        if control_source and cmds.isConnected(control_source, row["control"]):
+            cmds.disconnectAttr(control_source, row["control"])
     if quaternion_interpolation and all(
         str(row["target"]).rsplit(".", 1)[-1] in {"rotateX", "rotateY", "rotateZ"}
         for row in rows
@@ -3595,28 +4367,57 @@ def _commit_control_input(
     source: Optional[str],
     *,
     created_curve_nodes=None,
+    frame_range=None,
 ) -> Optional[str]:
     control, target = row["control"], row["target"]
     if row.get("layerRoute"):
+        if not row.get("translateBaselineOutput"):
+            restore_mmd_control_rig_anim_layer_route(
+                cmds,
+                row["layerRoute"],
+                control,
+            )
+            return str(row.get("source")) if row.get("source") else None
+        _disconnect_translate_baseline(cmds, row)
+        _disconnect_layer_control_source(cmds, row)
+        control_source = row.get("controlSource")
+        mmd_source = row.get("source")
+        if not control_source or not mmd_source:
+            raise MmdControlRigBuildError(
+                f"translate animation-layer route curves are incomplete: {target}"
+            )
+        _require_animation_source(cmds, control_source, control)
         restore_mmd_control_rig_anim_layer_route(
             cmds,
             row["layerRoute"],
             control,
         )
-        return str(row.get("source")) if row.get("source") else None
+        _copy_animation_curve(cmds, control_source, mmd_source)
+        _offset_animation_curve_values(
+            cmds,
+            mmd_source,
+            _translate_baseline(row),
+        )
+        _recenter_translate_control_source(cmds, row, control_source)
+        return str(mmd_source)
     value = cmds.getAttr(control)
+    baseline = _translate_baseline(row)
+    _disconnect_translate_baseline(cmds, row)
     if cmds.isConnected(control, target):
         cmds.disconnectAttr(control, target)
     control_source = row.get("controlSource") or source
     mmd_source = row.get("source")
     if row.get("routeClass", ROUTE_SAME_BASIS) == ROUTE_SAMPLED:
-        return _sample_control_input_to_mmd(
+        result = _sample_control_input_to_mmd(
             cmds,
             row,
             control_source,
             mmd_source,
             created_curve_nodes=created_curve_nodes,
+            frame_range=frame_range,
         )
+        _recenter_translate_control_source(cmds, row, control_source)
+        return result
     if control_source and mmd_source:
         # The two curves stay as separate nodes. Bake copies controller keys
         # into the original MMD curve when possible, then makes that curve the
@@ -3626,12 +4427,26 @@ def _commit_control_input(
         if not cmds.isConnected(mmd_source, target):
             cmds.connectAttr(mmd_source, target, force=False)
         _copy_animation_curve(cmds, control_source, mmd_source)
+        if row.get("translateBaselineOutput"):
+            _offset_animation_curve_values(cmds, mmd_source, baseline)
+            _recenter_translate_control_source(cmds, row, control_source)
         return str(mmd_source)
     if control_source and not mmd_source:
         # No authored MMD curve existed before EDIT. Keep the controller curve
         # intact and make it the sole MMD writer for this newly authored route.
         if cmds.isConnected(control_source, control):
             cmds.disconnectAttr(control_source, control)
+        if row.get("translateBaselineOutput"):
+            absolute_source = _duplicate_animation_source(
+                cmds,
+                control_source,
+                created_curve_nodes if created_curve_nodes is not None else [],
+            )
+            _offset_animation_curve_values(cmds, absolute_source, baseline)
+            if not cmds.isConnected(absolute_source, target):
+                cmds.connectAttr(absolute_source, target, force=False)
+            _recenter_translate_control_source(cmds, row, control_source)
+            return absolute_source
         if not cmds.isConnected(control_source, target):
             cmds.connectAttr(control_source, target, force=False)
         return None
@@ -3641,7 +4456,7 @@ def _commit_control_input(
         if not cmds.isConnected(source, target):
             cmds.connectAttr(source, target, force=False)
     else:
-        cmds.setAttr(target, value)
+        cmds.setAttr(target, value + baseline if row.get("translateBaselineOutput") else value)
     return str(source) if source else None
 
 
@@ -3652,6 +4467,7 @@ def _sample_control_input_to_mmd(
     mmd_source: Optional[str],
     *,
     created_curve_nodes=None,
+    frame_range=None,
 ) -> Optional[str]:
     """Sample controller values into an MMD animCurve.
 
@@ -3677,17 +4493,13 @@ def _sample_control_input_to_mmd(
             float(time)
             for time in (cmds.keyframe(control_node, query=True, timeChange=True) or [])
         ]
-    times = sorted(set(source_times + control_times))
-    if times:
-        times = sorted(
-            set(times)
-            | set(
-                float(frame)
-                for frame in range(int(math.floor(min(times))), int(math.ceil(max(times))) + 1)
-            )
-        )
+    times = _dense_sample_times(source_times + control_times, frame_range)
     sampled_values = [
-        (time, float(cmds.getAttr(control, time=time)))
+        (
+            time,
+            float(cmds.getAttr(control, time=time))
+            + (_translate_baseline(row) if row.get("translateBaselineOutput") else 0.0),
+        )
         for time in sorted(set(times))
     ]
     if cmds.isConnected(control, target):
@@ -3730,7 +4542,9 @@ def _sample_control_input_to_mmd(
             raise MmdControlRigBuildError(
                 f"could not create sampled MMD animation curve for {target}: {exc}"
             ) from exc
-    value = float(cmds.getAttr(control))
+    value = float(cmds.getAttr(control)) + (
+        _translate_baseline(row) if row.get("translateBaselineOutput") else 0.0
+    )
     cmds.setAttr(target, value)
     return None
 

@@ -158,6 +158,19 @@ float3 AmbientColor<
     int UIOrder = 204;
 > = {0.3f, 0.3f, 0.3f};
 
+// The generated MMD ramp is bright at V=0 and dark at V=1.  Maya's file
+// texture path samples the authored top-origin ramp with a small calibrated
+// offset; keep that calibration explicit instead of hiding it in N.L math.
+float ToonCoordinateOffset<
+    string UIGroup = "Lighting";
+    string UIName = "Toon Coordinate Offset";
+    string UIWidget = "Slider";
+    float UIMin = 0.0;
+    float UIMax = 1.0;
+    float UIStep = 0.001;
+    int UIOrder = 205;
+> = 0.55f;
+
 // Transparency
 float Opacity : OPACITY<
     string UIGroup = "Transparency";
@@ -268,12 +281,12 @@ float ShadowBias : ShadowMapBias<
 float3 MMDLightDirection<
     string UIGroup = "Lighting";
     string UIName = "MMD Light Direction";
-> = {0.5f, -1.0f, 0.5f};
+> = {-0.5f, -1.0f, -1.0f};
 
 float3 MMDLightColor<
     string UIGroup = "Lighting";
     string UIName = "MMD Light Color";
-> = {1.0f, 1.0f, 1.0f};
+> = {0.6039216f, 0.6039216f, 0.6039216f};
 
 float4x4 Light0Matrix : SHADOWMAPMATRIX
 <
@@ -371,11 +384,16 @@ VS_OUTPUT MainVS(VS_INPUT input)
 //--------------------------------------------------------------------------------------
 // Main Pass Pixel Shader
 //--------------------------------------------------------------------------------------
-float4 MainPS(VS_OUTPUT input) : SV_TARGET
+float3 ComputeMmdLitColor(VS_OUTPUT input, out float opacity)
 {
     // Normalize inputs
     float3 normal = normalize(input.worldNormal);
     float3 viewDir = normalize(ViewPosition - input.worldPosition);
+    // The imported PMX normals already carry the Maya Z-mirror and the mesh
+    // winding is reversed during conversion. Keep those authored normals for
+    // the dot product; a view-facing flip would change corner normals on the
+    // visible edge bands and is not equivalent to Three's primitive-facing
+    // DoubleSide handling.
     // MMDLightDirection is the direction the light travels (light's world -Z);
     // negate to get the surface -> light vector used by the lighting model.
     float3 lightDir = -normalize(MMDLightDirection);
@@ -393,29 +411,40 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // Calculate shadow
     float shadow = CalculateShadow(input.shadowCoord, Light0ShadowMap);
 
-    // FullShader samples its vertical toon ramp at 0.5 - 0.5 * N.L.
-    float NdotL = dot(normal, lightDir);
-    float toonV = saturate(0.5 - NdotL * 0.5);
+    // Three uploads toon maps with flipY=true. Maya's file texture sampling is
+    // top-origin, so convert the same signed coordinate back to the authored
+    // image row while retaining Three's positive-lighting direction.
+    // Preserve the linearly interpolated world normal for the toon-ramp
+    // coordinate. Normalizing here per pixel changes the corner-normal
+    // interpolation that the reference MMD shader uses; the normalized
+    // `normal` above remains the specular/lighting normal.
+    float NdotL = dot(input.worldNormal, lightDir);
+    float toonV = saturate(ToonCoordinateOffset - NdotL * 0.5);
     float3 toonColor = float3(1.0, 1.0, 1.0);
     if (HasToonTexture != 0)
     {
-        // U remains centered for Maya's vertical 1D texture representation.
-        float4 toonSample = ToonTexture.Sample(ToonSampler, float2(0.5, toonV));
+        // The MMD contract samples the first column of the vertical ramp.
+        float4 toonSample = ToonTexture.Sample(ToonSampler, float2(0.0, toonV));
         float4 factoredToon = toonSample * ToonTextureMultiply + ToonTextureAdd;
         toonColor = factoredToon.rgb;
     }
-    // MMD's untextured-toon path is intentionally flat: N.L only selects a
-    // toon-ramp sample and must not become an implicit gray diffuse ramp.
+    // MMD's material base is authored diffuse * light + ambient.  N.L selects
+    // the toon ramp when present; it must not become an extra Lambert
+    // multiplier on the authored material base.
     float3 materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb;
 
     // Sphere mapping
     float3 sphereColor = float3(1.0, 1.0, 1.0);
     if (SphereMode > 0 && HasSphereTexture != 0)
     {
-        float3 sphereNormal = normalize(mul(float4(normal, 0.0), View).xyz);
+        // Three's WebGPU MMD path normalizes the interpolated view normal for
+        // lighting, but deliberately uses the raw interpolated normal for the
+        // sphere UV.  Re-normalizing here expands the UV radius on beveled
+        // faces and makes the sphere map fade too aggressively at the edges.
+        float3 sphereNormal = mul(float4(input.worldNormal, 0.0), View).xyz;
         float2 sphereUV;
         sphereUV.x = sphereNormal.x * 0.5 + 0.5;
-        sphereUV.y = sphereNormal.y * -0.5 + 0.5;
+        sphereUV.y = sphereNormal.y * 0.5 + 0.5;
         float4 sphereSample = SphereTexture.Sample(LinearSampler, sphereUV);
         float4 factoredSphere = sphereSample * SphereTextureMultiply + SphereTextureAdd;
         sphereColor = factoredSphere.rgb;
@@ -448,7 +477,7 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     float3 litColor = diffuse + specular;
 
     // Apply opacity
-    float opacity = texColor.a * DiffuseColorA * Opacity;
+    opacity = texColor.a * DiffuseColorA * Opacity;
 
     // MMD parity (mmd-shading-notes §8): discard fully transparent fragments.
     // This is essential now that transparent materials write depth -- without
@@ -456,8 +485,16 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // depth and punch black holes / halos into whatever is behind them.
     clip(opacity - 0.003);
 
-    // Decode the gamma-space MMD result to linear; the view transform re-encodes
-    // it to sRGB for display, restoring the exact MMD look under CM-on.
+    return litColor;
+}
+
+float4 MainPS(VS_OUTPUT input) : SV_TARGET
+{
+    float opacity = 0.0f;
+    float3 litColor = ComputeMmdLitColor(input, opacity);
+
+    // Product materials decode the gamma-space MMD result to linear; the view
+    // transform re-encodes it to sRGB under CM-on.
     return float4(SrgbToLinear(litColor), opacity);
 }
 
@@ -479,12 +516,25 @@ VS_OUTPUT EdgeVS(VS_INPUT input)
 
     float2 safeScreenSize = max(ScreenSize, float2(1.0, 1.0));
     // ViewportPixelSize is physical; authored EdgeSize is in logical pixels.
+    // The 0.40 factor is the calibrated expansion for the 1024px fixtures:
+    // it restores the authored silhouette width without the interior bleed
+    // caused by the much larger historical 0.25 experiment.
     float logicalEdgeSize = EdgeSize * max(DevicePixelRatio, 1.0e-5);
-    clipPos.xy += screenNormal / (safeScreenSize * 0.5) * logicalEdgeSize * clipPos.w;
+    clipPos.xy += screenNormal / (safeScreenSize * 0.40) * logicalEdgeSize * clipPos.w;
 
     output.position = clipPos;
     output.worldPosition = worldPos.xyz;
 
+    return output;
+}
+
+// A translucent body writes depth before its outline is evaluated.  Keep the
+// inverted hull slightly behind that body so the strict-less edge test leaves
+// only the exterior silhouette instead of bleeding through translucent color.
+VS_OUTPUT EdgeVSTranslucent(VS_INPUT input)
+{
+    VS_OUTPUT output = EdgeVS(input);
+    output.position.z += 1.0e-2 * output.position.w;
     return output;
 }
 
@@ -496,8 +546,8 @@ float4 EdgePS(VS_OUTPUT input) : SV_TARGET
     // All techniques contain the edge pass. A material opts out in shader
     // space by setting EdgeSize to zero, avoiding separate NoEdge techniques.
     clip(EdgeSize - 1.0e-5);
-    // EdgeColorRGB is an authored gamma-space color; decode to linear so the
-    // view transform re-encode displays it as authored (no-op for pure black).
+    // EdgeColorRGB is an authored gamma-space color.  Product items decode to
+    // linear for Maya's CM-on view transform.
     return float4(SrgbToLinear(EdgeColorRGB), EdgeColorA);
 }
 
@@ -522,6 +572,18 @@ RasterizerState CullNone
 //--------------------------------------------------------------------------------------
 // Blend States
 //--------------------------------------------------------------------------------------
+BlendState AlphaBlend
+{
+    BlendEnable[0] = TRUE;
+    SrcBlend = SRC_ALPHA;
+    DestBlend = INV_SRC_ALPHA;
+    BlendOp = ADD;
+    SrcBlendAlpha = ONE;
+    DestBlendAlpha = INV_SRC_ALPHA;
+    BlendOpAlpha = ADD;
+    RenderTargetWriteMask[0] = 0x0F;
+};
+
 BlendState NoBlend
 {
     BlendEnable[0] = FALSE;
@@ -530,8 +592,9 @@ BlendState NoBlend
 //--------------------------------------------------------------------------------------
 // Depth Stencil States
 //--------------------------------------------------------------------------------------
-// Main surfaces are opaque/cutout only. Fully transparent fragments are
-// discarded in MainPS; every surviving fragment writes depth.
+// Body surfaces use strict-less depth testing and write depth, including
+// alpha-blended MMD materials. Fully transparent fragments are discarded in
+// MainPS; every surviving fragment writes depth.
 DepthStencilState EnableDepth
 {
     DepthEnable = TRUE;
@@ -598,5 +661,57 @@ technique11 MMDTechniqueDoubleSided<
         SetRasterizerState(CullNone);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+// Blended materials use the same read-only edge pass and an independent
+// alpha-blended main pass. The MMD queue owns material/submesh order;
+// the body still writes depth so that strict-less testing preserves that
+// order's natural translucent layer selection.
+technique11 MMDTechniqueTranslucent<
+    int isTransparent = 1;
+>
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
+    }
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVSTranslucent()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EdgeDepthReadOnly, 0);
+    }
+}
+
+technique11 MMDTechniqueTranslucentDoubleSided<
+    int isTransparent = 1;
+>
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullNone);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
+    }
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVSTranslucent()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EdgeDepthReadOnly, 0);
     }
 }

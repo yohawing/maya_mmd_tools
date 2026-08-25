@@ -9,6 +9,7 @@ ImportExportPresenter 自体は純粋な分岐ロジックだが、import 連鎖
 """
 
 import unittest
+from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -21,8 +22,7 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_TEXTURE_CACHE_PATH,
 )
 from mmd_tools.core.settings import settings  # noqa: E402
-from mmd_tools.actions.export_model_action import ExportModelResult  # noqa: E402
-from mmd_tools.actions.export_vmd_action import ExportVmdResult  # noqa: E402
+from mmd_tools.actions.create_model_action import CreateModelRequest  # noqa: E402
 from mmd_tools.actions.import_model_action import ImportModelResult  # noqa: E402
 from mmd_tools.actions.import_vmd_action import ImportVmdResult  # noqa: E402
 from mmd_tools.ui.presenters.import_export_presenter import (  # noqa: E402
@@ -54,6 +54,10 @@ class _RecordingSignal:
 class _RecordingButton:
     def __init__(self):
         self.clicked = _RecordingSignal()
+        self.enabled = True
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
 
 
 class _FakeLineEdit:
@@ -75,16 +79,13 @@ class _FakeCheckBox:
 class _FakeView:
     def __init__(self):
         self.import_path_button = _FakeButton()
-        self.export_path_button = _FakeButton()
         self.import_button = _FakeButton()
-        self.export_button = _FakeButton()
         self.vmd_path_button = _FakeButton()
         self.import_vmd_button = _FakeButton()
+        self.new_model_button = _RecordingButton()
         self.import_path_edit = _FakeLineEdit("model.pmx")
-        self.export_path_edit = _FakeLineEdit("out.pmx")
         self.vmd_path_edit = _FakeLineEdit("motion.vmd")
         self.new_file_check = _FakeCheckBox(False)
-        self.export_history = []
 
     def get_custom_namespace(self):
         return None
@@ -98,8 +99,43 @@ class _FakeView:
     def add_vmd_path_to_history(self, _path):
         pass
 
-    def add_export_path_to_history(self, path):
-        self.export_history.append(path)
+
+class _ModalDialog:
+    def __init__(self, accepted, values=(None, "", "")):
+        self.accepted = accepted
+        self.values = values
+        self.exec_calls = 0
+
+    def exec_modal(self):
+        self.exec_calls += 1
+        return self.accepted
+
+    def get_request(self):
+        template_id, model_name, model_name_english = self.values
+        if not template_id:
+            return None
+        return CreateModelRequest(
+            template_id=template_id,
+            model_name=model_name,
+            model_name_english=model_name_english,
+        )
+
+
+@dataclass(frozen=True)
+class _ReloadGenerationCreateModelRequest:
+    template_id: str
+    model_name: str
+    model_name_english: str = ""
+
+
+_ReloadGenerationCreateModelRequest.__module__ = CreateModelRequest.__module__
+_ReloadGenerationCreateModelRequest.__qualname__ = CreateModelRequest.__qualname__
+
+
+class _ModalView(_FakeView):
+    def __init__(self):
+        super().__init__()
+        self.new_model_button = _RecordingButton()
 
 
 class _FakeAppState:
@@ -108,6 +144,7 @@ class _FakeAppState:
         self.statuses = []
         self.progress = []
         self.scene_model_service = scene_model_service
+        self.refresh_count = 0
 
     def emit_status(self, message):
         self.statuses.append(message)
@@ -116,7 +153,7 @@ class _FakeAppState:
         self.progress.append(value)
 
     def refresh_model_list(self):
-        pass
+        self.refresh_count += 1
 
 
 class _FakeSceneModelService:
@@ -239,36 +276,6 @@ class _FailingImportVmdAction:
         raise AssertionError("vmd action must not be used")
 
 
-class _RecordingExportModelAction:
-    def __init__(self, result):
-        self.result = result
-        self.requests = []
-
-    def execute(self, request):
-        self.requests.append(request)
-        return self.result
-
-
-class _FailingExportModelAction:
-    def execute(self, _request):
-        raise AssertionError("model export action must not be used")
-
-
-class _RecordingExportVmdAction:
-    def __init__(self, result):
-        self.result = result
-        self.requests = []
-
-    def execute(self, request):
-        self.requests.append(request)
-        return self.result
-
-
-class _FailingExportVmdAction:
-    def execute(self, _request):
-        raise AssertionError("vmd export action must not be used")
-
-
 class TestImportExportPresenter(unittest.TestCase):
     """ImportExportPresenterのimport options構築を検証する。"""
 
@@ -281,6 +288,247 @@ class TestImportExportPresenter(unittest.TestCase):
         settings.set("import.rig.bake_mode", self._old_bake_mode)
         settings.set("ui.general.development_mode", self._old_dev_mode)
         settings.set("import.model.show_texture_issue_dialog", self._old_texture_dialog)
+
+    @staticmethod
+    def _create_model_view():
+        return _FakeView()
+
+    def test_create_model_is_disabled_without_injected_action(self):
+        view = self._create_model_view()
+
+        ImportExportPresenter(
+            view,
+            _FakeAppState(),
+            model_template_loader=lambda: (
+                SimpleNamespace(template_id="pmx20-basic-v1", label="PMX 2.0 Basic"),
+            ),
+        )
+
+        self.assertFalse(view.new_model_button.enabled)
+
+    def test_create_model_routes_request_and_publishes_new_root(self):
+        view = self._create_model_view()
+        app_state = _FakeAppState()
+        action = MagicMock()
+        action.execute.return_value = SimpleNamespace(root="|new_model")
+        dialog = _ModalDialog(True, ("pmx20-basic-v1", "モデル", "Model"))
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            create_model_action=action,
+            model_template_loader=lambda: (
+                SimpleNamespace(template_id="pmx20-basic-v1", label="PMX 2.0 Basic"),
+            ),
+            create_model_dialog_factory=lambda templates, parent: dialog,
+        )
+
+        self.assertTrue(view.new_model_button.enabled)
+        self.assertTrue(presenter.open_create_model_dialog())
+
+        request = action.execute.call_args.args[0]
+        self.assertIsInstance(request, CreateModelRequest)
+        self.assertEqual(request.template_id, "pmx20-basic-v1")
+        self.assertEqual(request.model_name, "モデル")
+        self.assertEqual(request.model_name_english, "Model")
+        self.assertEqual(app_state.refresh_count, 1)
+        self.assertEqual(app_state.current_model_root, "|new_model")
+        self.assertIn("|new_model", app_state.statuses[-1])
+
+    def test_create_model_failure_keeps_current_model_and_reports_status(self):
+        view = self._create_model_view()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "|existing"
+        action = MagicMock()
+        action.execute.side_effect = RuntimeError("template failed")
+        dialog = _ModalDialog(True, ("pmx20-basic-v1", "モデル", "Model"))
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            create_model_action=action,
+            model_template_loader=lambda: (
+                SimpleNamespace(template_id="pmx20-basic-v1", label="PMX 2.0 Basic"),
+            ),
+            create_model_dialog_factory=lambda templates, parent: dialog,
+        )
+
+        with patch(
+            "mmd_tools.ui.qt_compat.QMessageBox.warning",
+            create=True,
+        ) as warning:
+            self.assertFalse(presenter.open_create_model_dialog())
+
+        self.assertEqual(app_state.current_model_root, "|existing")
+        self.assertEqual(app_state.refresh_count, 0)
+        self.assertIn("template failed", app_state.statuses[-1])
+        warning.assert_called_once()
+        self.assertEqual(warning.call_args.args[2], app_state.statuses[-1])
+
+    def test_new_model_button_opens_injected_dialog_and_cancel_is_side_effect_free(self):
+        view = _ModalView()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "|existing"
+        action = MagicMock()
+        dialog = _ModalDialog(False, ("opaque-template-id", "モデル", "Model"))
+        factory_calls = []
+
+        def factory(templates, parent):
+            factory_calls.append((templates, parent))
+            return dialog
+
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            create_model_action=action,
+            model_template_loader=lambda: (SimpleNamespace(template_id="opaque-template-id", label="Template"),),
+            create_model_dialog_factory=factory,
+        )
+
+        self.assertTrue(view.new_model_button.enabled)
+        with patch(
+            "mmd_tools.ui.qt_compat.QMessageBox.warning",
+            create=True,
+        ) as warning:
+            self.assertFalse(presenter.open_create_model_dialog())
+        self.assertEqual(dialog.exec_calls, 1)
+        self.assertEqual(len(factory_calls), 1)
+        self.assertEqual(factory_calls[0][0][0].template_id, "opaque-template-id")
+        action.execute.assert_not_called()
+        self.assertEqual(app_state.refresh_count, 0)
+        self.assertEqual(app_state.current_model_root, "|existing")
+        self.assertEqual(app_state.statuses, [])
+        warning.assert_not_called()
+
+    def test_new_model_success_uses_opaque_template_id_and_refreshes_before_current_root(self):
+        view = _ModalView()
+        app_state = _FakeAppState()
+        events = []
+        original_refresh = app_state.refresh_model_list
+
+        def refresh():
+            events.append("refresh")
+            original_refresh()
+
+        app_state.refresh_model_list = refresh
+        action = MagicMock()
+        action.execute.return_value = SimpleNamespace(root="|created")
+        dialog = _ModalDialog(True, ("opaque-template-id", "日本語名", "EnglishName"))
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            create_model_action=action,
+            model_template_loader=lambda: (SimpleNamespace(template_id="opaque-template-id", label="Template"),),
+            create_model_dialog_factory=lambda templates, parent: dialog,
+        )
+
+        self.assertTrue(presenter.open_create_model_dialog())
+        request = action.execute.call_args.args[0]
+        self.assertEqual(request.template_id, "opaque-template-id")
+        self.assertEqual(request.model_name, "日本語名")
+        self.assertEqual(request.model_name_english, "EnglishName")
+        self.assertEqual(events, ["refresh"])
+        self.assertEqual(app_state.current_model_root, "|created")
+
+    def test_reload_generation_request_is_rehydrated_without_misclassifying_selection(self):
+        view = _ModalView()
+        app_state = _FakeAppState()
+        action = MagicMock()
+        action.execute.return_value = SimpleNamespace(root="|created")
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            create_model_action=action,
+            model_template_loader=lambda: (
+                SimpleNamespace(template_id="opaque-template-id", label="Template"),
+            ),
+        )
+        request = _ReloadGenerationCreateModelRequest(
+            "opaque-template-id",
+            "モデル",
+            "Model",
+        )
+
+        self.assertTrue(presenter._execute_create_model_request(request))
+
+        normalized = action.execute.call_args.args[0]
+        self.assertIs(type(normalized), CreateModelRequest)
+        self.assertEqual(normalized.template_id, "opaque-template-id")
+        self.assertFalse(any("Select a packaged" in status for status in app_state.statuses))
+
+    def test_unknown_template_is_not_reported_as_missing_selection(self):
+        view = _ModalView()
+        app_state = _FakeAppState()
+        action = MagicMock()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            create_model_action=action,
+            model_template_loader=lambda: (
+                SimpleNamespace(template_id="known", label="Template"),
+            ),
+        )
+
+        with patch(
+            "mmd_tools.ui.qt_compat.QMessageBox.warning",
+            create=True,
+        ) as warning:
+            self.assertFalse(
+                presenter._execute_create_model_request(
+                    CreateModelRequest("unknown", "モデル", "Model")
+                )
+            )
+
+        action.execute.assert_not_called()
+        self.assertIn("unknown", app_state.statuses[-1])
+        self.assertNotIn("Select a packaged", app_state.statuses[-1])
+        warning.assert_called_once()
+        self.assertEqual(warning.call_args.args[2], app_state.statuses[-1])
+
+    def test_new_model_button_fails_closed_when_template_loading_fails(self):
+        view = _ModalView()
+        action = MagicMock()
+
+        def loader():
+            raise RuntimeError("packaged template missing")
+
+        presenter = ImportExportPresenter(
+            view,
+            _FakeAppState(),
+            create_model_action=action,
+            model_template_loader=loader,
+        )
+
+        self.assertFalse(view.new_model_button.enabled)
+        with patch(
+            "mmd_tools.ui.qt_compat.QMessageBox.warning",
+            create=True,
+        ) as warning:
+            self.assertFalse(presenter.open_create_model_dialog())
+        action.execute.assert_not_called()
+        warning.assert_called_once()
+
+    def test_new_model_action_and_warning_keys_are_localized_in_every_language(self):
+        translator = UITranslator.instance()
+        previous_language = translator.get_language()
+        expected_actions = {
+            "en": "New MMD Model",
+            "ja": "MMDモデルを新規作成",
+            "zh-CN": "新建 MMD 模型",
+            "zh-TW": "建立 MMD 模型",
+        }
+        try:
+            for language, expected in expected_actions.items():
+                translator.set_language(language)
+                self.assertEqual(
+                    translator.translate("new_mmd_model", "actions"),
+                    expected,
+                )
+                warning_title = translator.translate(
+                    "create_model_warning_title",
+                    "messages",
+                )
+                self.assertNotEqual(warning_title, "create_model_warning_title")
+        finally:
+            translator.set_language(previous_language)
 
     def test_vmd_reduction_summary_is_localized_and_concise(self):
         presenter = ImportExportPresenter(_FakeView(), _FakeAppState())
@@ -505,6 +753,38 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertEqual(result, {"resolved": 1, "unresolved": 2})
         self.assertTrue(any("1" in status for status in app_state.statuses))
 
+    @patch("mmd_tools.ui.presenters.import_export_presenter.list_model_registry_members_from_adapter")
+    def test_current_model_texture_nodes_use_registry_members_for_new_scene(self, mock_registry_members):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "root"
+        maya_adapter = _FakeMayaAdapter(
+            existing={"root"},
+            relatives={"root": ["shape"]},
+            connections={
+                "shape": ["sg"],
+                "sg": ["mat"],
+                "mat": ["material_file"],
+                "root.message": ["legacy_file"],
+            },
+            existing_attrs={
+                "material_file": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+                "registry_file": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+                "legacy_file": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+            },
+        )
+        mock_registry_members.return_value = ["registry_file"]
+        presenter = ImportExportPresenter(view, app_state, maya_adapter=maya_adapter)
+
+        self.assertEqual(
+            presenter._current_model_texture_file_nodes(),
+            ["material_file", "registry_file"],
+        )
+        self.assertNotIn(
+            ("root.message", {"source": False, "destination": True, "type": "file"}),
+            maya_adapter.list_connections_calls,
+        )
+
     def test_fix_texture_paths_no_current_model_prompts_for_selection(self):
         view = _FakeView()
         app_state = _FakeAppState()
@@ -643,6 +923,73 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertIn("Import complete: model_root", app_state.statuses)
         self.assertIn(100, app_state.progress)
         self.assertEqual(recorded_history, ["model.pmx"])
+
+    def test_import_file_blocks_native_route_flags_in_normal_mode(self):
+        """Persisted native flags cannot escape their hidden normal-mode UI."""
+        keys = (
+            "ui.general.development_mode",
+            "import.native.use_cpp_fast_load",
+            "import.native.cpp_fast_load_mesh_only",
+            "import.native.use_cpp_vp2_ownership",
+        )
+        saved = {key: settings.get(key) for key in keys}
+        try:
+            for key, value in zip(keys, (False, True, False, True)):
+                settings.set(key, value)
+            action = _RecordingImportModelAction(
+                ImportModelResult(root_node="model_root", succeeded=True, outcome="success")
+            )
+            presenter = ImportExportPresenter(
+                _FakeView(),
+                _FakeAppState(),
+                import_model_action=action,
+                import_vmd_action=_FailingImportVmdAction(),
+            )
+
+            presenter.import_file()
+
+            options = action.requests[0].options
+            self.assertFalse(options["use_cpp_fast_load"])
+            self.assertTrue(options["cpp_fast_load_mesh_only"])
+            self.assertFalse(options["use_cpp_vp2_ownership"])
+            self.assertFalse(options["use_native_pmx_parse"])
+            self.assertFalse(options["require_native_pmx_parse"])
+        finally:
+            for key, value in saved.items():
+                settings.set(key, value)
+
+    def test_import_file_preserves_native_route_flags_in_development_mode(self):
+        """Development Mode forwards its explicitly persisted native route."""
+        keys = (
+            "ui.general.development_mode",
+            "import.native.use_cpp_fast_load",
+            "import.native.cpp_fast_load_mesh_only",
+            "import.native.use_cpp_vp2_ownership",
+        )
+        saved = {key: settings.get(key) for key in keys}
+        try:
+            for key, value in zip(keys, (True, True, True, True)):
+                settings.set(key, value)
+            action = _RecordingImportModelAction(
+                ImportModelResult(root_node="model_root", succeeded=True, outcome="success")
+            )
+            presenter = ImportExportPresenter(
+                _FakeView(),
+                _FakeAppState(),
+                import_model_action=action,
+                import_vmd_action=_FailingImportVmdAction(),
+            )
+
+            presenter.import_file()
+
+            options = action.requests[0].options
+            self.assertTrue(options["use_cpp_fast_load"])
+            self.assertTrue(options["cpp_fast_load_mesh_only"])
+            self.assertTrue(options["use_cpp_vp2_ownership"])
+            self.assertTrue(options["use_native_pmx_parse"])
+        finally:
+            for key, value in saved.items():
+                settings.set(key, value)
 
     def test_import_file_success_shows_japanese_and_english_model_readme_once(self):
         view = _FakeView()
@@ -1306,6 +1653,24 @@ class TestVmdImportOptions(unittest.TestCase):
         app_state.current_model_root = None
         self.assertIsNone(presenter._get_vmd_target_model())
 
+    def test_get_vmd_target_model_resolves_unique_long_path(self):
+        view = _FakeView()
+        app_state = _FakeAppState(_FakeSceneModelService(models=["|current_model"]))
+        app_state.current_model_root = "current_model"
+        presenter, _, _ = self._make_presenter(view, app_state)
+
+        self.assertEqual(presenter._get_vmd_target_model(), "|current_model")
+
+    def test_get_vmd_target_model_rejects_ambiguous_short_name(self):
+        view = _FakeView()
+        app_state = _FakeAppState(
+            _FakeSceneModelService(models=["|group_a|current_model", "|group_b|current_model"])
+        )
+        app_state.current_model_root = "current_model"
+        presenter, _, _ = self._make_presenter(view, app_state)
+
+        self.assertIsNone(presenter._get_vmd_target_model())
+
     def test_no_current_model_defers_content_validation_to_importer(self):
         view = _FakeView()
         app_state = _FakeAppState(_FakeSceneModelService(models=["model_a", "model_b"]))
@@ -1466,201 +1831,6 @@ class TestVmdImportOptions(unittest.TestCase):
         self.assertTrue(any("VMD import error: bad" in s for s in app_state.statuses))
         self.assertFalse(any("VMD import complete" in s for s in app_state.statuses))
         mock_partial.assert_not_called()
-
-
-class TestExportFile(unittest.TestCase):
-    """export_file の PMX/PMD/VMD action 分岐を検証する。"""
-
-    _KEYS_TO_PRESERVE = (
-        "export.general.export_format",
-        "export.general.apply_scale",
-        "ui.general.development_mode",
-    )
-
-    def setUp(self):
-        self._saved = {k: settings.get(k) for k in self._KEYS_TO_PRESERVE}
-        # Export is develop-mode only.
-        settings.set("ui.general.development_mode", True)
-
-    def tearDown(self):
-        for k, v in self._saved.items():
-            settings.set(k, v)
-
-    def test_export_blocked_in_normal_mode(self):
-        settings.set("ui.general.development_mode", False)
-        view = _FakeView()
-        view.export_path_edit = _FakeLineEdit("out.pmx")
-        app_state = _FakeAppState()
-        action = _RecordingExportModelAction(ExportModelResult(exported_path="out.pmx", succeeded=True))
-        presenter = ImportExportPresenter(
-            view,
-            app_state,
-            export_model_action=action,
-            export_vmd_action=_FailingExportVmdAction(),
-        )
-
-        presenter.export_file()
-
-        self.assertEqual(action.requests, [])
-        self.assertTrue(any("Development Mode" in s or "開発モード" in s for s in app_state.statuses))
-
-    def test_empty_path_guard(self):
-        view = _FakeView()
-        view.export_path_edit = _FakeLineEdit("")
-        app_state = _FakeAppState()
-        presenter = ImportExportPresenter(
-            view,
-            app_state,
-            export_model_action=_FailingExportModelAction(),
-            export_vmd_action=_FailingExportVmdAction(),
-        )
-        presenter.export_file()
-        self.assertIn("Please enter a file path", app_state.statuses)
-
-    def test_reports_model_action_status_message(self):
-        view = _FakeView()
-        view.export_path_edit = _FakeLineEdit("out.pmx")
-        app_state = _FakeAppState()
-        action = _RecordingExportModelAction(
-            ExportModelResult(
-                status_message="Export failed: Model export requires model_data, target_mesh, or a selected mesh"
-            )
-        )
-        presenter = ImportExportPresenter(
-            view,
-            app_state,
-            export_model_action=action,
-            export_vmd_action=_FailingExportVmdAction(),
-        )
-        presenter.export_file()
-        self.assertEqual(len(action.requests), 1)
-        self.assertEqual(action.requests[0].file_path, "out.pmx")
-        self.assertTrue(
-            any("Model export requires" in s for s in app_state.statuses)
-        )
-
-    def test_build_export_options_includes_file_path(self):
-        view = _FakeView()
-        view.export_path_edit = _FakeLineEdit("  out.pmx  ")
-        app_state = _FakeAppState()
-        presenter = ImportExportPresenter(view, app_state)
-
-        opts = presenter._build_export_options()
-
-        self.assertEqual(opts["file_path"], "out.pmx")
-
-    def test_build_export_options_reads_format_from_settings(self):
-        settings.set("export.general.export_format", "pmd")
-        view = _FakeView()
-        app_state = _FakeAppState()
-        presenter = ImportExportPresenter(view, app_state)
-
-        opts = presenter._build_export_options()
-
-        self.assertEqual(opts["export_format"], "pmd")
-
-    def test_build_export_options_reads_apply_scale_from_settings(self):
-        settings.set("export.general.apply_scale", False)
-        view = _FakeView()
-        app_state = _FakeAppState()
-        presenter = ImportExportPresenter(view, app_state)
-
-        opts = presenter._build_export_options()
-
-        self.assertFalse(opts["apply_scale"])
-
-    def test_export_file_reports_model_action_error(self):
-        view = _FakeView()
-        view.export_path_edit = _FakeLineEdit("out.pmx")
-        app_state = _FakeAppState()
-        action = _RecordingExportModelAction(ExportModelResult(error=ValueError("boom")))
-        presenter = ImportExportPresenter(
-            view,
-            app_state,
-            export_model_action=action,
-            export_vmd_action=_FailingExportVmdAction(),
-        )
-
-        presenter.export_file()
-
-        self.assertEqual(len(action.requests), 1)
-        self.assertTrue(any("Export error: boom" in s for s in app_state.statuses))
-
-    def test_export_file_passes_built_options_to_injected_action(self):
-        settings.set("export.general.export_format", "pmx")
-        settings.set("export.general.apply_scale", False)
-        view = _FakeView()
-        view.export_path_edit = _FakeLineEdit("  out.pmx  ")
-        app_state = _FakeAppState()
-        action = _RecordingExportModelAction(ExportModelResult(exported_path="out.pmx", succeeded=True))
-        presenter = ImportExportPresenter(
-            view,
-            app_state,
-            export_model_action=action,
-            export_vmd_action=_FailingExportVmdAction(),
-        )
-
-        presenter.export_file()
-
-        self.assertEqual(len(action.requests), 1)
-        request = action.requests[0]
-        self.assertEqual(request.file_path, "out.pmx")
-        self.assertEqual(
-            request.options,
-            {
-                "file_path": "out.pmx",
-                "export_format": "pmx",
-                "apply_scale": False,
-            },
-        )
-        self.assertIn("Export complete: out.pmx", app_state.statuses)
-        self.assertEqual(view.export_history, ["out.pmx"])
-
-    def test_export_file_uses_vmd_action_when_format_is_vmd(self):
-        settings.set("export.general.export_format", "vmd")
-        view = _FakeView()
-        view.export_path_edit = _FakeLineEdit("  out.vmd  ")
-        app_state = _FakeAppState()
-        action = _RecordingExportVmdAction(ExportVmdResult(exported_path="out.vmd", succeeded=True))
-        presenter = ImportExportPresenter(
-            view,
-            app_state,
-            export_model_action=_FailingExportModelAction(),
-            export_vmd_action=action,
-        )
-
-        presenter.export_file()
-
-        self.assertEqual(len(action.requests), 1)
-        request = action.requests[0]
-        self.assertEqual(request.file_path, "out.vmd")
-        self.assertEqual(
-            request.options,
-            {
-                "file_path": "out.vmd",
-                "export_format": "vmd",
-                "apply_scale": True,
-            },
-        )
-        self.assertIn("Export complete: out.vmd", app_state.statuses)
-
-    def test_export_file_reports_vmd_action_error(self):
-        settings.set("export.general.export_format", "vmd")
-        view = _FakeView()
-        view.export_path_edit = _FakeLineEdit("out.vmd")
-        app_state = _FakeAppState()
-        action = _RecordingExportVmdAction(ExportVmdResult(error=RuntimeError("boom")))
-        presenter = ImportExportPresenter(
-            view,
-            app_state,
-            export_model_action=_FailingExportModelAction(),
-            export_vmd_action=action,
-        )
-
-        presenter.export_file()
-
-        self.assertEqual(len(action.requests), 1)
-        self.assertTrue(any("Export error: boom" in s for s in app_state.statuses))
 
 
 class TestDevModeBehaviorGating(unittest.TestCase):

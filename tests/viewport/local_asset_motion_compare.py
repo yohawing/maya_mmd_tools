@@ -216,6 +216,10 @@ def _initialize_maya() -> None:
         maya.standalone.initialize(name="python")
     except RuntimeError:
         pass
+    _repo_imports()
+    from tests.common.maya_plugin_setup import load_mmd_tools_plugin
+
+    load_mmd_tools_plugin(ROOT)
 
 
 def _mesh_transforms(root: str | None = None) -> list[str]:
@@ -344,7 +348,14 @@ def _compare_frames(
     }
 
 
-def _import_pmx_vmd(pmx_path: Path, vmd_path: Path, setup_rig: bool, setup_bone_orientation: bool) -> str:
+def _import_pmx_vmd(
+    pmx_path: Path,
+    vmd_path: Path,
+    setup_rig: bool,
+    setup_bone_orientation: bool,
+    *,
+    bake_mode: bool,
+) -> str:
     _repo_imports()
     from mmd_tools.core import settings
     from mmd_tools.io.mmd_importer import import_mmd_file
@@ -368,6 +379,7 @@ def _import_pmx_vmd(pmx_path: Path, vmd_path: Path, setup_rig: bool, setup_bone_
         options={
             "target_model": root,
             "pmx_path": str(pmx_path),
+            "bake_mode": bake_mode,
         },
     )
     if not ok:
@@ -435,10 +447,22 @@ def _run_case(
         result["staged_pmx"] = str(pmx_path)
         result["staged_vmd"] = str(vmd_path)
 
-    root = _import_pmx_vmd(pmx_path, vmd_path, setup_rig=False, setup_bone_orientation=False)
+    root = _import_pmx_vmd(
+        pmx_path,
+        vmd_path,
+        setup_rig=False,
+        setup_bone_orientation=False,
+        bake_mode=True,
+    )
     bake_vertices = _capture_vertices(root, frames)
 
-    root = _import_pmx_vmd(pmx_path, vmd_path, setup_rig=True, setup_bone_orientation=True)
+    root = _import_pmx_vmd(
+        pmx_path,
+        vmd_path,
+        setup_rig=True,
+        setup_bone_orientation=True,
+        bake_mode=False,
+    )
     rig_vertices = _capture_vertices(root, frames)
     result["bake_vs_rig_mesh"] = _compare_frames(
         bake_vertices,

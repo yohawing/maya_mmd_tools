@@ -269,6 +269,7 @@ class SvgPickerWidget(QWidget):
 
     shape_clicked = Signal(str)
     shapes_selected = Signal(object)
+    background_clicked = Signal()
 
     def __init__(
         self,
@@ -314,6 +315,7 @@ class SvgPickerWidget(QWidget):
         self._available_regions = set(self._region_paths)
         self._enabled_regions = set(self._region_paths)
         self._additive_selection = False
+        self._subtractive_selection = False
 
     @property
     def region_ids(self) -> tuple[str, ...]:
@@ -326,6 +328,24 @@ class SvgPickerWidget(QWidget):
         """Whether the currently emitted picker action has Shift held."""
 
         return self._additive_selection
+
+    @property
+    def subtractive_selection(self) -> bool:
+        """Whether the currently emitted picker action has Ctrl held."""
+
+        return self._subtractive_selection
+
+    def _set_selection_modifiers(self, modifiers) -> None:
+        """Capture Maya-style add/remove modifiers for one emitted action."""
+
+        self._subtractive_selection = bool(modifiers & Qt.ControlModifier)
+        self._additive_selection = (
+            bool(modifiers & Qt.ShiftModifier) and not self._subtractive_selection
+        )
+
+    def _clear_selection_modifiers(self) -> None:
+        self._additive_selection = False
+        self._subtractive_selection = False
 
     def update_region_texts(
         self,
@@ -543,9 +563,9 @@ class SvgPickerWidget(QWidget):
             if self._pressed_region:
                 # A picker click is latency-sensitive: commit on press rather
                 # than waiting for release and Maya's next UI cycle.
-                self._additive_selection = bool(event.modifiers() & Qt.ShiftModifier)
+                self._set_selection_modifiers(event.modifiers())
                 self.shape_clicked.emit(self._pressed_region)
-                self._additive_selection = False
+                self._clear_selection_modifiers()
                 self._drag_origin = None
             else:
                 self._drag_origin = QPointF(position)
@@ -554,9 +574,11 @@ class SvgPickerWidget(QWidget):
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             if self._selection_rect is not None:
-                self._additive_selection = bool(event.modifiers() & Qt.ShiftModifier)
+                self._set_selection_modifiers(event.modifiers())
                 self.shapes_selected.emit(self._regions_in_rect(self._selection_rect))
-                self._additive_selection = False
+                self._clear_selection_modifiers()
+            elif self._drag_origin is not None:
+                self.background_clicked.emit()
         self._pressed_region = None
         self._drag_origin = None
         self._selection_rect = None

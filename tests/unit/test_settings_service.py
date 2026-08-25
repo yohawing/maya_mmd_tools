@@ -36,6 +36,7 @@ class _FakeSettingsStore:
                 "native": {
                     "use_cpp_fast_load": True,
                     "cpp_fast_load_mesh_only": False,
+                    "use_cpp_vp2_ownership": True,
                     "use_cpp_rig_nodes": True,
                 },
                 "naming": {"translate_names": False},
@@ -52,7 +53,7 @@ class _FakeSettingsStore:
                     "use_native_physics_bake": True,
                 },
             },
-            "export": {"general": {"export_format": "pmd", "apply_scale": False}},
+            "export": {"general": {"apply_scale": False}},
             "logging": {"enabled": False, "level": "ERROR", "log_file_path": "custom.log"},
             "ui": {"general": {"development_mode": False, "language": "en"}},
             "internal": {"ignored": True},
@@ -116,7 +117,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
         self.assertEqual(self.service.get("logging.level"), "WARNING")
         self.assertNotIn("log_level", self.store.data["ui"]["general"])
 
-    def test_load_and_save_settings_tab_state_preserve_keys(self):
+    def test_load_and_save_settings_tab_state(self):
         state = self.service.load_settings_tab_state()
         self.assertEqual(
             state,
@@ -162,6 +163,7 @@ class TestSettingsServiceJson(unittest.TestCase):
 
         self.assertEqual(set(data), {"import", "export", "logging", "ui"})
         self.assertNotIn("internal", data)
+        self.assertNotIn("export_format", data["export"].get("general", {}))
 
     def test_write_and_import_settings_json(self):
         path = "settings.json"
@@ -204,6 +206,18 @@ class TestSettingsServiceJson(unittest.TestCase):
 
         self.assertFalse(self.service.get("import.model.create_mmd_control_rig"))
         self.assertIsNone(self.service.get("import.animation.create_mmd_control_rig"))
+
+    def test_import_settings_drops_legacy_export_format(self):
+        self.service.import_settings_data(
+            {"export": {"general": {"export_format": "pmd", "apply_scale": False}}}
+        )
+
+        self.assertIsNone(self.service.get("export.general.export_format"))
+        self.assertNotIn(
+            ("export.general.export_format", "pmd"),
+            self.store.set_calls,
+        )
+        self.assertFalse(self.service.get("export.general.apply_scale"))
 
 
 class TestSettingsServiceImportOptions(unittest.TestCase):
@@ -248,9 +262,12 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["translate_names"])
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
-        self.assertTrue(options["use_cpp_fast_load"])
-        self.assertFalse(options["cpp_fast_load_mesh_only"])
-        self.assertTrue(options["use_cpp_rig_nodes"])
+        self.assertFalse(options["use_cpp_fast_load"])
+        self.assertTrue(options["cpp_fast_load_mesh_only"])
+        self.assertFalse(options["use_cpp_vp2_ownership"])
+        self.assertFalse(options["use_native_pmx_parse"])
+        self.assertFalse(options["require_native_pmx_parse"])
+        self.assertFalse(options["use_cpp_rig_nodes"])
         # Policy forces scale 1.0 without mutating the stored value.
         self.assertEqual(self.service.get("import.general.scale_factor"), 2.0)
 
@@ -274,8 +291,24 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertEqual(options["texture_search_path"], "/textures")
         self.assertTrue(options["add_semi_standard_bones"])
         self.assertFalse(options["translate_names"])
+        self.assertTrue(options["use_cpp_fast_load"])
+        self.assertFalse(options["cpp_fast_load_mesh_only"])
+        self.assertTrue(options["use_cpp_vp2_ownership"])
+        self.assertTrue(options["use_native_pmx_parse"])
+        self.assertTrue(options["use_cpp_rig_nodes"])
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
+
+    def test_build_pmx_import_options_defaults_native_render_routes_off(self):
+        self.service.set("ui.general.development_mode", True)
+        native = self.store.data["import"]["native"]
+        native.pop("use_cpp_fast_load")
+        native.pop("use_cpp_vp2_ownership")
+
+        options = self.service.build_pmx_import_options()
+
+        self.assertFalse(options["use_cpp_fast_load"])
+        self.assertFalse(options["use_cpp_vp2_ownership"])
 
     def test_model_control_rig_setting_feeds_pmx_and_vmd_options(self):
         self.service.set("import.model.create_mmd_control_rig", True)
@@ -417,10 +450,8 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
             resolve_reduce_bake_tolerances_from_quality(1.0),
         )
 
-    def test_build_export_options_and_texture_dialog_setting(self):
-        options = self.service.build_export_options("out.pmx")
-
-        self.assertEqual(options, {"file_path": "out.pmx", "export_format": "pmd", "apply_scale": False})
+    def test_export_format_setting_is_not_an_export_authority(self):
+        self.assertIsNone(self.service.get("export.general.export_format"))
         self.assertFalse(self.service.should_show_texture_issue_dialog())
 
 

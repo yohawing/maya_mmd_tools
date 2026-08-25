@@ -38,6 +38,9 @@ plug-ins/*/Debug/
 logs/
 stubs/
 
+# Machine-local asset probes and manifests (never imported by tracked code)
+/tools/local/
+
 # ai agent files
 .gemini/
 .clinerules/
@@ -53,6 +56,8 @@ docs-dev/
 /TODO.md
 /ROADMAP.md
 /PLAN.md
+/tools/local_asset_manifest.py
+/tests/unit/test_local_asset_manifest.py
 docs/*
 !docs/README_ja.md
 !docs/humanik_ja.md

@@ -1,8 +1,8 @@
 """Maya GUI commandPort E2E gate for the MMD-native control rig.
 
 The Maya-side check imports the checked-in PMX/VMD fixture, creates the
-detached control rig, enters EDIT, moves only the left foot IK controller,
-checks the owned ``mmdCcdIk`` response and cycle state, toggles ``ikEnabled``,
+detached control rig, enters EDIT, moves representative left/right foot and toe
+IK controllers, checks each owned ``mmdCcdIk`` response and cycle state, toggles ``ikEnabled``,
 bakes back to MMD inputs, saves/reopens, and performs a VMD export/re-import
 round-trip.  The host side always launches a fresh Maya process and refuses to
 use an already-open commandPort.
@@ -17,6 +17,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import logging
@@ -36,12 +37,17 @@ from tests.viewport.maya_e2e_harness import run_maya_e2e
 COMMAND_PORT = 7734
 COMPLETION_MARKER = "//-- MMD_CONTROL_RIG_E2E_DONE --//"
 TEST_TIMEOUT = 600
-MOVE_OFFSET_X = 0.35
 MOVE_EPSILON = 1.0e-5
 ROUNDTRIP_MATRIX_EPSILON = 5.0e-3
 ROUNDTRIP_FRAMES = tuple(range(0, 6))
 EVALUATION_MODE_CHOICES = ("default", "dg", "serial", "parallel")
 _EVALUATION_MODE_TO_MAYA = {"dg": "off", "serial": "serial", "parallel": "parallel"}
+IK_MOVE_CASES = (
+    ("left_foot_ik", 0.35),
+    ("right_foot_ik", 0.35),
+    ("left_toe_ik", 0.35),
+    ("right_toe_ik", 0.35),
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -330,20 +336,22 @@ def _matrix_error_summary(
     return {"nonSolverOwned": _summary(non_solver), "solverOwned": _summary(solver)}
 
 
-def _resolve_foot_solver(root: str, metadata: Mapping[str, Any], cmds) -> tuple[str, str]:
-    """Return the left-foot solver and an output-driven effector joint."""
+def _resolve_ik_solver(
+    metadata: Mapping[str, Any], role: str, cmds
+) -> tuple[str, str]:
+    """Return one role's solver and an output-driven effector joint."""
 
-    binding = metadata.get("bindings", {}).get("left_foot_ik", {})
+    binding = metadata.get("bindings", {}).get(role, {})
     solvers = [str(value) for value in binding.get("ikSolvers", []) if value]
     if not solvers:
-        raise RuntimeError("left_foot_ik binding has no mmdCcdIk solver")
+        raise RuntimeError(f"{role} binding has no mmdCcdIk solver")
     solver = solvers[0]
     if not cmds.objExists(solver):
         matches = cmds.ls(solver, long=True) or []
         if len(matches) == 1:
             solver = str(matches[0])
     if not cmds.objExists(solver):
-        raise RuntimeError(f"left foot solver is missing: {solver}")
+        raise RuntimeError(f"{role} solver is missing: {solver}")
 
     destinations: list[str] = []
     for index in range(32):
@@ -367,7 +375,131 @@ def _resolve_foot_solver(root: str, metadata: Mapping[str, Any], cmds) -> tuple[
     matches = cmds.ls(fallback, long=True) or []
     if len(matches) == 1:
         return solver, str(matches[0])
-    raise RuntimeError(f"left foot solver has no output-driven effector: {solver}")
+    raise RuntimeError(f"{role} solver has no output-driven effector: {solver}")
+
+
+def _solver_link_joints(solver: str, index: int, cmds) -> list[str]:
+    """Return output-driven IK link joints for one solver output slot."""
+
+    joints = []
+    for value in (
+        cmds.listConnections(
+            f"{solver}.outputRotate[{index}]",
+            source=False,
+            destination=True,
+            type="joint",
+        )
+        or []
+    ):
+        long_names = cmds.ls(value, long=True) or [value]
+        joints.extend(str(item) for item in long_names if cmds.objExists(str(item)))
+    return sorted(set(joints))
+
+
+def _nonzero_sentinel_value(before: float, offset: float) -> float:
+    """Choose a non-zero target while retaining a meaningful movement delta."""
+
+    expected = before + offset
+    if abs(expected) <= MOVE_EPSILON:
+        expected = before - offset
+    if abs(expected) <= MOVE_EPSILON:
+        expected = offset
+    return expected
+
+
+def _author_control_sentinel(control: str, attribute: str, frame: int, offset: float, cmds) -> dict[str, Any]:
+    """Author and verify a non-zero control value through its writable route."""
+
+    if not cmds.objExists(control):
+        raise RuntimeError(f"control is missing: {control}")
+    if not cmds.attributeQuery(attribute, node=control, exists=True):
+        raise RuntimeError(f"control attribute is missing: {control}.{attribute}")
+    before = float(cmds.getAttr(f"{control}.{attribute}", time=frame))
+    if not math.isfinite(before):
+        raise RuntimeError(f"control value is not finite: {control}.{attribute}")
+    expected = _nonzero_sentinel_value(before, float(offset))
+    source_plugs = [
+        str(value)
+        for value in (
+            cmds.listConnections(
+                f"{control}.{attribute}",
+                source=True,
+                destination=False,
+                plugs=True,
+            )
+            or []
+        )
+    ]
+    source_node = None
+    if len(source_plugs) > 1:
+        raise RuntimeError(
+            f"control input route is ambiguous: {control}.{attribute}: {source_plugs}"
+        )
+    if source_plugs:
+        source_node = source_plugs[0].split(".", 1)[0]
+        source_type = str(cmds.nodeType(source_node))
+        if not source_type.startswith("animCurve"):
+            raise RuntimeError(
+                f"control input route is not writable: {source_plugs[0]} ({source_type})"
+            )
+        cmds.setKeyframe(source_node, time=frame, value=expected)
+    else:
+        source_type = None
+        cmds.setKeyframe(control, attribute=attribute, time=frame, value=expected)
+    cmds.dgdirty(allPlugs=True)
+    cmds.dgdirty(control)
+    cmds.refresh(force=True)
+    after = float(cmds.getAttr(f"{control}.{attribute}", time=frame))
+    if not math.isfinite(after):
+        raise RuntimeError(f"authored control value is not finite: {control}.{attribute}")
+    delta = abs(after - before)
+    if (
+        abs(after) <= MOVE_EPSILON
+        or delta <= MOVE_EPSILON
+        or abs(after - expected) > MOVE_EPSILON
+    ):
+        raise RuntimeError(
+            f"control input route did not evaluate authored sentinel: "
+            f"{control}.{attribute} before={before} expected={expected} after={after}"
+        )
+    return {
+        "plug": f"{control}.{attribute}",
+        "sourcePlugs": source_plugs,
+        "sourceNode": source_node,
+        "sourceType": source_type,
+        "before": before,
+        "expected": expected,
+        "after": after,
+        "delta": delta,
+        "pass": True,
+    }
+
+
+def _ik_move_witness_pass(
+    *,
+    control_route_pass: bool,
+    control_delta: float,
+    target_delta: float,
+    link_deltas: Mapping[str, float],
+) -> bool:
+    """Require a writable authored input and evaluated solver/link response."""
+
+    return bool(
+        control_route_pass
+        and control_delta > MOVE_EPSILON
+        and target_delta > MOVE_EPSILON
+        and link_deltas
+        and all(delta > MOVE_EPSILON for delta in link_deltas.values())
+    )
+
+
+def _focused_witnesses_pass(report: Mapping[str, Any]) -> bool:
+    """Keep export parity from masking a failed focused Control Rig witness."""
+
+    return all(
+        bool(report.get(name, {}).get("pass"))
+        for name in ("ikMove", "ikToggle", "autoBakeExport")
+    )
 
 
 def _solver_snapshot(solver: str, effector: str, cmds) -> dict[str, Any]:
@@ -382,6 +514,7 @@ def _solver_snapshot(solver: str, effector: str, cmds) -> dict[str, Any]:
     links = chain.get("links", []) if isinstance(chain, dict) else []
     count = max(1, len(links))
     outputs = {}
+    link_world_matrices = {}
     for index in range(count):
         try:
             outputs[str(index)] = _flatten_numeric(
@@ -389,6 +522,10 @@ def _solver_snapshot(solver: str, effector: str, cmds) -> dict[str, Any]:
             )
         except RuntimeError:
             outputs[str(index)] = []
+        link_world_matrices[str(index)] = {
+            joint: _matrix(joint, cmds)
+            for joint in _solver_link_joints(solver, index, cmds)
+        }
     try:
         enabled = bool(cmds.getAttr(f"{solver}.enabled"))
     except RuntimeError:
@@ -398,70 +535,11 @@ def _solver_snapshot(solver: str, effector: str, cmds) -> dict[str, Any]:
         "enabled": enabled,
         "goalWorldMatrix": _flatten_numeric(cmds.getAttr(f"{solver}.goalWorldMatrix")),
         "outputRotate": outputs,
+        "ikLinkWorldMatrices": link_world_matrices,
         "effector": effector,
         "effectorWorldMatrix": _matrix(effector, cmds),
         "effectorWorldTranslation": _world_translation(effector, cmds),
     }
-
-
-def _control_worlds(controls: Mapping[str, str], cmds) -> dict[str, list[float]]:
-    return {
-        str(role): _matrix(str(node), cmds)
-        for role, node in sorted(controls.items())
-        if cmds.objExists(str(node))
-    }
-
-
-def _dag_descendant_roles(
-    controls: Mapping[str, str], ancestor_role: str, cmds
-) -> set[str]:
-    """Return controls that are DAG descendants of ``ancestor_role``.
-
-    Control zero groups are intentionally nested below their nearest parent
-    control.  Moving a parent therefore changes each child control's world
-    matrix even though no child channel was authored.  Resolve long DAG paths
-    before comparing them so namespace and nested-group changes do not turn
-    expected inherited motion into an unrelated-control failure.
-    """
-
-    ancestor = controls.get(ancestor_role)
-    if not ancestor:
-        return set()
-    try:
-        ancestor_paths = cmds.ls(str(ancestor), long=True) or [str(ancestor)]
-    except RuntimeError:
-        ancestor_paths = [str(ancestor)]
-
-    descendants: set[str] = set()
-    for ancestor_path in ancestor_paths:
-        try:
-            descendants.update(
-                str(node)
-                for node in (
-                    cmds.listRelatives(
-                        str(ancestor_path),
-                        allDescendents=True,
-                        fullPath=True,
-                    )
-                    or []
-                )
-            )
-        except RuntimeError:
-            continue
-    if not descendants:
-        return set()
-
-    result: set[str] = set()
-    for role, node in controls.items():
-        if str(role) == str(ancestor_role):
-            continue
-        try:
-            node_paths = cmds.ls(str(node), long=True) or [str(node)]
-        except RuntimeError:
-            node_paths = [str(node)]
-        if descendants.intersection(str(path) for path in node_paths):
-            result.add(str(role))
-    return result
 
 
 def _find_rig_root(cmds) -> str:
@@ -564,6 +642,157 @@ def _vmd_role_diagnostics(vmd_data) -> dict[str, dict[str, Any]]:
     return dict(sorted(rows.items()))
 
 
+def _vmd_applicability_candidates(vmd_data, joint_for_name) -> list[dict[str, Any]]:
+    """Return mapped VMD keys whose values changed from that bone's first key.
+
+    A VMD key can be non-zero without being motion: imported fixtures commonly
+    repeat the authored initial pose at later non-zero frames.  Use each bone's
+    first key as its source baseline and leave the Maya world-space comparison
+    to the caller.
+    """
+
+    by_bone: dict[str, list[Any]] = {}
+    for frame in getattr(vmd_data, "bone_frames", []) or []:
+        by_bone.setdefault(str(frame.bone_name), []).append(frame)
+
+    result = []
+    for bone_name, frames in sorted(by_bone.items()):
+        ordered = sorted(frames, key=lambda item: int(item.frame_number))
+        if len(ordered) < 2:
+            continue
+        joint = joint_for_name(bone_name)
+        if not joint:
+            continue
+        baseline = ordered[0]
+        baseline_frame = int(baseline.frame_number)
+        baseline_position = [float(value) for value in baseline.position]
+        baseline_rotation = [float(value) for value in baseline.rotation]
+        for candidate in ordered[1:]:
+            candidate_frame = int(candidate.frame_number)
+            if candidate_frame <= baseline_frame:
+                continue
+            candidate_position = [float(value) for value in candidate.position]
+            candidate_rotation = [float(value) for value in candidate.rotation]
+            position_delta = max(
+                (abs(after - before) for before, after in zip(baseline_position, candidate_position)),
+                default=0.0,
+            )
+            rotation_delta = max(
+                (abs(after - before) for before, after in zip(baseline_rotation, candidate_rotation)),
+                default=0.0,
+            )
+            source_delta = max(position_delta, rotation_delta)
+            if source_delta <= MOVE_EPSILON:
+                continue
+            result.append(
+                {
+                    "bone": bone_name,
+                    "joint": str(joint),
+                    "baseline": baseline,
+                    "candidate": candidate,
+                    "baselineFrame": baseline_frame,
+                    "candidateFrame": candidate_frame,
+                    "baselinePosition": baseline_position,
+                    "baselineRotation": baseline_rotation,
+                    "candidatePosition": candidate_position,
+                    "candidateRotation": candidate_rotation,
+                    "sourcePositionMaxAbsDelta": position_delta,
+                    "sourceRotationMaxAbsDelta": rotation_delta,
+                    "sourceMaxAbsDelta": source_delta,
+                }
+            )
+            # One real source-motion witness per bone is sufficient and keeps
+            # Maya time evaluation/report size bounded for dense VMD files.
+            break
+    return result
+
+
+def _canonical_warning_evidence(report: Any) -> list[dict[str, str]]:
+    """Keep warning callback evidence compact and independent of UI wording."""
+
+    return [
+        {
+            "code": str(issue.code),
+            "severity": str(issue.severity),
+            "path": str(issue.path),
+            "reason": str(issue.reason),
+        }
+        for issue in getattr(report, "issues", ()) or ()
+    ]
+
+
+def _report_evidence(report: Any) -> dict[str, Any] | None:
+    """Return the terminal report facts needed when one-shot publication fails."""
+
+    if report is None:
+        return None
+    status = None
+    to_dict = getattr(report, "to_dict", None)
+    if callable(to_dict):
+        status = to_dict().get("status")
+    return {
+        "status": status,
+        "format": getattr(report, "export_format", None),
+        "mode": getattr(report, "mode", None),
+        "warnings": _canonical_warning_evidence(report),
+    }
+
+
+def _approve_one_shot_export_warnings(report: Any, auto_gate: dict[str, Any]) -> bool:
+    """Record the in-call Export Anyway decision and explicitly approve it."""
+
+    acknowledgement = auto_gate.setdefault(
+        "warningAcknowledgement",
+        {"invoked": False, "approved": False, "callbackCount": 0, "warnings": []},
+    )
+    acknowledgement["invoked"] = True
+    acknowledgement["callbackCount"] = int(acknowledgement["callbackCount"]) + 1
+    acknowledgement["warnings"] = _canonical_warning_evidence(report)
+    if bool(getattr(report, "is_blocking", False)):
+        # A fatal report is never expected here, but it must not be approved if
+        # a workflow integration accidentally routes one through this callback.
+        acknowledgement["fatalRejected"] = True
+        return False
+    acknowledgement["approved"] = True
+    return True
+
+
+def _record_one_shot_terminal_evidence(
+    auto_gate: dict[str, Any], published: Any, output_path: Path
+) -> None:
+    """Record a complete one-shot terminal state before touching its output."""
+
+    report = getattr(published, "report", None)
+    error = getattr(published, "error", None)
+    succeeded = bool(getattr(published, "succeeded", False))
+    output_exists = output_path.is_file()
+    report_evidence = _report_evidence(report)
+    auto_gate.update(
+        {
+            "publishedState": getattr(published, "state", None),
+            "publishedSucceeded": succeeded,
+            "publishedError": (
+                None if error is None else f"{type(error).__name__}: {error}"
+            ),
+            "validationReport": report_evidence,
+            "phaseTimings": dict(getattr(published, "phase_timings", {}) or {}),
+            "activePhase": getattr(published, "active_phase", None),
+            "completedPhases": list(getattr(published, "completed_phases", ()) or ()),
+            "outputExists": output_exists,
+        }
+    )
+    if succeeded and output_exists:
+        return
+    reason = (
+        "automatic Bake Timeline did not publish a readable output: "
+        f"state={auto_gate['publishedState']!r}; "
+        f"succeeded={succeeded}; outputExists={output_exists}; "
+        f"error={auto_gate['publishedError']!r}; report={report_evidence!r}"
+    )
+    auto_gate["publishFailureReason"] = reason
+    raise RuntimeError(reason)
+
+
 def _record_control_rig_diagnostics(
     report: dict[str, Any],
     profile: Mapping[str, Any],
@@ -611,6 +840,10 @@ def run_e2e_check(
     exported_vmd_path: str,
     evaluation_mode: str = "default",
     create_on_import: bool = False,
+    auto_bake_only: bool = False,
+    cpp_config: str = "Debug",
+    ffi_path: str | None = None,
+    auto_frame_range: tuple[int, int] | None = None,
 ) -> None:
     """Execute the complete control-rig workflow in a live Maya GUI.
 
@@ -618,6 +851,11 @@ def run_e2e_check(
     exercise the legacy PMX import -> VMD import -> explicit rig-build route.
     When enabled, VMD import itself owns the transactional Control Rig create
     or reuse and direct controller keying path.
+
+    ``auto_bake_only`` keeps the existing Control Rig edits and evidence but
+    stops after the automatic Bake Timeline export gate.  It is intended for
+    focused host diagnosis; normal mode retains every existing assertion and
+    round-trip gate.
     """
 
     import maya.cmds as cmds
@@ -641,6 +879,22 @@ def run_e2e_check(
             "requested": str(evaluation_mode or "default"),
             "active": None,
             "mayaMode": None,
+        },
+        "focusedMode": {
+            "autoBakeOnly": bool(auto_bake_only),
+            "scope": "auto_bake_export" if auto_bake_only else "full_control_rig_roundtrip",
+        },
+        "cppConfig": str(cpp_config),
+        "autoFrameRange": {
+            "requested": list(auto_frame_range) if auto_frame_range else None,
+            "actual": None,
+        },
+        "ffiRuntime": {
+            "requestedPath": str(ffi_path) if ffi_path else None,
+            "configuredPath": None,
+            "resolvedPath": None,
+            "symbolAvailability": {},
+            "status": "not_requested" if not ffi_path else "pending",
         },
         "model": str(model_path),
         "motion": str(motion_path),
@@ -666,6 +920,7 @@ def run_e2e_check(
         "vmdApplicability": {},
         "ikMove": {},
         "ikToggle": {},
+        "autoBakeExport": {},
         "cycles": [],
         "roundtrip": {},
         "errors": [],
@@ -688,11 +943,26 @@ def run_e2e_check(
         plugin_path = _PROJECT_ROOT / "mmd_tools" / "plugin_main.py"
         plugin_name = plugin_path.stem
         maya_major = str(cmds.about(version=True)).split(".", 1)[0]
-        cpp_plugin = _PROJECT_ROOT / "plug-ins" / maya_major / "Debug" / "mmd_tools_cpp.mll"
+        cpp_plugin = (
+            _PROJECT_ROOT
+            / "plug-ins"
+            / maya_major
+            / str(cpp_config)
+            / "mmd_tools_cpp.mll"
+        )
         if not cpp_plugin.is_file():
             raise RuntimeError(
-                f"Maya {maya_major} Debug C++ plugin is required for mmdCcdIk E2E: {cpp_plugin}"
+                f"Maya {maya_major} {cpp_config} C++ plugin is required for mmdCcdIk E2E: {cpp_plugin}"
             )
+        if ffi_path:
+            configured_ffi_path = Path(ffi_path).expanduser()
+            if not configured_ffi_path.is_absolute():
+                configured_ffi_path = _PROJECT_ROOT / configured_ffi_path
+            configured_ffi_path = configured_ffi_path.resolve()
+            report["ffiRuntime"]["configuredPath"] = str(configured_ffi_path)
+            if not configured_ffi_path.is_file():
+                raise RuntimeError(f"requested mmd-anim FFI library does not exist: {configured_ffi_path}")
+            os.environ["MMD_ANIM_FFI_PATH"] = str(configured_ffi_path)
         plugin_dir = str(cpp_plugin.parent)
         if plugin_dir not in os.environ.get("PATH", "").split(os.pathsep):
             os.environ["PATH"] = plugin_dir + os.pathsep + os.environ.get("PATH", "")
@@ -704,6 +974,46 @@ def run_e2e_check(
         if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
             cmds.loadPlugin(str(plugin_path), quiet=True)
             _log(f"loaded plugin: {plugin_path}")
+
+        if ffi_path:
+            from mmd_tools.core.native.mmd_anim_runtime import (
+                get_mmd_runtime_library,
+                get_runtime_library_path,
+            )
+
+            runtime_library = get_mmd_runtime_library()
+            runtime_path = get_runtime_library_path()
+            resolved_runtime_path = runtime_path.resolve() if runtime_path else None
+            symbol_availability = {
+                "mmd_runtime_export_vmd_from_parts": bool(
+                    runtime_library is not None
+                    and hasattr(runtime_library, "mmd_runtime_export_vmd_from_parts")
+                )
+            }
+            report["ffiRuntime"].update(
+                {
+                    "resolvedPath": str(resolved_runtime_path) if resolved_runtime_path else None,
+                    "symbolAvailability": symbol_availability,
+                }
+            )
+            configured_path = Path(report["ffiRuntime"]["configuredPath"])
+            path_matches = bool(
+                resolved_runtime_path
+                and os.path.normcase(str(resolved_runtime_path))
+                == os.path.normcase(str(configured_path))
+            )
+            if runtime_library is None or not path_matches or not all(symbol_availability.values()):
+                report["ffiRuntime"]["status"] = "fail"
+                raise RuntimeError(
+                    "requested mmd-anim FFI library was not loaded with the required export: "
+                    f"requested={configured_path}, loaded={resolved_runtime_path}, "
+                    f"symbols={symbol_availability}"
+                )
+            report["ffiRuntime"]["status"] = "pass"
+            _log(
+                "mmd-anim FFI runtime: "
+                f"path={resolved_runtime_path} symbols={symbol_availability}"
+            )
 
         if create_on_import:
             # Preserve Maya's script-editor diagnostics alongside the JSON
@@ -865,49 +1175,73 @@ def run_e2e_check(
             )
 
         sample = None
-        sample_joint = None
-        for candidate in sorted(
-            source_vmd.bone_frames,
-            key=lambda item: (int(item.frame_number), str(item.bone_name)),
+        checked_candidates = []
+        for candidate in _vmd_applicability_candidates(
+            source_vmd, lambda name: _find_joint_for_mmd_name(name, cmds)
         ):
-            has_payload = any(abs(float(value)) > MOVE_EPSILON for value in candidate.position)
-            has_payload = has_payload or abs(float(candidate.rotation[3]) - 1.0) > MOVE_EPSILON
-            if not has_payload or int(candidate.frame_number) <= 0:
-                continue
-            joint = _find_joint_for_mmd_name(candidate.bone_name, cmds)
-            if joint:
-                sample = candidate
-                sample_joint = joint
+            cmds.currentTime(candidate["baselineFrame"], edit=True)
+            cmds.refresh(force=True)
+            sample_before = _matrix(candidate["joint"], cmds)
+            cmds.currentTime(candidate["candidateFrame"], edit=True)
+            cmds.refresh(force=True)
+            sample_after = _matrix(candidate["joint"], cmds)
+            world_delta = max(
+                (abs(actual - expected) for actual, expected in zip(sample_before, sample_after)),
+                default=0.0,
+            )
+            checked_candidates.append(
+                {
+                    "bone": candidate["bone"],
+                    "baselineFrame": candidate["baselineFrame"],
+                    "candidateFrame": candidate["candidateFrame"],
+                    "sourceMaxAbsDelta": candidate["sourceMaxAbsDelta"],
+                    "worldMatrixMaxAbsDelta": world_delta,
+                }
+            )
+            if world_delta > MOVE_EPSILON:
+                sample = {**candidate, "worldMatrixMaxAbsDelta": world_delta}
                 break
-        if sample is None or sample_joint is None:
-            raise RuntimeError("fixture VMD has no non-rest keyed bone mapped to a Maya joint")
-        cmds.currentTime(0, edit=True)
-        cmds.refresh(force=True)
-        sample_before = _matrix(sample_joint, cmds)
-        cmds.currentTime(int(sample.frame_number), edit=True)
-        cmds.refresh(force=True)
-        sample_after = _matrix(sample_joint, cmds)
-        sample_delta = max(
-            (abs(actual - expected) for actual, expected in zip(sample_before, sample_after)),
-            default=0.0,
-        )
+        if sample is None:
+            report["vmdApplicability"]["checkedCandidates"] = checked_candidates
+            raise RuntimeError(
+                "fixture VMD has no mapped key with both source and world-space motion"
+            )
         report["vmdApplicability"].update(
             {
-                "sampleBone": str(sample.bone_name),
-                "sampleJoint": sample_joint,
-                "sampleFrame": int(sample.frame_number),
-                "samplePosition": [float(value) for value in sample.position],
-                "sampleRotation": [float(value) for value in sample.rotation],
-                "sampleWorldMatrixMaxAbsDelta": sample_delta,
-                "pass": sample_delta > MOVE_EPSILON,
+                "sampleBone": sample["bone"],
+                "sampleJoint": sample["joint"],
+                "sampleFrame": sample["candidateFrame"],
+                "samplePosition": sample["candidatePosition"],
+                "sampleRotation": sample["candidateRotation"],
+                "baselineFrame": sample["baselineFrame"],
+                "baselinePosition": sample["baselinePosition"],
+                "baselineRotation": sample["baselineRotation"],
+                "candidateFrame": sample["candidateFrame"],
+                "candidatePosition": sample["candidatePosition"],
+                "candidateRotation": sample["candidateRotation"],
+                "sourcePositionMaxAbsDelta": sample["sourcePositionMaxAbsDelta"],
+                "sourceRotationMaxAbsDelta": sample["sourceRotationMaxAbsDelta"],
+                "sourceMaxAbsDelta": sample["sourceMaxAbsDelta"],
+                "sampleWorldMatrixMaxAbsDelta": sample["worldMatrixMaxAbsDelta"],
+                "checkedCandidates": checked_candidates,
+                "pass": (
+                    sample["sourceMaxAbsDelta"] > MOVE_EPSILON
+                    and sample["worldMatrixMaxAbsDelta"] > MOVE_EPSILON
+                ),
             }
         )
         _log(
-            "VMD applicability: boneFrames=%d sample=%s@%d worldMatrixMaxAbsDelta=%.8f"
-            % (len(source_vmd.bone_frames), sample.bone_name, sample.frame_number, sample_delta)
+            "VMD applicability: boneFrames=%d sample=%s baseline=%d candidate=%d "
+            "sourceMaxAbsDelta=%.8f worldMatrixMaxAbsDelta=%.8f"
+            % (
+                len(source_vmd.bone_frames),
+                sample["bone"],
+                sample["baselineFrame"],
+                sample["candidateFrame"],
+                sample["sourceMaxAbsDelta"],
+                sample["worldMatrixMaxAbsDelta"],
+            )
         )
-        if sample_delta <= MOVE_EPSILON:
-            raise RuntimeError("imported VMD has keyed data but no non-rest world effect")
 
         baseline_cycle = _cycle_state("after_vmd_import", cmds)
         report["cycles"].append(baseline_cycle)
@@ -960,8 +1294,14 @@ def run_e2e_check(
                 )
         elif rig.state != CONTROL_RIG_ATTACHED:
             raise RuntimeError(f"build did not produce ATTACHED state: {rig.state}")
-        if "left_foot_ik" not in rig.controls:
-            raise RuntimeError("fixture has no left_foot_ik control")
+        missing_ik_roles = [
+            role for role, _offset in IK_MOVE_CASES if role not in rig.controls
+        ]
+        if missing_ik_roles:
+            raise RuntimeError(
+                "fixture has no required IK controls: "
+                f"{', '.join(missing_ik_roles)}"
+            )
         _log(f"built control rig ({len(rig.controls)} controls)")
 
         metadata = read_mmd_control_rig_metadata(root)
@@ -970,7 +1310,7 @@ def run_e2e_check(
         if create_on_import:
             report["createOnImport"]["owner"] = metadata.get("owner")
             report["createOnImport"]["state"] = metadata.get("state")
-        solver, effector = _resolve_foot_solver(root, metadata, cmds)
+        solver, effector = _resolve_ik_solver(metadata, "left_foot_ik", cmds)
         control = str(rig.controls["left_foot_ik"])
         _log(f"left foot control={control}, solver={solver}, effector={effector}")
 
@@ -984,85 +1324,121 @@ def run_e2e_check(
         frame = 3
         cmds.currentTime(frame, edit=True)
         cmds.refresh(force=True)
-        before_solver = _solver_snapshot(solver, effector, cmds)
-        before_controls = _control_worlds(rig.controls, cmds)
-        before_x = float(cmds.getAttr(f"{control}.translateX"))
         before_cycle = _cycle_state("before_ik_move", cmds)
         report["cycles"].append(before_cycle)
 
-        cmds.setKeyframe(
-            control,
-            attribute="translateX",
-            time=frame,
-            value=before_x + MOVE_OFFSET_X,
-        )
-        cmds.refresh(force=True)
-        after_solver = _solver_snapshot(solver, effector, cmds)
-        after_controls = _control_worlds(rig.controls, cmds)
+        ik_cases: dict[str, dict[str, Any]] = {}
+        for role, offset in IK_MOVE_CASES:
+            case: dict[str, Any] = {
+                "role": role,
+                "frame": frame,
+                "offset": float(offset),
+                "control": str(rig.controls.get(role, "")),
+                "pass": False,
+            }
+            try:
+                case_solver, case_effector = _resolve_ik_solver(metadata, role, cmds)
+                case_control = str(rig.controls[role])
+                before_solver = _solver_snapshot(case_solver, case_effector, cmds)
+                before_control_world = _matrix(case_control, cmds)
+                authored = _author_control_sentinel(
+                    case_control,
+                    "translateX",
+                    frame,
+                    float(offset),
+                    cmds,
+                )
+                after_solver = _solver_snapshot(case_solver, case_effector, cmds)
+                after_control_world = _matrix(case_control, cmds)
+                target_delta = _distance(
+                    before_solver["goalWorldMatrix"], after_solver["goalWorldMatrix"]
+                )
+                output_delta = _distance(
+                    [
+                        item
+                        for values in before_solver["outputRotate"].values()
+                        for item in values
+                    ],
+                    [
+                        item
+                        for values in after_solver["outputRotate"].values()
+                        for item in values
+                    ],
+                )
+                link_deltas = {}
+                before_links = before_solver["ikLinkWorldMatrices"]
+                after_links = after_solver["ikLinkWorldMatrices"]
+                for index in sorted(set(before_links) & set(after_links)):
+                    for joint in sorted(
+                        set(before_links[index]) & set(after_links[index])
+                    ):
+                        link_deltas[f"{index}:{joint}"] = _distance(
+                            before_links[index][joint], after_links[index][joint]
+                        )
+                case.update(
+                    {
+                        "solver": case_solver,
+                        "effector": case_effector,
+                        "controlAuthored": authored,
+                        "controlWorldMatrixBefore": before_control_world,
+                        "controlWorldMatrixAfter": after_control_world,
+                        "controlWorldMatrixDelta": _distance(
+                            before_control_world, after_control_world
+                        ),
+                        "before": before_solver,
+                        "after": after_solver,
+                        "solverTargetDelta": target_delta,
+                        "outputRotateDelta": output_delta,
+                        "ikLinkWorldMatrixDeltas": link_deltas,
+                        "pass": _ik_move_witness_pass(
+                            control_route_pass=bool(authored["pass"]),
+                            control_delta=float(authored["delta"]),
+                            target_delta=target_delta,
+                            link_deltas=link_deltas,
+                        ),
+                    }
+                )
+            except Exception as exc:
+                case["error"] = f"{type(exc).__name__}: {exc}"
+            ik_cases[role] = case
+            _log(
+                "IK move %s: pass=%s targetDelta=%s linkDeltas=%s"
+                % (
+                    role,
+                    case["pass"],
+                    case.get("solverTargetDelta"),
+                    json.dumps(case.get("ikLinkWorldMatrixDeltas", {}), sort_keys=True),
+                )
+            )
+
+        left_case = ik_cases["left_foot_ik"]
         after_cycle = _cycle_state("after_ik_move", cmds)
         report["cycles"].append(after_cycle)
-
-        goal_delta = _distance(
-            before_solver["goalWorldMatrix"], after_solver["goalWorldMatrix"]
-        )
-        output_delta = _distance(
-            [item for values in before_solver["outputRotate"].values() for item in values],
-            [item for values in after_solver["outputRotate"].values() for item in values],
-        )
-        effector_delta = _distance(
-            before_solver["effectorWorldMatrix"], after_solver["effectorWorldMatrix"]
-        )
-        control_deltas = {
-            role: _distance(before_controls.get(role, []), after_controls.get(role, []))
-            for role in sorted(set(before_controls) | set(after_controls))
-        }
-        descendant_roles = _dag_descendant_roles(rig.controls, "left_foot_ik", cmds)
-        descendant_control_deltas = {
-            role: delta
-            for role, delta in control_deltas.items()
-            if role in descendant_roles
-        }
-        other_control_deltas = {
-            role: delta
-            for role, delta in control_deltas.items()
-            if role != "left_foot_ik" and role not in descendant_roles
-        }
         report["ikMove"] = {
             "frame": frame,
-            "control": control,
-            "solver": solver,
-            "effector": effector,
-            "before": before_solver,
-            "after": after_solver,
-            "goalWorldMatrixDelta": goal_delta,
-            "outputRotateDelta": output_delta,
-            "effectorWorldMatrixDelta": effector_delta,
-            "controlWorldDeltas": control_deltas,
-            "descendantControlRoles": sorted(descendant_roles),
-            "descendantControlWorldDeltas": descendant_control_deltas,
-            "otherControlWorldDeltas": other_control_deltas,
-            "pass": bool(
-                goal_delta > MOVE_EPSILON
-                and max(output_delta, effector_delta) > MOVE_EPSILON
-                and all(delta <= MOVE_EPSILON for delta in other_control_deltas.values())
+            "requiredCases": [role for role, _offset in IK_MOVE_CASES],
+            "cases": ik_cases,
+            "control": left_case.get("control", control),
+            "solver": left_case.get("solver", solver),
+            "effector": left_case.get("effector", effector),
+            "before": left_case.get("before"),
+            "after": left_case.get("after"),
+            "goalWorldMatrixDelta": left_case.get("solverTargetDelta", 0.0),
+            "outputRotateDelta": left_case.get("outputRotateDelta", 0.0),
+            "effectorWorldMatrixDelta": (
+                _distance(
+                    (left_case.get("before") or {}).get("effectorWorldMatrix", []),
+                    (left_case.get("after") or {}).get("effectorWorldMatrix", []),
+                )
+                if left_case.get("before") and left_case.get("after")
+                else 0.0
             ),
+            "pass": all(case.get("pass") is True for case in ik_cases.values()),
         }
-        _log(
-            "IK move: goalDelta=%.8f outputDelta=%.8f effectorDelta=%.8f"
-            % (goal_delta, output_delta, effector_delta)
-        )
-        if descendant_control_deltas:
-            _log(
-                "IK move: inherited descendant control deltas=%s"
-                % json.dumps(descendant_control_deltas, sort_keys=True)
-            )
-        if other_control_deltas:
-            _log(
-                "IK move: unrelated control deltas=%s"
-                % json.dumps(other_control_deltas, sort_keys=True)
-            )
-        if not report["ikMove"]["pass"]:
-            raise RuntimeError("left foot IK move did not produce an owned solver response")
+        if not report["ikMove"]["pass"] and not auto_bake_only:
+            raise RuntimeError("required IK move witnesses did not pass")
+        if not report["ikMove"]["pass"] and auto_bake_only:
+            _log("focused auto-bake mode: retaining failed IK move evidence")
 
         enabled_before = bool(cmds.getAttr(f"{solver}.enabled"))
         enabled_after_expected = not enabled_before
@@ -1159,8 +1535,547 @@ def run_e2e_check(
             "pass": enabled_after == enabled_after_expected,
         }
         _log(f"IK enabled toggle: {enabled_before} -> {enabled_after}")
-        if not report["ikToggle"]["pass"]:
+        if not report["ikToggle"]["pass"] and not auto_bake_only:
             raise RuntimeError("ikEnabled toggle did not reach mmdCcdIk.enabled")
+        if not report["ikToggle"]["pass"] and auto_bake_only:
+            _log("focused auto-bake mode: retaining failed IK toggle evidence")
+
+        # Exercise the production one-shot export while the Control Rig owns
+        # the authoring motion.  Collection may temporarily bake MMD inputs,
+        # but its watch and sibling output do not outlive this call.
+        from mmd_tools.adapters.maya_vmd_prepare_backend import (
+            create_maya_bake_timeline_vmd_action,
+        )
+        from mmd_tools.services.export_workflow_service import (
+            ExportWorkflowRequest,
+            ExportWorkflowService,
+        )
+
+        auto_output = Path(exported_vmd_path).with_suffix(".auto_bake.vmd")
+        timeline_range = (
+            float(cmds.playbackOptions(query=True, minTime=True)),
+            float(cmds.playbackOptions(query=True, maxTime=True)),
+        )
+        if auto_bake_only and auto_frame_range is not None:
+            requested_start, requested_end = auto_frame_range
+            if requested_start < 0 or requested_end < requested_start:
+                raise ValueError(
+                    "automatic Bake Timeline frame range must be ordered and non-negative"
+                )
+            cmds.playbackOptions(
+                minTime=int(requested_start),
+                maxTime=int(requested_end),
+                animationStartTime=int(requested_start),
+                animationEndTime=int(requested_end),
+            )
+            timeline_range = (float(requested_start), float(requested_end))
+        auto_start = int(round(timeline_range[0]))
+        auto_end = int(round(timeline_range[1]))
+        auto_compare_frames = (
+            tuple(
+                sorted(
+                    {
+                        auto_start,
+                        auto_end,
+                        auto_start + (auto_end - auto_start) // 4,
+                        auto_start + (auto_end - auto_start) // 2,
+                        auto_start + (auto_end - auto_start) * 3 // 4,
+                    }
+                )
+            )
+            if auto_bake_only
+            else ROUNDTRIP_FRAMES
+        )
+        report["autoFrameRange"]["actual"] = list(timeline_range)
+        auto_source_world = {}
+        auto_source_ik = {}
+        auto_sentinel_indices = {}
+        auto_sentinel_names = {}
+        auto_curve_snapshot_before = {}
+        auto_curve_snapshot_after = {}
+        auto_export_payload = {}
+        if auto_bake_only:
+            authored_controls = {
+                "center": str(rig.controls["center"]),
+                "left_arm": str(rig.controls["left_arm"]),
+            }
+            for key_time, center_x, arm_rotation in (
+                (auto_start, 0.0, (0.0, 0.0, 0.0)),
+                (auto_end, 1.25, (18.0, -7.0, 11.0)),
+                (auto_end + 5, 9.0, (65.0, -25.0, 37.0)),
+            ):
+                cmds.setKeyframe(
+                    authored_controls["center"],
+                    attribute="translateX",
+                    time=key_time,
+                    value=center_x,
+                )
+                for axis, value in zip("XYZ", arm_rotation):
+                    cmds.setKeyframe(
+                        authored_controls["left_arm"],
+                        attribute=f"rotate{axis}",
+                        time=key_time,
+                        value=value,
+                    )
+            from mmd_tools.core.mmd_control_rig_builder import (
+                resolve_mmd_control_rig_binding_joint,
+            )
+
+            for role in authored_controls:
+                joint = resolve_mmd_control_rig_binding_joint(
+                    cmds,
+                    edit_metadata["bindings"][role],
+                )
+                auto_sentinel_indices[role] = str(
+                    int(cmds.getAttr(f"{joint}.mmd_bone_index"))
+                )
+                auto_sentinel_names[role] = str(
+                    cmds.getAttr(f"{joint}.mmd_bone_name")
+                )
+
+            def _control_curve_snapshot() -> dict[str, Any]:
+                snapshot: dict[str, Any] = {}
+                for role, control in authored_controls.items():
+                    curves = sorted(
+                        {
+                            str(curve)
+                            for curve in (
+                                cmds.keyframe(
+                                    control,
+                                    query=True,
+                                    name=True,
+                                )
+                                or []
+                            )
+                        }
+                    )
+                    snapshot[role] = {
+                        str(curve): {
+                            "times": [
+                                float(value)
+                                for value in (
+                                    cmds.keyframe(
+                                        curve,
+                                        query=True,
+                                        timeChange=True,
+                                    )
+                                    or []
+                                )
+                            ],
+                            "values": [
+                                float(value)
+                                for value in (
+                                    cmds.keyframe(
+                                        curve,
+                                        query=True,
+                                        valueChange=True,
+                                    )
+                                    or []
+                                )
+                            ],
+                        }
+                        for curve in curves
+                    }
+                return snapshot
+
+            def _vmd_sentinel_payload(vmd_data: Any) -> dict[str, Any]:
+                payload = {}
+                for role, bone_name in auto_sentinel_names.items():
+                    matches = [
+                        frame
+                        for frame in getattr(vmd_data, "bone_frames", []) or []
+                        if str(getattr(frame, "bone_name", "")) == bone_name
+                        and int(frame.frame_number) == auto_end
+                    ]
+                    payload[role] = [
+                        {
+                            "boneName": str(frame.bone_name),
+                            "frame": int(frame.frame_number),
+                            "position": [float(value) for value in frame.position],
+                            "rotation": [float(value) for value in frame.rotation],
+                        }
+                        for frame in matches
+                    ]
+                return payload
+
+            def _compare_control_curve_snapshots(
+                before: Mapping[str, Any], after: Mapping[str, Any]
+            ) -> dict[str, Any]:
+                mismatches = []
+                max_value_error = 0.0
+                if set(before) != set(after):
+                    mismatches.append("control roles changed")
+                for role in sorted(set(before) | set(after)):
+                    before_curves = before.get(role, {})
+                    after_curves = after.get(role, {})
+                    if set(before_curves) != set(after_curves):
+                        mismatches.append(f"{role}: animCurve set changed")
+                    for curve in sorted(set(before_curves) | set(after_curves)):
+                        before_curve = before_curves.get(curve, {})
+                        after_curve = after_curves.get(curve, {})
+                        if before_curve.get("times") != after_curve.get("times"):
+                            mismatches.append(f"{curve}: key times changed")
+                        before_values = before_curve.get("values", [])
+                        after_values = after_curve.get("values", [])
+                        if len(before_values) != len(after_values):
+                            mismatches.append(f"{curve}: key count changed")
+                            continue
+                        for before_value, after_value in zip(before_values, after_values):
+                            max_value_error = max(
+                                max_value_error,
+                                abs(float(before_value) - float(after_value)),
+                            )
+                return {
+                    "pass": not mismatches and max_value_error <= MOVE_EPSILON,
+                    "maxValueError": max_value_error,
+                    "mismatches": mismatches,
+                }
+
+            auto_curve_snapshot_before = _control_curve_snapshot()
+            if not any(auto_curve_snapshot_before.values()):
+                raise RuntimeError("automatic export sentinel controls have no animCurves")
+            auto_source_world = _joint_worlds(cmds, auto_compare_frames)
+            auto_source_ik = _ik_states(cmds, auto_compare_frames)
+            sentinel_effect = {
+                role: max(
+                    abs(last - first)
+                    for first, last in zip(
+                        auto_source_world[str(auto_start)][index],
+                        auto_source_world[str(auto_end)][index],
+                    )
+                )
+                for role, index in auto_sentinel_indices.items()
+            }
+            if any(value <= MOVE_EPSILON for value in sentinel_effect.values()):
+                raise RuntimeError(
+                    f"automatic export sentinel edits had no world-space effect: {sentinel_effect}"
+                )
+        else:
+            # Keep the legacy full E2E route's diagnostics shape without
+            # enabling focused sentinel assertions or frame-range edits.
+            authored_controls = {
+                "center": str(rig.controls["center"]),
+                "left_arm": str(rig.controls["left_arm"]),
+            }
+
+            def _control_curve_snapshot() -> dict[str, Any]:
+                return {}
+
+            def _vmd_sentinel_payload(_vmd_data: Any) -> dict[str, Any]:
+                return {}
+
+            def _compare_control_curve_snapshots(
+                _before: Mapping[str, Any], _after: Mapping[str, Any]
+            ) -> dict[str, Any]:
+                return {"pass": True, "maxValueError": 0.0, "mismatches": []}
+        auto_options = {
+            "export_format": "vmd",
+            "export_strategy": "bake_timeline",
+            "current_model_root": root,
+            "target_model": root,
+            "require_current_model": True,
+            "require_target": True,
+            "frame_range": timeline_range,
+            "frame_step": 1.0,
+        }
+        auto_action = None
+        auto_gate = {
+            "status": "running",
+            "outputPath": str(auto_output),
+            "frameRange": list(timeline_range),
+            "requestedFrameRange": list(auto_frame_range) if auto_frame_range else list(timeline_range),
+            "actualFrameRange": list(timeline_range),
+            "representativeFrames": list(auto_compare_frames),
+            "uiHeartbeat": [],
+            "warningAcknowledgement": {
+                "invoked": False,
+                "approved": False,
+                "callbackCount": 0,
+                "warnings": [],
+            },
+        }
+        report["autoBakeExport"] = auto_gate
+        if auto_bake_only:
+            auto_gate["authoredSentinels"] = {
+                "jointIndices": dict(auto_sentinel_indices),
+                "worldMatrixEffect": sentinel_effect,
+            }
+        unrelated_layer = None
+        unrelated_node = None
+        if auto_bake_only:
+            # Reproduce a production scene that retains a muted VMD_Motion-like
+            # layer for another model/object. It must neither block restoration
+            # nor be absorbed into this model's ownership journal.
+            unrelated_node = cmds.createNode(
+                "transform",
+                name="MMT_AutoBake_Unrelated",
+            )
+            unrelated_layer = cmds.animLayer(
+                "MMT_AutoBake_Unrelated_VMD_Motion",
+                override=False,
+                weight=0.0,
+            )
+            cmds.animLayer(
+                unrelated_layer,
+                edit=True,
+                attribute=f"{unrelated_node}.translateX",
+            )
+            cmds.setKeyframe(
+                unrelated_node,
+                attribute="translateX",
+                time=2.0,
+                value=1.0,
+                animLayer=unrelated_layer,
+            )
+            auto_gate["unrelatedLayer"] = {
+                "name": unrelated_layer,
+                "weight": float(
+                    cmds.animLayer(unrelated_layer, query=True, weight=True)
+                ),
+            }
+        try:
+            auto_action = create_maya_bake_timeline_vmd_action()
+            auto_service = ExportWorkflowService(vmd_action=auto_action)
+            auto_gate["exportOperation"] = {"oneShot": True}
+
+            post_preview_center_value = (
+                2.5
+                if auto_bake_only
+                else float(
+                    cmds.getAttr(
+                        f"{authored_controls['center']}.translateX",
+                        time=auto_end,
+                    )
+                )
+            )
+            post_preview_arm_values = (
+                (30.0, -11.0, 15.0)
+                if auto_bake_only
+                else tuple(
+                    float(
+                        cmds.getAttr(
+                            f"{authored_controls['left_arm']}.rotate{axis}",
+                            time=auto_end,
+                        )
+                    )
+                    for axis in "XYZ"
+                )
+            )
+            cmds.setKeyframe(
+                authored_controls["center"],
+                attribute="translateX",
+                time=auto_end,
+                value=post_preview_center_value,
+            )
+            for axis, value in zip("XYZ", post_preview_arm_values):
+                cmds.setKeyframe(
+                    authored_controls["left_arm"],
+                    attribute=f"rotate{axis}",
+                    time=auto_end,
+                    value=value,
+                )
+            cmds.dgdirty(allPlugs=True)
+            cmds.refresh(force=True)
+            auto_curve_snapshot_before = _control_curve_snapshot()
+            auto_source_world = _joint_worlds(cmds, auto_compare_frames)
+            auto_source_ik = _ik_states(cmds, auto_compare_frames)
+            auto_export_payload = {}
+            if unrelated_layer is not None and unrelated_node is not None:
+                unrelated_attributes = cmds.animLayer(
+                    unrelated_layer,
+                    query=True,
+                    attribute=True,
+                ) or []
+                unrelated_pass = any(
+                    str(attribute).endswith(f"{unrelated_node}.translateX")
+                    for attribute in unrelated_attributes
+                )
+                auto_gate["unrelatedLayer"]["preserved"] = unrelated_pass
+                if not unrelated_pass:
+                    raise RuntimeError(
+                        "automatic Bake Timeline changed an unrelated animation layer"
+                    )
+
+            published = auto_service.execute(
+                ExportWorkflowRequest(
+                    str(auto_output),
+                    dict(auto_options),
+                ),
+                warning_callback=lambda warning_report: _approve_one_shot_export_warnings(
+                    warning_report, auto_gate
+                ),
+                progress_callback=lambda stage: auto_gate["uiHeartbeat"].append(str(stage)),
+            )
+            _record_one_shot_terminal_evidence(auto_gate, published, auto_output)
+            published_vmd = VmdData().parse_file(str(auto_output))
+            curve_restoration_pass = True
+            sentinel_payload_changed = {}
+            if auto_bake_only:
+                auto_export_payload = _vmd_sentinel_payload(published_vmd)
+                for role in auto_sentinel_names:
+                    sentinel_payload_changed[role] = bool(auto_export_payload.get(role))
+                auto_curve_snapshot_after = _control_curve_snapshot()
+                curve_restoration = _compare_control_curve_snapshots(
+                    auto_curve_snapshot_before,
+                    auto_curve_snapshot_after,
+                )
+                curve_restoration_pass = bool(curve_restoration["pass"])
+                auto_gate["controlCurves"] = {
+                    "before": auto_curve_snapshot_before,
+                    "after": auto_curve_snapshot_after,
+                    **curve_restoration,
+                    "restorationPass": curve_restoration_pass,
+                }
+                auto_gate["exportedSentinels"] = {
+                    "payload": auto_export_payload,
+                    "present": sentinel_payload_changed,
+                }
+            published_pass = bool(
+                published.succeeded
+                and auto_output.is_file()
+                and published_vmd.bone_frames
+                and (
+                    not auto_bake_only
+                    or (all(sentinel_payload_changed.values()) and curve_restoration_pass)
+                )
+            )
+            auto_gate.update(
+                {
+                    "outputSha256": hashlib.sha256(auto_output.read_bytes()).hexdigest(),
+                    "sectionCounts": {
+                        "bones": len(published_vmd.bone_frames),
+                        "morphs": len(published_vmd.morph_frames),
+                        "cameras": len(published_vmd.camera_frames),
+                        "lights": len(published_vmd.light_frames),
+                        "shadows": len(published_vmd.shadow_frames),
+                        "ik": len(published_vmd.ik_show_hide_frames),
+                    },
+                    "publishedBoneFrames": len(published_vmd.bone_frames),
+                    "publishedParsePass": bool(published_vmd.bone_frames),
+                    "pass": published_pass,
+                    "ikMovePass": bool(report["ikMove"].get("pass")),
+                }
+            )
+            if not published_pass:
+                raise RuntimeError(
+                    f"automatic Bake Timeline publish/parse failed: {published.error}"
+                )
+            if not report["ikMove"].get("pass"):
+                raise RuntimeError("automatic export parity passed but IK move witnesses failed")
+            if not report["ikToggle"].get("pass"):
+                raise RuntimeError(
+                    "automatic export parity passed but the IK toggle witness failed"
+                )
+            auto_gate["status"] = "pass"
+        except Exception as exc:
+            auto_gate["status"] = "fail"
+            auto_gate["error"] = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            auto_gate["cleanupPass"] = True
+
+        if auto_bake_only:
+            cmds.file(new=True, force=True)
+            fresh_root = import_mmd_file(
+                str(model_path),
+                options={
+                    "setup_rig": True,
+                    "setup_bone_orientation": True,
+                    "import_physics": False,
+                },
+            )
+            if not fresh_root:
+                raise RuntimeError("fresh PMX import failed for automatic export parity")
+            if not import_mmd_file(
+                str(auto_output),
+                options={"target_model": str(fresh_root), "pmx_path": str(model_path)},
+            ):
+                raise RuntimeError("fresh VMD import failed for automatic export parity")
+            fresh_world = _joint_worlds(cmds, auto_compare_frames)
+            fresh_ik = _ik_states(cmds, auto_compare_frames)
+            if set(auto_source_world) != set(fresh_world):
+                raise RuntimeError(
+                    "automatic export parity frame set changed after fresh import"
+                )
+            for frame in auto_source_world:
+                if set(auto_source_world[frame]) != set(fresh_world[frame]):
+                    raise RuntimeError(
+                        f"automatic export parity joint set changed at frame {frame}"
+                    )
+            source_solver_owned = set(
+                _expand_solver_owned_joint_indices(
+                    _solver_owned_joint_indices(cmds),
+                    cmds,
+                )
+            )
+            matrix_errors = [
+                {
+                    "error": abs(actual - expected),
+                    "frame": int(frame),
+                    "jointIndex": str(index),
+                    "element": int(element),
+                }
+                for frame in sorted(auto_source_world)
+                for index in sorted(auto_source_world[frame])
+                if index in fresh_world.get(frame, {})
+                for element, (actual, expected) in enumerate(
+                    zip(auto_source_world[frame][index], fresh_world[frame][index])
+                )
+            ]
+            error_summary = _matrix_error_summary(
+                matrix_errors,
+                solver_owned_indices=source_solver_owned,
+            )
+            non_solver = error_summary["nonSolverOwned"]
+            sentinel_errors = {
+                role: max(
+                    (
+                        item["error"]
+                        for item in matrix_errors
+                        if item["jointIndex"] == index
+                    ),
+                    default=float("inf"),
+                )
+                for role, index in auto_sentinel_indices.items()
+            }
+            parity_pass = bool(
+                matrix_errors
+                and non_solver["jointCount"] > 0
+                and non_solver["maxWorldMatrixError"] < ROUNDTRIP_MATRIX_EPSILON
+                and error_summary["solverOwned"]["maxWorldMatrixError"]
+                < ROUNDTRIP_MATRIX_EPSILON
+                and all(
+                    error < ROUNDTRIP_MATRIX_EPSILON
+                    for error in sentinel_errors.values()
+                )
+                and auto_source_ik == fresh_ik
+            )
+            auto_gate["authoredRoundtrip"] = {
+                "exportOutputSha256": auto_gate["outputSha256"],
+                "frames": list(auto_compare_frames),
+                "matrixErrorMetric": "max_abs_element",
+                "nonSolverOwned": non_solver,
+                "solverOwned": error_summary["solverOwned"],
+                "sentinelErrors": sentinel_errors,
+                "ikStatesEqual": auto_source_ik == fresh_ik,
+                "pass": parity_pass,
+            }
+            if not parity_pass:
+                raise RuntimeError(
+                    "automatic Control Rig VMD authored-motion parity exceeded the numeric gate"
+                )
+            if not _focused_witnesses_pass(report):
+                raise RuntimeError(
+                    "required Control Rig witnesses did not all pass before final status"
+                )
+            report["internalOracle"] = {
+                "identity": "maya_vmd_export_reimport_authored_parity",
+                "status": "pass",
+                "solverOwnedDriftDelegatedToExternalOracle": False,
+            }
+            report["status"] = "pass"
+            _log("PASS: focused automatic Bake Timeline authored-motion parity passed")
+            return
 
         baked_metadata = bake_mmd_control_rig(root)
         report["states"]["afterBake"] = baked_metadata.get("state")
@@ -1375,6 +2290,15 @@ def _repo_path(value: str) -> Path:
     return path
 
 
+def _input_path(value: str) -> Path:
+    """Resolve a PMX/VMD input, including explicitly supplied local assets."""
+
+    path = Path(value).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"input file does not exist: {path}")
+    return path
+
+
 # ===================================================================
 # Host-side: launch a fresh GUI process and drive commandPort
 # ===================================================================
@@ -1408,23 +2332,68 @@ def main() -> int:
             "controllers directly, and clear existing motion"
         ),
     )
+    parser.add_argument(
+        "--auto-bake-only",
+        action="store_true",
+        help=(
+            "Run the Control Rig edits and automatic Bake Timeline export gate, "
+            "then stop before manual bake and round-trip gates"
+        ),
+    )
+    parser.add_argument(
+        "--cpp-config",
+        choices=("Debug", "Release"),
+        default="Debug",
+        help="C++ plugin configuration used by the Maya E2E process",
+    )
+    parser.add_argument(
+        "--ffi-path",
+        default=None,
+        help="Explicit mmd_runtime_ffi.dll path used inside the Maya process",
+    )
+    parser.add_argument(
+        "--auto-frame-range",
+        nargs=2,
+        type=int,
+        metavar=("START", "END"),
+        default=None,
+        help="Inclusive Control Rig Bake Timeline range (requires --auto-bake-only)",
+    )
     parser.add_argument("--out-dir", default=str(_PROJECT_ROOT / "build" / "e2e"))
     args = parser.parse_args()
 
     out_dir = _repo_path(args.out_dir)
+    ffi_path = _repo_path(args.ffi_path) if args.ffi_path else None
+    if args.auto_frame_range is not None and not args.auto_bake_only:
+        parser.error("--auto-frame-range requires --auto-bake-only")
+    auto_frame_range = (
+        (int(args.auto_frame_range[0]), int(args.auto_frame_range[1]))
+        if args.auto_frame_range is not None
+        else None
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     mode_suffix = "" if args.evaluation_mode == "default" else f"_{args.evaluation_mode}"
     route_suffix = "_create_on_import" if args.create_on_import else ""
-    output_suffix = f"{mode_suffix}{route_suffix}"
+    focused_suffix = "_auto_bake_only" if args.auto_bake_only else ""
+    frame_suffix = (
+        f"_frames_{auto_frame_range[0]}_{auto_frame_range[1]}"
+        if auto_frame_range
+        else ""
+    )
+    config_suffix = "" if args.cpp_config == "Debug" else f"_{args.cpp_config.lower()}"
+    output_suffix = f"{mode_suffix}{route_suffix}{focused_suffix}{frame_suffix}{config_suffix}"
     report_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.json"
     log_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.log"
     scene_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.ma"
     exported_vmd_path = out_dir / f"mmd_control_rig_e2e_maya{args.maya}{output_suffix}.vmd"
-    model_path = _repo_path(args.model)
-    motion_path = _repo_path(args.motion)
+    auto_exported_vmd_path = exported_vmd_path.with_suffix(".auto_bake.vmd")
+    model_path = _input_path(args.model)
+    motion_path = _input_path(args.motion)
     try:
         model_posix = model_path.as_posix()
         motion_posix = motion_path.as_posix()
+        ffi_command_arg = repr(ffi_path.as_posix() if ffi_path else None)
+        auto_frame_command_arg = repr(auto_frame_range)
         command = (
             "import sys\n"
             "from pathlib import Path\n"
@@ -1432,7 +2401,7 @@ def main() -> int:
             "if str(project_root) not in sys.path:\n"
             "    sys.path.insert(0, str(project_root))\n"
             "from tests.viewport.e2e_mmd_control_rig import run_e2e_check\n"
-            f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}', r'{motion_posix}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{exported_vmd_path.as_posix()}', r'{args.evaluation_mode}', {bool(args.create_on_import)!r})\n"
+            f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}', r'{motion_posix}', r'{report_path.as_posix()}', r'{scene_path.as_posix()}', r'{exported_vmd_path.as_posix()}', r'{args.evaluation_mode}', {bool(args.create_on_import)!r}, {bool(args.auto_bake_only)!r}, r'{args.cpp_config}', {ffi_command_arg}, {auto_frame_command_arg})\n"
         )
         report = run_maya_e2e(
             project_root=_PROJECT_ROOT,
@@ -1445,7 +2414,13 @@ def main() -> int:
             command=command,
             marker=COMPLETION_MARKER,
             send_label="<mmd-control-rig-e2e>",
-            stale_paths=[log_path, report_path, scene_path, exported_vmd_path],
+            stale_paths=[
+                log_path,
+                report_path,
+                scene_path,
+                exported_vmd_path,
+                auto_exported_vmd_path,
+            ],
             port_error=(
                 f"commandPort :{args.port} is already open; refusing to attach; choose a free port"
             ),
@@ -1466,6 +2441,10 @@ def main() -> int:
             "maya": args.maya,
             "port": args.port,
             "evaluationMode": args.evaluation_mode,
+            "autoBakeOnly": bool(args.auto_bake_only),
+            "cppConfig": args.cpp_config,
+            "ffiPath": str(ffi_path) if ffi_path else None,
+            "autoFrameRange": list(auto_frame_range) if auto_frame_range else None,
             "error": str(exc),
         }
         _write_maya_report(report_path, blocked)

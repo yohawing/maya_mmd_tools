@@ -95,11 +95,20 @@ class ImportExportViewState:
         history.insert(0, {"path": new_path, "type": file_type})
         self.set(FILE_HISTORY_KEY, json.dumps(history[:FILE_HISTORY_MAX]))
 
-    def clear_file_history(self):
-        """Clear unified history and its legacy per-category sources."""
+    def clear_file_history(self, file_types=None):
+        """Clear selected history categories while preserving hidden legacy data."""
 
-        self.set(FILE_HISTORY_KEY, "[]")
-        self.clear_histories(LEGACY_HISTORY_TYPES)
+        selected = set(LEGACY_HISTORY_TYPES.values()) if file_types is None else set(file_types)
+        unknown = selected.difference(LEGACY_HISTORY_TYPES.values())
+        if unknown:
+            raise ValueError(f"unsupported file history types: {sorted(unknown)}")
+        remaining = [
+            item for item in self.load_file_history(FILE_HISTORY_MAX) if item["type"] not in selected
+        ]
+        self.set(FILE_HISTORY_KEY, json.dumps(remaining))
+        self.clear_histories(
+            key for key, file_type in LEGACY_HISTORY_TYPES.items() if file_type in selected
+        )
 
     def _migrate_legacy_history(self):
         """Migrate legacy lists deterministically when cross-type time is unavailable."""

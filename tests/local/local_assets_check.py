@@ -18,8 +18,12 @@ from maya.api import OpenMaya as om  # noqa: E402
 
 from mmd_tools.actions import ImportModelAction, ImportModelRequest
 from mmd_tools.io.mmd_importer import import_mmd_file
+from tests.common.maya_plugin_setup import load_mmd_tools_plugin
 
 MAYA_MESSAGE_ERROR = 4
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+load_mmd_tools_plugin(PROJECT_ROOT)
 
 _DG_EVAL_ATTRS = {
     "mmdMaterialMorphEval": ("outputDiffuse",),

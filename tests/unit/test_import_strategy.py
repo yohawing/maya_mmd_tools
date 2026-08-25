@@ -9,6 +9,21 @@ from mmd_tools.core.import_strategy import (
 
 
 class TestModelImportStrategy(unittest.TestCase):
+    def test_development_mode_does_not_enable_fast_load_by_default(self):
+        def fake_settings(key, default=None):
+            if key == "ui.general.development_mode":
+                return True
+            return default
+
+        strategy = resolve_model_import_strategy(
+            "model.pmx",
+            {},
+            settings_get=fake_settings,
+        )
+
+        self.assertFalse(strategy.use_cpp_fast_load)
+        self.assertEqual(strategy.cpp_fast_load_reason, "disabled by option/settings")
+
     def test_pmx_fast_load_enabled_by_option(self):
         strategy = resolve_model_import_strategy(
             "model.pmx",
@@ -31,13 +46,28 @@ class TestModelImportStrategy(unittest.TestCase):
         self.assertFalse(strategy.use_cpp_fast_load)
         self.assertEqual(strategy.cpp_fast_load_reason, "disabled: suffix .pmd is not .pmx")
 
-    def test_native_parse_defaults_come_from_settings(self):
+    def test_native_defaults_are_ignored_outside_development_mode(self):
         def fake_settings(key, default=None):
             if key == "import.native.use_cpp_fast_load":
-                return False
+                return True
             if key == "import.native.require_native_pmx_parse":
                 return True
             return default
+
+        strategy = resolve_model_import_strategy("model.pmx", {}, settings_get=fake_settings)
+
+        self.assertFalse(strategy.use_cpp_fast_load)
+        self.assertIsNone(strategy.use_native_pmx_parse)
+        self.assertFalse(strategy.require_native_pmx_parse)
+
+    def test_native_parse_defaults_come_from_settings_in_development_mode(self):
+        def fake_settings(key, default=None):
+            values = {
+                "ui.general.development_mode": True,
+                "import.native.use_cpp_fast_load": False,
+                "import.native.require_native_pmx_parse": True,
+            }
+            return values.get(key, default)
 
         strategy = resolve_model_import_strategy("model.pmx", {}, settings_get=fake_settings)
 

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "maya-vmd-camera-render-smoke",
+  "defaults": {
+    "camera": {
+      "position": [0.0, 10.0, 45.0],
+      "target": [0.0, 10.0, 0.0],
+      "fov": 30.0
+    },
+    "light": {
+      "direction": [0.5, -1.0, 0.5],
+      "color": [1.0, 1.0, 1.0]
+    },
+    "image": {
+      "width": 640,
+      "height": 480
+    }
+  },
+  "cases": [
+    {
+      "name": "mmt-test-model-vmd-camera",
+      "kind": "maya-vmd-camera-render-smoke",
+      "frames": [0],
+      "assets": {
+        "model": "../data/mmt_test_model.pmx",
+        "cameraMotion": "../data/test_camera_light.vmd"
+      },
+      "metadata": {
+        "title": "Production Maya VMD camera import drives a rendered PMX capture"
+      }
+    }
+  ]
+}

@@ -147,6 +147,59 @@ class TestModelImportPipelineLogging(unittest.TestCase):
             force=True,
         )
 
+    def test_registry_owns_new_texture_nodes_without_root_fanout(self):
+        pipeline = self._make_pipeline(MagicMock())
+        with patch.object(model_import_pipeline, "register_model_members") as register_members:
+            pipeline.connect_texture_nodes_to_root(
+                "ModelRoot",
+                ["texture_file"],
+                model_registry="ModelRegistry",
+            )
+
+        register_members.assert_called_once_with(
+            "ModelRegistry",
+            "texture",
+            ["texture_file"],
+        )
+
+    def test_registry_owns_generated_material_shaders_without_root_fanout(self):
+        pipeline = self._make_pipeline(MagicMock())
+        shaders = ["dx11Shader1", "glslShader1"]
+        with patch.object(model_import_pipeline, "register_model_members") as register_members:
+            pipeline.connect_shader_nodes_to_root(
+                "ModelRoot",
+                shaders,
+                model_registry="ModelRegistry",
+            )
+
+        register_members.assert_called_once_with(
+            "ModelRegistry",
+            "material",
+            shaders,
+        )
+
+    def test_shader_registration_empty_list_is_safe(self):
+        pipeline = self._make_pipeline(MagicMock())
+        with patch.object(model_import_pipeline, "register_model_members") as register_members:
+            pipeline.connect_shader_nodes_to_root(
+                "ModelRoot",
+                [],
+                model_registry="ModelRegistry",
+            )
+
+        register_members.assert_called_once_with("ModelRegistry", "material", [])
+
+    def test_legacy_shader_registration_does_not_fan_out_root_message(self):
+        pipeline = self._make_pipeline(MagicMock())
+        with patch.object(model_import_pipeline, "register_model_members") as register_members, patch.object(
+            model_import_pipeline.cmds,
+            "connectAttr",
+        ) as connect_attr:
+            pipeline.connect_shader_nodes_to_root("ModelRoot", ["dx11Shader1"])
+
+        register_members.assert_not_called()
+        connect_attr.assert_not_called()
+
     def test_all_generated_network_morph_types_receive_root_ownership(self):
         """Normal PMX import ownership includes bone, group, and material morph nodes."""
         pipeline = self._make_pipeline(MagicMock())
@@ -154,6 +207,7 @@ class TestModelImportPipelineLogging(unittest.TestCase):
             "bone_morph_nodes": ["bone_morph"],
             "group_morph_nodes": ["group_morph"],
             "material_morph_nodes": ["material_morph"],
+            "vertex_morph_nodes": ["vertex_morph"],
         }
         with patch.object(
             model_import_pipeline.cmds,
@@ -169,16 +223,38 @@ class TestModelImportPipelineLogging(unittest.TestCase):
         ) as connect_attr:
             pipeline.connect_morph_nodes_to_root("ModelRoot", morph_result)
 
-        self.assertEqual(add_attr.call_count, 3)
+        self.assertEqual(add_attr.call_count, 4)
         self.assertEqual(
             {call.args for call in connect_attr.call_args_list},
             {
                 ("ModelRoot.message", "bone_morph.mmd_model_root"),
                 ("ModelRoot.message", "group_morph.mmd_model_root"),
                 ("ModelRoot.message", "material_morph.mmd_model_root"),
+                ("ModelRoot.message", "vertex_morph.mmd_model_root"),
             },
         )
         self.assertTrue(all(call.kwargs == {} for call in connect_attr.call_args_list))
+
+    def test_registry_owns_new_morph_nodes_without_root_fanout(self):
+        pipeline = self._make_pipeline(MagicMock())
+        morph_result = {
+            "bone_morph_nodes": ["bone_morph"],
+            "group_morph_nodes": ["group_morph"],
+            "material_morph_nodes": ["material_morph"],
+            "vertex_morph_nodes": ["vertex_morph"],
+        }
+        with patch.object(model_import_pipeline, "register_model_members") as register_members:
+            pipeline.connect_morph_nodes_to_root(
+                "ModelRoot",
+                morph_result,
+                model_registry="ModelRegistry",
+            )
+
+        register_members.assert_called_once_with(
+            "ModelRegistry",
+            "morph",
+            ["bone_morph", "group_morph", "material_morph", "vertex_morph"],
+        )
 
     def test_mesh_converter_records_glsl_hardware_backend(self):
         converter = MeshConverter()

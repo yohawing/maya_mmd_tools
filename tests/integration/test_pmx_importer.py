@@ -3,6 +3,7 @@ PMXインポーターの統合テスト
 """
 
 import os
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -14,12 +15,17 @@ from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import (
     ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_PMX_REST_POSITION,
+    ATTR_MMD_TEXTURE_TABLE_JSON,
 )
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
+from mmd_tools.core.model_registry import get_model_registry
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.io import pmx_importer
+from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.io.pmx_importer import import_pmx_file
 from mmd_tools.core.mmd_parser import MMDParseException, parse_pmx_file
 
@@ -102,6 +108,8 @@ class TestPmxImporter(MayaTestBase):
             "表示枠 metadata が root に保存されていません",
         )
         self.assertTrue(cmds.getAttr(f"{result}.{ATTR_MMD_DISPLAY_FRAMES_JSON}"))
+        texture_table = json.loads(cmds.getAttr(f"{result}.{ATTR_MMD_TEXTURE_TABLE_JSON}"))
+        self.assertEqual(texture_table, [str(path) for path in parser.textures])
 
         # テクスチャ file ノードがあれば、パスが有効であることを確認
         file_nodes = cmds.ls(type="file") or []
@@ -130,6 +138,121 @@ class TestPmxImporter(MayaTestBase):
             )
         )
 
+    def test_imported_texture_table_resolves_export_material_indices(self):
+        """Imported PMX texture order is preserved through scene collection."""
+        pmx_file = self.fixture_provider.get_verified_pmx_file("yw_test_model")
+        parser = parse_pmx_file(pmx_file)
+
+        result = import_pmx_file(
+            parser,
+            pmx_file,
+            options={
+                "setup_rig": False,
+                "import_physics": False,
+                "import_morphs": False,
+            },
+        )
+
+        expected_textures = [str(path) for path in parser.textures]
+        root_table = json.loads(cmds.getAttr(f"{result}.{ATTR_MMD_TEXTURE_TABLE_JSON}"))
+        collected = ExportSceneCollector().collect_from_model_root(result)
+
+        self.assertEqual(root_table, expected_textures)
+        self.assertEqual(collected["textures"], expected_textures)
+        self.assertEqual(len(collected["materials"]), len(parser.materials))
+        for collected_material, source_material in zip(collected["materials"], parser.materials):
+            self.assertEqual(collected_material["name"], source_material.name)
+            self.assertEqual(collected_material["name_english"], source_material.name_english)
+            for field in ("diffuse", "specular", "ambient", "edge_color"):
+                self.assertListAlmostEqual(
+                    collected_material[field],
+                    getattr(source_material, field),
+                    places=5,
+                    msg=f"collector lost material field: {field}",
+                )
+            for field in ("specular_coefficient", "edge_size"):
+                self.assertAlmostEqual(
+                    collected_material[field],
+                    getattr(source_material, field),
+                    places=5,
+                    msg=f"collector lost material field: {field}",
+                )
+            for field in ("draw_flag", "sphere_mode", "shared_toon_flag"):
+                self.assertEqual(
+                    collected_material[field],
+                    int(getattr(source_material, field)),
+                    f"collector lost material field: {field}",
+                )
+            for field in (
+                "texture_index",
+                "sphere_texture_index",
+                "toon_texture_index",
+            ):
+                self.assertEqual(
+                    collected_material[field],
+                    getattr(source_material, field),
+                    f"collector lost material field: {field}",
+                )
+            self.assertEqual(collected_material["memo"], source_material.memo)
+            self.assertEqual(collected_material["semantic_missing"], [])
+        textured_materials = [
+            material
+            for material in collected["materials"]
+            if material.get("texture_path") or material.get("sphere_texture_path")
+        ]
+        self.assertTrue(textured_materials)
+        for material in textured_materials:
+            self.assertNotIn("source_texture_index", material)
+            self.assertNotIn("source_sphere_texture_index", material)
+            self.assertNotIn("texture_table", material.get("semantic_missing", []))
+
+        roundtrip_path = self.get_temp_filename("yw_texture_roundtrip.pmx")
+        PmxExporter().export_pmx_model(roundtrip_path, collected)
+        roundtrip = parse_pmx_file(roundtrip_path)
+
+        self.assertEqual(roundtrip.textures, parser.textures)
+        self.assertEqual(
+            [
+                (
+                    material.texture_index,
+                    material.sphere_texture_index,
+                    material.sphere_mode,
+                    material.toon_texture_index,
+                    int(material.shared_toon_flag),
+                )
+                for material in roundtrip.materials
+            ],
+            [
+                (
+                    material.texture_index,
+                    material.sphere_texture_index,
+                    int(material.sphere_mode),
+                    material.toon_texture_index,
+                    int(material.shared_toon_flag),
+                )
+                for material in parser.materials
+            ],
+        )
+        for actual, expected in zip(roundtrip.materials, parser.materials):
+            self.assertEqual(actual.name, expected.name)
+            self.assertEqual(actual.name_english, expected.name_english)
+            for field in ("diffuse", "specular", "ambient", "edge_color"):
+                self.assertListAlmostEqual(
+                    getattr(actual, field),
+                    getattr(expected, field),
+                    places=5,
+                    msg=f"writer lost material field: {field}",
+                )
+            for field in ("specular_coefficient", "edge_size"):
+                self.assertAlmostEqual(
+                    getattr(actual, field),
+                    getattr(expected, field),
+                    places=5,
+                    msg=f"writer lost material field: {field}",
+                )
+            self.assertEqual(int(actual.draw_flag), int(expected.draw_flag))
+            self.assertEqual(actual.memo, expected.memo)
+
     def test_local_axis_scale_preserves_real_import_world_positions(self):
         """Real PMX import keeps LOCAL_AXIS bone positions at each import scale."""
         pmx_file = self.fixture_provider.get_pmx_file("mmt_test_model")
@@ -151,6 +274,7 @@ class TestPmxImporter(MayaTestBase):
                 )
 
                 self.assertTrue(result)
+                self.assertAlmostEqual(cmds.getAttr(f"{result}.{ATTR_MMD_IMPORT_SCALE}"), scale)
                 matches = [
                     joint
                     for joint in (cmds.ls(type="joint", long=True) or [])
@@ -166,6 +290,20 @@ class TestPmxImporter(MayaTestBase):
                 )
                 for actual, expected_value in zip(world_pos, expected):
                     self.assertAlmostEqual(actual, expected_value, places=5)
+
+    def test_invalid_import_scale_fails_before_scene_mutation(self):
+        """Invalid scale never creates a root or other Maya nodes."""
+        pmx_file = self.fixture_provider.get_pmx_file("mmt_test_model")
+        parser = parse_pmx_file(pmx_file)
+        nodes_before = set(cmds.ls(long=True) or [])
+
+        for scale in (0.0, -1.0, float("inf"), float("nan"), True):
+            with self.subTest(scale=scale), self.assertRaisesRegex(
+                MMDImportException, "finite positive"
+            ):
+                import_pmx_file(parser, pmx_file, scale=scale)
+
+        self.assertEqual(set(cmds.ls(long=True) or []), nodes_before)
 
     def test_invalid_local_axis_fails_before_real_import_scene_mutation(self):
         """Importer rejects degenerate LOCAL_AXIS before root or mesh creation."""
@@ -329,8 +467,13 @@ class TestPmxImporter(MayaTestBase):
         self.assertGreater(len(drivers), 0)
         self.assertEqual(world_shapes, ["|MMD_PhysicsWorld|MMD_PhysicsWorldShape"])
         self.assertFalse(cmds.getAttr(f"{world_shapes[0]}.enable"))
-        self.assertTrue(
-            root in (cmds.listConnections(f"{solvers[0]}.modelRoot", source=True, destination=False) or [])
+        registry = get_model_registry(root)
+        self.assertEqual(
+            [registry],
+            cmds.listConnections(f"{solvers[0]}.modelRegistry", source=True, destination=False) or [],
+        )
+        self.assertFalse(
+            cmds.listConnections(f"{solvers[0]}.modelRoot", source=True, destination=False) or []
         )
         self.assertTrue(cmds.listConnections(f"{solvers[0]}.inTime", source=True, destination=False))
         self.assertTrue(

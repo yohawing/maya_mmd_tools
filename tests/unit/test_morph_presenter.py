@@ -1,10 +1,13 @@
 import unittest
 from unittest.mock import MagicMock, patch
-import json
 from maya import cmds
 from mmd_tools.ui.presenters import morph_presenter as morph_presenter_module
 from mmd_tools.ui.presenters.morph_presenter import MorphPresenter
 from mmd_tools.ui.translations import UITranslator
+from mmd_tools.core.morph_topology import (
+    MorphTopologyDiagnostic,
+    MorphTopologyInspection,
+)
 from tests.common.mock_ui import attach_mocks
 from tests.common.maya_test_base import MayaTestBase
 
@@ -38,6 +41,22 @@ class TestMorphPresenter(MayaTestBase):
 
         # プレゼンターを作成
         self.presenter = MorphPresenter(self.mock_view, self.mock_app_state)
+        self.presenter._loaded_model_root = "|test_model_root"
+        self.preview_coordinator = MagicMock()
+        self.preview_coordinator.set_morph_preview.side_effect = self._set_preview_weights
+        self.preview_coordinator.reset_morph_preview.side_effect = self._reset_preview_weights
+        self.presenter._preview_coordinator = self.preview_coordinator
+
+    @staticmethod
+    def _set_preview_weights(_model_root, targets, weight):
+        for target in targets:
+            cmds.setAttr(target, weight)
+
+    @staticmethod
+    def _reset_preview_weights(_model_root, targets):
+        for target in targets:
+            cmds.setAttr(target, 0.0)
+        return len(targets)
 
     def _setup_view_mocks(self):
         """ビューのモックを設定"""
@@ -89,6 +108,40 @@ class TestMorphPresenter(MayaTestBase):
         self.assertEqual(self.presenter.morph_data, {})
         self.assertEqual(self.presenter.group_morphs, {})
         self.mock_view.set_morph_details_enabled.assert_called_with(False)
+
+    def test_topology_diagnostic_enables_explicit_repair_without_mutating_load(self):
+        inspection = MorphTopologyInspection(
+            {"1": ((0, 0.5),)},
+            {},
+            (MorphTopologyDiagnostic("stale", "cache differs"),),
+        )
+        coordinator = MagicMock()
+        coordinator.inspect_morph_topology.return_value = inspection
+        self.presenter.authoring_coordinator = coordinator
+
+        self.presenter._inspect_morph_topology("|root")
+
+        coordinator.inspect_morph_topology.assert_called_once_with("|root")
+        coordinator.repair_morph_topology.assert_not_called()
+        self.mock_view.set_topology_repair_state.assert_called_once_with(
+            "stale: cache differs", True
+        )
+        self.assertEqual(self.presenter._controller_topology, {})
+
+    def test_explicit_topology_repair_reloads_only_after_valid_readback(self):
+        inspection = MorphTopologyInspection(
+            {"1": ((0, 0.5),)}, {"1": ((0, 0.5),)}, ()
+        )
+        coordinator = MagicMock()
+        coordinator.repair_morph_topology.return_value = inspection
+        self.presenter.authoring_coordinator = coordinator
+        self.mock_app_state.current_model_root = "|root"
+        self.presenter.load_morphs = MagicMock()
+
+        self.presenter.repair_morph_topology()
+
+        coordinator.repair_morph_topology.assert_called_once_with("|root")
+        self.presenter.load_morphs.assert_called_once_with()
 
     def test_load_morphs_with_model(self):
         """モデルがある場合のモーフロードのテスト"""
@@ -175,20 +228,18 @@ class TestMorphPresenter(MayaTestBase):
                 "blend_shape_node": blend_shape,
                 "blend_shape_target": "Mouth_A01",
                 "blend_shape_weight_attr": "weight[0]",
+                "runtime_targets": (f"{blend_shape}.weight[0]",),
             }
         }
 
         # スライダー変更をシミュレート
-        with patch.object(
-            self.presenter.maya_adapter,
-            "set_attr",
-            wraps=self.presenter.maya_adapter.set_attr,
-        ) as set_attr:
-            self.presenter.on_morph_slider_changed(50)
+        self.presenter.on_morph_slider_changed(50)
 
         # 結果を確認
         self.mock_view.morph_value_label.setText.assert_called_with("50%")
-        set_attr.assert_called_once_with(f"{blend_shape}.weight[0]", 0.5)
+        self.preview_coordinator.set_morph_preview.assert_called_once_with(
+            "|test_model_root", (f"{blend_shape}.weight[0]",), 0.5
+        )
         weight = cmds.getAttr(f"{blend_shape}.weight[0]")
         self.assertAlmostEqual(weight, 0.5, places=5)
 
@@ -209,7 +260,11 @@ class TestMorphPresenter(MayaTestBase):
             # 値を設定
             cmds.setAttr(f"{blend_shape}.{alias_name}", 0.5)
 
-            morphs_data[f"morph_{i}"] = {"blend_shape_node": blend_shape, "blend_shape_target": alias_name}
+            morphs_data[f"morph_{i}"] = {
+                "blend_shape_node": blend_shape,
+                "blend_shape_target": alias_name,
+                "runtime_targets": (f"{blend_shape}.weight[0]",),
+            }
 
         self.presenter.morph_data = morphs_data
 
@@ -277,12 +332,9 @@ class TestMorphPresenter(MayaTestBase):
         self.assertIn("custom_morph", self.presenter.group_morphs["その他"])
 
     def test_apply_changes(self):
-        """変更適用のテスト"""
-        # モデルを作成
+        """Coordinator がない Apply はデータも Maya 属性も変更しない。"""
         test_model = cmds.group(empty=True, name="test_model_root")
         self.mock_app_state.current_model_root = test_model
-
-        # モーフデータを設定
         self.presenter.current_morph = "test_morph"
         self.presenter.morph_data = {
             "test_morph": {
@@ -293,29 +345,21 @@ class TestMorphPresenter(MayaTestBase):
                 "group": "その他",
             }
         }
-
-        # UIの値を設定
         self.mock_view.morph_name_jp_edit.text.return_value = "新名前"
         self.mock_view.morph_name_en_edit.text.return_value = "new_name"
         self.mock_view.panel_combo.currentIndex.return_value = 1
         self.mock_view.morph_type_combo.currentIndex.return_value = 2
 
-        # 変更を適用
         self.presenter.apply_changes()
 
-        # 結果を確認
         data = self.presenter.morph_data["test_morph"]
-        self.assertEqual(data["name_jp"], "新名前")
-        self.assertEqual(data["name_en"], "new_name")
-        self.assertEqual(data["panel"], 1)
-        self.assertEqual(data["type"], 2)
-        self.assertNotIn("group", data)
-
-        # MMDアトリビュートに保存されたことを確認
-        self.assertTrue(cmds.attributeQuery("mmdMorphData", node=test_model, exists=True))
-        saved_data = json.loads(cmds.getAttr(f"{test_model}.mmdMorphData"))
-        self.assertEqual(saved_data["test_morph"]["name_jp"], "新名前")
-        self.assertNotIn("group", saved_data["test_morph"])
+        self.assertEqual(data["name_jp"], "旧名前")
+        self.assertEqual(data["name_en"], "old_name")
+        self.assertEqual(data["panel"], 0)
+        self.assertEqual(data["type"], 0)
+        self.assertIn("group", data)
+        self.assertFalse(cmds.attributeQuery("mmdMorphData", node=test_model, exists=True))
+        self.assertTrue(self.mock_app_state.emit_status.called)
 
 
 if __name__ == "__main__":

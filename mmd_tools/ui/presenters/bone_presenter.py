@@ -1,25 +1,25 @@
 import math
+from collections.abc import Sequence
+from dataclasses import replace
+from typing import Protocol
+
 from mmd_tools.adapters import MayaCmdsAdapter
-from mmd_tools.actions.go_to_bind_pose_action import GoToBindPoseAction
+from mmd_tools.core.bone_authoring import BoneResetPlan
+from mmd_tools.core.model_authoring_spec import MmdBoneSpec
 from ...core.logger import get_logger
-from ...core.maya_attribute_utils import (
-    set_custom_attributes,
-    get_attribute,
-)
+from ...core.maya_attribute_utils import get_attribute
 from ...core.maya_scene_utils import object_exists
 from ...core.constants import (
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_DEFORM_LAYER,
-    ATTR_MMD_BONE_OFFSET,
-    ATTR_MMD_CONNECTION_BONE,
-    ATTR_MMD_IK_TARGET,
     ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_IK_LOOP,
     ATTR_MMD_IK_LIMIT_ANGLE,
     ATTR_MMD_IK_LINKS,
     ATTR_MMD_GRANT_PARENT,
+    ATTR_MMD_GRANT_PARENT_INDEX,
     ATTR_MMD_GRANT_RATE,
     ATTR_MMD_FIXED_AXIS,
     ATTR_MMD_LOCAL_X_AXIS,
@@ -38,6 +38,7 @@ from ..qt_compat import (
 from .list_presenter_helpers import (
     apply_list_filter,
     format_indexed_node_label,
+    maya_node_leaf_name,
     reload_for_current_model_change,
     select_existing_user_role_nodes,
     tr_message,
@@ -47,35 +48,101 @@ from .list_presenter_helpers import (
 logger = get_logger(__name__)
 
 
+class BoneAuthoringCoordinator(Protocol):
+    """Transactional semantic/binding boundary for Bone Tab registration."""
+
+    def register_bone(self, model_root: str, bone: MmdBoneSpec) -> object: ...
+
+    def capture_rest(self, model_root: str, bone_index: int, joint: str) -> MmdBoneSpec: ...
+
+    def read_spec(self, model_root: str) -> object: ...
+
+    def read_bone_value(self, model_root: str, bone_index: int, binding: str) -> MmdBoneSpec: ...
+
+    def apply_bone_value_patch(self, model_root: str, bone: MmdBoneSpec) -> MmdBoneSpec: ...
+
+    def replace_bone(
+        self,
+        model_root: str,
+        bone: MmdBoneSpec,
+        world_position: Sequence[float],
+    ) -> object: ...
+
+    def replace_bone_semantic(self, model_root: str, bone: MmdBoneSpec) -> object: ...
+
+    def reindex_bones(self, model_root: str, ordered_indices: Sequence[int]) -> object: ...
+
+    def unregister_bone(self, model_root: str, bone_index: int) -> object: ...
+
+    def plan_bone_reset(self, model_root: str, requested_order=None) -> BoneResetPlan: ...
+
+    def reset_bones(self, model_root: str, plan: BoneResetPlan, requested_order=None) -> object: ...
+
+
 class BonePresenter:
-    def __init__(self, view, app_state, maya_adapter=None, bind_pose_action=None):
+    def __init__(
+        self,
+        view,
+        app_state,
+        maya_adapter=None,
+        authoring_coordinator=None,
+    ):
         self.view = view
         self.app_state = app_state
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
+        self.authoring_coordinator = authoring_coordinator
         self.current_bone = None
+        self.current_bone_index = None
+        self._model_root_valid = False
+        self._registered_indices = {}
+        self._reindex_dirty = False
+        self._pending_order = []
+        self._reset_plan = None
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = None
         self.bone_data = {}  # Store original bone data for reset
         self.bone_list_items = {}  # Map bone name to list item
         self.all_bones = []  # All bones list
         self.is_updating = False  # Prevent feedback loops
-        self.bind_pose_action = bind_pose_action or GoToBindPoseAction()
-
         self.connect_signals()
+        self._update_authoring_actions()
 
         # 既に選択されているモデルがある場合はロード
         if self.app_state.current_model_root:
             # Qt のイベントループが安定してから実行
-            QTimer.singleShot(100, self.load_bones)
+            QTimer.singleShot(100, self._load_initial_bones)
 
     def connect_signals(self):
         # ApplicationStateのシグナル
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
+        refresh_signal = getattr(self.app_state, "model_refresh_completed", None)
+        if refresh_signal is not None and hasattr(refresh_signal, "connect"):
+            refresh_signal.connect(self.on_model_refresh)
 
         # リストビューのシグナル
         self.view.bone_list.currentItemChanged.connect(self.on_bone_selected)
         self.view.bone_list.itemSelectionChanged.connect(self.on_selection_changed_maya)
-        self.view.refresh_btn.clicked.connect(self.load_bones)
-        if hasattr(self.view, "bind_pose_btn"):
-            self.view.bind_pose_btn.clicked.connect(self.go_to_bind_pose)
+        sync_button = getattr(self.view, "refresh_btn", None)
+        if sync_button is None:
+            # Keep injected pre-refresh test/integration views usable while
+            # the production BoneTab exposes the canonical refresh entrypoint.
+            sync_button = getattr(self.view, "sync_btn", None)
+        if sync_button is not None:
+            sync_button.clicked.connect(self.sync_bones)
+        for button_name, handler in (
+            ("reindex_up_btn", lambda: self.move_reindex(-1)),
+            ("reindex_down_btn", lambda: self.move_reindex(1)),
+        ):
+            button = getattr(self.view, button_name, None)
+            if button is not None:
+                button.clicked.connect(handler)
+        # Older injected views may still expose a separate reset button.  Do
+        # not connect it when it aliases the unified sync button, otherwise a
+        # single click would run two authoring entrypoints.
+        if sync_button is None:
+            legacy_reset = getattr(self.view, "reset_authoring_btn", None)
+            if legacy_reset is not None:
+                legacy_reset.clicked.connect(self.reset_authoring)
         self.view.search_edit.textChanged.connect(self.filter_bones)
 
         # ボーン選択ボタン
@@ -89,8 +156,6 @@ class BonePresenter:
         self.view.fixed_axis_check.toggled.connect(self.on_axis_toggled)
         self.view.local_axis_check.toggled.connect(self.on_axis_toggled)
         self.view.external_parent_check.toggled.connect(self.on_external_parent_toggled)
-        self.view.connection_type_combo.currentIndexChanged.connect(self.on_connection_type_changed)
-
         # IKリンクテーブル
         self.view.add_ik_link_btn.clicked.connect(self.add_ik_link)
         self.view.remove_ik_link_btn.clicked.connect(self.remove_ik_link)
@@ -106,25 +171,96 @@ class BonePresenter:
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
+        if getattr(self.app_state, "refreshing", False) is True:
+            self.on_model_refresh(getattr(self.app_state, "refresh_generation", 0))
+            return
+        self._pending_refresh_generation = None
         self.current_bone = None
+        self.current_bone_index = None
+        self._model_root_valid = False
+        self._registered_indices.clear()
+        self._reindex_dirty = False
+        self._pending_order = []
+        self._reset_plan = None
+        self._update_authoring_actions()
         reload_for_current_model_change(logger, "BonePresenter", model_root, self.load_bones)
 
-    def go_to_bind_pose(self):
-        """Run the Bone Editor's one-shot model-wide bind-pose restore."""
-        result = self.bind_pose_action.execute(self.app_state.current_model_root or "")
-        if result.succeeded:
-            self.app_state.emit_status(
-                f"Go to Bind Pose: {result.model_root or self.app_state.current_model_root} "
-                f"({result.joint_count} joints)"
+    def on_model_refresh(self, generation):
+        """Mark the list stale without replacing pending Bone UI work."""
+        self._pending_refresh_generation = generation
+
+    def _has_pending_refresh_work(self):
+        if self._reindex_dirty or self._reset_plan is not None:
+            return True
+        return self._has_pending_detail_edit()
+
+    def _has_pending_detail_edit(self):
+        """Return whether the selected detail form contains unapplied edits."""
+        if not self.current_bone or not self.bone_data:
+            return False
+        # The controls are a local work copy; comparing them is Maya-free.
+        try:
+            if self.view.bone_name_jp_edit.text() != self.bone_data.get("name_jp", ""):
+                return True
+            if self.view.bone_name_en_edit.text() != self.bone_data.get("name_en", ""):
+                return True
+            if self.view.deform_layer_spin.value() != self.bone_data.get("deform_layer"):
+                return True
+            if int(self._calculate_bone_flags(self.bone_data.get("flags", 0))) != int(
+                self.bone_data.get("flags", 0)
+            ):
+                return True
+            for key, names in (
+                ("fixed_axis", ("fixed_axis_x_spin", "fixed_axis_y_spin", "fixed_axis_z_spin")),
+                ("local_axis_x", ("local_x_axis_x_spin", "local_x_axis_y_spin", "local_x_axis_z_spin")),
+                ("local_axis_z", ("local_z_axis_x_spin", "local_z_axis_y_spin", "local_z_axis_z_spin")),
+            ):
+                expected = self.bone_data.get(key)
+                if expected is None:
+                    continue
+                values = tuple(getattr(self.view, name).value() for name in names)
+                if values != tuple(expected):
+                    return True
+            return self._structural_ui_state(existing_flags=self.bone_data.get("flags", 0)) != self.bone_data.get(
+                "structural"
             )
-        else:
-            self.app_state.emit_status(f"Go to Bind Pose failed: {result.error}")
+        except Exception:
+            # If a local control cannot be inspected, retain the work copy
+            # rather than risking a destructive refresh.
+            return True
+
+    def refresh_for_generation(self, generation):
+        """Reload a visible tab once per generation when its work copy is clean."""
+        if self._pending_refresh_generation != generation:
+            if self._last_refresh_generation == generation:
+                return True
+            self.load_bones()
+            self._last_refresh_generation = generation
+            return True
+        if self._has_pending_refresh_work():
+            self._last_refresh_generation = generation
+            return True
+        self.load_bones()
+        self._pending_refresh_generation = None
+        self._last_refresh_generation = generation
+        return True
 
     def load_bones(self):
         """ボーンリストをロード"""
+        if self._pending_refresh_generation is not None and self._has_pending_refresh_work():
+            return
+        self._last_refresh_generation = getattr(self.app_state, "refresh_generation", 0)
+        self._pending_refresh_generation = None
         self.view.bone_list.clear()
         self.bone_list_items.clear()
         self.all_bones.clear()
+        self.current_bone = None
+        self.current_bone_index = None
+        self._model_root_valid = False
+        self._registered_indices.clear()
+        self._reindex_dirty = False
+        self._pending_order = []
+        self._reset_plan = None
         self.view.set_bone_details_enabled(False)
 
         current_model_root = self.app_state.current_model_root
@@ -132,20 +268,35 @@ class BonePresenter:
 
         if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
             logger.warning(f"Model root does not exist: {current_model_root}")
+            self._update_authoring_actions()
             return
+        self._model_root_valid = True
+        self._update_authoring_actions()
 
         # ジョイントを検索する複数の方法を試す
-        joints = self.maya_adapter.list_relatives(current_model_root, allDescendents=True, type="joint") or []
+        # Store canonical DAG paths in rows.  Short joint names can differ from
+        # the coordinator's binding identity and make a valid UI selection
+        # fail its narrow selected-bone transaction.
+        joints = self.maya_adapter.list_relatives(
+            current_model_root,
+            allDescendents=True,
+            type="joint",
+            fullPath=True,
+        ) or []
         logger.debug(f"Found {len(joints)} joints using listRelatives")
 
         # もしジョイントが見つからない場合、別の方法を試す
         if not joints:
             # ルートノードの子を確認
-            children = self.maya_adapter.list_relatives(current_model_root, children=True) or []
+            children = self.maya_adapter.list_relatives(
+                current_model_root, children=True, fullPath=True
+            ) or []
             logger.debug(f"Direct children of root: {children}")
 
             # 全ての子孫を取得してジョイントをフィルタ
-            all_descendants = self.maya_adapter.list_relatives(current_model_root, allDescendents=True) or []
+            all_descendants = self.maya_adapter.list_relatives(
+                current_model_root, allDescendents=True, fullPath=True
+            ) or []
             joints = [node for node in all_descendants if self.maya_adapter.node_type(node) == "joint"]
             logger.debug(f"Found {len(joints)} joints using nodeType filter from {len(all_descendants)} descendants")
 
@@ -157,6 +308,8 @@ class BonePresenter:
         joints_with_index = []
         for joint in joints:
             bone_index = get_attribute(joint, ATTR_MMD_BONE_INDEX)
+            if type(bone_index) is int and bone_index >= 0:
+                self._registered_indices[joint] = bone_index
             joints_with_index.append((joint, bone_index))
 
         # インデックスでソート（インデックスがない場合は最後に）
@@ -167,6 +320,7 @@ class BonePresenter:
 
         # ボーンをリストに追加
         self.all_bones = sorted_joints
+        self._pending_order = [joint for joint in sorted_joints if joint in self._registered_indices]
         for idx, joint in enumerate(sorted_joints):
             # ボーン情報を取得
             name_jp = get_attribute(joint, ATTR_MMD_BONE_NAME)
@@ -181,8 +335,18 @@ class BonePresenter:
             item.setToolTip(joint)
             self.view.bone_list.addItem(item)
             self.bone_list_items[joint] = item
+        self._update_authoring_actions()
 
         logger.debug(f"Loaded {len(joints)} bones for model: {current_model_root}")
+
+    def _load_initial_bones(self):
+        """Load the deferred constructor projection unless activation did it first."""
+        if self._pending_refresh_generation is not None:
+            return
+        generation = getattr(self.app_state, "refresh_generation", 0)
+        if self._last_refresh_generation == generation:
+            return
+        self.load_bones()
 
     def _get_bone_type(self, joint):
         """ボーンのタイプを判定"""
@@ -234,17 +398,350 @@ class BonePresenter:
     def on_bone_selected(self, current, previous):
         """ボーンが選択されたときの処理"""
         if not current:
+            self.current_bone = None
+            self.current_bone_index = None
             self.view.set_bone_details_enabled(False)
+            self._update_authoring_actions()
             return
 
         self.current_bone = current.data(Qt.UserRole)
         if not self.current_bone or not object_exists(self.current_bone):
+            self.current_bone_index = None
             self.view.set_bone_details_enabled(False)
+            self._update_authoring_actions()
             return
+
+        self.current_bone_index = self._registered_indices.get(self.current_bone)
 
         logger.debug(f"Selected bone: {self.current_bone}")
         self.view.set_bone_details_enabled(True)
+        self._update_authoring_actions()
         self.load_bone_properties()
+
+    def _update_authoring_actions(self):
+        available = self._authoring_available() and self._model_root_valid
+        registered = available and type(self.current_bone_index) is int
+        translate = getattr(self.view, "tr", None)
+        if callable(translate):
+            reason_unavailable = translate("authoring_unavailable", "tooltips")
+            reason_selection = translate("authoring_selection_required", "tooltips")
+        else:
+            reason_unavailable = "Authoring coordinator is not available"
+            reason_selection = "Select an item first"
+        for button_name, enabled, reason, reason_key in (
+            ("reindex_up_btn", registered, "" if registered else (reason_selection if available else reason_unavailable), "" if registered else ("authoring_selection_required" if available else "authoring_unavailable")),
+            ("reindex_down_btn", registered, "" if registered else (reason_selection if available else reason_unavailable), "" if registered else ("authoring_selection_required" if available else "authoring_unavailable")),
+            # Compatibility for injected legacy views; BoneTab no longer
+            # creates these individual-operation buttons.
+            ("register_joint_btn", False, reason_unavailable, "authoring_unavailable"),
+            ("capture_rest_btn", False, reason_unavailable, "authoring_unavailable"),
+            ("apply_reindex_btn", False, reason_unavailable, "authoring_unavailable"),
+            ("unregister_btn", False, reason_unavailable, "authoring_unavailable"),
+        ):
+            button = getattr(self.view, button_name, None)
+            if button is not None:
+                set_reason = getattr(button, "set_disabled_reason", None)
+                if callable(set_reason):
+                    set_reason(reason, reason_key)
+                button.setEnabled(bool(enabled))
+        sync_button = getattr(self.view, "refresh_btn", None)
+        if sync_button is None:
+            sync_button = getattr(self.view, "sync_btn", None)
+        if sync_button is not None:
+            set_reason = getattr(sync_button, "set_disabled_reason", None)
+            if callable(set_reason):
+                set_reason(
+                    "" if available else reason_unavailable,
+                    "" if available else "authoring_unavailable",
+                )
+            sync_button.setEnabled(bool(available))
+        for legacy_name in ("sync_btn", "reset_authoring_btn"):
+            button = getattr(self.view, legacy_name, None)
+            if button is None or button is sync_button:
+                continue
+            button.setEnabled(bool(available))
+
+    def _authoring_available(self):
+        if self.authoring_coordinator is None:
+            return False
+        if not all(
+            callable(getattr(self.authoring_coordinator, method, None))
+            for method in ("read_spec", "replace_bone_semantic")
+        ):
+            return False
+        return all(
+            callable(getattr(self.authoring_coordinator, method, None))
+            for method in ("plan_bone_reset", "reset_bones")
+        ) or all(
+            callable(getattr(self.authoring_coordinator, method, None))
+            for method in ("register_bone", "capture_rest", "reindex_bones", "unregister_bone")
+        )
+
+    def _authoring_root(self):
+        root = self.app_state.current_model_root
+        if not root or not self.maya_adapter.object_exists(root):
+            self._model_root_valid = False
+            self._update_authoring_actions()
+            self.app_state.emit_status(tr_message("bone_authoring_root_missing"))
+            return None
+        if not self._authoring_available():
+            self.app_state.emit_status(tr_message("bone_authoring_unavailable"))
+            return None
+        self._model_root_valid = True
+        return root
+
+    def _run_authoring(self, operation, *args):
+        root = self._authoring_root()
+        if root is None:
+            return False
+        try:
+            getattr(self.authoring_coordinator, operation)(root, *args)
+        except Exception as exc:
+            logger.error("Bone authoring %s failed", operation, exc_info=True)
+            self.app_state.emit_status(
+                tr_message_format("bone_authoring_failed", operation=operation, error=str(exc))
+            )
+            return False
+        self.load_bones()
+        self.app_state.emit_status(tr_message(f"bone_{operation}_succeeded"))
+        return True
+
+    def register_selected_joint(self):
+        """Register exactly one selected Maya joint and append its row."""
+        try:
+            selected = tuple(
+                self.maya_adapter.ls(selection=True, type="joint", long=True) or ()
+            )
+        except Exception:
+            selected = ()
+        if len(selected) != 1:
+            self.app_state.emit_status(tr_message("bone_register_selection_required"))
+            return False
+        joint = selected[0]
+        root = self._authoring_root()
+        if root is None:
+            return False
+        try:
+            result = self.authoring_coordinator.register_selected_joint(root, joint)
+        except Exception as exc:
+            logger.error("Bone authoring register_selected_joint failed", exc_info=True)
+            self.app_state.emit_status(
+                tr_message_format(
+                    "bone_authoring_failed", operation="register_selected_joint", error=str(exc)
+                )
+            )
+            return False
+        if not isinstance(result, MmdBoneSpec) or not result.binding_identity:
+            self.app_state.emit_status(
+                tr_message_format(
+                    "bone_authoring_failed",
+                    operation="register_selected_joint",
+                    error="invalid registered bone result",
+                )
+            )
+            return False
+        binding = result.binding_identity
+        item = QListWidgetItem(
+            format_indexed_node_label(result.index, result.name, binding, result.name_english)
+        )
+        item.setData(Qt.UserRole, binding)
+        item.setToolTip(binding)
+        self.view.bone_list.addItem(item)
+        self.bone_list_items[binding] = item
+        self.all_bones.append(binding)
+        self._registered_indices[binding] = result.index
+        self._pending_order.append(binding)
+        self.current_bone = binding
+        self.current_bone_index = result.index
+        self.view.bone_list.setCurrentItem(item)
+        self.view.set_bone_details_enabled(True)
+        self._update_authoring_actions()
+        self.app_state.emit_status(tr_message("bone_register_selected_joint_succeeded"))
+        return result
+
+    def capture_rest(self):
+        """Capture rest separately for the currently registered bone."""
+        if type(self.current_bone_index) is not int or not self.current_bone:
+            self.app_state.emit_status(tr_message("bone_registered_selection_required"))
+            return False
+        root = self._authoring_root()
+        if root is None:
+            return False
+        try:
+            result = self.authoring_coordinator.capture_rest(
+                root, self.current_bone_index, self.current_bone
+            )
+        except Exception as exc:
+            logger.error("Bone authoring capture_rest failed", exc_info=True)
+            self.app_state.emit_status(
+                tr_message_format("bone_authoring_failed", operation="capture_rest", error=str(exc))
+            )
+            return False
+        self._update_selected_row_after_patch(result)
+        self.app_state.emit_status(tr_message("bone_capture_rest_succeeded"))
+        return result
+
+    def move_reindex(self, direction):
+        """Move one registered row in the explicit pending reindex order."""
+        if type(self.current_bone_index) is not int or direction not in (-1, 1):
+            return False
+        row = self.view.bone_list.currentRow()
+        target = row + direction
+        if row < 0 or target < 0 or target >= len(self.all_bones):
+            return False
+        target_bone = self.all_bones[target]
+        if target_bone not in self._registered_indices:
+            return False
+        item = self.view.bone_list.takeItem(row)
+        self.view.bone_list.insertItem(target, item)
+        self.view.bone_list.setCurrentItem(item)
+        bone = self.all_bones.pop(row)
+        self.all_bones.insert(target, bone)
+        self._pending_order = [item for item in self.all_bones if item in self._registered_indices]
+        self._reindex_dirty = True
+        self._update_authoring_actions()
+        self.app_state.emit_status(tr_message("bone_reindex_pending"))
+        return True
+
+    def sync_bones(self):
+        """Refresh or apply a scene-authoritative bone synchronization plan."""
+        root = self._authoring_root()
+        if root is None:
+            return False
+        if self._has_pending_detail_edit():
+            self.app_state.emit_status(tr_message("bone_sync_pending_edits"))
+            return False
+        requested = tuple(self._pending_order or [item for item in self.all_bones if item in self._registered_indices])
+        try:
+            if not callable(getattr(self.authoring_coordinator, "plan_bone_reset", None)):
+                # Legacy injected presenters are kept operational for external
+                # integrations. Production BoneTab always takes the planner
+                # path above and therefore has a no-write refresh branch.
+                ordered_indices = tuple(self._registered_indices[item] for item in requested)
+                return bool(self.authoring_coordinator.reindex_bones(root, ordered_indices))
+            self._reset_plan = None
+            plan = self._plan_reset(root)
+            if plan is None:
+                return False
+            if plan.blockers:
+                self.app_state.emit_status(
+                    tr_message_format("bone_reset_blocked", blockers="; ".join(plan.blockers))
+                )
+                return False
+            diff = plan.diff
+            if not any(diff.values()):
+                selected = self.current_bone
+                self._reset_plan = None
+                self.load_bones()
+                self._restore_bone_selection(selected)
+                self.app_state.emit_status(tr_message("bone_sync_no_changes"))
+                return True
+            if not self._confirm_bone_sync(plan):
+                self._reset_plan = None
+                self.app_state.emit_status(tr_message("bone_sync_cancelled"))
+                return False
+            selected = self.current_bone
+            result = self.authoring_coordinator.reset_bones(root, plan)
+        except Exception as exc:
+            logger.error("Bone authoring reset failed", exc_info=True)
+            self.app_state.emit_status(
+                tr_message_format("bone_authoring_failed", operation="reset", error=str(exc))
+            )
+            return False
+        self._reindex_dirty = False
+        self._reset_plan = None
+        self.load_bones()
+        self._restore_bone_selection(selected)
+        diff = plan.diff
+        self.app_state.emit_status(
+            tr_message_format(
+                "bone_reset_succeeded",
+                added=diff["added"], removed=diff["removed"], rest=diff["rest_updated"],
+            )
+        )
+        return result
+
+    def reset_authoring(self):
+        """Compatibility alias for the unified Bone Tab synchronization action."""
+
+        return self.sync_bones()
+
+    def _plan_reset(self, root=None):
+        """Build and display the immutable reset diff without applying it."""
+        root = root or self._authoring_root()
+        if root is None:
+            return None
+        requested = tuple(self._pending_order or [item for item in self.all_bones if item in self._registered_indices])
+        plan = self.authoring_coordinator.plan_bone_reset(root, requested_order=requested)
+        self._reset_plan = plan
+        warning_text = "; ".join(plan.warnings)
+        label = getattr(self.view, "animation_warning_label", None)
+        if label is not None:
+            label.setText(warning_text)
+            label.setVisible(bool(warning_text))
+        return plan
+
+    def _confirm_bone_sync(self, plan):
+        """Ask for explicit confirmation only when the plan mutates the scene."""
+        from ..qt_compat import QMessageBox
+
+        diff = plan.diff
+        details = (
+            f"added={diff['added']}, removed={diff['removed']}, "
+            f"rest={diff['rest_updated']}, reindexed={diff['reindexed']}"
+        )
+        if plan.added_bindings:
+            details += "\nadded bindings: " + ", ".join(plan.added_bindings)
+        if plan.removed_bindings:
+            details += "\nremoved bindings: " + ", ".join(plan.removed_bindings)
+        if plan.rest_updated_indices:
+            details += "\nrest indices: " + ", ".join(
+                str(index) for index in plan.rest_updated_indices
+            )
+        if plan.warnings:
+            details += "\nwarnings: " + "; ".join(plan.warnings)
+        reply = QMessageBox.question(
+            self.view,
+            tr_message("bone_sync_confirm_title"),
+            tr_message_format("bone_sync_confirm", details=details),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return reply == QMessageBox.Yes
+
+    def _restore_bone_selection(self, binding):
+        """Restore a still-existing canonical binding, or clear it safely."""
+        if not binding:
+            return
+        item = self.bone_list_items.get(binding)
+        if item is not None:
+            self.view.bone_list.setCurrentItem(item)
+            return
+        clear = getattr(self.view.bone_list, "clearSelection", None)
+        if callable(clear):
+            clear()
+        self.current_bone = None
+        self.current_bone_index = None
+        self.view.set_bone_details_enabled(False)
+
+
+    def unregister_bone(self):
+        """Confirm and unregister the current semantic bone."""
+        if type(self.current_bone_index) is not int:
+            self.app_state.emit_status(tr_message("bone_registered_selection_required"))
+            return False
+        from ..qt_compat import QMessageBox
+
+        reply = QMessageBox.question(
+            self.view,
+            tr_message("bone_unregister_title"),
+            tr_message("bone_unregister_confirm"),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return False
+        return self._run_authoring("unregister_bone", self.current_bone_index)
 
     def on_selection_changed_maya(self):
         """リスト選択が変更されたときにMayaでも選択する"""
@@ -272,14 +769,13 @@ class BonePresenter:
             self.view.bone_name_en_edit.setText(get_attribute(self.current_bone, ATTR_MMD_BONE_NAME_EN))
 
             # 親ボーン
-            parent = self.maya_adapter.list_relatives(self.current_bone, parent=True, type="joint")
-            self.view.parent_bone_edit.setText(parent[0] if parent else "")
-
-            # 位置
-            pos = self.maya_adapter.xform(self.current_bone, query=True, translation=True, worldSpace=True)
-            self.view.pos_x_spin.setValue(pos[0])
-            self.view.pos_y_spin.setValue(pos[1])
-            self.view.pos_z_spin.setValue(pos[2])
+            parent = self.maya_adapter.list_relatives(
+                self.current_bone,
+                parent=True,
+                type="joint",
+                fullPath=True,
+            )
+            self._set_reference_edit(self.view.parent_bone_edit, parent[0] if parent else "")
 
             # 変形階層
             self.view.deform_layer_spin.setValue(get_attribute(self.current_bone, ATTR_MMD_DEFORM_LAYER))
@@ -296,29 +792,6 @@ class BonePresenter:
             # 特殊フラグ
             self.view.after_physics_check.setChecked(bool(flags & PmxBoneFlag.DEFORM_AFTER_PHYSICS))
             self.view.external_parent_check.setChecked(bool(flags & PmxBoneFlag.EXTERNAL_PARENT_DEFORM))
-
-            # 接続先
-            connection_type = 0 if (flags & PmxBoneFlag.CONNECT_BONE) == 0 else 1
-            self.view.connection_type_combo.setCurrentIndex(connection_type)
-
-            if connection_type == 0:
-                # 座標オフセット
-                offset = get_attribute(self.current_bone, ATTR_MMD_BONE_OFFSET)
-                if isinstance(offset, (list, tuple)) and len(offset) >= 3:
-                    self.view.offset_x_spin.setValue(float(offset[0]))
-                    self.view.offset_y_spin.setValue(float(offset[1]))
-                    self.view.offset_z_spin.setValue(float(offset[2]))
-                else:
-                    self.view.offset_x_spin.setValue(0.0)
-                    self.view.offset_y_spin.setValue(-1.0)
-                    self.view.offset_z_spin.setValue(0.0)
-                self.view.connection_bone_edit.clear()
-            else:
-                # ボーン接続
-                connection_bone = get_attribute(self.current_bone, ATTR_MMD_CONNECTION_BONE)
-                # 接続先ボーンの表示名を作成
-                display_name = self._get_bone_display_name(connection_bone)
-                self.view.connection_bone_edit.setText(display_name)
 
             # IK設定
             self.view.ik_enabled_check.setChecked(bool(flags & PmxBoneFlag.IK))
@@ -343,7 +816,6 @@ class BonePresenter:
             self.on_grant_toggled()
             self.on_axis_toggled()
             self.on_external_parent_toggled(self.view.external_parent_check.isChecked())
-            self.on_connection_type_changed(self.view.connection_type_combo.currentIndex())
 
             # データを保存（リセット用）
             self._store_bone_data()
@@ -356,6 +828,7 @@ class BonePresenter:
         if not self.view.ik_enabled_check.isChecked():
             self.view.ik_settings_group.setVisible(False)
             self.view.ik_links_group.setVisible(False)
+            self._set_reference_edit(self.view.ik_target_edit, "")
             return
 
         self.view.ik_settings_group.setVisible(True)
@@ -363,12 +836,12 @@ class BonePresenter:
 
         # IKターゲット
         ik_target_index = get_attribute(self.current_bone, ATTR_MMD_IK_TARGET_INDEX)
-        if isinstance(ik_target_index, int) and 0 <= ik_target_index < len(self.all_bones):
-            ik_target = self.all_bones[ik_target_index]
-            display_name = self._get_bone_display_name(ik_target)
-        else:
-            display_name = ""
-        self.view.ik_target_edit.setText(display_name)
+        ik_target = (
+            self.all_bones[ik_target_index]
+            if isinstance(ik_target_index, int) and 0 <= ik_target_index < len(self.all_bones)
+            else ""
+        )
+        self._set_reference_edit(self.view.ik_target_edit, ik_target)
 
         # IKループ回数
         ik_loop = get_attribute(self.current_bone, ATTR_MMD_IK_LOOP)
@@ -401,9 +874,8 @@ class BonePresenter:
                 else:
                     bone_name = str(bone_index)
 
-                display_name = self._get_bone_display_name(bone_name)
                 self._add_ik_link_row(
-                    display_name,
+                    bone_name,
                     link_data.get("limit_enabled", False),
                     link_data.get("lower_limit", [0.0, 0.0, 0.0]),
                     link_data.get("upper_limit", [0.0, 0.0, 0.0]),
@@ -415,7 +887,11 @@ class BonePresenter:
         self.view.ik_links_table.insertRow(row)
 
         # ボーン名
-        self.view.ik_links_table.setItem(row, 0, QTableWidgetItem(bone_name))
+        identity = bone_name if bone_name and object_exists(bone_name) else None
+        bone_item = QTableWidgetItem(self._get_bone_display_name(bone_name))
+        bone_item.setData(Qt.UserRole, identity)
+        bone_item.setToolTip(str(identity or ""))
+        self.view.ik_links_table.setItem(row, 0, bone_item)
 
         # 角度制限チェックボックス
         limit_check = QCheckBox()
@@ -438,12 +914,18 @@ class BonePresenter:
         self.view.grant_settings_group.setVisible(grant_enabled)
 
         if not grant_enabled:
+            self._set_reference_edit(self.view.grant_parent_edit, "")
             return
 
         # 付与親
-        grant_parent = get_attribute(self.current_bone, ATTR_MMD_GRANT_PARENT)
-        display_name = self._get_bone_display_name(grant_parent)
-        self.view.grant_parent_edit.setText(display_name)
+        grant_parent_index = get_attribute(self.current_bone, ATTR_MMD_GRANT_PARENT_INDEX)
+        grant_parent = (
+            self.all_bones[grant_parent_index]
+            if isinstance(grant_parent_index, int)
+            and 0 <= grant_parent_index < len(self.all_bones)
+            else get_attribute(self.current_bone, ATTR_MMD_GRANT_PARENT)
+        )
+        self._set_reference_edit(self.view.grant_parent_edit, grant_parent)
 
         # 付与率
         grant_rate = get_attribute(self.current_bone, ATTR_MMD_GRANT_RATE)
@@ -519,31 +1001,35 @@ class BonePresenter:
         self.bone_data = {
             "name_jp": self.view.bone_name_jp_edit.text(),
             "name_en": self.view.bone_name_en_edit.text(),
-            "position": [
-                self.view.pos_x_spin.value(),
-                self.view.pos_y_spin.value(),
-                self.view.pos_z_spin.value(),
-            ],
             "deform_layer": self.view.deform_layer_spin.value(),
-            "flags": self._calculate_bone_flags(),
+            "flags": int(self._get_bone_flags(self.current_bone)),
+            "structural": self._structural_ui_state(),
             "all_settings": self._gather_all_settings(),
+            "fixed_axis": self._axis_values("fixed_axis_x_spin", "fixed_axis_y_spin", "fixed_axis_z_spin"),
+            "local_axis_x": self._axis_values("local_x_axis_x_spin", "local_x_axis_y_spin", "local_x_axis_z_spin"),
+            "local_axis_z": self._axis_values("local_z_axis_x_spin", "local_z_axis_y_spin", "local_z_axis_z_spin"),
         }
+
+    def _axis_values(self, *names):
+        """Capture one axis vector from controls without querying Maya."""
+        try:
+            return tuple(getattr(self.view, name).value() for name in names)
+        except Exception:
+            return None
 
     def select_bone_dialog(self, target_type):
         """ボーン選択ダイアログを表示"""
         # 簡易的な実装：現在のMaya選択を使用
-        selected = self.maya_adapter.ls(selection=True, type="joint")
+        selected = self.maya_adapter.ls(selection=True, type="joint", long=True)
         if not selected:
             self.app_state.emit_status(tr_message("select_joint"))
             return
 
         bone = selected[0]
-        display_name = self._get_bone_display_name(bone)
-
         if target_type == "ik_target":
-            self.view.ik_target_edit.setText(display_name)
+            self._set_reference_edit(self.view.ik_target_edit, bone)
         elif target_type == "grant_parent":
-            self.view.grant_parent_edit.setText(display_name)
+            self._set_reference_edit(self.view.grant_parent_edit, bone)
 
     def _is_descendant(self, parent, child):
         """childがparentの子孫かどうかをチェック"""
@@ -573,29 +1059,15 @@ class BonePresenter:
         self.view.external_parent_key_label.setVisible(checked)
         self.view.external_parent_key_spin.setVisible(checked)
 
-    def on_connection_type_changed(self, index):
-        """接続タイプ変更時の処理"""
-        if index == 0:  # 座標オフセット
-            self.view.offset_x_spin.setEnabled(True)
-            self.view.offset_y_spin.setEnabled(True)
-            self.view.offset_z_spin.setEnabled(True)
-            self.view.connection_bone_edit.setEnabled(False)
-        else:  # ボーン
-            self.view.offset_x_spin.setEnabled(False)
-            self.view.offset_y_spin.setEnabled(False)
-            self.view.offset_z_spin.setEnabled(False)
-            self.view.connection_bone_edit.setEnabled(True)
-
     def add_ik_link(self):
         """IKリンクを追加"""
-        selected = self.maya_adapter.ls(selection=True, type="joint")
+        selected = self.maya_adapter.ls(selection=True, type="joint", long=True)
         if not selected:
             self.app_state.emit_status(tr_message("select_joint_for_ik_link"))
             return
 
         bone = selected[0]
-        display_name = self._get_bone_display_name(bone)
-        self._add_ik_link_row(display_name, False, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        self._add_ik_link_row(bone, False, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
 
     def remove_ik_link(self):
         """選択されたIKリンクを削除"""
@@ -621,7 +1093,13 @@ class BonePresenter:
                 row_data.append(widget.isChecked() if widget else False)
             else:
                 item = self.view.ik_links_table.item(current_row, col)
-                row_data.append(item.text() if item else "")
+                row_data.append(
+                    (
+                        item.text() if item else "",
+                        item.data(Qt.UserRole) if item else None,
+                        item.toolTip() if item else "",
+                    )
+                )
 
         # 行を削除して新しい位置に挿入
         self.view.ik_links_table.removeRow(current_row)
@@ -634,143 +1112,215 @@ class BonePresenter:
                 check.setChecked(data)
                 self.view.ik_links_table.setCellWidget(new_row, col, check)
             else:
-                self.view.ik_links_table.setItem(new_row, col, QTableWidgetItem(str(data)))
+                text, identity, tooltip = data
+                item = QTableWidgetItem(text)
+                item.setData(Qt.UserRole, identity)
+                item.setToolTip(tooltip)
+                self.view.ik_links_table.setItem(new_row, col, item)
 
         # 選択を維持
         self.view.ik_links_table.setCurrentCell(new_row, 0)
 
     def apply_changes(self):
-        """変更を適用"""
+        """Apply selected value edits narrowly; keep structural edits on full route."""
         if not self.current_bone or not self.maya_adapter.object_exists(self.current_bone):
             return
 
         try:
-            # 基本情報
-            attributes = {
-                ATTR_MMD_BONE_NAME: self.view.bone_name_jp_edit.text(),
-                ATTR_MMD_BONE_NAME_EN: self.view.bone_name_en_edit.text(),
-                ATTR_MMD_DEFORM_LAYER: self.view.deform_layer_spin.value(),
-                ATTR_MMD_BONE_FLAGS: self._calculate_bone_flags(),
-            }
+            root = self._authoring_root()
+            if root is None or type(self.current_bone_index) is not int:
+                return
+            selected_reader = getattr(self.authoring_coordinator, "read_bone_value", None)
+            selected_writer = getattr(self.authoring_coordinator, "apply_bone_value_patch", None)
+            if callable(selected_reader) and callable(selected_writer):
+                existing = selected_reader(root, self.current_bone_index, self.current_bone)
+                if not isinstance(existing, MmdBoneSpec):
+                    existing = None
+            if callable(selected_reader) and callable(selected_writer) and isinstance(existing, MmdBoneSpec):
+                ui_flags = self._calculate_bone_flags(existing.flags)
+                structural_mask = int(
+                    PmxBoneFlag.CONNECT_BONE
+                    | PmxBoneFlag.IK
+                    | PmxBoneFlag.LOCAL
+                    | PmxBoneFlag.GRANT_PARENT_ROTATE
+                    | PmxBoneFlag.GRANT_PARENT_MOVE
+                    | PmxBoneFlag.EXTERNAL_PARENT_DEFORM
+                )
+                value_mask = int(
+                    PmxBoneFlag.ROTATABLE
+                    | PmxBoneFlag.MOVABLE
+                    | PmxBoneFlag.DISPLAY
+                    | PmxBoneFlag.OPERATABLE
+                    | PmxBoneFlag.AXIS_FIXED
+                    | PmxBoneFlag.LOCAL_AXIS
+                    | PmxBoneFlag.DEFORM_AFTER_PHYSICS
+                )
+                structural_changed = (
+                    (int(existing.flags) ^ int(ui_flags)) & structural_mask
+                ) or (
+                    (int(existing.flags) ^ int(ui_flags)) & ~(structural_mask | value_mask)
+                ) or self._structural_ui_state() != self.bone_data.get("structural")
+                if not structural_changed:
+                    flags = (int(existing.flags) & ~value_mask) | (int(ui_flags) & value_mask)
+                    replacement = replace(
+                        existing,
+                        name=self.view.bone_name_jp_edit.text(),
+                        name_english=self.view.bone_name_en_edit.text(),
+                        transform_layer=self.view.deform_layer_spin.value(),
+                        flags=flags,
+                        fixed_axis=(
+                            (
+                                self.view.fixed_axis_x_spin.value(),
+                                self.view.fixed_axis_y_spin.value(),
+                                self.view.fixed_axis_z_spin.value(),
+                            )
+                            if flags & PmxBoneFlag.AXIS_FIXED
+                            else None
+                        ),
+                        local_axis_x=(
+                            (
+                                self.view.local_x_axis_x_spin.value(),
+                                self.view.local_x_axis_y_spin.value(),
+                                self.view.local_x_axis_z_spin.value(),
+                            )
+                            if flags & PmxBoneFlag.LOCAL_AXIS
+                            else None
+                        ),
+                        local_axis_z=(
+                            (
+                                self.view.local_z_axis_x_spin.value(),
+                                self.view.local_z_axis_y_spin.value(),
+                                self.view.local_z_axis_z_spin.value(),
+                            )
+                            if flags & PmxBoneFlag.LOCAL_AXIS
+                            else None
+                        ),
+                    )
+                    result = selected_writer(root, replacement)
+                    self._update_selected_row_after_patch(result)
+                    logger.info("Applied narrow value changes to bone '%s'", self.current_bone)
+                    self.app_state.emit_status(
+                        tr_message_format("bone_changes_applied", bone=self.current_bone)
+                    )
+                    return
 
-            # 位置（ワールド座標で設定）
-            pos = [
-                self.view.pos_x_spin.value(),
-                self.view.pos_y_spin.value(),
-                self.view.pos_z_spin.value(),
-            ]
-            self.maya_adapter.xform(self.current_bone, translation=pos, worldSpace=True)
+            spec = self.authoring_coordinator.read_spec(root)
+            existing = next(
+                (bone for bone in spec.bones if bone.index == self.current_bone_index),
+                None,
+            )
+            if existing is None or existing.binding_identity != self.current_bone:
+                raise ValueError("selected bone is not the current registered binding")
 
-            # 接続先設定
-            if self.view.connection_type_combo.currentIndex() == 0:
-                # 座標オフセット
-                offset = [
-                    self.view.offset_x_spin.value(),
-                    self.view.offset_y_spin.value(),
-                    self.view.offset_z_spin.value(),
-                ]
-                attributes[ATTR_MMD_BONE_OFFSET] = offset
-            else:
-                # ボーン接続（表示名から実際のボーン名を抽出）
-                display_name = self.view.connection_bone_edit.text()
-                actual_bone = self._extract_bone_name(display_name)
-                attributes[ATTR_MMD_CONNECTION_BONE] = actual_bone
+            # Position, connect target, and tail offset are derived/restored by
+            # Reset and persisted authoring metadata.  Normal Apply only edits
+            # the explicitly semantic UI fields and carries those values over.
+            flags = self._calculate_bone_flags(existing.flags)
 
-            # IK設定
-            if self.view.ik_enabled_check.isChecked():
-                # IKターゲット（表示名から実際のボーン名を抽出）
-                display_name = self.view.ik_target_edit.text()
-                actual_bone = self._extract_bone_name(display_name)
-                attributes[ATTR_MMD_IK_LOOP] = self.view.ik_loop_spin.value()
-                attributes[ATTR_MMD_IK_LIMIT_ANGLE] = math.radians(self.view.ik_limit_angle_spin.value())
+            grant_enabled = bool(
+                flags & (PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE)
+            )
+            grant_parent_index = (
+                self._resolve_bone_reference(
+                    spec,
+                    self.view.grant_parent_edit.text(),
+                    "grant parent",
+                    self.view.grant_parent_edit.property("mmdBindingIdentity"),
+                )
+                if grant_enabled
+                else None
+            )
 
-                # IKリンク
-                ik_links = []
+            ik_target_index = None
+            ik_links = ()
+            ik_loop_count = 0
+            ik_limit_radian = None
+            if flags & PmxBoneFlag.IK:
+                ik_target_index = self._resolve_bone_reference(
+                    spec,
+                    self.view.ik_target_edit.text(),
+                    "IK target",
+                    self.view.ik_target_edit.property("mmdBindingIdentity"),
+                )
+                ik_loop_count = self.view.ik_loop_spin.value()
+                ik_limit_radian = math.radians(self.view.ik_limit_angle_spin.value())
+                links = []
                 for row in range(self.view.ik_links_table.rowCount()):
                     bone_item = self.view.ik_links_table.item(row, 0)
+                    if bone_item is None:
+                        continue
                     limit_widget = self.view.ik_links_table.cellWidget(row, 1)
-
-                    if bone_item:
-                        # 表示名から実際のボーン名を抽出
-                        display_name = bone_item.text()
-                        actual_bone = self._extract_bone_name(display_name)
-                        link_data = {
-                            "bone": actual_bone,
+                    links.append(
+                        {
+                            "bone": self._resolve_bone_reference(
+                                spec,
+                                bone_item.text(),
+                                f"IK link {row}",
+                                bone_item.data(Qt.UserRole),
+                            ),
                             "limit_enabled": limit_widget.isChecked() if limit_widget else False,
                             "lower_limit": [
-                                math.radians(float(self.view.ik_links_table.item(row, 2).text())),
-                                math.radians(float(self.view.ik_links_table.item(row, 3).text())),
-                                math.radians(float(self.view.ik_links_table.item(row, 4).text())),
+                                math.radians(float(self.view.ik_links_table.item(row, col).text()))
+                                for col in range(2, 5)
                             ],
                             "upper_limit": [
-                                math.radians(float(self.view.ik_links_table.item(row, 5).text())),
-                                math.radians(float(self.view.ik_links_table.item(row, 6).text())),
-                                math.radians(float(self.view.ik_links_table.item(row, 7).text())),
+                                math.radians(float(self.view.ik_links_table.item(row, col).text()))
+                                for col in range(5, 8)
                             ],
                         }
-                        ik_links.append(link_data)
-
-                # IKリンクをJSON文字列として保存
-                import json
-
-                attributes[ATTR_MMD_IK_LINKS] = json.dumps(ik_links)
-
-            # 付与設定
-            if self.view.rotation_grant_check.isChecked() or self.view.move_grant_check.isChecked():
-                # 付与親（表示名から実際のボーン名を抽出）
-                display_name = self.view.grant_parent_edit.text()
-                actual_bone = self._extract_bone_name(display_name)
-                attributes[ATTR_MMD_GRANT_PARENT] = actual_bone
-                attributes[ATTR_MMD_GRANT_RATE] = self.view.grant_rate_spin.value()
-
-            # 軸制限設定
-            if self.view.fixed_axis_check.isChecked():
-                fixed_axis = [
-                    self.view.fixed_axis_x_spin.value(),
-                    self.view.fixed_axis_y_spin.value(),
-                    self.view.fixed_axis_z_spin.value(),
-                ]
-                attributes[ATTR_MMD_FIXED_AXIS] = fixed_axis
-
-            if self.view.local_axis_check.isChecked():
-                local_x = [
-                    self.view.local_x_axis_x_spin.value(),
-                    self.view.local_x_axis_y_spin.value(),
-                    self.view.local_x_axis_z_spin.value(),
-                ]
-                local_z = [
-                    self.view.local_z_axis_x_spin.value(),
-                    self.view.local_z_axis_y_spin.value(),
-                    self.view.local_z_axis_z_spin.value(),
-                ]
-                attributes[ATTR_MMD_LOCAL_X_AXIS] = local_x
-                attributes[ATTR_MMD_LOCAL_Z_AXIS] = local_z
-
-            # 外部親設定
-            if self.view.external_parent_check.isChecked():
-                attributes[ATTR_MMD_EXTERNAL_PARENT_KEY] = self.view.external_parent_key_spin.value()
-
-            # 属性を設定
-            self._ensure_mmd_attributes(self.current_bone)
-            set_custom_attributes(self.current_bone, attributes)
-
-            # リストビューの表示を更新
-            if self.current_bone in self.bone_list_items:
-                item = self.bone_list_items[self.current_bone]
-                bone_index = get_attribute(self.current_bone, ATTR_MMD_BONE_INDEX)
-                name_jp = self.view.bone_name_jp_edit.text()
-                name_en = self.view.bone_name_en_edit.text()
-
-                index_label = bone_index if bone_index is not None and bone_index >= 0 else "-"
-                item.setText(
-                    format_indexed_node_label(
-                        index_label,
-                        name_jp,
-                        self.current_bone,
-                        name_en,
                     )
-                )
-                item.setToolTip(self.current_bone)
+                ik_links = tuple(links)
+
+            replacement = replace(
+                existing,
+                name=self.view.bone_name_jp_edit.text(),
+                name_english=self.view.bone_name_en_edit.text(),
+                transform_layer=self.view.deform_layer_spin.value(),
+                flags=int(flags),
+                connect_bone_index=existing.connect_bone_index,
+                tail_offset=existing.tail_offset,
+                grant_parent_index=grant_parent_index,
+                grant_ratio=self.view.grant_rate_spin.value() if grant_enabled else 0.0,
+                grant_local=bool(flags & PmxBoneFlag.LOCAL),
+                fixed_axis=(
+                    (
+                        self.view.fixed_axis_x_spin.value(),
+                        self.view.fixed_axis_y_spin.value(),
+                        self.view.fixed_axis_z_spin.value(),
+                    )
+                    if flags & PmxBoneFlag.AXIS_FIXED
+                    else None
+                ),
+                local_axis_x=(
+                    (
+                        self.view.local_x_axis_x_spin.value(),
+                        self.view.local_x_axis_y_spin.value(),
+                        self.view.local_x_axis_z_spin.value(),
+                    )
+                    if flags & PmxBoneFlag.LOCAL_AXIS
+                    else None
+                ),
+                local_axis_z=(
+                    (
+                        self.view.local_z_axis_x_spin.value(),
+                        self.view.local_z_axis_y_spin.value(),
+                        self.view.local_z_axis_z_spin.value(),
+                    )
+                    if flags & PmxBoneFlag.LOCAL_AXIS
+                    else None
+                ),
+                external_parent_key=(
+                    self.view.external_parent_key_spin.value()
+                    if flags & PmxBoneFlag.EXTERNAL_PARENT_DEFORM
+                    else None
+                ),
+                ik_target_index=ik_target_index,
+                ik_loop_count=ik_loop_count,
+                ik_limit_radian=ik_limit_radian,
+                ik_links=ik_links,
+            )
+            self.authoring_coordinator.replace_bone_semantic(root, replacement)
+            self.load_bones()
 
             logger.info(f"Applied changes to bone '{self.current_bone}'")
             self.app_state.emit_status(tr_message_format("bone_changes_applied", bone=self.current_bone))
@@ -779,19 +1329,93 @@ class BonePresenter:
             logger.error(f"Failed to apply bone changes: {e}", exc_info=True)
             self.app_state.emit_status(tr_message_format("bone_changes_failed", error=str(e)))
 
+    def _structural_ui_state(self, existing_flags=None):
+        """Return only controls that require reference/topology resolution."""
+        if existing_flags is None:
+            existing_flags = self._get_bone_flags(self.current_bone) if self.current_bone else 0
+        flags = self._calculate_bone_flags(existing_flags)
+        links = []
+        for row in range(self.view.ik_links_table.rowCount()):
+            values = []
+            for col in range(self.view.ik_links_table.columnCount()):
+                if col == 1:
+                    widget = self.view.ik_links_table.cellWidget(row, col)
+                    values.append(bool(widget.isChecked()) if widget else False)
+                else:
+                    item = self.view.ik_links_table.item(row, col)
+                    values.append(item.text() if item else "")
+            links.append(tuple(values))
+        return {
+            "flags": int(flags)
+            & int(
+                PmxBoneFlag.CONNECT_BONE
+                | PmxBoneFlag.IK
+                | PmxBoneFlag.LOCAL
+                | PmxBoneFlag.GRANT_PARENT_ROTATE
+                | PmxBoneFlag.GRANT_PARENT_MOVE
+                | PmxBoneFlag.EXTERNAL_PARENT_DEFORM
+            ),
+            "grant_parent": self.view.grant_parent_edit.text(),
+            "grant_rate": self.view.grant_rate_spin.value(),
+            "ik_target": self.view.ik_target_edit.text(),
+            "ik_loop": self.view.ik_loop_spin.value(),
+            "ik_limit": self.view.ik_limit_angle_spin.value(),
+            "ik_links": tuple(links),
+            "external_parent_key": self.view.external_parent_key_spin.value(),
+            "parent": self.view.parent_bone_edit.text(),
+        }
+
+    def _update_selected_row_after_patch(self, result):
+        """Refresh only the selected row/state after a narrow value patch."""
+        if isinstance(result, MmdBoneSpec):
+            bone = result
+        else:
+            bone = None
+        item = self.bone_list_items.get(self.current_bone)
+        if item is not None and bone is not None:
+            item.setText(
+                format_indexed_node_label(
+                    bone.index, bone.name, self.current_bone, bone.name_english
+                )
+            )
+        self._registered_indices[self.current_bone] = self.current_bone_index
+        self._store_bone_data()
+
+    def _resolve_bone_reference(self, spec, display_name, field, binding_identity=None):
+        """Resolve one UI label to a unique registered semantic bone index."""
+        if binding_identity:
+            exact = [
+                bone.index
+                for bone in spec.bones
+                if bone.binding_identity == binding_identity
+            ]
+            if len(exact) == 1:
+                return exact[0]
+            raise ValueError(f"{field} no longer identifies a registered bone")
+        matches = []
+        for bone in spec.bones:
+            binding = bone.binding_identity
+            labels = {bone.name, bone.name_english}
+            if binding:
+                labels.update((binding, self._get_bone_display_name(binding)))
+            if display_name in labels:
+                matches.append(bone.index)
+        if len(matches) != 1:
+            raise ValueError(f"{field} must identify exactly one registered bone")
+        return matches[0]
+
     def reset_changes(self):
         """変更をリセット"""
         if self.current_bone and self.bone_data:
             self.load_bone_properties()
             self.app_state.emit_status(tr_message("changes_reset"))
 
-    def _calculate_bone_flags(self):
+    def _calculate_bone_flags(self, existing_flags=0):
         """UIの状態からボーンフラグを計算"""
-        flags = 0
-
-        # 接続先
-        if self.view.connection_type_combo.currentIndex() == 1:
-            flags |= PmxBoneFlag.CONNECT_BONE
+        # CONNECT_BONE is persisted PMX tail semantics, not a normal-form
+        # toggle. Preserve it from the loaded spec while rebuilding the
+        # remaining editable flags from visible controls.
+        flags = int(existing_flags) & int(PmxBoneFlag.CONNECT_BONE)
 
         # 基本フラグ
         if self.view.rotatable_check.isChecked():
@@ -841,11 +1465,19 @@ class BonePresenter:
         if not bone_name or not object_exists(bone_name):
             return bone_name or ""
 
+        leaf_name = maya_node_leaf_name(bone_name)
         # MMD日本語名を取得
         name_jp = get_attribute(bone_name, ATTR_MMD_BONE_NAME)
-        if name_jp and name_jp != bone_name:
-            return f"{bone_name}:{name_jp}"
-        return bone_name
+        if name_jp and name_jp != leaf_name:
+            return f"{leaf_name}:{name_jp}"
+        return leaf_name
+
+    def _set_reference_edit(self, edit, bone_name):
+        """Show a compact label while retaining the canonical Maya identity."""
+        identity = bone_name if bone_name and object_exists(bone_name) else None
+        edit.setText(self._get_bone_display_name(bone_name))
+        edit.setProperty("mmdBindingIdentity", identity)
+        edit.setToolTip(str(identity or ""))
 
     def _extract_bone_name(self, display_name):
         """表示名から実際のボーン名を抽出"""
@@ -878,55 +1510,3 @@ class BonePresenter:
             logger.debug(f"Failed to get attribute {attr} from {node}: {e}")
             pass
         return default
-
-    def _ensure_mmd_attributes(self, joint):
-        """MMD用カスタム属性が存在することを確認"""
-        attrs = [
-            (ATTR_MMD_BONE_NAME, "string", ""),
-            (ATTR_MMD_BONE_NAME_EN, "string", ""),
-            (
-                ATTR_MMD_BONE_FLAGS,
-                "long",
-                int(PmxBoneFlag.ROTATABLE | PmxBoneFlag.DISPLAY),
-            ),
-            (ATTR_MMD_DEFORM_LAYER, "long", 0),
-            (ATTR_MMD_BONE_OFFSET, "double3", None),
-            (ATTR_MMD_CONNECTION_BONE, "string", ""),
-            (ATTR_MMD_IK_TARGET, "string", ""),
-            (ATTR_MMD_IK_LOOP, "long", 10),
-            (ATTR_MMD_IK_LIMIT_ANGLE, "double", 2.0),
-            (ATTR_MMD_IK_LINKS, "string", "[]"),  # JSON文字列として保存
-            (ATTR_MMD_GRANT_PARENT, "string", ""),
-            (ATTR_MMD_GRANT_RATE, "double", 1.0),
-            (ATTR_MMD_FIXED_AXIS, "double3", None),
-            (ATTR_MMD_LOCAL_X_AXIS, "double3", None),
-            (ATTR_MMD_LOCAL_Z_AXIS, "double3", None),
-            (ATTR_MMD_EXTERNAL_PARENT_KEY, "long", -1),
-        ]
-
-        for attr_name, attr_type, default in attrs:
-            if not self.maya_adapter.attribute_exists(attr_name, joint):
-                if attr_type == "double3":
-                    # double3アトリビュートを作成
-                    defaults = {
-                        ATTR_MMD_BONE_OFFSET: [0.0, -1.0, 0.0],
-                        ATTR_MMD_FIXED_AXIS: [0.0, 0.0, 1.0],
-                        ATTR_MMD_LOCAL_X_AXIS: [1.0, 0.0, 0.0],
-                        ATTR_MMD_LOCAL_Z_AXIS: [0.0, 0.0, 1.0],
-                    }
-                    default_value = defaults.get(attr_name, [0.0, 0.0, 0.0])
-                    set_custom_attributes(joint, {attr_name: default_value})
-                else:
-                    # その他のアトリビュートを作成
-                    if default is not None:
-                        set_custom_attributes(joint, {attr_name: default})
-                    else:
-                        # デフォルト値がない場合はタイプに応じて初期値を設定
-                        if attr_type == "string":
-                            set_custom_attributes(joint, {attr_name: ""})
-                        elif attr_type == "double":
-                            set_custom_attributes(joint, {attr_name: 0.0})
-                        elif attr_type == "long":
-                            set_custom_attributes(joint, {attr_name: 0})
-                        elif attr_type == "bool":
-                            set_custom_attributes(joint, {attr_name: False})

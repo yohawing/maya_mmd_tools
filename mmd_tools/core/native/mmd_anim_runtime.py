@@ -149,19 +149,9 @@ def is_native_json_export_available(format_kind: str) -> bool:
     return _runtime_export.is_native_json_export_available(format_kind, get_mmd_runtime_library)
 
 
-def export_vmd_animation_json(payload: Any) -> Optional[bytes]:
-    """VmdParsedAnimation JSON から VMD バイト列を native writer で生成する。"""
-    return _runtime_export.export_vmd_animation_json(payload, get_mmd_runtime_library)
-
-
 def export_pmx_model_json(payload: Any) -> Optional[bytes]:
     """PmxParsedModel JSON から PMX バイト列を native writer で生成する。"""
     return _runtime_export.export_pmx_model_json(payload, get_mmd_runtime_library)
-
-
-def export_pmd_model_json(payload: Any) -> Optional[bytes]:
-    """PmdParsedModel JSON から PMD バイト列を native writer で生成する。"""
-    return _runtime_export.export_pmd_model_json(payload, get_mmd_runtime_library)
 
 
 def export_pmx_from_parts(

@@ -5,11 +5,56 @@ from ..qt_compat import (
     QGroupBox,
     QTextEdit,
     QLabel,
+    QObject,
+    Signal,
 )
 from ..base_tab import BaseTab
 
 
+class _InfoEditEventFilter(QObject):
+    """Emit deterministic edit-session boundaries for both text widgets.
+
+    ``QLineEdit`` and ``QTextEdit`` expose different editing signals, so the
+    presenter must not infer an undo transaction from ``textChanged`` or use a
+    timer.  Focus transitions are common to both widgets and provide the
+    smallest stable seam for an Info metadata edit session.
+    """
+
+    # QEvent.FocusIn / FocusOut are 8 / 9 in both Qt 5 and Qt 6.  Keeping the
+    # numeric values here avoids importing QEvent, which is intentionally not
+    # part of the lightweight headless Qt compatibility stubs.
+    _FOCUS_IN = 8
+    _FOCUS_OUT = 9
+
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.owner = owner
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual method
+        try:
+            event_type = int(event.type())
+        except (AttributeError, TypeError, ValueError):
+            event_type = None
+
+        if event_type == self._FOCUS_IN:
+            self.owner.edit_started.emit(watched)
+        elif event_type == self._FOCUS_OUT:
+            self.owner.edit_finished.emit(watched)
+
+        try:
+            return super().eventFilter(watched, event)
+        except AttributeError:
+            # The pure-Python Qt stubs do not implement QObject.eventFilter.
+            return False
+
+
 class InfoTab(BaseTab):
+    """Model metadata editor with shared focus-based edit-session signals."""
+
+    edit_started = Signal(object)
+    edit_finished = Signal(object)
+    teardown = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("InfoTab")
@@ -24,6 +69,16 @@ class InfoTab(BaseTab):
         self.model_name_en_edit = QLineEdit()
         self.comment_jp_edit = QTextEdit()
         self.comment_en_edit = QTextEdit()
+
+        self.editable_fields = (
+            self.model_name_jp_edit,
+            self.model_name_en_edit,
+            self.comment_jp_edit,
+            self.comment_en_edit,
+        )
+        self._edit_event_filter = _InfoEditEventFilter(self)
+        for widget in self.editable_fields:
+            widget.installEventFilter(self._edit_event_filter)
 
         # コメントフィールドの高さを制限
         self.comment_jp_edit.setMaximumHeight(100)
@@ -54,6 +109,15 @@ class InfoTab(BaseTab):
 
         # 初期状態では編集不可
         self.set_fields_enabled(False)
+
+    def closeEvent(self, event):  # noqa: N802 - Qt virtual method
+        """Notify the presenter before the tab is torn down."""
+        self.teardown.emit()
+        try:
+            super().closeEvent(event)
+        except AttributeError:
+            if hasattr(event, "accept"):
+                event.accept()
 
     def set_fields_enabled(self, enabled):
         """フィールドの編集可否を設定"""

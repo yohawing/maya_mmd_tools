@@ -60,7 +60,22 @@ constexpr double kPi = 3.14159265358979323846;
 // authored Maya value or solver output) to a much finer grid than the solver's
 // angular accuracy so equivalent DCC/format poses enter CCD identically.
 constexpr float kRuntimeQuaternionQuantum = 1.0e-6f;
+// The runtime solver converges to 1e-5 MMD units.  Snap only its transient
+// position inputs to a five-times finer grid so a one-ULP export/reimport
+// difference cannot select a different iterative CCD branch.
+constexpr float kRuntimePositionQuantum = 2.0e-6f;
 using nlohmann::json;
+
+float canonicalizeRuntimePosition(float value)
+{
+    // Compute the cell index in double precision.  At ordinary MMD model
+    // scales, the float quotient itself can lose enough low bits to put two
+    // adjacent float inputs into different cells near a boundary.
+    const double quantum = static_cast<double>(kRuntimePositionQuantum);
+    const float snapped = static_cast<float>(
+        std::round(static_cast<double>(value) / quantum) * quantum);
+    return snapped == 0.0f ? 0.0f : snapped;
+}
 
 void canonicalizeRuntimeQuaternion(float* quaternion)
 {
@@ -1022,6 +1037,10 @@ bool solveChainJsonIk(
         }
     }
 
+    for (float& position : positions) {
+        position = canonicalizeRuntimePosition(position);
+    }
+
     if (!solveEnabled) {
         copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
         copyMmdLinkQuaternionsToOutput(cfg, rotations, outMmdLinkQuaternions);
@@ -1032,9 +1051,12 @@ bool solveChainJsonIk(
     const bool useControllerGoal = cfg.controllerBoneSlot >= 0 &&
                                    static_cast<size_t>(cfg.controllerBoneSlot) < boneCount &&
                                    !goalHasInputConnection;
-    const std::array<float, 3> goal = useControllerGoal
+    std::array<float, 3> goal = useControllerGoal
         ? computeFkWorldPosition(cfg, positions, rotations, cfg.controllerBoneSlot)
         : readGoalPositionMmd(cfg, node, data, useGoalWorldMatrix);
+    for (float& component : goal) {
+        component = canonicalizeRuntimePosition(component);
+    }
 
     // Pass-through gate: FK input pose が target を既に goal 上に置いている
     // なら solve しない（VMD bake 済み final pose の二重 solve 防止）。

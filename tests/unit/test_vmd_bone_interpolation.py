@@ -9,6 +9,9 @@ import maya.cmds as cmds
 
 from mmd_tools.converters import vmd_bezier_tangent
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.converters.vmd_redirected_authoring_proxy import (
+    resolve_redirected_authoring_proxy_authority,
+)
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from mmd_tools.io.mmd_importer import import_mmd_file
@@ -151,8 +154,24 @@ class TestVmdBoneInterpolation(MayaTestBase):
             self._assert_authored_key_times(self, f"{ordinary_joint}.{attr}")
             self.assertIsNone(cmds.keyframe(f"{append_joint}.{attr}", query=True, timeChange=True))
             self.assertIsNone(cmds.keyframe(f"{ik_joint}.{attr}", query=True, timeChange=True))
-        for attr in ("baseRotateX", "baseRotateY", "baseRotateZ"):
-            self._assert_authored_key_times(self, f"{append_node}.{attr}")
+        proxy_route, authority, claimed = resolve_redirected_authoring_proxy_authority(
+            append_joint
+        )
+        self.assertTrue(claimed)
+        for axis in "XYZ":
+            channel = f"rotate{axis}"
+            self.assertEqual(
+                authority[channel], (append_node, f"baseRotate{axis}")
+            )
+            proxy, proxy_attr = proxy_route[channel]
+            self._assert_authored_key_times(self, f"{proxy}.{proxy_attr}")
+            self.assertIsNone(
+                cmds.keyframe(
+                    f"{append_node}.baseRotate{axis}",
+                    query=True,
+                    timeChange=True,
+                )
+            )
 
         chain_slot = 2
         for axis in "XYZ":

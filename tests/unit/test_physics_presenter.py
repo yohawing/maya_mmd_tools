@@ -88,6 +88,11 @@ class TestPresenterModuleStructure(unittest.TestCase):
         self.assertIn("_find_physics_world_shape", func_names)
         self.assertIn('chunkName="MMD Physics Enable"', self.source)
 
+    def test_model_solver_lookup_uses_registry_with_legacy_fallback(self):
+        self.assertIn("_model_physics_solvers", self.source)
+        self.assertIn("REGISTRY_CATEGORY_PHYSICS", self.source)
+        self.assertIn("list_model_registry_members", self.source)
+
     def test_has_parse_vector_str(self):
         self.assertIn("_parse_vector_str", self.source)
 
@@ -103,6 +108,24 @@ class TestPresenterModuleStructure(unittest.TestCase):
         self.assertIn("PHYSICS_GROUP", self.source)
         self.assertIn("RIGID_BODIES_GROUP", self.source)
         self.assertIn("CONSTRAINTS_GROUP", self.source)
+
+    def test_dirty_tracking_connects_one_semantic_signal_per_editor(self):
+        connect_loop = next(
+            node
+            for node in ast.walk(self.tree)
+            if isinstance(node, ast.For)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "signal_name"
+        )
+        signal_names = ast.literal_eval(connect_loop.iter)
+        self.assertEqual(
+            signal_names,
+            ("currentIndexChanged", "valueChanged", "textChanged"),
+        )
+        self.assertTrue(
+            any(isinstance(node, ast.Break) for node in ast.walk(connect_loop)),
+            "dirty tracking must stop after the first supported semantic signal",
+        )
 
 
 class TestRigidBodyFieldKeys(unittest.TestCase):

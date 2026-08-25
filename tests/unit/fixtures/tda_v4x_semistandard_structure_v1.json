@@ -1,0 +1,485 @@
+{
+  "schema_version": 1,
+  "source_asset": {
+    "label": "Tda MIKU V4X 1.00",
+    "expected_bone_count": 239,
+    "local_validation_path": "F:/MMD/pmx/Tda式初音ミクV4X_Ver1.00/Tda式初音ミクV4X_Ver1.00.pmx",
+    "redistribution": "Reference metadata only; the PMX and bundled assets are not copied into this repository."
+  },
+  "selected_roles": [
+    {
+      "name": "上半身2",
+      "source_index": 13,
+      "parent": "上半身",
+      "source_position": [
+        0,
+        13.983,
+        -0.464
+      ],
+      "source_flags": 2074
+    },
+    {
+      "name": "右足IK親",
+      "source_index": 6,
+      "parent": "全ての親",
+      "source_position": [
+        -1.013,
+        0.086,
+        0.85
+      ],
+      "source_flags": 31
+    },
+    {
+      "name": "左足IK親",
+      "source_index": 9,
+      "parent": "全ての親",
+      "source_position": [
+        1.013,
+        0.086,
+        0.8
+      ],
+      "source_flags": 31
+    },
+    {
+      "name": "右肩P",
+      "source_index": 24,
+      "parent": "上半身2",
+      "source_position": [
+        -0.235,
+        16.145,
+        -0.147
+      ],
+      "source_flags": 26
+    },
+    {
+      "name": "右肩",
+      "source_index": 25,
+      "parent": "右肩P",
+      "source_position": [
+        -0.235,
+        16.145,
+        -0.147
+      ],
+      "source_flags": 2074
+    },
+    {
+      "name": "右肩C",
+      "source_index": 26,
+      "parent": "右肩",
+      "source_position": [
+        -1.094,
+        15.925,
+        -0.135
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "右腕",
+      "source_index": 27,
+      "parent": "右肩C",
+      "source_position": [
+        -1.094,
+        15.925,
+        -0.135
+      ],
+      "source_flags": 2074
+    },
+    {
+      "name": "右腕捩",
+      "source_index": 28,
+      "parent": "右腕",
+      "source_position": [
+        -2.323,
+        14.982,
+        -0.102
+      ],
+      "source_flags": 3098
+    },
+    {
+      "name": "右腕捩1",
+      "source_index": 29,
+      "parent": "右腕",
+      "source_position": [
+        -1.785,
+        15.395,
+        -0.116
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "右腕捩2",
+      "source_index": 30,
+      "parent": "右腕",
+      "source_position": [
+        -2.23,
+        15.053,
+        -0.104
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "右腕捩3",
+      "source_index": 31,
+      "parent": "右腕",
+      "source_position": [
+        -2.675,
+        14.712,
+        -0.092
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "右手捩",
+      "source_index": 34,
+      "parent": "右ひじ",
+      "source_position": [
+        -4.372,
+        13.421,
+        -0.129
+      ],
+      "source_flags": 3098
+    },
+    {
+      "name": "右手捩1",
+      "source_index": 35,
+      "parent": "右ひじ",
+      "source_position": [
+        -3.805,
+        13.851,
+        -0.116
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "右手捩2",
+      "source_index": 36,
+      "parent": "右ひじ",
+      "source_position": [
+        -4.222,
+        13.535,
+        -0.125
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "右手捩3",
+      "source_index": 37,
+      "parent": "右ひじ",
+      "source_position": [
+        -4.639,
+        13.219,
+        -0.134
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "左肩P",
+      "source_index": 61,
+      "parent": "上半身2",
+      "source_position": [
+        0.235,
+        16.145,
+        -0.147
+      ],
+      "source_flags": 26
+    },
+    {
+      "name": "左肩",
+      "source_index": 62,
+      "parent": "左肩P",
+      "source_position": [
+        0.235,
+        16.145,
+        -0.147
+      ],
+      "source_flags": 2074
+    },
+    {
+      "name": "左肩C",
+      "source_index": 63,
+      "parent": "左肩",
+      "source_position": [
+        1.094,
+        15.925,
+        -0.135
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "左腕",
+      "source_index": 64,
+      "parent": "左肩C",
+      "source_position": [
+        1.094,
+        15.925,
+        -0.135
+      ],
+      "source_flags": 2074
+    },
+    {
+      "name": "左腕捩",
+      "source_index": 65,
+      "parent": "左腕",
+      "source_position": [
+        2.323,
+        14.982,
+        -0.101
+      ],
+      "source_flags": 3098
+    },
+    {
+      "name": "左腕捩1",
+      "source_index": 66,
+      "parent": "左腕",
+      "source_position": [
+        1.785,
+        15.395,
+        -0.116
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "左腕捩2",
+      "source_index": 67,
+      "parent": "左腕",
+      "source_position": [
+        2.23,
+        15.053,
+        -0.104
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "左腕捩3",
+      "source_index": 68,
+      "parent": "左腕",
+      "source_position": [
+        2.675,
+        14.712,
+        -0.091
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "左手捩",
+      "source_index": 71,
+      "parent": "左ひじ",
+      "source_position": [
+        4.372,
+        13.421,
+        -0.129
+      ],
+      "source_flags": 3098
+    },
+    {
+      "name": "左手捩1",
+      "source_index": 72,
+      "parent": "左ひじ",
+      "source_position": [
+        3.805,
+        13.851,
+        -0.116
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "左手捩2",
+      "source_index": 73,
+      "parent": "左ひじ",
+      "source_position": [
+        4.222,
+        13.535,
+        -0.125
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "左手捩3",
+      "source_index": 74,
+      "parent": "左ひじ",
+      "source_position": [
+        4.639,
+        13.219,
+        -0.134
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "腰キャンセル右",
+      "source_index": 141,
+      "parent": "下半身",
+      "source_position": [
+        -0.896,
+        11.45,
+        -0.381
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "腰キャンセル左",
+      "source_index": 145,
+      "parent": "下半身",
+      "source_position": [
+        0.896,
+        11.45,
+        -0.381
+      ],
+      "source_flags": 274
+    },
+    {
+      "name": "右足D",
+      "source_index": 231,
+      "parent": "腰キャンセル右",
+      "source_position": [
+        -0.896,
+        11.45,
+        -0.381
+      ],
+      "source_flags": 2330
+    },
+    {
+      "name": "右ひざD",
+      "source_index": 232,
+      "parent": "右足D",
+      "source_position": [
+        -0.93,
+        6.436,
+        -0.017
+      ],
+      "source_flags": 2330
+    },
+    {
+      "name": "右足首D",
+      "source_index": 233,
+      "parent": "右ひざD",
+      "source_position": [
+        -1.013,
+        1.329,
+        0.609
+      ],
+      "source_flags": 2330
+    },
+    {
+      "name": "右足先EX",
+      "source_index": 234,
+      "parent": "右足首D",
+      "source_position": [
+        -1.013,
+        0.336,
+        -0.1
+      ],
+      "source_flags": 26
+    },
+    {
+      "name": "左足D",
+      "source_index": 235,
+      "parent": "腰キャンセル左",
+      "source_position": [
+        0.896,
+        11.45,
+        -0.381
+      ],
+      "source_flags": 2330
+    },
+    {
+      "name": "左ひざD",
+      "source_index": 236,
+      "parent": "左足D",
+      "source_position": [
+        0.93,
+        6.436,
+        -0.017
+      ],
+      "source_flags": 2330
+    },
+    {
+      "name": "左足首D",
+      "source_index": 237,
+      "parent": "左ひざD",
+      "source_position": [
+        1.013,
+        1.329,
+        0.609
+      ],
+      "source_flags": 2330
+    },
+    {
+      "name": "左足先EX",
+      "source_index": 238,
+      "parent": "左足首D",
+      "source_position": [
+        1.013,
+        0.336,
+        -0.1
+      ],
+      "source_flags": 26
+    }
+  ],
+  "normalized_template_contract": {
+    "template_id": "pmx20-semistandard-v1",
+    "revision": "3",
+    "required_roles": [
+      "上半身2",
+      "右足IK親",
+      "左足IK親",
+      "右肩P",
+      "右肩",
+      "右肩C",
+      "右腕",
+      "右腕捩",
+      "右腕捩1",
+      "右腕捩2",
+      "右腕捩3",
+      "右手捩",
+      "右手捩1",
+      "右手捩2",
+      "右手捩3",
+      "左肩P",
+      "左肩",
+      "左肩C",
+      "左腕",
+      "左腕捩",
+      "左腕捩1",
+      "左腕捩2",
+      "左腕捩3",
+      "左手捩",
+      "左手捩1",
+      "左手捩2",
+      "左手捩3",
+      "腰キャンセル右",
+      "腰キャンセル左",
+      "右足D",
+      "右ひざD",
+      "右足首D",
+      "右足先EX",
+      "左足D",
+      "左ひざD",
+      "左足首D",
+      "左足先EX"
+    ],
+    "grant_ratios": {
+      "左肩C": -1,
+      "右肩C": -1,
+      "左腕捩1": 0.25,
+      "左腕捩2": 0.5,
+      "左腕捩3": 0.75,
+      "右腕捩1": 0.25,
+      "右腕捩2": 0.5,
+      "右腕捩3": 0.75,
+      "左手捩1": 0.25,
+      "左手捩2": 0.5,
+      "左手捩3": 0.75,
+      "右手捩1": 0.25,
+      "右手捩2": 0.5,
+      "右手捩3": 0.75,
+      "腰キャンセル左": -1,
+      "腰キャンセル右": -1,
+      "左足D": 1,
+      "左ひざD": 1,
+      "左足首D": 1,
+      "右足D": 1,
+      "右ひざD": 1,
+      "右足首D": 1
+    }
+  }
+}

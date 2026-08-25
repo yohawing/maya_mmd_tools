@@ -8,7 +8,11 @@ import tempfile
 import unittest
 
 from tests.common.gui_test_base import GuiTestBase, requires_gui
-from mmd_tools.ui.qt_compat import QSettings
+from tests.common.qsettings_isolation import (
+    host_native_qsettings_fingerprints,
+    isolated_settings_store,
+)
+from mmd_tools.ui.qt_compat import Qt
 from mmd_tools.ui.import_export_view_state import ImportExportViewState
 from mmd_tools.ui.tabs.import_export_tab import ImportExportTab
 
@@ -19,10 +23,10 @@ class TestImportExportTabGUI(GuiTestBase):
 
     def setUp(self):
         super().setUp()
-        # 本番の QSettings を消さないよう、テストごとの一時 INI に隔離する。
-        self._settings_dir = tempfile.TemporaryDirectory()
-        settings_path = os.path.join(self._settings_dir.name, "import_export_tab.ini")
-        self.settings = QSettings(settings_path, QSettings.IniFormat)
+        # The runner activates one process-level INI backend before this
+        # class is imported.  Use the same production scope so default
+        # ImportExportTab construction and injected view-state tests share it.
+        self.settings = isolated_settings_store("maya_mmd_tools", "ImportExportTab")
         self.settings.clear()
         self.settings.sync()
         self.view_state = ImportExportViewState(self.settings)
@@ -33,7 +37,6 @@ class TestImportExportTabGUI(GuiTestBase):
             self.settings.sync()
             del self.view_state
             del self.settings
-            self._settings_dir.cleanup()
         finally:
             super().tearDown()
 
@@ -41,10 +44,43 @@ class TestImportExportTabGUI(GuiTestBase):
         """テスト専用の view state を使うタブを作成する。"""
         return ImportExportTab(view_state=self.view_state)
 
-    def test_settings_store_is_isolated_from_user_profile(self):
-        """GUIテストが実ユーザーのファイル履歴ストアを使わないことを確認する。"""
-        user_settings = QSettings("maya_mmd_tools", "ImportExportTab")
-        self.assertNotEqual(self.settings.fileName(), user_settings.fileName())
+    def test_default_production_tab_keeps_matrix_value_in_fixture_store(self):
+        """The real default view state never targets either native scope."""
+        before = host_native_qsettings_fingerprints()
+        tab = ImportExportTab()
+        try:
+            tab.import_path_edit.setText("matrix-value")
+            tab.namespace_edit.setText("matrix-value")
+            self.settings.sync()
+            self.assertEqual(self.settings.value("import_path"), "matrix-value")
+            self.assertEqual(self.settings.value("custom_namespace_name"), "matrix-value")
+        finally:
+            tab.deleteLater()
+        self.assertEqual(before, host_native_qsettings_fingerprints())
+
+    def test_clear_history_click_only_clears_isolated_fixture_history(self):
+        """Keep the production Clear History interaction on isolated data."""
+        with tempfile.TemporaryDirectory() as directory:
+            import_path = os.path.join(directory, "model.pmx")
+            vmd_path = os.path.join(directory, "motion.vmd")
+            export_path = os.path.join(directory, "export.pmx")
+            for path in (import_path, vmd_path, export_path):
+                with open(path, "w", encoding="utf-8"):
+                    pass
+            self.view_state.save_file_history("import", import_path)
+            self.view_state.save_file_history("vmd", vmd_path)
+            self.view_state.save_file_history("export", export_path)
+            before = host_native_qsettings_fingerprints()
+            tab = self._create_tab()
+            try:
+                tab.clear_history_button.click()
+            finally:
+                tab.deleteLater()
+            self.assertEqual(
+                self.view_state.load_file_history(),
+                [{"path": export_path, "type": "export"}],
+            )
+            self.assertEqual(before, host_native_qsettings_fingerprints())
 
     def test_path_persistence_with_real_widgets(self):
         """実際のウィジェットを使用したパスの永続化テスト"""
@@ -53,10 +89,7 @@ class TestImportExportTabGUI(GuiTestBase):
 
         # パスを設定
         test_import_path = "/test/import/model.pmx"
-        test_export_path = "/test/export/model.pmx"
-
         tab1.import_path_edit.setText(test_import_path)
-        tab1.export_path_edit.setText(test_export_path)
 
         # タブを削除
         tab1.deleteLater()
@@ -66,7 +99,6 @@ class TestImportExportTabGUI(GuiTestBase):
 
         # 保存されたパスが読み込まれていることを確認
         self.assertEqual(tab2.import_path_edit.text(), test_import_path)
-        self.assertEqual(tab2.export_path_edit.text(), test_export_path)
 
         # クリーンアップ
         tab2.deleteLater()
@@ -144,20 +176,82 @@ class TestImportExportTabGUI(GuiTestBase):
         finally:
             tab.deleteLater()
 
-    def test_export_format_combo_excludes_pmd(self):
-        """エクスポート形式に未実装の 'pmd' が含まれないことを確認する（B-3）。"""
+    def test_import_tab_contains_only_import_controls(self):
+        """Export workflow controls are owned by the dedicated Export tab."""
         tab = self._create_tab()
-        items = [tab.export_format_combo.itemText(i) for i in range(tab.export_format_combo.count())]
-        self.assertIn("pmx", items)
-        self.assertNotIn("pmd", items)
-        tab.deleteLater()
+        try:
+            for attr in (
+                "export_group",
+                "export_path_edit",
+                "export_path_button",
+                "export_button",
+                "export_format_combo",
+                "apply_scale_check",
+            ):
+                self.assertFalse(hasattr(tab, attr), attr)
+        finally:
+            tab.deleteLater()
 
     def test_vpd_ui_is_not_in_import_export_tab(self):
-        """VPD は pose apply / D&D 導線で扱い、Import/Export タブには置かない（B-3）。"""
+        """VPD は pose apply / D&D 導線で扱い、Import タブには置かない（B-3）。"""
         tab = self._create_tab()
         self.assertFalse(hasattr(tab, "vpd_group"))
         self.assertFalse(hasattr(tab, "vpd_not_implemented"))
         tab.deleteLater()
+
+    def test_animation_history_filters_vmd_and_populates_motion_path(self):
+        """Animation tab owns the typed VMD history and double-click route."""
+        tab = self._create_tab()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                model_path = os.path.join(directory, "model.pmx")
+                motion_path = os.path.join(directory, "motion.vmd")
+                with open(model_path, "w", encoding="utf-8"):
+                    pass
+                with open(motion_path, "w", encoding="utf-8"):
+                    pass
+                self.view_state.save_file_history("import", model_path)
+                self.view_state.save_file_history("vmd", motion_path)
+                tab.import_category_stack.setCurrentIndex(1)
+                self.assertEqual(tab.import_category_stack.count(), 2)
+                self.assertEqual(tab.unified_history_list.count(), 1)
+                item = tab.unified_history_list.item(0)
+                self.assertEqual(item.data(Qt.UserRole + 1), "vmd")
+                tab._on_history_item_double_clicked(item)
+                self.assertEqual(tab.vmd_path_edit.text(), motion_path)
+        finally:
+            tab.deleteLater()
+
+    def test_new_model_entrypoint_is_one_button_next_to_import(self):
+        """The inline template fields are gone; one modal entrypoint shares the import row."""
+        tab = self._create_tab()
+        try:
+            self.assertFalse(hasattr(tab, "create_model_group"))
+            self.assertFalse(hasattr(tab, "create_model_template_combo"))
+            self.assertTrue(hasattr(tab, "new_model_button"))
+            self.assertEqual(tab.import_button.parentWidget(), tab.new_model_button.parentWidget())
+            # The buttons live in a QHBoxLayout nested inside the group's
+            # QFormLayout, so the parent widget's top-level layout does not
+            # contain them directly.
+            def find_layout_containing(layout, widget):
+                for index in range(layout.count()):
+                    item = layout.itemAt(index)
+                    if item is None:
+                        continue
+                    if item.widget() is widget:
+                        return layout
+                    child_layout = item.layout()
+                    if child_layout is not None:
+                        found = find_layout_containing(child_layout, widget)
+                        if found is not None:
+                            return found
+                return None
+
+            button_layout = find_layout_containing(tab.model_import_group.layout(), tab.import_button)
+            self.assertIsNotNone(button_layout)
+            self.assertEqual(button_layout.indexOf(tab.import_button) + 1, button_layout.indexOf(tab.new_model_button))
+        finally:
+            tab.deleteLater()
 
 
 if __name__ == "__main__":

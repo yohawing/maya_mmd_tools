@@ -11,6 +11,7 @@ install_headless_ui_stubs()
 
 from mmd_tools.ui.import_export_view_state import ImportExportViewState  # noqa: E402
 from mmd_tools.ui.tabs import import_export_tab  # noqa: E402
+from mmd_tools.ui.tabs import export_tab  # noqa: E402
 
 
 class _FakeSettingsService:
@@ -41,6 +42,18 @@ class _FakeWidget:
 
     def setEnabled(self, enabled):
         self.enabled = enabled
+
+
+class _FakeCheck(_FakeWidget):
+    def __init__(self, checked=False):
+        super().__init__()
+        self.checked = checked
+
+    def isChecked(self):
+        return self.checked
+
+    def setChecked(self, checked):
+        self.checked = checked
 
 
 class _FakeLabel:
@@ -82,6 +95,150 @@ class _FakeSlider(_FakeSpinBox):
         self.visible = visible
 
 
+class _FakeLineEdit:
+    def __init__(self, text):
+        self._text = text
+
+    def text(self):
+        return self._text
+
+
+class _FakeWorkspaceCmds:
+    def __init__(self, root=None, error=None):
+        self.root = root
+        self.error = error
+        self.calls = []
+
+    def workspace(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return self.root
+
+
+class TestExportTabOutputPathResolution(unittest.TestCase):
+    def _page(self, pane, text, cmds):
+        owner = export_tab.ExportTab.__new__(export_tab.ExportTab)
+        owner.MODEL_PANE = "model"
+        owner.MOTION_PANE = "motion"
+        owner._maya_cmds = cmds
+
+        page = export_tab._ExportPage.__new__(export_tab._ExportPage)
+        page.owner = owner
+        page.pane = pane
+        page.export_format = "pmx" if pane == owner.MODEL_PANE else "vmd"
+        page.output_path_edit = _FakeLineEdit(text)
+        page.apply_scale_check = _FakeCheck(True)
+        page.frame_range_check = _FakeCheck(False)
+        page.frame_start_spin = _FakeSpinBox(0)
+        page.frame_end_spin = _FakeSpinBox(120)
+        return page
+
+    def test_relative_model_and_motion_requests_use_set_project_root(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            cmds = _FakeWorkspaceCmds(root=str(root))
+            model_page = self._page("model", "typed-motion.vmd", cmds)
+            motion_page = self._page("motion", "sub/typed-model.pmx", cmds)
+
+            model_request = model_page.build_request("model_ROOT")
+            motion_request = motion_page.build_request("model_ROOT")
+
+            self.assertEqual(model_request.file_path, str(root / "typed-motion.pmx"))
+            self.assertEqual(
+                motion_request.file_path,
+                str(root / "sub" / "typed-model.vmd"),
+            )
+            self.assertEqual(model_page.output_path_edit.text(), "typed-motion.vmd")
+            self.assertEqual(motion_page.output_path_edit.text(), "sub/typed-model.pmx")
+            self.assertEqual(
+                cmds.calls,
+                [
+                    {"query": True, "rootDirectory": True},
+                    {"query": True, "rootDirectory": True},
+                ],
+            )
+
+    def test_absolute_request_stays_absolute_without_workspace_lookup(self):
+        with TemporaryDirectory() as directory:
+            absolute = str(Path(directory) / "motion.vmd")
+            cmds = _FakeWorkspaceCmds(root=str(Path(directory) / "project"))
+            page = self._page("motion", absolute, cmds)
+
+            request = page.build_request("model_ROOT")
+
+            self.assertEqual(request.file_path, absolute)
+            self.assertEqual(page.output_path_edit.text(), absolute)
+            self.assertEqual(cmds.calls, [])
+
+    def test_invalid_workspace_preserves_relative_fallback(self):
+        cmds = _FakeWorkspaceCmds(error=RuntimeError("workspace unavailable"))
+        page = self._page("motion", "motion.pmx", cmds)
+
+        request = page.build_request("model_ROOT")
+
+        self.assertEqual(request.file_path, "motion.vmd")
+        self.assertEqual(page.output_path_edit.text(), "motion.pmx")
+
+
+class TestExportTabNavigationAndActions(unittest.TestCase):
+    """Keep Export's navigation and format-specific action contract explicit."""
+
+    def setUp(self):
+        self.source = Path(export_tab.__file__).read_text(encoding="utf-8")
+
+    def test_export_uses_tab_navigation_without_legacy_button_selector(self):
+        self.assertIn("CategoryStack(", self.source)
+        self.assertNotIn("navigation=", self.source)
+        self.assertNotIn("button selector over QStackedWidget", self.source)
+
+    def test_export_pages_use_format_specific_primary_actions(self):
+        for key in ('"export_pmx"', '"export_vmd"'):
+            self.assertIn(key, self.source)
+        self.assertNotIn('"validate_model"', self.source)
+        self.assertNotIn('"validate_animation"', self.source)
+
+    def test_animation_has_one_export_signal_without_prepare_or_validate_controls(self):
+        self.assertNotIn("exportMotionPrepareButton", self.source)
+        self.assertNotIn("prepare_button =", self.source)
+        self.assertNotIn("validate_button =", self.source)
+        self.assertEqual(self.source.count("export_requested = Signal()"), 2)
+
+    def test_supported_languages_define_model_animation_and_format_actions(self):
+        translation_dir = Path(export_tab.__file__).resolve().parents[1] / "translations"
+        expected = {
+            "ja": ("モデル", "アニメーション", "モデルを書き出す", "アニメーションを書き出し"),
+            "en": ("Model", "Animation", "Export Model", "Export Animation"),
+            "zh_cn": ("模型", "动画", "导出模型", "导出动画"),
+            "zh_tw": ("模型", "動畫", "匯出模型", "匯出動畫"),
+        }
+        for language, values in expected.items():
+            translations = json.loads(
+                (translation_dir / f"{language}.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(translations["tabs"]["export_model"], values[0])
+            self.assertEqual(translations["tabs"]["export_motion"], values[1])
+            self.assertEqual(translations["buttons"]["export_pmx"], values[2])
+            self.assertEqual(translations["buttons"]["export_vmd"], values[3])
+            self.assertIn("vmd_export_timeline", translations["options"])
+            self.assertIn("vmd_bake_export", translations["checkboxes"])
+            self.assertIn("vmd_bake_export_help", translations["messages"])
+            self.assertEqual(
+                set(translations["export_status"]),
+                {
+                    "editing",
+                    "validating_scene",
+                    "collecting_animation",
+                    "writing_temporary_file",
+                    "finalizing",
+                    "completed",
+                    "blocked",
+                },
+            )
+            self.assertNotIn("export_strategy", translations["fields"])
+            self.assertIn("animation_timeline_bake", translations["export_progress"])
+
+
 class TestImportExportTabDevModeVisibility(unittest.TestCase):
     def test_mmd_control_rig_option_is_not_development_mode_gated(self):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
@@ -103,8 +260,7 @@ class TestImportExportTabDevModeVisibility(unittest.TestCase):
         scale_row = _FakeWidget()
         cpp_rig_nodes_check = _FakeWidget()
         motion_scale_row = _FakeWidget()
-        export_settings_tab = _FakeWidget()
-        tab._dev_only_widgets = [scale_row, cpp_rig_nodes_check, motion_scale_row, export_settings_tab]
+        tab._dev_only_widgets = [scale_row, cpp_rig_nodes_check, motion_scale_row]
         tab.scale_spin = _FakeSpinBox(value=2.5)
         tab.settings_service = _FakeSettingsService(
             {
@@ -117,15 +273,12 @@ class TestImportExportTabDevModeVisibility(unittest.TestCase):
         self.assertFalse(scale_row.visible)
         self.assertFalse(cpp_rig_nodes_check.visible)
         self.assertFalse(motion_scale_row.visible)
-        self.assertFalse(export_settings_tab.visible)
 
         tab.settings_service.set("ui.general.development_mode", True)
         import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
         self.assertTrue(scale_row.visible)
         self.assertTrue(cpp_rig_nodes_check.visible)
         self.assertTrue(motion_scale_row.visible)
-        self.assertTrue(export_settings_tab.visible)
-
     def test_normal_mode_hides_scale_row_and_displays_one_without_writing_settings(self):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
         scale_row = _FakeWidget()
@@ -198,6 +351,14 @@ class TestImportExportTabNativePhysicsBakeVisibility(unittest.TestCase):
 
         import_export_tab.ImportExportTab._sync_native_physics_bake_enabled(tab, True)
         self.assertTrue(tab.native_physics_bake_check.enabled)
+
+
+class TestImportExportTabCppFastLoadVisibility(unittest.TestCase):
+    def test_native_controls_are_owned_by_settings_advanced(self):
+        source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("self.use_cpp_fast_load_check =", source)
+        self.assertNotIn("self.use_cpp_vp2_ownership_check =", source)
+        self.assertNotIn("self.use_cpp_rig_nodes_check =", source)
 
 
 class TestImportExportTabReducedBakeVisibility(unittest.TestCase):
@@ -292,48 +453,6 @@ class TestImportExportTabReducedBakeVisibility(unittest.TestCase):
         tab.bake_mode_check.isChecked = lambda: True
         import_export_tab.ImportExportTab._sync_vmd_rotation_time_curve_enabled(tab)
         self.assertFalse(tab.vmd_rotation_time_curve_check.enabled)
-
-
-class TestImportExportTabExportVisibility(unittest.TestCase):
-    def _make_tab(self, development_mode=True):
-        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
-        tab.export_group = _FakeWidget()
-        tab.settings_service = _FakeSettingsService(
-            {"ui.general.development_mode": development_mode}
-        )
-        return tab
-
-    def test_export_group_is_shown_for_pmx_format_in_dev_mode(self):
-        tab = self._make_tab(development_mode=True)
-
-        tab.settings_service.set("export.general.export_format", "pmx")
-        import_export_tab.ImportExportTab._apply_export_visibility(tab)
-
-        self.assertTrue(tab.export_group.visible)
-
-    def test_export_group_is_shown_for_vmd_format_in_dev_mode(self):
-        tab = self._make_tab(development_mode=True)
-
-        tab.settings_service.set("export.general.export_format", "vmd")
-        import_export_tab.ImportExportTab._apply_export_visibility(tab)
-
-        self.assertTrue(tab.export_group.visible)
-
-    def test_export_group_is_hidden_in_normal_mode(self):
-        tab = self._make_tab(development_mode=False)
-
-        tab.settings_service.set("export.general.export_format", "pmx")
-        import_export_tab.ImportExportTab._apply_export_visibility(tab)
-
-        self.assertFalse(tab.export_group.visible)
-
-    def test_export_format_change_updates_settings_and_visibility(self):
-        tab = self._make_tab(development_mode=True)
-
-        import_export_tab.ImportExportTab._on_export_format_changed(tab, "vmd")
-
-        self.assertEqual(tab.settings_service.get("export.general.export_format"), "vmd")
-        self.assertTrue(tab.export_group.visible)
 
 
 class _FakeQSettings:
@@ -456,6 +575,24 @@ class TestImportExportViewState(unittest.TestCase):
             self.assertEqual(store.values["import_path_history"], "[]")
             self.assertEqual(store.values["vmd_path_history"], "[]")
 
+    def test_import_history_clear_preserves_hidden_export_history(self):
+        with TemporaryDirectory() as temp_dir:
+            model_path = str(Path(temp_dir) / "model.pmx")
+            export_path = str(Path(temp_dir) / "export.pmx")
+            for path in (model_path, export_path):
+                Path(path).write_text("", encoding="utf-8")
+            store = _FakeQSettings()
+            view_state = ImportExportViewState(store)
+            view_state.save_file_history("import", model_path)
+            view_state.save_file_history("export", export_path)
+
+            view_state.clear_file_history(("import", "vmd"))
+
+            self.assertEqual(
+                view_state.load_file_history(),
+                [{"path": export_path, "type": "export"}],
+            )
+
 
 class TestNormalModeVisibilitySourceInspection(unittest.TestCase):
     """Verify supported model import controls remain available in normal mode."""
@@ -483,6 +620,17 @@ class TestNormalModeVisibilitySourceInspection(unittest.TestCase):
         dev_only_end = self.source.index("]", dev_only_start)
 
         self.assertNotIn("self.separate_meshes_check", self.source[dev_only_start:dev_only_end])
+
+    def test_import_tab_has_no_export_controls(self):
+        for name in (
+            "export_group",
+            "export_path_edit",
+            "export_path_button",
+            "export_button",
+            "export_format_combo",
+            "apply_scale_check",
+        ):
+            self.assertNotIn(f"self.{name}", self.source)
 
 
 class TestControlRigSettingSourceInspection(unittest.TestCase):
@@ -540,7 +688,7 @@ class TestControlRigSettingSourceInspection(unittest.TestCase):
         checkbox_end = self.source.index(")", checkbox_start)
         self.assertIn("True", self.source[checkbox_start:checkbox_end])
 
-    def test_import_defaults_keep_bake_off_and_dev_time_curve_on(self):
+    def test_import_defaults_keep_native_render_routes_off(self):
         defaults_path = (
             Path(import_export_tab.__file__).resolve().parents[2]
             / "config"
@@ -550,6 +698,8 @@ class TestControlRigSettingSourceInspection(unittest.TestCase):
 
         self.assertFalse(defaults["import"]["rig"]["bake_mode"])
         self.assertTrue(defaults["import"]["animation"]["vmd_rotation_time_curve"])
+        self.assertFalse(defaults["import"]["native"]["use_cpp_fast_load"])
+        self.assertFalse(defaults["import"]["native"]["use_cpp_vp2_ownership"])
 
     def test_japanese_control_rig_label_uses_katakana(self):
         translation_path = (

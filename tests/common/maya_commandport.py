@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import socket
@@ -21,6 +22,51 @@ def maya_exe(version: str) -> Path:
     return maya_binary(version, "maya")
 
 
+def seed_isolated_maya_profile(
+    maya_app_dir: Path,
+    version: str,
+    project_root: Path,
+) -> None:
+    """Allow this checkout's Python plug-ins in an isolated Maya profile.
+
+    Maya reads the secure plug-in allowlist from ``userPrefs.mel`` during
+    startup.  Release and E2E harnesses use disposable ``MAYA_APP_DIR`` values,
+    so the allowlist must be seeded before every fresh Maya launch instead of
+    relying on a trust decision persisted in the user's normal preferences.
+    """
+    plugin_dir = (project_root / "mmd_tools").resolve().as_posix()
+    # MEL strings use backslash escapes; paths are normalized to forward
+    # slashes first so only quotes/control characters need escaping here.
+    escaped_plugin_dir = (
+        plugin_dir.replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
+    prefs = (
+        f'//Maya Preference {version} (Release 1)\n'
+        '//\n'
+        '//\n'
+        '\n'
+        'optionVar -version 3;\n'
+        '\n'
+        '// Security\n'
+        'optionVar -cat "Security"\n'
+        ' -sa "SafeModeAllowedlistPaths"\n'
+        f' -sva "SafeModeAllowedlistPaths" "{escaped_plugin_dir}"\n'
+        ';\n'
+    )
+    # English Maya uses the base profile. Japanese and Simplified Chinese
+    # builds use locale-qualified profile roots under the same version.
+    for locale_name in (None, "ja_JP", "zh_CN"):
+        version_root = maya_app_dir / version
+        if locale_name is not None:
+            version_root /= locale_name
+        prefs_path = version_root / "prefs" / "userPrefs.mel"
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        prefs_path.write_text(prefs, encoding="utf-8")
+
+
 def is_port_open(port: int) -> bool:
     """Return whether a local commandPort is already accepting connections."""
     try:
@@ -28,6 +74,117 @@ def is_port_open(port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+def ensure_port_available(port: int) -> None:
+    """Fail before launch when the requested local commandPort is occupied."""
+    if is_port_open(port):
+        raise RuntimeError(f"commandPort :{port} is already in use by another process")
+
+
+def _powershell_quote(value: str) -> str:
+    """Quote one value for a single-quoted PowerShell string literal."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _run_powershell(script: str) -> str:
+    """Run a small read-only/validated PowerShell query on Windows."""
+    if platform.system() != "Windows":
+        return ""
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def _maya_process_query(commandport_script: Path, pid: Optional[int] = None) -> str:
+    """Build an exact Maya process query for one generated commandport script."""
+    script_literal = _powershell_quote(str(commandport_script.resolve()))
+    pid_clause = f"$_.ProcessId -eq {int(pid)} -and " if pid is not None else ""
+    return (
+        f"$needle = {script_literal}; "
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { "
+        f"{pid_clause}"
+        "$_.Name -eq 'maya.exe' -and $_.CommandLine -and "
+        "([string]$_.CommandLine).ToLowerInvariant().Contains($needle.ToLowerInvariant()) "
+        "} | Select-Object -First 1 ProcessId,Name,CommandLine | "
+        "ConvertTo-Json -Compress"
+    )
+
+
+def find_maya_process_id(commandport_script: Path) -> Optional[int]:
+    """Find the Maya PID whose command line owns this run's MEL script."""
+    if platform.system() != "Windows":
+        return None
+    output = _run_powershell(_maya_process_query(commandport_script))
+    if not output:
+        return None
+    try:
+        process = json.loads(output)
+        return int(process["ProcessId"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def wait_for_maya_process_id(commandport_script: Path, timeout: float) -> int:
+    """Wait for the exact Explorer-launched Maya process for one run."""
+    if platform.system() != "Windows":
+        raise RuntimeError("Maya process discovery is only required on Windows Explorer launch")
+    start = time.time()
+    while time.time() - start < timeout:
+        process_id = find_maya_process_id(commandport_script)
+        if process_id is not None:
+            return process_id
+        time.sleep(0.25)
+    raise TimeoutError(f"Timed out finding Maya process for {commandport_script}")
+
+
+def is_maya_process_for_script(process_id: int, commandport_script: Path) -> bool:
+    """Return whether *process_id* is still the exact run-owned Maya process."""
+    if platform.system() != "Windows":
+        return False
+    output = _run_powershell(_maya_process_query(commandport_script, process_id))
+    return bool(output)
+
+
+def wait_for_maya_process_exit(process_id: int, commandport_script: Path, timeout: float) -> bool:
+    """Wait for the exact run-owned Maya process to exit."""
+    start = time.time()
+    while time.time() - start < timeout:
+        if not is_maya_process_for_script(process_id, commandport_script):
+            return True
+        time.sleep(0.25)
+    return not is_maya_process_for_script(process_id, commandport_script)
+
+
+def terminate_maya_process(process_id: int, commandport_script: Path) -> bool:
+    """Force-stop only a Maya process revalidated against this run's MEL path."""
+    if platform.system() != "Windows" or not is_maya_process_for_script(process_id, commandport_script):
+        return False
+    script_literal = _powershell_quote(str(commandport_script.resolve()))
+    script = (
+        f"$needle = {script_literal}; "
+        "$process = Get-CimInstance Win32_Process | "
+        "Where-Object { "
+        f"$_.ProcessId -eq {int(process_id)} -and "
+        "$_.Name -eq 'maya.exe' -and $_.CommandLine -and "
+        "([string]$_.CommandLine).ToLowerInvariant().Contains($needle.ToLowerInvariant()) "
+        "} | Select-Object -First 1 ProcessId; "
+        "if ($null -ne $process) { Stop-Process -Id ([int]$process.ProcessId) -Force }"
+    )
+    _run_powershell(script)
+    return not is_maya_process_for_script(process_id, commandport_script)
 
 
 def wait_for_port(port: int, timeout: float, process: Optional[subprocess.Popen] = None) -> None:

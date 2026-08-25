@@ -179,6 +179,38 @@ class TestVmdBoneAnimation(MayaTestBase):
 
         cmds.delete(joint)
 
+    def test_control_owned_translate_keys_motion_delta_without_bind_duplication(self):
+        """Control Rig translate baseline と VMD keyer で bind 値を二重加算しない。"""
+        joint = cmds.joint(name="control_owned_translate_joint")
+        control = cmds.createNode("transform", name="control_owned_translate_CTRL")
+        self.converter.use_animation_layers = False
+        self.converter._bone_bind_poses["センター"] = (3.0, 4.0, 5.0)
+        route = {
+            "attr_targets": {
+                attr: (control, attr)
+                for attr in ("translateX", "translateY", "translateZ")
+            },
+            "control_owned": True,
+            "control_owned_channels": (
+                "translateX",
+                "translateY",
+                "translateZ",
+            ),
+        }
+
+        self.converter._set_bone_keyframes(
+            joint,
+            [_bone_frame("センター", 8, (1.0, 2.0, 3.0))],
+            "センター",
+            route,
+        )
+
+        cmds.currentTime(8, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{control}.translateX"), 1.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{control}.translateY"), 2.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{control}.translateZ"), -3.0, places=6)
+        cmds.delete(joint, control)
+
     def test_namespace_less_duplicate_bones_key_only_explicit_target_root(self):
         """Same bone name/index on two roots keys only the explicitly selected model."""
         root_a = cmds.group(empty=True, name="bone_model_a_root")

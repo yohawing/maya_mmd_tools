@@ -37,6 +37,8 @@ except ModuleNotFoundError:
     sys.modules["tomllib"] = tomllib_stub
 
 import noxfile
+from tools.nox.release_matrix import tier2_commands
+from tools.nox.release_sessions import run_native_physics_release_gate
 
 
 class ReleaseGateContractTest(unittest.TestCase):
@@ -396,18 +398,47 @@ class ReleaseGateContractTest(unittest.TestCase):
             self.assertEqual(noxfile._normalize_local_gate_report(report, strict_local=False), "fail")
 
     def test_full_release_gate_includes_bundled_native_smoke(self):
-        source = inspect.getsource(noxfile.release_gate)
-        self.assertIn('"tier2:bundled-native-smoke"', source)
-        self.assertIn('["uvx", "nox", "-s", "bundled_native_smoke"]', source)
+        commands = tier2_commands(
+            version="2024",
+            cpp_versions=[],
+            cpp_config="Debug",
+            release_maya_versions=(),
+            viewport_matrix=(),
+            visual_manifest=Path("missing-render-manifest.json"),
+            visual_ports={},
+            visual_cases=lambda _shader_backend: (),
+            include_cpp=False,
+            verbose=False,
+        )
+        self.assertIn(
+            ("tier2:bundled-native-smoke", ["uvx", "nox", "-s", "bundled_native_smoke"]),
+            commands,
+        )
 
     def test_full_release_gate_includes_native_physics_release_gate(self):
-        source = inspect.getsource(noxfile.release_gate)
-        self.assertIn('"tier2:native-physics-release-gate"', source)
-        self.assertIn('["uvx", "nox", "-s", "native_physics_release_gate"]', source)
-        gate_source = inspect.getsource(noxfile.native_physics_release_gate)
+        commands = tier2_commands(
+            version="2024",
+            cpp_versions=[],
+            cpp_config="Debug",
+            release_maya_versions=(),
+            viewport_matrix=(),
+            visual_manifest=Path("missing-render-manifest.json"),
+            visual_ports={},
+            visual_cases=lambda _shader_backend: (),
+            include_cpp=False,
+            verbose=False,
+        )
+        self.assertIn(
+            (
+                "tier2:native-physics-release-gate",
+                ["uvx", "nox", "-s", "native_physics_release_gate"],
+            ),
+            commands,
+        )
+        gate_source = inspect.getsource(run_native_physics_release_gate)
         self.assertIn('tests/data/physics/test_hair_physics.pmx', gate_source)
         self.assertIn('tests/data/mmt_test_model_test_motion.vmd', gate_source)
-        self.assertIn("_bundled_physics_runtime()", gate_source)
+        self.assertIn("bundled_physics_runtime()", gate_source)
 
     def test_bundled_physics_runtime_selects_supported_platform(self):
         windows = noxfile._bundled_physics_runtime("Windows")
@@ -418,7 +449,7 @@ class ReleaseGateContractTest(unittest.TestCase):
             noxfile._bundled_physics_runtime("Linux")
 
     def test_native_physics_release_gate_clears_all_reports_before_inputs(self):
-        source = inspect.getsource(noxfile.native_physics_release_gate)
+        source = inspect.getsource(run_native_physics_release_gate)
         cleanup = source.index("for stale_report in")
         input_check = source.index("for required in")
         self.assertLess(cleanup, input_check)

@@ -542,29 +542,91 @@ def run_ui_check(
                 (18.0, -12.0, 27.0),
             ):
                 cmds.setKeyframe(left_control, attribute=channel, value=value)
+            key_payload_before = {
+                axis: {
+                    "times": [
+                        float(value)
+                        for value in (
+                            cmds.keyframe(
+                                left_control,
+                                attribute=f"rotate{axis}",
+                                query=True,
+                                timeChange=True,
+                            )
+                            or []
+                        )
+                    ],
+                    "values": [
+                        float(value)
+                        for value in (
+                            cmds.keyframe(
+                                left_control,
+                                attribute=f"rotate{axis}",
+                                query=True,
+                                valueChange=True,
+                            )
+                            or []
+                        )
+                    ],
+                }
+                for axis in "XYZ"
+            }
             cmds.select(left_control, replace=True)
             reset_button.click()
             _safe_process_events()
-            cmds.currentTime(reset_time, edit=True)
             reset_pose_keys = {
-                axis: [
-                    float(value)
-                    for value in (
-                        cmds.keyframe(
-                            left_control,
-                            attribute=f"rotate{axis}",
-                            query=True,
-                            time=(reset_time, reset_time),
-                            valueChange=True,
+                axis: {
+                    "times": [
+                        float(value)
+                        for value in (
+                            cmds.keyframe(
+                                left_control,
+                                attribute=f"rotate{axis}",
+                                query=True,
+                                timeChange=True,
+                            )
+                            or []
                         )
-                        or []
-                    )
-                ]
+                    ],
+                    "values": [
+                        float(value)
+                        for value in (
+                            cmds.keyframe(
+                                left_control,
+                                attribute=f"rotate{axis}",
+                                query=True,
+                                valueChange=True,
+                            )
+                            or []
+                        )
+                    ],
+                }
                 for axis in "XYZ"
             }
-            reset_pose_passed = all(
-                values and abs(values[-1]) <= 1.0e-6
-                for values in reset_pose_keys.values()
+            current_rest = tuple(
+                float(cmds.getAttr(f"{left_control}.{channel}"))
+                for channel in (
+                    "translateX",
+                    "translateY",
+                    "translateZ",
+                    "rotateX",
+                    "rotateY",
+                    "rotateZ",
+                )
+            )
+            cmds.currentTime(reset_time + 1.0, edit=True)
+            cmds.currentTime(reset_time, edit=True)
+            restored_motion = tuple(
+                float(cmds.getAttr(f"{left_control}.rotate{axis}"))
+                for axis in "XYZ"
+            )
+            reset_pose_passed = (
+                reset_pose_keys == key_payload_before
+                and all(abs(value) <= 1.0e-6 for value in current_rest)
+                and all(
+                    abs(actual - expected) <= 1.0e-6
+                    for actual, expected in zip(restored_motion, (18.0, -12.0, 27.0))
+                )
             )
 
         mirror_pose_passed = False

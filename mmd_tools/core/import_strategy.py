@@ -39,10 +39,16 @@ def resolve_model_import_strategy(
 ) -> ModelImportStrategy:
     """Resolve model import path flags without mutating import state."""
     suffix = Path(filepath).suffix.lower()
+    development_mode = bool(settings_get(settings_keys.UI_GENERAL_DEVELOPMENT_MODE, False))
+    default_fast_load = (
+        settings_get(settings_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False)
+        if development_mode
+        else False
+    )
     requested_fast_load = bool(
         options.get(
             "use_cpp_fast_load",
-            settings_get(settings_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False),
+            default_fast_load,
         )
     )
     if suffix != ".pmx":
@@ -63,7 +69,11 @@ def resolve_model_import_strategy(
         require_native_pmx_parse=bool(
             options.get(
                 "require_native_pmx_parse",
-                settings_get(settings_keys.IMPORT_NATIVE_REQUIRE_NATIVE_PMX_PARSE, False),
+                (
+                    settings_get(settings_keys.IMPORT_NATIVE_REQUIRE_NATIVE_PMX_PARSE, False)
+                    if development_mode
+                    else False
+                ),
             )
         ),
     )

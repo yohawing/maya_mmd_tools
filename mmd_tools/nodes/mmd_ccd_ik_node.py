@@ -36,6 +36,18 @@ from mmd_tools.core.native.mmd_anim_runtime import MmdIkChain, is_rig_primitive_
 # sub-microdegree Euler noise introduced by VMD export/reimport, but far below
 # the native solver's meaningful angular accuracy.
 _RUNTIME_QUATERNION_QUANTUM = c_float(1.0e-6).value
+_RUNTIME_POSITION_QUANTUM = c_float(2.0e-6).value
+
+
+def _canonicalize_runtime_position(value):
+    """Return one deterministic float position for the native IK input."""
+    value_f32 = c_float(value).value
+    if not math.isfinite(value_f32):
+        return value_f32
+    scaled = float(value_f32) / float(_RUNTIME_POSITION_QUANTUM)
+    cell = math.floor(scaled + 0.5) if scaled >= 0.0 else math.ceil(scaled - 0.5)
+    snapped = c_float(cell * float(_RUNTIME_POSITION_QUANTUM)).value
+    return 0.0 if snapped == 0.0 else snapped
 
 
 def _canonicalize_runtime_quaternion(values):
@@ -257,6 +269,7 @@ class MmdCcdIkNode(om.MPxNode):
             maya_translates,
             maya_rotate_eulers,
         )
+        positions = [_canonicalize_runtime_position(value) for value in positions]
 
         use_controller_goal = (
             0 <= self._controller_slot < self._bone_count
@@ -264,6 +277,10 @@ class MmdCcdIkNode(om.MPxNode):
         )
         if use_controller_goal:
             goal_x, goal_y, goal_z = self._compute_pre_ik_goal(positions, rotations)
+        goal_x, goal_y, goal_z = (
+            _canonicalize_runtime_position(value)
+            for value in (goal_x, goal_y, goal_z)
+        )
 
         # Pass-through gate: FK input pose が target を既に goal 上に置いている
         # なら solve しない（VMD bake 済み final pose の二重 solve 防止）。

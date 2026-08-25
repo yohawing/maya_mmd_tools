@@ -9,6 +9,44 @@ from tests.common import maya_commandport
 
 
 class TestMayaCommandPort(unittest.TestCase):
+    def test_ensure_port_available_rejects_an_occupied_port(self):
+        with mock.patch.object(maya_commandport, "is_port_open", return_value=True):
+            with self.assertRaisesRegex(RuntimeError, "commandPort :7788 is already in use"):
+                maya_commandport.ensure_port_available(7788)
+
+    def test_ensure_port_available_accepts_a_free_port(self):
+        with mock.patch.object(maya_commandport, "is_port_open", return_value=False):
+            maya_commandport.ensure_port_available(7788)
+
+    def test_find_maya_process_id_uses_the_run_specific_commandport_script(self):
+        commandport_script = Path("F:/temp/run with 'quote'/commandport_7720.mel")
+        with mock.patch.object(maya_commandport.platform, "system", return_value="Windows"), mock.patch.object(
+            maya_commandport,
+            "_run_powershell",
+            return_value='{"ProcessId":1234,"Name":"maya.exe"}',
+        ) as run_powershell:
+            self.assertEqual(1234, maya_commandport.find_maya_process_id(commandport_script))
+
+        query = run_powershell.call_args.args[0]
+        self.assertIn("ProcessId", query)
+        self.assertIn("commandport_7720.mel", query)
+        self.assertIn("''quote''", query)
+        self.assertIn("maya.exe", query)
+
+    def test_terminate_maya_process_rechecks_exact_process_before_stopping(self):
+        commandport_script = Path("F:/temp/commandport_7720.mel")
+        with mock.patch.object(maya_commandport.platform, "system", return_value="Windows"), mock.patch.object(
+            maya_commandport,
+            "is_maya_process_for_script",
+            side_effect=[True, False],
+        ), mock.patch.object(maya_commandport, "_run_powershell") as run_powershell:
+            self.assertTrue(maya_commandport.terminate_maya_process(1234, commandport_script))
+
+        script = run_powershell.call_args.args[0]
+        self.assertIn("ProcessId -eq 1234", script)
+        self.assertIn("Stop-Process", script)
+        self.assertIn("commandport_7720.mel", script)
+
     def test_wait_for_port_close_polls_until_closed(self):
         with mock.patch.object(
             maya_commandport,

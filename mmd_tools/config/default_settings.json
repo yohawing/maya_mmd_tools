@@ -52,9 +52,10 @@
       "static_channel_epsilon_rotate_deg": 0.01
     },
     "native": {
-      "_comment": "Settings for the compiled C++ fast import path",
+      "_comment": "Development Mode settings for native and compiled import paths",
       "use_cpp_fast_load": false,
       "cpp_fast_load_mesh_only": true,
+      "use_cpp_vp2_ownership": false,
       "require_native_pmx_parse": true,
       "use_cpp_rig_nodes": false
     },
@@ -68,8 +69,15 @@
     "_comment": "Settings related to exporting to MMD formats",
     "general": {
       "_comment": "General export settings",
-      "export_format": "pmx",
       "apply_scale": true
+    },
+    "motion": {
+      "_comment": "VMD motion export settings",
+      "strategy": "bake_timeline",
+      "use_frame_range": false,
+      "start_frame": 0,
+      "end_frame": 120,
+      "range_initialized": false
     }
   },
   "ui": {

@@ -17,7 +17,7 @@ from ..qt_compat import (
 from ..base_tab import BaseTab
 from ..widgets.body_picker_widget import BodyPickerWidget
 from ..widgets.finger_picker_widget import FingerPickerWidget
-from ..components.symbol_tool_button import MaterialSymbolToolButton
+from ..components.symbol_tool_button import SymbolToolButton
 from ...services.settings_service import SettingsService
 
 
@@ -44,7 +44,7 @@ class AnimationTab(BaseTab):
         self.model_combo = QComboBox()
         self.model_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         selector_layout.addWidget(self.model_combo, 1)
-        self.refresh_btn = MaterialSymbolToolButton("refresh", "Refresh")
+        self.refresh_btn = SymbolToolButton("refresh", "Refresh")
         selector_layout.addWidget(self.refresh_btn)
         main_layout.addLayout(selector_layout)
 
@@ -59,7 +59,7 @@ class AnimationTab(BaseTab):
             ("colliders", "capsule"),
             ("control_rig", "controlrig"),
         ):
-            button = MaterialSymbolToolButton(symbol, key, tri_state=True)
+            button = SymbolToolButton(symbol, key, tri_state=True)
             button.setVisibilityState("visible")
             if key == "control_rig":
                 button._control_rig_available = False
@@ -131,7 +131,7 @@ class AnimationTab(BaseTab):
             ("reset", "restart_alt"),
             ("mirror", "flip"),
         ):
-            button = MaterialSymbolToolButton(symbol, key)
+            button = SymbolToolButton(symbol, key)
             button.setObjectName(f"CommonPickerAction_{key}")
             common_layout.addWidget(button)
             self.common_action_buttons[key] = button
@@ -169,7 +169,7 @@ class AnimationTab(BaseTab):
                 ("bake", "Bake", "animation"),
             ]
         ):
-            btn = MaterialSymbolToolButton(symbol, label)
+            btn = SymbolToolButton(symbol, label)
             row, col = divmod(i, 6)
             tools_layout.addWidget(btn, row, col)
             self.tool_buttons[key] = btn

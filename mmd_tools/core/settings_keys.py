@@ -26,6 +26,7 @@ IMPORT_NAMING_TRANSLATE_NAMES = "import.naming.translate_names"
 
 IMPORT_NATIVE_USE_CPP_FAST_LOAD = "import.native.use_cpp_fast_load"
 IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY = "import.native.cpp_fast_load_mesh_only"
+IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP = "import.native.use_cpp_vp2_ownership"
 IMPORT_NATIVE_REQUIRE_NATIVE_PMX_PARSE = "import.native.require_native_pmx_parse"
 IMPORT_NATIVE_USE_CPP_RIG_NODES = "import.native.use_cpp_rig_nodes"
 
@@ -52,8 +53,12 @@ IMPORT_LIGHT_CREATE_CONTROLLER = "import.light.create_controller"
 IMPORT_VIEW_SETUP_COLOR_MANAGEMENT = "import.view.setup_color_management"
 IMPORT_VIEW_SETUP_TRANSPARENCY = "import.view.setup_transparency"
 
-EXPORT_GENERAL_EXPORT_FORMAT = "export.general.export_format"
 EXPORT_GENERAL_APPLY_SCALE = "export.general.apply_scale"
+EXPORT_MOTION_STRATEGY = "export.motion.strategy"
+EXPORT_MOTION_USE_FRAME_RANGE = "export.motion.use_frame_range"
+EXPORT_MOTION_START_FRAME = "export.motion.start_frame"
+EXPORT_MOTION_END_FRAME = "export.motion.end_frame"
+EXPORT_MOTION_RANGE_INITIALIZED = "export.motion.range_initialized"
 
 UI_GENERAL_DEVELOPMENT_MODE = "ui.general.development_mode"
 UI_GENERAL_LANGUAGE = "ui.general.language"

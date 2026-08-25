@@ -19,8 +19,13 @@ _VISIBILITY_STYLES = {
 }
 
 
-class MaterialSymbolToolButton(QPushButton):
-    """Consistent square icon button used by refresh and Animator controls."""
+class SymbolToolButton(QPushButton):
+    """Consistent square icon button used by authoring and Animator controls.
+
+    The button deliberately keeps the translated label in its tooltip and
+    accessible name while rendering an icon-only control when an SVG exists.
+    Missing symbols therefore remain usable through the text fallback.
+    """
 
     stateChanged = Signal(int)
     visibilityStateChanged = Signal(str)
@@ -40,6 +45,8 @@ class MaterialSymbolToolButton(QPushButton):
         self._visibility_available = True
         self._visibility_state_labels = dict(_VISIBILITY_LABELS)
         self._visibility_unavailable_label = "Unavailable"
+        self._disabled_reason = ""
+        self._disabled_reason_key = ""
         path = _SYMBOL_DIR / f"{symbol}.svg"
         self._has_icon = path.is_file()
         self._base_icon = QIcon()
@@ -68,7 +75,42 @@ class MaterialSymbolToolButton(QPushButton):
         if self._tri_state:
             self._refresh_visibility_presentation()
         else:
-            self.setToolTip(text)
+            self._refresh_tooltip()
+
+    def set_disabled_reason(self, reason: str = "", reason_key: str = "") -> None:
+        """Expose why a disabled action cannot currently be used."""
+
+        self._disabled_reason = str(reason or "").strip()
+        self._disabled_reason_key = str(reason_key or "").strip()
+        self._refresh_tooltip()
+
+    def setDisabledReason(self, reason: str = "", reason_key: str = "") -> None:  # noqa: N802
+        """Qt-style alias for :meth:`set_disabled_reason`."""
+
+        self.set_disabled_reason(reason, reason_key)
+
+    @property
+    def disabled_reason_key(self) -> str:
+        """Return the translation key associated with the disabled reason."""
+
+        return self._disabled_reason_key
+
+    def setEnabled(self, enabled: bool) -> None:  # noqa: N802
+        """Keep the disabled reason visible whenever state changes."""
+
+        super().setEnabled(bool(enabled))
+        if hasattr(self, "_fallback_text"):
+            if getattr(self, "_tri_state", False):
+                self._refresh_visibility_presentation()
+            else:
+                self._refresh_tooltip()
+
+    def _refresh_tooltip(self) -> None:
+        label = self._fallback_text
+        if not self.isEnabled() and self._disabled_reason:
+            label = f"{label} ({self._disabled_reason})" if label else self._disabled_reason
+        self.setToolTip(label)
+        self.setAccessibleName(self._fallback_text)
 
     @property
     def visibility_state(self) -> str:
@@ -167,11 +209,16 @@ class MaterialSymbolToolButton(QPushButton):
             label = self._visibility_state_labels[self._visibility_state]
         else:
             label = self._visibility_unavailable_label
-        self.setToolTip(f"{self._fallback_text} ({label})")
+        tooltip = f"{self._fallback_text} ({label})"
+        if not self._visibility_available and self._disabled_reason:
+            tooltip = f"{tooltip} ({self._disabled_reason})"
+        self.setToolTip(tooltip)
         self.setAccessibleName(f"{self._fallback_text} ({label})")
         self.setStyleSheet(_VISIBILITY_STYLES[self._visibility_state])
         if not self._tri_state or not self._has_icon:
             return
+
+
         try:
             base = self._base_icon.pixmap(QSize(28, 28))
             badge = QPixmap(base)
@@ -197,3 +244,8 @@ class MaterialSymbolToolButton(QPushButton):
             # Headless Qt doubles and old Maya Qt builds may not expose the
             # full QPixmap/QPainter surface; tooltip/style remain authoritative.
             return
+
+
+# Kept for third-party integrations and older tests.  There is intentionally
+# one implementation; Material is not a specialisation of this generic button.
+MaterialSymbolToolButton = SymbolToolButton

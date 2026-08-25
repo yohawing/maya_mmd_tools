@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maya_mmd_tools"
-version = "0.6.2"
+version = "0.7.0"
 description = "A set of tools for working with MMD data in Autodesk Maya."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,6 +27,7 @@ dev = [
 [tool.setuptools.package-data]
 mmd_tools = [
     "config/mmd_control_rig_curve_shapes.json",
+    "config/model_templates/*.json",
     "ui/assets/animator_toolset/*.png",
     "ui/assets/animator_toolset/*.svg",
     "ui/assets/morph_types/*.svg",

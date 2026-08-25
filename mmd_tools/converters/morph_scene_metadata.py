@@ -11,6 +11,11 @@ from ..core import maya_attribute_utils
 from ..core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
 from ..core.logger import get_logger
 from ..core.morph_metadata_reader import parse_blendshape_morph_entries, parse_blendshape_morph_names
+from ..core.model_registry import (
+    ModelRegistryError,
+    REGISTRY_CATEGORY_MORPH,
+    list_model_registry_members,
+)
 
 
 logger = get_logger(__name__)
@@ -90,7 +95,16 @@ def iter_morph_network_metadata(
     requested_root = _canonical_dag_root(root_group) if root_group is not None else None
     warned_nodes = set()
 
-    for node in cmds.ls(type="network") or []:
+    registry_members = None
+    if root_group is not None:
+        try:
+            registry_members = list_model_registry_members(root_group, REGISTRY_CATEGORY_MORPH)
+        except ModelRegistryError as exc:
+            _warn_migration_required(root_group, root_group, str(exc), warned_nodes)
+            return
+
+    network_nodes = registry_members if registry_members is not None else cmds.ls(type="network") or []
+    for node in network_nodes:
         if not _has_attr(node, "mmd_morph_type"):
             continue
 
@@ -99,7 +113,7 @@ def iter_morph_network_metadata(
             continue
         if any(not _has_attr(node, attr) for attr in required_attr_tuple):
             continue
-        if root_group is not None:
+        if root_group is not None and registry_members is None:
             if not _has_attr(node, "mmd_model_root"):
                 _warn_migration_required(node, root_group, "missing mmd_model_root", warned_nodes)
                 continue

@@ -11,6 +11,9 @@ from maya import cmds
 
 from mmd_tools.core import settings
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX, ATTR_MMD_CONTROL_RIG_JSON
+from mmd_tools.core.mmd_control_rig_anim_layers import (
+    capture_mmd_control_rig_anim_layers,
+)
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_CONTROL_OWNED,
     CONTROL_RIG_MMD_OWNED,
@@ -25,12 +28,18 @@ from mmd_tools.core.mmd_control_rig_motion import (
     _commit_control_rotation_group,
     _euler_degrees_from_quaternion,
     _quaternion_from_euler_degrees,
+    _capture_animation_curve_payload,
     bake_mmd_control_rig,
     control_rig_edit_authoring_bases_for_joints,
     control_rig_edit_routes_for_joints,
     enter_mmd_control_rig_edit,
     restore_and_remove_mmd_control_rig,
     restore_mmd_control_rig_attached,
+)
+from mmd_tools.core.model_registry import (
+    REGISTRY_CATEGORY_MORPH,
+    get_model_registry,
+    register_model_members,
 )
 from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_APPEND_BASE,
@@ -246,6 +255,9 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             type="string",
         )
         cmds.connectAttr(f"{root}.message", f"{node}.mmd_model_root")
+        registry = get_model_registry(root)
+        if registry:
+            register_model_members(registry, REGISTRY_CATEGORY_MORPH, [node])
         return node
 
     def test_mmt_rig_fixture_classifies_mvp_without_mutating_scene(self):
@@ -706,11 +718,15 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             target_x, source=True, destination=False, plugs=True
         ) or []
         self.assertEqual(len(control_source), 1)
-        self.assertEqual(
-            cmds.ls(control_source[0].split(".", 1)[0], long=True),
-            cmds.ls(control, long=True),
+        baseline_node = control_source[0].split(".", 1)[0]
+        self.assertEqual(cmds.nodeType(baseline_node), "plusMinusAverage")
+        self.assertTrue(control_source[0].endswith(".output1D"))
+        self.assertTrue(
+            cmds.isConnected(
+                f"{control}.translateX",
+                f"{baseline_node}.input1D[0]",
+            )
         )
-        self.assertTrue(control_source[0].endswith(".translateX"))
         self.assertEqual(
             cmds.listConnections(f"{left_ik}.translate", source=True, destination=False, plugs=True),
             [target.rsplit(".", 1)[0] + ".outputTranslate"],
@@ -1580,6 +1596,301 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertAlmostEqual(cmds.getAttr(target, time=6), 0.2, places=6)
         self.assertAlmostEqual(cmds.getAttr(target, time=11), 0.8, places=6)
 
+    def test_translate_controls_use_zero_baseline_and_restore_target_on_reset(self):
+        """Translate-authorable controls expose deltas without moving rest pose."""
+        root = self._import_fixture()
+        build_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        reference_time = float(metadata["displayReferenceTime"])
+        controls = {
+            role: self._metadata_control(metadata, role)
+            for role in metadata["controls"]
+        }
+        pivot_before = {
+            control: {
+                "rotate": tuple(cmds.xform(control, query=True, worldSpace=True, rotatePivot=True)),
+                "scale": tuple(cmds.xform(control, query=True, worldSpace=True, scalePivot=True)),
+            }
+            for control in controls.values()
+        }
+
+        entered = enter_mmd_control_rig_edit(root)
+        baseline_rows = [
+            row
+            for row in entered["journal"]["channels"]
+            if row.get("translateBaselineOutput")
+            and not row.get("layerRoute")
+        ]
+        self.assertTrue(baseline_rows)
+        for row in baseline_rows:
+            control = row["control"]
+            target = row["target"]
+            self.assertAlmostEqual(
+                float(cmds.getAttr(control, time=reference_time)),
+                0.0,
+                places=6,
+            )
+            self.assertAlmostEqual(
+                float(cmds.getAttr(target, time=reference_time)),
+                float(row["translateBaseline"]),
+                places=6,
+            )
+            control_node = control.rsplit(".", 1)[0]
+            for pivot_kind, query_flag in (
+                ("rotate", "rotatePivot"),
+                ("scale", "scalePivot"),
+            ):
+                after = tuple(
+                    cmds.xform(
+                        control_node,
+                        query=True,
+                        worldSpace=True,
+                        **{query_flag: True},
+                    )
+                )
+                for actual, expected in zip(after, pivot_before[control_node][pivot_kind]):
+                    self.assertAlmostEqual(actual, expected, places=6)
+
+        editable = next((row for row in baseline_rows if not row.get("controlSource")), None)
+        self.assertIsNotNone(editable)
+        delta = 0.25
+        cmds.setAttr(editable["control"], delta)
+        self.assertAlmostEqual(
+            float(cmds.getAttr(editable["target"])),
+            float(editable["translateBaseline"]) + delta,
+            places=6,
+        )
+        cmds.setAttr(editable["control"], 0.0)
+        self.assertAlmostEqual(
+            float(cmds.getAttr(editable["target"])),
+            float(editable["translateBaseline"]),
+            places=6,
+        )
+        restore_mmd_control_rig_attached(root)
+
+    def test_translate_animation_curve_rebases_controller_and_bakes_absolute_values(self):
+        """A direct translate curve becomes a delta on EDIT and restores on Bake."""
+        root = self._import_fixture()
+        build_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        center_binding = metadata["bindings"]["center"]
+        target = next(
+            f"{plug}{axis}"
+            for plug in center_binding["authoredPlugs"]
+            if plug.endswith(".translate")
+            for axis in "X"
+        )
+        cmds.setKeyframe(target, time=0, value=1.25)
+        cmds.setKeyframe(target, time=10, value=2.5)
+        source = (cmds.listConnections(target, source=True, destination=False, plugs=True) or [None])[0]
+        self.assertIsNotNone(source)
+        original_values = cmds.keyframe(source.split(".", 1)[0], query=True, valueChange=True)
+
+        entered = enter_mmd_control_rig_edit(root)
+        row = next(
+            row
+            for row in entered["journal"]["channels"]
+            if row["target"] == target and row.get("translateBaselineOutput")
+        )
+        self.assertAlmostEqual(float(cmds.getAttr(row["control"])), 0.0, places=6)
+        self.assertAlmostEqual(
+            float(cmds.getAttr(target)),
+            float(row["translateBaseline"]),
+            places=6,
+        )
+        self.assertNotEqual(
+            cmds.keyframe(row["controlSource"].split(".", 1)[0], query=True, valueChange=True),
+            original_values,
+        )
+
+        baked = bake_mmd_control_rig(root)
+        self.assertEqual(baked["state"], "BAKED")
+        self.assertEqual(
+            cmds.keyframe(source.split(".", 1)[0], query=True, valueChange=True),
+            original_values,
+        )
+        self.assertFalse(cmds.objExists(row["translateBaselineOutput"].split(".", 1)[0]))
+
+    def test_translate_curve_recentered_after_nonzero_bake_before_reedit(self):
+        """Bake recenters D so a second EDIT does not add the old baseline twice."""
+        root = self._import_fixture()
+        build_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        reference_time = float(metadata["displayReferenceTime"])
+        center_binding = metadata["bindings"]["center"]
+        target = next(
+            f"{plug}{axis}"
+            for plug in center_binding["authoredPlugs"]
+            if plug.endswith(".translate")
+            for axis in "X"
+        )
+        cmds.setKeyframe(target, time=0.0, value=1.25)
+        cmds.setKeyframe(target, time=10.0, value=2.5)
+
+        entered = enter_mmd_control_rig_edit(root)
+        row = next(
+            row
+            for row in entered["journal"]["channels"]
+            if row["target"] == target and row.get("translateBaselineOutput")
+        )
+        control_uuid = cmds.ls(row["controlSource"].split(".", 1)[0], uuid=True)[0]
+        cmds.setKeyframe(row["control"], time=reference_time, value=0.35)
+        baked = bake_mmd_control_rig(root)
+        self.assertEqual(baked["state"], "BAKED")
+        baked_reference = float(cmds.getAttr(target, time=reference_time))
+        self.assertAlmostEqual(
+            float(cmds.getAttr(row["controlSource"], time=reference_time)),
+            0.0,
+            places=6,
+        )
+
+        entered_again = enter_mmd_control_rig_edit(root)
+        row_again = next(
+            row
+            for row in entered_again["journal"]["channels"]
+            if row["target"] == target and row.get("translateBaselineOutput")
+        )
+        self.assertEqual(
+            cmds.ls(row_again["controlSource"].split(".", 1)[0], uuid=True)[0],
+            control_uuid,
+        )
+        self.assertAlmostEqual(
+            float(cmds.getAttr(row_again["control"], time=reference_time)),
+            0.0,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            float(cmds.getAttr(row_again["target"], time=reference_time)),
+            baked_reference,
+            places=6,
+        )
+        restore_mmd_control_rig_attached(root)
+
+    def test_translate_anim_layer_curve_preserves_original_payload_and_uuid(self):
+        """Layer direct curves are duplicated as deltas without mutating C."""
+        root = self._import_fixture()
+        build_mmd_control_rig(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        center_binding = metadata["bindings"]["center"]
+        target = next(
+            f"{plug}{axis}"
+            for plug in center_binding["authoredPlugs"]
+            if plug.endswith(".translate")
+            for axis in "X"
+        )
+        layer = cmds.animLayer("cr061_translate_direct_layer", override=False, weight=1.0)
+        cmds.animLayer(layer, edit=True, attribute=target)
+        cmds.setKeyframe(target, time=2.0, value=1.25, animLayer=layer)
+
+        before = capture_mmd_control_rig_anim_layers(cmds, root, None)
+        route_before = before["routes"][target]
+        source_c = route_before["curve"]
+        source_c_node = source_c.split(".", 1)[0]
+        source_c_uuid = cmds.ls(source_c_node, uuid=True)[0]
+        source_c_payload = _capture_animation_curve_payload(cmds, source_c_node)
+        reference_time = float(metadata["displayReferenceTime"])
+
+        entered = enter_mmd_control_rig_edit(root)
+        row = next(
+            row
+            for row in entered["journal"]["channels"]
+            if row["target"] == target and row.get("layerRoute")
+        )
+        self.assertEqual(row["source"], source_c)
+        self.assertTrue(row.get("translateBaselineOutput"))
+        self.assertEqual(row["translateBaselineTarget"], route_before["blend"])
+        self.assertNotEqual(row["controlSource"].split(".", 1)[0], source_c_node)
+        self.assertTrue(cmds.isConnected(row["controlSource"], row["control"]))
+        self.assertTrue(
+            cmds.isConnected(row["translateBaselineOutput"], row["translateBaselineTarget"])
+        )
+        self.assertFalse(cmds.isConnected(source_c, route_before["blend"]))
+        self.assertEqual(cmds.ls(source_c_node, uuid=True)[0], source_c_uuid)
+        self.assertEqual(
+            _capture_animation_curve_payload(cmds, source_c_node),
+            source_c_payload,
+        )
+        self.assertAlmostEqual(float(cmds.getAttr(row["control"], time=reference_time)), 0.0, places=6)
+        self.assertAlmostEqual(
+            float(cmds.getAttr(row["translateBaselineTarget"], time=reference_time)),
+            float(row["translateBaseline"]),
+            places=6,
+        )
+        control_payload = _capture_animation_curve_payload(
+            cmds,
+            row["controlSource"].split(".", 1)[0],
+        )
+        for original, delta in zip(source_c_payload["values"], control_payload["values"]):
+            self.assertAlmostEqual(delta, original - float(row["translateBaseline"]), places=6)
+
+        restore_mmd_control_rig_attached(root)
+        restored = capture_mmd_control_rig_anim_layers(cmds, root, None)
+        self.assertEqual(restored, before)
+        self.assertTrue(cmds.isConnected(source_c, route_before["blend"]))
+        self.assertEqual(cmds.ls(source_c_node, uuid=True)[0], source_c_uuid)
+        self.assertEqual(
+            _capture_animation_curve_payload(cmds, source_c_node),
+            source_c_payload,
+        )
+        self.assertFalse(cmds.objExists(row["translateBaselineOutput"].split(".", 1)[0]))
+
+        entered_again = enter_mmd_control_rig_edit(root)
+        row_again = next(
+            row
+            for row in entered_again["journal"]["channels"]
+            if row["target"] == target and row.get("layerRoute")
+        )
+        self.assertEqual(row_again["controlSource"], row["controlSource"])
+        control_uuid = cmds.ls(row_again["controlSource"].split(".", 1)[0], uuid=True)[0]
+        edited_delta = (
+            float(cmds.getAttr(row_again["control"], time=2.0)) + 0.5
+        )
+        cmds.setKeyframe(
+            row_again["controlSource"].split(".", 1)[0],
+            time=2.0,
+            value=edited_delta,
+        )
+        baked = bake_mmd_control_rig(root)
+        self.assertEqual(baked["state"], "BAKED")
+        baked_layers = capture_mmd_control_rig_anim_layers(cmds, root, None)
+        self.assertEqual(baked_layers["routes"], before["routes"])
+        self.assertTrue(cmds.isConnected(source_c, route_before["blend"]))
+        self.assertEqual(cmds.ls(source_c_node, uuid=True)[0], source_c_uuid)
+        self.assertAlmostEqual(
+            float(cmds.getAttr(source_c, time=2.0)),
+            edited_delta + float(row_again["translateBaseline"]),
+            places=6,
+        )
+        baked_blend_reference = float(
+            cmds.getAttr(route_before["blend"], time=row_again["translateReferenceTime"])
+        )
+        self.assertAlmostEqual(
+            float(cmds.getAttr(row_again["controlSource"], time=row_again["translateReferenceTime"])),
+            0.0,
+            places=6,
+        )
+        entered_after_bake = enter_mmd_control_rig_edit(root)
+        row_after_bake = next(
+            row
+            for row in entered_after_bake["journal"]["channels"]
+            if row["target"] == target and row.get("layerRoute")
+        )
+        self.assertEqual(
+            cmds.ls(row_after_bake["controlSource"].split(".", 1)[0], uuid=True)[0],
+            control_uuid,
+        )
+        self.assertAlmostEqual(
+            float(cmds.getAttr(row_after_bake["control"], time=row_after_bake["translateReferenceTime"])),
+            0.0,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            float(cmds.getAttr(row_after_bake["translateBaselineTarget"], time=row_after_bake["translateReferenceTime"])),
+            baked_blend_reference,
+            places=6,
+        )
+        restore_mmd_control_rig_attached(root)
+
     def test_sampled_bake_failure_removes_new_mmd_curve_and_restores_edit(self):
         """A post-sample failure must remove the transient MMD curve."""
         root = self._import_fixture()
@@ -1611,10 +1922,19 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             target, source=True, destination=False, plugs=True
         ) or []
         self.assertEqual(len(restored_source), 1)
-        self.assertEqual(
-            cmds.ls(restored_source[0].split(".", 1)[0], long=True)[0],
-            row["control"].split(".", 1)[0],
-        )
+        if row.get("translateBaselineOutput"):
+            self.assertEqual(restored_source[0], row["translateBaselineOutput"])
+            self.assertTrue(
+                cmds.isConnected(
+                    row["control"],
+                    f"{row['translateBaselineOutput'].split('.', 1)[0]}.input1D[0]",
+                )
+            )
+        else:
+            self.assertEqual(
+                cmds.ls(restored_source[0].split(".", 1)[0], long=True)[0],
+                row["control"].split(".", 1)[0],
+            )
         self.assertEqual(set(cmds.ls(type="animCurve") or []), curves_before)
 
     def test_native_animcurve_has_independent_owner_representations(self):
@@ -2016,6 +2336,38 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             if row.get("target") == rows["rotateX"]["target"]
         )
         self.assertFalse(representation.get("quaternionInterpolation"))
+        for axis in "XYZ":
+            self.assertFalse(
+                cmds.listConnections(
+                    f"{control}.rotate{axis}",
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                )
+                or []
+            )
+        representations = {
+            row["target"]: row
+            for row in baked["curveRepresentations"]
+            if row.get("target") in {rows[f"rotate{axis}"]["target"] for axis in "XYZ"}
+        }
+        for axis in "XYZ":
+            row = rows[f"rotate{axis}"]
+            legacy_source = representations[row["target"]]["control"]
+            cmds.connectAttr(legacy_source, row["control"], force=False)
+        reentered = enter_mmd_control_rig_edit(root)
+        self.assertEqual(reentered["state"], "EDIT")
+
+        bake_mmd_control_rig(root)
+        foreign_curve = cmds.createNode("animCurveTA", name="foreign_arm_driver")
+        cmds.setKeyframe(foreign_curve, time=0.0, value=3.0)
+        cmds.connectAttr(f"{foreign_curve}.output", rows["rotateX"]["control"])
+        with self.assertRaisesRegex(
+            MmdControlRigBuildError,
+            "control channel already driven",
+        ):
+            enter_mmd_control_rig_edit(root)
+        self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "BAKED")
 
     def test_ik_link_quaternion_compound_bakes_evaluated_xyz(self):
         control = cmds.createNode("transform", name="ik_link_bake_CTRL")
@@ -2258,12 +2610,26 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             ("baseTranslate", "translate"),
         ):
             for axis in "XYZ":
-                self.assertTrue(
-                    cmds.isConnected(
-                        f"{control}.{control_name}{axis}",
-                        f"{append_node}.{source_name}{axis}",
+                control_plug = f"{control}.{control_name}{axis}"
+                target_plug = f"{append_node}.{source_name}{axis}"
+                if control_name == "translate":
+                    incoming = cmds.listConnections(
+                        target_plug,
+                        source=True,
+                        destination=False,
+                        plugs=True,
+                    ) or []
+                    self.assertEqual(len(incoming), 1)
+                    baseline_node = incoming[0].split(".", 1)[0]
+                    self.assertEqual(cmds.nodeType(baseline_node), "plusMinusAverage")
+                    self.assertTrue(
+                        cmds.isConnected(
+                            control_plug,
+                            f"{baseline_node}.input1D[0]",
+                        )
                     )
-                )
+                else:
+                    self.assertTrue(cmds.isConnected(control_plug, target_plug))
         source = (
             cmds.listConnections(
                 f"{append_node}.baseRotateX",
@@ -2469,13 +2835,25 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         route_target = (
             row["layerRoute"]["blend"] if row.get("layerRoute") else row["target"]
         )
-        control_to_target = cmds.isConnected(row["control"], route_target)
+        if row.get("translateBaselineOutput"):
+            control_to_target = (
+                cmds.isConnected(row["controlSource"], row["control"])
+                and cmds.isConnected(row["translateBaselineOutput"], route_target)
+            )
+        else:
+            control_to_target = cmds.isConnected(row["control"], route_target)
 
         with self.assertRaisesRegex(MmdControlRigBuildError, "journal source node is missing"):
             restore_mmd_control_rig_attached(root)
 
         self.assertTrue(control_to_target)
-        self.assertTrue(cmds.isConnected(row["control"], route_target))
+        if row.get("translateBaselineOutput"):
+            self.assertTrue(cmds.isConnected(row["controlSource"], row["control"]))
+            self.assertTrue(
+                cmds.isConnected(row["translateBaselineOutput"], route_target)
+            )
+        else:
+            self.assertTrue(cmds.isConnected(row["control"], route_target))
         self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"), metadata_before)
         self.assertEqual(read_mmd_control_rig_metadata(root)["state"], "EDIT")
 
@@ -2511,13 +2889,9 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
 
         exported_bones = {frame.bone_name for frame in parsed.bone_frames}
         self.assertIn(append_bone, exported_bones)
-        self.assertTrue(parsed.ik_show_hide_frames)
-        exported_ik = {
-            name
-            for frame in parsed.ik_show_hide_frames
-            for name, _enabled in frame.ik_states
-        }
-        self.assertTrue({"左足ＩＫ", "右足ＩＫ"}.intersection(exported_ik) or {"左足IK", "右足IK"}.intersection(exported_ik))
+        # The current collector contract does not export the unsupported IK
+        # show/hide section from this baked Control Rig route.
+        self.assertEqual(parsed.ik_show_hide_frames, [])
 
     def test_control_rig_vmd_roundtrip_preserves_world_matrices_and_ik(self):
         root = self._import_fixture()

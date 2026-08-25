@@ -13,6 +13,14 @@ from ..converters.mesh_converter import sync_dx11_generated_uniforms
 from ..core import maya_attribute_utils, maya_viewport_utils, settings_keys as setting_keys
 from ..core.constants import DEFAULT_IMPORT_PHYSICS, SCENE_ROOT_SUFFIX
 from ..core.namespace_utils import NamespaceUtils
+from ..core.model_registry import (
+    REGISTRY_CATEGORY_MORPH,
+    REGISTRY_CATEGORY_MATERIAL,
+    REGISTRY_CATEGORY_PHYSICS,
+    REGISTRY_CATEGORY_TEXTURE,
+    ensure_model_registry,
+    register_model_members,
+)
 from ..core.visibility_state import sync_visibility_connections
 from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
 from .import_scale import apply_import_scale
@@ -75,13 +83,33 @@ class ModelImportPipeline:
         maya_attribute_utils.set_custom_attributes(root_group, attributes)
         return root_group
 
-    def connect_morph_nodes_to_root(self, root_group: str, morph_result: Dict[str, Any]) -> None:
-        """Connect PMX network morph metadata nodes back to the model root."""
-        for morph_node in (
+    def create_model_registry(self, root_group: str) -> str:
+        """Create the one non-DAG ownership registry for an imported model."""
+        registry = ensure_model_registry(root_group)
+        self.logger.debug("Created model ownership registry: %s", registry)
+        return registry
+
+    def connect_morph_nodes_to_root(
+        self,
+        root_group: str,
+        morph_result: Dict[str, Any],
+        *,
+        model_registry: Optional[str] = None,
+    ) -> None:
+        """Register PMX morph nodes, with legacy root links as a fallback."""
+        morph_nodes = (
             morph_result.get("bone_morph_nodes", [])
             + morph_result.get("group_morph_nodes", [])
             + morph_result.get("material_morph_nodes", [])
-        ):
+            + morph_result.get("uv_morph_nodes", [])
+            + morph_result.get("flip_impulse_morph_nodes", [])
+            + morph_result.get("vertex_morph_nodes", [])
+        )
+        if model_registry:
+            register_model_members(model_registry, REGISTRY_CATEGORY_MORPH, morph_nodes)
+            return
+
+        for morph_node in morph_nodes:
             if not cmds.attributeQuery("mmd_model_root", node=morph_node, exists=True):
                 cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
             existing_roots = cmds.listConnections(
@@ -100,12 +128,49 @@ class ModelImportPipeline:
                 continue
             cmds.connectAttr(f"{root_group}.message", f"{morph_node}.mmd_model_root")
 
-    def connect_texture_nodes_to_root(self, root_group: str, texture_nodes) -> None:
-        """Attach instance ownership to imported texture nodes."""
+    def connect_texture_nodes_to_root(
+        self,
+        root_group: str,
+        texture_nodes,
+        *,
+        model_registry: Optional[str] = None,
+    ) -> None:
+        """Register imported texture nodes, retaining legacy links for callers."""
+        if model_registry:
+            register_model_members(model_registry, REGISTRY_CATEGORY_TEXTURE, texture_nodes or [])
+            return
+
         for texture_node in texture_nodes or []:
             if not cmds.attributeQuery("mmd_model_root", node=texture_node, exists=True):
                 cmds.addAttr(texture_node, longName="mmd_model_root", attributeType="message")
             cmds.connectAttr(f"{root_group}.message", f"{texture_node}.mmd_model_root", force=True)
+
+    def connect_shader_nodes_to_root(
+        self,
+        root_group: str,
+        shader_nodes,
+        *,
+        model_registry: Optional[str] = None,
+    ) -> None:
+        """Register generated material shaders without legacy root fan-out.
+
+        ``created_shaders`` contains material shader nodes, not shading groups
+        or file nodes.  New imports persist that ownership on the model
+        registry's ``materialMembers`` message array.  A legacy import without
+        a registry deliberately does nothing: shader ownership remains
+        discoverable through the existing mesh/shading-group fallback.
+        """
+        if not model_registry:
+            if shader_nodes:
+                self.logger.debug(
+                    "Skipping material shader registry: model registry unavailable"
+                )
+            return
+        register_model_members(
+            model_registry,
+            REGISTRY_CATEGORY_MATERIAL,
+            shader_nodes or [],
+        )
 
     def convert_physics(
         self,
@@ -114,6 +179,7 @@ class ModelImportPipeline:
         parser: Any,
         maya_joints: Any,
         root_group: str,
+        model_registry: Optional[str] = None,
     ) -> Tuple[list, list]:
         """Build physics DAG nodes when the import option is enabled."""
         if not bool(self.options.get("import_physics", DEFAULT_IMPORT_PHYSICS)):
@@ -162,8 +228,15 @@ class ModelImportPipeline:
             bones=getattr(parser, "bones", None) or [],
             maya_joints=maya_joints,
             root_group=root_group,
+            model_registry=model_registry,
             logger=self.logger,
         )
+        if model_registry and live_graph.get("solver"):
+            register_model_members(
+                model_registry,
+                REGISTRY_CATEGORY_PHYSICS,
+                [live_graph["solver"]],
+            )
         from ..core.collider_authoring import refresh_collider_authoring_pose
 
         for transform in rb_transforms:

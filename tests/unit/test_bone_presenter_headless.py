@@ -1,7 +1,7 @@
 """BonePresenterのMaya非依存ロジックを検証するheadless unitテスト。"""
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
@@ -16,16 +16,21 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_CONNECTION_BONE,
     ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_EXTERNAL_PARENT_KEY,
-    ATTR_MMD_GRANT_PARENT,
-    ATTR_MMD_GRANT_RATE,
     ATTR_MMD_IK_LINKS,
     ATTR_MMD_IK_LIMIT_ANGLE,
     ATTR_MMD_IK_LOOP,
     ATTR_MMD_IK_TARGET_INDEX,
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag  # noqa: E402
+from mmd_tools.core.model_authoring_spec import (  # noqa: E402
+    MmdBoneSpec,
+    MmdModelAuthoringSpec,
+    MmdModelSpec,
+)
+from mmd_tools.core.bone_authoring import BoneResetPlan  # noqa: E402
 from mmd_tools.ui.presenters import bone_presenter as bone_presenter_module  # noqa: E402
 from mmd_tools.ui.presenters.bone_presenter import BonePresenter  # noqa: E402
+from mmd_tools.ui.qt_compat import QMessageBox  # noqa: E402
 from mmd_tools.ui.translations import UITranslator  # noqa: E402
 
 UITranslator.instance().set_language("en")
@@ -45,11 +50,17 @@ class _FakeSignal:
 class _FakeButton:
     def __init__(self):
         self.clicked = _FakeSignal()
+        self.enabled = True
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
 
 
 class _FakeLineEdit:
     def __init__(self, text=""):
         self._text = text
+        self._properties = {}
+        self._tooltip = ""
         self.enabled = True
         self.textChanged = _FakeSignal()
 
@@ -64,6 +75,18 @@ class _FakeLineEdit:
 
     def setEnabled(self, enabled):
         self.enabled = enabled
+
+    def setProperty(self, name, value):
+        self._properties[name] = value
+
+    def property(self, name):
+        return self._properties.get(name)
+
+    def setToolTip(self, tooltip):
+        self._tooltip = tooltip
+
+    def toolTip(self):
+        return self._tooltip
 
 
 class _FakeCheckBox:
@@ -118,13 +141,19 @@ class _FakeGroup:
 
 
 class _FakeLabel(_FakeGroup):
-    pass
+    def __init__(self):
+        super().__init__()
+        self.text = ""
+
+    def setText(self, text):
+        self.text = text
 
 
 class _FakeList:
     def __init__(self):
         self.clear_calls = 0
         self.items = []
+        self.current_row = -1
         self.currentItemChanged = _FakeSignal()
         self.itemSelectionChanged = _FakeSignal()
 
@@ -137,6 +166,21 @@ class _FakeList:
 
     def selectedItems(self):
         return []
+
+    def currentRow(self):
+        return self.current_row
+
+    def takeItem(self, row):
+        return self.items.pop(row)
+
+    def insertItem(self, row, item):
+        self.items.insert(row, item)
+
+    def setCurrentItem(self, item):
+        self.current_row = self.items.index(item)
+
+    def clearSelection(self):
+        self.current_row = -1
 
 
 class _FakeListItem:
@@ -176,8 +220,17 @@ class _FakeTable:
 class _FakeView:
     def __init__(self):
         self.bone_list = _FakeList()
-        self.refresh_btn = _FakeButton()
+        self.sync_btn = _FakeButton()
+        self.refresh_btn = self.sync_btn
         self.bind_pose_btn = _FakeButton()
+        self.register_joint_btn = _FakeButton()
+        self.capture_rest_btn = _FakeButton()
+        self.reindex_up_btn = _FakeButton()
+        self.reindex_down_btn = _FakeButton()
+        self.apply_reindex_btn = _FakeButton()
+        self.unregister_btn = _FakeButton()
+        self.reset_authoring_btn = self.sync_btn
+        self.animation_warning_label = _FakeLabel()
         self.search_edit = _FakeLineEdit()
         self.select_ik_target_btn = _FakeButton()
         self.select_grant_parent_btn = _FakeButton()
@@ -191,11 +244,9 @@ class _FakeView:
         self.bone_name_jp_edit = _FakeLineEdit("センター")
         self.bone_name_en_edit = _FakeLineEdit("Center")
         self.parent_bone_edit = _FakeLineEdit()
-        self.connection_bone_edit = _FakeLineEdit()
         self.ik_target_edit = _FakeLineEdit()
         self.grant_parent_edit = _FakeLineEdit("parent_jnt:親")
 
-        self.connection_type_combo = _FakeComboBox(0)
         self.rotatable_check = _FakeCheckBox(True)
         self.movable_check = _FakeCheckBox(False)
         self.visible_check = _FakeCheckBox(True)
@@ -209,13 +260,7 @@ class _FakeView:
         self.fixed_axis_check = _FakeCheckBox(False)
         self.local_axis_check = _FakeCheckBox(False)
 
-        self.pos_x_spin = _FakeSpinBox(1.0)
-        self.pos_y_spin = _FakeSpinBox(2.0)
-        self.pos_z_spin = _FakeSpinBox(3.0)
         self.deform_layer_spin = _FakeSpinBox(4)
-        self.offset_x_spin = _FakeSpinBox(0.25)
-        self.offset_y_spin = _FakeSpinBox(-1.5)
-        self.offset_z_spin = _FakeSpinBox(0.75)
         self.ik_loop_spin = _FakeSpinBox(10)
         self.ik_limit_angle_spin = _FakeSpinBox(57.0)
         self.grant_rate_spin = _FakeSpinBox(0.5)
@@ -276,7 +321,10 @@ class _FakeMayaAdapter:
 
     def ls(self, *args, **kwargs):
         self.calls.append(("ls", args, kwargs))
-        if kwargs == {"selection": True, "type": "joint"}:
+        if kwargs in (
+            {"selection": True, "type": "joint"},
+            {"selection": True, "type": "joint", "long": True},
+        ):
             return self.selection
         return []
 
@@ -292,30 +340,19 @@ class _FakeMayaAdapter:
         return True
 
 
-class _FakeBindPoseResult:
-    def __init__(
-        self, *, succeeded=True, error="", model_root="", joint_count=0
-    ):
-        self.succeeded = succeeded
-        self.error = error
-        self.model_root = model_root
-        self.joint_count = joint_count
-
-
-class _FakeBindPoseAction:
-    def __init__(self):
-        self.models = []
-
-    def execute(self, model_root):
-        self.models.append(model_root)
-        return _FakeBindPoseResult(model_root=model_root, joint_count=3)
-
-
-def _make_presenter(adapter=None):
+def _make_presenter(
+    adapter=None,
+    coordinator=None,
+):
     view = _FakeView()
     app_state = _FakeAppState()
     adapter = adapter or _FakeMayaAdapter()
-    presenter = BonePresenter(view, app_state, maya_adapter=adapter)
+    presenter = BonePresenter(
+        view,
+        app_state,
+        maya_adapter=adapter,
+        authoring_coordinator=coordinator,
+    )
     return presenter, view, app_state, adapter
 
 
@@ -327,23 +364,312 @@ def _attr_getter(values):
 
 
 class TestBonePresenterHeadless(unittest.TestCase):
-    def test_bind_pose_button_runs_one_shot_action_without_locking_editor(self):
+    def test_sync_handler_prefers_canonical_refresh_button_once(self):
         view = _FakeView()
-        app_state = _FakeAppState()
-        action = _FakeBindPoseAction()
+        view.refresh_btn = _FakeButton()
+        view.sync_btn = _FakeButton()
+        view.reset_authoring_btn = _FakeButton()
         presenter = BonePresenter(
             view,
-            app_state,
+            _FakeAppState(),
             maya_adapter=_FakeMayaAdapter(),
-            bind_pose_action=action,
+        )
+
+        self.assertEqual(len(view.refresh_btn.clicked.callbacks), 1)
+        self.assertIs(view.refresh_btn.clicked.callbacks[0].__self__, presenter)
+        self.assertEqual(view.refresh_btn.clicked.callbacks[0].__func__, presenter.sync_bones.__func__)
+        self.assertEqual(view.sync_btn.clicked.callbacks, [])
+        self.assertEqual(view.reset_authoring_btn.clicked.callbacks, [])
+
+    def test_authoring_actions_fail_closed_without_injected_coordinator(self):
+        presenter, view, app_state, _ = _make_presenter()
+        app_state.current_model_root = TEST_MODEL
+
+        presenter.load_bones()
+
+        self.assertFalse(view.reindex_up_btn.enabled)
+        self.assertFalse(view.reindex_down_btn.enabled)
+        self.assertFalse(view.reset_authoring_btn.enabled)
+
+    def test_authoring_actions_fail_closed_for_incomplete_coordinator(self):
+        presenter, view, app_state, _ = _make_presenter(
+            adapter=_FakeMayaAdapter(selection=[TEST_BONE]),
+            coordinator=object(),
         )
         app_state.current_model_root = TEST_MODEL
 
-        presenter.go_to_bind_pose()
+        presenter.load_bones()
 
-        self.assertEqual(action.models, [TEST_MODEL])
-        self.assertIn("Go to Bind Pose", app_state.status_messages[-1])
-        self.assertIsNone(view.details_enabled)
+        self.assertFalse(view.reset_authoring_btn.enabled)
+        self.assertFalse(presenter.reset_authoring())
+
+    def test_register_selected_joint_routes_exactly_one_joint(self):
+        coordinator = Mock()
+        adapter = _FakeMayaAdapter(selection=["|model|new_joint"])
+        presenter, view, app_state, _ = _make_presenter(adapter, coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter.load_bones()
+
+        self.assertFalse(view.register_joint_btn.enabled)
+        self.assertFalse(hasattr(presenter, "reset_pose"))
+
+    def test_register_selected_joint_rejects_ambiguous_selection(self):
+        coordinator = Mock()
+        adapter = _FakeMayaAdapter(selection=["joint_a", "joint_b"])
+        presenter, _, app_state, _ = _make_presenter(adapter, coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter.load_bones()
+
+        self.assertFalse(presenter.register_selected_joint())
+
+        coordinator.register_bone.assert_not_called()
+        self.assertTrue(app_state.status_messages)
+
+    def test_register_selected_joint_appends_and_selects_without_reload(self):
+        coordinator = Mock()
+        coordinator.register_selected_joint.return_value = MmdBoneSpec(
+            "new_joint",
+            name_english="new_joint",
+            index=2,
+            binding_identity="|model|new_joint",
+        )
+        adapter = _FakeMayaAdapter(selection=["|model|new_joint"])
+        presenter, view, app_state, _ = _make_presenter(adapter, coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+
+        with patch.object(presenter, "load_bones") as reload:
+            result = presenter.register_selected_joint()
+
+        self.assertIsInstance(result, MmdBoneSpec)
+        coordinator.register_selected_joint.assert_called_once_with(
+            TEST_MODEL, "|model|new_joint"
+        )
+        reload.assert_not_called()
+        self.assertEqual(presenter.all_bones, ["|model|new_joint"])
+        self.assertEqual(presenter.current_bone, "|model|new_joint")
+        self.assertEqual(presenter.current_bone_index, 2)
+        self.assertEqual(view.bone_list.current_row, 0)
+
+    def test_capture_rest_routes_current_registered_index_and_joint(self):
+        coordinator = Mock()
+        presenter, view, app_state, _ = _make_presenter(coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+        presenter._registered_indices = {TEST_BONE: 4}
+        item = _FakeListItem("4:center", TEST_BONE)
+
+        with patch.object(bone_presenter_module, "object_exists", return_value=True):
+            with patch.object(presenter, "load_bone_properties"):
+                presenter.on_bone_selected(item, None)
+        with patch.object(presenter, "load_bones") as reload:
+            self.assertTrue(presenter.capture_rest())
+        reload.assert_not_called()
+
+        self.assertFalse(view.capture_rest_btn.enabled)
+
+    def test_reindex_requires_explicit_move_then_apply(self):
+        coordinator = Mock()
+        presenter, view, app_state, _ = _make_presenter(coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+        presenter.all_bones = ["joint_a", "joint_b"]
+        presenter._registered_indices = {"joint_a": 0, "joint_b": 1}
+        presenter.current_bone = "joint_b"
+        presenter.current_bone_index = 1
+        view.bone_list.items = [
+            _FakeListItem("0:a", "joint_a"),
+            _FakeListItem("1:b", "joint_b"),
+        ]
+        view.bone_list.current_row = 1
+
+        self.assertTrue(presenter.move_reindex(-1))
+        self.assertEqual(presenter.all_bones, ["joint_b", "joint_a"])
+        self.assertTrue(view.reset_authoring_btn.enabled)
+
+    def test_unregister_requires_confirmation(self):
+        coordinator = Mock()
+        presenter, _, app_state, _ = _make_presenter(coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+        presenter.current_bone = TEST_BONE
+        presenter.current_bone_index = 2
+
+        with patch("mmd_tools.ui.qt_compat.QMessageBox.question", return_value=0):
+            self.assertFalse(presenter.unregister_bone())
+        coordinator.unregister_bone.assert_not_called()
+
+        yes = QMessageBox.Yes
+        with patch("mmd_tools.ui.qt_compat.QMessageBox.question", return_value=yes):
+            with patch.object(presenter, "load_bones"):
+                self.assertTrue(presenter.unregister_bone())
+        coordinator.unregister_bone.assert_called_once_with(TEST_MODEL, 2)
+
+    def test_bone_tab_reset_pose_surface_is_removed(self):
+        presenter, view, _, _ = _make_presenter()
+        self.assertFalse(hasattr(presenter, "reset_pose"))
+        self.assertEqual(view.bind_pose_btn.clicked.callbacks, [])
+
+    def test_animation_warning_is_visible_but_reset_remains_enabled(self):
+        coordinator = Mock()
+        spec = MmdModelAuthoringSpec(model=MmdModelSpec("Model"))
+        coordinator.plan_bone_reset.return_value = BoneResetPlan(
+            current_spec=spec,
+            target_spec=spec,
+            expected_fingerprint=spec.fingerprint(),
+            warnings=("animation inputs detected; current frame 12 will be captured as PMX Rest",),
+        )
+        coordinator.reset_bones.return_value = spec
+        presenter, view, app_state, _ = _make_presenter(
+            adapter=_FakeMayaAdapter(), coordinator=coordinator
+        )
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+        presenter._pending_order = []
+        presenter._update_authoring_actions()
+        with patch.object(presenter, "load_bones"):
+            self.assertTrue(presenter.reset_authoring())
+        self.assertTrue(view.animation_warning_label.visible)
+        self.assertTrue(view.reset_authoring_btn.enabled)
+
+    def test_sync_without_diff_refreshes_without_confirmation_or_mutation(self):
+        coordinator = Mock()
+        spec = MmdModelAuthoringSpec(
+            model=MmdModelSpec("Model"),
+            bones=(MmdBoneSpec("center", index=0, binding_identity=TEST_BONE),),
+        )
+        coordinator.plan_bone_reset.return_value = BoneResetPlan(
+            current_spec=spec,
+            target_spec=spec,
+            expected_fingerprint=spec.fingerprint(),
+        )
+        presenter, _, app_state, _ = _make_presenter(coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+
+        with patch.object(presenter, "load_bones") as reload:
+            with patch("mmd_tools.ui.qt_compat.QMessageBox.question") as question:
+                self.assertTrue(presenter.sync_bones())
+
+        reload.assert_called_once_with()
+        question.assert_not_called()
+        coordinator.reset_bones.assert_not_called()
+        self.assertIn("no scene differences", app_state.status_messages[-1])
+
+    def test_sync_diff_cancel_is_fail_closed(self):
+        coordinator = Mock()
+        current = MmdModelAuthoringSpec(
+            model=MmdModelSpec("Model"),
+            bones=(MmdBoneSpec("center", index=0, binding_identity=TEST_BONE),),
+        )
+        target = MmdModelAuthoringSpec(
+            model=current.model,
+            bones=(
+                MmdBoneSpec(
+                    "center",
+                    index=0,
+                    rest_position=(1.0, 2.0, 3.0),
+                    binding_identity=TEST_BONE,
+                ),
+            ),
+        )
+        coordinator.plan_bone_reset.return_value = BoneResetPlan(
+            current_spec=current,
+            target_spec=target,
+            expected_fingerprint=current.fingerprint(),
+            rest_updated_indices=(0,),
+        )
+        presenter, _, app_state, _ = _make_presenter(coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+
+        with patch(
+            "mmd_tools.ui.qt_compat.QMessageBox.question",
+            return_value=QMessageBox.No,
+        ):
+            with patch.object(presenter, "load_bones") as reload:
+                self.assertFalse(presenter.sync_bones())
+
+        reload.assert_not_called()
+        coordinator.reset_bones.assert_not_called()
+        self.assertIn("cancelled", app_state.status_messages[-1])
+
+    def test_sync_diff_confirmation_runs_one_atomic_reset(self):
+        coordinator = Mock()
+        current = MmdModelAuthoringSpec(
+            model=MmdModelSpec("Model"),
+            bones=(MmdBoneSpec("center", index=0, binding_identity=TEST_BONE),),
+        )
+        target = MmdModelAuthoringSpec(
+            model=current.model,
+            bones=(
+                MmdBoneSpec(
+                    "center",
+                    index=0,
+                    rest_position=(1.0, 2.0, 3.0),
+                    binding_identity=TEST_BONE,
+                ),
+            ),
+        )
+        plan = BoneResetPlan(
+            current_spec=current,
+            target_spec=target,
+            expected_fingerprint=current.fingerprint(),
+            rest_updated_indices=(0,),
+        )
+        coordinator.plan_bone_reset.return_value = plan
+        coordinator.reset_bones.return_value = target
+        presenter, _, app_state, _ = _make_presenter(coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+
+        with patch(
+            "mmd_tools.ui.qt_compat.QMessageBox.question",
+            return_value=QMessageBox.Yes,
+        ):
+            with patch.object(presenter, "load_bones") as reload:
+                self.assertTrue(presenter.sync_bones())
+
+        coordinator.reset_bones.assert_called_once_with(TEST_MODEL, plan)
+        reload.assert_called_once_with()
+        self.assertIn("rest updated 1", app_state.status_messages[-1])
+
+    def test_sync_blocker_does_not_prompt_or_mutate(self):
+        coordinator = Mock()
+        spec = MmdModelAuthoringSpec(model=MmdModelSpec("Model"))
+        coordinator.plan_bone_reset.return_value = BoneResetPlan(
+            current_spec=spec,
+            target_spec=None,
+            expected_fingerprint=spec.fingerprint(),
+            blockers=("referenced joint",),
+        )
+        presenter, _, app_state, _ = _make_presenter(coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+
+        with patch("mmd_tools.ui.qt_compat.QMessageBox.question") as question:
+            self.assertFalse(presenter.sync_bones())
+
+        question.assert_not_called()
+        coordinator.reset_bones.assert_not_called()
+        self.assertIn("referenced joint", app_state.status_messages[-1])
+
+    def test_sync_stops_for_pending_detail_edit(self):
+        coordinator = Mock()
+        presenter, _, app_state, _ = _make_presenter(coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+        presenter.current_bone = TEST_BONE
+        presenter.bone_data = {"name_jp": "センター"}
+        presenter.view.bone_name_jp_edit.setText("編集済み")
+
+        with patch.object(presenter, "load_bones") as reload:
+            self.assertFalse(presenter.sync_bones())
+
+        reload.assert_not_called()
+        coordinator.plan_bone_reset.assert_not_called()
+        coordinator.reset_bones.assert_not_called()
+        self.assertIn("pending edits", app_state.status_messages[-1])
 
     def test_load_bones_clears_and_returns_when_no_model(self):
         presenter, view, _, adapter = _make_presenter()
@@ -369,7 +695,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
 
     def test_load_bones_routes_to_adapter_and_adds_sorted_items(self):
         relatives = {
-            (TEST_MODEL, (("allDescendents", True), ("type", "joint"))): [
+            (TEST_MODEL, (("allDescendents", True), ("fullPath", True), ("type", "joint"))): [
                 "arm_jnt",
                 "center_jnt",
             ],
@@ -396,7 +722,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
                 (
                     "list_relatives",
                     TEST_MODEL,
-                    {"allDescendents": True, "type": "joint"},
+                    {"allDescendents": True, "type": "joint", "fullPath": True},
                 ),
             ],
         )
@@ -412,9 +738,9 @@ class TestBonePresenterHeadless(unittest.TestCase):
 
     def test_load_bones_falls_back_to_descendant_node_type_filter(self):
         relatives = {
-            (TEST_MODEL, (("allDescendents", True), ("type", "joint"))): [],
-            (TEST_MODEL, (("children", True),)): ["skeleton_grp"],
-            (TEST_MODEL, (("allDescendents", True),)): ["mesh", "leg_jnt"],
+            (TEST_MODEL, (("allDescendents", True), ("fullPath", True), ("type", "joint"))): [],
+            (TEST_MODEL, (("children", True), ("fullPath", True))): ["skeleton_grp"],
+            (TEST_MODEL, (("allDescendents", True), ("fullPath", True))): ["mesh", "leg_jnt"],
         }
         adapter = _FakeMayaAdapter(relatives=relatives, node_types={"mesh": "mesh", "leg_jnt": "joint"})
         presenter, view, app_state, adapter = _make_presenter(adapter=adapter)
@@ -432,9 +758,13 @@ class TestBonePresenterHeadless(unittest.TestCase):
             adapter.calls,
             [
                 ("object_exists", TEST_MODEL),
-                ("list_relatives", TEST_MODEL, {"allDescendents": True, "type": "joint"}),
-                ("list_relatives", TEST_MODEL, {"children": True}),
-                ("list_relatives", TEST_MODEL, {"allDescendents": True}),
+                (
+                    "list_relatives",
+                    TEST_MODEL,
+                    {"allDescendents": True, "type": "joint", "fullPath": True},
+                ),
+                ("list_relatives", TEST_MODEL, {"children": True, "fullPath": True}),
+                ("list_relatives", TEST_MODEL, {"allDescendents": True, "fullPath": True}),
                 ("node_type", "mesh"),
                 ("node_type", "leg_jnt"),
             ],
@@ -444,7 +774,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
     def test_load_bones_hides_namespace_and_path_but_preserves_full_node(self):
         joint = "|root|outer:model:manipulation_center"
         relatives = {
-            (TEST_MODEL, (("allDescendents", True), ("type", "joint"))): [joint],
+            (TEST_MODEL, (("allDescendents", True), ("fullPath", True), ("type", "joint"))): [joint],
         }
         adapter = _FakeMayaAdapter(relatives=relatives)
         presenter, view, app_state, _ = _make_presenter(adapter=adapter)
@@ -506,12 +836,6 @@ class TestBonePresenterHeadless(unittest.TestCase):
         self.assertTrue(view.external_parent_key_label.visible)
         self.assertTrue(view.external_parent_key_spin.visible)
 
-        presenter.on_connection_type_changed(1)
-        self.assertFalse(view.offset_x_spin.enabled)
-        self.assertFalse(view.offset_y_spin.enabled)
-        self.assertFalse(view.offset_z_spin.enabled)
-        self.assertTrue(view.connection_bone_edit.enabled)
-
     def test_load_bone_properties_treats_missing_flags_as_unflagged(self):
         presenter, view, _, adapter = _make_presenter()
         presenter.current_bone = TEST_BONE
@@ -536,11 +860,17 @@ class TestBonePresenterHeadless(unittest.TestCase):
         self.assertFalse(view.rotatable_check.isChecked())
         self.assertFalse(view.movable_check.isChecked())
         self.assertFalse(view.ik_enabled_check.isChecked())
-        self.assertEqual(adapter.calls[0], ("list_relatives", TEST_BONE, {"parent": True, "type": "joint"}))
+        self.assertEqual(
+            adapter.calls[0],
+            (
+                "list_relatives",
+                TEST_BONE,
+                {"parent": True, "type": "joint", "fullPath": True},
+            ),
+        )
 
     def test_calculate_bone_flags_combines_enabled_ui_state(self):
         presenter, view, _, _ = _make_presenter()
-        view.connection_type_combo.setCurrentIndex(1)
         view.movable_check.setChecked(True)
         view.ik_enabled_check.setChecked(True)
         view.local_grant_check.setChecked(True)
@@ -550,7 +880,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
         view.after_physics_check.setChecked(True)
         view.external_parent_check.setChecked(True)
 
-        flags = presenter._calculate_bone_flags()
+        flags = presenter._calculate_bone_flags(PmxBoneFlag.CONNECT_BONE)
 
         expected = (
             PmxBoneFlag.CONNECT_BONE
@@ -569,58 +899,136 @@ class TestBonePresenterHeadless(unittest.TestCase):
         self.assertEqual(flags, expected)
 
     def test_select_bone_dialog_routes_selection_query_and_updates_target_field(self):
-        adapter = _FakeMayaAdapter(selection=["ik_target_jnt"])
+        target = "|model_root|Skeleton|ik_target_jnt"
+        adapter = _FakeMayaAdapter(selection=[target])
         presenter, view, _, adapter = _make_presenter(adapter=adapter)
-        attrs = {("ik_target_jnt", ATTR_MMD_BONE_NAME): "IK先"}
+        attrs = {(target, ATTR_MMD_BONE_NAME): "IK先"}
 
         with patch.object(bone_presenter_module, "object_exists", return_value=True):
             with patch.object(bone_presenter_module, "get_attribute", side_effect=_attr_getter(attrs)):
                 presenter.select_bone_dialog("ik_target")
 
-        self.assertEqual(adapter.calls, [("ls", (), {"selection": True, "type": "joint"})])
+        self.assertEqual(
+            adapter.calls,
+            [("ls", (), {"selection": True, "type": "joint", "long": True})],
+        )
         self.assertEqual(view.ik_target_edit.text(), "ik_target_jnt:IK先")
+        self.assertEqual(view.ik_target_edit.property("mmdBindingIdentity"), target)
+        self.assertEqual(view.ik_target_edit.toolTip(), target)
 
-    def test_apply_changes_routes_object_exists_and_xform_and_updates_view_item(self):
+    def test_resolve_bone_reference_prefers_hidden_binding_identity(self):
+        presenter, _, _, _ = _make_presenter()
+        first = MmdBoneSpec(
+            "同名",
+            index=1,
+            binding_identity="|model_a|Skeleton|same_name",
+        )
+        second = MmdBoneSpec(
+            "同名",
+            index=2,
+            binding_identity="|model_b|Skeleton|same_name",
+        )
+        spec = MmdModelAuthoringSpec(model=MmdModelSpec("Model"), bones=(first, second))
+
+        resolved = presenter._resolve_bone_reference(
+            spec,
+            "same_name:同名",
+            "IK target",
+            second.binding_identity,
+        )
+
+        self.assertEqual(resolved, 2)
+
+    def test_apply_changes_routes_complete_spec_through_semantic_coordinator(self):
         adapter = _FakeMayaAdapter()
-        presenter, view, app_state, adapter = _make_presenter(adapter=adapter)
+        coordinator = Mock()
+        coordinator.read_spec.return_value = MmdModelAuthoringSpec(
+            model=MmdModelSpec("Model"),
+            bones=(MmdBoneSpec(
+                "center",
+                index=3,
+                flags=int(PmxBoneFlag.CONNECT_BONE),
+                connect_bone_index=4,
+                tail_offset=(0.0, 2.0, 0.0),
+                rest_position=(9.0, 8.0, 7.0),
+                binding_identity=TEST_BONE,
+            ), MmdBoneSpec("tail", index=4, binding_identity="tail_jnt")),
+        )
+        presenter, view, app_state, adapter = _make_presenter(adapter=adapter, coordinator=coordinator)
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
         presenter.current_bone = TEST_BONE
-        list_item = _FakeListItem("old")
-        presenter.bone_list_items[TEST_BONE] = list_item
-        attrs = {(TEST_BONE, ATTR_MMD_BONE_INDEX): 3}
+        presenter.current_bone_index = 3
 
-        with patch.object(bone_presenter_module, "get_attribute", side_effect=_attr_getter(attrs)):
-            with patch.object(bone_presenter_module, "set_custom_attributes") as set_attrs:
-                with patch.object(presenter, "_ensure_mmd_attributes") as ensure_attrs:
-                    presenter.apply_changes()
+        with patch.object(presenter, "load_bones"):
+            presenter.apply_changes()
 
-                    self.assertEqual(
-                        adapter.calls,
-                        [
-                            ("object_exists", TEST_BONE),
-                            (
-                                "xform",
-                                TEST_BONE,
-                                {"translation": [1.0, 2.0, 3.0], "worldSpace": True},
-                            ),
-                        ],
-                    )
-                    ensure_attrs.assert_called_once_with(TEST_BONE)
-                    set_attrs.assert_called_once()
-                    node, attributes = set_attrs.call_args.args
-                    self.assertEqual(node, TEST_BONE)
-                    self.assertEqual(attributes[ATTR_MMD_BONE_NAME], "センター")
-                    self.assertEqual(attributes[ATTR_MMD_BONE_NAME_EN], "Center")
-                    self.assertEqual(attributes[ATTR_MMD_DEFORM_LAYER], 4)
-                    self.assertEqual(attributes[ATTR_MMD_BONE_OFFSET], [0.25, -1.5, 0.75])
-                    self.assertEqual(
-                        attributes[ATTR_MMD_BONE_FLAGS],
-                        PmxBoneFlag.ROTATABLE | PmxBoneFlag.DISPLAY | PmxBoneFlag.OPERATABLE,
-                    )
-                    self.assertNotIn(ATTR_MMD_GRANT_PARENT, attributes)
-                    self.assertNotIn(ATTR_MMD_GRANT_RATE, attributes)
-                    self.assertEqual(list_item.text(), "3:センター（center_jnt） [Center]")
-                    self.assertEqual(list_item.toolTip(), TEST_BONE)
-                    self.assertEqual(app_state.status_messages, ["Applied bone changes: center_jnt"])
+        coordinator.read_spec.assert_called_once_with(TEST_MODEL)
+        root, replacement = coordinator.replace_bone_semantic.call_args.args
+        self.assertEqual(root, TEST_MODEL)
+        self.assertEqual(replacement.name, "センター")
+        self.assertEqual(replacement.name_english, "Center")
+        self.assertEqual(replacement.transform_layer, 4)
+        self.assertEqual(replacement.tail_offset, (0.0, 2.0, 0.0))
+        self.assertEqual(replacement.connect_bone_index, 4)
+        self.assertTrue(replacement.flags & PmxBoneFlag.CONNECT_BONE)
+        self.assertEqual(replacement.rest_position, (9.0, 8.0, 7.0))
+        self.assertIsNone(replacement.grant_parent_index)
+        self.assertIsNone(replacement.ik_target_index)
+        self.assertEqual(
+            adapter.calls,
+            [("object_exists", TEST_BONE), ("object_exists", TEST_MODEL)],
+        )
+        self.assertEqual(app_state.status_messages, ["Applied bone changes: center_jnt"])
+
+    def test_apply_changes_value_patch_updates_selected_row_without_full_reload(self):
+        coordinator = Mock()
+        existing = MmdBoneSpec("center", index=3, binding_identity=TEST_BONE)
+        coordinator.read_bone_value.return_value = existing
+        coordinator.apply_bone_value_patch.side_effect = lambda _root, bone: bone
+        presenter, view, app_state, _adapter = _make_presenter(
+            adapter=_FakeMayaAdapter(), coordinator=coordinator
+        )
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+        presenter.current_bone = TEST_BONE
+        presenter.current_bone_index = 3
+        presenter.bone_data = {"structural": presenter._structural_ui_state()}
+        item = _FakeListItem("3:center", TEST_BONE)
+        presenter.bone_list_items[TEST_BONE] = item
+
+        with patch.object(presenter, "load_bones") as reload:
+            presenter.apply_changes()
+
+        reload.assert_not_called()
+        coordinator.read_spec.assert_not_called()
+        coordinator.apply_bone_value_patch.assert_called_once()
+        self.assertIn("3:センター", item.text())
+
+    def test_apply_changes_structural_edit_keeps_full_route(self):
+        coordinator = Mock()
+        existing = MmdBoneSpec("center", index=3, binding_identity=TEST_BONE)
+        coordinator.read_bone_value.return_value = existing
+        coordinator.read_spec.return_value = MmdModelAuthoringSpec(
+            model=MmdModelSpec("Model"),
+            bones=(existing,),
+        )
+        presenter, view, app_state, _adapter = _make_presenter(
+            adapter=_FakeMayaAdapter(), coordinator=coordinator
+        )
+        app_state.current_model_root = TEST_MODEL
+        presenter._model_root_valid = True
+        presenter.current_bone = TEST_BONE
+        presenter.current_bone_index = 3
+        presenter.bone_data = {"structural": presenter._structural_ui_state()}
+        view.external_parent_check.setChecked(True)
+
+        with patch.object(presenter, "load_bones"):
+            presenter.apply_changes()
+
+        coordinator.read_spec.assert_called_once_with(TEST_MODEL)
+        coordinator.replace_bone_semantic.assert_called_once()
+        coordinator.apply_bone_value_patch.assert_not_called()
 
 
 if __name__ == "__main__":
