@@ -54,13 +54,20 @@ def _convert_morph_animation(context: VmdMorphAnimationContext, morph_frames) ->
         if not mappings:
             continue
 
+        animation_layer = context.anim_layer if context.use_animation_layers and context.anim_layer else None
         for morph_node, weight_attr, _ in mappings:
             samples = []
             for frame in frames:
                 frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
                 value = frame.value if hasattr(frame, "value") else frame.get("value", 0.0)
                 samples.append((context.vmd_frame_to_maya_time(frame_number), float(value)))
-            if not context.batch_key_scalar_channels(morph_node, {weight_attr: samples}, None):
+            channel_samples = {weight_attr: samples}
+            samples_to_key = (
+                context.samples_as_anim_layer_deltas(morph_node, channel_samples)
+                if animation_layer
+                else channel_samples
+            )
+            if not context.batch_key_scalar_channels(morph_node, samples_to_key, animation_layer) and not animation_layer:
                 _ensure_fallback_allowed(
                     morph_node,
                     weight_attr,

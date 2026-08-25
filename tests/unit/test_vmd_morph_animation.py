@@ -77,6 +77,88 @@ class TestVmdMorphAnimation(MayaTestBase):
         self.assertTrue(convert_morph_animation(context, [_morph_frame("smile", 5, 0.75)]))
         self.assertEqual(captured, [("direct_context_morph", {"weight": [(5.0, 0.75)]}, None)])
 
+    def test_convert_morph_animation_uses_anim_layer_deltas(self):
+        """Layered morph import converts absolute samples to additive deltas."""
+        mapping = object()
+        captured_deltas = []
+        captured_keys = []
+
+        def fake_samples_as_anim_layer_deltas(node_name, channel_samples):
+            captured_deltas.append((node_name, channel_samples))
+            return {"weight": [(5.0, 0.5)]}
+
+        def fake_batch_key_scalar_channels(node_name, channel_samples, animation_layer):
+            captured_keys.append((node_name, channel_samples, animation_layer))
+            return True
+
+        def iter_morph_mappings(mapping_value):
+            self.assertIs(mapping_value, mapping)
+            return [("layered_context_morph", "weight", "smile")]
+
+        context = VmdMorphAnimationContext(
+            logger=self.converter.logger,
+            morph_name_mapping={"smile": mapping},
+            anim_layer="VMD_Motion",
+            use_animation_layers=True,
+            iter_morph_mappings=iter_morph_mappings,
+            vmd_frame_to_maya_time=self.converter.vmd_frame_to_maya_time,
+            samples_as_anim_layer_deltas=fake_samples_as_anim_layer_deltas,
+            batch_key_scalar_channels=fake_batch_key_scalar_channels,
+        )
+
+        self.assertTrue(convert_morph_animation(context, [_morph_frame("smile", 5, 0.75)]))
+        self.assertEqual(
+            captured_deltas,
+            [("layered_context_morph", {"weight": [(5.0, 0.75)]})],
+        )
+        self.assertEqual(
+            captured_keys,
+            [("layered_context_morph", {"weight": [(5.0, 0.5)]}, "VMD_Motion")],
+        )
+
+    def test_convert_morph_animation_blendshape_layer_weight_controls_result(self):
+        """BlendShape morph keys are additive and respond to layer weight."""
+        base = cmds.polyCube(name="normal_morph_layer_base")[0]
+        target = cmds.duplicate(base, name="normal_morph_layer_target")[0]
+        blend_shape = cmds.blendShape(target, base, name="normal_morph_layer_blendShape")[0]
+        cmds.aliasAttr("smile", f"{blend_shape}.weight[0]")
+        cmds.setAttr(f"{blend_shape}.weight[0]", 0.25)
+
+        self.converter.use_animation_layers = True
+        self.converter.anim_layer = cmds.animLayer("normal_morph_layer", override=False, weight=1.0)
+        self.converter.morph_name_mapping = {"smile": (blend_shape, "weight[0]", "smile")}
+
+        self.assertTrue(self.converter._convert_morph_animation([_morph_frame("smile", 0, 0.75)]))
+        layer_attrs = cmds.animLayer(self.converter.anim_layer, query=True, attribute=True) or []
+        self.assertIn(f"{blend_shape}.smile", layer_attrs)
+
+        cmds.currentTime(0, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{blend_shape}.weight[0]"), 0.75, places=6)
+        cmds.animLayer(self.converter.anim_layer, edit=True, weight=0.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{blend_shape}.weight[0]"), 0.25, places=6)
+
+    def test_convert_morph_animation_keys_morph_controller_input_on_layer(self):
+        """Morph-controller authoring inputWeight keys stay on the selected layer."""
+        controller = cmds.createNode("network", name="normal_morph_controller")
+        cmds.addAttr(controller, longName="inputWeight", attributeType="double", multi=True, keyable=True)
+        cmds.setAttr(f"{controller}.inputWeight[3]", 0.2)
+
+        self.converter.use_animation_layers = True
+        self.converter.anim_layer = cmds.animLayer("normal_controller_morph_layer", override=False, weight=1.0)
+        self.converter.morph_name_mapping = {
+            "smile": (controller, "inputWeight[3]", "smile"),
+        }
+
+        self.assertTrue(self.converter._convert_morph_animation([_morph_frame("smile", 4, 0.8)]))
+        self.assertIn(
+            f"{controller}.inputWeight[3]",
+            cmds.animLayer(self.converter.anim_layer, query=True, attribute=True) or [],
+        )
+        cmds.currentTime(4, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{controller}.inputWeight[3]"), 0.8, places=6)
+        cmds.animLayer(self.converter.anim_layer, edit=True, weight=0.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{controller}.inputWeight[3]"), 0.2, places=6)
+
     def test_convert_morph_animation_with_split_mesh_aliases(self):
         """The same morph alias on multiple meshes keys every mapping."""
         frame = _morph_frame("morph_split", 5, 0.75)
