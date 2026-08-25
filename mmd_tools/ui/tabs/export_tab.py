@@ -261,7 +261,8 @@ class _ExportPage(QWidget):
 
     def normalize_output_path(self) -> str:
         """Return a format-safe request path without mutating the line edit."""
-        return self._coerce_output_path(self.output_path_edit.text(), self.export_format)
+        coerced = self._coerce_output_path(self.output_path_edit.text(), self.export_format)
+        return self.owner._resolve_output_path(coerced)
 
     def _on_output_path_changed(self, *_args) -> None:
         """Persist exact typed text and invalidate the active report."""
@@ -531,6 +532,31 @@ class ExportTab(BaseTab):
         motion.frame_start_spin.setValue(int(start or 0))
         motion.frame_end_spin.setValue(int(end if end is not None else 120))
         motion._sync_frame_range_enabled()
+
+    def _resolve_output_path(self, path: str) -> str:
+        """Resolve relative export requests under Maya's Set Project root."""
+        if not path:
+            return ""
+        candidate = Path(path)
+        if candidate.is_absolute():
+            return path
+        cmds = self._maya_cmds
+        if cmds is None:
+            try:
+                from maya import cmds
+            except Exception:
+                cmds = None
+        root = None
+        if cmds is not None:
+            try:
+                raw_root = cmds.workspace(query=True, rootDirectory=True)
+                if raw_root is not None and str(raw_root).strip():
+                    candidate_root = Path(str(raw_root)).expanduser()
+                    if candidate_root.is_absolute():
+                        root = candidate_root
+            except Exception:
+                pass
+        return str(root / candidate) if root is not None else path
 
     def _persist_semantic_preferences(self) -> None:
         service = self.settings_service

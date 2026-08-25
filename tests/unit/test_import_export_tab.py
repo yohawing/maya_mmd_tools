@@ -95,6 +95,92 @@ class _FakeSlider(_FakeSpinBox):
         self.visible = visible
 
 
+class _FakeLineEdit:
+    def __init__(self, text):
+        self._text = text
+
+    def text(self):
+        return self._text
+
+
+class _FakeWorkspaceCmds:
+    def __init__(self, root=None, error=None):
+        self.root = root
+        self.error = error
+        self.calls = []
+
+    def workspace(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return self.root
+
+
+class TestExportTabOutputPathResolution(unittest.TestCase):
+    def _page(self, pane, text, cmds):
+        owner = export_tab.ExportTab.__new__(export_tab.ExportTab)
+        owner.MODEL_PANE = "model"
+        owner.MOTION_PANE = "motion"
+        owner._maya_cmds = cmds
+
+        page = export_tab._ExportPage.__new__(export_tab._ExportPage)
+        page.owner = owner
+        page.pane = pane
+        page.export_format = "pmx" if pane == owner.MODEL_PANE else "vmd"
+        page.output_path_edit = _FakeLineEdit(text)
+        page.apply_scale_check = _FakeCheck(True)
+        page.frame_range_check = _FakeCheck(False)
+        page.frame_start_spin = _FakeSpinBox(0)
+        page.frame_end_spin = _FakeSpinBox(120)
+        return page
+
+    def test_relative_model_and_motion_requests_use_set_project_root(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            cmds = _FakeWorkspaceCmds(root=str(root))
+            model_page = self._page("model", "typed-motion.vmd", cmds)
+            motion_page = self._page("motion", "sub/typed-model.pmx", cmds)
+
+            model_request = model_page.build_request("model_ROOT")
+            motion_request = motion_page.build_request("model_ROOT")
+
+            self.assertEqual(model_request.file_path, str(root / "typed-motion.pmx"))
+            self.assertEqual(
+                motion_request.file_path,
+                str(root / "sub" / "typed-model.vmd"),
+            )
+            self.assertEqual(model_page.output_path_edit.text(), "typed-motion.vmd")
+            self.assertEqual(motion_page.output_path_edit.text(), "sub/typed-model.pmx")
+            self.assertEqual(
+                cmds.calls,
+                [
+                    {"query": True, "rootDirectory": True},
+                    {"query": True, "rootDirectory": True},
+                ],
+            )
+
+    def test_absolute_request_stays_absolute_without_workspace_lookup(self):
+        with TemporaryDirectory() as directory:
+            absolute = str(Path(directory) / "motion.vmd")
+            cmds = _FakeWorkspaceCmds(root=str(Path(directory) / "project"))
+            page = self._page("motion", absolute, cmds)
+
+            request = page.build_request("model_ROOT")
+
+            self.assertEqual(request.file_path, absolute)
+            self.assertEqual(page.output_path_edit.text(), absolute)
+            self.assertEqual(cmds.calls, [])
+
+    def test_invalid_workspace_preserves_relative_fallback(self):
+        cmds = _FakeWorkspaceCmds(error=RuntimeError("workspace unavailable"))
+        page = self._page("motion", "motion.pmx", cmds)
+
+        request = page.build_request("model_ROOT")
+
+        self.assertEqual(request.file_path, "motion.vmd")
+        self.assertEqual(page.output_path_edit.text(), "motion.pmx")
+
+
 class TestExportTabNavigationAndActions(unittest.TestCase):
     """Keep Export's navigation and format-specific action contract explicit."""
 
