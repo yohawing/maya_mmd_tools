@@ -1,9 +1,10 @@
 """Human-facing renderer for the canonical export ValidationReport."""
 
 import json
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .qt_compat import QApplication, QHBoxLayout, QPushButton, QTextEdit, QVBoxLayout, QWidget
+from .translations import UITranslator
 from ..validation.export_validator import ExportValidationReport
 
 
@@ -27,8 +28,9 @@ def _console_requires_red(report: Optional[ExportValidationReport]) -> bool:
 def render_validation_console_text(
     report: Optional[ExportValidationReport],
     metadata: Optional[Mapping[str, Any]] = None,
+    include_details: bool = False,
 ) -> str:
-    """Render one deterministic English Console view from the canonical report."""
+    """Render a concise English Console view, with optional diagnostics."""
     if report is None:
         return ""
 
@@ -62,7 +64,7 @@ def render_validation_console_text(
         lines.append(f"Snapshot: {canonical['snapshot_fingerprint']}")
 
     aggregation = canonical.get("issue_aggregation")
-    if aggregation is not None:
+    if include_details and aggregation is not None:
         lines.extend(
             [
                 "",
@@ -78,6 +80,48 @@ def render_validation_console_text(
                 ),
             ]
         )
+
+    if not include_details:
+        grouped: Dict[Tuple[Any, ...], List[Mapping[str, Any]]] = {}
+        for issue in canonical["issues"]:
+            _, reason, action = _issue_display_wording(issue)
+            key = (
+                issue["severity"],
+                issue["blocking"],
+                issue["code"],
+                reason,
+                action,
+            )
+            grouped.setdefault(key, []).append(issue)
+
+        for index, (key, issues) in enumerate(grouped.items(), start=1):
+            severity, blocking, _, reason, action = key
+            label = severity.upper()
+            if blocking:
+                label = f"{label}, BLOCKED"
+            lines.extend(["", f"{index}. [{label}] Reason: {reason}"])
+
+            affected_bones = []
+            for issue in issues:
+                details = issue.get("details") or {}
+                bone = details.get("bone")
+                if not bone:
+                    affected_bones = []
+                    break
+                key_count = details.get("generated_key_count")
+                if isinstance(key_count, int):
+                    noun = "key" if key_count == 1 else "keys"
+                    affected_bones.append(f"{bone} ({key_count} {noun})")
+                else:
+                    affected_bones.append(str(bone))
+            if affected_bones:
+                subject_label = "Bone" if len(affected_bones) == 1 else "Affected bones"
+                lines.append(f"   {subject_label}: {', '.join(affected_bones)}")
+            elif len(issues) > 1:
+                occurrence_count = sum(issue.get("occurrence_count", 1) for issue in issues)
+                lines.append(f"   Affected items: {occurrence_count}")
+            lines.append(f"   Action: {action}")
+        return "\n".join(lines)
 
     for index, issue in enumerate(canonical["issues"], start=1):
         _, reason, action = _issue_display_wording(issue)
@@ -112,7 +156,7 @@ def render_validation_console_text(
 
 
 class ValidationConsole(QWidget):
-    """Display the complete report in one read-only Console and offer Copy."""
+    """Display a concise report with optional diagnostics and Copy."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -127,6 +171,12 @@ class ValidationConsole(QWidget):
         layout.addWidget(self.console_text)
 
         actions = QHBoxLayout()
+        self.details_button = QPushButton()
+        self.details_button.setObjectName("validationDetailsButton")
+        self.details_button.setCheckable(True)
+        self.details_button.setVisible(False)
+        self.details_button.toggled.connect(self._on_details_toggled)
+        actions.addWidget(self.details_button)
         self.copy_button = QPushButton()
         self.copy_button.setObjectName("validationCopyButton")
         self.copy_button.clicked.connect(self.copy_report)
@@ -160,6 +210,8 @@ class ValidationConsole(QWidget):
         """Replace the displayed report and its associated metadata."""
         self._report = report
         self._metadata = dict(metadata or {})
+        self.details_button.setChecked(False)
+        self.details_button.setVisible(bool(report and report.issues))
         self._refresh_text()
 
     def clear_report(self) -> None:
@@ -167,7 +219,11 @@ class ValidationConsole(QWidget):
         self.set_report(None, {})
 
     def _refresh_text(self) -> None:
-        text = render_validation_console_text(self._report, self._metadata)
+        text = render_validation_console_text(
+            self._report,
+            self._metadata,
+            include_details=self.details_button.isChecked(),
+        )
         self.console_text.setPlainText(text)
         is_red = _console_requires_red(self._report)
         self.console_text.setStyleSheet("color: red;" if is_red else "")
@@ -180,9 +236,16 @@ class ValidationConsole(QWidget):
         if clipboard_owner is not None:
             clipboard_owner.setText(self.console_text.toPlainText())
 
+    def _on_details_toggled(self, _checked: bool) -> None:
+        """Switch between the concise user view and technical diagnostics."""
+        self._refresh_text()
+
     def retranslateUi(self) -> None:
         """Refresh normal UI controls without translating Console contents."""
         self.copy_button.setText("Copy")
+        self.details_button.setText(
+            UITranslator.instance().translate("details", "groups", default="Details")
+        )
         self._refresh_text()
 
 

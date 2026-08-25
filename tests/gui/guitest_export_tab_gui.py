@@ -328,6 +328,7 @@ class TestExportTabGUI(GuiTestBase):
         tab = self._create_visible_tab()
         try:
             console = tab.validation_console
+            self.assertFalse(console.details_button.isVisible())
             fatal = ExportValidationReport(
                 "vmd",
                 (
@@ -345,11 +346,17 @@ class TestExportTabGUI(GuiTestBase):
             )
             console.set_report(fatal, {"fixture": "gui_validation_console"})
             QApplication.processEvents()
+            self.assertTrue(console.details_button.isVisible())
             fatal_text = console.console_text.toPlainText()
             self.assertIn("Reason: current scene frame range is invalid", fatal_text)
             self.assertIn("Action: Choose a valid start and end frame, then retry.", fatal_text)
-            self.assertIn("[FATAL] BLOCKED", fatal_text)
-            self.assertIn('Details: {"end": 12, "start": 42}', fatal_text)
+            self.assertIn("[FATAL, BLOCKED]", fatal_text)
+            self.assertNotIn("Details:", fatal_text)
+            console.details_button.setChecked(True)
+            QApplication.processEvents()
+            details_text = console.console_text.toPlainText()
+            self.assertIn("[FATAL] BLOCKED", details_text)
+            self.assertIn('Details: {"end": 12, "start": 42}', details_text)
             self.assertIn("red", console.console_text.styleSheet().lower())
             self.assertTrue(console.console_text.isReadOnly())
             self.assertFalse(hasattr(console, "filter_combo"))

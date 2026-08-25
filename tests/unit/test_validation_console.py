@@ -28,7 +28,7 @@ class TestValidationConsoleRendering(unittest.TestCase):
             "[INFO] Validation passed: no errors or warnings were found.",
         )
 
-    def test_issue_reason_and_action_precede_debug_fields(self):
+    def test_issue_default_view_keeps_guidance_and_hides_debug_fields(self):
         report = ExportValidationReport(
             "vmd",
             (
@@ -48,6 +48,34 @@ class TestValidationConsoleRendering(unittest.TestCase):
         rendered = render_validation_console_text(report, {"fixture": "range"})
 
         self.assertIn("[BLOCKED] Validation report", rendered)
+        self.assertLess(rendered.index("Reason:"), rendered.index("Action:"))
+        self.assertIn("[FATAL, BLOCKED]", rendered)
+        self.assertNotIn("Code:", rendered)
+        self.assertNotIn("Path:", rendered)
+        self.assertNotIn("Details:", rendered)
+        self.assertNotIn("Evidence:", rendered)
+
+    def test_details_view_retains_complete_diagnostics(self):
+        report = ExportValidationReport(
+            "vmd",
+            (
+                ExportValidationIssue(
+                    "EXPORT_OPTIONS_INVALID",
+                    "fatal",
+                    True,
+                    "frame_range",
+                    "current scene frame range is invalid",
+                    "Choose a valid start and end frame, then retry.",
+                    {"start": 42, "end": 12},
+                ),
+            ),
+            mode="bake_timeline",
+        )
+
+        rendered = render_validation_console_text(
+            report, {"fixture": "range"}, include_details=True
+        )
+
         self.assertLess(rendered.index("Reason:"), rendered.index("Action:"))
         self.assertLess(rendered.index("Action:"), rendered.index("Code:"))
         self.assertIn("[FATAL] BLOCKED", rendered)
@@ -75,7 +103,7 @@ class TestValidationConsoleRendering(unittest.TestCase):
             rendered.startswith("[INFO] Validation passed: no errors or warnings were found.")
         )
         self.assertIn("Reason: optional feature was not present", rendered)
-        self.assertIn("Code: UNSUPPORTED_FEATURE", rendered)
+        self.assertNotIn("Code: UNSUPPORTED_FEATURE", rendered)
 
     def test_oversized_report_preserves_aggregation(self):
         report = ExportValidationReport(
@@ -93,11 +121,37 @@ class TestValidationConsoleRendering(unittest.TestCase):
             ),
         )
 
-        rendered = render_validation_console_text(report)
+        rendered = render_validation_console_text(report, include_details=True)
 
         self.assertIn("Issue occurrences: shown=105 omitted=0", rendered)
         self.assertIn("Occurrences: 105", rendered)
         self.assertIn("Path pattern: faces[*]", rendered)
+
+    def test_matching_dependency_bake_warnings_are_grouped_with_key_counts(self):
+        reason = "This bone has no dedicated Control Rig mapping, so its evaluated motion was baked."
+        action = "Review the baked dependency keys before publishing the VMD."
+        report = ExportValidationReport(
+            "vmd",
+            tuple(
+                ExportValidationIssue(
+                    "ROUTE_UNRESOLVED",
+                    "warning",
+                    False,
+                    f"scene.{bone}.dependency_bake",
+                    reason,
+                    action,
+                    {"bone": bone, "generated_key_count": key_count},
+                )
+                for bone, key_count in (("両目", 1), ("左目", 121))
+            ),
+            mode="bake_timeline",
+        )
+
+        rendered = render_validation_console_text(report)
+
+        self.assertEqual(rendered.count(reason), 1)
+        self.assertIn("Affected bones: 両目 (1 key), 左目 (121 keys)", rendered)
+        self.assertEqual(rendered.count(action), 1)
 
     def test_red_style_uses_full_source_summary_beyond_display_limit(self):
         report = ExportValidationReport(

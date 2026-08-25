@@ -42,7 +42,7 @@ class DependencyBakeWarningTests(unittest.TestCase):
         self.assertEqual(issue.details["frame_range"], [0, 120])
         self.assertEqual(issue.details["generated_key_count"], 121)
 
-        rendered = render_validation_console_text(report)
+        rendered = render_validation_console_text(report, include_details=True)
         self.assertEqual(rendered.count(f"Reason: {reason}"), 1)
         self.assertIn('"bone": "EyeCtrl"', rendered)
         self.assertIn('"frame_range": [0, 120]', rendered)

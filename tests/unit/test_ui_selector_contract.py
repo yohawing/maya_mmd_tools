@@ -265,6 +265,7 @@ def test_physics_settings_and_validation_selectors(qapp):
         validation,
         (
             ("console_text", "validationConsoleText", QTextEdit),
+            ("details_button", "validationDetailsButton", QPushButton),
             ("copy_button", "validationCopyButton", QPushButton),
         ),
     )
