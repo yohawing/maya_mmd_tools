@@ -10,7 +10,11 @@ install_headless_ui_stubs()
 
 from mmd_tools.core.settings import settings  # noqa: E402
 from mmd_tools.core.exceptions import MMDImportException  # noqa: E402
-from mmd_tools.io.mmd_importer import _scoped_settings_override, import_mmd_file  # noqa: E402
+from mmd_tools.io.mmd_importer import (  # noqa: E402
+    _record_physics_compatibility_warnings,
+    _scoped_settings_override,
+    import_mmd_file,
+)
 
 _ALL_KEYS = (
     "import.model.separate_meshes_by_material",
@@ -112,6 +116,76 @@ class TestScopedSettingsOverride(unittest.TestCase):
         options = {"nonexistent_key": "value", "another_unknown": 42}
         with _scoped_settings_override(options):
             pass  # should not raise
+
+
+class TestPhysicsCompatibilityWarningProfile(unittest.TestCase):
+    def test_skips_warning_when_physics_import_is_disabled(self):
+        options = {"import_physics": False, "profile": {}}
+
+        with patch(
+            "mmd_tools.io.mmd_importer.find_legacy_soft_constraint_warnings"
+        ) as detector:
+            _record_physics_compatibility_warnings(object(), options)
+
+        detector.assert_not_called()
+        self.assertNotIn("warnings", options["profile"])
+
+    def test_records_structured_warning_without_changing_import_behavior(self):
+        warning = {
+            "code": "legacy_soft_constraint_behavior",
+            "reason": "nonzero_locked_translation_in_unbound_dynamic_chain",
+            "joint_names": ["breast_back_2"],
+            "rigid_body_names": ["breast_back", "breast"],
+            "affected_bone_indices": [12],
+            "affected_bone_names": ["breast"],
+        }
+        options = {}
+
+        with patch(
+            "mmd_tools.io.mmd_importer.find_legacy_soft_constraint_warnings",
+            return_value=[warning],
+        ):
+            with self.assertLogs("mmd_tools.io.mmd_importer", level="WARNING") as logs:
+                _record_physics_compatibility_warnings(object(), options)
+
+        self.assertEqual(options["profile"]["warnings"], [warning])
+        self.assertIn("legacy_soft_constraint_behavior", "\n".join(logs.output))
+
+    def test_keeps_existing_profile_warnings(self):
+        existing = {"code": "existing"}
+        added = {"code": "legacy_soft_constraint_behavior"}
+        options = {"profile": {"warnings": [existing]}}
+
+        with patch(
+            "mmd_tools.io.mmd_importer.find_legacy_soft_constraint_warnings",
+            return_value=[added],
+        ):
+            _record_physics_compatibility_warnings(object(), options)
+
+        self.assertEqual(options["profile"]["warnings"], [existing, added])
+
+    def test_pmx_import_records_warning_before_scene_import(self):
+        parsed_data = object()
+        warning = {
+            "code": "legacy_soft_constraint_behavior",
+            "reason": "nonzero_locked_translation_in_unbound_dynamic_chain",
+        }
+        options = {}
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
+            with patch(
+                "mmd_tools.io.mmd_importer.find_legacy_soft_constraint_warnings",
+                return_value=[warning],
+            ):
+                with patch(
+                    "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
+                    return_value="model_root",
+                ) as importer:
+                    result = import_mmd_file("model.pmx", options=options)
+
+        self.assertEqual(result, "model_root")
+        self.assertEqual(options["profile"]["warnings"], [warning])
+        importer.assert_called_once()
 
 
 class TestImportMmdFileScalePrecedence(unittest.TestCase):

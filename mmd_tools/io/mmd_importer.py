@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Optional
 
 from mmd_tools.core import settings, settings_keys
 from mmd_tools.core import maya_viewport_utils
+from mmd_tools.core.constants import DEFAULT_IMPORT_PHYSICS
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.import_strategy import resolve_model_import_strategy
 from mmd_tools.core.mmd_parser import parse_mmd_file
@@ -19,6 +20,7 @@ from mmd_tools.converters.vmd_motion_kind import detect_vmd_motion_kind
 from mmd_tools.io import pmx_importer, vmd_importer
 from mmd_tools.io.cpp_fast_importer import fast_import
 from mmd_tools.core.logger import get_logger
+from mmd_tools.validation.physics_compatibility import find_legacy_soft_constraint_warnings
 
 logger = get_logger("mmd_tools.io.mmd_importer")
 
@@ -79,6 +81,31 @@ def _resolve_vmd_content_route(parsed_data: Any, options: Dict[str, Any]) -> Non
     if not options.get("target_model"):
         raise MMDImportException(
             "VMD model motion requires a current model. Select a model in the Manager first."
+        )
+
+
+def _record_physics_compatibility_warnings(parsed_data: Any, options: Dict[str, Any]) -> None:
+    """Record narrow, non-blocking PMX physics compatibility warnings."""
+    if not bool(options.get("import_physics", DEFAULT_IMPORT_PHYSICS)):
+        return
+    warnings = find_legacy_soft_constraint_warnings(parsed_data)
+    if not warnings:
+        return
+    profile = options.get("profile")
+    if not isinstance(profile, dict):
+        profile = {}
+        options["profile"] = profile
+    profile.setdefault("warnings", []).extend(warnings)
+    for warning in warnings:
+        logger.warning(
+            "PMX physics compatibility warning: code=%s reason=%s joints=%s rigid_bodies=%s "
+            "affected_bones=%s affected_bone_indices=%s",
+            warning.get("code", "physics_compatibility_warning"),
+            warning.get("reason", "unspecified"),
+            warning.get("joint_names", []),
+            warning.get("rigid_body_names", []),
+            warning.get("affected_bone_names", []),
+            warning.get("affected_bone_indices", []),
         )
 
 
@@ -350,6 +377,7 @@ def import_mmd_file(
         # 手動reload後はクラスIDがずれて isinstance が失敗することがあるため、
         # ファイル拡張子でインポーターを選ぶ。
         if suffix == ".pmx":
+            _record_physics_compatibility_warnings(parsed_data, options)
             with _scoped_settings_override(options):
                 model_root = pmx_importer.import_pmx_file(
                     parsed_data,
