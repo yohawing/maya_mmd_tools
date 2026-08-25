@@ -60,7 +60,9 @@ class TestSettingsDefaults(unittest.TestCase):
 
     def setUp(self):
         _reset_singleton()
-        self.settings = Settings()
+        # This class verifies packaged defaults, not persisted Maya preferences.
+        with patch.object(settings_module, "MAYA_AVAILABLE", False):
+            self.settings = Settings()
 
     def tearDown(self):
         _reset_singleton()
