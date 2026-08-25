@@ -767,6 +767,70 @@ class TestPmxExporter(MayaTestBase):
         self.assertEqual(len(pmx.faces), 1)
         self.assertEqual(pmx.materials[0].name, shader)
 
+    def test_skinned_mesh_collection_uses_rest_geometry_without_changing_pose(self):
+        """PMX vertices stay at skin rest geometry while the current pose remains live."""
+        transform, (root_joint, child_joint), _skin_cluster = self._make_skinned_triangle(
+            "posed_export_tri"
+        )
+        collector = ExportSceneCollector()
+        rest_data = collector.collect_from_mesh(transform)
+        rest_vertices = [
+            tuple(vertex["position"])
+            for vertex in rest_data["vertices"]
+        ]
+        rest_bones = [tuple(bone["position"]) for bone in rest_data["bones"]]
+
+        cmds.setAttr(f"{child_joint}.rotateZ", 45.0)
+        cmds.setAttr(f"{child_joint}.translateX", 1.0)
+        placement = cmds.group(empty=True, name="posed_export_placement")
+        cmds.parent(transform, root_joint, placement)
+        cmds.setAttr(f"{placement}.translate", 7.0, 8.0, 9.0, type="double3")
+        shape = (
+            cmds.listRelatives(
+                transform,
+                shapes=True,
+                noIntermediate=True,
+                fullPath=True,
+            )
+            or []
+        )[0]
+        selection = om.MSelectionList()
+        selection.add(shape)
+        visible_points = om.MFnMesh(selection.getDagPath(0)).getPoints(om.MSpace.kWorld)
+        self.assertNotAlmostEqual(float(visible_points[2].x), 0.0)
+
+        posed_rotation = cmds.getAttr(f"{child_joint}.rotateZ")
+        posed_translation = cmds.getAttr(f"{child_joint}.translateX")
+        posed_data = collector.collect_from_mesh(transform)
+        posed_vertices = [
+            tuple(vertex["position"])
+            for vertex in posed_data["vertices"]
+        ]
+        posed_bones = [tuple(bone["position"]) for bone in posed_data["bones"]]
+
+        output_path = self.get_temp_filename("posed_mesh_rest_export.pmx")
+        result = ExportModelAction().execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmx", "target_mesh": transform},
+            )
+        )
+        exported = _parse_pmx(output_path)
+        exported_vertices = [tuple(vertex.position) for vertex in exported.vertices]
+        exported_bones = [tuple(bone.position) for bone in exported.bones]
+
+        self.assertEqual(posed_vertices, rest_vertices)
+        self.assertEqual(posed_bones, rest_bones)
+        self.assertTrue(result.succeeded)
+        for exported_vertex, expected_vertex in zip(exported_vertices, rest_vertices):
+            for exported_value, expected_value in zip(exported_vertex, expected_vertex):
+                self.assertAlmostEqual(exported_value, expected_value, places=6)
+        for exported_bone, expected_bone in zip(exported_bones, rest_bones):
+            for exported_value, expected_value in zip(exported_bone, expected_bone):
+                self.assertAlmostEqual(exported_value, expected_value, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{child_joint}.rotateZ"), posed_rotation)
+        self.assertAlmostEqual(cmds.getAttr(f"{child_joint}.translateX"), posed_translation)
+
     def test_export_model_action_collects_model_root_meshes_to_pmx(self):
         """target_model 配下の複数 mesh を PMX の単一 model data にまとめる。"""
         root, _meshes, shaders = self._make_two_mesh_model_root("pmx_multi_root")

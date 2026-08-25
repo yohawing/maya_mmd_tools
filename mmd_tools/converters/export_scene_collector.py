@@ -540,6 +540,118 @@ def _find_skin_cluster(shape: str) -> str | None:
     return None
 
 
+def _skin_input_geometry(
+    skin_cluster: str,
+    output_path: om.MDagPath,
+    output_fn: om.MFnMesh,
+) -> tuple[list[om.MPoint], list[om.MVector]]:
+    """Return world-space points and normals feeding one skinCluster output.
+
+    PMX vertices describe the model's rest geometry. Reading the visible
+    output shape would instead bake the current joint pose into those vertices
+    while tagged PMX bones still export their stored rest positions.
+    """
+
+    selection = om.MSelectionList()
+    selection.add(skin_cluster)
+    skin_object = selection.getDependNode(0)
+    skin_fn = oma.MFnSkinCluster(skin_object)
+    logical_index = skin_fn.indexForOutputShape(output_path.node())
+    input_element = (
+        om.MFnDependencyNode(skin_object)
+        .findPlug("input", False)
+        .elementByLogicalIndex(logical_index)
+    )
+    input_object = input_element.child(0).asMObject()
+    if input_object.isNull() or not input_object.hasFn(om.MFn.kMesh):
+        raise ValueError(
+            f"skinCluster '{skin_cluster}' input geometry is unavailable"
+        )
+    input_fn = om.MFnMesh(input_object)
+    if (
+        input_fn.numVertices != output_fn.numVertices
+        or input_fn.numPolygons != output_fn.numPolygons
+        or any(
+            list(input_fn.getPolygonVertices(index))
+            != list(output_fn.getPolygonVertices(index))
+            for index in range(output_fn.numPolygons)
+        )
+    ):
+        raise ValueError(
+            f"skinCluster '{skin_cluster}' input geometry topology does not match its output"
+        )
+
+    geometry_matrix = _skin_matrix(
+        om.MFnDependencyNode(skin_object),
+        "geomMatrix",
+        skin_cluster,
+    )
+    normal_matrix = geometry_matrix.inverse().transpose()
+    points = [
+        point * geometry_matrix
+        for point in input_fn.getPoints(om.MSpace.kObject)
+    ]
+    normals = [
+        (om.MVector(normal) * normal_matrix).normal()
+        for normal in input_fn.getVertexNormals(False, om.MSpace.kObject)
+    ]
+    return points, normals
+
+
+def _skin_matrix(
+    dependency_fn: om.MFnDependencyNode,
+    attribute: str,
+    skin_cluster: str,
+    logical_index: int | None = None,
+) -> om.MMatrix:
+    """Read one finite, invertible skinCluster matrix plug."""
+
+    plug = dependency_fn.findPlug(attribute, False)
+    if logical_index is not None:
+        plug = plug.elementByLogicalIndex(logical_index)
+    try:
+        matrix = om.MFnMatrixData(plug.asMObject()).matrix()
+        values = [float(matrix[index]) for index in range(16)]
+        determinant = float(matrix.det4x4())
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"skinCluster '{skin_cluster}' {attribute} is unavailable"
+        ) from exc
+    if not all(math.isfinite(value) for value in values + [determinant]):
+        raise ValueError(
+            f"skinCluster '{skin_cluster}' {attribute} is non-finite"
+        )
+    if abs(determinant) <= 1.0e-12:
+        raise ValueError(
+            f"skinCluster '{skin_cluster}' {attribute} is singular"
+        )
+    return matrix
+
+
+def _skin_bind_positions(skin_cluster: str) -> dict[str, list[float]]:
+    """Return influence UUIDs mapped to bind-world joint positions."""
+
+    selection = om.MSelectionList()
+    selection.add(skin_cluster)
+    skin_object = selection.getDependNode(0)
+    skin_fn = oma.MFnSkinCluster(skin_object)
+    dependency_fn = om.MFnDependencyNode(skin_object)
+    positions = {}
+    for influence_path in skin_fn.influenceObjects():
+        logical_index = skin_fn.indexForInfluenceObject(influence_path)
+        bind_world = _skin_matrix(
+            dependency_fn,
+            "bindPreMatrix",
+            skin_cluster,
+            logical_index,
+        ).inverse()
+        joint = influence_path.fullPathName()
+        positions[_joint_identity(joint)] = [
+            float(bind_world[index]) for index in range(12, 15)
+        ]
+    return positions
+
+
 def _find_blend_shapes(shape: str) -> list[str]:
     """Return blendShape nodes in the mesh history."""
     history = cmds.listHistory(shape, pruneDagObjects=True) or []
@@ -962,7 +1074,10 @@ def _collect_ik_metadata(
     return metadata
 
 
-def _collect_bones_from_joints(joints: list[str]) -> tuple[list[dict], dict[str, int]]:
+def _collect_bones_from_joints(
+    joints: list[str],
+    bind_positions: Optional[dict[str, list[float]]] = None,
+) -> tuple[list[dict], dict[str, int]]:
     """Collect exporter bones from MMD-tagged joints in metadata order."""
 
     def sort_key(joint):
@@ -1008,7 +1123,9 @@ def _collect_bones_from_joints(joints: list[str]) -> tuple[list[dict], dict[str,
             if parent in export_index_by_joint:
                 parent_index = export_index_by_joint[parent]
 
-        position = cmds.xform(joint, query=True, worldSpace=True, translation=True)
+        position = (bind_positions or {}).get(_joint_identity(joint))
+        if position is None:
+            position = cmds.xform(joint, query=True, worldSpace=True, translation=True)
         flags_present = cmds.attributeQuery(ATTR_MMD_BONE_FLAGS, node=joint, exists=True)
         raw_flags = _get_attr(joint, ATTR_MMD_BONE_FLAGS) if flags_present else None
         bone = {
@@ -1040,7 +1157,10 @@ def _collect_bones_from_joints(joints: list[str]) -> tuple[list[dict], dict[str,
 def _collect_skin_bones(skin_cluster: str) -> tuple[list[dict], dict[str, int]]:
     """Collect exporter bone dicts from skinCluster influences."""
     influences = cmds.skinCluster(skin_cluster, query=True, influence=True) or []
-    return _collect_bones_from_joints(influences)
+    return _collect_bones_from_joints(
+        influences,
+        bind_positions=_skin_bind_positions(skin_cluster),
+    )
 
 
 def _collect_model_bones(root: str) -> list[dict]:
@@ -2041,9 +2161,12 @@ class ExportSceneCollector:
             bones, export_index_by_joint = _collect_skin_bones(skin_cluster)
             skin_weights = _collect_vertex_skin_weights(skin_cluster, shape, vertex_count, export_index_by_joint)
 
-        points = fn.getPoints(om.MSpace.kWorld)
-        # Angle-weighted=False gives evenly-weighted per-vertex normals.
-        vertex_normals = fn.getVertexNormals(False, om.MSpace.kWorld)
+        if skin_cluster:
+            points, vertex_normals = _skin_input_geometry(skin_cluster, dag, fn)
+        else:
+            points = fn.getPoints(om.MSpace.kWorld)
+            # Angle-weighted=False gives evenly-weighted per-vertex normals.
+            vertex_normals = fn.getVertexNormals(False, om.MSpace.kWorld)
 
         # Per-vertex UV: first polygon-corner occurrence wins.
         vertex_uvs = [(0.0, 0.0)] * vertex_count
