@@ -6,7 +6,7 @@ Maya MMD Tools imports, edits, and exports MikuMikuDance (MMD) PMD/PMX/VMD data 
 
 ![feature](docs/assets/feature.png)
 
-> Credits — Model: [Sour](https://bowlroll.net/file/146103) / Motion: [mobiusP](https://www.nicovideo.jp/watch/sm42576784)
+> Credits — Model: [Genoge miku](https://bowlroll.net/file/320915)
 
 > [!WARNING]
 > Maya MMD Tools is currently in alpha, and its UI and workflows may change. Comprehensive guides for individual features are not yet available. See the feature support matrix below for details.

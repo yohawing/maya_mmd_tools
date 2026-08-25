@@ -8,7 +8,7 @@ MayaでMikuMikuDance (MMD) のPMD/PMX/VMDを読み込み、編集、書き出し
 
 ![feature](./assets/feature.png)
 
-> クレジット — モデル: [Sour](https://bowlroll.net/file/146103) ／ モーション: [mobiusP](https://www.nicovideo.jp/watch/sm42576784) 
+> クレジット — モデル: [げのげ式ミク](https://bowlroll.net/file/320915)
 
 > [!WARNING]
 > ※本ツールは現在アルファ版で、UIや操作手順が変更される可能性があります。そのため、各機能の詳細な操作ガイドはまだ用意していません。詳細は下記の機能表を参照してください。
