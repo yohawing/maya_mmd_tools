@@ -70,7 +70,7 @@ static bool isNodeTypeRegistered(const MTypeId& expectedId)
 MStatus initializePlugin(MObject obj)
 {
     MStatus status;
-    MFnPlugin plugin(obj, "yohawing", "0.6.2", "Any");
+    MFnPlugin plugin(obj, "yohawing", "0.7.0", "Any");
     MmdRenderGeometryOverride::setPluginLoadPath(plugin.loadPath());
     MmdNativeCasterRenderOverride::setPluginLoadPath(plugin.loadPath());
 

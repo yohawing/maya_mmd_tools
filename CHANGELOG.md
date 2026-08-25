@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-25
+
 ### Added
 - Published a validation-gated Export workflow for the supported PMX 2.0 model and VMD character-animation scope.
 - Added Create MMD Model with packaged project-authored templates and transactional Material, Bone, and Morph authoring workflows, including shared and custom toon settings.
