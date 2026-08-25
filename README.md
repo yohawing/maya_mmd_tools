@@ -47,7 +47,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 - **Detailed documentation is not written yet.** This is an alpha release, and development speed is prioritized over documentation maintenance.
 - **Various features are still incomplete.** This is an experimental alpha release; feedback is welcome.
 - **QDEF and SDEF are downgraded to BDEF4.** Their specialized deformation is not preserved, so meshes may appear thinner with some model and motion combinations.
-- **Export supports a bounded, validated scope.** PMX deformation is standardized on BDEF4, and SDEF/QDEF-specific data is not retained. Additional UV and UV/additional-UV morph metadata is preserved through export and re-import, but Maya UV sets are not deformed. Flip morphs, Impulse morphs, and soft bodies are not exported. PMD is import-only. VMD export evaluates the current character with a fixed baked export; camera, light, and self-shadow are not exported.
+- **Export supports a bounded, validated scope.** Export depends on many features, and we have not yet tested it across a wide range of cases, so it likely still contains many bugs.
 - **Leg rotations and bones that conflict with bone morphs work only under the Control Rig.** Bones may become immovable when their connections conflict with bone morphs.
 
 ## System Requirements
