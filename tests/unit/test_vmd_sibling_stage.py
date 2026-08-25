@@ -2,8 +2,10 @@
 
 from pathlib import Path
 import tempfile
+from unittest import mock
 import unittest
 
+from mmd_tools.actions import vmd_sibling_stage
 from mmd_tools.actions.vmd_sibling_stage import (
     VmdSiblingStageError,
     VmdSiblingStageSession,
@@ -101,6 +103,39 @@ class VmdSiblingStageTests(unittest.TestCase):
                 self.assertEqual(stage.file_path and Path(stage.file_path).read_bytes(), b"")
             finally:
                 stage.cleanup()
+
+    def test_native_stage_fails_fast_when_sibling_open_is_denied(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "motion.vmd"
+            with mock.patch.object(
+                vmd_sibling_stage.os,
+                "open",
+                side_effect=PermissionError("protected output directory"),
+            ) as open_mock:
+                with self.assertRaisesRegex(
+                    VmdSiblingStageError, "could not create temporary VMD sibling"
+                ):
+                    VmdSiblingStageSession("モデル", target_path=str(target))
+
+            # CPython's tempfile implementation retries this error when its
+            # writable-directory heuristic says the path is usable.  The
+            # export boundary must stop after the first denied open.
+            self.assertEqual(open_mock.call_count, 1)
+
+    def test_native_stage_bounds_sibling_name_collisions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "motion.vmd"
+            with mock.patch.object(
+                vmd_sibling_stage.os,
+                "open",
+                side_effect=FileExistsError("candidate already exists"),
+            ) as open_mock:
+                with self.assertRaisesRegex(
+                    VmdSiblingStageError, "could not create a unique temporary VMD sibling"
+                ):
+                    VmdSiblingStageSession("モデル", target_path=str(target))
+
+            self.assertEqual(open_mock.call_count, vmd_sibling_stage._MAX_TEMPFILE_ATTEMPTS)
 
     def test_native_stage_truncates_cp932_names_at_character_boundaries(self):
         model_name = "M" * 19 + "モ"

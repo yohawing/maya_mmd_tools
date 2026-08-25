@@ -8,8 +8,8 @@ from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
+from secrets import token_hex
 import struct
-import tempfile
 from types import MappingProxyType
 from typing import Any, Optional, Tuple
 
@@ -24,6 +24,7 @@ class VmdSiblingStageError(ValueError):
 
 DEFAULT_BONE_INTERPOLATION = b"\x14" * 64
 _SECTIONS = ("bones", "morphs", "cameras", "lights", "shadows", "ik")
+_MAX_TEMPFILE_ATTEMPTS = 8
 _RECEIPT_COUNTS = {
     "bones": "bone_frames", "morphs": "morph_frames", "cameras": "camera_frames",
     "lights": "light_frames", "shadows": "shadow_frames", "ik": "ik_show_hide_frames",
@@ -278,15 +279,47 @@ class _VmdPartsSink:
             del items[:]
 
 
+def _open_sibling_tempfile(target: Path) -> tuple[int, Path]:
+    """Create one private sibling without tempfile's unbounded retry policy.
+
+    CPython retries ``PermissionError`` from ``_mkstemp_inner`` when the
+    directory exists and reports writable.  That heuristic is unsafe for
+    protected Windows directories: Maya can resolve a relative output such as
+    ``motion.vmd`` under its installation directory, where every candidate
+    open is denied and the GUI thread spins through ``TMP_MAX`` names.  Use a
+    small explicit collision budget and fail closed for all other filesystem
+    errors.
+    """
+
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    suffix = target.suffix or ".vmd"
+    for _ in range(_MAX_TEMPFILE_ATTEMPTS):
+        candidate = target.parent / f".{target.stem}.{token_hex(4)}{suffix}"
+        try:
+            descriptor = os.open(str(candidate), flags, 0o600)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise VmdSiblingStageError(
+                f"could not create temporary VMD sibling beside {target}: {exc}"
+            ) from exc
+        return descriptor, candidate
+    raise VmdSiblingStageError(
+        f"could not create a unique temporary VMD sibling beside {target}"
+    )
+
+
 class VmdSiblingStageSession:
     """Own one private sibling from collection until `os.replace` or cleanup."""
 
     def __init__(self, model_name: str, *, target_path: str, expected_frame_range: Optional[Tuple[int, int]] = None, output_verifier: Any = verify_vmd_output_streaming) -> None:
         self._target = Path(target_path).resolve(strict=False)
         self._target.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, name = tempfile.mkstemp(prefix=f".{self._target.stem}.", suffix=self._target.suffix or ".vmd", dir=str(self._target.parent))
+        descriptor, path = _open_sibling_tempfile(self._target)
         os.close(descriptor)
-        self._path = Path(name)
+        self._path = path
         self._writer: Optional[_VmdPartsSink] = _VmdPartsSink(model_name)
         self._summary: Optional[VmdSiblingStageSummary] = None
         self._expected_frame_range = expected_frame_range
