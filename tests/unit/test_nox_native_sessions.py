@@ -287,7 +287,7 @@ class NativeSessionsTest(unittest.TestCase):
             python_executable="python-test",
         )
         args, kwargs = session.runs[0]
-        self.assertEqual(args, ("python-test", str(Path("F:/repo/tools/local_asset_roundtrip.py")), "--maya", "2024", "--case", "miku"))
+        self.assertEqual(args, ("python-test", str(Path("F:/repo/tools/smoke/local_asset_roundtrip.py")), "--maya", "2024", "--case", "miku"))
         self.assertTrue(kwargs["external"])
 
     def test_native_export_smoke_removes_ffi_path_from_child_arguments(self):

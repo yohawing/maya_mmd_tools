@@ -28,7 +28,7 @@ import traceback
 from ctypes import wintypes
 from typing import Any, Callable, Iterable, Mapping, Optional
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 BUILD_ROOT = (ROOT / "build").resolve()
 DEFAULT_MANIFEST = BUILD_ROOT / "reports" / "local_asset_roundtrip" / "representative.json"
 DEFAULT_OUT_DIR = BUILD_ROOT / "reports" / "local_asset_roundtrip"
