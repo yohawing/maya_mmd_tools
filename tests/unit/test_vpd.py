@@ -86,20 +86,6 @@ class TestBonePose(unittest.TestCase):
         self.assertIn("center", text)
         self.assertIn("3", text)
 
-    def test_to_vpd_format(self):
-        pose = BonePose()
-        pose.bone_index = 5
-        pose.bone_name = "左腕"
-        pose.position = [1.0, 2.0, 3.0]
-        pose.quaternion = [0.0, 0.707107, 0.0, 0.707107]
-
-        text = pose.to_vpd_format()
-
-        self.assertIn("Bone5{左腕", text)
-        self.assertIn("1.000000,2.000000,3.000000;", text)
-        self.assertIn("0.000000,0.707107,0.000000,0.707107;", text)
-        self.assertTrue(text.endswith("}\n"))
-
     def test_str_matches_format(self):
         pose = BonePose()
         pose.bone_index = 1
@@ -112,24 +98,8 @@ class TestBonePose(unittest.TestCase):
         self.assertIn("Bone1{head", text)
         self.assertIn("0.100000", text)
 
-    def test_vpd_format_multiple_bones(self):
-        poses = []
-        for index, name in enumerate(["center", "upper_body", "head"]):
-            pose = BonePose()
-            pose.bone_index = index
-            pose.bone_name = name
-            pose.position = [float(index), 0.0, 0.0]
-            poses.append(pose)
-
-        text = "".join(pose.to_vpd_format() for pose in poses)
-
-        self.assertIn("Bone0{center", text)
-        self.assertIn("Bone1{upper_body", text)
-        self.assertIn("Bone2{head", text)
-
-
 class TestVpdData(unittest.TestCase):
-    """VpdData parser and writer behavior."""
+    """VpdData parser behavior."""
 
     def setUp(self):
         self.vpd_data = VpdData()
@@ -197,27 +167,6 @@ Bone0{センター
 
         self.assertEqual(self.vpd_data.header.bone_count, 1)
         self.assertEqual(len(self.vpd_data.bone_poses), 1)
-
-    def test_write_file_roundtrip(self):
-        self.vpd_data.header.parent_file = "output.osm"
-
-        pose = BonePose()
-        pose.bone_index = 0
-        pose.bone_name = "テストボーン"
-        pose.position = [1.5, 2.5, 3.5]
-        pose.quaternion = [0.0, 0.707107, 0.0, 0.707107]
-        self.vpd_data.bone_poses.append(pose)
-
-        output_file = self.test_dir / "output.vpd"
-        self.vpd_data.write_file(str(output_file))
-
-        parsed = VpdData()
-        parsed.parse_file(str(output_file))
-
-        self.assertEqual(parsed.header.parent_file, "output.osm")
-        self.assertEqual(len(parsed.bone_poses), 1)
-        self.assertEqual(parsed.bone_poses[0].bone_name, "テストボーン")
-        self.assertAlmostEqual(parsed.bone_poses[0].position[0], 1.5, places=5)
 
     def test_invalid_file(self):
         with self.assertRaises(FileNotFoundError):

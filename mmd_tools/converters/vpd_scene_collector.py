@@ -24,8 +24,6 @@ from mmd_tools.core.mmd_control_rig_builder import (
 from mmd_tools.core.mmd_control_rig_motion import (
     resolve_control_rig_direct_vmd_export_routes,
 )
-from mmd_tools.core.vpd_data import VpdData
-from mmd_tools.core.vpd_data.bone_pose import BonePose
 from mmd_tools.converters.vmd_import_state import get_stored_bind_translate
 from mmd_tools.converters.vmd_scene_collector import (
     _build_rotation_export_context,
@@ -78,8 +76,8 @@ class VpdSceneCollector:
         self._validate_control_rig_authority(root)
         return True
 
-    def collect(self, options: Optional[Mapping[str, Any]] = None) -> VpdData:
-        """Return a VPD payload from the current evaluated character scene."""
+    def collect(self, options: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+        """Return an mmd-anim VpdParsedPose DTO from the evaluated scene."""
         options = dict(options or {})
         target = options.get("current_model_root") or options.get("target_model") or options.get("model_root")
         if not target:
@@ -152,17 +150,14 @@ class VpdSceneCollector:
             raise VpdSceneCollectionError(
                 f"MMD joint rotation context could not be built for VPD export: {exc}"
             ) from exc
-        payload = VpdData()
-        for source_index, name, joint in candidates:
-            pose = BonePose()
-            pose.bone_index = source_index
-            pose.bone_name = name
+        bones = []
+        for _source_index, name, joint in candidates:
             translate = _finite_values(
                 [cmds.getAttr(f"{joint}.translate{axis}") for axis in "XYZ"],
                 field=f"{joint}.translate",
             )
             bind_translate = get_stored_bind_translate(joint) or (0.0, 0.0, 0.0)
-            pose.position = list(
+            position = list(
                 _maya_translate_to_vmd_position(
                     translate,
                     bind_translate,
@@ -176,7 +171,7 @@ class VpdSceneCollector:
             if len(rotate) != 3:
                 raise VpdSceneCollectionError(f"MMD joint rotation is not XYZ: {joint}")
             try:
-                pose.quaternion = list(
+                quaternion = list(
                     _maya_joint_rotate_to_vmd_quaternion(
                         joint,
                         rotate[0],
@@ -189,9 +184,18 @@ class VpdSceneCollector:
                 raise VpdSceneCollectionError(
                     f"MMD joint rotation could not be converted for VPD export: {joint}"
                 ) from exc
-            payload.bone_poses.append(pose)
-        payload.header.bone_count = len(payload.bone_poses)
-        return payload
+            bones.append(
+                {
+                    "name": name,
+                    "translation": position,
+                    "rotation": quaternion,
+                }
+            )
+        return {
+            "modelFile": str(options.get("model_file") or ""),
+            "boneCount": len(bones),
+            "bones": bones,
+        }
 
     @staticmethod
     def _validate_control_rig_authority(root: str) -> None:

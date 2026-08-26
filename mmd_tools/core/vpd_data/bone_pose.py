@@ -35,17 +35,3 @@ class BonePose:
             f"{self.quaternion[2]:.6f},{self.quaternion[3]:.6f};\n"
             f"}}"
         )
-
-    def to_vpd_format(self) -> str:
-        """VPDファイル形式の文字列を生成する
-
-        Returns:
-            str: VPDファイル形式の文字列
-        """
-        return (
-            f"Bone{self.bone_index}{{{self.bone_name}\n"
-            f"  {self.position[0]:.6f},{self.position[1]:.6f},{self.position[2]:.6f};\n"
-            f"  {self.quaternion[0]:.6f},{self.quaternion[1]:.6f},"
-            f"{self.quaternion[2]:.6f},{self.quaternion[3]:.6f};\n"
-            f"}}\n"
-        )

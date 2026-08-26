@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import math
 import os
@@ -10,7 +10,6 @@ from pathlib import Path
 import tempfile
 from typing import Any, List, Optional
 
-from ..core.vpd_data import VpdData
 from ..core.logger import get_logger
 from ..validation.export_validator import (
     ExportValidationError,
@@ -50,33 +49,33 @@ class _ExportVpdCancelled(RuntimeError):
     """Internal control flow for a requested pre-publication cancellation."""
 
 
-def _pose_payload(data: VpdData) -> list[dict[str, Any]]:
+def _pose_payload(data: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Return a stable, JSON-like fingerprint view of a VPD payload."""
     return [
         {
-            "index": int(pose.bone_index),
-            "name": str(pose.bone_name),
-            "position": [float(value) for value in pose.position],
-            "quaternion": [float(value) for value in pose.quaternion],
+            "name": str(pose["name"]),
+            "translation": [float(value) for value in pose["translation"]],
+            "rotation": [float(value) for value in pose["rotation"]],
         }
-        for pose in data.bone_poses
+        for pose in data["bones"]
     ]
 
 
-def _poses_equivalent(left: VpdData, right: VpdData) -> bool:
+def _poses_equivalent(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
     """Compare a writer roundtrip within VPD's six-decimal precision."""
-    if len(left.bone_poses) != len(right.bone_poses):
+    left_bones = left.get("bones") or []
+    right_bones = right.get("bones") or []
+    if len(left_bones) != len(right_bones):
         return False
-    for left_pose, right_pose in zip(left.bone_poses, right.bone_poses):
-        if (
-            int(left_pose.bone_index) != int(right_pose.bone_index)
-            or str(left_pose.bone_name) != str(right_pose.bone_name)
-        ):
+    for left_pose, right_pose in zip(left_bones, right_bones):
+        if str(left_pose.get("name")) != str(right_pose.get("name")):
             return False
         for left_values, right_values in (
-            (left_pose.position, right_pose.position),
-            (left_pose.quaternion, right_pose.quaternion),
+            (left_pose.get("translation") or [], right_pose.get("translation") or []),
+            (left_pose.get("rotation") or [], right_pose.get("rotation") or []),
         ):
+            if len(left_values) != len(right_values):
+                return False
             if any(abs(float(a) - float(b)) > 1.0e-5 for a, b in zip(left_values, right_values)):
                 return False
     return True
@@ -85,31 +84,59 @@ def _poses_equivalent(left: VpdData, right: VpdData) -> bool:
 def _validate_vpd_data(data: Any) -> ExportValidationReport:
     """Validate the writer-facing VPD shape before creating a temporary file."""
     issues = []
-    if not isinstance(data, VpdData):
+    if not isinstance(data, Mapping):
         issues.append(
             ExportValidationIssue(
-                "INPUT_INVALID", "fatal", True, "bone_poses", "VPD payload must be VpdData",
+                "INPUT_INVALID", "fatal", True, "bones",
+                "VPD payload must be an mmd-anim JSON object",
                 details={"aggregation_discriminator": "payload_shape"},
             )
         )
         return ExportValidationReport("vpd", tuple(issues), mode="current_pose")
-    if not data.bone_poses:
+    bones = data.get("bones")
+    if not isinstance(bones, Sequence) or isinstance(bones, (str, bytes, bytearray)):
+        bones = []
         issues.append(
             ExportValidationIssue(
-                "INPUT_INVALID", "fatal", True, "bone_poses",
+                "INPUT_INVALID", "fatal", True, "bones",
+                "VPD bones must be an array",
+                details={"aggregation_discriminator": "payload_shape"},
+            )
+        )
+    if not bones:
+        issues.append(
+            ExportValidationIssue(
+                "INPUT_INVALID", "fatal", True, "bones",
                 "VPD current-pose export requires at least one MMD bone pose",
                 details={"aggregation_discriminator": "payload_shape"},
             )
         )
+    bone_count = data.get("boneCount")
+    if isinstance(bone_count, bool) or not isinstance(bone_count, int) or bone_count != len(bones):
+        issues.append(
+            ExportValidationIssue(
+                "INPUT_INVALID", "fatal", True, "boneCount",
+                "VPD boneCount must match the bones array",
+                details={"aggregation_discriminator": "payload_shape"},
+            )
+        )
     seen_names = {}
-    seen_indices = {}
-    for index, pose in enumerate(data.bone_poses):
-        path = f"bone_poses[{index}]"
-        name = getattr(pose, "bone_name", None)
+    for index, pose in enumerate(bones):
+        path = f"bones[{index}]"
+        if not isinstance(pose, Mapping):
+            issues.append(
+                ExportValidationIssue(
+                    "INPUT_INVALID", "fatal", True, path,
+                    "VPD bone pose must be an object",
+                    details={"aggregation_discriminator": "bone"},
+                )
+            )
+            continue
+        name = pose.get("name")
         if not isinstance(name, str) or not name:
             issues.append(
                 ExportValidationIssue(
-                    "INPUT_INVALID", "fatal", True, f"{path}.bone_name",
+                    "INPUT_INVALID", "fatal", True, f"{path}.name",
                     "VPD bone name must be a non-empty string",
                     details={"aggregation_discriminator": "bone"},
                 )
@@ -120,7 +147,7 @@ def _validate_vpd_data(data: Any) -> ExportValidationReport:
             except UnicodeEncodeError:
                 issues.append(
                     ExportValidationIssue(
-                        "INPUT_INVALID", "fatal", True, f"{path}.bone_name",
+                        "INPUT_INVALID", "fatal", True, f"{path}.name",
                         "VPD bone name cannot be represented in Shift-JIS",
                         details={"aggregation_discriminator": "bone"},
                     )
@@ -129,33 +156,14 @@ def _validate_vpd_data(data: Any) -> ExportValidationReport:
             if prior is not None:
                 issues.append(
                     ExportValidationIssue(
-                        "REFERENCE_INVALID", "fatal", True, f"{path}.bone_name",
+                        "REFERENCE_INVALID", "fatal", True, f"{path}.name",
                         f"duplicate VPD bone name {name!r}",
                         details={"aggregation_discriminator": "reference"},
                     )
                 )
             seen_names[name] = index
-        bone_index = getattr(pose, "bone_index", None)
-        if isinstance(bone_index, bool) or not isinstance(bone_index, int) or bone_index < 0:
-            issues.append(
-                ExportValidationIssue(
-                    "INPUT_INVALID", "fatal", True, f"{path}.bone_index",
-                    "VPD bone index must be a non-negative integer",
-                    details={"aggregation_discriminator": "bone"},
-                )
-            )
-        elif bone_index in seen_indices:
-            issues.append(
-                ExportValidationIssue(
-                    "REFERENCE_INVALID", "fatal", True, f"{path}.bone_index",
-                    f"duplicate VPD bone index {bone_index}",
-                    details={"aggregation_discriminator": "reference"},
-                )
-            )
-        else:
-            seen_indices[bone_index] = index
-        for field_name, expected_length in (("position", 3), ("quaternion", 4)):
-            value = getattr(pose, field_name, None)
+        for field_name, expected_length in (("translation", 3), ("rotation", 4)):
+            value = pose.get(field_name)
             if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)) or len(value) != expected_length:
                 issues.append(
                     ExportValidationIssue(
@@ -194,12 +202,25 @@ def _append_report(
 class ExportVpdAction:
     """Write, parse-verify, and atomically publish one current pose."""
 
-    def __init__(self, collector: Any = _DEFAULT_COLLECTOR):
+    def __init__(
+        self,
+        collector: Any = _DEFAULT_COLLECTOR,
+        *,
+        encoder=None,
+        parser=None,
+    ):
         if collector is _DEFAULT_COLLECTOR:
             from ..converters.vpd_scene_collector import VpdSceneCollector
 
             collector = VpdSceneCollector().collect
+        if encoder is None or parser is None:
+            from ..core.native import export_vpd_pose_json, parse_vpd_pose_json
+
+            encoder = encoder or export_vpd_pose_json
+            parser = parser or parse_vpd_pose_json
         self._collector = collector
+        self._encoder = encoder
+        self._parser = parser
 
     def can_prepare_for_collection(self, options: dict) -> bool:
         """Return whether the collector can resolve the requested owner route."""
@@ -269,36 +290,28 @@ class ExportVpdAction:
             phase("encode", True)
             require_active()
             try:
-                data.write_file(temporary_path)
+                encoded = self._encoder(data)
+                if not isinstance(encoded, bytes) or not encoded:
+                    raise ValueError("mmd-anim returned empty VPD output")
+                with open(temporary_path, "wb") as handle:
+                    handle.write(encoded)
+                    handle.flush()
+                    os.fsync(handle.fileno())
             finally:
                 phase("encode", False)
-            failure_stage = "flush"
-            phase("flush", True)
-            require_active()
-            try:
-                try:
-                    with open(temporary_path, "rb") as handle:
-                        os.fsync(handle.fileno())
-                except OSError:
-                    # Some Windows file handles are not fsync-capable after a
-                    # text writer has closed them; the writer still owns the
-                    # complete temporary file in that case.
-                    pass
-            finally:
-                phase("flush", False)
             failure_stage = "output_verify"
             phase("output_verify", True)
             require_active()
             try:
-                reparsed = VpdData()
-                reparsed.parse_file(temporary_path)
+                with open(temporary_path, "rb") as handle:
+                    reparsed = self._parser(handle.read())
                 output_report = _validate_vpd_data(reparsed)
                 if output_report.is_blocking:
                     report = _append_report(
                         report,
                         ExportValidationIssue(
                             "OUTPUT_VERIFY_FAILED", "fatal", True, "output",
-                            "reparsed VPD output failed validation",
+                            "mmd-anim reparsed VPD output failed validation",
                             details={"aggregation_discriminator": "output_parse"},
                         ),
                     )
@@ -309,7 +322,7 @@ class ExportVpdAction:
                         tuple(report.issues)
                         + (
                             ExportValidationIssue(
-                                "OUTPUT_VERIFY_FAILED", "fatal", True, "bone_poses",
+                                "OUTPUT_VERIFY_FAILED", "fatal", True, "bones",
                                 "reparsed VPD pose differs from the collected current pose",
                                 details={"aggregation_discriminator": "output_parse"},
                             ),
@@ -370,7 +383,7 @@ class ExportVpdAction:
                             },
                         ),
                     )
-                elif failure_stage in {"encode", "flush", "replace"}:
+                elif failure_stage in {"encode", "replace"}:
                     report = _append_report(
                         report,
                         ExportValidationIssue(

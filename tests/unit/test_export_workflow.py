@@ -18,8 +18,6 @@ from mmd_tools.actions.bake_timeline_vmd_export_action import (  # noqa: E402
 from mmd_tools.actions.export_vpd_action import (  # noqa: E402
     ExportVpdAction,
 )
-from mmd_tools.core.vpd_data import VpdData  # noqa: E402
-from mmd_tools.core.vpd_data.bone_pose import BonePose  # noqa: E402
 from mmd_tools.core.vmd_data import VmdData  # noqa: E402
 from mmd_tools.services.export_workflow_service import (  # noqa: E402
     ExportWorkflowRequest,
@@ -202,12 +200,22 @@ class _ModelAction:
 
 class _VpdAction(ExportVpdAction):
     def __init__(self):
-        data = VpdData()
-        pose = BonePose()
-        pose.bone_index = 0
-        pose.bone_name = "センター"
-        data.bone_poses.append(pose)
-        super().__init__(collector=lambda _options: data)
+        data = {
+            "modelFile": "model.pmx",
+            "boneCount": 1,
+            "bones": [
+                {
+                    "name": "センター",
+                    "translation": [0.0, 0.0, 0.0],
+                    "rotation": [0.0, 0.0, 0.0, 1.0],
+                }
+            ],
+        }
+        super().__init__(
+            collector=lambda _options: data,
+            encoder=lambda _payload: b"native-vpd",
+            parser=lambda _bytes: data,
+        )
         self.capability_options = None
 
     def can_prepare_for_collection(self, options):
@@ -304,7 +312,7 @@ class ExportWorkflowTests(unittest.TestCase):
             )
 
             self.assertEqual(result.state, STATE_SUCCEEDED, result.error)
-            self.assertEqual(VpdData().parse_file(str(target)), None)
+            self.assertEqual(target.read_bytes(), b"native-vpd")
             self.assertEqual(list(Path(directory).glob(".pose.*.vpd")), [])
             self.assertIn("output_verify", result.completed_phases)
             self.assertIn("replace", result.completed_phases)

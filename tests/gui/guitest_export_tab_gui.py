@@ -123,16 +123,15 @@ class TestExportTabGUI(GuiTestBase):
         app.sendPostedEvents(tab, QtCore.QEvent.DeferredDelete)
         app.processEvents()
 
-    def test_model_animation_tabs_have_fixed_formats_and_no_target_or_format_widgets(self):
-        """Model/Animation tabs own PMX/VMD and expose no legacy selectors."""
+    def test_animation_page_switches_between_vmd_and_vpd(self):
+        """Animation owns both timeline VMD and current-frame VPD export."""
         tab = self._create_visible_tab()
         try:
             self.assertFalse(hasattr(tab, "target_combo"))
-            self.assertFalse(hasattr(tab, "format_combo"))
-            self.assertEqual(tab.pane_tabs.count(), 3)
+            self.assertTrue(hasattr(tab, "format_combo"))
+            self.assertEqual(tab.pane_tabs.count(), 2)
             self.assertEqual(tab.pane_tabs.tabText(0), "モデル")
             self.assertEqual(tab.pane_tabs.tabText(1), "アニメーション")
-            self.assertEqual(tab.pane_tabs.tabText(2), "ポーズ")
             self.assertEqual(tab.export_button.text(), "モデルを書き出す")
             self.assertEqual(tab.build_request("model_ROOT").options["export_format"], "pmx")
             pane_spy = QtSignalInvocationSpy(
@@ -161,17 +160,12 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(request.options["export_strategy"], VMD_EXPORT_BAKE_TIMELINE)
             self.assertTrue(tab.bake_export_check.isChecked())
             self.assertEqual(request.options["frame_range"], (12, 42))
-            tab.pane_tabs.setCurrentIndex(2)
-            pose_request = tab.build_request("model_ROOT")
-            self.assertEqual(pose_request.options["export_format"], "vpd")
-            self.assertEqual(pose_request.options["export_strategy"], "current_pose")
-            self.assertEqual(tab.export_button.text(), "ポーズを書き出し")
             _emit_witness(
                 "export.pane_selector",
                 "selector",
                 "objectName=exportCategoryStack",
                 "QTest.setCurrentIndex(objectName=exportCategoryStack, animation)",
-                "model and animation panes expose fixed PMX/VMD formats",
+                "model and animation panes expose PMX and VMD/VPD formats",
                 pane_spy,
                 tab.pane_tabs,
             )
@@ -201,6 +195,27 @@ class TestExportTabGUI(GuiTestBase):
                 "VMD request frame end equals 42",
                 end_spy,
                 tab.frame_end_spin,
+            )
+            format_spy = QtSignalInvocationSpy(
+                "ExportTab.format_changed",
+                tab.format_combo.currentIndexChanged,
+                tab.format_combo,
+            )
+            tab.format_combo.setCurrentIndex(1)
+            pose_request = tab.build_request("model_ROOT")
+            self.assertEqual(pose_request.options["export_format"], "vpd")
+            self.assertEqual(pose_request.options["export_strategy"], "current_pose")
+            self.assertEqual(tab.export_button.text(), "ポーズを書き出し")
+            self.assertTrue(tab.pose_help.isVisible())
+            self.assertFalse(tab.frame_range_check.isVisible())
+            _emit_witness(
+                "export.motion_format",
+                "selector",
+                "objectName=motionExportFormat",
+                "QTest.setCurrentIndex(objectName=motionExportFormat, VPD)",
+                "VPD request uses current-pose export",
+                format_spy,
+                tab.format_combo,
             )
         finally:
             self._delete_tab(tab)
@@ -234,21 +249,24 @@ class TestExportTabGUI(GuiTestBase):
         finally:
             self._delete_tab(tab)
 
-    def test_pose_operation_exposes_cancel_only_while_active(self):
+    def test_vpd_operation_exposes_cancel_only_while_active(self):
         tab = self._create_visible_tab()
         try:
-            tab.pane_tabs.setCurrentIndex(2)
-            pose_page = tab._pages[tab.POSE_PANE]
-            self.assertTrue(pose_page.cancel_button.isVisible())
-            self.assertFalse(pose_page.cancel_button.isEnabled())
+            tab.pane_tabs.setCurrentIndex(1)
+            motion_page = tab._pages[tab.MOTION_PANE]
+            motion_page.format_combo.setCurrentIndex(1)
+            self.assertTrue(motion_page.cancel_button.isVisible())
+            self.assertFalse(motion_page.cancel_button.isEnabled())
 
             tab.set_operation_active(True)
-            self.assertFalse(pose_page.export_button.isEnabled())
-            self.assertTrue(pose_page.cancel_button.isEnabled())
+            self.assertFalse(motion_page.export_button.isEnabled())
+            self.assertFalse(motion_page.format_combo.isEnabled())
+            self.assertTrue(motion_page.cancel_button.isEnabled())
 
             tab.set_operation_active(False)
-            self.assertTrue(pose_page.export_button.isEnabled())
-            self.assertFalse(pose_page.cancel_button.isEnabled())
+            self.assertTrue(motion_page.export_button.isEnabled())
+            self.assertTrue(motion_page.format_combo.isEnabled())
+            self.assertFalse(motion_page.cancel_button.isEnabled())
         finally:
             self._delete_tab(tab)
 
