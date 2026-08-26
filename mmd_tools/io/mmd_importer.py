@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Optional
 
 from mmd_tools.core import settings, settings_keys
 from mmd_tools.core import maya_viewport_utils
+from mmd_tools.core.constants import DEFAULT_IMPORT_PHYSICS
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.import_strategy import resolve_model_import_strategy
 from mmd_tools.core.mmd_parser import parse_mmd_file
@@ -80,6 +81,45 @@ def _resolve_vmd_content_route(parsed_data: Any, options: Dict[str, Any]) -> Non
         raise MMDImportException(
             "VMD model motion requires a current model. Select a model in the Manager first."
         )
+
+
+def _record_physics_compatibility_warnings(parsed_data: Any, options: Dict[str, Any]) -> None:
+    """Record narrow, non-blocking PMX physics compatibility warnings."""
+    if not bool(options.get("import_physics", DEFAULT_IMPORT_PHYSICS)):
+        return
+    bodies = list(getattr(parsed_data, "rigid_bodies", ()) or ())
+    for joint in getattr(parsed_data, "joints", ()) or ():
+        body_indices = (joint.rigid_body_a_index, joint.rigid_body_b_index)
+        if joint.joint_type != 0 or not all(0 <= index < len(bodies) for index in body_indices):
+            continue
+        locked_away_from_zero = any(
+            minimum == maximum and minimum != 0.0
+            for minimum, maximum in zip(
+                joint.translation_limit_min,
+                joint.translation_limit_max,
+            )
+        )
+        has_unbound_dynamic_body = any(
+            bodies[index].related_bone_index == -1 and bodies[index].physics_mode != 0
+            for index in body_indices
+        )
+        if locked_away_from_zero and has_unbound_dynamic_body:
+            break
+    else:
+        return
+    profile = options.get("profile")
+    if not isinstance(profile, dict):
+        profile = {}
+        options["profile"] = profile
+    warning = {
+        "code": "legacy_soft_constraint_behavior",
+        "message": (
+            "This model may rely on legacy MMD soft-constraint behavior. "
+            "Modern Bullet can settle affected rigid bodies at a different position."
+        ),
+    }
+    profile.setdefault("warnings", []).append(warning)
+    logger.warning("PMX physics compatibility warning: %s", warning["message"])
 
 
 def _schedule_uv_editor_refresh() -> None:
@@ -350,6 +390,7 @@ def import_mmd_file(
         # 手動reload後はクラスIDがずれて isinstance が失敗することがあるため、
         # ファイル拡張子でインポーターを選ぶ。
         if suffix == ".pmx":
+            _record_physics_compatibility_warnings(parsed_data, options)
             with _scoped_settings_override(options):
                 model_root = pmx_importer.import_pmx_file(
                     parsed_data,
