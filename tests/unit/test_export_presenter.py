@@ -1,6 +1,7 @@
 """ExportPresenter's single-button operation boundary."""
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
@@ -11,6 +12,7 @@ from mmd_tools.services.export_workflow_service import (  # noqa: E402
     ExportWorkflowRequest,
     ExportWorkflowResult,
     STATE_FAILED,
+    STATE_CANCELLED,
     STATE_SUCCEEDED,
 )
 from mmd_tools.ui.presenters import export_presenter  # noqa: E402
@@ -69,6 +71,20 @@ class _PmxView(_View):
         return ExportWorkflowRequest(
             "model.pmx",
             {"export_format": "pmx", "current_model_root": root},
+        )
+
+
+class _VpdView(_View):
+    current_export_format = "vpd"
+
+    def __init__(self):
+        super().__init__()
+        self.cancel_requested = _Signal()
+
+    def build_request(self, root):
+        return ExportWorkflowRequest(
+            "pose.vpd",
+            {"export_format": "vpd", "current_model_root": root},
         )
 
 
@@ -136,6 +152,19 @@ class _WarningWorkflow(_Workflow):
             {"output_path": request.file_path},
         )
 
+
+class _CancelWorkflow(_Workflow):
+    def execute(self, request, *, progress_callback=None, **_kwargs):
+        self.requests.append(request)
+        if callable(progress_callback):
+            progress_callback("writer")
+        self.cancel_seen = bool(request.options["_cancel_requested"]())
+        return ExportWorkflowResult(
+            STATE_CANCELLED,
+            ExportValidationReport("vpd", (), mode="current_pose"),
+            {"output_path": request.file_path},
+            action_result=SimpleNamespace(cancelled=True),
+        )
 
 class _DialogButton:
     def __init__(self, text):
@@ -235,6 +264,27 @@ class ExportPresenterTests(unittest.TestCase):
         app_state.current_model_changed.slots[0]("other_ROOT")
 
         self.assertEqual(view.invalidations, 1)
+
+    def test_vpd_cancel_signal_reaches_atomic_action_callback(self):
+        view = _VpdView()
+        app_state = _AppState()
+        workflow = _CancelWorkflow()
+        presenter = ExportPresenter(view, app_state, workflow)
+        view.cancel_requested.slots.append(lambda: None)
+
+        # Simulate the visible cancel button being pressed when the writer
+        # progress boundary processes UI events.
+        with patch.object(
+            export_presenter.QApplication,
+            "processEvents",
+            side_effect=lambda: view.cancel_requested.slots[0](),
+            create=True,
+        ):
+            result = presenter.export()
+
+        self.assertEqual(result.state, STATE_CANCELLED)
+        self.assertTrue(workflow.cancel_seen)
+        self.assertEqual(app_state.statuses[-1], "Cancelled")
 
     def test_model_export_keeps_gui_progress_updates(self):
         view = _PmxView()

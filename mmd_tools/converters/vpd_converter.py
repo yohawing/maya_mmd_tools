@@ -7,11 +7,12 @@ import maya.cmds as cmds
 import maya.api.OpenMaya as om
 
 from mmd_tools.core.logger import get_logger
-from mmd_tools.core.maya_attribute_utils import get_attribute
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
-from mmd_tools.core.coordinate_transform import mmd_euler_xyz_to_maya, mmd_point_to_maya
+from mmd_tools.core.coordinate_transform import mmd_point_to_maya
 from mmd_tools.core.vpd_data.bone_pose import BonePose
 from mmd_tools.converters.vmd_anim_layer import add_transform_attrs_to_anim_layer
+from mmd_tools.converters.vmd_import_state import get_stored_bind_translate
+from mmd_tools.converters.vmd_scene_collector import _build_rotation_export_context
 
 logger = get_logger(__name__)
 
@@ -55,6 +56,11 @@ class VpdConverter:
         if not joints:
             logger.warning("Target joint not found")
             return False
+        try:
+            self._rotation_export_context = _build_rotation_export_context(joints)
+        except Exception as exc:
+            raise ValueError(f"VPD rotation context could not be built: {exc}") from exc
+        self._validate_pose_conversions(vpd_data.bone_poses, joints, target_namespace)
 
         # オプションからレイヤー設定を取得
         layer_name = options.get("layer_name", "VPD_Pose")
@@ -190,9 +196,17 @@ class VpdConverter:
             if create_keyframe and self.use_animation_layers and self.anim_layer:
                 cmds.animLayer(self.anim_layer, edit=True, selected=True)
 
-            # 位置の適用（センターボーンなど移動可能なボーンのみ）
-            if self._is_movable_bone(bone_pose.bone_name):
-                position = self._convert_position_mmd_to_maya(bone_pose.position)
+            # VPD position is a bind-relative motion delta, matching VMD.
+            position_delta = self._convert_position_mmd_to_maya(bone_pose.position)
+            bind_position = get_stored_bind_translate(maya_joint) or (0.0, 0.0, 0.0)
+            position = [
+                float(bind) + float(delta)
+                for bind, delta in zip(bind_position, position_delta)
+            ]
+            current_position = [
+                float(cmds.getAttr(f"{maya_joint}.translate{axis}")) for axis in "XYZ"
+            ]
+            if any(abs(current - desired) > 1.0e-5 for current, desired in zip(current_position, position)):
                 cmds.setAttr(f"{maya_joint}.translateX", position[0])
                 cmds.setAttr(f"{maya_joint}.translateY", position[1])
                 cmds.setAttr(f"{maya_joint}.translateZ", position[2])
@@ -208,26 +222,23 @@ class VpdConverter:
                         )
 
             # 回転の適用
-            rotation = self._convert_quaternion_to_euler(bone_pose.quaternion)
-            rotation = self._convert_rotation_mmd_to_maya(rotation)
-
-            # JointOrientを考慮した回転の適用
-            joint_orient = [
-                get_attribute(maya_joint, "jointOrientX") or 0.0,
-                get_attribute(maya_joint, "jointOrientY") or 0.0,
-                get_attribute(maya_joint, "jointOrientZ") or 0.0,
+            rotation = self._convert_quaternion_to_joint_rotate(
+                maya_joint, bone_pose.quaternion
+            )
+            current_rotation = [
+                float(cmds.getAttr(f"{maya_joint}.rotate{axis}")) for axis in "XYZ"
             ]
-
-            if any(joint_orient):
-                # JointOrientがある場合は補正が必要
-                rotation = self._apply_joint_orient_correction(rotation, joint_orient)
-
-            cmds.setAttr(f"{maya_joint}.rotateX", rotation[0])
-            cmds.setAttr(f"{maya_joint}.rotateY", rotation[1])
-            cmds.setAttr(f"{maya_joint}.rotateZ", rotation[2])
+            rotation_changed = any(
+                abs(current - desired) > 1.0e-5
+                for current, desired in zip(current_rotation, rotation)
+            )
+            if rotation_changed:
+                cmds.setAttr(f"{maya_joint}.rotateX", rotation[0])
+                cmds.setAttr(f"{maya_joint}.rotateY", rotation[1])
+                cmds.setAttr(f"{maya_joint}.rotateZ", rotation[2])
 
             # キーフレームを作成
-            if create_keyframe:
+            if create_keyframe and rotation_changed:
                 for i, attr in enumerate(["rotateX", "rotateY", "rotateZ"]):
                     cmds.setKeyframe(
                         maya_joint,
@@ -243,18 +254,6 @@ class VpdConverter:
             logger.warning(f"Failed to apply bone '{bone_pose.bone_name}': {e}")
             return None
 
-    def _is_movable_bone(self, bone_name: str) -> bool:
-        """移動可能なボーンかどうかを判定
-
-        Args:
-            bone_name (str): ボーン名
-
-        Returns:
-            bool: 移動可能な場合True
-        """
-        movable_bones = ["センター", "center", "Center", "全ての親", "master", "Master"]
-        return bone_name in movable_bones
-
     def _convert_position_mmd_to_maya(self, position: Sequence[float]) -> List[float]:
         """MMDの位置座標をMayaの座標系に変換
 
@@ -266,32 +265,68 @@ class VpdConverter:
         """
         return list(mmd_point_to_maya(position))
 
-    def _convert_quaternion_to_euler(self, quaternion: Sequence[float]) -> List[float]:
-        """四元数をオイラー角に変換
+    def _convert_quaternion_to_joint_rotate(
+        self, joint: str, quaternion: Sequence[float]
+    ) -> List[float]:
+        """Invert the bind/JO/rotateOrder-aware VMD/VPD export transform."""
 
-        Args:
-            quaternion (list): 四元数 [x, y, z, w]
-
-        Returns:
-            list: オイラー角（度） [x, y, z]
-        """
-        # Maya APIを使用して四元数からオイラー角への変換
-        quat = om.MQuaternion(quaternion[3], quaternion[0], quaternion[1], quaternion[2])
-        euler = quat.asEulerRotation()
-
-        # ラジアンから度に変換
+        if len(quaternion) != 4:
+            raise ValueError("VPD quaternion must contain XYZW")
+        values = [float(value) for value in quaternion]
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("VPD quaternion must contain finite values")
+        context = getattr(self, "_rotation_export_context", {}).get(joint)
+        if context is None:
+            raise ValueError(f"VPD rotation context is unavailable: {joint}")
+        order = int(context["rotateOrder"])
+        if not 0 <= order <= 5:
+            raise ValueError(f"VPD target rotateOrder is invalid: {joint}: {order}")
+        qx, qy, qz, qw = values
+        motion = om.MQuaternion(-qx, -qy, qz, qw)
+        total = (
+            context["bindCorrection"]
+            * motion
+            * context["parentCorrection"]
+        )
+        rotate = total * context["jointOrient"].inverse()
+        euler = rotate.asEulerRotation()
+        order_map = (
+            om.MEulerRotation.kXYZ,
+            om.MEulerRotation.kYZX,
+            om.MEulerRotation.kZXY,
+            om.MEulerRotation.kXZY,
+            om.MEulerRotation.kYXZ,
+            om.MEulerRotation.kZYX,
+        )
+        euler.reorderIt(order_map[order])
+        reference = om.MEulerRotation(
+            *(
+                math.radians(float(cmds.getAttr(f"{joint}.rotate{axis}")))
+                for axis in "XYZ"
+            ),
+            order_map[order],
+        )
+        euler = euler.closestSolution(reference)
         return [math.degrees(euler.x), math.degrees(euler.y), math.degrees(euler.z)]
 
-    def _convert_rotation_mmd_to_maya(self, rotation: Sequence[float]) -> List[float]:
-        """MMDの回転をMayaの座標系に変換
+    def _validate_pose_conversions(
+        self,
+        bone_poses: Sequence[BonePose],
+        joints: Sequence[str],
+        namespace: Optional[str],
+    ) -> None:
+        """Validate every mapped pose conversion before the first scene write."""
 
-        Args:
-            rotation (list): MMDの回転（度） [x, y, z]
-
-        Returns:
-            list: Mayaの回転（度） [x, y, z]
-        """
-        return list(mmd_euler_xyz_to_maya(rotation))
+        for bone_pose in bone_poses:
+            joint = self._find_maya_joint(bone_pose.bone_name, joints, namespace)
+            if joint is None:
+                continue
+            position = [float(value) for value in bone_pose.position]
+            if len(position) != 3 or not all(math.isfinite(value) for value in position):
+                raise ValueError(
+                    f"VPD position must contain three finite values: {bone_pose.bone_name}"
+                )
+            self._convert_quaternion_to_joint_rotate(joint, bone_pose.quaternion)
 
     def _setup_animation_layer(self, layer_name: str) -> None:
         """アニメーションレイヤーを作成または選択
@@ -318,17 +353,3 @@ class VpdConverter:
             objects (list): 追加するオブジェクトのリスト
         """
         add_transform_attrs_to_anim_layer(self.anim_layer, objects)
-
-    def _apply_joint_orient_correction(self, rotation: Sequence[float], joint_orient: Sequence[float]) -> List[float]:
-        """JointOrientを考慮した回転の補正
-
-        Args:
-            rotation (list): 回転値（度） [x, y, z]
-            joint_orient (list): JointOrient値（度） [x, y, z]
-
-        Returns:
-            list: 補正された回転値（度） [x, y, z]
-        """
-        # JointOrientの影響を除去
-        # これは簡略化された実装で、より正確な変換が必要な場合がある
-        return [rotation[0] - joint_orient[0], rotation[1] - joint_orient[1], rotation[2] - joint_orient[2]]

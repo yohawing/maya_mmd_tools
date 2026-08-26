@@ -31,6 +31,7 @@
     "export_workflow": "匯出",
     "export_model": "模型",
     "export_motion": "動畫",
+    "export_pose": "姿勢",
     "info": "資訊",
     "material": "材質",
     "bone": "骨骼",
@@ -60,6 +61,7 @@
     "export_pmx": "匯出模型",
     "validate_animation": "驗證動畫",
     "export_vmd": "匯出動畫",
+    "export_vpd": "匯出姿勢",
     "ok": "確定",
     "apply": "套用",
     "cancel": "取消",
@@ -197,6 +199,7 @@
   },
   "messages": {
     "vmd_bake_export_help": "匯出動畫前烘焙目前時間軸。啟用範圍時，只評估指定範圍。",
+    "vpd_current_pose_help": "匯出目前影格評估的目前模型姿勢。",
     "import_success": "匯入完成",
     "create_model_unavailable": "此工作階段無法建立 MMD 模型",
     "create_model_templates_unavailable": "無法載入內建模型範本。請重新載入外掛程式後再試",

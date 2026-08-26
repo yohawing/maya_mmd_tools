@@ -16,7 +16,8 @@ from .vmd_validator import VMD_EXPORT_BAKE_TIMELINE
 
 MODEL_FORMATS = frozenset({"pmx"})
 VMD_FORMATS = frozenset({"vmd"})
-SUPPORTED_FORMATS = MODEL_FORMATS | VMD_FORMATS
+VPD_FORMATS = frozenset({"vpd"})
+SUPPORTED_FORMATS = MODEL_FORMATS | VMD_FORMATS | VPD_FORMATS
 VMD_EXPORT_TARGETS = frozenset({"character", "camera", "light", "camera+light"})
 
 
@@ -65,6 +66,8 @@ def _normalize_format(options: Mapping[str, Any]) -> str:
 
 def _normalize_export_strategy(export_format: str, options: Mapping[str, Any]) -> str:
     """Resolve the semantic strategy for a VMD export request."""
+    if export_format == "vpd":
+        return "current_pose"
     if export_format != "vmd":
         return "model"
     return str(options.get("export_strategy") or VMD_EXPORT_BAKE_TIMELINE).lower()
@@ -330,7 +333,9 @@ class ScenePreflight:
         # Ownership determines which animation path may be sampled. PMX model
         # export does not collect timeline motion, so an active authoring rig
         # must not block the model payload.
-        if export_format == "vmd" and export_target == "character":
+        if export_format == "vpd" or (
+            export_format == "vmd" and export_target == "character"
+        ):
             control_rig = (
                 ownership.get("control_rig")
                 if isinstance(ownership, Mapping)
@@ -344,7 +349,7 @@ class ScenePreflight:
                         _issue(
                             "OWNERSHIP_CONFLICT",
                             "ownership.control_rig",
-                            "Control Rig owns the authoring path, but its direct VMD export route could not be resolved",
+                            "Control Rig owns the authoring path, but its direct export route could not be resolved",
                             "Repair the Control Rig export mapping, or switch to MMD Rig only if direct export is not required.",
                             details={
                                 "owner": "control_rig",
@@ -415,6 +420,7 @@ class ScenePreflight:
 __all__ = [
     "MODEL_FORMATS",
     "VMD_FORMATS",
+    "VPD_FORMATS",
     "SUPPORTED_FORMATS",
     "VMD_EXPORT_TARGETS",
     "ScenePreflight",

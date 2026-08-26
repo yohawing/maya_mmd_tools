@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added current-character pose export to VPD through the normal Export workflow, with model-scoped MMD identity checks, Shift-JIS validation, parse verification, and atomic publication.
+
 ## [0.7.0] - 2026-08-25
 
 ### Added

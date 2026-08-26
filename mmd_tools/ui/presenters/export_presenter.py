@@ -1,4 +1,4 @@
-"""Presenter for the single-action PMX/VMD export workflow."""
+"""Presenter for the single-action PMX/VMD/VPD export workflow."""
 
 from ..qt_compat import QApplication, QMessageBox, QObject
 from ...adapters.maya_vmd_prepare_backend import create_maya_bake_timeline_vmd_action
@@ -44,6 +44,7 @@ class ExportPresenter(QObject):
         cancel_signal = getattr(self.view, "cancel_requested", None)
         if cancel_signal is not None:
             cancel_signal.connect(self.cancel)
+        self._active_export_format = None
         current_model_changed = getattr(app_state, "current_model_changed", None)
         if current_model_changed is not None:
             current_model_changed.connect(lambda _root: self.view.invalidate_all_panes())
@@ -55,12 +56,15 @@ class ExportPresenter(QObject):
         progress_token = None
         operation_active = False
         export_format = self._view_export_format()
+        self._cancel_requested = False
+        self._active_export_format = export_format
         try:
             self._cancel_requested = False
             request = self.view.build_request(
                 getattr(self.app_state, "current_model_root", None)
             )
             export_format = self._request_export_format(request, export_format)
+            self._active_export_format = export_format
             target = str((getattr(request, "options", None) or {}).get("export_target") or "").lower()
             self._cancellable_scene_export = export_format == "vmd" and target in {
                 "camera",
@@ -70,6 +74,8 @@ class ExportPresenter(QObject):
             }
             if self._cancellable_scene_export:
                 request.options["cancel_requested"] = lambda: self._cancel_requested
+            elif export_format == "vpd":
+                request.options["_cancel_requested"] = lambda: self._cancel_requested
             operation_active = True
             self.view.set_operation_active(True)
             self.view.set_state(STATE_EXPORTING)
@@ -105,15 +111,16 @@ class ExportPresenter(QObject):
                 self.view.set_operation_active(False)
             if progress_token is not None:
                 self.app_state.end_progress(progress_token)
+            self._active_export_format = None
 
         self.view.set_result(result)
         self._emit_status(result)
         return result
 
     def cancel(self) -> None:
-        """Request cancellation for an in-flight Camera/Light export."""
+        """Request cancellation for an in-flight scene VMD or VPD export."""
 
-        if self._cancellable_scene_export:
+        if self._cancellable_scene_export or self._active_export_format == "vpd":
             self._cancel_requested = True
 
     def _confirm_warnings(self, report: ExportValidationReport, request) -> bool:
@@ -140,11 +147,11 @@ class ExportPresenter(QObject):
         update_view = getattr(self.view, "set_progress", None)
         if callable(update_view):
             update_view(stage)
-        if self._cancellable_scene_export:
+        if self._cancellable_scene_export or self._active_export_format == "vpd":
             # Camera/Light collection polls this callback once per evaluated
             # frame, allowing the visible Cancel button to stop before the
-            # private sibling is published. Character export retains its
-            # no-reentry synchronous path.
+            # private sibling is published. VPD polls at its atomic phase
+            # boundaries. Character VMD retains its no-reentry path.
             QApplication.processEvents()
         if token is None:
             return
@@ -162,9 +169,10 @@ class ExportPresenter(QObject):
     def _publish_failure(self, status_prefix, error, request, export_format):
         options = dict(getattr(request, "options", None) or {})
         export_format = str(options.get("export_format") or export_format or "").lower() or None
-        strategy = (
-            VMD_EXPORT_BAKE_TIMELINE if export_format == "vmd" else "model"
-        )
+        strategy = {
+            "vmd": VMD_EXPORT_BAKE_TIMELINE,
+            "vpd": "current_pose",
+        }.get(export_format, "model")
         lower_report = getattr(error, "report", None)
         if isinstance(lower_report, ExportValidationReport):
             return ExportWorkflowResult(

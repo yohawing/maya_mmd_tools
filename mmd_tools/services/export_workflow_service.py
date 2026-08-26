@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..actions.export_model_action import ExportModelAction, ExportModelRequest
 from ..actions.bake_timeline_vmd_export_action import BakeTimelineVmdExportCancelled
+from ..actions.export_vpd_action import ExportVpdAction, ExportVpdRequest
 from ..validation.export_validator import (
     ExportValidationAcknowledgementRequired,
     ExportValidationIssue,
@@ -157,15 +158,20 @@ def _report_output_failure(
 
 
 def _scene_report_for_control_rig(
-    report: ExportValidationReport, options: Mapping[str, Any], vmd_action: Any
+    report: ExportValidationReport, options: Mapping[str, Any], action: Any
 ) -> ExportValidationReport:
     """Allow ownership paths the one-shot action can collect safely."""
 
-    if str(options.get("export_format") or "").lower() != "vmd":
+    export_format = str(options.get("export_format") or "").lower()
+    if export_format not in {"vmd", "vpd"}:
         return report
-    if str(options.get("export_strategy") or "").lower() != VMD_EXPORT_BAKE_TIMELINE:
+    strategy = str(options.get("export_strategy") or "").lower()
+    if (
+        export_format == "vmd"
+        and strategy != VMD_EXPORT_BAKE_TIMELINE
+    ) or (export_format == "vpd" and strategy != "current_pose"):
         return report
-    can_collect = getattr(vmd_action, "can_prepare_for_collection", None)
+    can_collect = getattr(action, "can_prepare_for_collection", None)
     if not callable(can_collect):
         return report
     try:
@@ -228,9 +234,11 @@ class ExportWorkflowService:
         scene_service: Any = None,
         model_action: Optional[ExportModelAction] = None,
         vmd_action: Any = None,
+        vpd_action: Any = None,
     ):
         self.model_action = model_action or ExportModelAction()
         self.vmd_action = vmd_action
+        self.vpd_action = vpd_action or ExportVpdAction()
         self.scene_preflight = scene_preflight or ScenePreflight(scene_service=scene_service)
 
     @staticmethod
@@ -243,12 +251,15 @@ class ExportWorkflowService:
         if export_format == "vmd":
             options["export_format"] = "vmd"
             options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
+        elif export_format == "vpd":
+            options["export_format"] = "vpd"
+            options["export_strategy"] = "current_pose"
         return options
 
     @staticmethod
     def _target_options(options: Mapping[str, Any], metadata: Mapping[str, Any]) -> Dict[str, Any]:
         enriched = dict(options)
-        if metadata.get("format") in {"pmx", "vmd"} and enriched.get("current_model_root"):
+        if metadata.get("format") in {"pmx", "vmd", "vpd"} and enriched.get("current_model_root"):
             enriched["target_model"] = str(enriched["current_model_root"])
         if metadata.get("target_identity") is not None:
             enriched.setdefault("target_identity", metadata["target_identity"])
@@ -304,9 +315,8 @@ class ExportWorkflowService:
         # capability check.  Use the same enriched options that collection
         # receives so EDIT / CONTROL_OWNED does not remain falsely blocked.
         action_options = self._target_options(options, metadata)
-        report = _scene_report_for_control_rig(
-            scene.report, action_options, self.vmd_action
-        )
+        action = self.vpd_action if metadata.get("format") == "vpd" else self.vmd_action
+        report = _scene_report_for_control_rig(scene.report, action_options, action)
         return options, metadata, report
 
     def _collect_model(self, request: ExportWorkflowRequest, options: Mapping[str, Any]) -> Any:
@@ -521,8 +531,8 @@ class ExportWorkflowService:
             if acknowledge_warnings:
                 action_options["ack_warnings"] = True
             action_options["_warning_callback"] = warning_callback
-            action_options["_phase_callback"] = tracker.transition
             if export_format == "pmx":
+                action_options["_phase_callback"] = tracker.transition
                 self._emit_progress(progress_callback, "payload_collection")
                 tracker.transition("collect", True)
                 try:
@@ -534,6 +544,22 @@ class ExportWorkflowService:
                 self._emit_progress(progress_callback, "writer")
                 action_result = self.model_action.execute(
                     ExportModelRequest(request.file_path, action_options)
+                )
+            elif export_format == "vpd":
+                self._emit_progress(progress_callback, "payload_collection")
+
+                def phase_callback(name: str, started: bool) -> None:
+                    tracker.transition(name, started)
+                    if not started:
+                        return
+                    if name in {"encode", "flush"}:
+                        self._emit_progress(progress_callback, "writer")
+                    elif name in {"output_verify", "replace", "cleanup"}:
+                        self._emit_progress(progress_callback, "report_ready")
+
+                action_options["_phase_callback"] = phase_callback
+                action_result = self.vpd_action.execute(
+                    ExportVpdRequest(request.file_path, action_options)
                 )
             else:
                 return tracker.attach(ExportWorkflowResult(STATE_BLOCKED, report, metadata))
@@ -552,15 +578,16 @@ class ExportWorkflowService:
             export_strategy=strategy,
         )
         action_error = getattr(action_result, "error", None)
+        cancelled = bool(getattr(action_result, "cancelled", False))
         succeeded = bool(getattr(action_result, "succeeded", False)) and action_error is None
-        if not succeeded and action_error is not None:
+        if not succeeded and action_error is not None and not cancelled:
             report = _report_output_failure(
                 report, action_error, export_format=export_format, export_strategy=strategy
             )
         self._emit_progress(progress_callback, "report_ready")
         return tracker.attach(
             ExportWorkflowResult(
-                STATE_SUCCEEDED if succeeded else STATE_FAILED,
+                STATE_SUCCEEDED if succeeded else (STATE_CANCELLED if cancelled else STATE_FAILED),
                 report,
                 metadata,
                 action_result=action_result,
@@ -574,6 +601,7 @@ __all__ = [
     "ExportWorkflowResult",
     "ExportWorkflowService",
     "STATE_BLOCKED",
+    "STATE_CANCELLED",
     "STATE_EDITING",
     "STATE_EXPORTING",
     "STATE_FAILED",
