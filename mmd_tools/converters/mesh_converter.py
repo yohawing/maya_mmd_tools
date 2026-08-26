@@ -18,7 +18,6 @@ from mmd_tools.core.texture_path_cache import (
     resolve_texture_to_cache,
 )
 from mmd_tools.core.pmx_data import PmxData
-from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.constants import (
     ATTR_MMD_SHARED_TOON_FLAG,
     ATTR_MMD_SPHERE_TEXTURE_INDEX,
@@ -46,7 +45,9 @@ from mmd_tools.core.constants import (
     ATTR_MMD_ADDITIONAL_UVS_JSON,
     ATTR_MMD_PMX_ADDITIONAL_UV_COUNT,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
+    ATTR_MMD_SOURCE_TO_LOCAL_INDICES,
 )
+from mmd_tools.core.morph_weld_plan import build_sparse_morph_signatures
 from mmd_tools.converters.mesh_material_properties import (
     PMX_DOUBLE_SIDED_DRAW_FLAG as _PMX_DOUBLE_SIDED_DRAW_FLAG,
     PMX_EDGE_DRAWING_DRAW_FLAG as _PMX_EDGE_DRAWING_DRAW_FLAG,
@@ -1365,6 +1366,33 @@ class MeshConverter:
         return [int(index) for index in source_indices]
 
     @staticmethod
+    def _persist_source_to_local_indices(
+        mesh_node: str,
+        source_to_local_indices,
+    ) -> None:
+        """Persist the complete PMX-source to local-vertex fan-out map."""
+        values = [int(index) for index in source_to_local_indices]
+        maya_attribute_utils.add_typed_attribute(
+            mesh_node,
+            ATTR_MMD_SOURCE_TO_LOCAL_INDICES,
+            "longArray",
+        )
+        maya_attribute_utils.set_attribute(
+            mesh_node,
+            ATTR_MMD_SOURCE_TO_LOCAL_INDICES,
+            values,
+            "longArray",
+        )
+        persisted = maya_attribute_utils.get_int_array_attribute(
+            mesh_node,
+            ATTR_MMD_SOURCE_TO_LOCAL_INDICES,
+        )
+        if persisted != values:
+            raise ValueError(
+                f"failed to persist {ATTR_MMD_SOURCE_TO_LOCAL_INDICES} on '{mesh_node}'"
+            )
+
+    @staticmethod
     def _persist_additional_uvs(
         mesh_node: str,
         all_vertices,
@@ -1422,8 +1450,18 @@ class MeshConverter:
         a topology weld from changing the imported skin result.
         """
         return (
+            int(getattr(vertex, "weight_transform_type", 0)),
             tuple(int(index) for index in getattr(vertex, "bone_indices", []) or []),
             tuple(float(weight) for weight in getattr(vertex, "bone_weights", []) or []),
+            tuple(float(value) for value in getattr(vertex, "sdef_c", ()))
+            if int(getattr(vertex, "weight_transform_type", 0)) == 3
+            else (),
+            tuple(float(value) for value in getattr(vertex, "sdef_r0", ()))
+            if int(getattr(vertex, "weight_transform_type", 0)) == 3
+            else (),
+            tuple(float(value) for value in getattr(vertex, "sdef_r1", ()))
+            if int(getattr(vertex, "weight_transform_type", 0)) == 3
+            else (),
         )
 
     def _build_vertex_weld_keys(self, all_vertices, all_faces, all_materials, morphs) -> Dict[int, tuple]:
@@ -1431,10 +1469,10 @@ class MeshConverter:
 
         PMX stores UVs on vertices, so a UV seam commonly duplicates the same
         position. Maya supports per-face-vertex UV assignments and therefore
-        does not need those geometric duplicates. Vertices with authored
-        vertex morphs are kept separate until a source-to-local fan-out map is
-        available; merging them here would otherwise make a morph target one
-        of the seam copies only.
+        does not need those geometric duplicates. Vertices are keyed by a
+        sparse, exact signature of every indexed Vertex/UV/Additional-UV
+        morph, so equivalent seam copies share one Maya point while
+        conflicting source deltas remain separate.
         """
         material_sets = [set() for _ in all_vertices]
         face_offset = 0
@@ -1447,31 +1485,10 @@ class MeshConverter:
                         material_sets[source_index].add(material_index)
             face_offset += face_count
 
-        morph_vertex_indices = set()
-        for morph in morphs or []:
-            morph_type = getattr(morph, "morph_type", None)
-            if morph_type not in {
-                PmxMorphType.VertexMorph,
-                PmxMorphType.UVMorph,
-                PmxMorphType.AdditionalUVMorph1,
-                PmxMorphType.AdditionalUVMorph2,
-                PmxMorphType.AdditionalUVMorph3,
-                PmxMorphType.AdditionalUVMorph4,
-            }:
-                continue
-            for offset in getattr(morph, "offsets", ()) or ():
-                try:
-                    morph_vertex_indices.add(int(offset["vertex_index"]))
-                except (KeyError, TypeError, ValueError):
-                    continue
+        morph_signatures = build_sparse_morph_signatures(morphs or (), len(all_vertices))
 
         keys = {}
         for source_index, vertex in enumerate(all_vertices):
-            if source_index in morph_vertex_indices:
-                # A unique key keeps every morph-bearing source vertex local.
-                keys[source_index] = ("morph_source", source_index)
-                continue
-
             additional_uvs = tuple(
                 tuple(float(value) for value in uv)
                 for uv in getattr(vertex, "additional_uvs", ()) or ()
@@ -1483,6 +1500,7 @@ class MeshConverter:
                 float(getattr(vertex, "edge_magnification", 1.0)),
                 additional_uvs,
                 tuple(sorted(material_sets[source_index])),
+                morph_signatures[source_index],
             )
         return keys
 
@@ -1510,6 +1528,7 @@ class MeshConverter:
         local_source_indices = []
         local_by_key = {}
         source_to_local = {}
+        source_to_local_indices = [-1] * len(all_vertices)
         source_to_uv = {}
         uv_by_key = {}
         uvs = []
@@ -1529,6 +1548,7 @@ class MeshConverter:
                 local_by_key[weld_key] = local_index
                 local_source_indices.append(source_index)
             source_to_local[source_index] = local_index
+            source_to_local_indices[source_index] = local_index
 
             uv = all_vertices[source_index].uv
             uv_key = (float(uv[0]), 1.0 - float(uv[1]))
@@ -1578,6 +1598,7 @@ class MeshConverter:
             "face_uv_connects": face_uv_connects,
             "source_vertex_indices": local_source_indices,
             "source_to_local": source_to_local,
+            "source_to_local_indices": source_to_local_indices,
             "material_face_ranges": material_face_ranges,
             "welded_vertex_count": len(candidates) - len(local_source_indices),
         }
@@ -1733,20 +1754,15 @@ class MeshConverter:
             },
         )
         self._use_cpp_uv_weld = self._cpp_uv_weld_command_available()
-        if self._use_cpp_uv_weld:
-            # Keep the source topology intact until the C++ command has read
-            # the PMX deformation payload and rebuilt Maya's mesh.
-            weld_keys = {
-                source_index: ("source", source_index)
-                for source_index in range(len(all_vertices))
-            }
-        else:
-            weld_keys = self._build_vertex_weld_keys(
-                all_vertices,
-                all_faces,
-                all_materials,
-                getattr(pmx_data, "morphs", None),
-            )
+        # Plan exact morph-equivalent welds once per import. The native pass
+        # remains conservative for morph-bearing representatives and only
+        # composes this plan through any additional non-morph seam welds.
+        weld_keys = self._build_vertex_weld_keys(
+            all_vertices,
+            all_faces,
+            all_materials,
+            getattr(pmx_data, "morphs", None),
+        )
 
         # マテリアルごとの透過モードを先に算出（使用UV領域のテクスチャαを見る）。
         self._precompute_transparency_modes(all_vertices, all_faces, all_materials, all_textures)
@@ -1893,6 +1909,10 @@ class MeshConverter:
         self.profile["created_mesh_count"] += 1
         self.profile["source_vertex_count"] = len(all_vertices)
         self.profile["mesh_vertex_slots_estimated"] += len(mesh_data["vertices"])
+        self._persist_source_to_local_indices(
+            created_mesh,
+            mesh_data["source_to_local_indices"],
+        )
         native_welded_count = self._run_cpp_uv_weld(
             created_mesh,
             mesh_data["source_vertex_indices"],
@@ -1908,11 +1928,9 @@ class MeshConverter:
             post_weld_source_indices,
             additional_uv_count,
         )
-        self.profile["uv_welded_vertex_count"] += (
-            native_welded_count
-            if native_welded_count is not None
-            else mesh_data["welded_vertex_count"]
-        )
+        self.profile["uv_welded_vertex_count"] += mesh_data["welded_vertex_count"]
+        if native_welded_count is not None:
+            self.profile["uv_welded_vertex_count"] += native_welded_count
         self.profile["face_count"] += len(mesh_data["face_counts"])
 
         if (
@@ -2066,6 +2084,10 @@ class MeshConverter:
             self.profile["created_mesh_count"] += 1
             self.profile["source_vertex_count"] = len(all_vertices)
             self.profile["mesh_vertex_slots_estimated"] += len(mesh_data["vertices"])
+            self._persist_source_to_local_indices(
+                created_mesh,
+                mesh_data["source_to_local_indices"],
+            )
             native_welded_count = self._run_cpp_uv_weld(
                 created_mesh,
                 mesh_data["source_vertex_indices"],
@@ -2081,11 +2103,9 @@ class MeshConverter:
                 post_weld_source_indices,
                 additional_uv_count,
             )
-            self.profile["uv_welded_vertex_count"] += (
-                native_welded_count
-                if native_welded_count is not None
-                else mesh_data["welded_vertex_count"]
-            )
+            self.profile["uv_welded_vertex_count"] += mesh_data["welded_vertex_count"]
+            if native_welded_count is not None:
+                self.profile["uv_welded_vertex_count"] += native_welded_count
             self.profile["face_count"] += len(mesh_data["face_counts"])
             _set_mesh_double_sided(created_mesh, _material_is_double_sided(material))
             maya_attribute_utils.set_custom_attributes(

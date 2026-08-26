@@ -117,13 +117,27 @@ def main() -> int:
         root = cmds.group(empty=True, name="focused_python_uv_weld_root")
         converter = MeshConverter(str(FIXTURE))
         _mesh_group, converted_mesh = converter.convert_pmx_mesh(parsed, root)
-        if int(cmds.polyEvaluate(converted_mesh, vertex=True)) != actual_new:
-            raise RuntimeError("Python mesh converter did not use the C++ UV weld command")
-        if int(converter.profile["uv_welded_vertex_count"]) != old_vertex_count - actual_new:
-            raise RuntimeError("Python converter did not report native UV weld count")
+        converted_count = int(cmds.polyEvaluate(converted_mesh, vertex=True))
+        if converted_count > actual_new:
+            raise RuntimeError("Python morph-aware plan retained vertices the conservative C++ weld removed")
+        if int(converter.profile["uv_welded_vertex_count"]) != old_vertex_count - converted_count:
+            raise RuntimeError("Python converter did not report the combined planned/native weld count")
+        if not cmds.attributeQuery("mmd_source_to_local_indices", node=converted_mesh, exists=True):
+            raise RuntimeError("Python/C++ weld did not preserve the complete source-to-local mapping")
+        source_to_local = cmds.getAttr(f"{converted_mesh}.mmd_source_to_local_indices") or []
+        if len(source_to_local) != len(parsed.vertices):
+            raise RuntimeError("source-to-local mapping does not cover every PMX source vertex")
+        if any(int(value) < 0 for value in source_to_local):
+            raise RuntimeError("unified source-to-local mapping contains an unavailable source")
+        mapped_locals = {int(value) for value in source_to_local if int(value) >= 0}
+        if len(mapped_locals) != converted_count:
+            raise RuntimeError("source-to-local mapping was not composed through the C++ weld")
         cmds.delete(root)
 
-        print(f"OK: C++ UV weld reduced {old_vertex_count} -> {actual_new} vertices")
+        print(
+            "OK: C++ UV weld reduced "
+            f"{old_vertex_count} -> {actual_new}; morph-aware import -> {converted_count} vertices"
+        )
         return 0
     finally:
         maya.standalone.uninitialize()

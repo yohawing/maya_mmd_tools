@@ -52,6 +52,7 @@ using nlohmann::json;
 namespace {
 
 constexpr const char* kSourceVertexAttribute = "mmd_source_vertex_indices";
+constexpr const char* kSourceToLocalAttribute = "mmd_source_to_local_indices";
 
 struct UvSetData {
     MString     name;
@@ -281,9 +282,9 @@ WeldKey makeWeldKey(const RawGeometry& raw, size_t sourceIndex)
                      sourceIndex * 4U, 4U);
     }
 
-    // Vertex and UV morphs are source-vertex operations. Keep their source
-    // vertices distinct so semantic offsets can be remapped after topology
-    // welding without losing the addressed source index.
+    // Python has already welded sources with exactly equivalent morph
+    // signatures. Keep each remaining morph-bearing representative distinct;
+    // this native pass does not need to rescan or rebuild all morph signatures.
     if (sourceIndex < raw.vertexIndexedMorphSources.size() &&
         raw.vertexIndexedMorphSources[sourceIndex]) {
         key.words.push_back(0xC0FFEE01U);
@@ -365,6 +366,82 @@ bool writeSourceVertexIndices(const MObject& transform,
             return false;
         }
         values[static_cast<unsigned int>(i)] = static_cast<int>(sourceIndices[i]);
+    }
+    MFnIntArrayData dataFn;
+    const MObject dataObject = dataFn.create(values, &status);
+    if (!status) {
+        return false;
+    }
+    return plug.setMObject(dataObject) == MS::kSuccess;
+}
+
+bool readSourceToLocalIndices(const MObject& transform, size_t sourceCount,
+                              size_t vertexCount, std::vector<int>& values)
+{
+    values.clear();
+    MStatus status;
+    MFnDependencyNode dependencyFn(transform, &status);
+    if (!status) {
+        return false;
+    }
+    MPlug plug = dependencyFn.findPlug(kSourceToLocalAttribute, true, &status);
+    if (!status || plug.isNull()) {
+        return true;
+    }
+    const MObject dataObject = plug.asMObject(&status);
+    if (!status || dataObject.isNull()) {
+        return false;
+    }
+    MFnIntArrayData dataFn(dataObject, &status);
+    if (!status) {
+        return false;
+    }
+    const MIntArray rawValues = dataFn.array(&status);
+    if (!status || rawValues.length() != sourceCount) {
+        return false;
+    }
+    values.reserve(sourceCount);
+    for (unsigned int source = 0; source < rawValues.length(); ++source) {
+        const int local = rawValues[source];
+        if (local < -1 || (local >= 0 && static_cast<size_t>(local) >= vertexCount)) {
+            return false;
+        }
+        values.push_back(local);
+    }
+    return true;
+}
+
+bool writeSourceToLocalIndices(const MObject& transform,
+                               const std::vector<int>& sourceToLocal)
+{
+    MStatus status;
+    MFnDependencyNode dependencyFn(transform, &status);
+    if (!status) {
+        return false;
+    }
+    MPlug plug = dependencyFn.findPlug(kSourceToLocalAttribute, true, &status);
+    if (!status || plug.isNull()) {
+        MFnTypedAttribute typedAttribute;
+        const MObject attribute = typedAttribute.create(
+            kSourceToLocalAttribute, kSourceToLocalAttribute, MFnData::kIntArray, &status);
+        typedAttribute.setStorable(true);
+        if (!status) {
+            return false;
+        }
+        status = dependencyFn.addAttribute(attribute);
+        if (!status) {
+            return false;
+        }
+        plug = dependencyFn.findPlug(kSourceToLocalAttribute, true, &status);
+    }
+    if (!status || plug.isNull()) {
+        return false;
+    }
+
+    MIntArray values;
+    values.setLength(static_cast<unsigned int>(sourceToLocal.size()));
+    for (size_t source = 0; source < sourceToLocal.size(); ++source) {
+        values[static_cast<unsigned int>(source)] = sourceToLocal[source];
     }
     MFnIntArrayData dataFn;
     const MObject dataObject = dataFn.create(values, &status);
@@ -532,6 +609,19 @@ MStatus weldMesh(const MString& meshName, const MString& pmxPath,
             return MS::kSuccess;
         }
     }
+    std::vector<int> sourceToOldLocal;
+    if (!readSourceToLocalIndices(
+            transformObject, sourceCount, oldVertexCount, sourceToOldLocal)) {
+        MGlobal::displayWarning(
+            "[mmdWeldUvSeamVertices] Source-to-local mapping is invalid; keeping original topology.");
+        return MS::kSuccess;
+    }
+    if (sourceToOldLocal.empty()) {
+        sourceToOldLocal.assign(sourceCount, -1);
+        for (size_t local = 0; local < sourceIndices.size(); ++local) {
+            sourceToOldLocal[sourceIndices[local]] = static_cast<int>(local);
+        }
+    }
 
     std::unordered_map<WeldKey, unsigned int, WeldKeyHash> candidateGroups;
     candidateGroups.reserve(oldVertexCount);
@@ -591,7 +681,19 @@ MStatus weldMesh(const MString& meshName, const MString& pmxPath,
         }
     }
     newVertexCount = localCount;
+    std::vector<int> sourceToNewLocal(sourceCount, -1);
+    for (size_t source = 0; source < sourceToOldLocal.size(); ++source) {
+        const int oldLocal = sourceToOldLocal[source];
+        if (oldLocal >= 0) {
+            sourceToNewLocal[source] = static_cast<int>(
+                localByVertex[static_cast<unsigned int>(oldLocal)]);
+        }
+    }
     if (newVertexCount >= oldVertexCount) {
+        if (!writeSourceToLocalIndices(transformObject, sourceToNewLocal)) {
+            MGlobal::displayWarning(
+                "[mmdWeldUvSeamVertices] Failed to write source-to-local mapping; keeping original topology.");
+        }
         return MS::kSuccess;
     }
 
@@ -731,10 +833,21 @@ MStatus weldMesh(const MString& meshName, const MString& pmxPath,
         return MS::kFailure;
     }
 
+    if (!writeSourceToLocalIndices(transformObject, sourceToNewLocal)) {
+        writeSourceVertexIndices(transformObject, sourceIndices);
+        MDagModifier cleanup;
+        cleanup.deleteNode(newMeshObject);
+        cleanup.doIt();
+        MGlobal::displayError("[mmdWeldUvSeamVertices] Failed to write source-to-local mapping.");
+        return MS::kFailure;
+    }
+
     MDagModifier deleteOld;
     deleteOld.deleteNode(meshPath.node());
     status = deleteOld.doIt();
     if (!status) {
+        writeSourceVertexIndices(transformObject, sourceIndices);
+        writeSourceToLocalIndices(transformObject, sourceToOldLocal);
         MGlobal::displayError("[mmdWeldUvSeamVertices] Failed to replace original mesh shape.");
         MDagModifier cleanup;
         cleanup.deleteNode(newMeshObject);
