@@ -1,4 +1,4 @@
-"""Maya standalone parity and decision probe for native Material outline writes."""
+"""Maya standalone parity smoke for native Material outline writes."""
 
 from __future__ import annotations
 
@@ -31,9 +31,9 @@ from mmd_tools.converters.mesh_converter import expected_shader_outline_preview 
 from mmd_tools.core import settings  # noqa: E402
 from mmd_tools.io.mmd_importer import import_mmd_file  # noqa: E402
 from tests.common.maya_plugin_setup import load_mmd_tools_plugin  # noqa: E402
-from tools.maya_cpp_patch_candidates_probe import (  # noqa: E402
+from tools.authoring_command_smoke_support import (  # noqa: E402
     MayaCommandRecorder,
-    _measure_case,
+    measure_case,
 )
 
 
@@ -355,7 +355,7 @@ def measure(mode):
         assert snapshot(shader) == holders["outline_target"][index]
         state["current"] = holders["target"][index]
 
-    return _measure_case(
+    return measure_case(
         name="material_outline_n7_{}".format(mode),
         recorder=recorder,
         action=action,

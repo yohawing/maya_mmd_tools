@@ -1,4 +1,4 @@
-"""Maya standalone parity and decision probe for native Material value writes."""
+"""Maya standalone parity smoke for native Material value writes."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from maya.api import OpenMaya as om  # noqa: E402
 from mmd_tools.adapters.maya_authoring_factory import build_maya_authoring_composition  # noqa: E402
 from mmd_tools.core.model_authoring_spec import MmdMaterialSpec  # noqa: E402
 from tests.common.maya_plugin_setup import load_mmd_tools_plugin  # noqa: E402
-from tools.maya_cpp_patch_candidates_probe import MayaCommandRecorder  # noqa: E402
+from tools.authoring_command_smoke_support import MayaCommandRecorder  # noqa: E402
 
 
 FIELDS = (
@@ -266,7 +266,7 @@ for label, fields in FIELDS:
         samples = []
         state = coordinator.read_material_value(root, 0, shader)
         phase_offset = 1 if state.name_english == "Native B" else 0
-        for index in range(10):  # same 3 cold + 7 warm protocol as the candidate probe
+        for index in range(10):  # same 3 cold + 7 warm smoke protocol
             if index < 3:
                 coordinator = build_maya_authoring_composition(cmds).coordinator
             before = state
