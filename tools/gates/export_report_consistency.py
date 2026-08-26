@@ -10,7 +10,7 @@ import re
 import sys
 from typing import Any, Optional, Union
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 

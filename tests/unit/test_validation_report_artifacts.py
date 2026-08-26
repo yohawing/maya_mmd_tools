@@ -12,7 +12,7 @@ from mmd_tools.validation.export_validator import (
 )
 from mmd_tools.validation.issue_catalog import UnknownValidationIssueError
 from mmd_tools.validation.report_artifacts import write_validation_report_artifacts
-from tools.export_report_consistency import validate_report_consistency
+from tools.gates.export_report_consistency import validate_report_consistency
 
 
 def _valid_model_data():

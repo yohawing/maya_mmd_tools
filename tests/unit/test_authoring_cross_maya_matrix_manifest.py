@@ -7,9 +7,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MATRIX_PATH = ROOT / "tools" / "authoring_cross_maya_matrix.json"
-UI_MANIFEST_PATH = ROOT / "tools" / "ui_coverage_manifest.json"
-SEMANTIC_MANIFEST_PATH = ROOT / "tools" / "authoring_test_layer_manifest.json"
+MATRIX_PATH = ROOT / "tools" / "gates" / "authoring_cross_maya_matrix.json"
+UI_MANIFEST_PATH = ROOT / "tools" / "gates" / "ui_coverage_manifest.json"
+SEMANTIC_MANIFEST_PATH = ROOT / "tools" / "gates" / "authoring_test_layer_manifest.json"
 
 SUPPORTED_VERSIONS = ["2024", "2026"]
 PROFILE_POLICY = {

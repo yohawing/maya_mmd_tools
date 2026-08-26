@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from mmd_tools.validation.export_validator import ExportValidationIssue, ExportValidationReport
-from tools.mmd_anim_binding_gate import run_gate
+from tools.gates.mmd_anim_binding_gate import run_gate
 
 
 class MmdAnimBindingGateTest(unittest.TestCase):
@@ -20,7 +20,7 @@ class MmdAnimBindingGateTest(unittest.TestCase):
             model.write_bytes(b"pmx")
             motion.write_bytes(b"vmd")
             with patch(
-                "tools.mmd_anim_binding_gate.verify_mmd_anim_binding_asset",
+                "tools.gates.mmd_anim_binding_gate.verify_mmd_anim_binding_asset",
                 return_value=ExportValidationReport("pmx", (), mode="binding"),
             ) as verifier:
                 status = run_gate(
@@ -64,7 +64,7 @@ class MmdAnimBindingGateTest(unittest.TestCase):
                 mode="binding",
             )
             with patch(
-                "tools.mmd_anim_binding_gate.verify_mmd_anim_binding_asset",
+                "tools.gates.mmd_anim_binding_gate.verify_mmd_anim_binding_asset",
                 return_value=report,
             ):
                 status = run_gate(model=model, motion=None, output=output)

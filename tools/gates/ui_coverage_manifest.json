@@ -67,7 +67,7 @@
       "required_maya_versions": [
         "2024"
       ],
-      "source": "Focused GUI tests named in tools/authoring_test_layer_manifest.json"
+      "source": "Focused GUI tests named in tools/gates/authoring_test_layer_manifest.json"
     },
     {
       "id": "persistence.mixed_authoring_scene",

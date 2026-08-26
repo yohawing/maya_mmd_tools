@@ -142,7 +142,7 @@ def run_mmd_anim_binding_gate(
     )
     command = [
         str(python_executable),
-        "tools/mmd_anim_binding_gate.py",
+        "tools/gates/mmd_anim_binding_gate.py",
         "--binding-root",
         str(binding_dir),
         "--runtime-library",

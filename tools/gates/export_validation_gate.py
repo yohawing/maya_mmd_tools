@@ -396,7 +396,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--strict", action="store_true", help="return non-zero when any blocker is recorded")
     args = parser.parse_args(argv)
 
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     cli = _resolve_cli(root, args.cli)
     assets = tuple(args.asset or DEFAULT_ASSETS)
     report = build_report(

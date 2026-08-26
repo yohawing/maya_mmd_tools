@@ -22,7 +22,7 @@ import traceback
 from typing import Any
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 BUILD_ROOT = (ROOT / "build").resolve()
 REPORT_ROOT = BUILD_ROOT / "reports"
 if str(ROOT) not in sys.path:

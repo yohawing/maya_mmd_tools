@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import authoring_cross_maya_gate as gate
+from tools.gates import authoring_cross_maya_gate as gate
 
 
 ROOT = Path(__file__).resolve().parents[2]

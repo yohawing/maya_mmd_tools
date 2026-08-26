@@ -10,7 +10,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "tools" / "export_validation_gate.py"
+SCRIPT = ROOT / "tools" / "gates" / "export_validation_gate.py"
 SPEC = importlib.util.spec_from_file_location("export_validation_gate", SCRIPT)
 GATE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(GATE)

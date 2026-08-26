@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import authoring_cross_maya_gate as gate
+from tools.gates import authoring_cross_maya_gate as gate
 from tools.nox.authoring_sessions import (
     HEADLESS_QT_REQUIREMENT,
     run_authoring_cross_maya_matrix,

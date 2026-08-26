@@ -11,7 +11,7 @@ from mmd_tools.validation.export_validator import (
     validate_model_data,
 )
 from mmd_tools.validation.report_artifacts import write_validation_report_artifacts
-from tools.export_report_consistency import validate_report_consistency
+from tools.gates.export_report_consistency import validate_report_consistency
 
 
 class ExportIssueAggregationTests(unittest.TestCase):

@@ -14,7 +14,7 @@ from tests.common.ui_action_coverage import (  # noqa: E402
     QtSignalInvocationSpy,
     build_surface_witness,
 )
-from tools.ui_coverage_gate import validate_report  # noqa: E402
+from tools.gates.ui_coverage_gate import validate_report  # noqa: E402
 
 try:  # noqa: E402
     from PySide6.QtTest import QTest

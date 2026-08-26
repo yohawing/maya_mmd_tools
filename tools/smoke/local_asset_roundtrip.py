@@ -2161,7 +2161,7 @@ def _run_pmx_case(case: Mapping[str, Any], out_dir: Path, context: _WorkerContex
     from mmd_tools.core.pmx_data import PmxData
     from mmd_tools.services.export_workflow_service import ExportWorkflowService
     from tests.roundtrip.pmx_roundtrip_runner import _compare_pmx_supported_content
-    from tools.export_release_maya_probe import (
+    from tools.gates.export_release_maya_probe import (
         _build_source_bone_semantics_oracle,
         _capture_bone_semantics_oracle,
         _capture_scene_oracle,
@@ -2648,7 +2648,7 @@ def _run_vmd_case(
     from mmd_tools.adapters.maya_vmd_prepare_backend import (
         create_maya_bake_timeline_vmd_action,
     )
-    from tools.export_release_maya_probe import (
+    from tools.gates.export_release_maya_probe import (
         _capture_camera_light_scene_oracle,
         _capture_scene_oracle,
         _compare_camera_light_semantics,

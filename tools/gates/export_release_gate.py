@@ -26,7 +26,7 @@ import time
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 BUILD_ROOT = (ROOT / "build").resolve()
 MAX_OUTPUT = 1800
 MAYA_VERSIONS = ("2024", "2026")
@@ -1715,7 +1715,7 @@ def _validate_maya_probe_report(
 
 def _report_consistency_step(report_paths: Iterable[Path]) -> dict[str, Any]:
     """Validate all generated report bundles with the canonical checker."""
-    checker_path = ROOT / "tools" / "export_report_consistency.py"
+    checker_path = ROOT / "tools" / "gates" / "export_report_consistency.py"
     if not checker_path.is_file():
         return _not_run("report_consistency", "checker not present yet")
     command = [sys.executable, str(checker_path)]
@@ -1893,7 +1893,7 @@ def build_release_summary(
             f"maya_probe_{version}",
             [
                 str(mayapy),
-                str(ROOT / "tools" / "export_release_maya_probe.py"),
+                str(ROOT / "tools" / "gates" / "export_release_maya_probe.py"),
                 "--out-dir",
                 str(probe_dir),
             ],
@@ -1934,7 +1934,7 @@ def build_release_summary(
         ui_coverage_report = out_dir / "ui-coverage.json"
         coverage_args = [
             sys.executable,
-            str(ROOT / "tools" / "ui_coverage_gate.py"),
+            str(ROOT / "tools" / "gates" / "ui_coverage_gate.py"),
             "--write-report",
             str(ui_coverage_report),
             "--headless-report",
@@ -1963,7 +1963,7 @@ def build_release_summary(
                 "mmd_anim_validation",
                 [
                     sys.executable,
-                    str(ROOT / "tools" / "export_validation_gate.py"),
+                    str(ROOT / "tools" / "gates" / "export_validation_gate.py"),
                     "--cli",
                     mmd_anim_cli,
                     "--strict",

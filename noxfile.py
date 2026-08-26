@@ -1104,7 +1104,7 @@ def export_validation_gate(session: nox.Session) -> None:
     unittest surface. When no explicit CLI is supplied, resolve the pinned
     compatible CLI through ``_downloaded_mmd_anim_cli``; that helper honors
     ``MMD_ANIM_CLI`` as an explicit override. All session arguments are
-    forwarded to ``tools/export_validation_gate.py``; the session remains
+    forwarded to ``tools/gates/export_validation_gate.py``; the session remains
     strict by default so a known external-version mismatch cannot be reported
     as green.
 
@@ -1120,7 +1120,7 @@ def export_validation_gate(session: nox.Session) -> None:
         gate_args.append("--strict")
     session.run(
         sys.executable,
-        "tools/export_validation_gate.py",
+        "tools/gates/export_validation_gate.py",
         *gate_args,
         external=True,
     )
@@ -1143,7 +1143,7 @@ def model_authoring_gate(session: nox.Session) -> None:
         gate_args.append("--strict")
     session.run(
         sys.executable,
-        "tools/model_authoring_gate.py",
+        "tools/gates/model_authoring_gate.py",
         *gate_args,
         external=True,
     )
@@ -1155,7 +1155,7 @@ def ui_coverage_gate(session: nox.Session) -> None:
     args = list(session.posargs) or ["--from-evidence"]
     session.run(
         sys.executable,
-        "tools/ui_coverage_gate.py",
+        "tools/gates/ui_coverage_gate.py",
         *args,
         external=True,
     )
@@ -1183,7 +1183,7 @@ def export_release_gate(session: nox.Session) -> None:
         gate_args = ["--mmd-anim-cli", str(_downloaded_mmd_anim_cli(session)), *gate_args]
     session.run(
         sys.executable,
-        "tools/export_release_gate.py",
+        "tools/gates/export_release_gate.py",
         *gate_args,
         external=True,
     )

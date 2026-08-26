@@ -23,7 +23,7 @@
         "production_main_window"
       ],
       "tool_allowlist": [
-        "tools/export_release_maya_probe.py"
+        "tools/gates/export_release_maya_probe.py"
       ]
     },
     "persistence": {
@@ -35,7 +35,7 @@
     }
   },
   "surface_coverage": {
-    "source_manifest": "tools/ui_coverage_manifest.json",
+    "source_manifest": "tools/gates/ui_coverage_manifest.json",
     "source_selector": {
       "disposition": "qt_case"
     },
@@ -66,7 +66,7 @@
       "cost_evidence": {
         "metric": "target_surface_count",
         "value": 222,
-        "source": "tools/ui_coverage_manifest.json"
+        "source": "tools/gates/ui_coverage_manifest.json"
       }
     },
     {
@@ -222,7 +222,7 @@
       "semantic_boundary": "release_probe_pmx_family_fresh_import",
       "primary_layer": "persistence",
       "state_family": "release_probe_pmx_families",
-      "representative_test": "tools/export_release_maya_probe.py",
+      "representative_test": "tools/gates/export_release_maya_probe.py",
       "redundant_test": [],
       "cost_evidence": {
         "metric": "fresh_import_matrix_cases",

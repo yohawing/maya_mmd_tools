@@ -9,8 +9,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST_PATH = ROOT / "tools" / "authoring_test_layer_manifest.json"
-UI_MANIFEST_PATH = ROOT / "tools" / "ui_coverage_manifest.json"
+MANIFEST_PATH = ROOT / "tools" / "gates" / "authoring_test_layer_manifest.json"
+UI_MANIFEST_PATH = ROOT / "tools" / "gates" / "ui_coverage_manifest.json"
 LAYERS = {"pure_unit", "headless_qt", "real_maya", "persistence"}
 MAYA_VERSIONS = {"2024", "2025", "2026"}
 REQUIRED_CONTRACT_KEYS = {

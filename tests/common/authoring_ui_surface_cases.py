@@ -37,7 +37,7 @@ from tests.common.ui_action_coverage import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST_PATH = ROOT / "tools" / "ui_coverage_manifest.json"
+MANIFEST_PATH = ROOT / "tools" / "gates" / "ui_coverage_manifest.json"
 HEADLESS_CASE_ID = "headless.authoring_ui_surface_matrix"
 
 

@@ -9,7 +9,7 @@ soft-body, Flip, and Impulse policy rejections, and verifies the documented
 SDEF-to-BDEF4 downgrade and camera/light export scope, and
 exports a VMD motion.
 The JSON output is consumed by
-:mod:`tools.export_release_gate`.
+:mod:`tools.gates.export_release_gate`.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import traceback
 from typing import Any, Iterable, Mapping
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 BUILD_ROOT = (ROOT / "build").resolve()
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

@@ -939,7 +939,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 )
             report_result = validate_report(manifest, generated)
         elif args.from_evidence:
-            generated = build_report_from_evidence(manifest, Path(__file__).resolve().parents[1])
+            generated = build_report_from_evidence(manifest, Path(__file__).resolve().parents[2])
             if args.write_report:
                 report_path = Path(args.write_report)
                 report_path.parent.mkdir(parents=True, exist_ok=True)

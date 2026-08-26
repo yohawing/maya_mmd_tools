@@ -6,8 +6,8 @@
     "2026"
   ],
   "source_manifests": {
-    "ui_surfaces": "tools/ui_coverage_manifest.json",
-    "semantic_contracts": "tools/authoring_test_layer_manifest.json"
+    "ui_surfaces": "tools/gates/ui_coverage_manifest.json",
+    "semantic_contracts": "tools/gates/authoring_test_layer_manifest.json"
   },
   "profiles": {
     "focused": {

@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from tools import authoring_cross_maya_gate as gate
+from tools.gates import authoring_cross_maya_gate as gate
 
 
 HEADLESS_QT_REQUIREMENT = "PySide6==6.11.0"

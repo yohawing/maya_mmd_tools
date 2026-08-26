@@ -165,7 +165,7 @@ def _gui_node_id(test_id: str) -> str:
 def load_matrix(root: Path, path: Optional[Path] = None) -> Mapping[str, Any]:
     """Load the checked-in matrix and validate all source links."""
     root = root.resolve()
-    matrix_path = path.resolve() if path is not None else root / "tools" / "authoring_cross_maya_matrix.json"
+    matrix_path = path.resolve() if path is not None else root / "tools" / "gates" / "authoring_cross_maya_matrix.json"
     matrix = load_json(matrix_path)
     if matrix.get("schema_version") != SCHEMA_VERSION or matrix.get("matrix_id") != MATRIX_ID:
         raise CrossMayaGateError("unsupported Authoring cross-Maya matrix schema or id")
