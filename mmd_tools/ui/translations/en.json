@@ -456,6 +456,8 @@
   },
   "checkboxes": {
     "vmd_bake_export": "Bake Export",
+    "vmd_export_camera": "Camera",
+    "vmd_export_light": "Light",
     "use_namespace": "Use Namespace",
     "custom_namespace": "Custom namespace:",
     "import_models": "Import Models",
@@ -783,6 +785,7 @@
     "writing_temporary_file": "Writing temporary file",
     "finalizing": "Finalizing",
     "completed": "Completed",
+    "cancelled": "Cancelled",
     "blocked": "Blocked"
   }
 }

@@ -140,6 +140,8 @@ class TestExportTabGUI(GuiTestBase):
             tab.pane_tabs.setCurrentIndex(1)
             self.assertTrue(tab.bake_export_check.isChecked())
             self.assertFalse(tab.bake_export_check.isEnabled())
+            self.assertFalse(tab.camera_export_check.isChecked())
+            self.assertFalse(tab.light_export_check.isChecked())
             self.assertEqual(tab.export_button.text(), "アニメーションを書き出し")
             tab.bake_export_check.click()
             range_spy = QtSignalInvocationSpy(
@@ -158,8 +160,21 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(request.options["export_format"], "vmd")
             self.assertEqual(request.options["current_model_root"], "model_ROOT")
             self.assertEqual(request.options["export_strategy"], VMD_EXPORT_BAKE_TIMELINE)
+            self.assertEqual(request.options["export_target"], "character")
             self.assertTrue(tab.bake_export_check.isChecked())
             self.assertEqual(request.options["frame_range"], (12, 42))
+            tab.camera_export_check.setChecked(True)
+            self.assertEqual(tab.build_request("model_ROOT").options["export_target"], "camera")
+            tab.light_export_check.setChecked(True)
+            self.assertEqual(
+                tab.build_request("model_ROOT").options["export_target"],
+                "camera+light",
+            )
+            tab.set_operation_active(True)
+            self.assertTrue(tab.cancel_button.isVisible())
+            self.assertTrue(tab.cancel_button.isEnabled())
+            tab.set_operation_active(False)
+            self.assertFalse(tab.cancel_button.isVisible())
             _emit_witness(
                 "export.pane_selector",
                 "selector",

@@ -601,7 +601,26 @@ class MayaVmdExportBackend:
             for history_node in history:
                 nodes.add(self._canonical_required(history_node))
 
-        for marker, option_name in ((_CAMERA_MARKER, "cameras"), (_LIGHT_MARKER, "lights")):
+        export_target = str(options.get("export_target") or "").strip().lower()
+        track_targets = options.get("track_targets")
+        explicit_sections = export_target or track_targets is not None
+        selected_sections = {"character", "camera", "light"}
+        if export_target:
+            selected_sections = {
+                "camera" if export_target == "camera+light" else export_target
+            }
+            if export_target in {"camera+light", "camera_light"}:
+                selected_sections = {"camera", "light"}
+        elif track_targets is not None:
+            if isinstance(track_targets, str):
+                track_targets = (track_targets,)
+            selected_sections = {str(item).strip().lower() for item in track_targets}
+        for marker, option_name, target_name in (
+            (_CAMERA_MARKER, "cameras", "camera"),
+            (_LIGHT_MARKER, "lights", "light"),
+        ):
+            if explicit_sections and target_name not in selected_sections:
+                continue
             if option_name in options:
                 tagged = _as_list(options.get(option_name))
             else:

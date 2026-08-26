@@ -1,12 +1,13 @@
 """Presenter for the single-action PMX/VMD export workflow."""
 
-from ..qt_compat import QMessageBox, QObject
+from ..qt_compat import QApplication, QMessageBox, QObject
 from ...adapters.maya_vmd_prepare_backend import create_maya_bake_timeline_vmd_action
 from ...core.logger import get_logger
 from ...services.export_workflow_service import (
     ExportWorkflowResult,
     ExportWorkflowService,
     STATE_EXPORTING,
+    STATE_CANCELLED,
     STATE_FAILED,
 )
 from ...validation.export_validator import ExportValidationIssue, ExportValidationReport
@@ -36,8 +37,13 @@ class ExportPresenter(QObject):
                 vmd_action=create_maya_bake_timeline_vmd_action(),
             )
         self.workflow_service = workflow_service
+        self._cancel_requested = False
+        self._cancellable_scene_export = False
         self.view.presenter = self
         self.view.export_requested.connect(self.export)
+        cancel_signal = getattr(self.view, "cancel_requested", None)
+        if cancel_signal is not None:
+            cancel_signal.connect(self.cancel)
         current_model_changed = getattr(app_state, "current_model_changed", None)
         if current_model_changed is not None:
             current_model_changed.connect(lambda _root: self.view.invalidate_all_panes())
@@ -50,21 +56,35 @@ class ExportPresenter(QObject):
         operation_active = False
         export_format = self._view_export_format()
         try:
+            self._cancel_requested = False
+            request = self.view.build_request(
+                getattr(self.app_state, "current_model_root", None)
+            )
+            export_format = self._request_export_format(request, export_format)
+            target = str((getattr(request, "options", None) or {}).get("export_target") or "").lower()
+            self._cancellable_scene_export = export_format == "vmd" and target in {
+                "camera",
+                "light",
+                "camera+light",
+                "camera_light",
+            }
+            if self._cancellable_scene_export:
+                request.options["cancel_requested"] = lambda: self._cancel_requested
             operation_active = True
             self.view.set_operation_active(True)
             self.view.set_state(STATE_EXPORTING)
             progress_token = self.app_state.begin_progress(
                 self._PROGRESS_LABELS["scene_preflight"]
             )
-            request = self.view.build_request(
-                getattr(self.app_state, "current_model_root", None)
-            )
-            export_format = self._request_export_format(request, export_format)
 
             def update_progress(stage):
                 self._update_progress(progress_token, stage)
 
-            progress_callback = None if export_format == "vmd" else update_progress
+            progress_callback = (
+                update_progress
+                if self._cancellable_scene_export or export_format != "vmd"
+                else None
+            )
             result = self.workflow_service.execute(
                 request,
                 warning_callback=lambda report: self._confirm_warnings(report, request),
@@ -80,6 +100,7 @@ class ExportPresenter(QObject):
             logger.error("Export workflow failed before result creation: %s", exc, exc_info=True)
             result = self._publish_failure("Export failed", exc, request, export_format)
         finally:
+            self._cancellable_scene_export = False
             if operation_active:
                 self.view.set_operation_active(False)
             if progress_token is not None:
@@ -88,6 +109,12 @@ class ExportPresenter(QObject):
         self.view.set_result(result)
         self._emit_status(result)
         return result
+
+    def cancel(self) -> None:
+        """Request cancellation for an in-flight Camera/Light export."""
+
+        if self._cancellable_scene_export:
+            self._cancel_requested = True
 
     def _confirm_warnings(self, report: ExportValidationReport, request) -> bool:
         """Show the verified warning report and ask within this export call."""
@@ -113,6 +140,12 @@ class ExportPresenter(QObject):
         update_view = getattr(self.view, "set_progress", None)
         if callable(update_view):
             update_view(stage)
+        if self._cancellable_scene_export:
+            # Camera/Light collection polls this callback once per evaluated
+            # frame, allowing the visible Cancel button to stop before the
+            # private sibling is published. Character export retains its
+            # no-reentry synchronous path.
+            QApplication.processEvents()
         if token is None:
             return
         label = self._PROGRESS_LABELS.get(stage, stage)
@@ -161,7 +194,9 @@ class ExportPresenter(QObject):
         )
 
     def _emit_status(self, result: ExportWorkflowResult) -> None:
-        if result.succeeded:
+        if result.state == STATE_CANCELLED:
+            self.app_state.emit_status("Cancelled")
+        elif result.succeeded:
             self.app_state.emit_status("Completed")
         elif result.report.is_blocking:
             self.app_state.emit_status("Blocked")

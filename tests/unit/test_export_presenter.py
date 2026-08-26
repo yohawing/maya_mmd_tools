@@ -28,10 +28,15 @@ class _Signal:
     def connect(self, slot):
         self.slots.append(slot)
 
+    def emit(self):
+        for slot in tuple(self.slots):
+            slot()
+
 
 class _View:
     def __init__(self):
         self.export_requested = _Signal()
+        self.cancel_requested = _Signal()
         self.current_export_format = "vmd"
         self.states = []
         self.operation_states = []
@@ -190,6 +195,37 @@ class ExportPresenterTests(unittest.TestCase):
             app_state.progress,
             [("begin", "Validating scene"), ("end", 1)],
         )
+
+    def test_camera_export_cancel_signal_reaches_action_callback(self):
+        class CameraView(_View):
+            def build_request(self, root):
+                return ExportWorkflowRequest(
+                    "scene.vmd",
+                    {
+                        "export_format": "vmd",
+                        "export_target": "camera",
+                        "current_model_root": root,
+                    },
+                )
+
+        class CancellingWorkflow(_Workflow):
+            def execute(self, request, *, progress_callback=None, **_kwargs):
+                progress_callback("payload_collection")
+                view.cancel_requested.emit()
+                progress_callback("payload_collection")
+                self.cancelled = request.options["cancel_requested"]()
+                return ExportWorkflowResult(
+                    STATE_SUCCEEDED,
+                    ExportValidationReport("vmd", (), mode="bake_timeline"),
+                    {},
+                )
+
+        view = CameraView()
+        workflow = CancellingWorkflow()
+        with patch.object(export_presenter.QApplication, "processEvents", create=True):
+            ExportPresenter(view, _AppState(), workflow).export()
+
+        self.assertTrue(workflow.cancelled)
 
     def test_current_model_change_only_invalidates_visible_reports(self):
         view = _View()

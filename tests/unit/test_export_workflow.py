@@ -20,6 +20,7 @@ from mmd_tools.services.export_workflow_service import (  # noqa: E402
     ExportWorkflowRequest,
     ExportWorkflowService,
     STATE_BLOCKED,
+    STATE_CANCELLED,
     STATE_FAILED,
     STATE_SUCCEEDED,
 )
@@ -376,6 +377,59 @@ class ExportWorkflowTests(unittest.TestCase):
 
             self._assert_vmd_boundary_failure(result, boundary, target)
             self.assertNotIn("collect", result.completed_phases)
+
+    def test_camera_light_live_cancel_keeps_target_and_cleans_watch(self):
+        boundary = _VmdBoundary()
+        checks = 0
+
+        def cancel_requested():
+            nonlocal checks
+            checks += 1
+            return checks >= 2
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "scene.vmd"
+            target.write_bytes(b"original")
+            result = self._service(
+                vmd_action=BakeTimelineVmdExportAction(boundary)
+            ).execute(
+                self._vmd_request(
+                    target,
+                    export_target="camera+light",
+                    cancel_requested=cancel_requested,
+                )
+            )
+
+            self.assertEqual(result.state, STATE_CANCELLED)
+            self.assertTrue(result.action_result.cancelled)
+            self.assertEqual(target.read_bytes(), b"original")
+            self.assertEqual(boundary.collect_calls, 0)
+            self.assertGreaterEqual(boundary.close_calls, 1)
+            self.assertEqual(list(Path(directory).glob(".scene.*.vmd")), [])
+            self.assertNotIn(
+                "OUTPUT_WRITE_FAILED", [issue.code for issue in result.report.issues]
+            )
+
+    def test_camera_target_skips_character_ownership_conflicts(self):
+        preflight = ScenePreflight(
+            scene_service=_SceneService(),
+            ownership_checker=lambda _target: {
+                "control_rig": {"state": "EDIT", "owner": "CONTROL_OWNED"},
+                "humanik": {"blocked": "active"},
+            },
+        )
+
+        result = preflight.run(
+            {
+                "export_format": "vmd",
+                "export_target": "camera",
+                "target_model": "model_ROOT",
+                "file_path": "scene.vmd",
+            }
+        )
+
+        self.assertFalse(result.report.is_blocking)
+        self.assertEqual(result.metadata["export_target"], "camera")
 
     def test_vmd_encode_failure_preserves_target_and_restores_temporary_rig(self):
         boundary = _TemporaryVmdBoundary()

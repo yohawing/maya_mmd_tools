@@ -17,6 +17,7 @@ from .vmd_validator import VMD_EXPORT_BAKE_TIMELINE
 MODEL_FORMATS = frozenset({"pmx"})
 VMD_FORMATS = frozenset({"vmd"})
 SUPPORTED_FORMATS = MODEL_FORMATS | VMD_FORMATS
+VMD_EXPORT_TARGETS = frozenset({"character", "camera", "light", "camera+light"})
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,17 @@ def _normalize_export_strategy(export_format: str, options: Mapping[str, Any]) -
     if export_format != "vmd":
         return "model"
     return str(options.get("export_strategy") or VMD_EXPORT_BAKE_TIMELINE).lower()
+
+
+def _normalize_vmd_export_target(options: Mapping[str, Any]) -> Optional[str]:
+    """Return the explicit VMD target enum, defaulting to Character."""
+
+    if "export_target" not in options:
+        return "character"
+    value = str(options.get("export_target") or "").strip().lower()
+    if value == "camera_light":
+        value = "camera+light"
+    return value or None
 
 
 def _resolve_target(options: Mapping[str, Any], scene_service: Any) -> Optional[str]:
@@ -158,6 +170,7 @@ class ScenePreflight:
         export_format = _normalize_format(options)
         export_strategy = _normalize_export_strategy(export_format, options)
         issues = []
+        export_target = _normalize_vmd_export_target(options) if export_format == "vmd" else None
         target = _resolve_target(options, self._scene_service)
         require_current_model = bool(options.get("require_current_model", False))
         require_target = bool(options.get("require_target", True)) or require_current_model
@@ -169,6 +182,16 @@ class ScenePreflight:
                     "export_format",
                     f"export format {export_format or 'empty'} is not supported by the export workflow",
                     details={"format": export_format or "empty"},
+                )
+            )
+        elif export_format == "vmd" and export_target not in VMD_EXPORT_TARGETS:
+            issues.append(
+                _issue(
+                    "EXPORT_OPTIONS_INVALID",
+                    "export_target",
+                    f"VMD export target {export_target or 'empty'} is not supported",
+                    "Choose Character, Camera, Light, or Camera+Light.",
+                    details={"export_target": export_target},
                 )
             )
 
@@ -307,7 +330,7 @@ class ScenePreflight:
         # Ownership determines which animation path may be sampled. PMX model
         # export does not collect timeline motion, so an active authoring rig
         # must not block the model payload.
-        if export_format == "vmd":
+        if export_format == "vmd" and export_target == "character":
             control_rig = (
                 ownership.get("control_rig")
                 if isinstance(ownership, Mapping)
@@ -369,6 +392,7 @@ class ScenePreflight:
             "schema_version": 1,
             "format": export_format or None,
             "export_strategy": export_strategy,
+            "export_target": export_target,
             "target_identity": target,
             "namespace": _namespace_for_target(target),
             "source_scene": str(source_scene) if source_scene else None,
@@ -392,6 +416,7 @@ __all__ = [
     "MODEL_FORMATS",
     "VMD_FORMATS",
     "SUPPORTED_FORMATS",
+    "VMD_EXPORT_TARGETS",
     "ScenePreflight",
     "ScenePreflightResult",
 ]

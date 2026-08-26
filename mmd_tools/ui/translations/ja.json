@@ -456,6 +456,8 @@
   },
   "checkboxes": {
     "vmd_bake_export": "ベイク書き出し",
+    "vmd_export_camera": "カメラ",
+    "vmd_export_light": "ライト",
     "use_namespace": "ネームスペースを使用",
     "custom_namespace": "カスタムnamespace:",
     "import_models": "モデルをインポート",
@@ -783,6 +785,7 @@
     "writing_temporary_file": "一時ファイルを書き込み中",
     "finalizing": "最終処理中",
     "completed": "完了",
+    "cancelled": "キャンセル済み",
     "blocked": "ブロック済み"
   }
 }

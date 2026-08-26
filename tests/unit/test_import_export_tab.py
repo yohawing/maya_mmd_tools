@@ -129,10 +129,21 @@ class TestExportTabOutputPathResolution(unittest.TestCase):
         page.export_format = "pmx" if pane == owner.MODEL_PANE else "vmd"
         page.output_path_edit = _FakeLineEdit(text)
         page.apply_scale_check = _FakeCheck(True)
+        page.camera_export_check = _FakeCheck(False)
+        page.light_export_check = _FakeCheck(False)
         page.frame_range_check = _FakeCheck(False)
         page.frame_start_spin = _FakeSpinBox(0)
         page.frame_end_spin = _FakeSpinBox(120)
         return page
+
+    def test_motion_request_selects_camera_and_light_without_character_tracks(self):
+        page = self._page("motion", "scene.vmd", _FakeWorkspaceCmds(root="."))
+        page.camera_export_check.checked = True
+        page.light_export_check.checked = True
+
+        request = page.build_request("model_ROOT")
+
+        self.assertEqual(request.options["export_target"], "camera+light")
 
     def test_relative_model_and_motion_requests_use_set_project_root(self):
         with TemporaryDirectory() as directory:
@@ -222,6 +233,8 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
             self.assertEqual(translations["buttons"]["export_vmd"], values[3])
             self.assertIn("vmd_export_timeline", translations["options"])
             self.assertIn("vmd_bake_export", translations["checkboxes"])
+            self.assertIn("vmd_export_camera", translations["checkboxes"])
+            self.assertIn("vmd_export_light", translations["checkboxes"])
             self.assertIn("vmd_bake_export_help", translations["messages"])
             self.assertEqual(
                 set(translations["export_status"]),
@@ -232,6 +245,7 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
                     "writing_temporary_file",
                     "finalizing",
                     "completed",
+                    "cancelled",
                     "blocked",
                 },
             )

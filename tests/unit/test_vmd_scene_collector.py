@@ -549,6 +549,172 @@ class TestVmdSceneCollector(unittest.TestCase):
             3,
         )
 
+    def test_bake_timeline_scene_target_streams_only_camera_and_light(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "mmd_camera": "transform",
+                "mmd_light": "transform",
+            }
+        )
+        self.cmds.attrs.update(
+            {
+                ("mmd_camera", ATTR_MMD_CAMERA): True,
+                ("mmd_light", ATTR_MMD_LIGHT): True,
+            }
+        )
+        for node, attrs in {
+            "mmd_camera": {
+                "translateX": 1.0,
+                "translateY": 2.0,
+                "translateZ": -3.0,
+                "rotateX": 10.0,
+                "rotateY": 20.0,
+                "rotateZ": -30.0,
+                "mmd_camera_distance": -45.0,
+                "mmd_camera_viewing_angle": 42.0,
+                "mmd_camera_perspective": 1.0,
+            },
+            "mmd_light": {
+                "mmd_light_colorR": 0.2,
+                "mmd_light_colorG": 0.3,
+                "mmd_light_colorB": 0.4,
+                "rotateX": -30.0,
+                "rotateY": 20.0,
+                "rotateZ": 0.0,
+            },
+        }.items():
+            for attr, value in attrs.items():
+                self.cmds.attrs[(node, attr)] = value
+                self.cmds.keys[(node, attr)] = {0.0: value, 2.0: value}
+
+        _collector, result, sink = self._collect_to_sink(
+            {
+                "target_model": "model_root",
+                "export_strategy": "bake_timeline",
+                "export_target": "camera+light",
+                "cameras": ["mmd_camera"],
+                "lights": ["mmd_light"],
+                "frame_range": (0, 2),
+            }
+        )
+
+        sections = [section for section, _frame in sink.frames]
+        self.assertEqual(sections.count("cameras"), 3)
+        self.assertEqual(sections.count("lights"), 3)
+        self.assertEqual(set(sections), {"cameras", "lights"})
+        self.assertEqual(result["section_counts"]["bones"], 0)
+        self.assertEqual(result["section_counts"]["morphs"], 0)
+        self.assertEqual(result["section_counts"]["shadows"], 0)
+        self.assertEqual(result["section_counts"]["ik"], 0)
+        camera = next(frame for section, frame in sink.frames if section == "cameras")
+        self.assertEqual(camera["interpolation"], b"\x14" * 24)
+
+    def test_bake_timeline_selected_camera_requires_one_tagged_track(self):
+        with self.assertRaisesRegex(RuntimeError, "Reason: an explicit Camera target"):
+            self._collect_to_sink(
+                {
+                    "target_model": "model_root",
+                    "export_strategy": "bake_timeline",
+                    "export_target": "camera",
+                    "cameras": [],
+                }
+            )
+
+    def test_bake_timeline_static_scene_targets_sample_the_requested_range(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "mmd_camera": "transform",
+                "mmd_light": "transform",
+            }
+        )
+        self.cmds.attrs.update(
+            {
+                ("mmd_camera", ATTR_MMD_CAMERA): True,
+                ("mmd_camera", "mmd_camera_viewing_angle"): 45.0,
+                ("mmd_light", ATTR_MMD_LIGHT): True,
+                ("mmd_light", "mmd_light_colorR"): 0.5,
+                ("mmd_light", "mmd_light_colorG"): 0.6,
+                ("mmd_light", "mmd_light_colorB"): 0.7,
+            }
+        )
+
+        _collector, result, sink = self._collect_to_sink(
+            {
+                "target_model": "model_root",
+                "export_strategy": "bake_timeline",
+                "export_target": "camera+light",
+                "cameras": ["mmd_camera"],
+                "lights": ["mmd_light"],
+                "frame_range": (4, 6),
+            }
+        )
+
+        self.assertEqual(result["section_counts"]["cameras"], 3)
+        self.assertEqual(result["section_counts"]["lights"], 3)
+        self.assertEqual(
+            [frame["frame_number"] for section, frame in sink.frames if section == "cameras"],
+            [4, 5, 6],
+        )
+        self.assertEqual(
+            [frame["frame_number"] for section, frame in sink.frames if section == "lights"],
+            [4, 5, 6],
+        )
+
+    def test_bake_timeline_static_scene_target_without_range_samples_current_frame(self):
+        self.cmds.node_types.update(
+            {"model_root": "transform", "mmd_camera": "transform"}
+        )
+        self.cmds.attrs[("mmd_camera", ATTR_MMD_CAMERA)] = True
+        self.cmds.current_time = 8.0
+
+        _collector, result, sink = self._collect_to_sink(
+            {
+                "target_model": "model_root",
+                "export_strategy": "bake_timeline",
+                "export_target": "camera",
+                "cameras": ["mmd_camera"],
+            }
+        )
+
+        self.assertEqual(result["validation_frame_range"], (8, 8))
+        self.assertEqual(
+            [frame["frame_number"] for section, frame in sink.frames if section == "cameras"],
+            [8],
+        )
+
+    def test_bake_timeline_light_shape_color_drives_implicit_range(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "mmd_light": "transform",
+                "mmd_lightShape": "directionalLight",
+            }
+        )
+        self.cmds.children["mmd_light"] = ["mmd_lightShape"]
+        self.cmds.attrs[("mmd_light", ATTR_MMD_LIGHT)] = True
+        for attr, value in {"colorR": 0.2, "colorG": 0.3, "colorB": 0.4}.items():
+            self.cmds.attrs[("mmd_lightShape", attr)] = value
+            self.cmds.keys[("mmd_lightShape", attr)] = {12.0: value}
+        for attr in ("rotateX", "rotateY", "rotateZ"):
+            self.cmds.attrs[("mmd_light", attr)] = 0.0
+
+        _collector, result, sink = self._collect_to_sink(
+            {
+                "target_model": "model_root",
+                "export_strategy": "bake_timeline",
+                "export_target": "light",
+                "lights": ["mmd_light"],
+            }
+        )
+
+        self.assertEqual(result["validation_frame_range"], (12, 12))
+        self.assertEqual(
+            [frame["frame_number"] for section, frame in sink.frames if section == "lights"],
+            [12],
+        )
+
     def test_bake_timeline_stream_morph_post_conversion_first_win(self):
         self.cmds.node_types.update(
             {"model_root": "transform", "face_bs": "blendShape", "driver": "network"}

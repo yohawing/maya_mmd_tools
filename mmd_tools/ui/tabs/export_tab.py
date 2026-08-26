@@ -41,11 +41,13 @@ class _ExportPage(QWidget):
     """Own one format's settings, workflow controls, and validation report."""
 
     export_requested = Signal()
+    cancel_requested = Signal()
 
     _STATE_STATUS_KEYS = {
         STATE_EDITING: "editing",
         "Exporting": "validating_scene",
         "Succeeded": "completed",
+        "Cancelled": "cancelled",
         "Blocked": "blocked",
         "Failed": "blocked",
     }
@@ -150,6 +152,19 @@ class _ExportPage(QWidget):
                 self.owner.tr("vmd_bake_export_help", "messages")
             )
 
+            self.camera_export_check = QCheckBox(
+                self.owner.tr("vmd_export_camera", "checkboxes")
+            )
+            self.camera_export_check.setObjectName("motionExportCamera")
+            self.camera_export_check.toggled.connect(self._on_semantic_input_changed)
+            self._motion_form.addRow(self.camera_export_check)
+            self.light_export_check = QCheckBox(
+                self.owner.tr("vmd_export_light", "checkboxes")
+            )
+            self.light_export_check.setObjectName("motionExportLight")
+            self.light_export_check.toggled.connect(self._on_semantic_input_changed)
+            self._motion_form.addRow(self.light_export_check)
+
             self.frame_range_check = QCheckBox(
                 self.owner.tr("use_frame_range", "checkboxes")
             )
@@ -203,6 +218,11 @@ class _ExportPage(QWidget):
         self.export_button = QPushButton(self._button_text("export"))
         self.export_button.clicked.connect(self.export_requested.emit)
         buttons.addWidget(self.export_button)
+        self.cancel_button = QPushButton(self.owner.tr("cancel", "buttons"))
+        self.cancel_button.setObjectName(f"export{self.pane.title()}CancelButton")
+        self.cancel_button.setVisible(False)
+        self.cancel_button.clicked.connect(self.cancel_requested.emit)
+        buttons.addWidget(self.cancel_button)
         self.state_label = QLabel(self.owner.tr(self._status_key, "export_status"))
         self.state_label.setObjectName(f"export{self.pane.title()}StateLabel")
         buttons.addWidget(self.state_label)
@@ -252,6 +272,7 @@ class _ExportPage(QWidget):
             options["apply_scale"] = self.apply_scale_check.isChecked()
         else:
             options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
+            options["export_target"] = self.export_target()
             if self.frame_range_check.isChecked():
                 options["frame_range"] = (
                     self.frame_start_spin.value(),
@@ -305,6 +326,30 @@ class _ExportPage(QWidget):
         self._operation_active = bool(active)
         enabled = not self._operation_active
         self.export_button.setEnabled(enabled)
+        self.cancel_button.setVisible(
+            self._operation_active and self.pane == self.owner.MOTION_PANE and self.is_scene_target()
+        )
+        self.cancel_button.setEnabled(self._operation_active)
+
+    def export_target(self) -> str:
+        """Return the explicit VMD target selected by the motion page."""
+
+        if self.pane != self.owner.MOTION_PANE:
+            return "character"
+        camera_check = getattr(self, "camera_export_check", None)
+        light_check = getattr(self, "light_export_check", None)
+        camera = bool(camera_check is not None and camera_check.isChecked())
+        light = bool(light_check is not None and light_check.isChecked())
+        if camera and light:
+            return "camera+light"
+        if camera:
+            return "camera"
+        if light:
+            return "light"
+        return "character"
+
+    def is_scene_target(self) -> bool:
+        return self.export_target() in {"camera", "light", "camera+light"}
 
     def invalidate(self) -> None:
         self._state = STATE_EDITING
@@ -355,6 +400,12 @@ class _ExportPage(QWidget):
             self.bake_export_check.setToolTip(
                 self.owner.tr("vmd_bake_export_help", "messages")
             )
+            self.camera_export_check.setText(
+                self.owner.tr("vmd_export_camera", "checkboxes")
+            )
+            self.light_export_check.setText(
+                self.owner.tr("vmd_export_light", "checkboxes")
+            )
             self.frame_range_check.setText(
                 self.owner.tr("use_frame_range", "checkboxes")
             )
@@ -387,6 +438,7 @@ class ExportTab(BaseTab):
     """Present independent PMX and VMD pages under one category selector."""
 
     export_requested = Signal()
+    cancel_requested = Signal()
 
     MODEL_PANE = "model"
     MOTION_PANE = "motion"
@@ -436,6 +488,7 @@ class ExportTab(BaseTab):
         }
         for pane, page in self._pages.items():
             page.export_requested.connect(self.export_requested.emit)
+            page.cancel_requested.connect(self.cancel_requested.emit)
             self.category_stack.add_page(pane, page)
         self.category_stack.currentChanged.connect(self._on_pane_changed)
         main_layout.addWidget(self.category_stack)
@@ -644,10 +697,13 @@ class ExportTab(BaseTab):
             "output_path_edit",
             "output_browse_button",
             "export_button",
+            "cancel_button",
             "state_label",
             "validation_console",
             "apply_scale_check",
             "bake_export_check",
+            "camera_export_check",
+            "light_export_check",
             "frame_range_check",
             "frame_start_spin",
             "frame_end_spin",
@@ -666,6 +722,8 @@ class ExportTab(BaseTab):
                 "frame_range_check": self.MOTION_PANE,
                 "frame_start_spin": self.MOTION_PANE,
                 "frame_end_spin": self.MOTION_PANE,
+                "camera_export_check": self.MOTION_PANE,
+                "light_export_check": self.MOTION_PANE,
             }
             pane = pane_by_attribute.get(
                 name, self.__dict__.get("_active_pane", self.MODEL_PANE)

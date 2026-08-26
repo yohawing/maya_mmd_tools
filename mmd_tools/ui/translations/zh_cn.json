@@ -358,6 +358,8 @@
   },
   "checkboxes": {
     "vmd_bake_export": "烘焙导出",
+    "vmd_export_camera": "相机",
+    "vmd_export_light": "灯光",
     "use_namespace": "使用命名空间",
     "import_models": "导入模型",
     "create_mmd_shaders": "创建MMD着色器",
@@ -674,6 +676,7 @@
     "writing_temporary_file": "正在写入临时文件",
     "finalizing": "正在完成",
     "completed": "已完成",
+    "cancelled": "已取消",
     "blocked": "已阻止"
   }
 }
