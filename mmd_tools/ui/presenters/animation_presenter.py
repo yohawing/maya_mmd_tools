@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import TYPE_CHECKING
 
 from ...core.constants import (
@@ -1014,6 +1015,111 @@ class AnimationPresenter:
     def on_goto_body(self):
         self.view.picker_tabs.setCurrentIndex(self.view.TAB_BODY)
 
+    def _mirror_bind_translation(self, joint: str):
+        """Read an imported joint's absolute local bind translation."""
+
+        attribute = "mmd_vmd_bind_translate"
+        try:
+            if not self.maya_adapter.attribute_exists(attribute, joint):
+                raise RuntimeError(f"MMD mirror bind translation is unavailable: {joint}")
+            raw = self.maya_adapter.get_attr(f"{joint}.{attribute}")
+            values = json.loads(raw) if isinstance(raw, str) else raw
+            values = tuple(float(value) for value in values)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"MMD mirror bind translation is invalid: {joint}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"MMD mirror bind translation is unavailable: {joint}") from exc
+        if len(values) != 3 or not all(math.isfinite(value) for value in values):
+            raise RuntimeError(f"MMD mirror bind translation is invalid: {joint}")
+        return values
+
+    def _mirror_joint_contexts(self, joints):
+        """Build JO and bind-world records without changing Maya time."""
+
+        import maya.api.OpenMaya as om
+
+        cmds = self.maya_adapter._cmds
+        canonical = {}
+        for item in joints:
+            paths = cmds.ls(item, long=True) or []
+            if len(paths) != 1:
+                continue
+            joint = str(paths[0])
+            if not cmds.attributeQuery("mmd_bone_index", node=joint, exists=True):
+                continue
+            index = int(cmds.getAttr(f"{joint}.mmd_bone_index"))
+            previous = canonical.get(index)
+            if previous is not None and previous != joint:
+                raise RuntimeError(f"MMD mirror bone index is ambiguous: {index}")
+            canonical[index] = joint
+        index_by_joint = {joint: index for index, joint in canonical.items()}
+        parent_by_index = {}
+        bind_space_by_index = {}
+        local_records = {}
+        for index, joint in canonical.items():
+            parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
+            parent = str(parents[0]) if parents else None
+            parent_index = index_by_joint.get(parent)
+            if parent and str(cmds.nodeType(parent) or "") == "joint" and parent_index is None:
+                raise RuntimeError(f"MMD mirror parent context is unavailable: {joint}")
+            parent_by_index[index] = parent_index
+            bind_space_by_index[index] = parent if parent_index is None else None
+            try:
+                orient_values = tuple(
+                    float(value) for value in cmds.getAttr(f"{joint}.jointOrient")[0]
+                )
+            except Exception as exc:
+                raise RuntimeError(f"MMD mirror jointOrient is unavailable: {joint}") from exc
+            if len(orient_values) != 3 or not all(
+                math.isfinite(value) for value in orient_values
+            ):
+                raise RuntimeError(f"MMD mirror jointOrient is invalid: {joint}")
+            orient = om.MEulerRotation(
+                *(math.radians(value) for value in orient_values)
+            ).asQuaternion()
+            translation = self._mirror_bind_translation(joint)
+            transform = om.MTransformationMatrix()
+            transform.setTranslation(om.MVector(*translation), om.MSpace.kTransform)
+            transform.setRotation(orient)
+            local_records[index] = (transform.asMatrix(), orient, translation)
+
+        bind_worlds = {}
+        resolved_spaces = {}
+
+        def resolve(index):
+            if index in bind_worlds:
+                return bind_worlds[index]
+            local, _orient, _translation = local_records[index]
+            parent_index = parent_by_index[index]
+            world = local * resolve(parent_index) if parent_index is not None else local
+            bind_worlds[index] = world
+            return world
+
+        def resolve_space(index):
+            if index in resolved_spaces:
+                return resolved_spaces[index]
+            parent_index = parent_by_index[index]
+            space = (
+                bind_space_by_index[index]
+                if parent_index is None
+                else resolve_space(parent_index)
+            )
+            resolved_spaces[index] = space
+            return space
+
+        result = {}
+        for index, joint in canonical.items():
+            world = resolve(index)
+            _local, orient, _translation = local_records[index]
+            result[joint] = {
+                "joint_orient": tuple(
+                    float(getattr(orient, component)) for component in ("x", "y", "z", "w")
+                ),
+                "bind_world_matrix": tuple(float(value) for value in world),
+                "bind_space_node": resolve_space(index),
+            }
+        return result
+
     def _mirror_entries(self):
         """Build UUID-authoritative joint/control entries for this model."""
 
@@ -1036,6 +1142,11 @@ class AnimationPresenter:
                 raise RuntimeError("MMD model UUID is unavailable")
             model_uuid = str(root_uuids[0])
 
+        candidates = list(dict.fromkeys((*self._all_model_joints, *self._bone_name_to_joint.values())))
+        joint_contexts = {}
+        if owner == "MMD_OWNED" and cmds is not None:
+            joint_contexts = self._mirror_joint_contexts(candidates)
+
         control_bases = {}
         if owner == "CONTROL_OWNED" and cmds is not None:
             from ...core.mmd_control_rig_basis import validate_basis_record
@@ -1053,7 +1164,6 @@ class AnimationPresenter:
                     raise RuntimeError(f"ambiguous Control Rig mirror basis: {path}")
                 control_bases[path] = basis
 
-        candidates = list(dict.fromkeys((*self._all_model_joints, *self._bone_name_to_joint.values())))
         entries = []
         seen = set()
         seen_nodes = {}
@@ -1091,6 +1201,16 @@ class AnimationPresenter:
                         names.append(str(bone_name))
             if not names:
                 continue
+            joint_orient = (0.0, 0.0, 0.0, 1.0)
+            bind_world_matrix = None
+            bind_space_node = None
+            if owner == "MMD_OWNED" and cmds is not None:
+                joint_context = joint_contexts.get(joint)
+                if joint_context is None:
+                    raise RuntimeError(f"MMD mirror joint context is unavailable: {joint}")
+                joint_orient = joint_context["joint_orient"]
+                bind_world_matrix = joint_context["bind_world_matrix"]
+                bind_space_node = joint_context["bind_space_node"]
             if owner == "CONTROL_OWNED":
                 node = self._preferred_rig_control(joint)
                 if not node:
@@ -1115,6 +1235,9 @@ class AnimationPresenter:
                     "joint": joint,
                     "names": tuple(dict.fromkeys(names)),
                     "authoring_basis": authoring_basis,
+                    "joint_orient": joint_orient,
+                    "bind_world_matrix": bind_world_matrix,
+                    "bind_space_node": bind_space_node,
                 }
             )
             seen.add(identity)

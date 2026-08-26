@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
@@ -49,3 +51,13 @@ def test_mirror_pose_real_maya_error_keeps_original_exception():
 
     assert presenter.status_by_test[0][0] == "mirror_failed"
     assert isinstance(presenter.status_by_test[0][1]["error"], RuntimeError)
+
+
+def test_mmd_owned_mirror_requires_persisted_bind_translation():
+    presenter = AnimationPresenter.__new__(AnimationPresenter)
+    presenter.maya_adapter = SimpleNamespace(
+        attribute_exists=lambda _attribute, _joint: False,
+    )
+
+    with pytest.raises(RuntimeError, match="bind translation is unavailable"):
+        presenter._mirror_bind_translation("|model|left_arm")
