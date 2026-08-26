@@ -12,8 +12,6 @@ from mmd_tools.ui.mirror_actions import (
     build_mirror_pairs,
     mirrored_transform_values,
 )
-
-
 class _FakeCmds:
     def __init__(self):
         self.uuid = "model-uuid"
@@ -26,6 +24,9 @@ class _FakeCmds:
         self.incoming = {}
         self.locks = {}
         self.keyframes = []
+        self.keyframe_edits = []
+        self.curve_keys = {}
+        self.set_attr_calls = []
         self.time = 12.0
         for node, offset in (("|model|L_arm", 1.0), ("|model|R_arm", 10.0)):
             for channel, value in zip(
@@ -36,6 +37,9 @@ class _FakeCmds:
                 self.incoming[f"{node}.{channel}"] = []
                 self.locks[f"{node}.{channel}"] = False
         self.fail_plug = None
+        self.undo_values = None
+        self.undo_keyframes = None
+        self.undo_curve_keys = None
 
     def ls(self, node=None, long=False, uuid=False, **_kwargs):
         if uuid:
@@ -57,6 +61,7 @@ class _FakeCmds:
         if plug == self.fail_plug:
             self.fail_plug = None
             raise RuntimeError("setAttr failure")
+        self.set_attr_calls.append(plug)
         self.values[plug] = value
 
     def listConnections(self, plug, source=False, destination=False, plugs=False):
@@ -71,14 +76,45 @@ class _FakeCmds:
     def currentTime(self, query=False):
         return self.time if query else None
 
-    def setKeyframe(self, node, time, value):
-        self.keyframes.append((node, tuple(time), float(value)))
+    def setKeyframe(self, node, time, value=None, attribute=None):
+        plug = f"{node}.{attribute}" if attribute else node
+        if value is None:
+            value = self.values[plug]
+        self.keyframes.append((plug, tuple(time), float(value)))
+        curve = plug
+        if plug in self.incoming and self.incoming[plug]:
+            curve = self.incoming[plug][0].rsplit(".", 1)[0]
+            self.values[plug] = float(value)
+        self.curve_keys.setdefault(curve, {})[float(time[0])] = float(value)
         for plug, incoming in self.incoming.items():
-            if incoming == [f"{node}.output"]:
+            if incoming == [f"{curve}.output"]:
                 self.values[plug] = float(value)
 
+    def keyframe(
+        self,
+        node,
+        edit=False,
+        time=None,
+        valueChange=None,
+        absolute=False,
+    ):
+        if not edit or not absolute:
+            raise AssertionError("fake only supports absolute key edits")
+        self.keyframe_edits.append((node, tuple(time), float(valueChange)))
+        self.curve_keys.setdefault(node, {})[float(time[0])] = float(valueChange)
+        for plug, incoming in self.incoming.items():
+            if incoming == [f"{node}.output"]:
+                self.values[plug] = float(valueChange)
+
     def undo(self):
-        pass
+        if self.undo_values is not None:
+            self.values = dict(self.undo_values)
+        if self.undo_keyframes is not None:
+            self.keyframes = list(self.undo_keyframes)
+        if self.undo_curve_keys is not None:
+            self.curve_keys = {
+                curve: dict(keys) for curve, keys in self.undo_curve_keys.items()
+            }
 
 
 class _FakeAdapter:
@@ -130,7 +166,6 @@ class TestMirrorPairing(unittest.TestCase):
         self.assertAlmostEqual(rotation[1], 0.0, places=6)
         self.assertAlmostEqual(rotation[2], 0.0, places=6)
 
-
 class TestMirrorPoseTransaction(unittest.TestCase):
     def _make(self):
         cmds = _FakeCmds()
@@ -163,6 +198,48 @@ class TestMirrorPoseTransaction(unittest.TestCase):
         self.assertEqual(cmds.values[source_plug], before_source[source_plug])
         self.assertEqual(cmds.incoming[source_plug], ["animCurve.output"])
 
+    def test_child_first_mappings_write_parent_target_first(self):
+        cmds, adapter, _mapping = self._make()
+        nodes = (
+            "|model|L_parent",
+            "|model|L_parent|L_child",
+            "|model|R_parent",
+            "|model|R_parent|R_child",
+        )
+        for index, node in enumerate(nodes):
+            cmds.paths[node] = node
+            for channel, value in zip(
+                ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"),
+                (index + 1.0,) * 6,
+            ):
+                plug = f"{node}.{channel}"
+                cmds.values[plug] = value
+                cmds.incoming[plug] = []
+                cmds.locks[plug] = False
+        parent_mapping = MirrorMapping(
+            MirrorEntry("left-parent", nodes[0], nodes[0], ("左親",)),
+            MirrorEntry("right-parent", nodes[2], nodes[2], ("右親",)),
+        )
+        child_mapping = MirrorMapping(
+            MirrorEntry("left-child", nodes[1], nodes[1], ("左子",)),
+            MirrorEntry("right-child", nodes[3], nodes[3], ("右子",)),
+        )
+        transaction = MirrorPoseTransaction(
+            adapter,
+            model_root="|model",
+            model_uuid="model-uuid",
+            mappings=[child_mapping, parent_mapping],
+        )
+
+        self.assertEqual(transaction.apply(), 2)
+        target_writes = [
+            plug
+            for plug in cmds.set_attr_calls
+            if plug.startswith((nodes[2] + ".", nodes[3] + "."))
+        ]
+        self.assertTrue(target_writes)
+        self.assertTrue(target_writes[0].startswith(nodes[2] + "."))
+
     def test_failure_rolls_back_exact_target_values(self):
         cmds, adapter, mapping = self._make()
         original = dict(cmds.values)
@@ -192,17 +269,40 @@ class TestMirrorPoseTransaction(unittest.TestCase):
             cmds.incoming[f"|model|R_arm.{channel}"] = [
                 f"animCurve_{channel}.output"
             ]
+            cmds.curve_keys[f"animCurve_{channel}"] = {8.0: 100.0, 14.0: -100.0}
 
         self.assertEqual(self._transaction(adapter, mapping).apply(), 1)
 
         self.assertEqual(
-            cmds.keyframes,
+            cmds.keyframe_edits,
             [
                 ("animCurve_rotateX", (12.0, 12.0), 4.0),
                 ("animCurve_rotateY", (12.0, 12.0), -5.0),
                 ("animCurve_rotateZ", (12.0, 12.0), -6.0),
             ],
         )
+        self.assertEqual(cmds.curve_keys["animCurve_rotateY"], {8.0: 100.0, 12.0: -5.0, 14.0: -100.0})
+
+    def test_keyed_failure_uses_undo_and_preserves_source_and_adjacent_keys(self):
+        cmds, adapter, mapping = self._make()
+        source_before = dict(cmds.values)
+        target_before = dict(cmds.values)
+        cmds.incoming["|model|R_arm.rotateX"] = ["animCurve_rotateX.output"]
+        cmds.curve_keys["animCurve_rotateX"] = {8.0: 37.0, 14.0: -12.0}
+        cmds.undo_values = dict(cmds.values)
+        cmds.undo_keyframes = list(cmds.keyframes)
+        cmds.undo_curve_keys = {
+            curve: dict(keys) for curve, keys in cmds.curve_keys.items()
+        }
+        cmds.fail_plug = "|model|R_arm.rotateY"
+
+        with self.assertRaises(MirrorActionError):
+            self._transaction(adapter, mapping).apply()
+
+        self.assertEqual(cmds.values, target_before)
+        self.assertEqual(cmds.values["|model|L_arm.rotateY"], source_before["|model|L_arm.rotateY"])
+        self.assertEqual(cmds.keyframes, [])
+        self.assertEqual(cmds.curve_keys["animCurve_rotateX"], {8.0: 37.0, 14.0: -12.0})
 
 
 if __name__ == "__main__":
