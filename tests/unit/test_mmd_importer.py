@@ -123,68 +123,37 @@ class TestPhysicsCompatibilityWarningProfile(unittest.TestCase):
         options = {"import_physics": False, "profile": {}}
 
         with patch(
-            "mmd_tools.io.mmd_importer.find_legacy_soft_constraint_warnings"
+            "mmd_tools.io.mmd_importer.has_legacy_soft_constraint_pattern"
         ) as detector:
             _record_physics_compatibility_warnings(object(), options)
 
         detector.assert_not_called()
         self.assertNotIn("warnings", options["profile"])
 
-    def test_records_structured_warning_without_changing_import_behavior(self):
-        warning = {
-            "code": "legacy_soft_constraint_behavior",
-            "reason": "nonzero_locked_translation_in_unbound_dynamic_chain",
-            "joint_names": ["breast_back_2"],
-            "rigid_body_names": ["breast_back", "breast"],
-            "affected_bone_indices": [12],
-            "affected_bone_names": ["breast"],
-        }
-        options = {}
-
-        with patch(
-            "mmd_tools.io.mmd_importer.find_legacy_soft_constraint_warnings",
-            return_value=[warning],
-        ):
-            with self.assertLogs("mmd_tools.io.mmd_importer", level="WARNING") as logs:
-                _record_physics_compatibility_warnings(object(), options)
-
-        self.assertEqual(options["profile"]["warnings"], [warning])
-        self.assertIn("legacy_soft_constraint_behavior", "\n".join(logs.output))
-
-    def test_keeps_existing_profile_warnings(self):
-        existing = {"code": "existing"}
-        added = {"code": "legacy_soft_constraint_behavior"}
-        options = {"profile": {"warnings": [existing]}}
-
-        with patch(
-            "mmd_tools.io.mmd_importer.find_legacy_soft_constraint_warnings",
-            return_value=[added],
-        ):
-            _record_physics_compatibility_warnings(object(), options)
-
-        self.assertEqual(options["profile"]["warnings"], [existing, added])
-
-    def test_pmx_import_records_warning_before_scene_import(self):
+    def test_pmx_import_appends_structured_warning(self):
         parsed_data = object()
-        warning = {
-            "code": "legacy_soft_constraint_behavior",
-            "reason": "nonzero_locked_translation_in_unbound_dynamic_chain",
-        }
-        options = {}
+        existing = {"code": "existing"}
+        options = {"profile": {"warnings": [existing]}}
 
         with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
             with patch(
-                "mmd_tools.io.mmd_importer.find_legacy_soft_constraint_warnings",
-                return_value=[warning],
+                "mmd_tools.io.mmd_importer.has_legacy_soft_constraint_pattern",
+                return_value=True,
             ):
-                with patch(
-                    "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
-                    return_value="model_root",
-                ) as importer:
-                    result = import_mmd_file("model.pmx", options=options)
+                with self.assertLogs("mmd_tools.io.mmd_importer", level="WARNING") as logs:
+                    with patch(
+                        "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
+                        return_value="model_root",
+                    ) as importer:
+                        result = import_mmd_file("model.pmx", options=options)
 
         self.assertEqual(result, "model_root")
-        self.assertEqual(options["profile"]["warnings"], [warning])
+        self.assertEqual(options["profile"]["warnings"][0], existing)
+        self.assertEqual(
+            options["profile"]["warnings"][1]["code"],
+            "legacy_soft_constraint_behavior",
+        )
+        self.assertIn("legacy MMD soft-constraint behavior", "\n".join(logs.output))
         importer.assert_called_once()
 
 

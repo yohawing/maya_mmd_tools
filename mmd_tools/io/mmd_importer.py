@@ -20,7 +20,7 @@ from mmd_tools.converters.vmd_motion_kind import detect_vmd_motion_kind
 from mmd_tools.io import pmx_importer, vmd_importer
 from mmd_tools.io.cpp_fast_importer import fast_import
 from mmd_tools.core.logger import get_logger
-from mmd_tools.validation.physics_compatibility import find_legacy_soft_constraint_warnings
+from mmd_tools.validation.physics_compatibility import has_legacy_soft_constraint_pattern
 
 logger = get_logger("mmd_tools.io.mmd_importer")
 
@@ -88,25 +88,21 @@ def _record_physics_compatibility_warnings(parsed_data: Any, options: Dict[str, 
     """Record narrow, non-blocking PMX physics compatibility warnings."""
     if not bool(options.get("import_physics", DEFAULT_IMPORT_PHYSICS)):
         return
-    warnings = find_legacy_soft_constraint_warnings(parsed_data)
-    if not warnings:
+    if not has_legacy_soft_constraint_pattern(parsed_data):
         return
     profile = options.get("profile")
     if not isinstance(profile, dict):
         profile = {}
         options["profile"] = profile
-    profile.setdefault("warnings", []).extend(warnings)
-    for warning in warnings:
-        logger.warning(
-            "PMX physics compatibility warning: code=%s reason=%s joints=%s rigid_bodies=%s "
-            "affected_bones=%s affected_bone_indices=%s",
-            warning.get("code", "physics_compatibility_warning"),
-            warning.get("reason", "unspecified"),
-            warning.get("joint_names", []),
-            warning.get("rigid_body_names", []),
-            warning.get("affected_bone_names", []),
-            warning.get("affected_bone_indices", []),
-        )
+    warning = {
+        "code": "legacy_soft_constraint_behavior",
+        "message": (
+            "This model may rely on legacy MMD soft-constraint behavior. "
+            "Modern Bullet can settle affected rigid bodies at a different position."
+        ),
+    }
+    profile.setdefault("warnings", []).append(warning)
+    logger.warning("PMX physics compatibility warning: %s", warning["message"])
 
 
 def _schedule_uv_editor_refresh() -> None:
