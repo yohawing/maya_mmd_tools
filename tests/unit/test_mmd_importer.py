@@ -122,30 +122,36 @@ class TestPhysicsCompatibilityWarningProfile(unittest.TestCase):
     def test_skips_warning_when_physics_import_is_disabled(self):
         options = {"import_physics": False, "profile": {}}
 
-        with patch(
-            "mmd_tools.io.mmd_importer.has_legacy_soft_constraint_pattern"
-        ) as detector:
-            _record_physics_compatibility_warnings(object(), options)
+        _record_physics_compatibility_warnings(object(), options)
 
-        detector.assert_not_called()
         self.assertNotIn("warnings", options["profile"])
 
     def test_pmx_import_appends_structured_warning(self):
-        parsed_data = object()
+        parsed_data = SimpleNamespace(
+            rigid_bodies=[
+                SimpleNamespace(related_bone_index=-1, physics_mode=1),
+                SimpleNamespace(related_bone_index=0, physics_mode=1),
+            ],
+            joints=[
+                SimpleNamespace(
+                    joint_type=0,
+                    rigid_body_a_index=0,
+                    rigid_body_b_index=1,
+                    translation_limit_min=(0.0, 0.3, 0.0),
+                    translation_limit_max=(0.0, 0.3, 0.0),
+                )
+            ],
+        )
         existing = {"code": "existing"}
         options = {"profile": {"warnings": [existing]}}
 
         with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
-            with patch(
-                "mmd_tools.io.mmd_importer.has_legacy_soft_constraint_pattern",
-                return_value=True,
-            ):
-                with self.assertLogs("mmd_tools.io.mmd_importer", level="WARNING") as logs:
-                    with patch(
-                        "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
-                        return_value="model_root",
-                    ) as importer:
-                        result = import_mmd_file("model.pmx", options=options)
+            with self.assertLogs("mmd_tools.io.mmd_importer", level="WARNING") as logs:
+                with patch(
+                    "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
+                    return_value="model_root",
+                ) as importer:
+                    result = import_mmd_file("model.pmx", options=options)
 
         self.assertEqual(result, "model_root")
         self.assertEqual(options["profile"]["warnings"][0], existing)
@@ -155,6 +161,12 @@ class TestPhysicsCompatibilityWarningProfile(unittest.TestCase):
         )
         self.assertIn("legacy MMD soft-constraint behavior", "\n".join(logs.output))
         importer.assert_called_once()
+
+        parsed_data.joints[0].translation_limit_min = (0.0, 0.0, 0.0)
+        parsed_data.joints[0].translation_limit_max = (0.0, 0.0, 0.0)
+        clean_options = {}
+        _record_physics_compatibility_warnings(parsed_data, clean_options)
+        self.assertNotIn("profile", clean_options)
 
 
 class TestImportMmdFileScalePrecedence(unittest.TestCase):

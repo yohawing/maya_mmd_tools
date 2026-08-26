@@ -20,7 +20,6 @@ from mmd_tools.converters.vmd_motion_kind import detect_vmd_motion_kind
 from mmd_tools.io import pmx_importer, vmd_importer
 from mmd_tools.io.cpp_fast_importer import fast_import
 from mmd_tools.core.logger import get_logger
-from mmd_tools.validation.physics_compatibility import has_legacy_soft_constraint_pattern
 
 logger = get_logger("mmd_tools.io.mmd_importer")
 
@@ -88,7 +87,25 @@ def _record_physics_compatibility_warnings(parsed_data: Any, options: Dict[str, 
     """Record narrow, non-blocking PMX physics compatibility warnings."""
     if not bool(options.get("import_physics", DEFAULT_IMPORT_PHYSICS)):
         return
-    if not has_legacy_soft_constraint_pattern(parsed_data):
+    bodies = list(getattr(parsed_data, "rigid_bodies", ()) or ())
+    for joint in getattr(parsed_data, "joints", ()) or ():
+        body_indices = (joint.rigid_body_a_index, joint.rigid_body_b_index)
+        if joint.joint_type != 0 or not all(0 <= index < len(bodies) for index in body_indices):
+            continue
+        locked_away_from_zero = any(
+            minimum == maximum and minimum != 0.0
+            for minimum, maximum in zip(
+                joint.translation_limit_min,
+                joint.translation_limit_max,
+            )
+        )
+        has_unbound_dynamic_body = any(
+            bodies[index].related_bone_index == -1 and bodies[index].physics_mode != 0
+            for index in body_indices
+        )
+        if locked_away_from_zero and has_unbound_dynamic_body:
+            break
+    else:
         return
     profile = options.get("profile")
     if not isinstance(profile, dict):
