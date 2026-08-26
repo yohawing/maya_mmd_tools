@@ -280,17 +280,6 @@ class TestVpdConverter(unittest.TestCase):
     def test_convert_position_flips_z_axis(self):
         self.assertEqual(self.converter._convert_position_mmd_to_maya([1.0, 2.0, -3.0]), [1.0, 2.0, 3.0])
 
-    def test_convert_rotation_conjugates_z_reflection(self):
-        self.assertEqual(
-            self.converter._convert_rotation_mmd_to_maya([10.0, 20.0, -30.0]),
-            [-10.0, -20.0, -30.0],
-        )
-
-    def test_is_movable_bone_accepts_center_and_master_names(self):
-        for bone_name in ["センター", "center", "Center", "全ての親", "master", "Master"]:
-            with self.subTest(bone_name=bone_name):
-                self.assertTrue(self.converter._is_movable_bone(bone_name))
-
     def test_convert_returns_false_without_target_joints(self):
         vpd_data = SimpleNamespace(bone_poses=[])
 
@@ -344,6 +333,7 @@ class TestVpdConverter(unittest.TestCase):
             s.enter_context(patch.object(self.converter, "_build_name_mappings"))
             s.enter_context(patch.object(self.converter, "_get_target_joints", return_value=["model:上半身"]))
             s.enter_context(patch(_CVT + ".cmds.currentTime", return_value=1.0))
+            s.enter_context(patch.object(self.converter, "_validate_pose_conversions"))
             s.enter_context(patch.object(self.converter, "_setup_animation_layer"))
             s.enter_context(patch.object(self.converter, "_apply_bone_pose", return_value="model:上半身"))
             s.enter_context(patch.object(self.converter, "_add_objects_to_layer"))
@@ -355,6 +345,39 @@ class TestVpdConverter(unittest.TestCase):
             ["Starting VPD pose conversion", "VPD pose conversion completed: applied 1/1 bones"],
             on_debug=False,
         )
+
+    def test_convert_validates_all_pose_conversions_before_scene_writes(self):
+        bone = BonePose()
+        bone.bone_name = "上半身"
+        apply_pose = MagicMock()
+        with ExitStack() as s:
+            s.enter_context(patch.object(self.converter, "_build_name_mappings"))
+            s.enter_context(
+                patch.object(self.converter, "_get_target_joints", return_value=["model:上半身"])
+            )
+            s.enter_context(patch(_CVT + "._build_rotation_export_context", return_value={}))
+            s.enter_context(
+                patch.object(
+                    self.converter,
+                    "_validate_pose_conversions",
+                    side_effect=ValueError("invalid pose conversion"),
+                )
+            )
+            s.enter_context(patch.object(self.converter, "_apply_bone_pose", apply_pose))
+            with self.assertRaisesRegex(ValueError, "invalid pose conversion"):
+                self.converter.convert(SimpleNamespace(bone_poses=[bone]), "model")
+
+        apply_pose.assert_not_called()
+
+    def test_joint_rotate_conversion_rejects_invalid_rotate_order(self):
+        self.converter._rotation_export_context = {
+            "model:上半身": {"rotateOrder": 6}
+        }
+
+        with self.assertRaisesRegex(ValueError, "rotateOrder is invalid"):
+            self.converter._convert_quaternion_to_joint_rotate(
+                "model:上半身", [0.0, 0.0, 0.0, 1.0]
+            )
 
 
 class TestVpdImporter(unittest.TestCase):

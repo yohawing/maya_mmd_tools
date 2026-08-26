@@ -129,9 +129,10 @@ class TestExportTabGUI(GuiTestBase):
         try:
             self.assertFalse(hasattr(tab, "target_combo"))
             self.assertFalse(hasattr(tab, "format_combo"))
-            self.assertEqual(tab.pane_tabs.count(), 2)
+            self.assertEqual(tab.pane_tabs.count(), 3)
             self.assertEqual(tab.pane_tabs.tabText(0), "モデル")
             self.assertEqual(tab.pane_tabs.tabText(1), "アニメーション")
+            self.assertEqual(tab.pane_tabs.tabText(2), "ポーズ")
             self.assertEqual(tab.export_button.text(), "モデルを書き出す")
             self.assertEqual(tab.build_request("model_ROOT").options["export_format"], "pmx")
             pane_spy = QtSignalInvocationSpy(
@@ -160,6 +161,11 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(request.options["export_strategy"], VMD_EXPORT_BAKE_TIMELINE)
             self.assertTrue(tab.bake_export_check.isChecked())
             self.assertEqual(request.options["frame_range"], (12, 42))
+            tab.pane_tabs.setCurrentIndex(2)
+            pose_request = tab.build_request("model_ROOT")
+            self.assertEqual(pose_request.options["export_format"], "vpd")
+            self.assertEqual(pose_request.options["export_strategy"], "current_pose")
+            self.assertEqual(tab.export_button.text(), "ポーズを書き出し")
             _emit_witness(
                 "export.pane_selector",
                 "selector",
@@ -225,6 +231,24 @@ class TestExportTabGUI(GuiTestBase):
 
             self.assertTrue(tab._pages[tab.MODEL_PANE].export_button.isEnabled())
             self.assertFalse(animation_page.export_button.isEnabled())
+        finally:
+            self._delete_tab(tab)
+
+    def test_pose_operation_exposes_cancel_only_while_active(self):
+        tab = self._create_visible_tab()
+        try:
+            tab.pane_tabs.setCurrentIndex(2)
+            pose_page = tab._pages[tab.POSE_PANE]
+            self.assertTrue(pose_page.cancel_button.isVisible())
+            self.assertFalse(pose_page.cancel_button.isEnabled())
+
+            tab.set_operation_active(True)
+            self.assertFalse(pose_page.export_button.isEnabled())
+            self.assertTrue(pose_page.cancel_button.isEnabled())
+
+            tab.set_operation_active(False)
+            self.assertTrue(pose_page.export_button.isEnabled())
+            self.assertFalse(pose_page.cancel_button.isEnabled())
         finally:
             self._delete_tab(tab)
 
