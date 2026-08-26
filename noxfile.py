@@ -981,7 +981,7 @@ def authoring_performance_contract(session: nox.Session) -> None:
     """Capture narrow Authoring action timings and Maya adapter scope."""
     _run_python_module(
         session,
-        module="tools.authoring_performance_contract",
+        module="tools.probes.authoring_performance_contract",
         posargs=session.posargs,
         python_executable=sys.executable,
         environment=dict(os.environ),
@@ -1410,7 +1410,7 @@ def maya_bone_reset_smoke(session: nox.Session) -> None:
     _run_mayapy_probe(
         session,
         mayapy,
-        "tools/maya_bone_reset_smoke.py",
+        "tools/smoke/maya_bone_reset_smoke.py",
         ["--out", str(report)],
         {"--out"},
         utf8=True,
@@ -1845,7 +1845,7 @@ def render_override_visual_gate(session: nox.Session) -> None:
 
     session.run(
         sys.executable,
-        "tools/render_override_visual_gate.py",
+        "tools/render_override/render_override_visual_gate.py",
         *session.posargs,
         external=True,
     )
@@ -1857,7 +1857,7 @@ def render_override_native_ui_gallery(session: nox.Session) -> None:
 
     session.run(
         sys.executable,
-        "tools/render_override_native_gallery.py",
+        "tools/render_override/render_override_native_gallery.py",
         *session.posargs,
         external=True,
     )
@@ -2338,7 +2338,7 @@ def maya_vertex_morph_authoring_smoke(session: nox.Session) -> None:
     mayapy = _mayapy(maya_version)
     session.run(
         str(mayapy),
-        _mayapy_script(mayapy, "tools/maya_vertex_morph_authoring_smoke.py"),
+        _mayapy_script(mayapy, "tools/smoke/maya_vertex_morph_authoring_smoke.py"),
         env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
         external=True,
     )
@@ -2351,7 +2351,7 @@ def maya_morph_topology_repair_smoke(session: nox.Session) -> None:
     mayapy = _mayapy(maya_version)
     session.run(
         str(mayapy),
-        _mayapy_script(mayapy, "tools/maya_morph_topology_repair_smoke.py"),
+        _mayapy_script(mayapy, "tools/smoke/maya_morph_topology_repair_smoke.py"),
         env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
         external=True,
     )
@@ -2373,7 +2373,7 @@ def maya_model_template_smoke(session: nox.Session) -> None:
         args.extend(("--out", _mayapy_arg_path(mayapy, out_path)))
     session.run(
         str(mayapy),
-        _mayapy_script(mayapy, "tools/maya_model_template_smoke.py"),
+        _mayapy_script(mayapy, "tools/smoke/maya_model_template_smoke.py"),
         *args,
         env=_mayapy_env(mayapy, MAYA_SKIP_USERSETUP_PY="1", PYTHONIOENCODING="utf-8"),
         external=True,
@@ -2391,7 +2391,7 @@ def tda_semistandard_reference(session: nox.Session) -> None:
     if not reference:
         session.error("--reference is required")
     out_path = _option(session.posargs, "--out", None)
-    args = ["tools/tda_semistandard_reference_probe.py", "--reference", reference]
+    args = ["tools/probes/tda_semistandard_reference_probe.py", "--reference", reference]
     if out_path:
         args.extend(("--out", out_path))
     session.run(sys.executable, *args, external=True)

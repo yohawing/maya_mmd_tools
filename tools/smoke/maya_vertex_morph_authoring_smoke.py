@@ -71,7 +71,7 @@ def main() -> int:
     standalone.initialize(name="python")
     try:
         load_mmd_tools_plugin(
-            Path(__file__).resolve().parents[1],
+            Path(__file__).resolve().parents[2],
             required_node_types=("mmdMorphController",),
             cmds_module=cmds,
         )

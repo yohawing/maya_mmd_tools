@@ -31,7 +31,7 @@ from mmd_tools.converters.mesh_converter import expected_shader_outline_preview 
 from mmd_tools.core import settings  # noqa: E402
 from mmd_tools.io.mmd_importer import import_mmd_file  # noqa: E402
 from tests.common.maya_plugin_setup import load_mmd_tools_plugin  # noqa: E402
-from tools.authoring_command_smoke_support import (  # noqa: E402
+from tools.smoke.authoring_command_support import (  # noqa: E402
     MayaCommandRecorder,
     measure_case,
 )
@@ -68,7 +68,7 @@ def snapshot(shader):
     return result
 
 
-repo_root = Path(__file__).resolve().parents[1]
+repo_root = Path(__file__).resolve().parents[2]
 load_mmd_tools_plugin(repo_root, cmds_module=cmds)
 cmds.loadPlugin("dx11Shader", quiet=True)
 cmds.loadPlugin(plugin, quiet=True)

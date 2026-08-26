@@ -1,6 +1,6 @@
 """Behavior checks for the native receiver-filter probe expectations."""
 
-from tools.render_override_native_caster_e2e import (
+from tools.render_override.render_override_native_caster_e2e import (
     _receiver_eligible_non_outline_count,
     _viewport_probe_aba_passes,
 )

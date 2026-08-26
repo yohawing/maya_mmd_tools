@@ -42,7 +42,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
@@ -52,7 +52,7 @@ from tools.render_override.common import (  # noqa: E402
     require_requested_plugin as _require_requested_plugin,
     write_report as _write_report,
 )
-from tools.render_override_vp2_ownership_e2e import (  # noqa: E402
+from tools.render_override.render_override_vp2_ownership_e2e import (  # noqa: E402
     _configure_camera,
     _configure_oracle_color_environment,
     _read_material_binding_diagnostics,
@@ -1941,7 +1941,7 @@ def main() -> int:
         str(args.control_model.resolve()) if args.control_model is not None else None
     )
     command = (
-        "from tools.render_override_native_caster_e2e import run_probe\n"
+        "from tools.render_override.render_override_native_caster_e2e import run_probe\n"
         f"run_probe({str(log_path)!r}, {str(report_path)!r}, {str(out_dir)!r}, "
         f"{str(args.model.resolve())!r}, {str(plugin.resolve())!r}, "
         f"control_model_path={control_model!r}, "

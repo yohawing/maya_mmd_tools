@@ -16,7 +16,7 @@ not the two-item alpha-overlap probe.
 
 Example::
 
-    mayapy tools/render_override_vp2_ownership_e2e.py --maya 2024 \
+    mayapy tools/render_override/render_override_vp2_ownership_e2e.py --maya 2024 \
         --model "F:/path/to/mmd-alpha-blend-overlap.pmx"
 """
 
@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
@@ -1020,7 +1020,7 @@ def main() -> int:
     log_path = out_dir / f"render_override_vp2_maya{args.maya}.log"
     report_path = out_dir / f"render_override_vp2_maya{args.maya}.json"
     command = (
-        "from tools.render_override_vp2_ownership_e2e import run_probe\n"
+        "from tools.render_override.render_override_vp2_ownership_e2e import run_probe\n"
         f"run_probe({str(log_path)!r}, {str(report_path)!r}, {str(out_dir)!r}, "
         f"{str(model_path.resolve())!r}, {str(plugin.resolve())!r}, "
         f"width={args.width}, height={args.height}, "

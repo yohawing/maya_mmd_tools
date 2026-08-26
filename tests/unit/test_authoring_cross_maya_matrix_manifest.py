@@ -64,35 +64,35 @@ EXPECTED_CASE_IDS = {
 ORIGIN_KINDS = {"matrix_policy", "standalone_smoke", "native_smoke"}
 EXPECTED_MAYAPY_CASES = {
     "maya.vertex_blendshape": {
-        "script": "tools/maya_vertex_morph_authoring_smoke.py",
+        "script": "tools/smoke/maya_vertex_morph_authoring_smoke.py",
         "requires_cpp_plugin": False,
         "domains": ["morph"],
         "proves": ["domain_mutation", "blendshape_dg"],
         "origin_kind": "standalone_smoke",
     },
     "native.morph_binding_query": {
-        "script": "tools/maya_morph_binding_query_smoke.py",
+        "script": "tools/smoke/maya_morph_binding_query_smoke.py",
         "requires_cpp_plugin": True,
         "domains": ["morph"],
         "proves": ["native_cpp_command"],
         "origin_kind": "native_smoke",
     },
     "native.morph_weight": {
-        "script": "tools/maya_morph_weight_command_smoke.py",
+        "script": "tools/smoke/maya_morph_weight_command_smoke.py",
         "requires_cpp_plugin": True,
         "domains": ["morph"],
         "proves": ["domain_mutation", "undo_redo", "native_cpp_command"],
         "origin_kind": "native_smoke",
     },
     "native.material_value": {
-        "script": "tools/maya_material_value_command_smoke.py",
+        "script": "tools/smoke/maya_material_value_command_smoke.py",
         "requires_cpp_plugin": True,
         "domains": ["material"],
         "proves": ["domain_mutation", "undo_redo", "native_cpp_command"],
         "origin_kind": "native_smoke",
     },
     "native.material_outline": {
-        "script": "tools/maya_material_outline_command_smoke.py",
+        "script": "tools/smoke/maya_material_outline_command_smoke.py",
         "requires_cpp_plugin": True,
         "domains": ["material"],
         "proves": ["domain_mutation", "undo_redo", "native_cpp_command"],
@@ -344,7 +344,7 @@ def _errors(matrix, ui_manifest, semantic_manifest):
                 errors.append("mayapy_case_schema")
                 continue
             script = _resolve_source(case.get("script"))
-            if script is None or script.parent != (ROOT / "tools").resolve() or not script.is_file():
+            if script is None or script.parent != (ROOT / "tools" / "smoke").resolve() or not script.is_file():
                 errors.append("mayapy_script")
             if type(case.get("requires_cpp_plugin")) is not bool:
                 errors.append("native_requirement")
@@ -477,7 +477,7 @@ def test_matrix_has_exactly_ten_gui_and_five_mayapy_representatives():
     assert sum(case["runner"] == "gui_batch" for case in manifest["cases"]) == 10
     assert sum(case["runner"] == "mayapy" for case in manifest["cases"]) == 5
     outline = next(case for case in manifest["cases"] if case["id"] == "native.material_outline")
-    assert outline["script"] == "tools/maya_material_outline_command_smoke.py"
+    assert outline["script"] == "tools/smoke/maya_material_outline_command_smoke.py"
     assert (ROOT / outline["script"]).is_file()
     assert outline["requires_cpp_plugin"] is True
     assert "native.material_outline" in manifest["surface_trace"]["tab_representatives"]["material"]

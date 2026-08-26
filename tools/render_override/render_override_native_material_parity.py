@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CASE = "fixture-render-generated-visual-mmd-alpha-blend-overlap"
 DEFAULT_OUTPUT = ROOT / "build" / "render-override" / "native-material-parity"
 MAYA_LAUNCH_GRACE_SECONDS, MAYA_REPORT_GRACE_SECONDS, MAYA_CLEANUP_GRACE_SECONDS = 120, 30, 120
@@ -33,7 +33,7 @@ from tools.render_override.common import (  # noqa: E402
     png_size as _png_size,
     resolve_mayapy as _resolve_mayapy,
 )
-from tools.render_override_visual_gate import (  # noqa: E402
+from tools.render_override.render_override_visual_gate import (  # noqa: E402
     FLIP_THRESHOLDS,
     _default_flip_runner,
     _safe_case_dir_name,
@@ -189,7 +189,7 @@ def run_parity(
     mayapy = _resolve_mayapy(maya)
     command = [
         str(mayapy),
-        str(ROOT / "tools" / "render_override_vp2_ownership_e2e.py"),
+        str(ROOT / "tools" / "render_override" / "render_override_vp2_ownership_e2e.py"),
         "--maya",
         maya,
         "--model-json",

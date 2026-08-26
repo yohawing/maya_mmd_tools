@@ -168,7 +168,7 @@ def main() -> int:
 
     from tests.common.maya_plugin_setup import load_mmd_tools_plugin
 
-    load_mmd_tools_plugin(Path(__file__).resolve().parents[1], cmds_module=cmds)
+    load_mmd_tools_plugin(Path(__file__).resolve().parents[2], cmds_module=cmds)
     results = [_run_template(template_id) for template_id in ("pmx20-semistandard-v1", "pmx20-basic-v1")]
     report = {"status": "pass", "templates": results}
     if args.out is not None:

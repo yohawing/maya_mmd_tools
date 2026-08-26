@@ -74,7 +74,7 @@ def test_geometry_override_registers_only_enabled_body_receivers() -> None:
 
 def test_native_caster_uses_fixed_targets_and_occupancy_witness() -> None:
     """Validate target/depth contracts from the structured probe report."""
-    from tools.render_override_native_caster_e2e import (
+    from tools.render_override.render_override_native_caster_e2e import (
         _caster_depth_distribution_passes,
         _caster_target_witness_passes,
     )
@@ -133,7 +133,7 @@ def test_native_material_initializes_diagnostic_flags_off() -> None:
 
 
 def test_native_caster_e2e_records_negative_control() -> None:
-    runner = (ROOT / "tools" / "render_override_native_caster_e2e.py").read_text(
+    runner = (ROOT / "tools" / "render_override" / "render_override_native_caster_e2e.py").read_text(
         encoding="utf-8"
     )
 
@@ -166,7 +166,7 @@ def test_native_caster_e2e_records_negative_control() -> None:
 
 
 def test_depth_bias_aba_gate_checks_bias_and_footprint() -> None:
-    from tools.render_override_native_caster_e2e import _depth_bias_aba_passes
+    from tools.render_override.render_override_native_caster_e2e import _depth_bias_aba_passes
 
     baseline = {
         "depthBias": 0.35,
@@ -201,7 +201,7 @@ def test_depth_bias_aba_gate_checks_bias_and_footprint() -> None:
 
 
 def test_visible_shape_mask_rejects_identical_frames() -> None:
-    from tools.render_override_native_caster_e2e import _visible_shape_mask
+    from tools.render_override.render_override_native_caster_e2e import _visible_shape_mask
 
     frame = bytes([255, 255, 255, 255] * 4)
     result = _visible_shape_mask(frame, frame, 2, 2)

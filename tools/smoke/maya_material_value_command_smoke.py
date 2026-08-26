@@ -26,7 +26,7 @@ from maya.api import OpenMaya as om  # noqa: E402
 from mmd_tools.adapters.maya_authoring_factory import build_maya_authoring_composition  # noqa: E402
 from mmd_tools.core.model_authoring_spec import MmdMaterialSpec  # noqa: E402
 from tests.common.maya_plugin_setup import load_mmd_tools_plugin  # noqa: E402
-from tools.authoring_command_smoke_support import MayaCommandRecorder  # noqa: E402
+from tools.smoke.authoring_command_support import MayaCommandRecorder  # noqa: E402
 
 
 FIELDS = (
@@ -82,7 +82,7 @@ def percentile(values, fraction):
     return ordered[max(0, min(len(ordered) - 1, math.ceil(len(ordered) * fraction) - 1))]
 
 
-repo_root = Path(__file__).resolve().parents[1]
+repo_root = Path(__file__).resolve().parents[2]
 load_mmd_tools_plugin(repo_root, cmds_module=cmds)
 cmds.loadPlugin(plugin, quiet=True)
 assert callable(getattr(cmds, "mmdAuthoringSetMaterialValues", None))

@@ -87,31 +87,31 @@ EXPECTED_CASE_IDS = {
 }
 EXPECTED_MAYAPY_CASES = {
     "maya.vertex_blendshape": (
-        "tools/maya_vertex_morph_authoring_smoke.py",
+        "tools/smoke/maya_vertex_morph_authoring_smoke.py",
         False,
         ["morph"],
         ["domain_mutation", "blendshape_dg"],
     ),
     "native.morph_binding_query": (
-        "tools/maya_morph_binding_query_smoke.py",
+        "tools/smoke/maya_morph_binding_query_smoke.py",
         True,
         ["morph"],
         ["native_cpp_command"],
     ),
     "native.morph_weight": (
-        "tools/maya_morph_weight_command_smoke.py",
+        "tools/smoke/maya_morph_weight_command_smoke.py",
         True,
         ["morph"],
         ["domain_mutation", "undo_redo", "native_cpp_command"],
     ),
     "native.material_value": (
-        "tools/maya_material_value_command_smoke.py",
+        "tools/smoke/maya_material_value_command_smoke.py",
         True,
         ["material"],
         ["domain_mutation", "undo_redo", "native_cpp_command"],
     ),
     "native.material_outline": (
-        "tools/maya_material_outline_command_smoke.py",
+        "tools/smoke/maya_material_outline_command_smoke.py",
         True,
         ["material"],
         ["domain_mutation", "undo_redo", "native_cpp_command"],
@@ -266,7 +266,7 @@ def load_matrix(root: Path, path: Optional[Path] = None) -> Mapping[str, Any]:
                 raise CrossMayaGateError("uncontracted GUI case has no matrix-policy rationale")
         elif runner == "mayapy":
             script = _resolve_repo_path(root, case.get("script"), "mayapy script")
-            if not script.is_file() or script.parent != (root / "tools").resolve():
+            if not script.is_file() or script.parent != (root / "tools" / "smoke").resolve():
                 raise CrossMayaGateError("mayapy representative script is missing: {}".format(script))
             if case.get("origin_kind") not in {"standalone_smoke", "native_smoke"} or not case.get("rationale"):
                 raise CrossMayaGateError("mayapy case has no explicit origin rationale")

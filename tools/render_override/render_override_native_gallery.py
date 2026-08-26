@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = ROOT / "build" / "render-override" / "native-material-capture"
 DEFAULT_GALLERY = ROOT / "build" / "render-override" / "latest"
 MAYA_LAUNCH_GRACE_SECONDS = 120
@@ -36,7 +36,7 @@ from tools.render_override.common import (  # noqa: E402
     png_size as _png_size,
     resolve_mayapy as _resolve_mayapy,
 )
-from tools.render_override_visual_gate import (  # noqa: E402
+from tools.render_override.render_override_visual_gate import (  # noqa: E402
     FLIP_THRESHOLDS,
     _default_flip_runner,
     _threshold_evaluation,
@@ -188,7 +188,7 @@ def _run_native_case(
     mayapy = _resolve_mayapy(maya)
     command = [
         str(mayapy),
-        str(ROOT / "tools" / "render_override_vp2_ownership_e2e.py"),
+        str(ROOT / "tools" / "render_override" / "render_override_vp2_ownership_e2e.py"),
         "--maya",
         maya,
         "--model-json",

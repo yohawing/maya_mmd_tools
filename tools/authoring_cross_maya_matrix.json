@@ -280,7 +280,7 @@
       ],
       "origin_kind": "standalone_smoke",
       "rationale": "The semantic inventory has no GUI contract for direct blendShape target topology; this standalone probe is the focused Maya DG boundary.",
-      "script": "tools/maya_vertex_morph_authoring_smoke.py",
+      "script": "tools/smoke/maya_vertex_morph_authoring_smoke.py",
       "requires_cpp_plugin": false
     },
     {
@@ -294,7 +294,7 @@
       ],
       "origin_kind": "native_smoke",
       "rationale": "The native morph binding query has no GUI surface and requires exact plugin command registration and Maya result validation.",
-      "script": "tools/maya_morph_binding_query_smoke.py",
+      "script": "tools/smoke/maya_morph_binding_query_smoke.py",
       "requires_cpp_plugin": true
     },
     {
@@ -310,7 +310,7 @@
       ],
       "origin_kind": "native_smoke",
       "rationale": "The undoable native morph weight command is a language-boundary representative rather than a separate GUI semantic contract.",
-      "script": "tools/maya_morph_weight_command_smoke.py",
+      "script": "tools/smoke/maya_morph_weight_command_smoke.py",
       "requires_cpp_plugin": true
     },
     {
@@ -326,7 +326,7 @@
       ],
       "origin_kind": "native_smoke",
       "rationale": "The undoable native material value command is verified directly because the semantic GUI contract also permits a Python fallback route.",
-      "script": "tools/maya_material_value_command_smoke.py",
+      "script": "tools/smoke/maya_material_value_command_smoke.py",
       "requires_cpp_plugin": true
     },
     {
@@ -342,7 +342,7 @@
       ],
       "origin_kind": "native_smoke",
       "rationale": "The undoable native material outline command is verified directly because the semantic GUI contract also permits a Python fallback route.",
-      "script": "tools/maya_material_outline_command_smoke.py",
+      "script": "tools/smoke/maya_material_outline_command_smoke.py",
       "requires_cpp_plugin": true
     }
   ]

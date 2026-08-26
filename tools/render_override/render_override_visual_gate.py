@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_RELATIVE = Path("build/render-override/latest")
 MANIFEST_ENV = "GOLDEN_ORACLE_RENDER_MANIFEST"
 FEATURES = ("transparency", "outline", "self-shadow", "all")

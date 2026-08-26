@@ -25,7 +25,7 @@ import traceback
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL = PROJECT_ROOT / "tests" / "data" / "yw_test_model_control_rig_bone_morph.pmx"
 DEFAULT_OUT_DIR = PROJECT_ROOT / "build" / "reports" / "authoring_performance_contract"
 DEFAULT_TEXTURE = PROJECT_ROOT / "tests" / "data" / "tex" / "diffuse.png"
@@ -1428,7 +1428,7 @@ def main() -> int:
         "from pathlib import Path\n"
         f"project_root = Path({str(PROJECT_ROOT.as_posix())!r})\n"
         "sys.path.insert(0, str(project_root)) if str(project_root) not in sys.path else None\n"
-        "from tools.authoring_performance_contract import run_probe\n"
+        "from tools.probes.authoring_performance_contract import run_probe\n"
         f"run_probe({str(log_path.as_posix())!r}, {str(Path(args.model).resolve().as_posix())!r}, "
         f"{str(Path(args.texture).resolve().as_posix())!r}, {str(report_path.as_posix())!r}, "
         f"{int(args.iterations)}, {int(args.warmup)}, {int(args.min_vertices)}, {int(args.min_bones)})\n"

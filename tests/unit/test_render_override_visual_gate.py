@@ -7,7 +7,7 @@ import struct
 import zlib
 from pathlib import Path
 
-import tools.render_override_visual_gate as gate
+import tools.render_override.render_override_visual_gate as gate
 
 
 FLIP_TEXT = """Mean: 0.010000

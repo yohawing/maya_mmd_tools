@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools.authoring_command_smoke_support import (
+from tools.smoke.authoring_command_support import (
     COLD_ITERATIONS,
     MayaCommandRecorder,
     _command_targets,

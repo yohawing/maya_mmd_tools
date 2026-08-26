@@ -40,7 +40,7 @@ def percentile(values, fraction):
     return ordered[min(len(ordered) - 1, int(round((len(ordered) - 1) * fraction)))]
 
 
-repo_root = Path(__file__).resolve().parents[1]
+repo_root = Path(__file__).resolve().parents[2]
 load_mmd_tools_plugin(repo_root, required_node_types=("mmdMorphController",), cmds_module=cmds)
 cmds.loadPlugin(plugin, quiet=True)
 assert callable(getattr(cmds, "mmdAuthoringSetMorphWeights", None))

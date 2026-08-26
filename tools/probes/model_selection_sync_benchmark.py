@@ -9,7 +9,7 @@ modified by this tool.
 Run from a normal Python interpreter because the host side launches a fresh
 Maya GUI process through the repository E2E harness::
 
-    python tools/model_selection_sync_benchmark.py --maya 2024
+    python tools/probes/model_selection_sync_benchmark.py --maya 2024
 
 The generated JSON is evidence only.  A report is green only when all three
 window-state cases observe real selection callbacks and both model identities
@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL_A = PROJECT_ROOT / "tests" / "data" / "mmt_test_model.pmx"
 DEFAULT_MODEL_B = PROJECT_ROOT / "tests" / "data" / "test_morph_model.pmx"
 DEFAULT_OUT_DIR = PROJECT_ROOT / "build" / "reports" / "model_selection_sync"
@@ -527,7 +527,7 @@ def main() -> int:
         "from pathlib import Path\n"
         f"project_root = Path({str(PROJECT_ROOT.as_posix())!r})\n"
         "sys.path.insert(0, str(project_root)) if str(project_root) not in sys.path else None\n"
-        "from tools.model_selection_sync_benchmark import run_probe\n"
+        "from tools.probes.model_selection_sync_benchmark import run_probe\n"
         f"run_probe({str(log_path.as_posix())!r}, {str(Path(args.model_a).resolve().as_posix())!r}, "
         f"{str(Path(args.model_b).resolve().as_posix())!r}, {str(report_path.as_posix())!r}, "
         f"{int(args.iterations)}, {int(args.warmup)})\n"

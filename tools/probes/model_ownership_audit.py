@@ -2,7 +2,7 @@
 
 Run with Maya's standalone Python::
 
-    mayapy tools/model_ownership_audit.py --scene build/example.ma
+    mayapy tools/probes/model_ownership_audit.py --scene build/example.ma
 
 The report is intentionally diagnostic.  Existing root.message fan-out is
 reported as migration_required, while unknown destinations and ambiguous
@@ -19,7 +19,7 @@ import sys
 import maya.standalone
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _parse_args() -> argparse.Namespace:
