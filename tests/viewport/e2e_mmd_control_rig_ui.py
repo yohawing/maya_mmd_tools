@@ -99,6 +99,64 @@ def _safe_process_events() -> None:
         pass
 
 
+def _skin_bind_world(cmds, joint: str):
+    """Return one independently persisted skin bind world for a joint."""
+
+    import maya.api.OpenMaya as om
+
+    joint_paths = cmds.ls(joint, long=True) or []
+    if len(joint_paths) != 1:
+        raise RuntimeError(f"skin bind joint is ambiguous: {joint}")
+    joint_path = str(joint_paths[0])
+    for skin in cmds.ls(type="skinCluster", long=True) or []:
+        for index in cmds.getAttr(f"{skin}.matrix", multiIndices=True) or []:
+            sources = cmds.listConnections(
+                f"{skin}.matrix[{index}]",
+                source=True,
+                destination=False,
+                plugs=True,
+            ) or []
+            if not any(
+                (cmds.ls(str(source).split(".", 1)[0], long=True) or [None])[0]
+                == joint_path
+                for source in sources
+            ):
+                continue
+            bind_pre = om.MMatrix(cmds.getAttr(f"{skin}.bindPreMatrix[{index}]"))
+            return bind_pre.inverse()
+    raise RuntimeError(f"skin bindPreMatrix is unavailable: {joint}")
+
+
+def _reflected_skin_delta_error(
+    cmds,
+    source_joint: str,
+    target_joint: str,
+    source_bind_world,
+    target_bind_world,
+) -> float:
+    """Compare the driven target against an independent X-reflected skin delta."""
+
+    import maya.api.OpenMaya as om
+
+    reflection = om.MMatrix(
+        (
+            -1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        )
+    )
+    source_world = om.MMatrix(
+        cmds.xform(source_joint, query=True, matrix=True, worldSpace=True)
+    )
+    target_world = om.MMatrix(
+        cmds.xform(target_joint, query=True, matrix=True, worldSpace=True)
+    )
+    expected = reflection * (source_bind_world.inverse() * source_world) * reflection
+    actual = target_bind_world.inverse() * target_world
+    return max(abs(float(expected[index]) - float(actual[index])) for index in range(16))
+
+
 def _load_plugins(cmds) -> None:
     """Load the native IK plugin and Python plugin used by the normal UI."""
 
@@ -530,8 +588,8 @@ def run_ui_check(
         # Exercise both common actions while the Control Rig owns motion.
         reset_button = common_action_buttons.get("reset")
         mirror_pose_button = common_action_buttons.get("mirror")
-        left_control = resolved_controls.get("left_arm")
-        right_control = resolved_controls.get("right_arm")
+        left_control = resolved_controls.get("left_elbow")
+        right_control = resolved_controls.get("right_elbow")
         reset_pose_passed = False
         reset_pose_keys = {}
         if left_control and reset_button is not None:
@@ -636,11 +694,11 @@ def run_ui_check(
         expected_rotation = None
         actual_rotation = None
         mirror_pose_status = ""
+        skin_delta_max_error = None
         target_rotation_keys = {}
         target_rotation_writers = {}
         if left_control and right_control and mirror_pose_button is not None:
             from mmd_tools.ui.mirror_actions import (
-                _quaternion_from_euler_degrees,
                 mirrored_transform_values,
             )
 
@@ -651,7 +709,7 @@ def run_ui_check(
                 ("rotateX", "rotateY", "rotateZ"), source_rotation
             ):
                 cmds.setKeyframe(left_control, attribute=channel, value=value)
-                # The compact fixture does not animate every right-arm
+                # The compact fixture does not animate every right-elbow
                 # channel.  Seed an existing target curve so the button must
                 # edit the current motion key rather than a static channel.
                 cmds.setKeyframe(
@@ -671,14 +729,25 @@ def run_ui_check(
                 float(cmds.getAttr(f"{left_control}.translate{axis}"))
                 for axis in "XYZ"
             )
-            left_basis = (metadata or {}).get("authoringBases", {}).get("left_arm")
-            right_basis = (metadata or {}).get("authoringBases", {}).get("right_arm")
+            left_basis = (metadata or {}).get("authoringBases", {}).get("left_elbow")
+            right_basis = (metadata or {}).get("authoringBases", {}).get("right_elbow")
             expected_translation, expected_rotation = mirrored_transform_values(
                 source_translation,
                 source_rotation,
                 source_basis=left_basis,
                 target_basis=right_basis,
             )
+            bindings = (metadata or {}).get("bindings", {}) or {}
+            left_joint_uuid = (bindings.get("left_elbow") or {}).get("jointUuid")
+            right_joint_uuid = (bindings.get("right_elbow") or {}).get("jointUuid")
+            left_joint_paths = cmds.ls(left_joint_uuid, long=True) or []
+            right_joint_paths = cmds.ls(right_joint_uuid, long=True) or []
+            if len(left_joint_paths) != 1 or len(right_joint_paths) != 1:
+                raise RuntimeError("Control Rig elbow joint binding is unavailable")
+            left_joint = str(left_joint_paths[0])
+            right_joint = str(right_joint_paths[0])
+            left_bind_world = _skin_bind_world(cmds, left_joint)
+            right_bind_world = _skin_bind_world(cmds, right_joint)
             cmds.select(left_control, replace=True)
             mirror_pose_button.click()
             _safe_process_events()
@@ -691,14 +760,6 @@ def run_ui_check(
             actual_rotation = tuple(
                 float(cmds.getAttr(f"{right_control}.rotate{axis}"))
                 for axis in "XYZ"
-            )
-            expected_quaternion = _quaternion_from_euler_degrees(expected_rotation)
-            actual_quaternion = _quaternion_from_euler_degrees(actual_rotation)
-            quaternion_dot = abs(
-                sum(
-                    left * right
-                    for left, right in zip(expected_quaternion, actual_quaternion)
-                )
             )
             target_keyed = all(
                 int(
@@ -745,16 +806,15 @@ def run_ui_check(
                 ]
                 for axis in "XYZ"
             }
+            skin_delta_max_error = _reflected_skin_delta_error(
+                cmds,
+                left_joint,
+                right_joint,
+                left_bind_world,
+                right_bind_world,
+            )
             mirror_pose_passed = (
-                max(
-                    abs(actual - expected)
-                    for actual, expected in zip(
-                        actual_translation,
-                        expected_translation,
-                    )
-                )
-                <= 1.0e-5
-                and abs(quaternion_dot - 1.0) <= 1.0e-5
+                skin_delta_max_error <= 2.0e-5
                 and target_keyed
             )
 
@@ -771,6 +831,9 @@ def run_ui_check(
             "expectedRotation": expected_rotation,
             "actualRotation": actual_rotation,
             "mirrorPoseStatus": mirror_pose_status,
+            "skinDeltaMaxError": skin_delta_max_error,
+            "skinDeltaPassed": skin_delta_max_error is not None
+            and skin_delta_max_error <= 2.0e-5,
             "targetRotationKeys": target_rotation_keys,
             "targetRotationWriters": target_rotation_writers,
             "passed": bool(

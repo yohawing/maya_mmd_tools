@@ -198,6 +198,13 @@ class MirrorPoseTransaction:
         for mapping in self.mappings:
             nodes.extend((mapping.source.node, mapping.target.node))
         self._capture(cmds, nodes)
+        for mapping in self.mappings:
+            if (
+                mapping.source.bind_world_matrix is not None
+                and mapping.target.bind_world_matrix is not None
+            ):
+                self._capture_world_matrix(cmds, mapping.source.joint)
+                self._capture_world_matrix(cmds, mapping.target.joint)
         desired_worlds = {}
         for mapping in self.mappings:
             if (
@@ -205,7 +212,7 @@ class MirrorPoseTransaction:
                 or mapping.target.bind_world_matrix is None
             ):
                 continue
-            target = mapping.target.node
+            target = mapping.target.joint
             if target in desired_worlds:
                 raise MirrorActionError(f"duplicate mirror target: {target}")
             desired_worlds[target] = self._desired_mmd_world(cmds, mapping)
@@ -216,7 +223,7 @@ class MirrorPoseTransaction:
             # (for example an arm-twist joint between arm and elbow).
             write_mappings = sorted(
                 self.mappings,
-                key=lambda mapping: mapping.target.node.count("|"),
+                key=lambda mapping: mapping.target.joint.count("|"),
             )
             for mapping in write_mappings:
                 source_values = self._snapshots[mapping.source.node][0]
@@ -225,11 +232,18 @@ class MirrorPoseTransaction:
                     mapping.source.bind_world_matrix is not None
                     and mapping.target.bind_world_matrix is not None
                 ):
-                    translation, rotation = self._mirrored_mmd_joint_values(
-                        cmds,
-                        mapping,
-                        desired_worlds,
-                    )
+                    if mapping.target.node == mapping.target.joint:
+                        translation, rotation = self._mirrored_mmd_joint_values(
+                            cmds,
+                            mapping,
+                            desired_worlds,
+                        )
+                    else:
+                        translation, rotation = self._mirrored_control_values(
+                            cmds,
+                            mapping,
+                            desired_worlds,
+                        )
                 else:
                     translation, rotation = mirrored_transform_values(
                         (source_values[channel] for channel in _CHANNELS[:3]),
@@ -317,21 +331,29 @@ class MirrorPoseTransaction:
                     raise MirrorActionError(f"mirror channel unavailable: {plug}") from exc
             self._snapshots[str(node)] = (values, incoming, locks)
             if capture_world:
-                try:
-                    matrix = tuple(
-                        float(value)
-                        for value in cmds.xform(
-                            node,
-                            query=True,
-                            matrix=True,
-                            worldSpace=True,
-                        )
-                    )
-                except Exception as exc:
-                    raise MirrorActionError(f"mirror world matrix unavailable: {node}") from exc
-                if len(matrix) != 16 or not all(math.isfinite(value) for value in matrix):
-                    raise MirrorActionError(f"mirror world matrix is invalid: {node}")
-                self._world_matrices[str(node)] = matrix
+                self._capture_world_matrix(cmds, str(node))
+
+    def _capture_world_matrix(self, cmds, node: str) -> None:
+        if node in self._world_matrices:
+            return
+        paths = cmds.ls(node, long=True) or []
+        if len(paths) != 1 or str(paths[0]) != str(node):
+            raise MirrorActionError(f"ambiguous mirror world node: {node}")
+        try:
+            matrix = tuple(
+                float(value)
+                for value in cmds.xform(
+                    node,
+                    query=True,
+                    matrix=True,
+                    worldSpace=True,
+                )
+            )
+        except Exception as exc:
+            raise MirrorActionError(f"mirror world matrix unavailable: {node}") from exc
+        if len(matrix) != 16 or not all(math.isfinite(value) for value in matrix):
+            raise MirrorActionError(f"mirror world matrix is invalid: {node}")
+        self._world_matrices[str(node)] = matrix
 
     @staticmethod
     def _space_world_matrix(cmds, node: str | None):
@@ -368,7 +390,7 @@ class MirrorPoseTransaction:
             source_bind = om.MMatrix(mapping.source.bind_world_matrix)
             source_space = self._space_world_matrix(cmds, mapping.source.bind_space_node)
             source_world = (
-                om.MMatrix(self._world_matrices[mapping.source.node])
+                om.MMatrix(self._world_matrices[mapping.source.joint])
                 * source_space.inverse()
             )
             target_bind = om.MMatrix(mapping.target.bind_world_matrix)
@@ -396,57 +418,13 @@ class MirrorPoseTransaction:
         try:
             import maya.api.OpenMaya as om
 
-            desired_world = om.MMatrix(desired_worlds[mapping.target.node])
-
-            parents = cmds.listRelatives(
-                mapping.target.node,
-                parent=True,
-                fullPath=True,
-            ) or []
-            if len(parents) > 1:
-                raise MirrorActionError(
-                    f"mirror target parent is ambiguous: {mapping.target.node}"
-                )
-            parent = str(parents[0]) if parents else None
-            parent_world = desired_worlds.get(parent)
-            if parent_world is None:
-                parent_world = (
-                    om.MMatrix(
-                        cmds.xform(
-                            parent,
-                            query=True,
-                            matrix=True,
-                            worldSpace=True,
-                        )
-                    )
-                    if parent
-                    else om.MMatrix()
-                )
-            else:
-                parent_world = om.MMatrix(parent_world)
-            local = om.MTransformationMatrix(desired_world * parent_world.inverse())
-            scale = tuple(float(value) for value in local.scale(om.MSpace.kTransform))
-            shear = tuple(float(value) for value in local.shear(om.MSpace.kTransform))
-            if any(abs(value - 1.0) > 1.0e-6 for value in scale) or any(
-                abs(value) > 1.0e-6 for value in shear
-            ):
-                raise MirrorActionError(
-                    f"mirror target requires unsupported scale or shear: {mapping.target.node}"
-                )
+            local = self._target_local_transform(cmds, mapping, desired_worlds)
             translate = local.translation(om.MSpace.kTransform)
             total_rotation = local.rotation(asQuaternion=True)
             joint_orient = om.MQuaternion(*mapping.target.joint_orient)
             rotate = total_rotation * joint_orient.inverse()
-            euler = rotate.asEulerRotation()
-            euler.reorderIt(om.MEulerRotation.kXYZ)
-            current = self._snapshots[mapping.target.node][0]
-            reference = om.MEulerRotation(
-                *(math.radians(float(current[f"rotate{axis}"])) for axis in "XYZ"),
-                om.MEulerRotation.kXYZ,
-            )
-            euler = euler.closestSolution(reference)
             translation = (float(translate.x), float(translate.y), float(translate.z))
-            rotation = tuple(math.degrees(float(value)) for value in (euler.x, euler.y, euler.z))
+            rotation = self._closest_target_rotation(om, mapping, rotate)
         except MirrorActionError:
             raise
         except Exception as exc:
@@ -456,6 +434,92 @@ class MirrorPoseTransaction:
         if not all(math.isfinite(value) for value in (*translation, *rotation)):
             raise MirrorActionError(f"MMD mirror result is invalid: {mapping.target.node}")
         return translation, rotation
+
+    def _mirrored_control_values(
+        self,
+        cmds,
+        mapping: MirrorMapping,
+        desired_worlds: Mapping[str, tuple[float, ...]],
+    ):
+        """Solve a Control Rig target from its driven joint's desired world."""
+
+        try:
+            import maya.api.OpenMaya as om
+
+            local = self._target_local_transform(cmds, mapping, desired_worlds)
+            total_rotation = local.rotation(asQuaternion=True)
+            joint_orient = om.MQuaternion(*mapping.target.joint_orient)
+            bone_rotation = total_rotation * joint_orient.inverse()
+            control_rotation = bone_to_control(
+                tuple(
+                    float(getattr(bone_rotation, component))
+                    for component in ("x", "y", "z", "w")
+                ),
+                mapping.target.authoring_basis,
+            )
+            control_quaternion = om.MQuaternion(*control_rotation)
+            source_values = self._snapshots[mapping.source.node][0]
+            translation = (
+                -float(source_values["translateX"]),
+                float(source_values["translateY"]),
+                float(source_values["translateZ"]),
+            )
+            rotation = self._closest_target_rotation(om, mapping, control_quaternion)
+        except MirrorActionError:
+            raise
+        except Exception as exc:
+            raise MirrorActionError(
+                f"Control Rig mirror world-space solve failed: {mapping.target.node}"
+            ) from exc
+        if not all(math.isfinite(value) for value in (*translation, *rotation)):
+            raise MirrorActionError(f"Control Rig mirror result is invalid: {mapping.target.node}")
+        return translation, rotation
+
+    @staticmethod
+    def _target_parent_world(cmds, target_joint, desired_worlds, om):
+        parents = cmds.listRelatives(target_joint, parent=True, fullPath=True) or []
+        if len(parents) > 1:
+            raise MirrorActionError(f"mirror target parent is ambiguous: {target_joint}")
+        parent = str(parents[0]) if parents else None
+        parent_world = desired_worlds.get(parent)
+        if parent_world is not None:
+            return om.MMatrix(parent_world)
+        if parent:
+            return om.MMatrix(
+                cmds.xform(parent, query=True, matrix=True, worldSpace=True)
+            )
+        return om.MMatrix()
+
+    def _target_local_transform(self, cmds, mapping, desired_worlds):
+        """Resolve and validate the target joint's desired local transform."""
+
+        import maya.api.OpenMaya as om
+
+        desired_world = om.MMatrix(desired_worlds[mapping.target.joint])
+        parent_world = self._target_parent_world(
+            cmds, mapping.target.joint, desired_worlds, om
+        )
+        local = om.MTransformationMatrix(desired_world * parent_world.inverse())
+        scale = tuple(float(value) for value in local.scale(om.MSpace.kTransform))
+        shear = tuple(float(value) for value in local.shear(om.MSpace.kTransform))
+        if any(abs(value - 1.0) > 1.0e-6 for value in scale) or any(
+            abs(value) > 1.0e-6 for value in shear
+        ):
+            raise MirrorActionError(
+                f"mirror target requires unsupported scale or shear: {mapping.target.joint}"
+            )
+        return local
+
+    def _closest_target_rotation(self, om, mapping, quaternion):
+        euler = quaternion.asEulerRotation()
+        euler.reorderIt(om.MEulerRotation.kXYZ)
+        current = self._snapshots[mapping.target.node][0]
+        reference = om.MEulerRotation(
+            *(math.radians(float(current[f"rotate{axis}"])) for axis in "XYZ"),
+            om.MEulerRotation.kXYZ,
+        )
+        euler = euler.closestSolution(reference)
+        return tuple(math.degrees(float(value)) for value in (euler.x, euler.y, euler.z))
 
     def _restore(self, cmds) -> None:
         self._assert_model_uuid(cmds)

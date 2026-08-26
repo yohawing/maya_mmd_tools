@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import math
 from typing import TYPE_CHECKING
@@ -1040,11 +1041,17 @@ class AnimationPresenter:
 
         cmds = self.maya_adapter._cmds
         canonical = {}
-        for item in joints:
+        pending = list(joints)
+        visited = set()
+        while pending:
+            item = pending.pop()
             paths = cmds.ls(item, long=True) or []
             if len(paths) != 1:
                 continue
             joint = str(paths[0])
+            if joint in visited:
+                continue
+            visited.add(joint)
             if not cmds.attributeQuery("mmd_bone_index", node=joint, exists=True):
                 continue
             index = int(cmds.getAttr(f"{joint}.mmd_bone_index"))
@@ -1052,6 +1059,11 @@ class AnimationPresenter:
             if previous is not None and previous != joint:
                 raise RuntimeError(f"MMD mirror bone index is ambiguous: {index}")
             canonical[index] = joint
+            parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
+            if len(parents) == 1:
+                parent = str(parents[0])
+                if str(cmds.nodeType(parent) or "") == "joint":
+                    pending.append(parent)
         index_by_joint = {joint: index for index, joint in canonical.items()}
         parent_by_index = {}
         bind_space_by_index = {}
@@ -1271,6 +1283,38 @@ class AnimationPresenter:
             if target is None:
                 raise RuntimeError(f"no unique mirror pair for {node}")
             mappings.append(MirrorMapping(entry, target))
+        if owner == "CONTROL_OWNED" and getattr(self.maya_adapter, "_cmds", None):
+            identity_basis = (0.0, 0.0, 0.0, 1.0)
+            oriented = [
+                mapping
+                for mapping in mappings
+                if mapping.source.authoring_basis != identity_basis
+                and mapping.target.authoring_basis != identity_basis
+            ]
+            if oriented:
+                contexts = self._mirror_joint_contexts(
+                    [entry.joint for mapping in oriented for entry in (mapping.source, mapping.target)]
+                )
+
+                def with_context(entry):
+                    context = contexts.get(entry.joint)
+                    if context is None:
+                        raise RuntimeError(
+                            f"MMD mirror joint context is unavailable: {entry.joint}"
+                        )
+                    return replace(
+                        entry,
+                        joint_orient=context["joint_orient"],
+                        bind_world_matrix=context["bind_world_matrix"],
+                        bind_space_node=context["bind_space_node"],
+                    )
+
+                mappings = [
+                    MirrorMapping(with_context(mapping.source), with_context(mapping.target))
+                    if mapping in oriented
+                    else mapping
+                    for mapping in mappings
+                ]
         return mappings, owner, model_uuid
 
     # -- Visibility -------------------------------------------------------
