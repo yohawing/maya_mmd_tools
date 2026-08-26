@@ -31,6 +31,7 @@
     "export_workflow": "导出",
     "export_model": "模型",
     "export_motion": "动画",
+    "export_pose": "姿势",
     "info": "信息",
     "material": "材质",
     "bone": "骨骼",
@@ -60,6 +61,7 @@
     "export_pmx": "导出模型",
     "validate_animation": "验证动画",
     "export_vmd": "导出动画",
+    "export_vpd": "导出姿势",
     "ok": "确定",
     "apply": "应用",
     "cancel": "取消",
@@ -197,6 +199,7 @@
   },
   "messages": {
     "vmd_bake_export_help": "导出动画前烘焙当前时间轴。启用范围时，仅评估指定范围。",
+    "vpd_current_pose_help": "导出当前帧评估的当前模型姿势。",
     "import_success": "导入完成",
     "create_model_unavailable": "此会话无法创建 MMD 模型",
     "create_model_templates_unavailable": "无法加载内置模型模板。请重新加载插件后再试",
@@ -674,6 +677,7 @@
     "writing_temporary_file": "正在写入临时文件",
     "finalizing": "正在完成",
     "completed": "已完成",
+    "cancelled": "已取消",
     "blocked": "已阻止"
   }
 }

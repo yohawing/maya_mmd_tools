@@ -21,6 +21,7 @@ class MmdAnimRuntimeExportError(RuntimeError):
 
 _JSON_EXPORT_SYMBOLS = {
     "pmx": "mmd_runtime_export_pmx_model_json",
+    "vpd": "mmd_runtime_export_vpd_pose_json",
 }
 
 
@@ -264,6 +265,65 @@ def export_pmx_model_json(
     return _export_json_with_symbol(_JSON_EXPORT_SYMBOLS["pmx"], payload, get_library)
 
 
+def _strict_json_codec_call(
+    symbol: str,
+    payload: Any,
+    get_library: Optional[Callable[[], Optional[CDLL]]] = None,
+) -> bytes:
+    """Call one required mmd-anim JSON codec ABI without a Python fallback."""
+
+    lib = _resolve_library(get_library)
+    if lib is None:
+        raise MmdAnimRuntimeExportError("{} requires the mmd-anim runtime".format(symbol))
+    codec = getattr(lib, symbol, None)
+    if codec is None:
+        raise MmdAnimRuntimeExportError("{} required ABI symbol is missing".format(symbol))
+    payload_bytes = _encode_export_metadata(payload)
+    if not payload_bytes:
+        raise MmdAnimRuntimeExportError("{} requires a non-empty payload".format(symbol))
+    payload_buffer = (c_uint8 * len(payload_bytes)).from_buffer_copy(payload_bytes)
+    try:
+        native_buffer: MmdRuntimeFfiByteBuffer = codec(
+            payload_buffer, len(payload_bytes)
+        )
+    except Exception as exc:
+        raise MmdAnimRuntimeExportError("{} call failed: {}".format(symbol, exc)) from exc
+    return _strict_native_buffer_to_bytes(lib, native_buffer, symbol=symbol)
+
+
+def export_vpd_pose_json(
+    payload: Any,
+    get_library: Optional[Callable[[], Optional[CDLL]]] = None,
+) -> bytes:
+    """Encode a VpdParsedPose-compatible JSON DTO through mmd-anim."""
+
+    return _strict_json_codec_call(
+        "mmd_runtime_export_vpd_pose_json", payload, get_library
+    )
+
+
+def parse_vpd_pose_json(
+    payload: Any,
+    get_library: Optional[Callable[[], Optional[CDLL]]] = None,
+) -> dict[str, Any]:
+    """Parse VPD bytes through mmd-anim and return its camelCase JSON DTO."""
+
+    raw_json = _strict_json_codec_call(
+        "mmd_runtime_parse_vpd_pose_json", payload, get_library
+    )
+    try:
+        parsed = json.loads(raw_json.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MmdAnimRuntimeExportError(
+            "mmd_runtime_parse_vpd_pose_json returned invalid UTF-8 JSON"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise MmdAnimRuntimeExportError(
+            "mmd_runtime_parse_vpd_pose_json returned a non-object DTO"
+        )
+    return parsed
+
+
 def export_pmx_from_parts(
     metadata: Any,
     positions_xyz: Any,
@@ -472,6 +532,8 @@ __all__ = [
     "is_native_vmd_parts_export_available",
     "is_native_json_export_available",
     "export_pmx_model_json",
+    "export_vpd_pose_json",
+    "parse_vpd_pose_json",
     "export_pmx_from_parts",
     "export_vmd_from_parts",
 ]

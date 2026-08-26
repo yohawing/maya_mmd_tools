@@ -65,6 +65,8 @@ def setup_function_signatures(lib: CDLL) -> None:
         [POINTER(MmdRuntimeModelDescriptor)],
     )
     set_sig(lib, "mmd_runtime_export_pmx_model_json", MmdRuntimeFfiByteBuffer, [POINTER(c_uint8), c_size_t])
+    set_sig(lib, "mmd_runtime_export_vpd_pose_json", MmdRuntimeFfiByteBuffer, [POINTER(c_uint8), c_size_t])
+    set_sig(lib, "mmd_runtime_parse_vpd_pose_json", MmdRuntimeFfiByteBuffer, [POINTER(c_uint8), c_size_t])
     set_sig(
         lib,
         "mmd_runtime_export_pmx_from_parts",

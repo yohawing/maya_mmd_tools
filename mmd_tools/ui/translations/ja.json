@@ -31,6 +31,7 @@
     "export_workflow": "エクスポート",
     "export_model": "モデル",
     "export_motion": "アニメーション",
+    "export_pose": "ポーズ",
     "info": "情報",
     "material": "材質",
     "bone": "ボーン",
@@ -61,6 +62,7 @@
     "export_pmx": "モデルを書き出す",
     "validate_animation": "アニメーションを検証",
     "export_vmd": "アニメーションを書き出し",
+    "export_vpd": "ポーズを書き出し",
     "apply": "適用",
     "ok": "OK",
     "cancel": "キャンセル",
@@ -205,6 +207,7 @@
   },
   "messages": {
     "vmd_bake_export_help": "現在のタイムラインをベイクしてアニメーションを書き出します。範囲指定時は指定範囲だけを対象にします。",
+    "vpd_current_pose_help": "現在フレームで評価されたCurrent Modelのポーズを書き出します。",
     "display_element_added": "{element_type}（PMXインデックス {index}）を追加しました",
     "no_display_element_candidates": "表示枠に追加できる要素がありません",
     "duplicate_display_element": "その要素は既にこの表示枠にあります",
@@ -783,6 +786,7 @@
     "writing_temporary_file": "一時ファイルを書き込み中",
     "finalizing": "最終処理中",
     "completed": "完了",
+    "cancelled": "キャンセル済み",
     "blocked": "ブロック済み"
   }
 }

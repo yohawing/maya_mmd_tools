@@ -207,10 +207,10 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
     def test_supported_languages_define_model_animation_and_format_actions(self):
         translation_dir = Path(export_tab.__file__).resolve().parents[1] / "translations"
         expected = {
-            "ja": ("モデル", "アニメーション", "モデルを書き出す", "アニメーションを書き出し"),
-            "en": ("Model", "Animation", "Export Model", "Export Animation"),
-            "zh_cn": ("模型", "动画", "导出模型", "导出动画"),
-            "zh_tw": ("模型", "動畫", "匯出模型", "匯出動畫"),
+            "ja": ("モデル", "アニメーション", "モデルを書き出す", "アニメーションを書き出し", "ポーズを書き出し"),
+            "en": ("Model", "Animation", "Export Model", "Export Animation", "Export Pose"),
+            "zh_cn": ("模型", "动画", "导出模型", "导出动画", "导出姿势"),
+            "zh_tw": ("模型", "動畫", "匯出模型", "匯出動畫", "匯出姿勢"),
         }
         for language, values in expected.items():
             translations = json.loads(
@@ -220,6 +220,7 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
             self.assertEqual(translations["tabs"]["export_motion"], values[1])
             self.assertEqual(translations["buttons"]["export_pmx"], values[2])
             self.assertEqual(translations["buttons"]["export_vmd"], values[3])
+            self.assertEqual(translations["buttons"]["export_vpd"], values[4])
             self.assertIn("vmd_export_timeline", translations["options"])
             self.assertIn("vmd_bake_export", translations["checkboxes"])
             self.assertIn("vmd_bake_export_help", translations["messages"])
@@ -232,6 +233,7 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
                     "writing_temporary_file",
                     "finalizing",
                     "completed",
+                    "cancelled",
                     "blocked",
                 },
             )

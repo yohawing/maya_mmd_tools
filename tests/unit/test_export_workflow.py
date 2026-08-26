@@ -15,11 +15,15 @@ from mmd_tools.actions.bake_timeline_vmd_export_action import (  # noqa: E402
     VmdExportDiscovery,
     _vmd_model_name_with_fallback,
 )
+from mmd_tools.actions.export_vpd_action import (  # noqa: E402
+    ExportVpdAction,
+)
 from mmd_tools.core.vmd_data import VmdData  # noqa: E402
 from mmd_tools.services.export_workflow_service import (  # noqa: E402
     ExportWorkflowRequest,
     ExportWorkflowService,
     STATE_BLOCKED,
+    STATE_CANCELLED,
     STATE_FAILED,
     STATE_SUCCEEDED,
 )
@@ -194,13 +198,41 @@ class _ModelAction:
         )()
 
 
+class _VpdAction(ExportVpdAction):
+    def __init__(self):
+        data = {
+            "modelFile": "model.pmx",
+            "boneCount": 1,
+            "bones": [
+                {
+                    "name": "センター",
+                    "translation": [0.0, 0.0, 0.0],
+                    "rotation": [0.0, 0.0, 0.0, 1.0],
+                }
+            ],
+        }
+        super().__init__(
+            collector=lambda _options: data,
+            encoder=lambda _payload: b"native-vpd",
+            parser=lambda _bytes: data,
+        )
+        self.capability_options = None
+
+    def can_prepare_for_collection(self, options):
+        self.capability_options = dict(options)
+        return options.get("target_model") == "model_ROOT"
+
+
 class ExportWorkflowTests(unittest.TestCase):
-    def _service(self, *, model_action=None, vmd_action=None, scene_preflight=None):
+    def _service(
+        self, *, model_action=None, vmd_action=None, vpd_action=None, scene_preflight=None
+    ):
         return ExportWorkflowService(
             scene_preflight=scene_preflight
             or ScenePreflight(scene_service=_SceneService(), ownership_checker=lambda _target: {}),
             model_action=model_action,
             vmd_action=vmd_action,
+            vpd_action=vpd_action,
         )
 
     def _vmd_request(self, target, **extra_options):
@@ -261,6 +293,86 @@ class ExportWorkflowTests(unittest.TestCase):
                 ["collect", "encode", "flush", "output_verify", "cleanup", "replace"],
             )
             self.assertEqual(list(Path(directory).glob(".motion.*.vmd")), [])
+
+    def test_vpd_collects_reparses_and_publishes_one_private_sibling(self):
+        action = _VpdAction()
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "pose.vpd"
+            target.write_bytes(b"old target")
+            result = self._service(vpd_action=action).execute(
+                ExportWorkflowRequest(
+                    str(target),
+                    {
+                        "export_format": "vpd",
+                        "current_model_root": "model_ROOT",
+                        "require_current_model": True,
+                        "require_target": True,
+                    },
+                )
+            )
+
+            self.assertEqual(result.state, STATE_SUCCEEDED, result.error)
+            self.assertEqual(target.read_bytes(), b"native-vpd")
+            self.assertEqual(list(Path(directory).glob(".pose.*.vpd")), [])
+            self.assertIn("output_verify", result.completed_phases)
+            self.assertIn("replace", result.completed_phases)
+
+    def test_vpd_control_owned_request_uses_capability_route(self):
+        action = _VpdAction()
+        service = self._service(
+            vpd_action=action,
+            scene_preflight=ScenePreflight(
+                scene_service=_SceneService(),
+                ownership_checker=lambda _target: {
+                    "control_rig": {"state": "EDIT", "owner": "CONTROL_OWNED"}
+                },
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            result = service.execute(
+                ExportWorkflowRequest(
+                    str(Path(directory) / "pose.vpd"),
+                    {
+                        "export_format": "vpd",
+                        "export_strategy": "current_pose",
+                        "current_model_root": "model_ROOT",
+                        "require_current_model": True,
+                        "require_target": True,
+                    },
+                )
+            )
+
+        self.assertEqual(result.state, STATE_SUCCEEDED, result.error)
+        self.assertEqual(action.capability_options["target_model"], "model_ROOT")
+        self.assertFalse(result.report.is_blocking)
+
+    def test_vpd_cancel_before_publication_is_terminal_and_non_destructive(self):
+        checks = 0
+
+        def cancel_requested():
+            nonlocal checks
+            checks += 1
+            return checks >= 3
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "pose.vpd"
+            target.write_bytes(b"old target")
+            result = self._service(vpd_action=_VpdAction()).execute(
+                ExportWorkflowRequest(
+                    str(target),
+                    {
+                        "export_format": "vpd",
+                        "current_model_root": "model_ROOT",
+                        "require_current_model": True,
+                        "_cancel_requested": cancel_requested,
+                    },
+                )
+            )
+
+            self.assertEqual(result.state, STATE_CANCELLED)
+            self.assertTrue(result.action_result.cancelled)
+            self.assertEqual(target.read_bytes(), b"old target")
+            self.assertEqual(list(Path(directory).glob(".pose.*.vpd")), [])
 
     def test_vmd_unencodable_model_name_uses_cp932_fallback_and_warning(self):
         class UnicodeModelBoundary(_VmdBoundary):
