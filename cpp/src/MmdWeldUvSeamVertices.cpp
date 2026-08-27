@@ -53,6 +53,7 @@ namespace {
 
 constexpr const char* kSourceVertexAttribute = "mmd_source_vertex_indices";
 constexpr const char* kSourceToLocalAttribute = "mmd_source_to_local_indices";
+constexpr const char* kSourceToLocalCapability = "sourceToLocalV1";
 
 struct UvSetData {
     MString     name;
@@ -870,6 +871,7 @@ MSyntax MmdWeldUvSeamVertices::newSyntax()
     MSyntax syntax;
     syntax.addFlag("-m", "-mesh", MSyntax::kString);
     syntax.addFlag("-f", "-file", MSyntax::kString);
+    syntax.addFlag("-qc", "-queryCapabilities", MSyntax::kBoolean);
     syntax.enableEdit(false);
     return syntax;
 }
@@ -877,6 +879,19 @@ MSyntax MmdWeldUvSeamVertices::newSyntax()
 MStatus MmdWeldUvSeamVertices::doIt(const MArgList& args)
 {
     MArgDatabase argData(newSyntax(), args);
+    if (argData.isFlagSet("-qc")) {
+        bool queryCapabilities = false;
+        const MStatus queryStatus = argData.getFlagArgument("-qc", 0, queryCapabilities);
+        if (!queryStatus || !queryCapabilities) {
+            MGlobal::displayError(
+                "[mmdWeldUvSeamVertices] -queryCapabilities requires true.");
+            return MS::kFailure;
+        }
+        MStringArray capabilities;
+        capabilities.append(kSourceToLocalCapability);
+        setResult(capabilities);
+        return MS::kSuccess;
+    }
     if (!argData.isFlagSet("-m") || !argData.isFlagSet("-f")) {
         MGlobal::displayError(
             "[mmdWeldUvSeamVertices] Required flags: -mesh <transform> -file <pmx>." );

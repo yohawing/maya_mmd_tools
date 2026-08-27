@@ -60,6 +60,9 @@ def main() -> int:
         cmds.loadPlugin(str(plugin_path), quiet=True)
         if not hasattr(cmds, "mmdWeldUvSeamVertices"):
             raise RuntimeError("mmdWeldUvSeamVertices was not registered")
+        capabilities = cmds.mmdWeldUvSeamVertices(queryCapabilities=True)
+        if "sourceToLocalV1" not in capabilities:
+            raise RuntimeError("mmdWeldUvSeamVertices lacks sourceToLocalV1")
 
         loaded = cmds.mmdFastLoad(f=str(FIXTURE), n="focused_uv_weld", s=1.0)
         if not loaded or len(loaded) != 2:

@@ -28,3 +28,12 @@ def test_weld_restores_the_authored_current_uv_set() -> None:
 
     assert "const MString currentUvSetName = meshFn.currentUVSetName" in source
     assert "newMeshFn.setCurrentUVSetName(currentUvSetName)" in source
+
+
+def test_weld_advertises_source_to_local_mapping_capability() -> None:
+    """Python must be able to reject an older command before topology changes."""
+    source = SOURCE.read_text(encoding="utf-8")
+
+    assert '"-qc", "-queryCapabilities", MSyntax::kBoolean' in source
+    assert 'kSourceToLocalCapability = "sourceToLocalV1"' in source
+    assert "capabilities.append(kSourceToLocalCapability)" in source

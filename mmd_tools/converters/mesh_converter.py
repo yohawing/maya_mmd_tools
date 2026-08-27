@@ -1253,13 +1253,31 @@ class MeshConverter:
         )
 
     def _cpp_uv_weld_command_available(self) -> bool:
-        """Return whether the optional native UV-weld command is loaded."""
+        """Return whether native UV weld supports the required provenance contract."""
         if not self.model_filepath:
             return False
         try:
-            return callable(getattr(cmds, "mmdWeldUvSeamVertices", None))
+            command = getattr(cmds, "mmdWeldUvSeamVertices", None)
+            if not callable(command):
+                return False
+            # An older MPxCommand prints a Maya displayError before Python can
+            # catch its unknown capability flag. Inspecting syntax first keeps
+            # version-skew fallback warning-only and leaves topology untouched.
+            help_text = cmds.help("mmdWeldUvSeamVertices")
+            if "-queryCapabilities" not in str(help_text):
+                raise RuntimeError("capability query flag is unavailable")
+            capabilities = command(queryCapabilities=True)
+            if isinstance(capabilities, str):
+                capabilities = [capabilities]
+            if isinstance(capabilities, (list, tuple)) and "sourceToLocalV1" in capabilities:
+                return True
         except Exception:
-            return False
+            pass
+        self.logger.warning(
+            "Loaded C++ UV seam weld does not support sourceToLocalV1; "
+            "using the Python weld plan to preserve morph provenance."
+        )
+        return False
 
     def _run_cpp_uv_weld(self, mesh_node: str, source_vertex_indices) -> Optional[int]:
         """Run the C++ topology command and return merged vertex count.

@@ -10,6 +10,7 @@ from tests.common.maya_stub import install_maya_stub
 install_maya_stub()
 
 from mmd_tools.converters import export_scene_collector as export_scene_collector_module  # noqa: E402
+from mmd_tools.converters import mesh_converter as mesh_converter_module  # noqa: E402
 from mmd_tools.converters import morph_converter as morph_converter_module  # noqa: E402
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector  # noqa: E402
 from mmd_tools.converters.material_shader_parameters import (  # noqa: E402
@@ -85,6 +86,38 @@ class TestExportScope(unittest.TestCase):
         )
 
         self.assertEqual(remapped, [8, 9])
+
+    def test_native_uv_weld_requires_source_to_local_capability(self):
+        converter = MeshConverter.__new__(MeshConverter)
+        converter.model_filepath = "model.pmx"
+        converter.logger = mock.Mock()
+
+        with mock.patch.object(
+            mesh_converter_module.cmds,
+            "mmdWeldUvSeamVertices",
+            return_value=["sourceToLocalV1"],
+            create=True,
+        ), mock.patch.object(
+            mesh_converter_module.cmds,
+            "help",
+            return_value="-qc -queryCapabilities Boolean",
+            create=True,
+        ):
+            self.assertTrue(converter._cpp_uv_weld_command_available())
+
+        with mock.patch.object(
+            mesh_converter_module.cmds,
+            "mmdWeldUvSeamVertices",
+            create=True,
+        ) as old_command, mock.patch.object(
+            mesh_converter_module.cmds,
+            "help",
+            return_value="-f -file String -m -mesh String",
+            create=True,
+        ):
+            self.assertFalse(converter._cpp_uv_weld_command_available())
+        old_command.assert_not_called()
+        converter.logger.warning.assert_called_once()
 
     def test_source_to_local_mapping_is_inverted_to_all_source_aliases(self):
         with (
