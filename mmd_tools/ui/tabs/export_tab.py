@@ -170,12 +170,6 @@ class _ExportPage(QWidget):
             )
 
             if self.pane == self.owner.CAMERA_PANE:
-                self.camera_help = QLabel(
-                    self.owner.tr("vmd_camera_export_help", "messages"), self
-                )
-                self.camera_help.setWordWrap(True)
-                self.camera_help.setObjectName("cameraExportHelp")
-                self._motion_form.addRow(self.camera_help)
                 self.light_export_check = QCheckBox(
                     self.owner.tr("vmd_export_light", "checkboxes")
                 )
@@ -473,9 +467,6 @@ class _ExportPage(QWidget):
                 self.owner.tr("vmd_bake_export_help", "messages")
             )
             if self.pane == self.owner.CAMERA_PANE:
-                self.camera_help.setText(
-                    self.owner.tr("vmd_camera_export_help", "messages")
-                )
                 self.light_export_check.setText(
                     self.owner.tr("vmd_export_light", "checkboxes")
                 )
@@ -831,7 +822,6 @@ class ExportTab(BaseTab):
             "frame_start_spin",
             "frame_end_spin",
             "pose_help",
-            "camera_help",
             "_model_form",
             "_motion_form",
             "_export_form",
@@ -845,7 +835,6 @@ class ExportTab(BaseTab):
                 "_motion_form": self.MOTION_PANE,
                 "format_combo": self.MOTION_PANE,
                 "pose_help": self.MOTION_PANE,
-                "camera_help": self.CAMERA_PANE,
             }
             pane = pane_by_attribute.get(
                 name, self.__dict__.get("_active_pane", self.MODEL_PANE)
