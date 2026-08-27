@@ -249,6 +249,44 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertAlmostEqual(light_frame.position[1], 0.0)
         self.assertAlmostEqual(light_frame.position[2], 0.0)
 
+    def test_bake_timeline_exports_selected_ordinary_camera_dense(self):
+        root, _joint = self._make_keyed_joint_scene()
+        camera, shape = cmds.camera(name="render_camera")
+        cmds.setAttr(f"{camera}.translateY", 10.0)
+        cmds.setAttr(f"{camera}.rotateX", -20.0)
+        cmds.setAttr(f"{shape}.centerOfInterest", 30.0)
+        cmds.setKeyframe(camera, attribute="rotateY", time=1, value=0.0)
+        cmds.setKeyframe(camera, attribute="rotateY", time=3, value=20.0)
+        cmds.select(camera, replace=True)
+        output_path = self.get_temp_filename("selected_camera_dense.vmd")
+
+        result = self._export_bake_timeline(
+            output_path,
+            {
+                "target_model": root,
+                "current_model_root": root,
+                "export_format": "vmd",
+                "export_strategy": "bake_timeline",
+                "export_target": "camera",
+                "frame_range": (1, 3),
+            },
+        )
+
+        self.assertTrue(result.succeeded, repr(result))
+        parsed = VmdData().parse_file(output_path)
+        self.assertEqual(
+            [frame.frame_number for frame in parsed.camera_frames],
+            # Maya film (24 fps) samples 1/2/3 map to VMD 1/2/4 at 30 fps.
+            [1, 2, 4],
+        )
+        self.assertTrue(
+            all(0.0 < abs(frame.distance) <= 1000.0 for frame in parsed.camera_frames)
+        )
+        self.assertTrue(
+            all(abs(frame.position[1]) <= 1e-5 for frame in parsed.camera_frames)
+        )
+        self.assertEqual(parsed.bone_frames, [])
+
     def test_namespaced_target_scopes_automatic_blendshape_discovery(self):
         hero_root = self._make_namespaced_keyed_blendshape("hero", "hero_morph")
         self._make_namespaced_keyed_blendshape("rival", "rival_morph")

@@ -125,7 +125,17 @@ class ControlRigDirectVmdExportError(ValueError):
         self.validation_issue_path = str(path)
         super().__init__(str(message))
 _TRANSFORM_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
-_CAMERA_SHAPE_EXPORT_ATTRS = ("focalLength", "orthographic", "orthographicWidth")
+_CAMERA_SHAPE_EXPORT_ATTRS = (
+    "focalLength",
+    "verticalFilmAperture",
+    "orthographic",
+    "orthographicWidth",
+    "centerOfInterest",
+)
+_RIGLESS_CAMERA_TARGET_PLANE_Y = 0.0
+_RIGLESS_CAMERA_MAX_TARGET_DISTANCE = 1000.0
+_RIGLESS_CAMERA_DEFAULT_TARGET_DISTANCE = 45.0
+_RIGLESS_CAMERA_PLANE_EPSILON = 1e-6
 _TRACK_SELECTION_DECISIONS = (
     "omitted_default",
     "omitted_unrepresentable",
@@ -1609,6 +1619,7 @@ class VmdSceneCollector:
                     cameras,
                     start_frame,
                     end_frame,
+                    motion_scale=motion_scale,
                     time_converter=maya_time_to_vmd,
                     dense_sample=True,
                     dense_frame_samples=bake_timeline_dense_frames,
@@ -1782,6 +1793,7 @@ class VmdSceneCollector:
             cameras,
             start_frame,
             end_frame,
+            motion_scale=motion_scale,
             time_converter=maya_time_to_vmd,
             dense_sample=False,
             dense_frame_samples=None,
@@ -1890,6 +1902,8 @@ class VmdSceneCollector:
             camera_target = _camera_target_node(camera)
             camera_shape = _camera_shape(camera)
             keyed_times.extend(_key_times(camera, _CAMERA_EXPORT_ATTRS))
+            for ancestor in _transform_ancestors(camera):
+                keyed_times.extend(_key_times(ancestor, _TRANSFORM_EXPORT_ATTRS))
             if camera_root:
                 keyed_times.extend(_key_times(camera_root, _BONE_EXPORT_ATTRS))
             if camera_target:
@@ -4580,6 +4594,7 @@ class VmdSceneCollector:
         cameras: Sequence[str],
         start_frame: Optional[float] = None,
         end_frame: Optional[float] = None,
+        motion_scale: float = 1.0,
         time_converter=None,
         dense_sample: bool = False,
         dense_frame_samples: Optional[Sequence[float]] = None,
@@ -4588,10 +4603,19 @@ class VmdSceneCollector:
         progress_callback=None,
         cancel_requested=None,
     ) -> list[dict]:
-        """Collect keyed MMD camera controller frames."""
+        """Collect MMD camera frames, including dense rigless camera baking."""
+        if abs(float(motion_scale)) < 1e-12:
+            raise ValueError("motion_scale must not be zero")
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = [] if frame_sink is None else None
         restore_time = None
+        rigless_target_reasons = {
+            "plane_hit": 0,
+            "distance_capped": 0,
+            "previous_distance": 0,
+            "center_of_interest": 0,
+            "default": 0,
+        }
         timeline_reader = _MayaTimelineReader() if timeline_evaluation else None
         with timeline_reader or nullcontext():
             try:
@@ -4599,8 +4623,14 @@ class VmdSceneCollector:
                     camera_target = _camera_target_node(camera)
                     camera_root = _camera_root_node(camera)
                     camera_shape = _camera_shape(camera)
+                    ancestor_frames = {
+                        frame
+                        for ancestor in _transform_ancestors(camera)
+                        for frame in _key_times(ancestor, _TRANSFORM_EXPORT_ATTRS)
+                    }
                     source_frames = sorted(
                         set(_key_times(camera, _CAMERA_EXPORT_ATTRS))
+                        | ancestor_frames
                         | (
                             set(_key_times(camera_root, _BONE_EXPORT_ATTRS))
                             if camera_root
@@ -4617,6 +4647,7 @@ class VmdSceneCollector:
                             else set()
                         )
                     )
+                    previous_rigless_distance = None
                     keyed_frames = (
                         sorted(set(dense_frame_samples))
                         if dense_sample
@@ -4632,6 +4663,12 @@ class VmdSceneCollector:
                         uses_aim_roll_rig = bool(
                             _uses_aim_roll_camera(camera) and camera_target
                         )
+                        uses_rigless_camera = bool(
+                            camera_shape
+                            and not uses_aim_roll_rig
+                            and not uses_raw_mmd_attrs
+                            and not _has_attr(camera, ATTR_MMD_CAMERA)
+                        )
                         if timeline_reader is not None:
                             timeline_reader.set_frame(frame_number)
                             read_value = _current_plug_float_at_frame
@@ -4642,15 +4679,8 @@ class VmdSceneCollector:
                                 if restore_time is None:
                                     restore_time = _query_current_time()
                                 cmds.currentTime(frame_number, edit=True)
-                            motion_scale = _camera_motion_scale(camera)
-                            eye = om.MVector(
-                                *cmds.xform(
-                                    camera,
-                                    query=True,
-                                    worldSpace=True,
-                                    translation=True,
-                                )
-                            )
+                            camera_motion_scale = _camera_motion_scale(camera)
+                            eye, forward, up = _camera_world_pose(camera)
                             target = om.MVector(
                                 *cmds.xform(
                                     camera_target,
@@ -4660,23 +4690,60 @@ class VmdSceneCollector:
                                 )
                             )
                             position = (
+                                float(target.x) / camera_motion_scale,
+                                float(target.y) / camera_motion_scale,
+                                -float(target.z) / camera_motion_scale,
+                            )
+                            distance = (
+                                _signed_camera_distance(eye, target, forward)
+                                / camera_motion_scale
+                            )
+                            rotation = mmd_camera_rotation_from_maya_forward_up(
+                                (forward.x, forward.y, forward.z),
+                                (up.x, up.y, up.z),
+                            )
+                            viewing_angle = _camera_viewing_angle(
+                                camera, camera_shape, frame_number, read_value
+                            )
+                            perspective = _camera_perspective_value(
+                                camera, camera_shape, frame_number, read_value
+                            )
+                        elif uses_rigless_camera:
+                            if timeline_reader is None:
+                                if restore_time is None:
+                                    restore_time = _query_current_time()
+                                cmds.currentTime(frame_number, edit=True)
+                            eye, forward, up = _camera_world_pose(camera)
+                            center_of_interest = (
+                                read_value(
+                                    camera_shape,
+                                    "centerOfInterest",
+                                    frame_number,
+                                )
+                                if _has_attr(camera_shape, "centerOfInterest")
+                                else None
+                            )
+                            target_distance, target_reason = (
+                                _rigless_camera_target_distance(
+                                    eye.y,
+                                    forward.y,
+                                    previous_distance=previous_rigless_distance,
+                                    center_of_interest=center_of_interest,
+                                )
+                            )
+                            previous_rigless_distance = target_distance
+                            rigless_target_reasons[target_reason] += 1
+                            target = om.MVector(
+                                eye.x + forward.x * target_distance,
+                                eye.y + forward.y * target_distance,
+                                eye.z + forward.z * target_distance,
+                            )
+                            position = (
                                 float(target.x) / motion_scale,
                                 float(target.y) / motion_scale,
                                 -float(target.z) / motion_scale,
                             )
-                            matrix = om.MMatrix(
-                                cmds.getAttr(f"{camera}.worldMatrix[0]")
-                            )
-                            forward = om.MVector(0.0, 0.0, -1.0) * matrix
-                            up = om.MVector(0.0, 1.0, 0.0) * matrix
-                            if forward.length() > 1e-12:
-                                forward.normalize()
-                            if up.length() > 1e-12:
-                                up.normalize()
-                            distance = (
-                                _signed_camera_distance(eye, target, forward)
-                                / motion_scale
-                            )
+                            distance = -float(target_distance) / motion_scale
                             rotation = mmd_camera_rotation_from_maya_forward_up(
                                 (forward.x, forward.y, forward.z),
                                 (up.x, up.y, up.z),
@@ -4712,7 +4779,7 @@ class VmdSceneCollector:
                                 read_value(camera, "translateY", frame_number),
                                 -read_value(camera, "translateZ", frame_number),
                             )
-                        if not uses_aim_roll_rig:
+                        if not uses_aim_roll_rig and not uses_rigless_camera:
                             if uses_raw_mmd_attrs and all(
                                 _has_attr(camera, attr)
                                 for attr in (
@@ -4796,6 +4863,13 @@ class VmdSceneCollector:
                     cmds.currentTime(restore_time, edit=True)
         if frame_sink is None:
             frames.sort(key=lambda item: item["frame_number"])
+        if any(rigless_target_reasons.values()):
+            self._diagnostics["rigless_camera_target"] = {
+                "plane": "XZ (Y=0)",
+                "max_distance": _RIGLESS_CAMERA_MAX_TARGET_DISTANCE,
+                "samples": rigless_target_reasons,
+            }
+        if frame_sink is None:
             return frames
         return []
 
@@ -5456,6 +5530,75 @@ def _poll_export_control(progress_callback=None, cancel_requested=None) -> None:
 def _camera_shape(camera: str) -> Optional[str]:
     shapes = cmds.listRelatives(camera, shapes=True, type="camera") or []
     return shapes[0] if shapes else None
+
+
+def _camera_world_pose(camera: str) -> tuple[om.MVector, om.MVector, om.MVector]:
+    """Read a camera's world eye, forward, and up vectors at current time."""
+
+    eye = om.MVector(
+        *cmds.xform(
+            camera,
+            query=True,
+            worldSpace=True,
+            translation=True,
+        )
+    )
+    matrix = om.MMatrix(cmds.getAttr(f"{camera}.worldMatrix[0]"))
+    forward = om.MVector(0.0, 0.0, -1.0) * matrix
+    up = om.MVector(0.0, 1.0, 0.0) * matrix
+    if forward.length() > 1e-12:
+        forward.normalize()
+    if up.length() > 1e-12:
+        up.normalize()
+    return eye, forward, up
+
+
+def _transform_ancestors(node: str) -> list[str]:
+    """Return transform ancestors nearest-first without escaping DAG cycles."""
+
+    result = []
+    visited = {str(node)}
+    current = str(node)
+    while current:
+        parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
+        if not parents:
+            break
+        parent = str(parents[0])
+        if parent in visited:
+            break
+        visited.add(parent)
+        result.append(parent)
+        current = parent
+    return result
+
+
+def _rigless_camera_target_distance(
+    eye_y: float,
+    forward_y: float,
+    *,
+    previous_distance: Optional[float] = None,
+    center_of_interest: Optional[float] = None,
+    plane_y: float = _RIGLESS_CAMERA_TARGET_PLANE_Y,
+    max_distance: float = _RIGLESS_CAMERA_MAX_TARGET_DISTANCE,
+) -> tuple[float, str]:
+    """Choose a bounded forward distance for a rigless camera target."""
+
+    limit = max(float(max_distance), _RIGLESS_CAMERA_PLANE_EPSILON)
+    if abs(float(forward_y)) > _RIGLESS_CAMERA_PLANE_EPSILON:
+        intersection_distance = (float(plane_y) - float(eye_y)) / float(forward_y)
+        if math.isfinite(intersection_distance) and intersection_distance > 0.0:
+            if intersection_distance > limit:
+                return limit, "distance_capped"
+            return intersection_distance, "plane_hit"
+    if previous_distance is not None:
+        value = float(previous_distance)
+        if math.isfinite(value) and value > 0.0:
+            return min(value, limit), "previous_distance"
+    if center_of_interest is not None:
+        value = float(center_of_interest)
+        if math.isfinite(value) and value > 0.0:
+            return min(value, limit), "center_of_interest"
+    return min(_RIGLESS_CAMERA_DEFAULT_TARGET_DISTANCE, limit), "default"
 
 
 def _camera_viewing_angle(

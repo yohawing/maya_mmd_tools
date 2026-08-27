@@ -5085,6 +5085,83 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(frame["viewing_angle"], 42)
         self.assertEqual(frame["perspective"], 1)
 
+    def test_rigless_camera_target_distance_caps_distant_plane_hit(self):
+        distance, reason = collector_module._rigless_camera_target_distance(
+            10.0,
+            -0.001,
+            max_distance=1000.0,
+        )
+
+        self.assertEqual(distance, 1000.0)
+        self.assertEqual(reason, "distance_capped")
+
+    def test_rigless_camera_target_distance_reuses_previous_for_parallel_ray(self):
+        distance, reason = collector_module._rigless_camera_target_distance(
+            10.0,
+            0.0,
+            previous_distance=80.0,
+            center_of_interest=30.0,
+        )
+
+        self.assertEqual(distance, 80.0)
+        self.assertEqual(reason, "previous_distance")
+
+    def test_collects_dense_rigless_camera_without_mmd_attributes(self):
+        self.cmds.node_types.update(
+            {
+                "render_camera": "transform",
+                "render_cameraShape": "camera",
+            }
+        )
+        self.cmds.children["render_camera"] = ["render_cameraShape"]
+        self.cmds.translations["render_camera"] = (0.0, 10.0, 0.0)
+        self.cmds.attrs.update(
+            {
+                ("render_cameraShape", "centerOfInterest"): 30.0,
+                ("render_cameraShape", "focalLength"): 35.0,
+                ("render_cameraShape", "verticalFilmAperture"): 1.0,
+                ("render_cameraShape", "orthographic"): 0.0,
+            }
+        )
+
+        original_rotation_from_forward_up = (
+            collector_module.mmd_camera_rotation_from_maya_forward_up
+        )
+        original_om = collector_module.om
+        collector_module.mmd_camera_rotation_from_maya_forward_up = (
+            lambda _forward, _up: (0.1, 0.2, 0.3)
+        )
+        collector_module.om = FakeOpenMaya
+        try:
+            collector = VmdSceneCollector()
+            frames = collector.collect_camera_frames(
+                ["render_camera"],
+                motion_scale=2.0,
+                dense_sample=True,
+                dense_frame_samples=[1.0, 2.0, 3.0],
+            )
+        finally:
+            collector_module.mmd_camera_rotation_from_maya_forward_up = (
+                original_rotation_from_forward_up
+            )
+            collector_module.om = original_om
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [1, 2, 3])
+        self.assertTrue(all(frame["distance"] == -15.0 for frame in frames))
+        self.assertTrue(
+            all(frame["position"] == (0.0, 5.0, 15.0) for frame in frames)
+        )
+        self.assertEqual(
+            collector.diagnostics["rigless_camera_target"]["samples"],
+            {
+                "plane_hit": 0,
+                "distance_capped": 0,
+                "previous_distance": 2,
+                "center_of_interest": 1,
+                "default": 0,
+            },
+        )
+
     def test_collects_imported_light_color_from_directional_shape(self):
         """Legacy VMD light imports keep color on the child shape."""
         self.cmds.node_types.update(

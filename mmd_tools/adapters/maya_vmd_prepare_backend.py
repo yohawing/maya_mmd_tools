@@ -223,7 +223,7 @@ class MayaVmdExportBackend:
         """Resolve the Current Model and fingerprint its dependency closure."""
 
         started = time.perf_counter()
-        options = self._validated_options(request)
+        options = self._resolve_camera_options(self._validated_options(request))
         target_model = self._resolve_target_model(options)
         model_name = self._resolve_model_name(options, target_model)
         target_uuid = self._stable_uuid(target_model)
@@ -501,6 +501,73 @@ class MayaVmdExportBackend:
                 return str(value)
         return target_model
 
+    def _resolve_camera_options(self, options: Mapping[str, Any]) -> dict[str, Any]:
+        """Freeze one selected Maya camera when no tagged camera route exists."""
+
+        result = dict(options)
+        if not self._camera_section_requested(result) or "cameras" in result:
+            return result
+        cmds = self._cmds_api()
+        try:
+            tagged = cmds.ls(f"*.{_CAMERA_MARKER}", objectsOnly=True, long=True) or []
+        except Exception as exc:
+            raise BakeTimelineVmdExportError(
+                "could not discover tagged mmd_camera tracks"
+            ) from exc
+        if tagged:
+            return result
+        try:
+            selected = cmds.ls(selection=True, long=True) or []
+        except Exception as exc:
+            raise BakeTimelineVmdExportError(
+                "could not inspect the selected Maya camera"
+            ) from exc
+        cameras = {
+            camera
+            for node in selected
+            for camera in [self._camera_transform(node)]
+            if camera is not None
+        }
+        if len(cameras) != 1:
+            raise BakeTimelineVmdExportError(
+                "Camera export requires exactly one selected Maya camera when "
+                "the scene has no tagged mmd_camera track"
+            )
+        result["cameras"] = [next(iter(cameras))]
+        return result
+
+    @staticmethod
+    def _camera_section_requested(options: Mapping[str, Any]) -> bool:
+        export_target = str(options.get("export_target") or "").strip().lower()
+        if export_target:
+            return export_target in {"camera", "camera+light", "camera_light"}
+        targets = options.get("track_targets")
+        if targets is None:
+            return False
+        if isinstance(targets, str):
+            targets = (targets,)
+        return "camera" in {str(item).strip().lower() for item in targets}
+
+    def _camera_transform(self, node: Any) -> Optional[str]:
+        canonical = self._canonical_node(node)
+        if canonical is None:
+            return None
+        node_type = self._node_type(canonical)
+        if node_type == "camera":
+            parents = self._list_relatives(canonical, parent=True, fullPath=True)
+            if len(parents) != 1:
+                return None
+            return self._canonical_node(parents[0])
+        if node_type != "transform":
+            return None
+        shapes = self._list_relatives(
+            canonical,
+            shapes=True,
+            type="camera",
+            fullPath=True,
+        )
+        return canonical if len(shapes) == 1 else None
+
     def _collector_options(self, options: Mapping[str, Any], target_model: str) -> dict[str, Any]:
         result = dict(options)
         result.update(
@@ -631,6 +698,19 @@ class MayaVmdExportBackend:
             for track in tagged:
                 track_path = self._canonical_required(track)
                 nodes.add(track_path)
+                ancestor = track_path
+                while True:
+                    parents = self._list_relatives(
+                        ancestor,
+                        parent=True,
+                        fullPath=True,
+                    )
+                    if not parents:
+                        break
+                    ancestor = self._canonical_required(parents[0])
+                    if ancestor in nodes:
+                        break
+                    nodes.add(ancestor)
                 # The camera collector samples shape properties (focalLength,
                 # orthographic, and orthographicWidth), while the light
                 # collector may sample a child shape color source.
