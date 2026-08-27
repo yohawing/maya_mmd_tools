@@ -3749,6 +3749,7 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
         {
             "export_strategy": "bake_timeline",
             "export_format": "vmd",
+            "export_target": "camera+light",
             "require_target": False,
             "current_model_root": source_root,
             "target_model": source_root,
@@ -3780,11 +3781,80 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
         "ik_show_hide_frames": len(exported_data.ik_show_hide_frames),
         "shadow_frames": len(exported_data.shadow_frames),
     }
-    if any(exported_counts.values()):
+    if exported_counts["camera_frames"] <= 0 or exported_counts["light_frames"] <= 0:
         raise AssertionError(
-            "camera/light Bake Timeline scope unexpectedly emitted tracks: "
+            "camera/light Bake Timeline export omitted selected tracks: "
             f"{exported_counts!r}"
         )
+    for excluded in (
+        "bone_frames",
+        "morph_frames",
+        "ik_show_hide_frames",
+        "shadow_frames",
+    ):
+        if exported_counts[excluded] != 0:
+            raise AssertionError(
+                f"camera/light Bake Timeline export emitted {excluded}: {exported_counts!r}"
+            )
+
+    exported_payload = _camera_light_payload(
+        exported_data, VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES
+    )
+    exported_dense = _camera_light_payload(
+        exported_data, VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES
+    )
+    native_expected = _native_camera_light_payload(
+        source_fixture, VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES
+    )
+    fresh_root = _fresh_import(DEFAULT_PMX)
+    _import_vmd_into_current_scene(fresh_root, DEFAULT_PMX, output)
+    fresh_scene = _capture_camera_light_scene_oracle(
+        fresh_root, VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES
+    )
+    source_key_scene = _camera_light_frame_subset(
+        source_scene, VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES
+    )
+    fresh_key_scene = _camera_light_frame_subset(
+        fresh_scene, VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES
+    )
+    failures = []
+    for label, actual in (
+        ("source_import", source_key_scene),
+        ("exported_file", exported_payload),
+        ("fresh_import", fresh_key_scene),
+    ):
+        failures.extend(
+            _compare_camera_light_semantics(source_payload, actual, label)
+        )
+    for label, actual in (
+        ("source_import", source_scene),
+        ("exported_file", exported_dense),
+        ("fresh_import", fresh_scene),
+    ):
+        failures.extend(
+            _compare_camera_light_semantics(
+                native_expected,
+                actual,
+                f"native_expected_vs_{label}",
+                tracks=("camera",),
+                tolerance=NATIVE_CAMERA_TOLERANCE,
+            )
+        )
+    for label, actual in (
+        ("exported_file", exported_dense),
+        ("fresh_import", fresh_scene),
+    ):
+        failures.extend(
+            _compare_camera_light_semantics(
+                source_scene,
+                actual,
+                f"source_import_vs_{label}",
+                tracks=("light",),
+            )
+        )
+    if failures:
+        raise AssertionError("; ".join(failures))
+    canonical = list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_CANONICAL_INTERPOLATION)
     return {
         "status": "pass",
         "format": "vmd_bake_timeline_camera_light",
@@ -3795,10 +3865,6 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
         "report_md": str(report_dir / "report.md"),
         "normalization": normalization,
         "bake_timeline_warning_acknowledged": True,
-        "scope_excluded": {
-            "camera_light_export_supported": False,
-            "reason": "VMD camera/light export is outside the current Bake Timeline scope",
-        },
         "track_coverage": {
             "checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
             "tracks": ["camera", "light"],
@@ -3815,17 +3881,55 @@ def _run_vmd_bake_timeline_camera_light_case(out_dir: Path) -> dict[str, Any]:
         },
         "camera_light": {
             "source": source_payload,
-            "source_import": source_scene,
-            "exported_file": {"camera": {}, "light": {}},
-            "scope_excluded": True,
+            "source_import": source_key_scene,
+            "exported_file": exported_payload,
+            "fresh_import": fresh_key_scene,
+            "interpolation": {
+                "source": {
+                    frame: payload["interpolation"]
+                    for frame, payload in source_payload["camera"].items()
+                },
+                "exported_file": {
+                    frame: payload["interpolation"]
+                    for frame, payload in exported_payload["camera"].items()
+                },
+                "bake_timeline_normalized": True,
+                "canonical_expected": canonical,
+                "canonical_length": len(canonical),
+                "canonical_exported": all(
+                    payload["interpolation"] == canonical
+                    for payload in exported_payload["camera"].values()
+                ),
+            },
+            "comparison": {
+                "status": "pass",
+                "boundaries": [
+                    "source",
+                    "source_import",
+                    "exported_file",
+                    "fresh_import",
+                ],
+                "checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_KEY_FRAMES),
+                "dense_checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
+                "dense_status": "pass",
+            },
+            "dense": {
+                "checked_frames": list(VMD_BAKE_TIMELINE_CAMERA_LIGHT_FRAMES),
+                "native_expected": native_expected,
+                "native_comparison_tracks": ["camera"],
+                "light_comparison": "source_import/fresh_import",
+                "source_import": source_scene,
+                "exported_file": exported_dense,
+                "fresh_import": fresh_scene,
+            },
         },
         "parsed_counts": exported_counts,
         "collection": {
-            "collector": "ExportWorkflowService -> VmdSceneCollector.collect",
+            "collector": "ExportWorkflowService -> VmdSceneCollector.collect_to_sink",
             "export_strategy": "bake_timeline",
             "standalone_scene": False,
             "source_fresh_import": True,
-            "result_fresh_import": False,
+            "result_fresh_import": True,
         },
     }
 

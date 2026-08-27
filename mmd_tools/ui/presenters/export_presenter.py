@@ -7,6 +7,7 @@ from ...services.export_workflow_service import (
     ExportWorkflowResult,
     ExportWorkflowService,
     STATE_EXPORTING,
+    STATE_CANCELLED,
     STATE_FAILED,
 )
 from ...validation.export_validator import ExportValidationIssue, ExportValidationReport
@@ -36,12 +37,12 @@ class ExportPresenter(QObject):
                 vmd_action=create_maya_bake_timeline_vmd_action(),
             )
         self.workflow_service = workflow_service
+        self._cancel_requested = False
         self.view.presenter = self
         self.view.export_requested.connect(self.export)
-        cancel_requested = getattr(self.view, "cancel_requested", None)
-        if cancel_requested is not None:
-            cancel_requested.connect(self._request_cancel)
-        self._cancel_requested = False
+        cancel_signal = getattr(self.view, "cancel_requested", None)
+        if cancel_signal is not None:
+            cancel_signal.connect(self.cancel)
         self._active_export_format = None
         current_model_changed = getattr(app_state, "current_model_changed", None)
         if current_model_changed is not None:
@@ -57,12 +58,7 @@ class ExportPresenter(QObject):
         self._cancel_requested = False
         self._active_export_format = export_format
         try:
-            operation_active = True
-            self.view.set_operation_active(True)
-            self.view.set_state(STATE_EXPORTING)
-            progress_token = self.app_state.begin_progress(
-                self._PROGRESS_LABELS["scene_preflight"]
-            )
+            self._cancel_requested = False
             request = self.view.build_request(
                 getattr(self.app_state, "current_model_root", None)
             )
@@ -70,11 +66,17 @@ class ExportPresenter(QObject):
             self._active_export_format = export_format
             if export_format == "vpd":
                 request.options["_cancel_requested"] = lambda: self._cancel_requested
+            operation_active = True
+            self.view.set_operation_active(True)
+            self.view.set_state(STATE_EXPORTING)
+            progress_token = self.app_state.begin_progress(
+                self._PROGRESS_LABELS["scene_preflight"]
+            )
 
             def update_progress(stage):
                 self._update_progress(progress_token, stage)
 
-            progress_callback = None if export_format == "vmd" else update_progress
+            progress_callback = update_progress if export_format != "vmd" else None
             result = self.workflow_service.execute(
                 request,
                 warning_callback=lambda report: self._confirm_warnings(report, request),
@@ -99,6 +101,12 @@ class ExportPresenter(QObject):
         self.view.set_result(result)
         self._emit_status(result)
         return result
+
+    def cancel(self) -> None:
+        """Request cancellation for an in-flight VPD export."""
+
+        if self._active_export_format == "vpd":
+            self._cancel_requested = True
 
     def _confirm_warnings(self, report: ExportValidationReport, request) -> bool:
         """Show the verified warning report and ask within this export call."""
@@ -125,17 +133,12 @@ class ExportPresenter(QObject):
         if callable(update_view):
             update_view(stage)
         if self._active_export_format == "vpd":
+            # VPD polls cancellation at its atomic phase boundaries.
             QApplication.processEvents()
         if token is None:
             return
         label = self._PROGRESS_LABELS.get(stage, stage)
         self.app_state.update_progress_state(token, label, 100 if stage == "report_ready" else None)
-
-    def _request_cancel(self) -> None:
-        """Request cancellation at the next VPD atomic phase boundary."""
-
-        if self._active_export_format == "vpd":
-            self._cancel_requested = True
 
     def _view_export_format(self) -> str:
         return str(getattr(self.view, "current_export_format", None) or "pmx").lower()
@@ -181,7 +184,7 @@ class ExportPresenter(QObject):
         )
 
     def _emit_status(self, result: ExportWorkflowResult) -> None:
-        if bool(getattr(result.action_result, "cancelled", False)):
+        if result.state == STATE_CANCELLED:
             self.app_state.emit_status("Cancelled")
         elif result.succeeded:
             self.app_state.emit_status("Completed")

@@ -36,6 +36,7 @@ from ...services.export_workflow_service import (
 )
 from ...validation.vmd_validator import (
     VMD_EXPORT_BAKE_TIMELINE,
+    VMD_EXPORT_PRESERVE_KEYS,
 )
 
 
@@ -76,6 +77,8 @@ class _ExportPage(QWidget):
         """Return the format-specific primary action label."""
         if self.pane == self.owner.MODEL_PANE:
             key = "export_pmx"
+        elif self.pane == self.owner.CAMERA_PANE:
+            key = "export_camera_vmd"
         else:
             key = "export_vpd" if self.export_format == "vpd" else "export_vmd"
         return self.owner.tr(key, "buttons")
@@ -136,34 +139,59 @@ class _ExportPage(QWidget):
             self._model_form.addRow(
                 self.owner.tr("options", "fields"), self.apply_scale_check
             )
-        elif self.pane == self.owner.MOTION_PANE:
+        elif self.pane in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
             self._motion_form = QFormLayout(self.settings_group)
-            self.format_combo = QComboBox(self)
-            self.format_combo.setObjectName("motionExportFormat")
-            self.format_combo.addItem("VMD", "vmd")
-            self.format_combo.addItem("VPD", "vpd")
-            self.format_combo.currentIndexChanged.connect(
-                self._on_motion_format_changed
-            )
-            self._motion_form.addRow(
-                self.owner.tr("format", "fields"), self.format_combo
-            )
+            if self.pane == self.owner.MOTION_PANE:
+                self.format_combo = QComboBox(self)
+                self.format_combo.setObjectName("motionExportFormat")
+                self.format_combo.addItem("VMD", "vmd")
+                self.format_combo.addItem("VPD", "vpd")
+                self.format_combo.currentIndexChanged.connect(
+                    self._on_motion_format_changed
+                )
+                self._motion_form.addRow(
+                    self.owner.tr("format", "fields"), self.format_combo
+                )
 
-            self.bake_export_check = QCheckBox(
-                self.owner.tr("vmd_bake_export", "checkboxes")
-            )
-            self.bake_export_check.setObjectName("motionBakeExport")
-            self.bake_export_check.setChecked(True)
-            # Current character motion is always exported as a timeline bake.
-            # Keep this visible as a contract indicator, not a user-selectable
-            # strategy switch.
-            self.bake_export_check.setEnabled(False)
-            self._motion_form.addRow(self.bake_export_check)
-            # Keep the explanation available as a tooltip without spending a
-            # persistent row on an already unambiguous Bake-only option.
-            self.bake_export_check.setToolTip(
-                self.owner.tr("vmd_bake_export_help", "messages")
-            )
+            if self.pane == self.owner.CAMERA_PANE:
+                self.strategy_combo = QComboBox(self)
+                self.strategy_combo.setObjectName("cameraExportStrategy")
+                self.strategy_combo.addItem(
+                    self.owner.tr("bake_timeline", "options"),
+                    VMD_EXPORT_BAKE_TIMELINE,
+                )
+                self.strategy_combo.addItem(
+                    self.owner.tr("preserve_keys", "options"),
+                    VMD_EXPORT_PRESERVE_KEYS,
+                )
+                self.strategy_combo.currentIndexChanged.connect(
+                    self._on_camera_strategy_changed
+                )
+                self._motion_form.addRow(
+                    self.owner.tr("export_strategy", "fields"),
+                    self.strategy_combo,
+                )
+            else:
+                self.bake_export_check = QCheckBox(
+                    self.owner.tr("vmd_bake_export", "checkboxes")
+                )
+                self.bake_export_check.setObjectName("motionBakeExport")
+                self.bake_export_check.setChecked(True)
+                self.bake_export_check.setEnabled(False)
+                self._motion_form.addRow(self.bake_export_check)
+                self.bake_export_check.setToolTip(
+                    self.owner.tr("vmd_bake_export_help", "messages")
+                )
+
+            if self.pane == self.owner.CAMERA_PANE:
+                self.light_export_check = QCheckBox(
+                    self.owner.tr("vmd_export_light", "checkboxes")
+                )
+                self.light_export_check.setObjectName("cameraExportLight")
+                self.light_export_check.toggled.connect(
+                    self._on_semantic_input_changed
+                )
+                self._motion_form.addRow(self.light_export_check)
 
             self.frame_range_check = QCheckBox(
                 self.owner.tr("use_frame_range", "checkboxes")
@@ -192,13 +220,14 @@ class _ExportPage(QWidget):
             self._motion_form.addRow(
                 self.owner.tr("end", "fields"), self.frame_end_spin
             )
-            self.pose_help = QLabel(
-                self.owner.tr("vpd_current_pose_help", "messages"), self
-            )
-            self.pose_help.setWordWrap(True)
-            self.pose_help.setObjectName("poseCurrentFrameHelp")
-            self._motion_form.addRow(self.pose_help)
-            self._sync_motion_format_controls()
+            if self.pane == self.owner.MOTION_PANE:
+                self.pose_help = QLabel(
+                    self.owner.tr("vpd_current_pose_help", "messages"), self
+                )
+                self.pose_help.setWordWrap(True)
+                self.pose_help.setObjectName("poseCurrentFrameHelp")
+                self._motion_form.addRow(self.pose_help)
+                self._sync_motion_format_controls()
             self._sync_frame_range_enabled()
         self.settings_layout.addStretch()
 
@@ -227,7 +256,7 @@ class _ExportPage(QWidget):
         buttons.addWidget(self.export_button)
         self.cancel_button = QPushButton(self.owner.tr("cancel", "buttons"))
         self.cancel_button.setObjectName(f"export{self.pane.title()}CancelButton")
-        self.cancel_button.setVisible(self.export_format == "vpd")
+        self.cancel_button.setVisible(False)
         self.cancel_button.setEnabled(False)
         self.cancel_button.clicked.connect(self.cancel_requested.emit)
         buttons.addWidget(self.cancel_button)
@@ -270,18 +299,20 @@ class _ExportPage(QWidget):
         # Coerce the extension only in the request.  The line edit remains an
         # exact record of what the user typed, including a non-native suffix.
         output_path = self.normalize_output_path()
+        requires_model = self.pane != self.owner.CAMERA_PANE
         options: Dict[str, Any] = {
             "export_format": self.export_format,
-            "require_target": True,
-            "require_current_model": True,
+            "require_target": requires_model,
+            "require_current_model": requires_model,
             "current_model_root": str(current_model_root or "") or None,
         }
         if self.pane == self.owner.MODEL_PANE:
             options["apply_scale"] = self.apply_scale_check.isChecked()
         elif self.export_format == "vpd":
             options["export_strategy"] = "current_pose"
-        elif self.pane == self.owner.MOTION_PANE:
-            options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
+        elif self.pane in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
+            options["export_strategy"] = self._export_strategy()
+            options["export_target"] = self.export_target()
             if self.frame_range_check.isChecked():
                 options["frame_range"] = (
                     self.frame_start_spin.value(),
@@ -309,6 +340,10 @@ class _ExportPage(QWidget):
 
     def _on_semantic_input_changed(self, *_args) -> None:
         """Invalidate the visible report for timeline-affecting inputs."""
+        self._mark_editing()
+
+    def _on_camera_strategy_changed(self, *_args) -> None:
+        self._sync_frame_range_enabled()
         self._mark_editing()
 
     def _on_motion_format_changed(self, *_args) -> None:
@@ -368,11 +403,24 @@ class _ExportPage(QWidget):
         self._operation_active = bool(active)
         enabled = not self._operation_active
         self.export_button.setEnabled(enabled)
-        if self.pane == self.owner.MOTION_PANE:
-            self.format_combo.setEnabled(enabled)
-            self.cancel_button.setEnabled(
-                self.export_format == "vpd" and self._operation_active
-            )
+        if self.pane in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
+            if self.pane == self.owner.MOTION_PANE:
+                self.format_combo.setEnabled(enabled)
+            else:
+                self.strategy_combo.setEnabled(enabled)
+            cancellable = self.export_format == "vpd"
+            self.cancel_button.setVisible(cancellable)
+            self.cancel_button.setEnabled(self._operation_active and cancellable)
+
+    def export_target(self) -> str:
+        """Return the explicit VMD target selected by the motion page."""
+
+        if self.pane == self.owner.CAMERA_PANE:
+            light_check = getattr(self, "light_export_check", None)
+            return "camera+light" if light_check is not None and light_check.isChecked() else "camera"
+        if self.pane != self.owner.MOTION_PANE:
+            return "character"
+        return "character"
 
     def invalidate(self) -> None:
         self._state = STATE_EDITING
@@ -381,7 +429,20 @@ class _ExportPage(QWidget):
 
     def _sync_frame_range_enabled(self) -> None:
         """Only expose editable frame bounds when range export is enabled."""
-        enabled = self.export_format == "vmd" and self.frame_range_check.isChecked()
+        supports_range = not (
+            self.pane == self.owner.CAMERA_PANE
+            and self._export_strategy() == VMD_EXPORT_PRESERVE_KEYS
+        )
+        if not supports_range and self.frame_range_check.isChecked():
+            self.frame_range_check.setChecked(False)
+        self.frame_range_check.setEnabled(
+            self.export_format == "vmd" and supports_range
+        )
+        enabled = (
+            self.export_format == "vmd"
+            and supports_range
+            and self.frame_range_check.isChecked()
+        )
         self.frame_start_spin.setEnabled(enabled)
         self.frame_end_spin.setEnabled(enabled)
 
@@ -390,13 +451,22 @@ class _ExportPage(QWidget):
 
         if self.export_format == "vpd":
             return "current_pose"
-        if self.pane != self.owner.MOTION_PANE:
+        if self.pane not in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
             return ""
+        if self.pane == self.owner.CAMERA_PANE:
+            combo = getattr(self, "strategy_combo", None)
+            return str(
+                combo.currentData() if combo is not None else VMD_EXPORT_BAKE_TIMELINE
+            )
         return VMD_EXPORT_BAKE_TIMELINE
 
     def set_export_strategy(self, export_strategy: str) -> None:
-        """Migrate legacy settings while keeping the Bake indicator fixed."""
-        del export_strategy
+        """Restore a supported strategy without exposing it for Character."""
+        if self.pane == self.owner.CAMERA_PANE:
+            index = self.strategy_combo.findData(str(export_strategy or "").lower())
+            self.strategy_combo.setCurrentIndex(max(0, index))
+            self._sync_frame_range_enabled()
+            return
         self.bake_export_check.setChecked(True)
         self.bake_export_check.setEnabled(False)
 
@@ -419,18 +489,35 @@ class _ExportPage(QWidget):
                 self.apply_scale_check,
                 self.owner.tr("options", "fields"),
             )
-        elif self.pane == self.owner.MOTION_PANE:
-            self._set_form_label(
-                self._motion_form,
-                self.format_combo,
-                self.owner.tr("format", "fields"),
-            )
-            self.bake_export_check.setText(
-                self.owner.tr("vmd_bake_export", "checkboxes")
-            )
-            self.bake_export_check.setToolTip(
-                self.owner.tr("vmd_bake_export_help", "messages")
-            )
+        elif self.pane in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
+            if self.pane == self.owner.MOTION_PANE:
+                self._set_form_label(
+                    self._motion_form,
+                    self.format_combo,
+                    self.owner.tr("format", "fields"),
+                )
+            if self.pane == self.owner.CAMERA_PANE:
+                self.strategy_combo.setItemText(
+                    0, self.owner.tr("bake_timeline", "options")
+                )
+                self.strategy_combo.setItemText(
+                    1, self.owner.tr("preserve_keys", "options")
+                )
+                self._set_form_label(
+                    self._motion_form,
+                    self.strategy_combo,
+                    self.owner.tr("export_strategy", "fields"),
+                )
+                self.light_export_check.setText(
+                    self.owner.tr("vmd_export_light", "checkboxes")
+                )
+            else:
+                self.bake_export_check.setText(
+                    self.owner.tr("vmd_bake_export", "checkboxes")
+                )
+                self.bake_export_check.setToolTip(
+                    self.owner.tr("vmd_bake_export_help", "messages")
+                )
             self.frame_range_check.setText(
                 self.owner.tr("use_frame_range", "checkboxes")
             )
@@ -449,9 +536,10 @@ class _ExportPage(QWidget):
                 self.frame_end_spin,
                 self.owner.tr("end", "fields"),
             )
-            self.pose_help.setText(
-                self.owner.tr("vpd_current_pose_help", "messages")
-            )
+            if self.pane == self.owner.MOTION_PANE:
+                self.pose_help.setText(
+                    self.owner.tr("vpd_current_pose_help", "messages")
+                )
         self.validation_console.retranslateUi()
 
     @staticmethod
@@ -463,13 +551,14 @@ class _ExportPage(QWidget):
 
 
 class ExportTab(BaseTab):
-    """Present Model and Animation export pages under one selector."""
+    """Present Model, Animation, and Camera export pages."""
 
     export_requested = Signal()
     cancel_requested = Signal()
 
     MODEL_PANE = "model"
     MOTION_PANE = "motion"
+    CAMERA_PANE = "camera"
 
     def __init__(
         self,
@@ -494,10 +583,11 @@ class ExportTab(BaseTab):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
         self.category_stack = CategoryStack(
-            (self.MODEL_PANE, self.MOTION_PANE),
+            (self.MODEL_PANE, self.MOTION_PANE, self.CAMERA_PANE),
             {
                 self.MODEL_PANE: self.tr("export_model", "tabs"),
                 self.MOTION_PANE: self.tr("export_motion", "tabs"),
+                self.CAMERA_PANE: self.tr("export_camera", "tabs"),
             },
             "exportCategoryStack",
             self,
@@ -513,6 +603,9 @@ class ExportTab(BaseTab):
             self.MOTION_PANE: _ExportPage(
                 self, self.MOTION_PANE, self.tr("export_motion", "tabs")
             ),
+            self.CAMERA_PANE: _ExportPage(
+                self, self.CAMERA_PANE, self.tr("export_camera", "tabs")
+            ),
         }
         for pane, page in self._pages.items():
             page.export_requested.connect(self.export_requested.emit)
@@ -526,6 +619,7 @@ class ExportTab(BaseTab):
         key = {
             self.MODEL_PANE: "export_model_path",
             self.MOTION_PANE: "export_motion_path",
+            self.CAMERA_PANE: "export_camera_path",
         }[pane]
         value = self.view_state.get(key, "")
         return str(value or "")
@@ -535,6 +629,7 @@ class ExportTab(BaseTab):
         key = {
             self.MODEL_PANE: "export_model_path",
             self.MOTION_PANE: "export_motion_path",
+            self.CAMERA_PANE: "export_camera_path",
         }[pane]
         self.view_state.set(key, str(value or ""))
 
@@ -563,7 +658,11 @@ class ExportTab(BaseTab):
 
     def _on_pane_changed(self, index: int) -> None:
         """Update the active format when the shared selector changes."""
-        self._active_pane = self.MODEL_PANE if int(index) == 0 else self.MOTION_PANE
+        self._active_pane = (
+            self.MODEL_PANE,
+            self.MOTION_PANE,
+            self.CAMERA_PANE,
+        )[int(index)]
 
     @property
     def active_pane(self) -> str:
@@ -597,6 +696,7 @@ class ExportTab(BaseTab):
                 return default
         model = self._pages[self.MODEL_PANE]
         motion = self._pages[self.MOTION_PANE]
+        camera = self._pages[self.CAMERA_PANE]
         model.apply_scale_check.setChecked(
             bool(getter(settings_keys.EXPORT_GENERAL_APPLY_SCALE, True))
         )
@@ -617,6 +717,25 @@ class ExportTab(BaseTab):
         motion.frame_start_spin.setValue(int(start or 0))
         motion.frame_end_spin.setValue(int(end if end is not None else 120))
         motion._sync_frame_range_enabled()
+        camera.set_export_strategy(
+            getter(settings_keys.EXPORT_CAMERA_STRATEGY, VMD_EXPORT_BAKE_TIMELINE)
+        )
+        camera.frame_range_check.setChecked(
+            bool(getter(settings_keys.EXPORT_CAMERA_USE_FRAME_RANGE, False))
+        )
+        camera_range_initialized = bool(
+            getter(settings_keys.EXPORT_CAMERA_RANGE_INITIALIZED, False)
+        )
+        if camera_range_initialized:
+            camera_start = getter(settings_keys.EXPORT_CAMERA_START_FRAME, 0)
+            camera_end = getter(settings_keys.EXPORT_CAMERA_END_FRAME, 120)
+        else:
+            camera_start, camera_end = self._timeline_range()
+        camera.frame_start_spin.setValue(int(camera_start or 0))
+        camera.frame_end_spin.setValue(
+            int(camera_end if camera_end is not None else 120)
+        )
+        camera._sync_frame_range_enabled()
 
     def _resolve_output_path(self, path: str) -> str:
         """Resolve relative export requests under Maya's Set Project root."""
@@ -650,6 +769,7 @@ class ExportTab(BaseTab):
             return
         model = self._pages[self.MODEL_PANE]
         motion = self._pages[self.MOTION_PANE]
+        camera = self._pages[self.CAMERA_PANE]
         setter(settings_keys.EXPORT_GENERAL_APPLY_SCALE, model.apply_scale_check.isChecked())
         setter(settings_keys.EXPORT_MOTION_STRATEGY, VMD_EXPORT_BAKE_TIMELINE)
         setter(
@@ -659,6 +779,14 @@ class ExportTab(BaseTab):
         setter(settings_keys.EXPORT_MOTION_START_FRAME, motion.frame_start_spin.value())
         setter(settings_keys.EXPORT_MOTION_END_FRAME, motion.frame_end_spin.value())
         setter(settings_keys.EXPORT_MOTION_RANGE_INITIALIZED, True)
+        setter(settings_keys.EXPORT_CAMERA_STRATEGY, camera._export_strategy())
+        setter(
+            settings_keys.EXPORT_CAMERA_USE_FRAME_RANGE,
+            camera.frame_range_check.isChecked(),
+        )
+        setter(settings_keys.EXPORT_CAMERA_START_FRAME, camera.frame_start_spin.value())
+        setter(settings_keys.EXPORT_CAMERA_END_FRAME, camera.frame_end_spin.value())
+        setter(settings_keys.EXPORT_CAMERA_RANGE_INITIALIZED, True)
 
     def build_request(self, current_model_root: Optional[str] = None) -> ExportWorkflowRequest:
         # Once an export starts, the page that owned the button click remains
@@ -681,6 +809,7 @@ class ExportTab(BaseTab):
             owner_index = {
                 self.MODEL_PANE: 0,
                 self.MOTION_PANE: 1,
+                self.CAMERA_PANE: 2,
             }[owner_page.pane]
             if self.category_stack.currentIndex() != owner_index:
                 self.category_stack.setCurrentIndex(owner_index)
@@ -717,6 +846,7 @@ class ExportTab(BaseTab):
         labels = {
             self.MODEL_PANE: self.tr("export_model", "tabs"),
             self.MOTION_PANE: self.tr("export_motion", "tabs"),
+            self.CAMERA_PANE: self.tr("export_camera", "tabs"),
         }
         self.category_stack.retranslate(labels)
         for page in self._pages.values():
@@ -737,6 +867,8 @@ class ExportTab(BaseTab):
             "validation_console",
             "apply_scale_check",
             "bake_export_check",
+            "light_export_check",
+            "strategy_combo",
             "format_combo",
             "frame_range_check",
             "frame_start_spin",
@@ -754,10 +886,6 @@ class ExportTab(BaseTab):
                 "apply_scale_check": self.MODEL_PANE,
                 "_motion_form": self.MOTION_PANE,
                 "format_combo": self.MOTION_PANE,
-                "bake_export_check": self.MOTION_PANE,
-                "frame_range_check": self.MOTION_PANE,
-                "frame_start_spin": self.MOTION_PANE,
-                "frame_end_spin": self.MOTION_PANE,
                 "pose_help": self.MOTION_PANE,
             }
             pane = pane_by_attribute.get(

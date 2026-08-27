@@ -489,6 +489,85 @@ class ExportWorkflowTests(unittest.TestCase):
             self._assert_vmd_boundary_failure(result, boundary, target)
             self.assertNotIn("collect", result.completed_phases)
 
+    def test_camera_target_skips_character_ownership_conflicts(self):
+        preflight = ScenePreflight(
+            scene_service=_SceneService(),
+            ownership_checker=lambda _target: {
+                "control_rig": {"state": "EDIT", "owner": "CONTROL_OWNED"},
+                "humanik": {"blocked": "active"},
+            },
+        )
+
+        result = preflight.run(
+            {
+                "export_format": "vmd",
+                "export_target": "camera",
+                "target_model": "model_ROOT",
+                "file_path": "scene.vmd",
+            }
+        )
+
+        self.assertFalse(result.report.is_blocking)
+        self.assertEqual(result.metadata["export_target"], "camera")
+
+    def test_camera_preserve_keys_strategy_survives_workflow_normalization(self):
+        request = ExportWorkflowRequest(
+            "camera.vmd",
+            {
+                "export_format": "vmd",
+                "export_target": "camera",
+                "export_strategy": "preserve_keys",
+            },
+        )
+
+        options = ExportWorkflowService._options(request)
+
+        self.assertEqual(options["export_strategy"], "preserve_keys")
+
+    def test_character_preserve_keys_is_blocked_by_preflight(self):
+        result = ScenePreflight(scene_service=_SceneService()).run(
+            {
+                "export_format": "vmd",
+                "export_target": "character",
+                "export_strategy": "preserve_keys",
+                "target_model": "model_ROOT",
+                "file_path": "motion.vmd",
+            }
+        )
+
+        self.assertTrue(result.report.is_blocking)
+        self.assertIn("Camera export only", result.report.issues[0].reason)
+
+    def test_camera_preserve_keys_frame_range_is_blocked_by_preflight(self):
+        result = ScenePreflight(scene_service=_SceneService()).run(
+            {
+                "export_format": "vmd",
+                "export_target": "camera",
+                "export_strategy": "preserve_keys",
+                "frame_range": (2, 8),
+                "target_model": "model_ROOT",
+                "file_path": "camera.vmd",
+            }
+        )
+
+        self.assertTrue(result.report.is_blocking)
+        self.assertTrue(
+            any("Frame Range" in issue.reason for issue in result.report.issues)
+        )
+
+    def test_standalone_light_target_is_blocked_by_preflight(self):
+        result = ScenePreflight(scene_service=_SceneService()).run(
+            {
+                "export_format": "vmd",
+                "export_target": "light",
+                "target_model": "model_ROOT",
+                "file_path": "light.vmd",
+            }
+        )
+
+        self.assertTrue(result.report.is_blocking)
+        self.assertIn("not supported", result.report.issues[0].reason)
+
     def test_vmd_encode_failure_preserves_target_and_restores_temporary_rig(self):
         boundary = _TemporaryVmdBoundary()
         with tempfile.TemporaryDirectory() as directory:

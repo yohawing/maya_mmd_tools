@@ -249,7 +249,11 @@ class ExportWorkflowService:
         ).lower().lstrip(".")
         if export_format == "vmd":
             options["export_format"] = "vmd"
-            options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
+            export_target = str(options.get("export_target") or "character").lower()
+            if export_target in {"camera", "camera+light"}:
+                options.setdefault("export_strategy", VMD_EXPORT_BAKE_TIMELINE)
+            else:
+                options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
         elif export_format == "vpd":
             options["export_format"] = "vpd"
             options["export_strategy"] = "current_pose"
@@ -306,8 +310,6 @@ class ExportWorkflowService:
         options = self._options(request)
         scene = self.scene_preflight.run(options)
         metadata = dict(scene.metadata)
-        if metadata.get("format") == "vmd":
-            metadata["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
         # GUI requests intentionally name only ``current_model_root``.  The
         # production VMD backend requires the equivalent ``target_model`` at
         # every action boundary, including this read-only Control Rig
@@ -464,15 +466,17 @@ class ExportWorkflowService:
             report = action_report
         action_error = getattr(action_result, "error", None)
         succeeded = bool(getattr(action_result, "succeeded", False)) and action_error is None
-        cancelled = isinstance(action_error, ExportValidationAcknowledgementRequired)
-        if not succeeded and action_error is not None and not cancelled:
+        warning_declined = isinstance(action_error, ExportValidationAcknowledgementRequired)
+        if not succeeded and action_error is not None and not warning_declined:
             report = _report_output_failure(
                 report, action_error, export_format=export_format, export_strategy=strategy
             )
         self._emit_progress(progress_callback, "report_ready")
         return finish(
             ExportWorkflowResult(
-                STATE_SUCCEEDED if succeeded else (STATE_BLOCKED if cancelled else STATE_FAILED),
+                STATE_SUCCEEDED
+                if succeeded
+                else (STATE_BLOCKED if warning_declined else STATE_FAILED),
                 report,
                 metadata,
                 action_result=action_result,

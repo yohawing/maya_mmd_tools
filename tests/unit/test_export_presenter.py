@@ -30,10 +30,15 @@ class _Signal:
     def connect(self, slot):
         self.slots.append(slot)
 
+    def emit(self):
+        for slot in tuple(self.slots):
+            slot()
+
 
 class _View:
     def __init__(self):
         self.export_requested = _Signal()
+        self.cancel_requested = _Signal()
         self.current_export_format = "vmd"
         self.states = []
         self.operation_states = []
