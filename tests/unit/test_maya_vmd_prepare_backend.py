@@ -83,13 +83,14 @@ class TestMayaVmdPrepareBackendCameraSelection(unittest.TestCase):
 
     def test_keeps_tagged_camera_route_in_preference_to_selection(self):
         self.cmds.selection = ["render_camera"]
+        self.cmds.node_types["mmd_camera"] = "transform"
         self.cmds.tagged = ["mmd_camera"]
 
         result = self.backend._resolve_camera_options(
             {"export_target": "camera"}
         )
 
-        self.assertNotIn("cameras", result)
+        self.assertEqual(result["cameras"], ["mmd_camera"])
 
     def test_requires_exactly_one_selected_camera_without_tag(self):
         with self.assertRaisesRegex(
@@ -104,6 +105,28 @@ class TestMayaVmdPrepareBackendCameraSelection(unittest.TestCase):
         )
 
         self.assertNotIn("cameras", result)
+
+    def test_camera_export_options_allow_missing_current_model(self):
+        result = self.backend._validated_options(
+            {
+                "export_strategy": "bake_timeline",
+                "export_target": "camera",
+            }
+        )
+
+        self.assertEqual(result["export_target"], "camera")
+
+    def test_character_export_options_still_require_current_model(self):
+        with self.assertRaisesRegex(
+            BakeTimelineVmdExportError,
+            "current_model_root is required for character VMD export",
+        ):
+            self.backend._validated_options(
+                {
+                    "export_strategy": "bake_timeline",
+                    "export_target": "character",
+                }
+            )
 
 
 if __name__ == "__main__":

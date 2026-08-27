@@ -250,7 +250,6 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertAlmostEqual(light_frame.position[2], 0.0)
 
     def test_bake_timeline_exports_selected_ordinary_camera_dense(self):
-        root, _joint = self._make_keyed_joint_scene()
         camera, shape = cmds.camera(name="render_camera")
         cmds.setAttr(f"{camera}.translateY", 10.0)
         cmds.setAttr(f"{camera}.rotateX", -20.0)
@@ -263,8 +262,9 @@ class TestVmdSceneCollector(MayaTestBase):
         result = self._export_bake_timeline(
             output_path,
             {
-                "target_model": root,
-                "current_model_root": root,
+                "current_model_root": None,
+                "require_target": False,
+                "require_current_model": False,
                 "export_format": "vmd",
                 "export_strategy": "bake_timeline",
                 "export_target": "camera",

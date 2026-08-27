@@ -121,6 +121,7 @@ class TestExportTabOutputPathResolution(unittest.TestCase):
         owner = export_tab.ExportTab.__new__(export_tab.ExportTab)
         owner.MODEL_PANE = "model"
         owner.MOTION_PANE = "motion"
+        owner.CAMERA_PANE = "camera"
         owner._maya_cmds = cmds
 
         page = export_tab._ExportPage.__new__(export_tab._ExportPage)
@@ -129,21 +130,21 @@ class TestExportTabOutputPathResolution(unittest.TestCase):
         page.export_format = "pmx" if pane == owner.MODEL_PANE else "vmd"
         page.output_path_edit = _FakeLineEdit(text)
         page.apply_scale_check = _FakeCheck(True)
-        page.camera_export_check = _FakeCheck(False)
         page.light_export_check = _FakeCheck(False)
         page.frame_range_check = _FakeCheck(False)
         page.frame_start_spin = _FakeSpinBox(0)
         page.frame_end_spin = _FakeSpinBox(120)
         return page
 
-    def test_motion_request_selects_camera_and_light_without_character_tracks(self):
-        page = self._page("motion", "scene.vmd", _FakeWorkspaceCmds(root="."))
-        page.camera_export_check.checked = True
+    def test_camera_request_selects_camera_and_light_without_current_model(self):
+        page = self._page("camera", "scene.vmd", _FakeWorkspaceCmds(root="."))
         page.light_export_check.checked = True
 
-        request = page.build_request("model_ROOT")
+        request = page.build_request(None)
 
         self.assertEqual(request.options["export_target"], "camera+light")
+        self.assertFalse(request.options["require_target"])
+        self.assertFalse(request.options["require_current_model"])
 
     def test_relative_model_and_motion_requests_use_set_project_root(self):
         with TemporaryDirectory() as directory:

@@ -31,6 +31,7 @@
     "export_workflow": "Export",
     "export_model": "Model",
     "export_motion": "Animation",
+    "export_camera": "Camera",
     "export_pose": "Pose",
     "info": "Info",
     "material": "Material",
@@ -62,6 +63,7 @@
     "export_pmx": "Export Model",
     "validate_animation": "Validate Animation",
     "export_vmd": "Export Animation",
+    "export_camera_vmd": "Export Camera",
     "export_vpd": "Export Pose",
     "apply": "Apply",
     "ok": "OK",
@@ -208,6 +210,7 @@
   "messages": {
     "vmd_bake_export_help": "Bake the current timeline before exporting the animation. When a range is enabled, only that range is evaluated.",
     "vpd_current_pose_help": "Export the evaluated current pose of the Current Model at the current frame.",
+    "vmd_camera_export_help": "Select one Maya Camera to export. An existing MMD Camera is used automatically. No Current Model is required.",
     "display_element_added": "Added {element_type} (PMX index {index})",
     "no_display_element_candidates": "No display-frame element candidates are available",
     "duplicate_display_element": "That element already belongs to this display frame",
