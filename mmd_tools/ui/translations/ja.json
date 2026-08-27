@@ -376,6 +376,8 @@
   },
   "options": {
     "vmd_export_timeline": "現在のタイムラインをVMD化",
+    "bake_timeline": "Bake Timeline",
+    "preserve_keys": "Preserve Keys",
     "none": "なし",
     "import_mesh": "メッシュをインポート",
     "import_skeleton": "スケルトンをインポート",
@@ -576,6 +578,7 @@
     "log_file": "ログファイル:",
     "command_port": "Command Port:",
     "export_format": "エクスポート形式:",
+    "export_strategy": "書き出し方法:",
     "transparency_mode": "透過モード:",
     "original_texture_path": "元テクスチャパス:",
     "name": "名前:",

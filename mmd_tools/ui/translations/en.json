@@ -376,6 +376,8 @@
   },
   "options": {
     "vmd_export_timeline": "Export the current timeline",
+    "bake_timeline": "Bake Timeline",
+    "preserve_keys": "Preserve Keys",
     "none": "None",
     "import_mesh": "Import Mesh",
     "import_skeleton": "Import Skeleton",
@@ -576,6 +578,7 @@
     "log_file": "Log File:",
     "command_port": "Command Port:",
     "export_format": "Export Format:",
+    "export_strategy": "Export Strategy:",
     "transparency_mode": "Transparency Mode:",
     "original_texture_path": "Original Texture Path:",
     "name": "Name:",

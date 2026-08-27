@@ -22,6 +22,7 @@ from mmd_tools.validation.export_validator import (
 from mmd_tools.ui.translations import UITranslator
 from mmd_tools.validation.vmd_validator import (
     VMD_EXPORT_BAKE_TIMELINE,
+    VMD_EXPORT_PRESERVE_KEYS,
 )
 from tests.common.ui_action_coverage import (
     ActionInvocationSpy,
@@ -169,9 +170,20 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(tab.export_button.text(), "カメラを書き出し")
             camera_request = tab.build_request(None)
             self.assertEqual(camera_request.options["export_target"], "camera")
+            self.assertEqual(
+                camera_request.options["export_strategy"],
+                VMD_EXPORT_BAKE_TIMELINE,
+            )
             self.assertFalse(camera_request.options["require_target"])
             self.assertFalse(camera_request.options["require_current_model"])
             self.assertIsNone(camera_request.options["current_model_root"])
+            tab.strategy_combo.setCurrentIndex(
+                tab.strategy_combo.findData(VMD_EXPORT_PRESERVE_KEYS)
+            )
+            self.assertEqual(
+                tab.build_request(None).options["export_strategy"],
+                VMD_EXPORT_PRESERVE_KEYS,
+            )
             tab.light_export_check.setChecked(True)
             self.assertEqual(
                 tab.build_request(None).options["export_target"],

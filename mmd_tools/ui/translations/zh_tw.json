@@ -276,6 +276,8 @@
   },
   "options": {
     "vmd_export_timeline": "匯出目前時間軸",
+    "bake_timeline": "Bake Timeline",
+    "preserve_keys": "Preserve Keys",
     "none": "無",
     "import_mesh": "匯入網格",
     "import_skeleton": "匯入骨骼",
@@ -466,6 +468,7 @@
     "log_file": "記錄檔案:",
     "command_port": "Command Port:",
     "export_format": "匯出格式:",
+    "export_strategy": "匯出方式:",
     "transparency_mode": "透明模式:",
     "original_texture_path": "原始紋理路徑:",
     "name": "名稱:",

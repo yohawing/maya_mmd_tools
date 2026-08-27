@@ -36,6 +36,7 @@ from ...services.export_workflow_service import (
 )
 from ...validation.vmd_validator import (
     VMD_EXPORT_BAKE_TIMELINE,
+    VMD_EXPORT_PRESERVE_KEYS,
 )
 
 
@@ -153,21 +154,35 @@ class _ExportPage(QWidget):
                     self.owner.tr("format", "fields"), self.format_combo
                 )
 
-            self.bake_export_check = QCheckBox(
-                self.owner.tr("vmd_bake_export", "checkboxes")
-            )
-            self.bake_export_check.setObjectName("motionBakeExport")
-            self.bake_export_check.setChecked(True)
-            # Current character motion is always exported as a timeline bake.
-            # Keep this visible as a contract indicator, not a user-selectable
-            # strategy switch.
-            self.bake_export_check.setEnabled(False)
-            self._motion_form.addRow(self.bake_export_check)
-            # Keep the explanation available as a tooltip without spending a
-            # persistent row on an already unambiguous Bake-only option.
-            self.bake_export_check.setToolTip(
-                self.owner.tr("vmd_bake_export_help", "messages")
-            )
+            if self.pane == self.owner.CAMERA_PANE:
+                self.strategy_combo = QComboBox(self)
+                self.strategy_combo.setObjectName("cameraExportStrategy")
+                self.strategy_combo.addItem(
+                    self.owner.tr("bake_timeline", "options"),
+                    VMD_EXPORT_BAKE_TIMELINE,
+                )
+                self.strategy_combo.addItem(
+                    self.owner.tr("preserve_keys", "options"),
+                    VMD_EXPORT_PRESERVE_KEYS,
+                )
+                self.strategy_combo.currentIndexChanged.connect(
+                    self._on_semantic_input_changed
+                )
+                self._motion_form.addRow(
+                    self.owner.tr("export_strategy", "fields"),
+                    self.strategy_combo,
+                )
+            else:
+                self.bake_export_check = QCheckBox(
+                    self.owner.tr("vmd_bake_export", "checkboxes")
+                )
+                self.bake_export_check.setObjectName("motionBakeExport")
+                self.bake_export_check.setChecked(True)
+                self.bake_export_check.setEnabled(False)
+                self._motion_form.addRow(self.bake_export_check)
+                self.bake_export_check.setToolTip(
+                    self.owner.tr("vmd_bake_export_help", "messages")
+                )
 
             if self.pane == self.owner.CAMERA_PANE:
                 self.light_export_check = QCheckBox(
@@ -297,7 +312,7 @@ class _ExportPage(QWidget):
         elif self.export_format == "vpd":
             options["export_strategy"] = "current_pose"
         elif self.pane in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
-            options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
+            options["export_strategy"] = self._export_strategy()
             options["export_target"] = self.export_target()
             if self.frame_range_check.isChecked():
                 options["frame_range"] = (
@@ -388,6 +403,8 @@ class _ExportPage(QWidget):
         if self.pane in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
             if self.pane == self.owner.MOTION_PANE:
                 self.format_combo.setEnabled(enabled)
+            else:
+                self.strategy_combo.setEnabled(enabled)
             cancellable = self.export_format == "vpd" or self.is_scene_target()
             self.cancel_button.setVisible(
                 self.export_format == "vpd"
@@ -426,11 +443,19 @@ class _ExportPage(QWidget):
             return "current_pose"
         if self.pane not in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
             return ""
+        if self.pane == self.owner.CAMERA_PANE:
+            combo = getattr(self, "strategy_combo", None)
+            return str(
+                combo.currentData() if combo is not None else VMD_EXPORT_BAKE_TIMELINE
+            )
         return VMD_EXPORT_BAKE_TIMELINE
 
     def set_export_strategy(self, export_strategy: str) -> None:
-        """Migrate legacy settings while keeping the Bake indicator fixed."""
-        del export_strategy
+        """Restore a supported strategy without exposing it for Character."""
+        if self.pane == self.owner.CAMERA_PANE:
+            index = self.strategy_combo.findData(str(export_strategy or "").lower())
+            self.strategy_combo.setCurrentIndex(max(0, index))
+            return
         self.bake_export_check.setChecked(True)
         self.bake_export_check.setEnabled(False)
 
@@ -460,15 +485,27 @@ class _ExportPage(QWidget):
                     self.format_combo,
                     self.owner.tr("format", "fields"),
                 )
-            self.bake_export_check.setText(
-                self.owner.tr("vmd_bake_export", "checkboxes")
-            )
-            self.bake_export_check.setToolTip(
-                self.owner.tr("vmd_bake_export_help", "messages")
-            )
             if self.pane == self.owner.CAMERA_PANE:
+                self.strategy_combo.setItemText(
+                    0, self.owner.tr("bake_timeline", "options")
+                )
+                self.strategy_combo.setItemText(
+                    1, self.owner.tr("preserve_keys", "options")
+                )
+                self._set_form_label(
+                    self._motion_form,
+                    self.strategy_combo,
+                    self.owner.tr("export_strategy", "fields"),
+                )
                 self.light_export_check.setText(
                     self.owner.tr("vmd_export_light", "checkboxes")
+                )
+            else:
+                self.bake_export_check.setText(
+                    self.owner.tr("vmd_bake_export", "checkboxes")
+                )
+                self.bake_export_check.setToolTip(
+                    self.owner.tr("vmd_bake_export_help", "messages")
                 )
             self.frame_range_check.setText(
                 self.owner.tr("use_frame_range", "checkboxes")
@@ -669,7 +706,9 @@ class ExportTab(BaseTab):
         motion.frame_start_spin.setValue(int(start or 0))
         motion.frame_end_spin.setValue(int(end if end is not None else 120))
         motion._sync_frame_range_enabled()
-        camera.set_export_strategy(VMD_EXPORT_BAKE_TIMELINE)
+        camera.set_export_strategy(
+            getter(settings_keys.EXPORT_CAMERA_STRATEGY, VMD_EXPORT_BAKE_TIMELINE)
+        )
         camera.frame_range_check.setChecked(
             bool(getter(settings_keys.EXPORT_CAMERA_USE_FRAME_RANGE, False))
         )
@@ -729,6 +768,7 @@ class ExportTab(BaseTab):
         setter(settings_keys.EXPORT_MOTION_START_FRAME, motion.frame_start_spin.value())
         setter(settings_keys.EXPORT_MOTION_END_FRAME, motion.frame_end_spin.value())
         setter(settings_keys.EXPORT_MOTION_RANGE_INITIALIZED, True)
+        setter(settings_keys.EXPORT_CAMERA_STRATEGY, camera._export_strategy())
         setter(
             settings_keys.EXPORT_CAMERA_USE_FRAME_RANGE,
             camera.frame_range_check.isChecked(),
@@ -817,6 +857,7 @@ class ExportTab(BaseTab):
             "apply_scale_check",
             "bake_export_check",
             "light_export_check",
+            "strategy_combo",
             "format_combo",
             "frame_range_check",
             "frame_start_spin",

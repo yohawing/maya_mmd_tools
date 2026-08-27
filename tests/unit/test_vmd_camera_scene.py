@@ -4,6 +4,7 @@ VmdConverter の camera import が作る Maya camera rig、keyframe、
 interpolation、fixture import の scene-level behavior を検証する。
 """
 
+import json
 import math
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from mmd_tools.converters.vmd_camera_animation import (
 from mmd_tools.core.coordinate_transform import mmd_point_to_maya
 from tests.common.maya_test_base import MayaTestBase
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from tests.common.test_fixture_provider import TestFixtureProvider
 
 
@@ -103,6 +105,41 @@ class TestVmdCameraScene(MayaTestBase):
             "mmd_camera_rotation_z",
         ):
             self.assertFalse(cmds.attributeQuery(attr, node=camera, exists=True), attr)
+
+    def test_sparse_camera_import_keeps_interpolation_for_scene_export(self):
+        """Sparse CameraRig keeps arriving-key interpolation as export authority."""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        source = []
+        expected = {}
+        for frame_number, seed in ((0, 3), (30, 41)):
+            frame = VmdCameraFrame()
+            frame.frame_number = frame_number
+            frame.position = (frame_number / 10.0, 2.0, -3.0)
+            frame.rotation = (0.1, 0.2, 0.3)
+            frame.distance = -25.0
+            frame.viewing_angle = 45
+            frame.perspective = 0
+            frame.interpolation = bytes((seed + index) % 128 for index in range(24))
+            source.append(frame)
+            expected[frame_number] = frame.interpolation
+
+        self.assertTrue(self.converter._convert_camera_animation(source))
+        camera = self.converter._get_or_create_camera()
+        stored = json.loads(cmds.getAttr(f"{camera}.mmd_camera_interpolation_json"))
+        self.assertEqual(stored["schema_version"], 1)
+
+        baked = VmdSceneCollector().collect_camera_frames([camera])
+        self.assertTrue(
+            all(frame["interpolation"] == b"\x14" * 24 for frame in baked)
+        )
+        exported = VmdSceneCollector().collect_camera_frames(
+            [camera], preserve_interpolation=True
+        )
+        self.assertEqual(
+            [frame["interpolation"] for frame in exported],
+            [expected[0], expected[30]],
+        )
 
     def test_convert_camera_animation(self):
         """カメラアニメーション変換テスト"""

@@ -116,6 +116,26 @@ class TestMayaVmdPrepareBackendCameraSelection(unittest.TestCase):
 
         self.assertEqual(result["export_target"], "camera")
 
+    def test_preserve_keys_is_scoped_to_scene_camera_or_light(self):
+        result = self.backend._validated_options(
+            {
+                "export_strategy": "preserve_keys",
+                "export_target": "camera",
+            }
+        )
+        self.assertEqual(result["export_strategy"], "preserve_keys")
+
+        with self.assertRaisesRegex(
+            BakeTimelineVmdExportError,
+            "Camera/Light export only",
+        ):
+            self.backend._validated_options(
+                {
+                    "export_strategy": "preserve_keys",
+                    "export_target": "character",
+                }
+            )
+
     def test_character_export_options_still_require_current_model(self):
         with self.assertRaisesRegex(
             BakeTimelineVmdExportError,

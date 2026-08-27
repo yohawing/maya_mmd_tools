@@ -542,6 +542,37 @@ class ExportWorkflowTests(unittest.TestCase):
         self.assertFalse(result.report.is_blocking)
         self.assertEqual(result.metadata["export_target"], "camera")
 
+    def test_camera_preserve_keys_strategy_survives_workflow_normalization(self):
+        request = ExportWorkflowRequest(
+            "camera.vmd",
+            {
+                "export_format": "vmd",
+                "export_target": "camera",
+                "export_strategy": "preserve_keys",
+            },
+        )
+
+        options = ExportWorkflowService._options(request)
+
+        self.assertEqual(options["export_strategy"], "preserve_keys")
+
+    def test_character_preserve_keys_is_blocked_by_preflight(self):
+        result = ScenePreflight(scene_service=_SceneService()).run(
+            {
+                "export_format": "vmd",
+                "export_target": "character",
+                "export_strategy": "preserve_keys",
+                "target_model": "model_ROOT",
+                "file_path": "motion.vmd",
+            }
+        )
+
+        self.assertTrue(result.report.is_blocking)
+        self.assertIn(
+            "Camera/Light export only",
+            result.report.issues[0].reason,
+        )
+
     def test_vmd_encode_failure_preserves_target_and_restores_temporary_rig(self):
         boundary = _TemporaryVmdBoundary()
         with tempfile.TemporaryDirectory() as directory:

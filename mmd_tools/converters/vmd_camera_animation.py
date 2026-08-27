@@ -1,5 +1,6 @@
 """Camera-specific helpers for VMD animation conversion."""
 
+import json
 import math
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -13,6 +14,7 @@ from .vmd_context import VmdCameraAnimationContext
 ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
 ATTR_MMD_CAMERA_TARGET_NODE = "mmd_camera_target_node"
 ATTR_MMD_CAMERA_ROOT_NODE = "mmd_camera_root_node"
+ATTR_MMD_CAMERA_INTERPOLATION_JSON = "mmd_camera_interpolation_json"
 MMD_CAMERA_RIG_ROOT_NAME = f"{DEFAULT_CAMERA_NAME}_rig"
 MMD_CAMERA_TARGET_NAME = f"{DEFAULT_CAMERA_NAME}_target"
 MMD_CAMERA_TARGET_ATTRS = (
@@ -442,6 +444,47 @@ def _ensure_string_attr(node: str, attr: str, value: str) -> None:
     cmds.setAttr(f"{node}.{attr}", value, type="string")
 
 
+def _store_camera_interpolation(
+    camera_transform: str,
+    camera_frames,
+    context: VmdCameraAnimationContext,
+) -> None:
+    """Keep arriving-key VMD interpolation for sparse CameraRig export."""
+    records = []
+    for frame in camera_frames:
+        raw = _frame_value(frame, "interpolation", "interpolation", b"")
+        try:
+            raw = bytes(raw)
+        except (TypeError, ValueError):
+            continue
+        if len(raw) != 24:
+            continue
+        records.append(
+            {
+                "maya_time": float(
+                    context.vmd_frame_to_maya_time(
+                        _frame_value(frame, "frame_number", "frame", 0)
+                    )
+                ),
+                "bytes": list(raw),
+            }
+        )
+    payload = json.dumps(
+        {"schema_version": 1, "frames": records},
+        separators=(",", ":"),
+    )
+    _ensure_string_attr(camera_transform, ATTR_MMD_CAMERA_INTERPOLATION_JSON, payload)
+
+
+def _clear_camera_interpolation(camera_transform: str) -> None:
+    if cmds.attributeQuery(
+        ATTR_MMD_CAMERA_INTERPOLATION_JSON,
+        node=camera_transform,
+        exists=True,
+    ):
+        cmds.deleteAttr(f"{camera_transform}.{ATTR_MMD_CAMERA_INTERPOLATION_JSON}")
+
+
 def _ensure_message_attr(node: str, attr: str) -> None:
     if not cmds.attributeQuery(attr, node=node, exists=True):
         cmds.addAttr(node, longName=attr, attributeType="message")
@@ -720,6 +763,10 @@ def _convert_camera_animation(
     camera_root = _ensure_mmd_camera_root(camera_transform, camera_target, orbit_hierarchy=not runtime_sampled)
     _delete_mmd_camera_expression(camera_transform)
     _delete_mmd_camera_raw_attrs(camera_transform)
+    if runtime_sampled:
+        _clear_camera_interpolation(camera_transform)
+    else:
+        _store_camera_interpolation(camera_transform, camera_frames, context)
     if cmds.attributeQuery("rotateOrder", node=camera_transform, exists=True):
         cmds.setAttr(f"{camera_transform}.rotateOrder", 0 if runtime_sampled else 2)
 

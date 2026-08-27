@@ -26,6 +26,7 @@ from ..validation.snapshot import fingerprint_payload
 _CAMERA_MARKER = "mmd_camera"
 _LIGHT_MARKER = "mmd_light"
 _BAKE_TIMELINE_EXPORT_STRATEGY = "bake_timeline"
+_PRESERVE_KEYS_EXPORT_STRATEGY = "preserve_keys"
 _CAMERA_LIGHT_VMD_MODEL_NAME = "カメラ・照明"
 
 
@@ -436,7 +437,10 @@ class MayaVmdExportBackend:
             {
                 "target_model": target_model,
                 "model_name": self._active_route.model_name,
-                "export_strategy": _BAKE_TIMELINE_EXPORT_STRATEGY,
+                "export_strategy": str(
+                    self._active_route.collector_options.get("export_strategy")
+                    or _BAKE_TIMELINE_EXPORT_STRATEGY
+                ),
                 "preserve_raw_bone_transforms": False,
             }
         )
@@ -478,9 +482,16 @@ class MayaVmdExportBackend:
     def _validated_options(self, request: Any) -> dict[str, Any]:
         options = _request_options(request)
         export_strategy = str(_field(options, "export_strategy") or "").lower()
-        if export_strategy != _BAKE_TIMELINE_EXPORT_STRATEGY:
+        if export_strategy not in {
+            _BAKE_TIMELINE_EXPORT_STRATEGY,
+            _PRESERVE_KEYS_EXPORT_STRATEGY,
+        }:
             raise BakeTimelineVmdExportError(
-                "Maya VMD export supports Bake Timeline only"
+                "unsupported Maya VMD export strategy"
+            )
+        if export_strategy == _PRESERVE_KEYS_EXPORT_STRATEGY and not self._scene_only_export_requested(options):
+            raise BakeTimelineVmdExportError(
+                "Preserve Keys is available for Camera/Light export only"
             )
         if not self._scene_only_export_requested(options):
             if not options.get("current_model_root"):
@@ -623,7 +634,9 @@ class MayaVmdExportBackend:
         result.update(
             {
                 "target_model": target_model or None,
-                "export_strategy": _BAKE_TIMELINE_EXPORT_STRATEGY,
+                "export_strategy": str(
+                    options.get("export_strategy") or _BAKE_TIMELINE_EXPORT_STRATEGY
+                ).lower(),
                 "preserve_raw_bone_transforms": False,
             }
         )

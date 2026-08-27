@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from .export_validator import ExportValidationIssue, ExportValidationReport
-from .vmd_validator import VMD_EXPORT_BAKE_TIMELINE
+from .vmd_validator import (
+    VMD_EXPORT_BAKE_TIMELINE,
+    VMD_EXPORT_PRESERVE_KEYS,
+    VMD_EXPORT_STRATEGIES,
+)
 
 
 MODEL_FORMATS = frozenset({"pmx"})
@@ -195,6 +199,33 @@ class ScenePreflight:
                     f"VMD export target {export_target or 'empty'} is not supported",
                     "Choose Character, Camera, Light, or Camera+Light.",
                     details={"export_target": export_target},
+                )
+            )
+        elif export_format == "vmd" and export_strategy not in VMD_EXPORT_STRATEGIES:
+            issues.append(
+                _issue(
+                    "EXPORT_OPTIONS_INVALID",
+                    "export_strategy",
+                    f"VMD export strategy {export_strategy or 'empty'} is not supported",
+                    "Choose Bake Timeline or Preserve Keys.",
+                    details={"export_strategy": export_strategy},
+                )
+            )
+        elif (
+            export_format == "vmd"
+            and export_strategy == VMD_EXPORT_PRESERVE_KEYS
+            and export_target == "character"
+        ):
+            issues.append(
+                _issue(
+                    "EXPORT_OPTIONS_INVALID",
+                    "export_strategy",
+                    "Preserve Keys is available for Camera/Light export only",
+                    "Use Bake Timeline for Character export.",
+                    details={
+                        "export_strategy": export_strategy,
+                        "export_target": export_target,
+                    },
                 )
             )
 

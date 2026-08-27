@@ -40,7 +40,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 | Physics | ℹ️ | Supports Bullet-based real-time physics and physics bake. Live evaluation is off by default and can be enabled from the Physics tab. Accuracy is still limited. |
 | HumanIK / retargeting | 🧪 | Experimental support for retargeting between imported MMD models. Try it from `MMD > HumanIK (Experimental)`. |
 | Control Rig | 🧪 | An optional Control Rig can be generated from the semi-standard bone layout. Restore and bake have known issues. |
-| Export | 🧪 | Exports the current character pose as VPD, or the current character and an explicitly selected camera and/or light over the selected timeline as VMD (Bake export only). Character and scene tracks are exported separately; self-shadow export is unsupported. |
+| Export | 🧪 | Exports the current character pose as VPD, or character/camera/light animation as VMD. Character and regular Maya cameras use Bake Timeline; MMD CameraRig also supports Preserve Keys. Self-shadow export is unsupported. |
 
 ## Known Limitations
 

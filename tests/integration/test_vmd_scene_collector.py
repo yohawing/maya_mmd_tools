@@ -288,6 +288,70 @@ class TestVmdSceneCollector(MayaTestBase):
         )
         self.assertEqual(parsed.bone_frames, [])
 
+    def test_preserve_keys_exports_sparse_mmd_camera_rig_with_interpolation(self):
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        source_frames = []
+        expected_interpolation = []
+        for frame_number, seed in ((0, 7), (30, 61)):
+            frame = VmdCameraFrame()
+            frame.frame_number = frame_number
+            frame.position = (frame_number / 10.0, 4.0, -2.0)
+            frame.rotation = (0.1, 0.2, 0.3)
+            frame.distance = -30.0
+            frame.viewing_angle = 50
+            frame.perspective = 0
+            frame.interpolation = bytes((seed + index) % 128 for index in range(24))
+            source_frames.append(frame)
+            expected_interpolation.append(frame.interpolation)
+        self.assertTrue(VmdConverter()._convert_camera_animation(source_frames))
+
+        output_path = self.get_temp_filename("camera_preserve_keys.vmd")
+        result = self._export_bake_timeline(
+            output_path,
+            {
+                "current_model_root": None,
+                "require_target": False,
+                "require_current_model": False,
+                "export_format": "vmd",
+                "export_strategy": "preserve_keys",
+                "export_target": "camera",
+            },
+        )
+
+        self.assertTrue(result.succeeded, repr(result))
+        parsed = VmdData().parse_file(output_path)
+        self.assertEqual(parsed.header.model_name, "カメラ・照明")
+        self.assertEqual(len(parsed.camera_frames), 2)
+        self.assertEqual(
+            [frame.interpolation for frame in parsed.camera_frames],
+            expected_interpolation,
+        )
+        self.assertEqual(parsed.bone_frames, [])
+
+        cmds.file(new=True, force=True)
+        cmds.currentUnit(time="film")
+        self.assertTrue(import_mmd_file(output_path))
+        tagged = cmds.ls(f"*.{ATTR_MMD_CAMERA}", objectsOnly=True) or []
+        self.assertEqual(len(tagged), 1)
+        targets = cmds.listConnections(
+            f"{tagged[0]}.mmd_camera_target_node",
+            source=True,
+            destination=False,
+        ) or []
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(
+            len(cmds.keyframe(f"{targets[0]}.translateX", query=True) or []),
+            2,
+        )
+        self.assertTrue(
+            cmds.attributeQuery(
+                "mmd_camera_interpolation_json",
+                node=tagged[0],
+                exists=True,
+            )
+        )
+
     def test_namespaced_target_scopes_automatic_blendshape_discovery(self):
         hero_root = self._make_namespaced_keyed_blendshape("hero", "hero_morph")
         self._make_namespaced_keyed_blendshape("rival", "rival_morph")

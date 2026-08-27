@@ -250,7 +250,11 @@ class ExportWorkflowService:
         ).lower().lstrip(".")
         if export_format == "vmd":
             options["export_format"] = "vmd"
-            options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
+            export_target = str(options.get("export_target") or "character").lower()
+            if export_target in {"camera", "light", "camera+light", "camera_light"}:
+                options.setdefault("export_strategy", VMD_EXPORT_BAKE_TIMELINE)
+            else:
+                options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
         elif export_format == "vpd":
             options["export_format"] = "vpd"
             options["export_strategy"] = "current_pose"
@@ -307,8 +311,6 @@ class ExportWorkflowService:
         options = self._options(request)
         scene = self.scene_preflight.run(options)
         metadata = dict(scene.metadata)
-        if metadata.get("format") == "vmd":
-            metadata["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
         # GUI requests intentionally name only ``current_model_root``.  The
         # production VMD backend requires the equivalent ``target_model`` at
         # every action boundary, including this read-only Control Rig

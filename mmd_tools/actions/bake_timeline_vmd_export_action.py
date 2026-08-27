@@ -274,7 +274,10 @@ def _merge_reports(
     )
 
 
-def _output_write_failure_report(error: Exception) -> ExportValidationReport:
+def _output_write_failure_report(
+    error: Exception,
+    export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
+) -> ExportValidationReport:
     """Make an unclassified terminal action failure visible to callers."""
 
     return ExportValidationReport(
@@ -293,7 +296,7 @@ def _output_write_failure_report(error: Exception) -> ExportValidationReport:
                 },
             ),
         ),
-        mode=VMD_EXPORT_BAKE_TIMELINE,
+        mode=export_strategy,
     )
 
 
@@ -384,6 +387,9 @@ class BakeTimelineVmdExportAction:
         failure: Optional[Exception] = None
         request_options = _read(request, "options")
         request_options = dict(request_options) if isinstance(request_options, Mapping) else {}
+        export_strategy = str(
+            request_options.get("export_strategy") or VMD_EXPORT_BAKE_TIMELINE
+        ).lower()
         export_target = str(request_options.get("export_target") or "").strip().lower()
         cancellable = export_target in {"camera", "light", "camera+light", "camera_light"}
         cancel_requested = request_options.get("cancel_requested")
@@ -469,7 +475,11 @@ class BakeTimelineVmdExportAction:
             stage = VmdSiblingStageSession(
                 writer_model_name,
                 target_path=str(target),
-                output_verifier=verify_vmd_output_streaming,
+                output_verifier=lambda path, _stage_strategy=None, **kwargs: verify_vmd_output_streaming(
+                    path,
+                    export_strategy=export_strategy,
+                    **kwargs,
+                ),
             )
             metadata = self._boundary.collect_to_sink(request, stage) or {}
             if not isinstance(metadata, Mapping):
@@ -573,11 +583,11 @@ class BakeTimelineVmdExportAction:
                 # failure result.  The finalizer still owns the watch close.
                 stage.cleanup()
             lower_report = structured_export_failure_report(
-                exc, "vmd", mode=VMD_EXPORT_BAKE_TIMELINE
+                exc, "vmd", mode=export_strategy
             )
             if isinstance(exc, BakeTimelineVmdExportCancelled):
                 report = report or ExportValidationReport(
-                    "vmd", (), mode=VMD_EXPORT_BAKE_TIMELINE
+                    "vmd", (), mode=export_strategy
                 )
             elif isinstance(exc, ExportValidationAcknowledgementRequired):
                 # A declined warning is a user decision after successful
@@ -585,11 +595,13 @@ class BakeTimelineVmdExportAction:
                 pass
             elif report is None or report is initial_report:
                 report = _merge_reports(
-                    initial_report, lower_report or _output_write_failure_report(exc)
+                    initial_report,
+                    lower_report or _output_write_failure_report(exc, export_strategy),
                 )
             else:
                 report = _merge_reports(
-                    report, lower_report or _output_write_failure_report(exc)
+                    report,
+                    lower_report or _output_write_failure_report(exc, export_strategy),
                 )
             if write_report and (not artifact_attempted or artifact_written):
                 try:

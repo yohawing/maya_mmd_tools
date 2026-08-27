@@ -251,7 +251,9 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
                     "blocked",
                 },
             )
-            self.assertNotIn("export_strategy", translations["fields"])
+            self.assertIn("export_strategy", translations["fields"])
+            self.assertIn("bake_timeline", translations["options"])
+            self.assertIn("preserve_keys", translations["options"])
             self.assertIn("animation_timeline_bake", translations["export_progress"])
 
 
