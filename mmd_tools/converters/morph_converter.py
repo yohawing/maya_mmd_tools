@@ -34,7 +34,7 @@ from mmd_tools.core.morph_topology import (
     serialize_group_topology,
 )
 from mmd_tools.core.pmx_data.morph import PmxMorphType
-from mmd_tools.core.morph_weld_plan import MorphWeldPlanError, map_morph_deltas_to_local
+from mmd_tools.core.morph_delta_mapping import MorphDeltaMappingError, map_morph_deltas_to_local
 from mmd_tools.converters.morph_scene_metadata import (
     iter_morph_network_metadata,
     read_blendshape_morph_entry_strings,
@@ -305,7 +305,7 @@ class MorphConverter:
                                 results.append(result)
                                 flip_impulse_morph_nodes.append(result["morph_node"])
                                 self.logger.debug(f"Successfully imported PMX 2.1 morph metadata: {morph.name}")
-                    except MorphWeldPlanError:
+                    except MorphDeltaMappingError:
                         raise
                     except Exception as e:
                         self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
@@ -483,7 +483,7 @@ class MorphConverter:
                 )
                 local_count = int(cmds.polyEvaluate(mesh_node, vertex=True))
             except Exception as exc:
-                raise MorphWeldPlanError(
+                raise MorphDeltaMappingError(
                     f"failed to read source-to-local mapping: {exc}"
                 ) from exc
             try:
@@ -497,7 +497,7 @@ class MorphConverter:
             except (TypeError, ValueError):
                 valid = False
             if not valid:
-                raise MorphWeldPlanError("source-to-local mapping is invalid")
+                raise MorphDeltaMappingError("source-to-local mapping is invalid")
             return {
                 source_index: int(local_index)
                 for source_index, local_index in enumerate(source_to_local)

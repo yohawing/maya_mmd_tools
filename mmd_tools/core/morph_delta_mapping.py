@@ -1,28 +1,22 @@
-"""Sparse, exact deformation signatures for UV-seam welding.
-
-The PMX morph tables are sparse: an offset only exists for a vertex that the
-morph touches.  This module deliberately builds signatures from those
-offsets, rather than constructing a vertex-by-morph matrix.  It is kept free
-of Maya imports so the same plan can later be used by an option or command.
-"""
+"""Map one PMX morph through an already-resolved source-to-local map."""
 
 import math
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
-# PmxMorphType values.  Keeping these integers here avoids making this small
-# planner depend on either Maya or the parser package.
+# PmxMorphType values. Keeping these integers here avoids making this small
+# mapping helper depend on either Maya or the parser package.
 VERTEX_INDEXED_MORPH_TYPES = frozenset({1, 3, 4, 5, 6, 7})
 
 
-class MorphWeldPlanError(ValueError):
-    """Raised when morph data cannot be represented by a safe weld plan."""
+class MorphDeltaMappingError(ValueError):
+    """Raised when PMX morph offsets cannot map safely to local vertices."""
 
 
 def _morph_type_value(morph: Any) -> int:
     value = getattr(morph, "morph_type", None)
     if isinstance(value, bool) or not isinstance(value, int):
-        raise MorphWeldPlanError("morph type must be an integer")
+        raise MorphDeltaMappingError("morph type must be an integer")
     return int(value)
 
 
@@ -43,7 +37,7 @@ def _offset_value(offset: Any, key: str, morph_index: int, offset_index: int) ->
     except (KeyError, TypeError, ValueError):
         invalid = True
     if invalid:
-        raise MorphWeldPlanError("morph %d offset %d has invalid %s" % (morph_index, offset_index, key))
+        raise MorphDeltaMappingError("morph %d offset %d has invalid %s" % (morph_index, offset_index, key))
     # Signed zero has no semantic effect on PMX deformation. Normalize it so
     # explicitly-zero and absent offsets share one exact signature.
     return tuple(0.0 if component == 0.0 else component for component in result)
@@ -58,17 +52,17 @@ def _offsets_for_morph(morph: Any, morph_index: int, source_count: int) -> Dict[
     if offsets is None:
         offsets = ()
     if not isinstance(offsets, (list, tuple)):
-        raise MorphWeldPlanError("morph %d offsets must be a sequence" % morph_index)
+        raise MorphDeltaMappingError("morph %d offsets must be a sequence" % morph_index)
 
     # PMX offsets are additive.  Accumulate duplicates once so MorphConverter
     # can apply one delta per resulting Maya vertex.  Every operation is
-    # validated before it is admitted to the plan.
+    # validated before it is admitted to the mapping.
     accumulated: Dict[int, List[float]] = {}
     for offset_index, offset in enumerate(offsets):
         try:
             source_index = offset["vertex_index"]
         except (KeyError, TypeError):
-            raise MorphWeldPlanError(
+            raise MorphDeltaMappingError(
                 "morph %d contains an invalid %s offset" % (morph_index, value_key)
             )
         if (
@@ -77,7 +71,7 @@ def _offsets_for_morph(morph: Any, morph_index: int, source_count: int) -> Dict[
             or source_index < 0
             or source_index >= source_count
         ):
-            raise MorphWeldPlanError(
+            raise MorphDeltaMappingError(
                 "morph %d contains an invalid %s offset" % (morph_index, value_key)
             )
         values = _offset_value(offset, value_key, morph_index, offset_index)
@@ -85,7 +79,7 @@ def _offsets_for_morph(morph: Any, morph_index: int, source_count: int) -> Dict[
         for component_index, component in enumerate(values):
             target[component_index] += component
             if not math.isfinite(target[component_index]):
-                raise MorphWeldPlanError(
+                raise MorphDeltaMappingError(
                     "morph %d contains an invalid %s offset" % (morph_index, value_key)
                 )
 
@@ -94,26 +88,6 @@ def _offsets_for_morph(morph: Any, morph_index: int, source_count: int) -> Dict[
         for source_index, values in accumulated.items()
         if any(value != 0.0 for value in values)
     }
-
-
-def build_sparse_morph_signatures(morphs: Iterable[Any], source_count: int) -> List[Tuple[Tuple[int, int, Tuple[float, ...]], ...]]:
-    """Build one sparse exact morph signature for each PMX source vertex.
-
-    Each entry is ``(morph_index, morph_type, accumulated_delta)``.  Missing
-    offsets and explicit zero offsets are both the zero deformation and are
-    omitted.  The result is ``O(source_count + total_indexed_offsets)`` and
-    contains no source-by-morph matrix.
-    """
-    if isinstance(source_count, bool) or not isinstance(source_count, int) or source_count < 0:
-        raise MorphWeldPlanError("source_count must be a non-negative integer")
-    signatures: List[List[Tuple[int, int, Tuple[float, ...]]]] = [[] for _ in range(source_count)]
-    for morph_index, morph in enumerate(morphs or ()):
-        morph_type = _morph_type_value(morph)
-        if morph_type not in VERTEX_INDEXED_MORPH_TYPES:
-            continue
-        for source_index, delta in _offsets_for_morph(morph, morph_index, source_count).items():
-            signatures[source_index].append((morph_index, morph_type, delta))
-    return [tuple(entries) for entries in signatures]
 
 
 def collect_morph_delta(morph: Any, morph_index: int, source_count: int) -> Dict[int, Tuple[float, ...]]:
@@ -155,13 +129,13 @@ def map_morph_deltas_to_local(
         if local_index is None:
             continue
         if local_index < 0 or local_index >= local_count:
-            raise MorphWeldPlanError(
+            raise MorphDeltaMappingError(
                 "morph %d source vertex %d maps outside local mesh vertex count %d"
                 % (morph_index, source_index, local_count)
             )
         previous = mapped.get(local_index)
         if previous is not None and previous != delta:
-            raise MorphWeldPlanError(
+            raise MorphDeltaMappingError(
                 "morph %d has conflicting source deltas for local vertex %d"
                 % (morph_index, local_index)
             )

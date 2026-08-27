@@ -38,7 +38,9 @@
 #include "third_party/json.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -54,6 +56,7 @@ namespace {
 constexpr const char* kSourceVertexAttribute = "mmd_source_vertex_indices";
 constexpr const char* kSourceToLocalAttribute = "mmd_source_to_local_indices";
 constexpr const char* kSourceToLocalCapability = "sourceToLocalV1";
+constexpr const char* kMorphEquivalentCapability = "morphEquivalentV1";
 
 struct UvSetData {
     MString     name;
@@ -68,15 +71,15 @@ struct RawGeometry {
     std::vector<uint32_t>           skinIndices;
     std::vector<float>              skinWeights;
     std::vector<float>              edgeScale;
-    std::vector<float>              sdefEnabled;
+    std::vector<uint8_t>            sdefEnabled;
     std::vector<float>              sdefC;
     std::vector<float>              sdefR0;
     std::vector<float>              sdefR1;
     std::vector<float>              sdefRw0;
     std::vector<float>              sdefRw1;
-    std::vector<float>              qdefEnabled;
-    std::vector<std::vector<float>> additionalUvs;
-    std::vector<bool>                vertexIndexedMorphSources;
+    std::vector<uint8_t>            qdefEnabled;
+    std::vector<std::vector<float>>    additionalUvs;
+    std::vector<std::vector<uint32_t>> morphSignatures;
 };
 
 struct WeldKey {
@@ -142,6 +145,16 @@ std::vector<uint32_t> takeU32Buffer(mmd_runtime_ffi_byte_buffer_t buffer)
     return result;
 }
 
+std::vector<uint8_t> takeU8Buffer(mmd_runtime_ffi_byte_buffer_t buffer)
+{
+    std::vector<uint8_t> result;
+    if (buffer.data && buffer.len > 0) {
+        result.assign(buffer.data, buffer.data + buffer.len);
+    }
+    mmd_runtime_byte_buffer_free(buffer);
+    return result;
+}
+
 json takeJsonBuffer(mmd_runtime_ffi_byte_buffer_t buffer)
 {
     json result;
@@ -159,6 +172,140 @@ uint32_t floatBits(float value)
     static_assert(sizeof(bits) == sizeof(value), "float and uint32_t must match");
     std::memcpy(&bits, &value, sizeof(bits));
     return bits;
+}
+
+void appendDoubleBits(std::vector<uint32_t>& words, double value)
+{
+    uint64_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value), "double and uint64_t must match");
+    std::memcpy(&bits, &value, sizeof(bits));
+    words.push_back(static_cast<uint32_t>(bits));
+    words.push_back(static_cast<uint32_t>(bits >> 32U));
+}
+
+bool buildMorphSignatures(const json& nonGeometry, size_t sourceCount,
+                          std::vector<std::vector<uint32_t>>& signatures)
+{
+    signatures.assign(sourceCount, {});
+    if (!nonGeometry.is_object() || !nonGeometry.contains("morphs") ||
+        !nonGeometry["morphs"].is_array()) {
+        return false;
+    }
+
+    const json& morphs = nonGeometry["morphs"];
+    for (size_t morphIndex = 0; morphIndex < morphs.size(); ++morphIndex) {
+        const json& morph = morphs[morphIndex];
+        if (!morph.is_object()) {
+            return false;
+        }
+
+        const std::string type = morph.value("type", std::string());
+        const char* offsetsField = nullptr;
+        const char* valueField = nullptr;
+        size_t componentCount = 0;
+        uint32_t morphKind = 0;
+        if (type == "vertex") {
+            offsetsField = "vertexOffsets";
+            valueField = "position";
+            componentCount = 3;
+            morphKind = 1;
+        } else if (type == "uv") {
+            offsetsField = "uvOffsets";
+            valueField = "uv";
+            componentCount = 4;
+            morphKind = 3;
+        } else if (type == "additionalUv") {
+            offsetsField = "additionalUvOffsets";
+            valueField = "uv";
+            componentCount = 4;
+            morphKind = 4;
+        } else {
+            continue;
+        }
+
+        const auto offsetsIt = morph.find(offsetsField);
+        if (offsetsIt == morph.end() || !offsetsIt->is_array()) {
+            return false;
+        }
+
+        std::unordered_map<uint32_t, std::array<double, 4>> accumulated;
+        std::unordered_map<uint32_t, uint32_t> additionalUvKinds;
+        for (const json& offset : *offsetsIt) {
+            if (!offset.is_object()) {
+                return false;
+            }
+            const auto sourceIt = offset.find("vertexIndex");
+            if (sourceIt == offset.end() || !sourceIt->is_number_integer()) {
+                return false;
+            }
+            const int64_t sourceValue = sourceIt->get<int64_t>();
+            if (sourceValue < 0 || static_cast<size_t>(sourceValue) >= sourceCount) {
+                return false;
+            }
+            const uint32_t sourceIndex = static_cast<uint32_t>(sourceValue);
+
+            uint32_t offsetKind = morphKind;
+            if (type == "additionalUv") {
+                const auto uvIndexIt = offset.find("uvIndex");
+                if (uvIndexIt == offset.end() || !uvIndexIt->is_number_integer()) {
+                    return false;
+                }
+                const int64_t uvIndex = uvIndexIt->get<int64_t>();
+                if (uvIndex < 0 || uvIndex > 3) {
+                    return false;
+                }
+                offsetKind += static_cast<uint32_t>(uvIndex);
+                const auto inserted = additionalUvKinds.emplace(sourceIndex, offsetKind);
+                if (!inserted.second && inserted.first->second != offsetKind) {
+                    return false;
+                }
+            }
+
+            const auto valuesIt = offset.find(valueField);
+            if (valuesIt == offset.end() || !valuesIt->is_array() ||
+                valuesIt->size() != componentCount) {
+                return false;
+            }
+            std::array<double, 4>& values = accumulated[sourceIndex];
+            for (size_t component = 0; component < componentCount; ++component) {
+                if (!(*valuesIt)[component].is_number()) {
+                    return false;
+                }
+                const double value = (*valuesIt)[component].get<double>();
+                if (!std::isfinite(value)) {
+                    return false;
+                }
+                values[component] += value;
+                if (!std::isfinite(values[component])) {
+                    return false;
+                }
+            }
+        }
+
+        for (const auto& entry : accumulated) {
+            const uint32_t sourceIndex = entry.first;
+            const std::array<double, 4>& values = entry.second;
+            bool nonZero = false;
+            for (size_t component = 0; component < componentCount; ++component) {
+                nonZero = nonZero || values[component] != 0.0;
+            }
+            if (!nonZero) {
+                continue;
+            }
+
+            std::vector<uint32_t>& signature = signatures[sourceIndex];
+            signature.push_back(0xC0FFEE02U);
+            signature.push_back(static_cast<uint32_t>(morphIndex));
+            signature.push_back(
+                type == "additionalUv" ? additionalUvKinds[sourceIndex] : morphKind);
+            signature.push_back(static_cast<uint32_t>(componentCount));
+            for (size_t component = 0; component < componentCount; ++component) {
+                const double normalized = values[component] == 0.0 ? 0.0 : values[component];
+                appendDoubleBits(signature, normalized);
+            }
+        }
+    }
+    return true;
 }
 
 void appendMarker(WeldKey& key, uint32_t marker, size_t count)
@@ -192,6 +339,19 @@ void appendU32(WeldKey& key, uint32_t marker, const std::vector<uint32_t>& value
                      values.begin() + static_cast<std::ptrdiff_t>(offset + count));
 }
 
+void appendU8(WeldKey& key, uint32_t marker, const std::vector<uint8_t>& values,
+              size_t offset, size_t count)
+{
+    appendMarker(key, marker, count);
+    if (offset > values.size() || count > values.size() - offset) {
+        key.words.push_back(0xFFFFFFFFU);
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        key.words.push_back(values[offset + i]);
+    }
+}
+
 bool loadRawGeometry(const std::vector<uint8_t>& bytes, RawGeometry& raw)
 {
     if (bytes.empty()) {
@@ -208,13 +368,13 @@ bool loadRawGeometry(const std::vector<uint8_t>& bytes, RawGeometry& raw)
     raw.skinIndices = takeU32Buffer(mmd_runtime_pmx_geometry_skin_indices_buffer(geometry));
     raw.skinWeights = takeFloatBuffer(mmd_runtime_pmx_geometry_skin_weights_buffer(geometry));
     raw.edgeScale = takeFloatBuffer(mmd_runtime_pmx_geometry_edge_scale_buffer(geometry));
-    raw.sdefEnabled = takeFloatBuffer(mmd_runtime_pmx_geometry_sdef_enabled_buffer(geometry));
+    raw.sdefEnabled = takeU8Buffer(mmd_runtime_pmx_geometry_sdef_enabled_buffer(geometry));
     raw.sdefC = takeFloatBuffer(mmd_runtime_pmx_geometry_sdef_c_buffer(geometry));
     raw.sdefR0 = takeFloatBuffer(mmd_runtime_pmx_geometry_sdef_r0_buffer(geometry));
     raw.sdefR1 = takeFloatBuffer(mmd_runtime_pmx_geometry_sdef_r1_buffer(geometry));
     raw.sdefRw0 = takeFloatBuffer(mmd_runtime_pmx_geometry_sdef_rw0_buffer(geometry));
     raw.sdefRw1 = takeFloatBuffer(mmd_runtime_pmx_geometry_sdef_rw1_buffer(geometry));
-    raw.qdefEnabled = takeFloatBuffer(mmd_runtime_pmx_geometry_qdef_enabled_buffer(geometry));
+    raw.qdefEnabled = takeU8Buffer(mmd_runtime_pmx_geometry_qdef_enabled_buffer(geometry));
 
     const size_t additionalUvCount =
         mmd_runtime_pmx_geometry_additional_uv_count(geometry);
@@ -231,39 +391,14 @@ bool loadRawGeometry(const std::vector<uint8_t>& bytes, RawGeometry& raw)
     }
 
     const size_t sourceCount = raw.positions.size() / 3U;
-    raw.vertexIndexedMorphSources.assign(sourceCount, false);
     const json nonGeometry = takeJsonBuffer(
         mmd_runtime_parse_pmx_non_geometry_json(bytes.data(), bytes.size()));
-    if (nonGeometry.is_object() && nonGeometry.contains("morphs") &&
-        nonGeometry["morphs"].is_array()) {
-        for (const json& morph : nonGeometry["morphs"]) {
-            if (!morph.is_object()) {
-                continue;
-            }
-            for (const char* field : {"vertexOffsets", "uvOffsets", "additionalUvOffsets"}) {
-                const auto offsets = morph.find(field);
-                if (offsets == morph.end() || !offsets->is_array()) {
-                    continue;
-                }
-                for (const json& offset : *offsets) {
-                    if (!offset.is_object()) {
-                        continue;
-                    }
-                    const uint32_t index = offset.value("vertexIndex", sourceCount);
-                    if (index < sourceCount) {
-                        raw.vertexIndexedMorphSources[index] = true;
-                    }
-                }
-            }
-        }
-    }
-    return true;
+    return buildMorphSignatures(nonGeometry, sourceCount, raw.morphSignatures);
 }
 
 WeldKey makeWeldKey(const RawGeometry& raw, size_t sourceIndex)
 {
     WeldKey key;
-    const size_t sourceCount = raw.positions.size() / 3U;
     appendFloats(key, 1U, raw.positions, sourceIndex * 3U, 3U);
 
     // Primary UV and authored normals are intentionally absent.  They are
@@ -271,25 +406,25 @@ WeldKey makeWeldKey(const RawGeometry& raw, size_t sourceIndex)
     appendU32(key, 2U, raw.skinIndices, sourceIndex * 4U, 4U);
     appendFloats(key, 3U, raw.skinWeights, sourceIndex * 4U, 4U);
     appendFloats(key, 4U, raw.edgeScale, sourceIndex, 1U);
-    appendFloats(key, 5U, raw.sdefEnabled, sourceIndex, 1U);
+    appendU8(key, 5U, raw.sdefEnabled, sourceIndex, 1U);
     appendFloats(key, 6U, raw.sdefC, sourceIndex * 3U, 3U);
     appendFloats(key, 7U, raw.sdefR0, sourceIndex * 3U, 3U);
     appendFloats(key, 8U, raw.sdefR1, sourceIndex * 3U, 3U);
     appendFloats(key, 9U, raw.sdefRw0, sourceIndex * 3U, 3U);
     appendFloats(key, 10U, raw.sdefRw1, sourceIndex * 3U, 3U);
-    appendFloats(key, 11U, raw.qdefEnabled, sourceIndex, 1U);
+    appendU8(key, 11U, raw.qdefEnabled, sourceIndex, 1U);
     for (size_t uvIndex = 0; uvIndex < raw.additionalUvs.size(); ++uvIndex) {
         appendFloats(key, static_cast<uint32_t>(100U + uvIndex), raw.additionalUvs[uvIndex],
                      sourceIndex * 4U, 4U);
     }
 
-    // Python has already welded sources with exactly equivalent morph
-    // signatures. Keep each remaining morph-bearing representative distinct;
-    // this native pass does not need to rescan or rebuild all morph signatures.
-    if (sourceIndex < raw.vertexIndexedMorphSources.size() &&
-        raw.vertexIndexedMorphSources[sourceIndex]) {
-        key.words.push_back(0xC0FFEE01U);
-        key.words.push_back(static_cast<uint32_t>(std::min(sourceIndex, sourceCount - 1U)));
+    // Exact sparse morph signatures make seam copies weldable when every
+    // Vertex/UV/Additional-UV morph deforms them identically. Missing and
+    // explicitly-zero offsets both contribute an empty signature.
+    if (sourceIndex < raw.morphSignatures.size()) {
+        appendMarker(key, 200U, raw.morphSignatures[sourceIndex].size());
+        key.words.insert(key.words.end(), raw.morphSignatures[sourceIndex].begin(),
+                         raw.morphSignatures[sourceIndex].end());
     }
     return key;
 }
@@ -889,6 +1024,7 @@ MStatus MmdWeldUvSeamVertices::doIt(const MArgList& args)
         }
         MStringArray capabilities;
         capabilities.append(kSourceToLocalCapability);
+        capabilities.append(kMorphEquivalentCapability);
         setResult(capabilities);
         return MS::kSuccess;
     }

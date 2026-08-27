@@ -47,7 +47,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SOURCE_VERTEX_INDICES,
     ATTR_MMD_SOURCE_TO_LOCAL_INDICES,
 )
-from mmd_tools.core.morph_weld_plan import build_sparse_morph_signatures
 from mmd_tools.converters.mesh_material_properties import (
     PMX_DOUBLE_SIDED_DRAW_FLAG as _PMX_DOUBLE_SIDED_DRAW_FLAG,
     PMX_EDGE_DRAWING_DRAW_FLAG as _PMX_EDGE_DRAWING_DRAW_FLAG,
@@ -1268,13 +1267,17 @@ class MeshConverter:
                 capabilities = command(queryCapabilities=True)
                 if isinstance(capabilities, str):
                     capabilities = [capabilities]
-                if isinstance(capabilities, (list, tuple)) and "sourceToLocalV1" in capabilities:
+                if (
+                    isinstance(capabilities, (list, tuple))
+                    and "sourceToLocalV1" in capabilities
+                    and "morphEquivalentV1" in capabilities
+                ):
                     return True
         except Exception:
             pass
         self.logger.warning(
-            "Loaded C++ UV seam weld does not support sourceToLocalV1; "
-            "using the Python weld plan to preserve morph provenance."
+            "Loaded C++ UV seam weld does not support morphEquivalentV1; "
+            "native welding is disabled and PMX source topology will be preserved."
         )
         return False
 
@@ -1458,39 +1461,8 @@ class MeshConverter:
             )
 
     @staticmethod
-    def _vertex_deformation_key(vertex) -> tuple:
-        """Return the PMX data that must remain per Maya vertex.
-
-        UVs and authored normals are intentionally excluded. Maya can assign
-        UVs and normals per face corner, while skin weights are stored per
-        geometric vertex. Keeping the deformation payload in the key prevents
-        a topology weld from changing the imported skin result.
-        """
-        return (
-            int(getattr(vertex, "weight_transform_type", 0)),
-            tuple(int(index) for index in getattr(vertex, "bone_indices", []) or []),
-            tuple(float(weight) for weight in getattr(vertex, "bone_weights", []) or []),
-            tuple(float(value) for value in getattr(vertex, "sdef_c", ()))
-            if int(getattr(vertex, "weight_transform_type", 0)) == 3
-            else (),
-            tuple(float(value) for value in getattr(vertex, "sdef_r0", ()))
-            if int(getattr(vertex, "weight_transform_type", 0)) == 3
-            else (),
-            tuple(float(value) for value in getattr(vertex, "sdef_r1", ()))
-            if int(getattr(vertex, "weight_transform_type", 0)) == 3
-            else (),
-        )
-
-    def _build_vertex_weld_keys(self, all_vertices, all_faces, all_materials, morphs) -> Dict[int, tuple]:
-        """Build conservative keys for welding UV-split PMX vertices.
-
-        PMX stores UVs on vertices, so a UV seam commonly duplicates the same
-        position. Maya supports per-face-vertex UV assignments and therefore
-        does not need those geometric duplicates. Vertices are keyed by a
-        sparse, exact signature of every indexed Vertex/UV/Additional-UV
-        morph, so equivalent seam copies share one Maya point while
-        conflicting source deltas remain separate.
-        """
+    def _build_pmd_vertex_weld_keys(all_vertices, all_faces, all_materials) -> Dict[int, tuple]:
+        """Preserve the existing conservative seam weld for legacy PMD import."""
         material_sets = [set() for _ in all_vertices]
         face_offset = 0
         for material_index, material in enumerate(all_materials or []):
@@ -1502,24 +1474,17 @@ class MeshConverter:
                         material_sets[source_index].add(material_index)
             face_offset += face_count
 
-        morph_signatures = build_sparse_morph_signatures(morphs or (), len(all_vertices))
-
-        keys = {}
-        for source_index, vertex in enumerate(all_vertices):
-            additional_uvs = tuple(
-                tuple(float(value) for value in uv)
-                for uv in getattr(vertex, "additional_uvs", ()) or ()
-            )
-            keys[source_index] = (
-                "weldable_source",
+        return {
+            source_index: (
+                "weldable_pmd_source",
                 tuple(float(value) for value in vertex.position),
-                self._vertex_deformation_key(vertex),
+                tuple(int(index) for index in getattr(vertex, "bone_indices", []) or []),
+                tuple(float(weight) for weight in getattr(vertex, "bone_weights", []) or []),
                 float(getattr(vertex, "edge_magnification", 1.0)),
-                additional_uvs,
                 tuple(sorted(material_sets[source_index])),
-                morph_signatures[source_index],
             )
-        return keys
+            for source_index, vertex in enumerate(all_vertices)
+        }
 
     def _build_maya_mesh_data(
         self,
@@ -1535,12 +1500,6 @@ class MeshConverter:
         vertex, while each source vertex keeps its own UV connection and
         authored normal on every face corner.
         """
-        if weld_keys is None:
-            weld_keys = {
-                source_index: ("source", source_index)
-                for source_index in range(len(all_vertices))
-            }
-
         candidates = list(active_source_indices) if active_source_indices is not None else list(range(len(all_vertices)))
         local_source_indices = []
         local_by_key = {}
@@ -1557,7 +1516,11 @@ class MeshConverter:
             if source_index < 0 or source_index >= len(all_vertices):
                 raise IndexError(f"PMX vertex index out of range: {source_index}")
 
-            weld_key = weld_keys.get(source_index, ("source", source_index))
+            weld_key = (
+                weld_keys.get(source_index, ("source", source_index))
+                if weld_keys is not None
+                else ("source", source_index)
+            )
             if weld_key in local_by_key:
                 local_index = local_by_key[weld_key]
             else:
@@ -1770,15 +1733,14 @@ class MeshConverter:
                 ATTR_MMD_PMX_ADDITIONAL_UV_COUNT: additional_uv_count,
             },
         )
-        self._use_cpp_uv_weld = self._cpp_uv_weld_command_available()
-        # Plan exact morph-equivalent welds once per import. The native pass
-        # remains conservative for morph-bearing representatives and only
-        # composes this plan through any additional non-morph seam welds.
-        weld_keys = self._build_vertex_weld_keys(
-            all_vertices,
-            all_faces,
-            all_materials,
-            getattr(pmx_data, "morphs", None),
+        self._use_cpp_uv_weld = not is_pmd and self._cpp_uv_weld_command_available()
+        # Preserve PMX source topology until the optional native command has
+        # built the exact sparse morph signatures. Without C++, welding is
+        # disabled instead of rebuilding large signature arrays in Python.
+        weld_keys = (
+            self._build_pmd_vertex_weld_keys(all_vertices, all_faces, all_materials)
+            if is_pmd
+            else None
         )
 
         # マテリアルごとの透過モードを先に算出（使用UV領域のテクスチャαを見る）。
@@ -1888,9 +1850,6 @@ class MeshConverter:
 
         # 統合メッシュの名前を設定
         mesh_name = maya_name_utils.sanitize_text(model_name) + "_mesh"
-
-        if weld_keys is None:
-            weld_keys = self._build_vertex_weld_keys(all_vertices, all_faces, all_materials, None)
 
         # Build the topology before MFnMesh.create(). UV seams remain in the
         # per-corner UV connections; only safe coincident source vertices are
@@ -2047,9 +2006,6 @@ class MeshConverter:
         if not all_vertices or len(all_vertices) == 0:
             self.logger.warning(f"Mesh has zero vertices; skipping mesh creation: {model_name}")
             return []
-
-        if weld_keys is None:
-            weld_keys = self._build_vertex_weld_keys(all_vertices, all_faces, all_materials, None)
 
         mesh_names = []
         face_offset = 0
