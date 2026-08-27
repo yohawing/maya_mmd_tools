@@ -31,6 +31,7 @@
     "export_workflow": "Export",
     "export_model": "Model",
     "export_motion": "Animation",
+    "export_pose": "Pose",
     "info": "Info",
     "material": "Material",
     "bone": "Bone",
@@ -61,6 +62,7 @@
     "export_pmx": "Export Model",
     "validate_animation": "Validate Animation",
     "export_vmd": "Export Animation",
+    "export_vpd": "Export Pose",
     "apply": "Apply",
     "ok": "OK",
     "cancel": "Cancel",
@@ -205,6 +207,7 @@
   },
   "messages": {
     "vmd_bake_export_help": "Bake the current timeline before exporting the animation. When a range is enabled, only that range is evaluated.",
+    "vpd_current_pose_help": "Export the evaluated current pose of the Current Model at the current frame.",
     "display_element_added": "Added {element_type} (PMX index {index})",
     "no_display_element_candidates": "No display-frame element candidates are available",
     "duplicate_display_element": "That element already belongs to this display frame",
@@ -783,6 +786,7 @@
     "writing_temporary_file": "Writing temporary file",
     "finalizing": "Finalizing",
     "completed": "Completed",
+    "cancelled": "Cancelled",
     "blocked": "Blocked"
   }
 }

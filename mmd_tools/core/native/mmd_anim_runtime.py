@@ -154,6 +154,18 @@ def export_pmx_model_json(payload: Any) -> Optional[bytes]:
     return _runtime_export.export_pmx_model_json(payload, get_mmd_runtime_library)
 
 
+def export_vpd_pose_json(payload: Any) -> bytes:
+    """Encode a VPD pose DTO through the required mmd-anim ABI."""
+
+    return _runtime_export.export_vpd_pose_json(payload, get_mmd_runtime_library)
+
+
+def parse_vpd_pose_json(payload: bytes) -> Dict[str, Any]:
+    """Parse VPD bytes through the required mmd-anim ABI."""
+
+    return _runtime_export.parse_vpd_pose_json(payload, get_mmd_runtime_library)
+
+
 def export_pmx_from_parts(
     metadata: Any,
     positions_xyz: Any,

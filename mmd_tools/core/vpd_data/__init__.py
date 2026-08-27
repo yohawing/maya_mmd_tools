@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 class VpdData:
     """VPDファイルのデータを管理するクラス
 
-    VPDファイルの読み込み、解析、書き出しを行います。
+    VPDファイルの読み込みと解析を行います。書き出しはmmd-animが担当します。
 
     Attributes:
         header (VpdHeader): ヘッダー情報
@@ -162,37 +162,6 @@ class VpdData:
         # ボーン数が指定されていない場合は実際の数を設定
         if self.header.bone_count == 0:
             self.header.bone_count = len(self.bone_poses)
-
-    def write_file(self, file_path: str) -> None:
-        """VPDファイルを書き出す
-
-        Args:
-            file_path (str): 出力先のファイルパス
-
-        Raises:
-            IOError: ファイルの書き込みに失敗した場合
-        """
-        logger.info(f"Starting VPD file export: {file_path}")
-
-        try:
-            with open(file_path, "w", encoding="shift-jis") as f:
-                # ヘッダーの書き込み
-                f.write(f"{self.header.signature}\n\n")
-
-                if self.header.parent_file:
-                    f.write(f"{self.header.parent_file};\n")
-
-                f.write(f"{len(self.bone_poses)};\n\n")
-
-                # ボーンポーズの書き込み
-                for bone_pose in self.bone_poses:
-                    f.write(bone_pose.to_vpd_format())
-
-            logger.info(f"VPD file export completed: {file_path}")
-
-        except Exception as e:
-            logger.error(f"Failed to export VPD file: {e}")
-            raise IOError(f"Failed to write VPD file: {e}")
 
     def __repr__(self) -> str:
         """文字列表現を返す"""

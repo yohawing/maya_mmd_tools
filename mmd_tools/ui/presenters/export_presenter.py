@@ -1,6 +1,6 @@
-"""Presenter for the single-action PMX/VMD export workflow."""
+"""Presenter for the single-action PMX/VMD/VPD export workflow."""
 
-from ..qt_compat import QMessageBox, QObject
+from ..qt_compat import QApplication, QMessageBox, QObject
 from ...adapters.maya_vmd_prepare_backend import create_maya_bake_timeline_vmd_action
 from ...core.logger import get_logger
 from ...services.export_workflow_service import (
@@ -38,6 +38,11 @@ class ExportPresenter(QObject):
         self.workflow_service = workflow_service
         self.view.presenter = self
         self.view.export_requested.connect(self.export)
+        cancel_requested = getattr(self.view, "cancel_requested", None)
+        if cancel_requested is not None:
+            cancel_requested.connect(self._request_cancel)
+        self._cancel_requested = False
+        self._active_export_format = None
         current_model_changed = getattr(app_state, "current_model_changed", None)
         if current_model_changed is not None:
             current_model_changed.connect(lambda _root: self.view.invalidate_all_panes())
@@ -49,6 +54,8 @@ class ExportPresenter(QObject):
         progress_token = None
         operation_active = False
         export_format = self._view_export_format()
+        self._cancel_requested = False
+        self._active_export_format = export_format
         try:
             operation_active = True
             self.view.set_operation_active(True)
@@ -60,6 +67,9 @@ class ExportPresenter(QObject):
                 getattr(self.app_state, "current_model_root", None)
             )
             export_format = self._request_export_format(request, export_format)
+            self._active_export_format = export_format
+            if export_format == "vpd":
+                request.options["_cancel_requested"] = lambda: self._cancel_requested
 
             def update_progress(stage):
                 self._update_progress(progress_token, stage)
@@ -84,6 +94,7 @@ class ExportPresenter(QObject):
                 self.view.set_operation_active(False)
             if progress_token is not None:
                 self.app_state.end_progress(progress_token)
+            self._active_export_format = None
 
         self.view.set_result(result)
         self._emit_status(result)
@@ -113,10 +124,18 @@ class ExportPresenter(QObject):
         update_view = getattr(self.view, "set_progress", None)
         if callable(update_view):
             update_view(stage)
+        if self._active_export_format == "vpd":
+            QApplication.processEvents()
         if token is None:
             return
         label = self._PROGRESS_LABELS.get(stage, stage)
         self.app_state.update_progress_state(token, label, 100 if stage == "report_ready" else None)
+
+    def _request_cancel(self) -> None:
+        """Request cancellation at the next VPD atomic phase boundary."""
+
+        if self._active_export_format == "vpd":
+            self._cancel_requested = True
 
     def _view_export_format(self) -> str:
         return str(getattr(self.view, "current_export_format", None) or "pmx").lower()
@@ -129,9 +148,10 @@ class ExportPresenter(QObject):
     def _publish_failure(self, status_prefix, error, request, export_format):
         options = dict(getattr(request, "options", None) or {})
         export_format = str(options.get("export_format") or export_format or "").lower() or None
-        strategy = (
-            VMD_EXPORT_BAKE_TIMELINE if export_format == "vmd" else "model"
-        )
+        strategy = {
+            "vmd": VMD_EXPORT_BAKE_TIMELINE,
+            "vpd": "current_pose",
+        }.get(export_format, "model")
         lower_report = getattr(error, "report", None)
         if isinstance(lower_report, ExportValidationReport):
             return ExportWorkflowResult(
@@ -161,7 +181,9 @@ class ExportPresenter(QObject):
         )
 
     def _emit_status(self, result: ExportWorkflowResult) -> None:
-        if result.succeeded:
+        if bool(getattr(result.action_result, "cancelled", False)):
+            self.app_state.emit_status("Cancelled")
+        elif result.succeeded:
             self.app_state.emit_status("Completed")
         elif result.report.is_blocking:
             self.app_state.emit_status("Blocked")
