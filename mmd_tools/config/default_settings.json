@@ -78,6 +78,13 @@
       "start_frame": 0,
       "end_frame": 120,
       "range_initialized": false
+    },
+    "camera": {
+      "_comment": "VMD camera export settings",
+      "use_frame_range": false,
+      "start_frame": 0,
+      "end_frame": 120,
+      "range_initialized": false
     }
   },
   "ui": {

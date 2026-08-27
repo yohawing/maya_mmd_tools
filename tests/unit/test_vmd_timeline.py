@@ -41,6 +41,28 @@ class TestVmdTimeline(MayaTestBase):
         self.assertEqual(cmds.playbackOptions(q=True, max=True), 60.0)
         self.assertEqual(cmds.currentUnit(q=True, time=True), "ntscf")
 
+    def test_camera_only_motion_sets_playback_range(self):
+        """Camera-only VMD uses its last key instead of the absent bone range."""
+        vmd_data = type("VmdDataStub", (), {})()
+        vmd_data.bone_frames = []
+        vmd_data.morph_frames = []
+        vmd_data.camera_frames = [{"frame_number": 75}]
+        vmd_data.light_frames = []
+        context = VmdTimelineContext(
+            logger=self.converter.logger,
+            fps=30.0,
+            vmd_frame_to_maya_time=float,
+        )
+
+        setup_timeline(context, vmd_data)
+
+        self.assertEqual(cmds.playbackOptions(q=True, min=True), 0.0)
+        self.assertEqual(cmds.playbackOptions(q=True, max=True), 75.0)
+        self.assertEqual(
+            cmds.playbackOptions(q=True, animationEndTime=True),
+            75.0,
+        )
+
     def test_timeline_context_factory_matches_converter_state(self):
         """Converter timeline context factory binds fps and frame conversion."""
         self.converter.fps = 24.0

@@ -10,7 +10,11 @@ install_headless_ui_stubs()
 
 from mmd_tools.core.settings import settings  # noqa: E402
 from mmd_tools.core.exceptions import MMDImportException  # noqa: E402
-from mmd_tools.io.mmd_importer import _scoped_settings_override, import_mmd_file  # noqa: E402
+from mmd_tools.io.mmd_importer import (  # noqa: E402
+    _record_physics_compatibility_warnings,
+    _scoped_settings_override,
+    import_mmd_file,
+)
 
 _ALL_KEYS = (
     "import.model.separate_meshes_by_material",
@@ -112,6 +116,57 @@ class TestScopedSettingsOverride(unittest.TestCase):
         options = {"nonexistent_key": "value", "another_unknown": 42}
         with _scoped_settings_override(options):
             pass  # should not raise
+
+
+class TestPhysicsCompatibilityWarningProfile(unittest.TestCase):
+    def test_skips_warning_when_physics_import_is_disabled(self):
+        options = {"import_physics": False, "profile": {}}
+
+        _record_physics_compatibility_warnings(object(), options)
+
+        self.assertNotIn("warnings", options["profile"])
+
+    def test_pmx_import_appends_structured_warning(self):
+        parsed_data = SimpleNamespace(
+            rigid_bodies=[
+                SimpleNamespace(related_bone_index=-1, physics_mode=1),
+                SimpleNamespace(related_bone_index=0, physics_mode=1),
+            ],
+            joints=[
+                SimpleNamespace(
+                    joint_type=0,
+                    rigid_body_a_index=0,
+                    rigid_body_b_index=1,
+                    translation_limit_min=(0.0, 0.3, 0.0),
+                    translation_limit_max=(0.0, 0.3, 0.0),
+                )
+            ],
+        )
+        existing = {"code": "existing"}
+        options = {"profile": {"warnings": [existing]}}
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
+            with self.assertLogs("mmd_tools.io.mmd_importer", level="WARNING") as logs:
+                with patch(
+                    "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
+                    return_value="model_root",
+                ) as importer:
+                    result = import_mmd_file("model.pmx", options=options)
+
+        self.assertEqual(result, "model_root")
+        self.assertEqual(options["profile"]["warnings"][0], existing)
+        self.assertEqual(
+            options["profile"]["warnings"][1]["code"],
+            "legacy_soft_constraint_behavior",
+        )
+        self.assertIn("legacy MMD soft-constraint behavior", "\n".join(logs.output))
+        importer.assert_called_once()
+
+        parsed_data.joints[0].translation_limit_min = (0.0, 0.0, 0.0)
+        parsed_data.joints[0].translation_limit_max = (0.0, 0.0, 0.0)
+        clean_options = {}
+        _record_physics_compatibility_warnings(parsed_data, clean_options)
+        self.assertNotIn("profile", clean_options)
 
 
 class TestImportMmdFileScalePrecedence(unittest.TestCase):

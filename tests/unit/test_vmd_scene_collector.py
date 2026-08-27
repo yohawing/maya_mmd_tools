@@ -74,6 +74,8 @@ class FakeCmds:
         self.translations = {}
         self.world_matrices = {}
         self.current_time = 0.0
+        self.playback_min = 0.0
+        self.playback_max = 120.0
         self.blendshape_weights = {}
         self.aliases = {}
         self.current_unit = "ntsc"
@@ -198,6 +200,13 @@ class FakeCmds:
             self.current_time = float(time)
             self.current_time_calls.append(float(time))
         return self.current_time
+
+    def playbackOptions(self, query=False, minTime=False, maxTime=False):  # noqa: N802,N803
+        if query and minTime:
+            return self.playback_min
+        if query and maxTime:
+            return self.playback_max
+        raise ValueError("unsupported playbackOptions call")
 
     def play(self, query=False, state=False):
         if query and state:
@@ -547,6 +556,198 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(
             collector.diagnostics["native_morph_sampler"]["sample_count"],
             3,
+        )
+
+    def test_bake_timeline_scene_target_streams_only_camera_and_light(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "mmd_camera": "transform",
+                "mmd_light": "transform",
+            }
+        )
+        self.cmds.attrs.update(
+            {
+                ("mmd_camera", ATTR_MMD_CAMERA): True,
+                ("mmd_light", ATTR_MMD_LIGHT): True,
+            }
+        )
+        for node, attrs in {
+            "mmd_camera": {
+                "translateX": 1.0,
+                "translateY": 2.0,
+                "translateZ": -3.0,
+                "rotateX": 10.0,
+                "rotateY": 20.0,
+                "rotateZ": -30.0,
+                "mmd_camera_distance": -45.0,
+                "mmd_camera_viewing_angle": 42.0,
+                "mmd_camera_perspective": 1.0,
+            },
+            "mmd_light": {
+                "mmd_light_colorR": 0.2,
+                "mmd_light_colorG": 0.3,
+                "mmd_light_colorB": 0.4,
+                "rotateX": -30.0,
+                "rotateY": 20.0,
+                "rotateZ": 0.0,
+            },
+        }.items():
+            for attr, value in attrs.items():
+                self.cmds.attrs[(node, attr)] = value
+                self.cmds.keys[(node, attr)] = {0.0: value, 2.0: value}
+
+        _collector, result, sink = self._collect_to_sink(
+            {
+                "target_model": "model_root",
+                "export_strategy": "bake_timeline",
+                "export_target": "camera+light",
+                "cameras": ["mmd_camera"],
+                "lights": ["mmd_light"],
+                "frame_range": (0, 2),
+            }
+        )
+
+        sections = [section for section, _frame in sink.frames]
+        self.assertEqual(sections.count("cameras"), 3)
+        self.assertEqual(sections.count("lights"), 3)
+        self.assertEqual(set(sections), {"cameras", "lights"})
+        self.assertEqual(result["section_counts"]["bones"], 0)
+        self.assertEqual(result["section_counts"]["morphs"], 0)
+        self.assertEqual(result["section_counts"]["shadows"], 0)
+        self.assertEqual(result["section_counts"]["ik"], 0)
+        camera = next(frame for section, frame in sink.frames if section == "cameras")
+        self.assertEqual(camera["interpolation"], b"\x14" * 24)
+
+    def test_bake_timeline_selected_camera_requires_one_tagged_track(self):
+        with self.assertRaisesRegex(RuntimeError, "Reason: an explicit Camera target"):
+            self._collect_to_sink(
+                {
+                    "target_model": "model_root",
+                    "export_strategy": "bake_timeline",
+                    "export_target": "camera",
+                    "cameras": [],
+                }
+            )
+
+    def test_bake_timeline_static_scene_targets_sample_the_requested_range(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "mmd_camera": "transform",
+                "mmd_light": "transform",
+            }
+        )
+        self.cmds.attrs.update(
+            {
+                ("mmd_camera", ATTR_MMD_CAMERA): True,
+                ("mmd_camera", "mmd_camera_viewing_angle"): 45.0,
+                ("mmd_light", ATTR_MMD_LIGHT): True,
+                ("mmd_light", "mmd_light_colorR"): 0.5,
+                ("mmd_light", "mmd_light_colorG"): 0.6,
+                ("mmd_light", "mmd_light_colorB"): 0.7,
+            }
+        )
+
+        _collector, result, sink = self._collect_to_sink(
+            {
+                "target_model": "model_root",
+                "export_strategy": "bake_timeline",
+                "export_target": "camera+light",
+                "cameras": ["mmd_camera"],
+                "lights": ["mmd_light"],
+                "frame_range": (4, 6),
+            }
+        )
+
+        self.assertEqual(result["section_counts"]["cameras"], 3)
+        self.assertEqual(result["section_counts"]["lights"], 3)
+        self.assertEqual(
+            [frame["frame_number"] for section, frame in sink.frames if section == "cameras"],
+            [4, 5, 6],
+        )
+        self.assertEqual(
+            [frame["frame_number"] for section, frame in sink.frames if section == "lights"],
+            [4, 5, 6],
+        )
+
+    def test_bake_timeline_keyless_camera_samples_playback_range(self):
+        self.cmds.node_types.update(
+            {"model_root": "transform", "mmd_camera": "transform"}
+        )
+        self.cmds.attrs[("mmd_camera", ATTR_MMD_CAMERA)] = True
+        self.cmds.playback_min = 8.0
+        self.cmds.playback_max = 10.0
+
+        _collector, result, sink = self._collect_to_sink(
+            {
+                "target_model": "model_root",
+                "export_strategy": "bake_timeline",
+                "export_target": "camera",
+                "cameras": ["mmd_camera"],
+            }
+        )
+
+        self.assertEqual(result["validation_frame_range"], (8, 10))
+        self.assertEqual(
+            [frame["frame_number"] for section, frame in sink.frames if section == "cameras"],
+            [8, 9, 10],
+        )
+
+    def test_preserve_keys_rejects_frame_range(self):
+        self.cmds.node_types.update(
+            {"model_root": "transform", "mmd_camera": "transform"}
+        )
+        self.cmds.attrs.update(
+            {
+                ("mmd_camera", ATTR_MMD_CAMERA): True,
+                ("mmd_camera", "mmd_camera_rig_type"): "mmd_aim_roll",
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "does not support Frame Range"):
+            self._collect_to_sink(
+                {
+                    "target_model": "model_root",
+                    "export_strategy": "preserve_keys",
+                    "export_target": "camera",
+                    "cameras": ["mmd_camera"],
+                    "frame_range": (2, 8),
+                }
+            )
+
+    def test_bake_timeline_light_shape_color_drives_implicit_range(self):
+        self.cmds.node_types.update(
+            {
+                "model_root": "transform",
+                "mmd_camera": "transform",
+                "mmd_light": "transform",
+                "mmd_lightShape": "directionalLight",
+            }
+        )
+        self.cmds.children["mmd_light"] = ["mmd_lightShape"]
+        self.cmds.attrs[("mmd_camera", ATTR_MMD_CAMERA)] = True
+        self.cmds.attrs[("mmd_light", ATTR_MMD_LIGHT)] = True
+        for attr, value in {"colorR": 0.2, "colorG": 0.3, "colorB": 0.4}.items():
+            self.cmds.attrs[("mmd_lightShape", attr)] = value
+            self.cmds.keys[("mmd_lightShape", attr)] = {12.0: value}
+        for attr in ("rotateX", "rotateY", "rotateZ"):
+            self.cmds.attrs[("mmd_light", attr)] = 0.0
+
+        _collector, result, sink = self._collect_to_sink(
+            {
+                "target_model": "model_root",
+                "export_strategy": "bake_timeline",
+                "export_target": "camera+light",
+                "cameras": ["mmd_camera"],
+                "lights": ["mmd_light"],
+            }
+        )
+
+        self.assertEqual(result["validation_frame_range"], (12, 12))
+        self.assertEqual(
+            [frame["frame_number"] for section, frame in sink.frames if section == "lights"],
+            [12],
         )
 
     def test_bake_timeline_stream_morph_post_conversion_first_win(self):
@@ -4918,6 +5119,83 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertAlmostEqual(frame["rotation"][2], 0.5235987755982988)
         self.assertEqual(frame["viewing_angle"], 42)
         self.assertEqual(frame["perspective"], 1)
+
+    def test_rigless_camera_target_distance_caps_distant_plane_hit(self):
+        distance, reason = collector_module._rigless_camera_target_distance(
+            10.0,
+            -0.001,
+            max_distance=1000.0,
+        )
+
+        self.assertEqual(distance, 1000.0)
+        self.assertEqual(reason, "distance_capped")
+
+    def test_rigless_camera_target_distance_reuses_previous_for_parallel_ray(self):
+        distance, reason = collector_module._rigless_camera_target_distance(
+            10.0,
+            0.0,
+            previous_distance=80.0,
+            center_of_interest=30.0,
+        )
+
+        self.assertEqual(distance, 80.0)
+        self.assertEqual(reason, "previous_distance")
+
+    def test_collects_dense_rigless_camera_without_mmd_attributes(self):
+        self.cmds.node_types.update(
+            {
+                "render_camera": "transform",
+                "render_cameraShape": "camera",
+            }
+        )
+        self.cmds.children["render_camera"] = ["render_cameraShape"]
+        self.cmds.translations["render_camera"] = (0.0, 10.0, 0.0)
+        self.cmds.attrs.update(
+            {
+                ("render_cameraShape", "centerOfInterest"): 30.0,
+                ("render_cameraShape", "focalLength"): 35.0,
+                ("render_cameraShape", "verticalFilmAperture"): 1.0,
+                ("render_cameraShape", "orthographic"): 0.0,
+            }
+        )
+
+        original_rotation_from_forward_up = (
+            collector_module.mmd_camera_rotation_from_maya_forward_up
+        )
+        original_om = collector_module.om
+        collector_module.mmd_camera_rotation_from_maya_forward_up = (
+            lambda _forward, _up: (0.1, 0.2, 0.3)
+        )
+        collector_module.om = FakeOpenMaya
+        try:
+            collector = VmdSceneCollector()
+            frames = collector.collect_camera_frames(
+                ["render_camera"],
+                motion_scale=2.0,
+                dense_sample=True,
+                dense_frame_samples=[1.0, 2.0, 3.0],
+            )
+        finally:
+            collector_module.mmd_camera_rotation_from_maya_forward_up = (
+                original_rotation_from_forward_up
+            )
+            collector_module.om = original_om
+
+        self.assertEqual([frame["frame_number"] for frame in frames], [1, 2, 3])
+        self.assertTrue(all(frame["distance"] == -15.0 for frame in frames))
+        self.assertTrue(
+            all(frame["position"] == (0.0, 5.0, 15.0) for frame in frames)
+        )
+        self.assertEqual(
+            collector.diagnostics["rigless_camera_target"]["samples"],
+            {
+                "plane_hit": 0,
+                "distance_capped": 0,
+                "previous_distance": 2,
+                "center_of_interest": 1,
+                "default": 0,
+            },
+        )
 
     def test_collects_imported_light_color_from_directional_shape(self):
         """Legacy VMD light imports keep color on the child shape."""

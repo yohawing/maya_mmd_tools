@@ -26,6 +26,8 @@ from ..validation.snapshot import fingerprint_payload
 _CAMERA_MARKER = "mmd_camera"
 _LIGHT_MARKER = "mmd_light"
 _BAKE_TIMELINE_EXPORT_STRATEGY = "bake_timeline"
+_PRESERVE_KEYS_EXPORT_STRATEGY = "preserve_keys"
+_CAMERA_LIGHT_VMD_MODEL_NAME = "カメラ・照明"
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,7 @@ class MayaVmdExportRoute:
     """The immutable host route used by one export operation."""
 
     target_model: str
+    target_identity: str
     collector_options: Mapping[str, Any]
     dependency_nodes: tuple[str, ...]
     dependency_uuids: tuple[str, ...]
@@ -180,6 +183,8 @@ class MayaVmdExportBackend:
 
         options = self._validated_options(request)
         target_model = self._resolve_target_model(options)
+        if not target_model:
+            return "", None
         cmds = self._cmds_api()
         attribute_query = getattr(cmds, "attributeQuery", None)
         if not callable(attribute_query):
@@ -223,10 +228,15 @@ class MayaVmdExportBackend:
         """Resolve the Current Model and fingerprint its dependency closure."""
 
         started = time.perf_counter()
-        options = self._validated_options(request)
+        options = self._resolve_camera_options(self._validated_options(request))
         target_model = self._resolve_target_model(options)
-        model_name = self._resolve_model_name(options, target_model)
-        target_uuid = self._stable_uuid(target_model)
+        target_identity = self._export_identity(options, target_model)
+        model_name = (
+            _CAMERA_LIGHT_VMD_MODEL_NAME
+            if self._scene_only_export_requested(options)
+            else self._resolve_model_name(options, target_model or target_identity)
+        )
+        target_uuid = self._stable_uuid(target_identity)
         closure_started = time.perf_counter()
         records, topology = self._dependency_closure(target_model, options)
         closure_sec = round(time.perf_counter() - closure_started, 6)
@@ -240,6 +250,7 @@ class MayaVmdExportBackend:
         cache_id = self._cache_id(session_id, target_uuid, dependency_fingerprint)
         route = MayaVmdExportRoute(
             target_model=target_model,
+            target_identity=target_identity,
             collector_options=self._collector_options(options, target_model),
             dependency_nodes=tuple(sorted(record[1] for record in records)),
             dependency_uuids=tuple(sorted(record[0] for record in records)),
@@ -253,13 +264,13 @@ class MayaVmdExportBackend:
             "node_count": len(records),
             "connection_count": len(topology),
             "target_uuid": target_uuid,
-            "target_identity": target_model,
+            "target_identity": target_identity,
         }
         self._emit_diagnostics()
         return VmdExportDiscovery(
             scene_session_id=session_id,
             target_uuid=target_uuid,
-            target_identity=target_model,
+            target_identity=target_identity,
             dependency_closure_fingerprint=dependency_fingerprint,
             cache_id=cache_id,
             route=route,
@@ -331,7 +342,7 @@ class MayaVmdExportBackend:
         if not self._watch_usable(watch) or not self._watch_current(watch):
             raise BakeTimelineVmdExportError("scene revision watch is disabled, closed, or stale")
         if discovery.target_uuid != self._stable_uuid(discovery.target_identity):
-            raise BakeTimelineVmdExportError("Current Model identity changed during collection")
+            raise BakeTimelineVmdExportError("VMD export target identity changed during collection")
         if not isinstance(revision, (str, int)) or str(revision).strip() == "":
             raise BakeTimelineVmdExportError("scene revision is unavailable")
         return f"{revision}:{self._watch_generation}"
@@ -395,12 +406,14 @@ class MayaVmdExportBackend:
     def _collection_context(self, request: Any) -> tuple[Any, dict[str, Any]]:
         """Validate the active route and build one isolated collector call."""
 
-        options = self._validated_options(request)
+        options = self._resolve_camera_options(self._validated_options(request))
         if self._active_route is None:
             raise BakeTimelineVmdExportError("VMD route was not discovered before collection")
         target_model = self._resolve_target_model(options)
         if target_model != self._active_route.target_model:
             raise BakeTimelineVmdExportError("Current Model changed before collection")
+        if self._export_identity(options, target_model) != self._active_route.target_identity:
+            raise BakeTimelineVmdExportError("VMD export target changed before collection")
         watch = self._active_watch
         if watch is None or not self._watch_usable(watch):
             raise BakeTimelineVmdExportError("scene revision watch is disabled or stale")
@@ -424,7 +437,10 @@ class MayaVmdExportBackend:
             {
                 "target_model": target_model,
                 "model_name": self._active_route.model_name,
-                "export_strategy": _BAKE_TIMELINE_EXPORT_STRATEGY,
+                "export_strategy": str(
+                    self._active_route.collector_options.get("export_strategy")
+                    or _BAKE_TIMELINE_EXPORT_STRATEGY
+                ),
                 "preserve_raw_bone_transforms": False,
             }
         )
@@ -466,17 +482,35 @@ class MayaVmdExportBackend:
     def _validated_options(self, request: Any) -> dict[str, Any]:
         options = _request_options(request)
         export_strategy = str(_field(options, "export_strategy") or "").lower()
-        if export_strategy != _BAKE_TIMELINE_EXPORT_STRATEGY:
+        if export_strategy not in {
+            _BAKE_TIMELINE_EXPORT_STRATEGY,
+            _PRESERVE_KEYS_EXPORT_STRATEGY,
+        }:
             raise BakeTimelineVmdExportError(
-                "Maya VMD export supports Bake Timeline only"
+                "unsupported Maya VMD export strategy"
             )
-        if not options.get("current_model_root"):
-            raise BakeTimelineVmdExportError("current_model_root is required for VMD export")
-        if not options.get("target_model"):
-            raise BakeTimelineVmdExportError("target_model is required for VMD export")
+        if export_strategy == _PRESERVE_KEYS_EXPORT_STRATEGY and not self._scene_only_export_requested(options):
+            raise BakeTimelineVmdExportError(
+                "Preserve Keys is available for Camera export only"
+            )
+        if not self._scene_only_export_requested(options):
+            if not options.get("current_model_root"):
+                raise BakeTimelineVmdExportError(
+                    "current_model_root is required for character VMD export"
+                )
+            if not options.get("target_model"):
+                raise BakeTimelineVmdExportError(
+                    "target_model is required for character VMD export"
+                )
         return options
 
     def _resolve_target_model(self, options: Mapping[str, Any]) -> str:
+        if (
+            self._scene_only_export_requested(options)
+            and not options.get("current_model_root")
+            and not options.get("target_model")
+        ):
+            return ""
         current = self._canonical_node(options.get("current_model_root"))
         target = self._canonical_node(options.get("target_model"))
         if current is None or target is None:
@@ -484,6 +518,25 @@ class MayaVmdExportBackend:
         if current != target:
             raise BakeTimelineVmdExportError("target_model does not match Current Model")
         return current
+
+    @staticmethod
+    def _scene_only_export_requested(options: Mapping[str, Any]) -> bool:
+        value = str(options.get("export_target") or "character").strip().lower()
+        return value in {"camera", "camera+light"}
+
+    def _export_identity(
+        self,
+        options: Mapping[str, Any],
+        target_model: str,
+    ) -> str:
+        """Return the stable scene node that owns this export operation."""
+
+        if target_model:
+            return target_model
+        values = _as_list(options.get("cameras"))
+        if values:
+            return self._canonical_required(values[0])
+        raise BakeTimelineVmdExportError("camera VMD export has no live scene target")
 
     def _resolve_model_name(self, options: Mapping[str, Any], target_model: str) -> str:
         """Resolve VMD header name: request, imported model metadata, identity."""
@@ -501,12 +554,79 @@ class MayaVmdExportBackend:
                 return str(value)
         return target_model
 
+    def _resolve_camera_options(self, options: Mapping[str, Any]) -> dict[str, Any]:
+        """Freeze one selected Maya camera when no tagged camera route exists."""
+
+        result = dict(options)
+        if not self._camera_section_requested(result) or "cameras" in result:
+            return result
+        cmds = self._cmds_api()
+        try:
+            tagged = cmds.ls(f"*.{_CAMERA_MARKER}", objectsOnly=True, long=True) or []
+        except Exception as exc:
+            raise BakeTimelineVmdExportError(
+                "could not discover tagged mmd_camera tracks"
+            ) from exc
+        if len(tagged) > 1:
+            raise BakeTimelineVmdExportError(
+                "Camera export found multiple tagged mmd_camera tracks"
+            )
+        if tagged:
+            result["cameras"] = [self._canonical_required(tagged[0])]
+            return result
+        try:
+            selected = cmds.ls(selection=True, long=True) or []
+        except Exception as exc:
+            raise BakeTimelineVmdExportError(
+                "could not inspect the selected Maya camera"
+            ) from exc
+        cameras = {
+            camera
+            for node in selected
+            for camera in [self._camera_transform(node)]
+            if camera is not None
+        }
+        if len(cameras) != 1:
+            raise BakeTimelineVmdExportError(
+                "Camera export requires exactly one selected Maya camera when "
+                "the scene has no tagged mmd_camera track"
+            )
+        result["cameras"] = [next(iter(cameras))]
+        return result
+
+    @staticmethod
+    def _camera_section_requested(options: Mapping[str, Any]) -> bool:
+        export_target = str(options.get("export_target") or "").strip().lower()
+        return export_target in {"camera", "camera+light"}
+
+    def _camera_transform(self, node: Any) -> Optional[str]:
+        canonical = self._canonical_node(node)
+        if canonical is None:
+            return None
+        node_type = self._node_type(canonical)
+        if node_type == "camera":
+            parents = self._list_relatives(canonical, parent=True, fullPath=True)
+            if len(parents) != 1:
+                return None
+            return self._canonical_node(parents[0])
+        if node_type != "transform":
+            return None
+        shapes = self._list_relatives(
+            canonical,
+            shapes=True,
+            type="camera",
+            fullPath=True,
+        )
+        return canonical if len(shapes) == 1 else None
+
     def _collector_options(self, options: Mapping[str, Any], target_model: str) -> dict[str, Any]:
         result = dict(options)
         result.update(
             {
-                "target_model": target_model,
-                "export_strategy": _BAKE_TIMELINE_EXPORT_STRATEGY,
+                "target_model": target_model or None,
+                "export_strategy": str(
+                    options.get("export_strategy") or _BAKE_TIMELINE_EXPORT_STRATEGY
+                ).lower(),
                 "preserve_raw_bone_transforms": False,
             }
         )
@@ -585,12 +705,27 @@ class MayaVmdExportBackend:
         options: Mapping[str, Any],
     ) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str, str]]]:
         cmds = self._cmds_api()
-        nodes: set[str] = {target_model}
-        descendants = self._list_relatives(target_model, allDescendents=True, fullPath=True)
-        nodes.update(self._canonical_required(value) for value in descendants)
+        nodes: set[str] = set()
+        if target_model:
+            nodes.add(target_model)
+            descendants = self._list_relatives(
+                target_model,
+                allDescendents=True,
+                fullPath=True,
+            )
+            nodes.update(self._canonical_required(value) for value in descendants)
         for name in _as_list(options.get("joints")) + _as_list(options.get("blend_shapes")):
             nodes.add(self._canonical_required(name))
-        mesh_nodes = self._list_relatives(target_model, allDescendents=True, type="mesh", fullPath=True)
+        mesh_nodes = (
+            self._list_relatives(
+                target_model,
+                allDescendents=True,
+                type="mesh",
+                fullPath=True,
+            )
+            if target_model
+            else []
+        )
         for mesh in mesh_nodes:
             mesh_path = self._canonical_required(mesh)
             nodes.add(mesh_path)
@@ -601,7 +736,21 @@ class MayaVmdExportBackend:
             for history_node in history:
                 nodes.add(self._canonical_required(history_node))
 
-        for marker, option_name in ((_CAMERA_MARKER, "cameras"), (_LIGHT_MARKER, "lights")):
+        export_target = str(options.get("export_target") or "").strip().lower()
+        explicit_sections = bool(export_target)
+        selected_sections = {"character", "camera", "light"}
+        if export_target:
+            selected_sections = {
+                "camera" if export_target == "camera+light" else export_target
+            }
+            if export_target == "camera+light":
+                selected_sections = {"camera", "light"}
+        for marker, option_name, target_name in (
+            (_CAMERA_MARKER, "cameras", "camera"),
+            (_LIGHT_MARKER, "lights", "light"),
+        ):
+            if explicit_sections and target_name not in selected_sections:
+                continue
             if option_name in options:
                 tagged = _as_list(options.get(option_name))
             else:
@@ -612,6 +761,19 @@ class MayaVmdExportBackend:
             for track in tagged:
                 track_path = self._canonical_required(track)
                 nodes.add(track_path)
+                ancestor = track_path
+                while True:
+                    parents = self._list_relatives(
+                        ancestor,
+                        parent=True,
+                        fullPath=True,
+                    )
+                    if not parents:
+                        break
+                    ancestor = self._canonical_required(parents[0])
+                    if ancestor in nodes:
+                        break
+                    nodes.add(ancestor)
                 # The camera collector samples shape properties (focalLength,
                 # orthographic, and orthographicWidth), while the light
                 # collector may sample a child shape color source.

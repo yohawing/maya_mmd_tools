@@ -86,20 +86,6 @@ class TestBonePose(unittest.TestCase):
         self.assertIn("center", text)
         self.assertIn("3", text)
 
-    def test_to_vpd_format(self):
-        pose = BonePose()
-        pose.bone_index = 5
-        pose.bone_name = "左腕"
-        pose.position = [1.0, 2.0, 3.0]
-        pose.quaternion = [0.0, 0.707107, 0.0, 0.707107]
-
-        text = pose.to_vpd_format()
-
-        self.assertIn("Bone5{左腕", text)
-        self.assertIn("1.000000,2.000000,3.000000;", text)
-        self.assertIn("0.000000,0.707107,0.000000,0.707107;", text)
-        self.assertTrue(text.endswith("}\n"))
-
     def test_str_matches_format(self):
         pose = BonePose()
         pose.bone_index = 1
@@ -112,24 +98,8 @@ class TestBonePose(unittest.TestCase):
         self.assertIn("Bone1{head", text)
         self.assertIn("0.100000", text)
 
-    def test_vpd_format_multiple_bones(self):
-        poses = []
-        for index, name in enumerate(["center", "upper_body", "head"]):
-            pose = BonePose()
-            pose.bone_index = index
-            pose.bone_name = name
-            pose.position = [float(index), 0.0, 0.0]
-            poses.append(pose)
-
-        text = "".join(pose.to_vpd_format() for pose in poses)
-
-        self.assertIn("Bone0{center", text)
-        self.assertIn("Bone1{upper_body", text)
-        self.assertIn("Bone2{head", text)
-
-
 class TestVpdData(unittest.TestCase):
-    """VpdData parser and writer behavior."""
+    """VpdData parser behavior."""
 
     def setUp(self):
         self.vpd_data = VpdData()
@@ -198,27 +168,6 @@ Bone0{センター
         self.assertEqual(self.vpd_data.header.bone_count, 1)
         self.assertEqual(len(self.vpd_data.bone_poses), 1)
 
-    def test_write_file_roundtrip(self):
-        self.vpd_data.header.parent_file = "output.osm"
-
-        pose = BonePose()
-        pose.bone_index = 0
-        pose.bone_name = "テストボーン"
-        pose.position = [1.5, 2.5, 3.5]
-        pose.quaternion = [0.0, 0.707107, 0.0, 0.707107]
-        self.vpd_data.bone_poses.append(pose)
-
-        output_file = self.test_dir / "output.vpd"
-        self.vpd_data.write_file(str(output_file))
-
-        parsed = VpdData()
-        parsed.parse_file(str(output_file))
-
-        self.assertEqual(parsed.header.parent_file, "output.osm")
-        self.assertEqual(len(parsed.bone_poses), 1)
-        self.assertEqual(parsed.bone_poses[0].bone_name, "テストボーン")
-        self.assertAlmostEqual(parsed.bone_poses[0].position[0], 1.5, places=5)
-
     def test_invalid_file(self):
         with self.assertRaises(FileNotFoundError):
             self.vpd_data.parse_file("nonexistent.vpd")
@@ -280,17 +229,6 @@ class TestVpdConverter(unittest.TestCase):
     def test_convert_position_flips_z_axis(self):
         self.assertEqual(self.converter._convert_position_mmd_to_maya([1.0, 2.0, -3.0]), [1.0, 2.0, 3.0])
 
-    def test_convert_rotation_conjugates_z_reflection(self):
-        self.assertEqual(
-            self.converter._convert_rotation_mmd_to_maya([10.0, 20.0, -30.0]),
-            [-10.0, -20.0, -30.0],
-        )
-
-    def test_is_movable_bone_accepts_center_and_master_names(self):
-        for bone_name in ["センター", "center", "Center", "全ての親", "master", "Master"]:
-            with self.subTest(bone_name=bone_name):
-                self.assertTrue(self.converter._is_movable_bone(bone_name))
-
     def test_convert_returns_false_without_target_joints(self):
         vpd_data = SimpleNamespace(bone_poses=[])
 
@@ -344,6 +282,7 @@ class TestVpdConverter(unittest.TestCase):
             s.enter_context(patch.object(self.converter, "_build_name_mappings"))
             s.enter_context(patch.object(self.converter, "_get_target_joints", return_value=["model:上半身"]))
             s.enter_context(patch(_CVT + ".cmds.currentTime", return_value=1.0))
+            s.enter_context(patch.object(self.converter, "_validate_pose_conversions"))
             s.enter_context(patch.object(self.converter, "_setup_animation_layer"))
             s.enter_context(patch.object(self.converter, "_apply_bone_pose", return_value="model:上半身"))
             s.enter_context(patch.object(self.converter, "_add_objects_to_layer"))
@@ -355,6 +294,39 @@ class TestVpdConverter(unittest.TestCase):
             ["Starting VPD pose conversion", "VPD pose conversion completed: applied 1/1 bones"],
             on_debug=False,
         )
+
+    def test_convert_validates_all_pose_conversions_before_scene_writes(self):
+        bone = BonePose()
+        bone.bone_name = "上半身"
+        apply_pose = MagicMock()
+        with ExitStack() as s:
+            s.enter_context(patch.object(self.converter, "_build_name_mappings"))
+            s.enter_context(
+                patch.object(self.converter, "_get_target_joints", return_value=["model:上半身"])
+            )
+            s.enter_context(patch(_CVT + "._build_rotation_export_context", return_value={}))
+            s.enter_context(
+                patch.object(
+                    self.converter,
+                    "_validate_pose_conversions",
+                    side_effect=ValueError("invalid pose conversion"),
+                )
+            )
+            s.enter_context(patch.object(self.converter, "_apply_bone_pose", apply_pose))
+            with self.assertRaisesRegex(ValueError, "invalid pose conversion"):
+                self.converter.convert(SimpleNamespace(bone_poses=[bone]), "model")
+
+        apply_pose.assert_not_called()
+
+    def test_joint_rotate_conversion_rejects_invalid_rotate_order(self):
+        self.converter._rotation_export_context = {
+            "model:上半身": {"rotateOrder": 6}
+        }
+
+        with self.assertRaisesRegex(ValueError, "rotateOrder is invalid"):
+            self.converter._convert_quaternion_to_joint_rotate(
+                "model:上半身", [0.0, 0.0, 0.0, 1.0]
+            )
 
 
 class TestVpdImporter(unittest.TestCase):

@@ -4,7 +4,9 @@ import unittest
 
 from mmd_tools.core.native.mmd_anim_runtime_export import (
     MmdAnimRuntimeExportError,
+    export_vpd_pose_json,
     export_vmd_from_parts,
+    parse_vpd_pose_json,
 )
 from mmd_tools.core.native.mmd_anim_runtime_types import MmdRuntimeFfiByteBuffer
 
@@ -23,6 +25,12 @@ class _FakeNativeLibrary:
             return MmdRuntimeFfiByteBuffer()
         self.storage = (ctypes.c_uint8 * len(self.payload)).from_buffer_copy(self.payload)
         return MmdRuntimeFfiByteBuffer(self.storage, len(self.payload))
+
+    def mmd_runtime_export_vpd_pose_json(self, *args):
+        return self.mmd_runtime_export_vmd_from_parts(*args)
+
+    def mmd_runtime_parse_vpd_pose_json(self, *args):
+        return self.mmd_runtime_export_vmd_from_parts(*args)
 
     def mmd_runtime_byte_buffer_free(self, buffer):
         self.free_count += 1
@@ -52,6 +60,26 @@ def _metadata():
 
 
 class MmdAnimRuntimeExportTests(unittest.TestCase):
+    def test_vpd_json_codec_uses_owned_buffers_without_fallback(self):
+        export_lib = _FakeNativeLibrary(b"Vocaloid Pose Data file\r\n")
+        encoded = export_vpd_pose_json(
+            {"modelFile": "", "boneCount": 0, "bones": []},
+            get_library=lambda: export_lib,
+        )
+        parse_lib = _FakeNativeLibrary(
+            b'{"format":"vpd","modelFile":"","boneCount":0,"bones":[],"diagnostics":[]}'
+        )
+        parsed = parse_vpd_pose_json(encoded, get_library=lambda: parse_lib)
+
+        self.assertTrue(encoded.startswith(b"Vocaloid Pose Data file"))
+        self.assertEqual(parsed["format"], "vpd")
+        self.assertEqual(export_lib.free_count, 1)
+        self.assertEqual(parse_lib.free_count, 1)
+
+    def test_vpd_json_codec_requires_native_symbols(self):
+        with self.assertRaisesRegex(MmdAnimRuntimeExportError, "required ABI symbol"):
+            export_vpd_pose_json({}, get_library=lambda: _MissingVmdPartsLibrary())
+
     def test_typed_parts_passes_explicit_lengths_and_frees_once(self):
         lib = _FakeNativeLibrary(b"native-vmd")
         result = export_vmd_from_parts(

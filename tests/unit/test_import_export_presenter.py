@@ -82,6 +82,7 @@ class _FakeView:
         self.import_button = _FakeButton()
         self.vmd_path_button = _FakeButton()
         self.import_vmd_button = _FakeButton()
+        self.create_mmd_camera_button = _RecordingButton()
         self.new_model_button = _RecordingButton()
         self.import_path_edit = _FakeLineEdit("model.pmx")
         self.vmd_path_edit = _FakeLineEdit("motion.vmd")
@@ -203,6 +204,10 @@ class _FakeMayaAdapter:
         self.attribute_exists_calls = []
         self.list_connections_calls = []
         self.ls_calls = []
+        self.select_calls = []
+
+    def select(self, nodes, replace=True):
+        self.select_calls.append((nodes, replace))
 
     def ls(self, *args, **kwargs):
         self.ls_calls.append((args, kwargs))
@@ -305,6 +310,50 @@ class TestImportExportPresenter(unittest.TestCase):
         )
 
         self.assertFalse(view.new_model_button.enabled)
+
+    def test_create_camera_button_creates_and_selects_camera(self):
+        view = self._create_model_view()
+        app_state = _FakeAppState()
+        maya_adapter = _FakeMayaAdapter()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            maya_adapter=maya_adapter,
+            camera_creator=lambda: "mmd_camera",
+        )
+
+        self.assertEqual(
+            view.create_mmd_camera_button.clicked.connected,
+            [presenter.create_mmd_camera],
+        )
+        self.assertEqual(presenter.create_mmd_camera(), "mmd_camera")
+        self.assertEqual(maya_adapter.select_calls, [("mmd_camera", True)])
+        self.assertIn("mmd_camera", app_state.statuses[-1])
+
+    def test_create_camera_failure_reports_without_selecting(self):
+        view = self._create_model_view()
+        app_state = _FakeAppState()
+        maya_adapter = _FakeMayaAdapter()
+
+        def fail():
+            raise RuntimeError("camera unavailable")
+
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            maya_adapter=maya_adapter,
+            camera_creator=fail,
+        )
+
+        with patch(
+            "mmd_tools.ui.qt_compat.QMessageBox.warning",
+            create=True,
+        ) as warning:
+            self.assertFalse(presenter.create_mmd_camera())
+
+        self.assertEqual(maya_adapter.select_calls, [])
+        self.assertIn("camera unavailable", app_state.statuses[-1])
+        warning.assert_called_once()
 
     def test_create_model_routes_request_and_publishes_new_root(self):
         view = self._create_model_view()

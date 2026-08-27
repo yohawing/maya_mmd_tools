@@ -253,6 +253,42 @@ class TestImportExportTabGUI(GuiTestBase):
         finally:
             tab.deleteLater()
 
+    def test_create_camera_entrypoint_is_next_to_animation_import(self):
+        """Animation workflow exposes one explicit MMD camera creation button."""
+        tab = self._create_tab()
+        try:
+            self.assertTrue(hasattr(tab, "create_mmd_camera_button"))
+            self.assertEqual(
+                tab.import_vmd_button.parentWidget(),
+                tab.create_mmd_camera_button.parentWidget(),
+            )
+
+            def find_layout_containing(layout, widget):
+                for index in range(layout.count()):
+                    item = layout.itemAt(index)
+                    if item is None:
+                        continue
+                    if item.widget() is widget:
+                        return layout
+                    child_layout = item.layout()
+                    if child_layout is not None:
+                        found = find_layout_containing(child_layout, widget)
+                        if found is not None:
+                            return found
+                return None
+
+            button_layout = find_layout_containing(
+                tab.animation_group.layout(),
+                tab.import_vmd_button,
+            )
+            self.assertIsNotNone(button_layout)
+            self.assertEqual(
+                button_layout.indexOf(tab.import_vmd_button) + 1,
+                button_layout.indexOf(tab.create_mmd_camera_button),
+            )
+        finally:
+            tab.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()

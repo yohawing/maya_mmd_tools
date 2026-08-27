@@ -2,6 +2,7 @@
 
 import math
 import os
+from pathlib import Path
 
 from maya import cmds
 
@@ -17,6 +18,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MODEL_NAME,
 )
 from mmd_tools.core.namespace_utils import NamespaceUtils
+from mmd_tools.core.native.mmd_anim_runtime_sampling import sample_vmd_camera_frames
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.io.vmd_exporter import VmdExporter
@@ -248,6 +250,150 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertAlmostEqual(light_frame.position[0], -1.0)
         self.assertAlmostEqual(light_frame.position[1], 0.0)
         self.assertAlmostEqual(light_frame.position[2], 0.0)
+
+    def test_bake_timeline_exports_selected_ordinary_camera_dense(self):
+        camera, shape = cmds.camera(name="render_camera")
+        cmds.setAttr(f"{camera}.translateY", 10.0)
+        cmds.setAttr(f"{camera}.rotateX", -20.0)
+        cmds.setAttr(f"{shape}.centerOfInterest", 30.0)
+        cmds.setKeyframe(camera, attribute="rotateY", time=1, value=0.0)
+        cmds.setKeyframe(camera, attribute="rotateY", time=3, value=20.0)
+        cmds.select(camera, replace=True)
+        output_path = self.get_temp_filename("selected_camera_dense.vmd")
+
+        result = self._export_bake_timeline(
+            output_path,
+            {
+                "current_model_root": None,
+                "require_target": False,
+                "require_current_model": False,
+                "export_format": "vmd",
+                "export_strategy": "bake_timeline",
+                "export_target": "camera",
+                "frame_range": (1, 3),
+            },
+        )
+
+        self.assertTrue(result.succeeded, repr(result))
+        parsed = VmdData().parse_file(output_path)
+        self.assertEqual(parsed.header.model_name, "カメラ・照明")
+        self.assertEqual(
+            [frame.frame_number for frame in parsed.camera_frames],
+            # Maya film (24 fps) samples 1/2/3 map to VMD 1/2/4 at 30 fps.
+            [1, 2, 4],
+        )
+        self.assertTrue(
+            all(0.0 < abs(frame.distance) <= 1000.0 for frame in parsed.camera_frames)
+        )
+        self.assertTrue(
+            all(abs(frame.position[1]) <= 1e-5 for frame in parsed.camera_frames)
+        )
+        self.assertEqual(parsed.bone_frames, [])
+
+    def test_preserve_keys_import_export_keeps_mmd_anim_camera_interpolation(self):
+        source_path = (
+            Path(__file__).resolve().parents[1]
+            / "data"
+            / "camera_motion"
+            / "camera-edge-generated.vmd"
+        )
+        source_bytes = source_path.read_bytes()
+        source_samples = sample_vmd_camera_frames(
+            source_bytes,
+            start_frame=0.0,
+            frame_step=1.0,
+            frame_count=61,
+        )
+        if source_samples is None:
+            self.skipTest("mmd-anim camera track sampling is unavailable")
+        source_data = VmdData().parse_file(str(source_path))
+
+        self.assertTrue(import_mmd_file(str(source_path)))
+        output_path = self.get_temp_filename("camera_edge_preserve_keys.vmd")
+        result = self._export_bake_timeline(
+            output_path,
+            {
+                "current_model_root": None,
+                "require_target": False,
+                "require_current_model": False,
+                "export_format": "vmd",
+                "export_strategy": "preserve_keys",
+                "export_target": "camera",
+            },
+        )
+
+        self.assertTrue(result.succeeded, repr(result))
+        exported_data = VmdData().parse_file(output_path)
+        self.assertEqual(
+            [frame.frame_number for frame in exported_data.camera_frames],
+            [frame.frame_number for frame in source_data.camera_frames],
+        )
+        self.assertEqual(
+            [frame.interpolation for frame in exported_data.camera_frames],
+            [frame.interpolation for frame in source_data.camera_frames],
+        )
+
+        exported_samples = sample_vmd_camera_frames(
+            Path(output_path).read_bytes(),
+            start_frame=0.0,
+            frame_step=1.0,
+            frame_count=61,
+        )
+        self.assertIsNotNone(exported_samples, "mmd-anim could not sample the exported VMD")
+        self.assertEqual(len(exported_samples), len(source_samples))
+
+        for source, exported in zip(source_samples, exported_samples):
+            frame = source["frame"]
+            self.assertEqual(exported["frame"], frame)
+            self.assertAlmostEqual(exported["distance"], source["distance"], places=4)
+            self.assertAlmostEqual(exported["fov"], source["fov"], places=4)
+            self.assertEqual(exported["perspective"], source["perspective"])
+            for channel, actual, expected in zip(
+                "XYZ",
+                exported["position"],
+                source["position"],
+            ):
+                self.assertAlmostEqual(
+                    actual,
+                    expected,
+                    places=4,
+                    msg=f"position{channel} mismatch at VMD frame {frame}",
+                )
+            for channel, actual, expected in zip(
+                "XYZ",
+                exported["rotation"],
+                source["rotation"],
+            ):
+                angle_delta = (actual - expected + math.pi) % (2.0 * math.pi) - math.pi
+                self.assertAlmostEqual(
+                    angle_delta,
+                    0.0,
+                    places=4,
+                    msg=f"rotation{channel} mismatch at VMD frame {frame}",
+                )
+
+        cmds.file(new=True, force=True)
+        cmds.currentUnit(time="film")
+        self.assertTrue(import_mmd_file(output_path))
+        tagged = cmds.ls(f"*.{ATTR_MMD_CAMERA}", objectsOnly=True) or []
+        self.assertEqual(len(tagged), 1)
+        targets = cmds.listConnections(
+            f"{tagged[0]}.mmd_camera_target_node",
+            source=True,
+            destination=False,
+        ) or []
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(
+            len(cmds.keyframe(f"{targets[0]}.translateX", query=True) or []),
+            len(source_data.camera_frames),
+        )
+        self.assertTrue(
+            cmds.attributeQuery(
+                "mmd_camera_interpolation_json",
+                node=tagged[0],
+                exists=True,
+            )
+        )
 
     def test_namespaced_target_scopes_automatic_blendshape_discovery(self):
         hero_root = self._make_namespaced_keyed_blendshape("hero", "hero_morph")
