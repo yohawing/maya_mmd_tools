@@ -24,7 +24,6 @@ _EXPORT_MODULES = {
     "ImportVmdResult": ".import_vmd_action",
     "BakeTimelineVmdExportAction": ".bake_timeline_vmd_export_action",
     "BakeTimelineVmdExportError": ".bake_timeline_vmd_export_action",
-    "BakeTimelineVmdExportCancelled": ".bake_timeline_vmd_export_action",
     "BakeTimelineVmdExportRaceError": ".bake_timeline_vmd_export_action",
     "VmdExportDiscovery": ".bake_timeline_vmd_export_action",
     "VmdExportPreparationBoundary": ".bake_timeline_vmd_export_action",

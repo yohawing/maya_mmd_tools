@@ -50,7 +50,6 @@ class _ExportPage(QWidget):
         STATE_EDITING: "editing",
         "Exporting": "validating_scene",
         "Succeeded": "completed",
-        "Cancelled": "cancelled",
         "Blocked": "blocked",
         "Failed": "blocked",
         STATE_CANCELLED: "cancelled",
@@ -166,7 +165,7 @@ class _ExportPage(QWidget):
                     VMD_EXPORT_PRESERVE_KEYS,
                 )
                 self.strategy_combo.currentIndexChanged.connect(
-                    self._on_semantic_input_changed
+                    self._on_camera_strategy_changed
                 )
                 self._motion_form.addRow(
                     self.owner.tr("export_strategy", "fields"),
@@ -343,6 +342,10 @@ class _ExportPage(QWidget):
         """Invalidate the visible report for timeline-affecting inputs."""
         self._mark_editing()
 
+    def _on_camera_strategy_changed(self, *_args) -> None:
+        self._sync_frame_range_enabled()
+        self._mark_editing()
+
     def _on_motion_format_changed(self, *_args) -> None:
         """Switch Animation between timeline VMD and current-frame VPD."""
         selected = self.format_combo.currentData()
@@ -405,11 +408,8 @@ class _ExportPage(QWidget):
                 self.format_combo.setEnabled(enabled)
             else:
                 self.strategy_combo.setEnabled(enabled)
-            cancellable = self.export_format == "vpd" or self.is_scene_target()
-            self.cancel_button.setVisible(
-                self.export_format == "vpd"
-                or (self._operation_active and self.is_scene_target())
-            )
+            cancellable = self.export_format == "vpd"
+            self.cancel_button.setVisible(cancellable)
             self.cancel_button.setEnabled(self._operation_active and cancellable)
 
     def export_target(self) -> str:
@@ -422,9 +422,6 @@ class _ExportPage(QWidget):
             return "character"
         return "character"
 
-    def is_scene_target(self) -> bool:
-        return self.export_target() in {"camera", "light", "camera+light"}
-
     def invalidate(self) -> None:
         self._state = STATE_EDITING
         self._set_status_key(self._STATE_STATUS_KEYS[STATE_EDITING])
@@ -432,7 +429,20 @@ class _ExportPage(QWidget):
 
     def _sync_frame_range_enabled(self) -> None:
         """Only expose editable frame bounds when range export is enabled."""
-        enabled = self.export_format == "vmd" and self.frame_range_check.isChecked()
+        supports_range = not (
+            self.pane == self.owner.CAMERA_PANE
+            and self._export_strategy() == VMD_EXPORT_PRESERVE_KEYS
+        )
+        if not supports_range and self.frame_range_check.isChecked():
+            self.frame_range_check.setChecked(False)
+        self.frame_range_check.setEnabled(
+            self.export_format == "vmd" and supports_range
+        )
+        enabled = (
+            self.export_format == "vmd"
+            and supports_range
+            and self.frame_range_check.isChecked()
+        )
         self.frame_start_spin.setEnabled(enabled)
         self.frame_end_spin.setEnabled(enabled)
 
@@ -455,6 +465,7 @@ class _ExportPage(QWidget):
         if self.pane == self.owner.CAMERA_PANE:
             index = self.strategy_combo.findData(str(export_strategy or "").lower())
             self.strategy_combo.setCurrentIndex(max(0, index))
+            self._sync_frame_range_enabled()
             return
         self.bake_export_check.setChecked(True)
         self.bake_export_check.setEnabled(False)

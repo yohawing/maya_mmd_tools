@@ -1466,9 +1466,7 @@ class VmdSceneCollector:
             blend_shapes = list(
                 options.get("blend_shapes") or self._find_blend_shapes(target_model)
             ) if include_character else []
-            discover_legacy_sections = (
-                "track_targets" not in options and "export_target" not in options
-            )
+            discover_legacy_sections = "export_target" not in options
             camera_candidates = (
                 self._resolve_tagged_track(options, "cameras", ATTR_MMD_CAMERA, None)
                 if include_camera or discover_legacy_sections
@@ -1500,11 +1498,11 @@ class VmdSceneCollector:
                     "Preserve Keys requires an MMD CameraRig; use Bake Timeline for a regular Maya Camera"
                 )
             start_frame, end_frame = _resolve_collection_frame_range(options)
+            if preserve_keys and (start_frame is not None or end_frame is not None):
+                raise ValueError("Preserve Keys does not support Frame Range")
             motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
             bone_bind_poses = options.get("bone_bind_poses") or {}
             maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
-            progress_callback = options.get("_progress_callback")
-            cancel_requested = options.get("cancel_requested")
             direct_control_rig_plan = (
                 self._control_rig_direct_export_plan(target_model, joints)
                 if include_character
@@ -1569,10 +1567,10 @@ class VmdSceneCollector:
                 and (include_camera or include_light)
                 and bake_timeline_dense_frames is None
             ):
-                current_time = _query_current_time()
-                if current_time is None or not math.isfinite(current_time):
-                    current_time = 0.0
-                bake_timeline_dense_frames = [max(0, int(round(current_time)))]
+                playback_start, playback_end = _query_playback_range()
+                bake_timeline_dense_frames = _dense_frame_samples(
+                    (), playback_start, playback_end
+                )
             self._diagnostics["route_provenance_dense_planning"] = {
                 "joint_count": len(joints),
                 "blend_shape_count": len(blend_shapes),
@@ -1649,8 +1647,6 @@ class VmdSceneCollector:
                     timeline_evaluation=not preserve_keys,
                     preserve_interpolation=preserve_keys,
                     frame_sink=lambda frame: emit("cameras", frame),
-                    progress_callback=progress_callback,
-                    cancel_requested=cancel_requested,
                 )
             begin_section("lights")
             if include_light:
@@ -1663,8 +1659,6 @@ class VmdSceneCollector:
                     dense_frame_samples=bake_timeline_dense_frames,
                     timeline_evaluation=not preserve_keys,
                     frame_sink=lambda frame: emit("lights", frame),
-                    progress_callback=progress_callback,
-                    cancel_requested=cancel_requested,
                 )
             if unsupported_cameras or unsupported_lights:
                 self._diagnostics["unsupported_bake_timeline_sections"] = {
@@ -4629,8 +4623,6 @@ class VmdSceneCollector:
         timeline_evaluation: bool = False,
         preserve_interpolation: bool = False,
         frame_sink=None,
-        progress_callback=None,
-        cancel_requested=None,
     ) -> list[dict]:
         """Collect MMD camera frames, including dense rigless camera baking."""
         if abs(float(motion_scale)) < 1e-12:
@@ -4891,7 +4883,6 @@ class VmdSceneCollector:
                             frames.append(payload)
                         else:
                             frame_sink(payload)
-                        _poll_export_control(progress_callback, cancel_requested)
             finally:
                 if restore_time is not None:
                     cmds.currentTime(restore_time, edit=True)
@@ -4917,8 +4908,6 @@ class VmdSceneCollector:
         dense_frame_samples: Optional[Sequence[float]] = None,
         timeline_evaluation: bool = False,
         frame_sink=None,
-        progress_callback=None,
-        cancel_requested=None,
     ) -> list[dict]:
         """Collect keyed MMD light controller frames."""
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
@@ -4963,7 +4952,6 @@ class VmdSceneCollector:
                         frames.append(payload)
                     else:
                         frame_sink(payload)
-                    _poll_export_control(progress_callback, cancel_requested)
         if frame_sink is None:
             frames.sort(key=lambda item: item["frame_number"])
             return frames
@@ -5263,6 +5251,19 @@ def _query_current_time() -> Optional[float]:
         return None
 
 
+def _query_playback_range() -> tuple[float, float]:
+    """Return Maya's finite playback range for keyless scene baking."""
+
+    try:
+        start = float(cmds.playbackOptions(query=True, minTime=True))
+        end = float(cmds.playbackOptions(query=True, maxTime=True))
+    except Exception as exc:
+        raise RuntimeError("Camera/Light playback range is unavailable") from exc
+    if not math.isfinite(start) or not math.isfinite(end) or end < start:
+        raise RuntimeError("Camera/Light playback range is invalid")
+    return start, end
+
+
 class _MayaTimelineReader:
     """Read current-frame values while advancing Maya's Timeline safely."""
 
@@ -5545,20 +5546,6 @@ def _current_plug_float(node: str, attr: str) -> float:
 
 def _current_plug_float_at_frame(node: str, attr: str, _frame: float) -> float:
     return _current_plug_float(node, attr)
-
-
-def _poll_export_control(progress_callback=None, cancel_requested=None) -> None:
-    """Pump the host-owned progress/cancel seam for scene-only tracks."""
-
-    if callable(progress_callback):
-        progress_callback("payload_collection")
-    if callable(cancel_requested):
-        try:
-            cancelled = bool(cancel_requested())
-        except Exception:
-            cancelled = False
-        if cancelled:
-            raise RuntimeError("VMD Camera/Light export was cancelled")
 
 
 def _camera_shape(camera: str) -> Optional[str]:
@@ -6104,42 +6091,18 @@ def _resolve_collection_frame_range(
 
 
 def _resolve_bake_timeline_track_targets(options: Mapping[str, Any]) -> set[str]:
-    """Resolve explicit Bake Timeline VMD track targets.
+    """Resolve the canonical public VMD export target."""
 
-    The legacy stream contract had no target selector and therefore retains
-    character-only behavior when the option is absent.  New UI/API callers
-    pass ``track_targets`` explicitly; choosing Camera or Light then scopes
-    the payload to those sections and never appends character, IK, or shadow
-    tracks.
-    """
-
-    option_name = "export_target" if "export_target" in options else "track_targets"
-    if option_name not in options:
+    if "export_target" not in options:
         return {"character"}
-    value = options.get(option_name)
-    if isinstance(value, str):
-        value = (value,)
-    try:
-        if option_name == "export_target":
-            target = str(value[0] if isinstance(value, (list, tuple)) and len(value) == 1 else value).strip().lower()
-            targets = {
-                "character": {"character"},
-                "camera": {"camera"},
-                "light": {"light"},
-                "camera+light": {"camera", "light"},
-                "camera_light": {"camera", "light"},
-            }.get(target, {target})
-        else:
-            targets = {str(item).strip().lower() for item in value}
-    except TypeError as exc:
-        raise ValueError("export_target must be a supported target name") from exc
-    if not targets or not targets.issubset(_BAKE_TIMELINE_TRACK_TARGETS):
-        invalid = sorted(targets - _BAKE_TIMELINE_TRACK_TARGETS)
-        if invalid:
-            raise ValueError(f"unsupported VMD export target: {', '.join(invalid)}")
-        raise ValueError("export_target must contain at least one target")
-    if "character" in targets and len(targets) > 1:
-        raise ValueError("character VMD export cannot be mixed with camera or light targets")
+    target = str(options.get("export_target") or "").strip().lower()
+    targets = {
+        "character": {"character"},
+        "camera": {"camera"},
+        "camera+light": {"camera", "light"},
+    }.get(target)
+    if targets is None:
+        raise ValueError(f"unsupported VMD export target: {target or 'empty'}")
     return targets
 
 

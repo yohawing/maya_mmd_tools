@@ -34,10 +34,6 @@ class BakeTimelineVmdExportRaceError(BakeTimelineVmdExportError):
     """Raised when the authoritative scene changes during collection."""
 
 
-class BakeTimelineVmdExportCancelled(BakeTimelineVmdExportError):
-    """Raised when a cancellable Camera/Light export stops before publish."""
-
-
 @dataclass
 class ExportVmdResult:
     """Terminal result from the one-shot Bake Timeline VMD export."""
@@ -49,7 +45,6 @@ class ExportVmdResult:
     warnings: List[Any] = field(default_factory=list)
     validation_report: Optional[ExportValidationReport] = None
     validation_report_artifacts: Optional[ValidationReportArtifactPaths] = None
-    cancelled: bool = False
 
 
 class VmdExportPreparationBoundary(Protocol):
@@ -366,10 +361,6 @@ class BakeTimelineVmdExportAction:
         """Write a verified sibling and its report before the final replace."""
 
         def phase(name: str, started: bool) -> None:
-            if started and name in {"collect", "output_verify", "replace"} and is_cancel_requested():
-                raise BakeTimelineVmdExportCancelled(
-                    "VMD Camera/Light export was cancelled before publication"
-                )
             if callable(phase_callback):
                 phase_callback(name, started)
 
@@ -390,18 +381,6 @@ class BakeTimelineVmdExportAction:
         export_strategy = str(
             request_options.get("export_strategy") or VMD_EXPORT_BAKE_TIMELINE
         ).lower()
-        export_target = str(request_options.get("export_target") or "").strip().lower()
-        cancellable = export_target in {"camera", "light", "camera+light", "camera_light"}
-        cancel_requested = request_options.get("cancel_requested")
-
-        def is_cancel_requested() -> bool:
-            if not cancellable or not callable(cancel_requested):
-                return False
-            try:
-                return bool(cancel_requested())
-            except Exception:
-                return False
-
         def build_result(
             *,
             exported_path: Optional[str] = None,
@@ -409,7 +388,6 @@ class BakeTimelineVmdExportAction:
             status_message: str = "",
             error: Optional[Exception] = None,
             warnings: Optional[List[Any]] = None,
-            cancelled: bool = False,
         ) -> ExportVmdResult:
             return ExportVmdResult(
                 exported_path=exported_path,
@@ -419,7 +397,6 @@ class BakeTimelineVmdExportAction:
                 warnings=list(warnings or []),
                 validation_report=report,
                 validation_report_artifacts=report_artifacts,
-                cancelled=cancelled,
             )
 
         def close_boundary() -> Optional[Exception]:
@@ -460,10 +437,6 @@ class BakeTimelineVmdExportAction:
                 collection_active = collection_context is not None
                 temporary_collection = collection_active
             first = _discovery(self._boundary.discover(request), request)
-            if is_cancel_requested():
-                raise BakeTimelineVmdExportCancelled(
-                    "VMD Camera/Light export was cancelled before collection"
-                )
             self._boundary.arm(request, first)
             boundary_open = True
             revision_before = _required(self._boundary.current_revision(request, first), "revision_before")
@@ -499,10 +472,6 @@ class BakeTimelineVmdExportAction:
                 raise BakeTimelineVmdExportError("streaming VMD metadata has an invalid frame range")
             stage.set_expected_frame_range(collected_range)
             phase("collect", False)
-            if is_cancel_requested():
-                raise BakeTimelineVmdExportCancelled(
-                    "VMD Camera/Light export was cancelled before verification"
-                )
             summary = stage.finish_collection(phase_callback=phase)
             self._stream_counts(metadata, summary)
 
@@ -556,10 +525,6 @@ class BakeTimelineVmdExportAction:
                 artifact_written = True
 
             phase("replace", True)
-            if is_cancel_requested():
-                raise BakeTimelineVmdExportCancelled(
-                    "VMD Camera/Light export was cancelled before publication"
-                )
             os.replace(stage.file_path, str(target))
             phase("replace", False)
             published = True
@@ -572,12 +537,6 @@ class BakeTimelineVmdExportAction:
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
-            failure = exc
-            if not isinstance(exc, BakeTimelineVmdExportCancelled) and is_cancel_requested():
-                failure = BakeTimelineVmdExportCancelled(
-                    "VMD Camera/Light export was cancelled before publication"
-                )
-                exc = failure
             if stage is not None and not published:
                 # Release the exact sibling before constructing a recoverable
                 # failure result.  The finalizer still owns the watch close.
@@ -585,11 +544,7 @@ class BakeTimelineVmdExportAction:
             lower_report = structured_export_failure_report(
                 exc, "vmd", mode=export_strategy
             )
-            if isinstance(exc, BakeTimelineVmdExportCancelled):
-                report = report or ExportValidationReport(
-                    "vmd", (), mode=export_strategy
-                )
-            elif isinstance(exc, ExportValidationAcknowledgementRequired):
+            if isinstance(exc, ExportValidationAcknowledgementRequired):
                 # A declined warning is a user decision after successful
                 # verification, not an output write failure.
                 pass
@@ -615,12 +570,10 @@ class BakeTimelineVmdExportAction:
                         artifact_error,
                         exc_info=True,
                     )
-            was_cancelled = isinstance(exc, BakeTimelineVmdExportCancelled)
             return build_result(
-                status_message="Export cancelled" if was_cancelled else f"Export failed: {exc}",
-                error=None if was_cancelled else exc,
+                status_message=f"Export failed: {exc}",
+                error=exc,
                 warnings=list(report.issues),
-                cancelled=was_cancelled,
             )
         finally:
             restore_error = restore_collection()
@@ -645,7 +598,6 @@ class BakeTimelineVmdExportAction:
 __all__ = [
     "BakeTimelineVmdExportAction",
     "BakeTimelineVmdExportError",
-    "BakeTimelineVmdExportCancelled",
     "BakeTimelineVmdExportRaceError",
     "ExportVmdResult",
     "VmdExportDiscovery",

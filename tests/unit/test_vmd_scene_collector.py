@@ -74,6 +74,8 @@ class FakeCmds:
         self.translations = {}
         self.world_matrices = {}
         self.current_time = 0.0
+        self.playback_min = 0.0
+        self.playback_max = 120.0
         self.blendshape_weights = {}
         self.aliases = {}
         self.current_unit = "ntsc"
@@ -198,6 +200,13 @@ class FakeCmds:
             self.current_time = float(time)
             self.current_time_calls.append(float(time))
         return self.current_time
+
+    def playbackOptions(self, query=False, minTime=False, maxTime=False):  # noqa: N802,N803
+        if query and minTime:
+            return self.playback_min
+        if query and maxTime:
+            return self.playback_max
+        raise ValueError("unsupported playbackOptions call")
 
     def play(self, query=False, state=False):
         if query and state:
@@ -662,12 +671,13 @@ class TestVmdSceneCollector(unittest.TestCase):
             [4, 5, 6],
         )
 
-    def test_bake_timeline_static_scene_target_without_range_samples_current_frame(self):
+    def test_bake_timeline_keyless_camera_samples_playback_range(self):
         self.cmds.node_types.update(
             {"model_root": "transform", "mmd_camera": "transform"}
         )
         self.cmds.attrs[("mmd_camera", ATTR_MMD_CAMERA)] = True
-        self.cmds.current_time = 8.0
+        self.cmds.playback_min = 8.0
+        self.cmds.playback_max = 10.0
 
         _collector, result, sink = self._collect_to_sink(
             {
@@ -678,21 +688,45 @@ class TestVmdSceneCollector(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result["validation_frame_range"], (8, 8))
+        self.assertEqual(result["validation_frame_range"], (8, 10))
         self.assertEqual(
             [frame["frame_number"] for section, frame in sink.frames if section == "cameras"],
-            [8],
+            [8, 9, 10],
         )
+
+    def test_preserve_keys_rejects_frame_range(self):
+        self.cmds.node_types.update(
+            {"model_root": "transform", "mmd_camera": "transform"}
+        )
+        self.cmds.attrs.update(
+            {
+                ("mmd_camera", ATTR_MMD_CAMERA): True,
+                ("mmd_camera", "mmd_camera_rig_type"): "mmd_aim_roll",
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "does not support Frame Range"):
+            self._collect_to_sink(
+                {
+                    "target_model": "model_root",
+                    "export_strategy": "preserve_keys",
+                    "export_target": "camera",
+                    "cameras": ["mmd_camera"],
+                    "frame_range": (2, 8),
+                }
+            )
 
     def test_bake_timeline_light_shape_color_drives_implicit_range(self):
         self.cmds.node_types.update(
             {
                 "model_root": "transform",
+                "mmd_camera": "transform",
                 "mmd_light": "transform",
                 "mmd_lightShape": "directionalLight",
             }
         )
         self.cmds.children["mmd_light"] = ["mmd_lightShape"]
+        self.cmds.attrs[("mmd_camera", ATTR_MMD_CAMERA)] = True
         self.cmds.attrs[("mmd_light", ATTR_MMD_LIGHT)] = True
         for attr, value in {"colorR": 0.2, "colorG": 0.3, "colorB": 0.4}.items():
             self.cmds.attrs[("mmd_lightShape", attr)] = value
@@ -704,7 +738,8 @@ class TestVmdSceneCollector(unittest.TestCase):
             {
                 "target_model": "model_root",
                 "export_strategy": "bake_timeline",
-                "export_target": "light",
+                "export_target": "camera+light",
+                "cameras": ["mmd_camera"],
                 "lights": ["mmd_light"],
             }
         )

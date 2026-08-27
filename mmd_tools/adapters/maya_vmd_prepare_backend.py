@@ -491,7 +491,7 @@ class MayaVmdExportBackend:
             )
         if export_strategy == _PRESERVE_KEYS_EXPORT_STRATEGY and not self._scene_only_export_requested(options):
             raise BakeTimelineVmdExportError(
-                "Preserve Keys is available for Camera/Light export only"
+                "Preserve Keys is available for Camera export only"
             )
         if not self._scene_only_export_requested(options):
             if not options.get("current_model_root"):
@@ -522,7 +522,7 @@ class MayaVmdExportBackend:
     @staticmethod
     def _scene_only_export_requested(options: Mapping[str, Any]) -> bool:
         value = str(options.get("export_target") or "character").strip().lower()
-        return value in {"camera", "light", "camera+light", "camera_light"}
+        return value in {"camera", "camera+light"}
 
     def _export_identity(
         self,
@@ -533,13 +533,10 @@ class MayaVmdExportBackend:
 
         if target_model:
             return target_model
-        for option_name in ("cameras", "lights"):
-            values = _as_list(options.get(option_name))
-            if values:
-                return self._canonical_required(values[0])
-        raise BakeTimelineVmdExportError(
-            "camera/light VMD export has no live scene target"
-        )
+        values = _as_list(options.get("cameras"))
+        if values:
+            return self._canonical_required(values[0])
+        raise BakeTimelineVmdExportError("camera VMD export has no live scene target")
 
     def _resolve_model_name(self, options: Mapping[str, Any], target_model: str) -> str:
         """Resolve VMD header name: request, imported model metadata, identity."""
@@ -600,14 +597,7 @@ class MayaVmdExportBackend:
     @staticmethod
     def _camera_section_requested(options: Mapping[str, Any]) -> bool:
         export_target = str(options.get("export_target") or "").strip().lower()
-        if export_target:
-            return export_target in {"camera", "camera+light", "camera_light"}
-        targets = options.get("track_targets")
-        if targets is None:
-            return False
-        if isinstance(targets, str):
-            targets = (targets,)
-        return "camera" in {str(item).strip().lower() for item in targets}
+        return export_target in {"camera", "camera+light"}
 
     def _camera_transform(self, node: Any) -> Optional[str]:
         canonical = self._canonical_node(node)
@@ -747,19 +737,14 @@ class MayaVmdExportBackend:
                 nodes.add(self._canonical_required(history_node))
 
         export_target = str(options.get("export_target") or "").strip().lower()
-        track_targets = options.get("track_targets")
-        explicit_sections = export_target or track_targets is not None
+        explicit_sections = bool(export_target)
         selected_sections = {"character", "camera", "light"}
         if export_target:
             selected_sections = {
                 "camera" if export_target == "camera+light" else export_target
             }
-            if export_target in {"camera+light", "camera_light"}:
+            if export_target == "camera+light":
                 selected_sections = {"camera", "light"}
-        elif track_targets is not None:
-            if isinstance(track_targets, str):
-                track_targets = (track_targets,)
-            selected_sections = {str(item).strip().lower() for item in track_targets}
         for marker, option_name, target_name in (
             (_CAMERA_MARKER, "cameras", "camera"),
             (_LIGHT_MARKER, "lights", "light"),

@@ -184,14 +184,16 @@ class TestExportTabGUI(GuiTestBase):
                 tab.build_request(None).options["export_strategy"],
                 VMD_EXPORT_PRESERVE_KEYS,
             )
+            self.assertFalse(tab.frame_range_check.isEnabled())
+            self.assertFalse(tab.frame_range_check.isChecked())
             tab.light_export_check.setChecked(True)
             self.assertEqual(
                 tab.build_request(None).options["export_target"],
                 "camera+light",
             )
             tab.set_operation_active(True)
-            self.assertTrue(tab.cancel_button.isVisible())
-            self.assertTrue(tab.cancel_button.isEnabled())
+            self.assertFalse(tab.cancel_button.isVisible())
+            self.assertFalse(tab.cancel_button.isEnabled())
             tab.set_operation_active(False)
             self.assertFalse(tab.cancel_button.isVisible())
             tab.pane_tabs.setCurrentIndex(1)

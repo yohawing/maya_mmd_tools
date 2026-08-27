@@ -7,7 +7,6 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from ..actions.export_model_action import ExportModelAction, ExportModelRequest
-from ..actions.bake_timeline_vmd_export_action import BakeTimelineVmdExportCancelled
 from ..actions.export_vpd_action import ExportVpdAction, ExportVpdRequest
 from ..validation.export_validator import (
     ExportValidationAcknowledgementRequired,
@@ -251,7 +250,7 @@ class ExportWorkflowService:
         if export_format == "vmd":
             options["export_format"] = "vmd"
             export_target = str(options.get("export_target") or "character").lower()
-            if export_target in {"camera", "light", "camera+light", "camera_light"}:
+            if export_target in {"camera", "camera+light"}:
                 options.setdefault("export_strategy", VMD_EXPORT_BAKE_TIMELINE)
             else:
                 options["export_strategy"] = VMD_EXPORT_BAKE_TIMELINE
@@ -443,13 +442,6 @@ class ExportWorkflowService:
                 elif name in {"output_verify", "warning_decision", "replace", "cleanup"}:
                     self._emit_progress(progress_callback, "report_ready")
 
-            if str(action_options.get("export_target") or "").lower() in {
-                "camera",
-                "light",
-                "camera+light",
-                "camera_light",
-            }:
-                action_options["_progress_callback"] = progress_callback
             action_result = execute_one_shot(
                 ExportWorkflowRequest(
                     request.file_path,
@@ -474,12 +466,8 @@ class ExportWorkflowService:
             report = action_report
         action_error = getattr(action_result, "error", None)
         succeeded = bool(getattr(action_result, "succeeded", False)) and action_error is None
-        live_cancelled = bool(getattr(action_result, "cancelled", False)) or isinstance(
-            action_error,
-            BakeTimelineVmdExportCancelled,
-        )
         warning_declined = isinstance(action_error, ExportValidationAcknowledgementRequired)
-        if not succeeded and action_error is not None and not live_cancelled and not warning_declined:
+        if not succeeded and action_error is not None and not warning_declined:
             report = _report_output_failure(
                 report, action_error, export_format=export_format, export_strategy=strategy
             )
@@ -488,11 +476,7 @@ class ExportWorkflowService:
             ExportWorkflowResult(
                 STATE_SUCCEEDED
                 if succeeded
-                else (
-                    STATE_CANCELLED
-                    if live_cancelled
-                    else (STATE_BLOCKED if warning_declined else STATE_FAILED)
-                ),
+                else (STATE_BLOCKED if warning_declined else STATE_FAILED),
                 report,
                 metadata,
                 action_result=action_result,
@@ -607,7 +591,6 @@ __all__ = [
     "STATE_EDITING",
     "STATE_EXPORTING",
     "STATE_FAILED",
-    "STATE_CANCELLED",
     "STATE_READY",
     "STATE_SUCCEEDED",
     "STATE_VALIDATING",

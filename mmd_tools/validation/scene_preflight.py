@@ -22,7 +22,7 @@ MODEL_FORMATS = frozenset({"pmx"})
 VMD_FORMATS = frozenset({"vmd"})
 VPD_FORMATS = frozenset({"vpd"})
 SUPPORTED_FORMATS = MODEL_FORMATS | VMD_FORMATS | VPD_FORMATS
-VMD_EXPORT_TARGETS = frozenset({"character", "camera", "light", "camera+light"})
+VMD_EXPORT_TARGETS = frozenset({"character", "camera", "camera+light"})
 
 
 @dataclass(frozen=True)
@@ -83,8 +83,6 @@ def _normalize_vmd_export_target(options: Mapping[str, Any]) -> Optional[str]:
     if "export_target" not in options:
         return "character"
     value = str(options.get("export_target") or "").strip().lower()
-    if value == "camera_light":
-        value = "camera+light"
     return value or None
 
 
@@ -197,7 +195,7 @@ class ScenePreflight:
                     "EXPORT_OPTIONS_INVALID",
                     "export_target",
                     f"VMD export target {export_target or 'empty'} is not supported",
-                    "Choose Character, Camera, Light, or Camera+Light.",
+                    "Choose Character, Camera, or Camera+Light.",
                     details={"export_target": export_target},
                 )
             )
@@ -220,7 +218,7 @@ class ScenePreflight:
                 _issue(
                     "EXPORT_OPTIONS_INVALID",
                     "export_strategy",
-                    "Preserve Keys is available for Camera/Light export only",
+                    "Preserve Keys is available for Camera export only",
                     "Use Bake Timeline for Character export.",
                     details={
                         "export_strategy": export_strategy,
@@ -270,6 +268,16 @@ class ScenePreflight:
                         details={
                             "frame_range": list(frame_range) if frame_range is not None else None,
                         },
+                    )
+                )
+            elif export_format == "vmd" and export_strategy == VMD_EXPORT_PRESERVE_KEYS:
+                issues.append(
+                    _issue(
+                        "EXPORT_OPTIONS_INVALID",
+                        "frame_range",
+                        "Preserve Keys does not support Frame Range",
+                        "Disable Use Frame Range or use Bake Timeline.",
+                        details={"frame_range": list(frame_range)},
                     )
                 )
 

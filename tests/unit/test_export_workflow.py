@@ -489,38 +489,6 @@ class ExportWorkflowTests(unittest.TestCase):
             self._assert_vmd_boundary_failure(result, boundary, target)
             self.assertNotIn("collect", result.completed_phases)
 
-    def test_camera_light_live_cancel_keeps_target_and_cleans_watch(self):
-        boundary = _VmdBoundary()
-        checks = 0
-
-        def cancel_requested():
-            nonlocal checks
-            checks += 1
-            return checks >= 2
-
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "scene.vmd"
-            target.write_bytes(b"original")
-            result = self._service(
-                vmd_action=BakeTimelineVmdExportAction(boundary)
-            ).execute(
-                self._vmd_request(
-                    target,
-                    export_target="camera+light",
-                    cancel_requested=cancel_requested,
-                )
-            )
-
-            self.assertEqual(result.state, STATE_CANCELLED)
-            self.assertTrue(result.action_result.cancelled)
-            self.assertEqual(target.read_bytes(), b"original")
-            self.assertEqual(boundary.collect_calls, 0)
-            self.assertGreaterEqual(boundary.close_calls, 1)
-            self.assertEqual(list(Path(directory).glob(".scene.*.vmd")), [])
-            self.assertNotIn(
-                "OUTPUT_WRITE_FAILED", [issue.code for issue in result.report.issues]
-            )
-
     def test_camera_target_skips_character_ownership_conflicts(self):
         preflight = ScenePreflight(
             scene_service=_SceneService(),
@@ -568,10 +536,37 @@ class ExportWorkflowTests(unittest.TestCase):
         )
 
         self.assertTrue(result.report.is_blocking)
-        self.assertIn(
-            "Camera/Light export only",
-            result.report.issues[0].reason,
+        self.assertIn("Camera export only", result.report.issues[0].reason)
+
+    def test_camera_preserve_keys_frame_range_is_blocked_by_preflight(self):
+        result = ScenePreflight(scene_service=_SceneService()).run(
+            {
+                "export_format": "vmd",
+                "export_target": "camera",
+                "export_strategy": "preserve_keys",
+                "frame_range": (2, 8),
+                "target_model": "model_ROOT",
+                "file_path": "camera.vmd",
+            }
         )
+
+        self.assertTrue(result.report.is_blocking)
+        self.assertTrue(
+            any("Frame Range" in issue.reason for issue in result.report.issues)
+        )
+
+    def test_standalone_light_target_is_blocked_by_preflight(self):
+        result = ScenePreflight(scene_service=_SceneService()).run(
+            {
+                "export_format": "vmd",
+                "export_target": "light",
+                "target_model": "model_ROOT",
+                "file_path": "light.vmd",
+            }
+        )
+
+        self.assertTrue(result.report.is_blocking)
+        self.assertIn("not supported", result.report.issues[0].reason)
 
     def test_vmd_encode_failure_preserves_target_and_restores_temporary_rig(self):
         boundary = _TemporaryVmdBoundary()
