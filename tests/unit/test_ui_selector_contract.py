@@ -67,7 +67,7 @@ def test_manifest_object_names_are_unique_source_contracts():
     """Keep selector spelling covered when the pure test runner uses Qt stubs."""
     repository_root = Path(__file__).resolve().parents[2]
     manifest = json.loads(
-        (repository_root / "tools" / "ui_coverage_manifest.json").read_text(
+        (repository_root / "tools" / "gates" / "ui_coverage_manifest.json").read_text(
             encoding="utf-8"
         )
     )

@@ -10,8 +10,8 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-import tools.export_release_gate as RELEASE_GATE
-from tools.export_release_gate import (
+import tools.gates.export_release_gate as RELEASE_GATE
+from tools.gates.export_release_gate import (
     _not_run,
     _require_build_path,
     _run_fail_fixture_matrix,
@@ -23,7 +23,7 @@ from tools.export_release_gate import (
     _validate_release_provenance,
     _validate_maya_probe_report,
 )
-from tools.export_release_maya_probe import (
+from tools.gates.export_release_maya_probe import (
     _bone_morph_separation_evidence,
     _compare_scene_oracles,
     _run_vmd_case,

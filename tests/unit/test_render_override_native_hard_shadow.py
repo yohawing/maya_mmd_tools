@@ -1,6 +1,6 @@
 """Behavior checks for the native hard-shadow witness helpers."""
 
-from tools.render_override_native_caster_e2e import (
+from tools.render_override.render_override_native_caster_e2e import (
     HARD_SHADOW_BIAS,
     _hard_shadow_body_states,
     _hard_shadow_witness_passes,

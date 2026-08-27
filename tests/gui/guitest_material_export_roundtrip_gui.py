@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from tests.common.gui_test_base import GuiTestBase, requires_gui
-from tools.export_release_maya_probe import (
+from tools.gates.export_release_maya_probe import (
     _capture_scene_oracle,
     _compare_scene_oracles,
     _fresh_import,

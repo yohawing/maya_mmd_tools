@@ -1,6 +1,6 @@
 """Pure-Python contract checks for the Authoring performance benchmark."""
 
-from tools.authoring_performance_contract import (
+from tools.probes.authoring_performance_contract import (
     MAX_ADAPTER_CALLS,
     SCALING_CASES,
     SCALING_OPERATIONS,

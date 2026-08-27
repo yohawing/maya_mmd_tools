@@ -4,7 +4,7 @@ import copy
 
 import pytest
 
-from tools.model_authoring_gate import (
+from tools.gates.model_authoring_gate import (
     ModelAuthoringGateError,
     REQUIRED_OPERATIONS,
     _require_completed_worker_result,

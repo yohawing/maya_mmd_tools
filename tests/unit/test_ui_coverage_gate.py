@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.ui_coverage_gate import (
+from tools.gates.ui_coverage_gate import (
     build_report_from_batch_logs,
     build_report_from_evidence,
     main,
@@ -15,7 +15,7 @@ from tools.ui_coverage_gate import (
 )
 
 
-MANIFEST_PATH = Path(__file__).resolve().parents[2] / "tools" / "ui_coverage_manifest.json"
+MANIFEST_PATH = Path(__file__).resolve().parents[2] / "tools" / "gates" / "ui_coverage_manifest.json"
 
 
 def _load_manifest():
