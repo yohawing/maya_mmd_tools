@@ -2,6 +2,7 @@
 
 import math
 import os
+from pathlib import Path
 
 from maya import cmds
 
@@ -17,6 +18,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MODEL_NAME,
 )
 from mmd_tools.core.namespace_utils import NamespaceUtils
+from mmd_tools.core.native.mmd_anim_runtime_sampling import sample_vmd_camera_frames
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.io.vmd_exporter import VmdExporter
@@ -351,6 +353,88 @@ class TestVmdSceneCollector(MayaTestBase):
                 exists=True,
             )
         )
+
+    def test_preserve_keys_import_export_keeps_mmd_anim_camera_interpolation(self):
+        source_path = (
+            Path(__file__).resolve().parents[1]
+            / "data"
+            / "camera_motion"
+            / "camera-edge-generated.vmd"
+        )
+        source_bytes = source_path.read_bytes()
+        source_samples = sample_vmd_camera_frames(
+            source_bytes,
+            start_frame=0.0,
+            frame_step=1.0,
+            frame_count=61,
+        )
+        if source_samples is None:
+            self.skipTest("mmd-anim camera track sampling is unavailable")
+        source_data = VmdData().parse_file(str(source_path))
+
+        self.assertTrue(import_mmd_file(str(source_path)))
+        output_path = self.get_temp_filename("camera_edge_preserve_keys.vmd")
+        result = self._export_bake_timeline(
+            output_path,
+            {
+                "current_model_root": None,
+                "require_target": False,
+                "require_current_model": False,
+                "export_format": "vmd",
+                "export_strategy": "preserve_keys",
+                "export_target": "camera",
+            },
+        )
+
+        self.assertTrue(result.succeeded, repr(result))
+        exported_data = VmdData().parse_file(output_path)
+        self.assertEqual(
+            [frame.frame_number for frame in exported_data.camera_frames],
+            [frame.frame_number for frame in source_data.camera_frames],
+        )
+        self.assertEqual(
+            [frame.interpolation for frame in exported_data.camera_frames],
+            [frame.interpolation for frame in source_data.camera_frames],
+        )
+
+        exported_samples = sample_vmd_camera_frames(
+            Path(output_path).read_bytes(),
+            start_frame=0.0,
+            frame_step=1.0,
+            frame_count=61,
+        )
+        self.assertIsNotNone(exported_samples, "mmd-anim could not sample the exported VMD")
+        self.assertEqual(len(exported_samples), len(source_samples))
+
+        for source, exported in zip(source_samples, exported_samples):
+            frame = source["frame"]
+            self.assertEqual(exported["frame"], frame)
+            self.assertAlmostEqual(exported["distance"], source["distance"], places=4)
+            self.assertAlmostEqual(exported["fov"], source["fov"], places=4)
+            self.assertEqual(exported["perspective"], source["perspective"])
+            for channel, actual, expected in zip(
+                "XYZ",
+                exported["position"],
+                source["position"],
+            ):
+                self.assertAlmostEqual(
+                    actual,
+                    expected,
+                    places=4,
+                    msg=f"position{channel} mismatch at VMD frame {frame}",
+                )
+            for channel, actual, expected in zip(
+                "XYZ",
+                exported["rotation"],
+                source["rotation"],
+            ):
+                angle_delta = (actual - expected + math.pi) % (2.0 * math.pi) - math.pi
+                self.assertAlmostEqual(
+                    angle_delta,
+                    0.0,
+                    places=4,
+                    msg=f"rotation{channel} mismatch at VMD frame {frame}",
+                )
 
     def test_namespaced_target_scopes_automatic_blendshape_discovery(self):
         hero_root = self._make_namespaced_keyed_blendshape("hero", "hero_morph")
