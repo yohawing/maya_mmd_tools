@@ -305,9 +305,9 @@ class MorphConverter:
                                 results.append(result)
                                 flip_impulse_morph_nodes.append(result["morph_node"])
                                 self.logger.debug(f"Successfully imported PMX 2.1 morph metadata: {morph.name}")
+                    except MorphWeldPlanError:
+                        raise
                     except Exception as e:
-                        if isinstance(e, MorphWeldPlanError):
-                            raise
                         self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
             finally:
                 self._flush_vertex_morph_name_mapping(template_ctx)
@@ -482,24 +482,27 @@ class MorphConverter:
                     ATTR_MMD_SOURCE_TO_LOCAL_INDICES,
                 )
                 local_count = int(cmds.polyEvaluate(mesh_node, vertex=True))
-                if not source_to_local or local_count < 0:
-                    raise MorphWeldPlanError("source-to-local mapping is empty or unreadable")
-                if any(local_index < -1 or local_index >= local_count for local_index in source_to_local):
-                    raise MorphWeldPlanError("source-to-local mapping contains an invalid local index")
-                mapped_locals = {local_index for local_index in source_to_local if local_index >= 0}
-                if mapped_locals != set(range(local_count)):
-                    raise MorphWeldPlanError("source-to-local mapping does not cover every local vertex")
-                return {
-                    source_index: int(local_index)
-                    for source_index, local_index in enumerate(source_to_local)
-                    if int(local_index) >= 0
-                }
-            except MorphWeldPlanError:
-                raise
             except Exception as exc:
                 raise MorphWeldPlanError(
                     f"failed to read source-to-local mapping: {exc}"
                 ) from exc
+            try:
+                valid = (
+                    bool(source_to_local)
+                    and local_count >= 0
+                    and all(-1 <= local_index < local_count for local_index in source_to_local)
+                    and {local_index for local_index in source_to_local if local_index >= 0}
+                    == set(range(local_count))
+                )
+            except (TypeError, ValueError):
+                valid = False
+            if not valid:
+                raise MorphWeldPlanError("source-to-local mapping is invalid")
+            return {
+                source_index: int(local_index)
+                for source_index, local_index in enumerate(source_to_local)
+                if int(local_index) >= 0
+            }
         try:
             if not cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mesh_node, exists=True):
                 return None
@@ -536,55 +539,28 @@ class MorphConverter:
 
         offsets: List[Dict[str, Any]] = []
         for offset_index, offset in enumerate(raw_offsets):
-            if not isinstance(offset, dict):
-                raise ValueError(f"Vertex morph {morph_index} offset {offset_index} must be a mapping")
-            unexpected_keys = set(offset) - {"vertex_index", "position_offset"}
-            if unexpected_keys:
-                raise ValueError(
-                    f"Vertex morph {morph_index} offset {offset_index} has unsupported fields: "
-                    f"{sorted(unexpected_keys)!r}"
+            valid = (
+                isinstance(offset, dict)
+                and set(offset) == {"vertex_index", "position_offset"}
+                and isinstance(offset.get("vertex_index"), int)
+                and not isinstance(offset.get("vertex_index"), bool)
+                and offset["vertex_index"] >= 0
+                and isinstance(offset.get("position_offset"), (list, tuple))
+                and len(offset["position_offset"]) == 3
+                and all(
+                    isinstance(component, (int, float))
+                    and not isinstance(component, bool)
+                    and math.isfinite(float(component))
+                    for component in offset["position_offset"]
                 )
-            if "vertex_index" not in offset:
-                raise ValueError(
-                    f"Vertex morph {morph_index} offset {offset_index} is missing vertex_index"
-                )
-            if "position_offset" not in offset:
-                raise ValueError(
-                    f"Vertex morph {morph_index} offset {offset_index} is missing position_offset"
-                )
-
-            vertex_index = offset["vertex_index"]
-            if isinstance(vertex_index, bool) or not isinstance(vertex_index, int) or vertex_index < 0:
-                raise ValueError(
-                    f"Vertex morph {morph_index} offset {offset_index} vertex_index "
-                    "must be a non-negative integer"
-                )
-
-            position_offset = offset["position_offset"]
-            if not isinstance(position_offset, (list, tuple)) or len(position_offset) != 3:
-                raise ValueError(
-                    f"Vertex morph {morph_index} offset {offset_index} position_offset "
-                    "must contain exactly three values"
-                )
-
-            normalized_position = []
-            for component_index, component in enumerate(position_offset):
-                if isinstance(component, bool) or not isinstance(component, (int, float)):
-                    raise ValueError(
-                        f"Vertex morph {morph_index} offset {offset_index} position_offset "
-                        f"component {component_index} must be a real number"
-                    )
-                component = float(component)
-                if not math.isfinite(component):
-                    raise ValueError(
-                        f"Vertex morph {morph_index} offset {offset_index} position_offset "
-                        f"component {component_index} must be finite"
-                    )
-                normalized_position.append(component)
+            )
+            if not valid:
+                raise ValueError(f"Vertex morph {morph_index} offset {offset_index} is invalid")
+            normalized_position = [float(component) for component in offset["position_offset"]]
 
             offsets.append(
                 {
-                    "vertex_index": vertex_index,
+                    "vertex_index": offset["vertex_index"],
                     "position_offset": normalized_position,
                 }
             )

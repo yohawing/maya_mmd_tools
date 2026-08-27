@@ -104,6 +104,25 @@ def test_mapping_fanout_applies_equivalent_delta_once_and_rejects_conflict():
         map_morph_deltas_to_local(conflicting, 3, {0: 0, 1: 0}, 1)
 
 
+def test_mapping_skips_high_source_absent_from_material_split_mesh():
+    morph = _morph(
+        PmxMorphType.VertexMorph,
+        [{"vertex_index": 7, "position_offset": (1.0, 0.0, 0.0)}],
+    )
+
+    assert map_morph_deltas_to_local(morph, 4, {0: 0}, 1) == {}
+
+
+def test_mapping_rejects_non_sequence_vector_payload():
+    morph = _morph(
+        PmxMorphType.VertexMorph,
+        [{"vertex_index": 0, "position_offset": {0: 1.0, 1: 2.0, 2: 3.0}}],
+    )
+
+    with pytest.raises(ValueError):
+        collect_morph_delta(morph, 5, 1)
+
+
 @pytest.mark.parametrize(
     "offset",
     [

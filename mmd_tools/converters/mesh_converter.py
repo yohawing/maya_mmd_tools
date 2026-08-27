@@ -1264,13 +1264,12 @@ class MeshConverter:
             # catch its unknown capability flag. Inspecting syntax first keeps
             # version-skew fallback warning-only and leaves topology untouched.
             help_text = cmds.help("mmdWeldUvSeamVertices")
-            if "-queryCapabilities" not in str(help_text):
-                raise RuntimeError("capability query flag is unavailable")
-            capabilities = command(queryCapabilities=True)
-            if isinstance(capabilities, str):
-                capabilities = [capabilities]
-            if isinstance(capabilities, (list, tuple)) and "sourceToLocalV1" in capabilities:
-                return True
+            if "-queryCapabilities" in str(help_text):
+                capabilities = command(queryCapabilities=True)
+                if isinstance(capabilities, str):
+                    capabilities = [capabilities]
+                if isinstance(capabilities, (list, tuple)) and "sourceToLocalV1" in capabilities:
+                    return True
         except Exception:
             pass
         self.logger.warning(

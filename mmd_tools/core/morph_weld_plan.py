@@ -13,19 +13,6 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 # PmxMorphType values.  Keeping these integers here avoids making this small
 # planner depend on either Maya or the parser package.
 VERTEX_INDEXED_MORPH_TYPES = frozenset({1, 3, 4, 5, 6, 7})
-_MORPH_TYPE_NAMES = {
-    "group": 0,
-    "vertex": 1,
-    "bone": 2,
-    "uv": 3,
-    "additional_uv1": 4,
-    "additional_uv2": 5,
-    "additional_uv3": 6,
-    "additional_uv4": 7,
-    "material": 8,
-    "flip": 9,
-    "impulse": 10,
-}
 
 
 class MorphWeldPlanError(ValueError):
@@ -33,47 +20,33 @@ class MorphWeldPlanError(ValueError):
 
 
 def _morph_type_value(morph: Any) -> int:
-    value = getattr(morph, "morph_type", morph.get("type") if isinstance(morph, Mapping) else None)
-    if isinstance(value, str):
-        try:
-            value = _MORPH_TYPE_NAMES[value.lower()]
-        except KeyError:
-            raise MorphWeldPlanError("unsupported vertex-indexed morph type: %s" % value)
-    if isinstance(value, bool):
-        raise MorphWeldPlanError("morph type must be an integer")
-    if not isinstance(value, int):
+    value = getattr(morph, "morph_type", None)
+    if isinstance(value, bool) or not isinstance(value, int):
         raise MorphWeldPlanError("morph type must be an integer")
     return int(value)
 
 
 def _offset_value(offset: Any, key: str, morph_index: int, offset_index: int) -> Sequence[Any]:
-    if not isinstance(offset, Mapping) or key not in offset:
-        raise MorphWeldPlanError(
-            "morph %d offset %d is missing %s" % (morph_index, offset_index, key)
-        )
-    value = offset[key]
-    if not isinstance(value, (list, tuple)):
-        raise MorphWeldPlanError("morph %d offset %d %s must be a sequence" % (morph_index, offset_index, key))
     expected = 3 if key == "position_offset" else 4
-    if len(value) != expected:
-        raise MorphWeldPlanError(
-            "morph %d offset %d %s must contain %d values"
-            % (morph_index, offset_index, key, expected)
-        )
-    result = []
-    for component in value:
-        if isinstance(component, bool):
-            raise MorphWeldPlanError("morph %d offset %d %s contains a bool" % (morph_index, offset_index, key))
-        try:
-            component = float(component)
-        except (TypeError, ValueError):
-            raise MorphWeldPlanError("morph %d offset %d %s contains a non-number" % (morph_index, offset_index, key))
-        if not math.isfinite(component):
-            raise MorphWeldPlanError("morph %d offset %d %s contains a non-finite value" % (morph_index, offset_index, key))
-        # Signed zero has no semantic effect on PMX deformation.  Normalize it
-        # so explicitly-zero and absent offsets share one exact signature.
-        result.append(0.0 if component == 0.0 else component)
-    return result
+    try:
+        value = offset[key]
+        if not isinstance(value, (list, tuple)):
+            invalid = True
+            result = ()
+        else:
+            result = tuple(float(component) for component in value)
+            invalid = (
+                len(value) != expected
+                or any(isinstance(component, bool) for component in value)
+                or not all(math.isfinite(component) for component in result)
+            )
+    except (KeyError, TypeError, ValueError):
+        invalid = True
+    if invalid:
+        raise MorphWeldPlanError("morph %d offset %d has invalid %s" % (morph_index, offset_index, key))
+    # Signed zero has no semantic effect on PMX deformation. Normalize it so
+    # explicitly-zero and absent offsets share one exact signature.
+    return tuple(0.0 if component == 0.0 else component for component in result)
 
 
 def _offsets_for_morph(morph: Any, morph_index: int, source_count: int) -> Dict[int, Tuple[float, ...]]:
@@ -81,7 +54,7 @@ def _offsets_for_morph(morph: Any, morph_index: int, source_count: int) -> Dict[
     if morph_type not in VERTEX_INDEXED_MORPH_TYPES:
         return {}
     value_key = "position_offset" if morph_type == 1 else "uv_offset"
-    offsets = getattr(morph, "offsets", morph.get("offsets", ()) if isinstance(morph, Mapping) else ())
+    offsets = getattr(morph, "offsets", ())
     if offsets is None:
         offsets = ()
     if not isinstance(offsets, (list, tuple)):
@@ -92,25 +65,29 @@ def _offsets_for_morph(morph: Any, morph_index: int, source_count: int) -> Dict[
     # validated before it is admitted to the plan.
     accumulated: Dict[int, List[float]] = {}
     for offset_index, offset in enumerate(offsets):
-        if not isinstance(offset, Mapping) or "vertex_index" not in offset:
-            raise MorphWeldPlanError("morph %d offset %d is missing vertex_index" % (morph_index, offset_index))
-        source_index = offset["vertex_index"]
-        if isinstance(source_index, bool):
-            raise MorphWeldPlanError("morph %d offset %d vertex_index must be an integer" % (morph_index, offset_index))
-        if not isinstance(source_index, int):
-            raise MorphWeldPlanError("morph %d offset %d vertex_index must be an integer" % (morph_index, offset_index))
-        source_index = int(source_index)
-        if source_index < 0 or source_index >= source_count:
+        try:
+            source_index = offset["vertex_index"]
+        except (KeyError, TypeError):
             raise MorphWeldPlanError(
-                "morph %d offset %d vertex_index %d is outside %d vertices"
-                % (morph_index, offset_index, source_index, source_count)
+                "morph %d contains an invalid %s offset" % (morph_index, value_key)
+            )
+        if (
+            isinstance(source_index, bool)
+            or not isinstance(source_index, int)
+            or source_index < 0
+            or source_index >= source_count
+        ):
+            raise MorphWeldPlanError(
+                "morph %d contains an invalid %s offset" % (morph_index, value_key)
             )
         values = _offset_value(offset, value_key, morph_index, offset_index)
         target = accumulated.setdefault(source_index, [0.0] * len(values))
         for component_index, component in enumerate(values):
             target[component_index] += component
             if not math.isfinite(target[component_index]):
-                raise MorphWeldPlanError("morph %d offset accumulation is non-finite" % morph_index)
+                raise MorphWeldPlanError(
+                    "morph %d contains an invalid %s offset" % (morph_index, value_key)
+                )
 
     return {
         source_index: tuple(0.0 if value == 0.0 else value for value in values)
@@ -156,19 +133,20 @@ def map_morph_deltas_to_local(
     accumulated deltas must be exactly equal; otherwise the weld is not
     representable by one blendShape point and this function fails closed.
     """
-    offsets = getattr(morph, "offsets", ()) or ()
-    source_max = -1
-    for offset in offsets:
-        if not isinstance(offset, Mapping) or "vertex_index" not in offset:
-            raise MorphWeldPlanError("morph %d offset is missing vertex_index" % morph_index)
-        source_index = offset["vertex_index"]
-        if isinstance(source_index, bool) or not isinstance(source_index, int):
-            raise MorphWeldPlanError("morph %d offset vertex_index must be an integer" % morph_index)
-        source_max = max(source_max, int(source_index))
     source_count = max(
         local_count,
         max(source_to_local.keys(), default=-1) + 1 if source_to_local else 0,
-        source_max + 1,
+        max(
+            (
+                offset.get("vertex_index", -1)
+                for offset in (getattr(morph, "offsets", ()) or ())
+                if isinstance(offset, Mapping)
+                and isinstance(offset.get("vertex_index"), int)
+                and not isinstance(offset.get("vertex_index"), bool)
+            ),
+            default=-1,
+        )
+        + 1,
     )
 
     mapped: Dict[int, Tuple[float, ...]] = {}
