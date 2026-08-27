@@ -585,9 +585,12 @@ class MayaMorphMetadataRepository:
                     )
                     source_index = source_indices[local_index]
                     if source_index in offsets:
-                        raise self._error(
-                            f"vertex morph {morph_index} maps source vertex {source_index} more than once"
-                        )
+                        if offsets[source_index] != pmx_delta:
+                            raise self._error(
+                                f"vertex morph {morph_index} maps source vertex "
+                                f"{source_index} to conflicting offsets"
+                            )
+                        continue
                     offsets[source_index] = pmx_delta
         if not target_seen:
             raise self._error(
