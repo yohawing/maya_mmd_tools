@@ -274,6 +274,7 @@ class TestVmdSceneCollector(MayaTestBase):
 
         self.assertTrue(result.succeeded, repr(result))
         parsed = VmdData().parse_file(output_path)
+        self.assertEqual(parsed.header.model_name, "カメラ・照明")
         self.assertEqual(
             [frame.frame_number for frame in parsed.camera_frames],
             # Maya film (24 fps) samples 1/2/3 map to VMD 1/2/4 at 30 fps.

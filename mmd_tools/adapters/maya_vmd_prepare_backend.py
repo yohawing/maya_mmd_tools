@@ -26,6 +26,7 @@ from ..validation.snapshot import fingerprint_payload
 _CAMERA_MARKER = "mmd_camera"
 _LIGHT_MARKER = "mmd_light"
 _BAKE_TIMELINE_EXPORT_STRATEGY = "bake_timeline"
+_CAMERA_LIGHT_VMD_MODEL_NAME = "カメラ・照明"
 
 
 @dataclass(frozen=True)
@@ -229,7 +230,11 @@ class MayaVmdExportBackend:
         options = self._resolve_camera_options(self._validated_options(request))
         target_model = self._resolve_target_model(options)
         target_identity = self._export_identity(options, target_model)
-        model_name = self._resolve_model_name(options, target_model or target_identity)
+        model_name = (
+            _CAMERA_LIGHT_VMD_MODEL_NAME
+            if self._scene_only_export_requested(options)
+            else self._resolve_model_name(options, target_model or target_identity)
+        )
         target_uuid = self._stable_uuid(target_identity)
         closure_started = time.perf_counter()
         records, topology = self._dependency_closure(target_model, options)
