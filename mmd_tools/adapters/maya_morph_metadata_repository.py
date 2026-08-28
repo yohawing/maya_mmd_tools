@@ -585,7 +585,18 @@ class MayaMorphMetadataRepository:
                     )
                     source_index = source_indices[local_index]
                     if source_index in offsets:
-                        if offsets[source_index] != pmx_delta:
+                        if not all(
+                            math.isclose(
+                                actual,
+                                expected,
+                                rel_tol=0.0,
+                                abs_tol=1.0e-7,
+                            )
+                            for actual, expected in zip(
+                                offsets[source_index],
+                                pmx_delta,
+                            )
+                        ):
                             raise self._error(
                                 f"vertex morph {morph_index} maps source vertex "
                                 f"{source_index} to conflicting offsets"

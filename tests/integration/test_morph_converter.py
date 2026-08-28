@@ -908,6 +908,73 @@ class TestMorphConverter(MayaTestBase):
         self.assertIn("mat1_only", mesh_b_aliases)
         self.assertNotIn("mat0_only", mesh_b_aliases)
 
+    def test_material_split_empty_vertex_morph_keeps_single_destination(self):
+        """空の vertex morph は material split mesh のいずれか一つにだけ作成する。"""
+        mesh_a = self._create_test_mesh()
+        mesh_b = self._create_test_mesh()
+        maya_attribute_utils.set_custom_attributes(
+            mesh_a,
+            {
+                "mmd_material_split_mesh": True,
+                "mmd_material_index": 0,
+            },
+        )
+        maya_attribute_utils.set_custom_attributes(
+            mesh_b,
+            {
+                "mmd_material_split_mesh": True,
+                "mmd_material_index": 1,
+            },
+        )
+
+        class FakeFace:
+            def __init__(self, indices):
+                self.indices = indices
+
+        class FakeMaterial:
+            face_count = 3
+
+        class FakeVertexMorph:
+            name = "empty_vertex_morph"
+            name_english = "empty_vertex_morph"
+            panel = 1
+            morph_type = PmxMorphType.VertexMorph
+            offsets = []
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [FakeFace([0, 1, 2]), FakeFace([0, 2, 3])],
+                "materials": [FakeMaterial(), FakeMaterial()],
+                "morphs": [FakeVertexMorph()],
+            },
+        )()
+
+        converter = MorphConverter()
+        result = converter.convert_pmx_morphs(fake_data, [mesh_a, mesh_b])
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 1)
+        self.assertEqual(len(result.get("blend_shape_nodes", [])), 1)
+        self.assertEqual(len(result.get("results", [])), 1)
+
+        root = cmds.group(empty=True, name="empty_vertex_morph_root")
+        controller = converter.build_morph_controller(fake_data, root, result)
+        destinations = cmds.listConnections(
+            f"{controller}.outputWeight[0]",
+            plugs=True,
+            destination=True,
+        ) or []
+        self.assertEqual(len(destinations), 1)
+        self.assertTrue(
+            destinations[0].startswith(f"{result['blend_shape_nodes'][0]}."),
+            destinations,
+        )
+
     def test_vertex_morph_metadata_rejects_malformed_offsets(self):
         """Malformed source offsets fail before the per-mesh preview path can skip them."""
         mesh = self._create_test_mesh()

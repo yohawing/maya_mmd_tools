@@ -1418,6 +1418,17 @@ def test_vertex_blendshape_offsets_deduplicate_identical_material_split_sources(
     ]
 
 
+def test_vertex_blendshape_offsets_deduplicate_material_split_rounding_noise() -> None:
+    cmds, backend = _vertex_scene(source_mapping=[0, 1])
+    _add_split_vertex_target(cmds, (1.0 + 5.0e-8, 2.0, 3.0))
+
+    metadata = list(backend.iter_morph_metadata("|root"))[0]
+
+    assert metadata["offsets"] == [
+        {"vertex_index": 1, "position_offset": [1.0, 2.0, -3.0]}
+    ]
+
+
 def test_vertex_blendshape_offsets_reject_conflicting_material_split_sources() -> None:
     cmds, backend = _vertex_scene(source_mapping=[0, 1])
     _add_split_vertex_target(cmds, (9.0, 2.0, 3.0))

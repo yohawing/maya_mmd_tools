@@ -197,6 +197,7 @@ class MorphConverter:
         converted_flip_impulse_morphs = set()
         material_vertex_sets = self._build_pmx_material_vertex_sets(pmx_data)
         skipped_vertex_morphs_by_material = 0
+        empty_vertex_morphs_converted = set()
 
         # Keep one semantic metadata node for every PMX vertex morph before
         # touching any mesh.  The blendShape target is the sole authority for
@@ -237,9 +238,18 @@ class MorphConverter:
                 for morph_index, morph in enumerate(pmx_data.morphs):
                     try:
                         if morph.morph_type == PmxMorphType.VertexMorph:
-                            if visible_vertex_indices is not None and not self._vertex_morph_affects_vertices(
-                                morph,
-                                visible_vertex_indices,
+                            is_empty_vertex_morph = not getattr(morph, "offsets", None)
+                            if (
+                                visible_vertex_indices is not None
+                                and is_empty_vertex_morph
+                                and morph_index in empty_vertex_morphs_converted
+                            ):
+                                skipped_vertex_morphs_by_material += 1
+                                continue
+                            if (
+                                visible_vertex_indices is not None
+                                and not is_empty_vertex_morph
+                                and not self._vertex_morph_affects_vertices(morph, visible_vertex_indices)
                             ):
                                 skipped_vertex_morphs_by_material += 1
                                 self.logger.debug(
@@ -255,6 +265,8 @@ class MorphConverter:
                             )
                             if result["success"]:
                                 results.append(result)
+                                if visible_vertex_indices is not None and is_empty_vertex_morph:
+                                    empty_vertex_morphs_converted.add(morph_index)
                                 if result["blend_shape_node"] not in blend_shape_nodes:
                                     blend_shape_nodes.append(result["blend_shape_node"])
                                 self.logger.debug(f"Successfully converted morph: {morph.name}")
