@@ -209,7 +209,7 @@
   },
   "messages": {
     "vmd_bake_export_help": "現在のタイムラインをベイクしてアニメーションを書き出します。範囲指定時は指定範囲だけを対象にします。",
-    "vpd_current_pose_help": "現在フレームで評価されたCurrent Modelのポーズを書き出します。",
+    "vpd_current_pose_help": "現在フレームで評価された現在のモデルのポーズを書き出します。",
     "display_element_added": "{element_type}（PMXインデックス {index}）を追加しました",
     "no_display_element_candidates": "表示枠に追加できる要素がありません",
     "duplicate_display_element": "その要素は既にこの表示枠にあります",
