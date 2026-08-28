@@ -269,11 +269,16 @@ class TestVmdMorphRealGate(MayaTestBase):
         self.assertTrue(repeated.convert(
             motion, target_model=root_b, pmx_path=str(PMX), layer_name="MorphGateLayerAgain"
         ))
+        first_layer_curves = cmds.animLayer("MorphGateLayer", query=True, animCurves=True) or []
+        repeated_layer_curves = cmds.animLayer("MorphGateLayerAgain", query=True, animCurves=True) or []
+        self.assertEqual(len(first_layer_curves), len(plugs_b))
+        self.assertEqual(len(repeated_layer_curves), len(plugs_b))
+        self.assertTrue(set(first_layer_curves).isdisjoint(repeated_layer_curves))
         for plug in plugs_b.values():
             direct_curves = cmds.listConnections(
                 plug, source=True, destination=False, type="animCurve"
             ) or []
-            self.assertEqual(len(direct_curves), 1)
+            self.assertEqual(direct_curves, [])
             self.assertEqual(cmds.keyframe(plug, query=True, timeChange=True), [0.0, 10.0])
 
         print(

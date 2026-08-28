@@ -8,6 +8,7 @@ run from Nox on Windows, macOS, and the Ubuntu GitHub Actions runner.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import re
 import shutil
@@ -351,10 +352,14 @@ def _validate_archive_contract(
         for platform_name in manifest["platform_policy"]:
             platform = manifest["platforms"][platform_name]
             native_runtime = PurePosixPath(platform["native_runtime"])
-            if not _archive_has(names, archive_root, native_runtime) or f"{archive_root}/{native_runtime.as_posix()}" not in names:
+            native_runtime_name = f"{archive_root}/{native_runtime.as_posix()}"
+            native_runtime_sha256 = None
+            if not _archive_has(names, archive_root, native_runtime) or native_runtime_name not in names:
                 errors.append(f"{platform_name} native runtime missing: {native_runtime.as_posix()}")
-            elif archive.getinfo(f"{archive_root}/{native_runtime.as_posix()}").file_size == 0:
+            elif archive.getinfo(native_runtime_name).file_size == 0:
                 errors.append(f"{platform_name} native runtime is empty: {native_runtime.as_posix()}")
+            else:
+                native_runtime_sha256 = hashlib.sha256(archive.read(native_runtime_name)).hexdigest()
             per_version: Dict[str, Any] = {}
             for maya_version in manifest["maya_versions"]:
                 plugin = PurePosixPath(str(platform["plugin"]).format(maya_version=maya_version))
@@ -366,6 +371,14 @@ def _validate_archive_contract(
                         errors.append(f"{platform_name} Maya {maya_version} Release {artifact} missing: {artifact_name}")
                     elif archive.getinfo(artifact_name).file_size == 0:
                         errors.append(f"{platform_name} Maya {maya_version} Release {artifact} is empty: {artifact_name}")
+                runtime_sha256 = None
+                if runtime_name in names and archive.getinfo(runtime_name).file_size > 0:
+                    runtime_sha256 = hashlib.sha256(archive.read(runtime_name)).hexdigest()
+                    if native_runtime_sha256 is not None and runtime_sha256 != native_runtime_sha256:
+                        errors.append(
+                            f"{platform_name} Maya {maya_version} runtime digest mismatch; "
+                            f"expected canonical {native_runtime_sha256}; observed {runtime_sha256}"
+                        )
                 if plugin_name in names:
                     plugin_bytes = archive.read(plugin_name)
                     observed_versions = _embedded_plugin_versions(
@@ -397,6 +410,7 @@ def _validate_archive_contract(
                     per_version[maya_version] = {
                         "plugin": plugin.as_posix(),
                         "runtime": runtime.as_posix(),
+                        "runtime_sha256": runtime_sha256,
                         "static_version_marker": {
                             "status": marker_status,
                             "observed_versions": distinct_versions,
@@ -407,6 +421,7 @@ def _validate_archive_contract(
                     }
             platform_evidence[platform_name] = {
                 "native_runtime": native_runtime.as_posix(),
+                "native_runtime_sha256": native_runtime_sha256,
                 "maya": per_version,
             }
         checks["platform_artifacts"] = platform_evidence

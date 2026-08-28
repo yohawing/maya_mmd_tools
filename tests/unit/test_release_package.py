@@ -75,13 +75,14 @@ class ReleasePackageTest(unittest.TestCase):
         self._write("plug-ins/mmd_tools_plugin.py", "# plugin\n")
         for platform_name in manifest["platform_policy"]:
             platform_policy = manifest["platforms"][platform_name]
-            self._write(platform_policy["native_runtime"], b"native-runtime")
+            runtime_bytes = f"{platform_name}-runtime".encode("ascii")
+            self._write(platform_policy["native_runtime"], runtime_bytes)
             for maya in manifest["maya_versions"]:
                 self._write(
                     platform_policy["plugin"].format(maya_version=maya),
                     f"fixture\0{self.version}\0Any\0toolchain 3.11.3".encode("ascii"),
                 )
-                self._write(platform_policy["runtime"].format(maya_version=maya), b"plugin-runtime")
+                self._write(platform_policy["runtime"].format(maya_version=maya), runtime_bytes)
         self._write("resources/icons/icon.txt", "optional\n")
         self._write("mmd_tools/__pycache__/leak.pyc", b"cache")
         self._write("mmd_tools/build/leak.txt", b"build")
@@ -128,6 +129,16 @@ class ReleasePackageTest(unittest.TestCase):
         marker = report["checks"]["platform_artifacts"]["windows"]["maya"]["2024"]["static_version_marker"]
         self.assertEqual(marker["status"], "matched")
         self.assertEqual(marker["observed_versions"], [self.version])
+
+    def test_mismatched_runtime_copy_fails_validation(self):
+        manifest = package.load_manifest(self.manifest_path)
+        mismatched = self.root / manifest["platforms"]["windows"]["runtime"].format(maya_version="2024")
+        mismatched.write_bytes(b"different-runtime")
+        with self.assertRaisesRegex(package.PackageValidationError, "windows Maya 2024 runtime digest mismatch"):
+            self._build()
+        report = json.loads((self.root / "build/reports/release_package.json").read_text(encoding="utf-8"))
+        artifacts = report["checks"]["platform_artifacts"]["windows"]
+        self.assertNotEqual(artifacts["native_runtime_sha256"], artifacts["maya"]["2024"]["runtime_sha256"])
 
     def test_stale_release_plugin_version_fails_validation(self):
         manifest = package.load_manifest(self.manifest_path)
