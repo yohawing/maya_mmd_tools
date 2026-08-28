@@ -21,6 +21,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
+    ATTR_MMD_SOURCE_TO_LOCAL_INDICES,
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
 )
 from mmd_tools.core.morph_metadata_reader import PMX_MORPH_TYPE_NAMES
@@ -33,6 +34,7 @@ from mmd_tools.core.morph_topology import (
     serialize_group_topology,
 )
 from mmd_tools.core.pmx_data.morph import PmxMorphType
+from mmd_tools.core.morph_delta_mapping import MorphDeltaMappingError, map_morph_deltas_to_local
 from mmd_tools.converters.morph_scene_metadata import (
     iter_morph_network_metadata,
     read_blendshape_morph_entry_strings,
@@ -195,6 +197,7 @@ class MorphConverter:
         converted_flip_impulse_morphs = set()
         material_vertex_sets = self._build_pmx_material_vertex_sets(pmx_data)
         skipped_vertex_morphs_by_material = 0
+        empty_vertex_morphs_converted = set()
 
         # Keep one semantic metadata node for every PMX vertex morph before
         # touching any mesh.  The blendShape target is the sole authority for
@@ -235,9 +238,18 @@ class MorphConverter:
                 for morph_index, morph in enumerate(pmx_data.morphs):
                     try:
                         if morph.morph_type == PmxMorphType.VertexMorph:
-                            if visible_vertex_indices is not None and not self._vertex_morph_affects_vertices(
-                                morph,
-                                visible_vertex_indices,
+                            is_empty_vertex_morph = not getattr(morph, "offsets", None)
+                            if (
+                                visible_vertex_indices is not None
+                                and is_empty_vertex_morph
+                                and morph_index in empty_vertex_morphs_converted
+                            ):
+                                skipped_vertex_morphs_by_material += 1
+                                continue
+                            if (
+                                visible_vertex_indices is not None
+                                and not is_empty_vertex_morph
+                                and not self._vertex_morph_affects_vertices(morph, visible_vertex_indices)
                             ):
                                 skipped_vertex_morphs_by_material += 1
                                 self.logger.debug(
@@ -253,6 +265,8 @@ class MorphConverter:
                             )
                             if result["success"]:
                                 results.append(result)
+                                if visible_vertex_indices is not None and is_empty_vertex_morph:
+                                    empty_vertex_morphs_converted.add(morph_index)
                                 if result["blend_shape_node"] not in blend_shape_nodes:
                                     blend_shape_nodes.append(result["blend_shape_node"])
                                 self.logger.debug(f"Successfully converted morph: {morph.name}")
@@ -303,6 +317,8 @@ class MorphConverter:
                                 results.append(result)
                                 flip_impulse_morph_nodes.append(result["morph_node"])
                                 self.logger.debug(f"Successfully imported PMX 2.1 morph metadata: {morph.name}")
+                    except MorphDeltaMappingError:
+                        raise
                     except Exception as e:
                         self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
             finally:
@@ -462,10 +478,44 @@ class MorphConverter:
             return None
 
     def _get_mesh_source_vertex_map(self, mesh_node: str) -> Optional[Dict[int, int]]:
-        """Return original PMX vertex index to local mesh vertex index mapping."""
+        """Return original PMX vertex index to local mesh vertex index mapping.
+
+        New meshes store a source-sized array so several PMX sources can point
+        to one Maya vertex and material-split meshes can mark absent sources
+        with ``-1``. Older scenes retain the local-to-source compatibility
+        array and are still readable.
+        """
+        if not cmds.objExists(mesh_node):
+            return None
+        if cmds.attributeQuery(ATTR_MMD_SOURCE_TO_LOCAL_INDICES, node=mesh_node, exists=True):
+            try:
+                source_to_local = maya_attribute_utils.get_int_array_attribute(
+                    mesh_node,
+                    ATTR_MMD_SOURCE_TO_LOCAL_INDICES,
+                )
+                local_count = int(cmds.polyEvaluate(mesh_node, vertex=True))
+            except Exception as exc:
+                raise MorphDeltaMappingError(
+                    f"failed to read source-to-local mapping: {exc}"
+                ) from exc
+            try:
+                valid = (
+                    bool(source_to_local)
+                    and local_count >= 0
+                    and all(-1 <= local_index < local_count for local_index in source_to_local)
+                    and {local_index for local_index in source_to_local if local_index >= 0}
+                    == set(range(local_count))
+                )
+            except (TypeError, ValueError):
+                valid = False
+            if not valid:
+                raise MorphDeltaMappingError("source-to-local mapping is invalid")
+            return {
+                source_index: int(local_index)
+                for source_index, local_index in enumerate(source_to_local)
+                if int(local_index) >= 0
+            }
         try:
-            if not cmds.objExists(mesh_node):
-                return None
             if not cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mesh_node, exists=True):
                 return None
             source_indices = maya_attribute_utils.get_int_array_attribute(mesh_node, ATTR_MMD_SOURCE_VERTEX_INDICES)
@@ -501,55 +551,28 @@ class MorphConverter:
 
         offsets: List[Dict[str, Any]] = []
         for offset_index, offset in enumerate(raw_offsets):
-            if not isinstance(offset, dict):
-                raise ValueError(f"Vertex morph {morph_index} offset {offset_index} must be a mapping")
-            unexpected_keys = set(offset) - {"vertex_index", "position_offset"}
-            if unexpected_keys:
-                raise ValueError(
-                    f"Vertex morph {morph_index} offset {offset_index} has unsupported fields: "
-                    f"{sorted(unexpected_keys)!r}"
+            valid = (
+                isinstance(offset, dict)
+                and set(offset) == {"vertex_index", "position_offset"}
+                and isinstance(offset.get("vertex_index"), int)
+                and not isinstance(offset.get("vertex_index"), bool)
+                and offset["vertex_index"] >= 0
+                and isinstance(offset.get("position_offset"), (list, tuple))
+                and len(offset["position_offset"]) == 3
+                and all(
+                    isinstance(component, (int, float))
+                    and not isinstance(component, bool)
+                    and math.isfinite(float(component))
+                    for component in offset["position_offset"]
                 )
-            if "vertex_index" not in offset:
-                raise ValueError(
-                    f"Vertex morph {morph_index} offset {offset_index} is missing vertex_index"
-                )
-            if "position_offset" not in offset:
-                raise ValueError(
-                    f"Vertex morph {morph_index} offset {offset_index} is missing position_offset"
-                )
-
-            vertex_index = offset["vertex_index"]
-            if isinstance(vertex_index, bool) or not isinstance(vertex_index, int) or vertex_index < 0:
-                raise ValueError(
-                    f"Vertex morph {morph_index} offset {offset_index} vertex_index "
-                    "must be a non-negative integer"
-                )
-
-            position_offset = offset["position_offset"]
-            if not isinstance(position_offset, (list, tuple)) or len(position_offset) != 3:
-                raise ValueError(
-                    f"Vertex morph {morph_index} offset {offset_index} position_offset "
-                    "must contain exactly three values"
-                )
-
-            normalized_position = []
-            for component_index, component in enumerate(position_offset):
-                if isinstance(component, bool) or not isinstance(component, (int, float)):
-                    raise ValueError(
-                        f"Vertex morph {morph_index} offset {offset_index} position_offset "
-                        f"component {component_index} must be a real number"
-                    )
-                component = float(component)
-                if not math.isfinite(component):
-                    raise ValueError(
-                        f"Vertex morph {morph_index} offset {offset_index} position_offset "
-                        f"component {component_index} must be finite"
-                    )
-                normalized_position.append(component)
+            )
+            if not valid:
+                raise ValueError(f"Vertex morph {morph_index} offset {offset_index} is invalid")
+            normalized_position = [float(component) for component in offset["position_offset"]]
 
             offsets.append(
                 {
-                    "vertex_index": vertex_index,
+                    "vertex_index": offset["vertex_index"],
                     "position_offset": normalized_position,
                 }
             )
@@ -1075,7 +1098,11 @@ class MorphConverter:
             # リセット用 setPoints + getPoints を完全に排除
             target_points_start = time.perf_counter()
             target_points = self._compute_target_points(
-                template_ctx["base_points"], morph, template_ctx["source_to_local"], self.scale,
+                template_ctx["base_points"],
+                morph,
+                template_ctx["source_to_local"],
+                self.scale,
+                morph_index=morph_index,
             )
             template_ctx["mesh_fn"].setPoints(target_points, om.MSpace.kObject)
             self._add_profile_time("target_points_sec", target_points_start)
@@ -1102,7 +1129,12 @@ class MorphConverter:
             maya_attribute_utils.set_attribute(target_mesh, "visibility", 0, "bool")
             source_to_local = self._get_mesh_source_vertex_map(mesh_node)
             target_points_start = time.perf_counter()
-            self._apply_vertex_offsets_pmx(target_mesh, morph, source_to_local=source_to_local)
+            self._apply_vertex_offsets_pmx(
+                target_mesh,
+                morph,
+                source_to_local=source_to_local,
+                morph_index=morph_index,
+            )
             self._add_profile_time("target_points_sec", target_points_start)
             blend_shape_node = maya_mesh_utils.find_or_create_blendshape_node(mesh_node)
             target_count = cmds.blendShape(blend_shape_node, query=True, target=True)
@@ -1165,30 +1197,45 @@ class MorphConverter:
         }
 
     @staticmethod
+    def _mapped_vertex_morph_deltas(
+        morph,
+        morph_index: int,
+        source_to_local: Optional[Dict[int, int]],
+        local_count: int,
+    ) -> Dict[int, tuple]:
+        """Map sparse PMX deltas once per Maya vertex.
+
+        A UV-seam weld may map several PMX sources to one local vertex. Those
+        sources are safe only when this morph's accumulated deltas are exactly
+        equal; applying both would double the deformation, while choosing one
+        would hide a malformed conflict.
+        """
+        return map_morph_deltas_to_local(
+            morph,
+            morph_index,
+            source_to_local,
+            local_count,
+        )
+
+    @staticmethod
     def _compute_target_points(
         base_points: om.MPointArray,
         morph,
         source_to_local: Optional[Dict[int, int]],
         scale: float = 1.0,
+        *,
+        morph_index: int = 0,
     ) -> om.MPointArray:
         """base_points + morph offsets → 新しい MPointArray を返す（メッシュ操作なし）。"""
         points = om.MPointArray(base_points)
         n_points = len(points)
-        if not hasattr(morph, "offsets"):
-            return points
-        for offset in morph.offsets:
-            if "vertex_index" not in offset or "position_offset" not in offset:
-                continue
-            src_vi = int(offset["vertex_index"])
-            if source_to_local is not None:
-                vi = source_to_local.get(src_vi)
-                if vi is None:
-                    continue
-            else:
-                vi = src_vi
-            if vi < n_points:
-                pos = offset["position_offset"]
-                points[vi] += MorphConverter._pmx_vertex_offset_to_maya_vector(pos, scale)
+        for local_index, pos in MorphConverter._mapped_vertex_morph_deltas(
+            morph,
+            morph_index,
+            source_to_local,
+            n_points,
+        ).items():
+            points[local_index] += MorphConverter._pmx_vertex_offset_to_maya_vector(pos, scale)
         return points
 
     @staticmethod
@@ -1203,7 +1250,14 @@ class MorphConverter:
         if target and cmds.objExists(target):
             cmds.delete(target)
 
-    def _apply_vertex_offsets_pmx(self, mesh_node: str, morph, source_to_local: Optional[Dict[int, int]] = None):
+    def _apply_vertex_offsets_pmx(
+        self,
+        mesh_node: str,
+        morph,
+        source_to_local: Optional[Dict[int, int]] = None,
+        *,
+        morph_index: int = 0,
+    ):
         """PMXの頂点オフセットを適用"""
         # MSelectionListを使用してDAGパスを取得
         sel_list = om.MSelectionList()
@@ -1216,20 +1270,13 @@ class MorphConverter:
         # 現在の頂点位置を取得
         points = mesh_fn.getPoints(om.MSpace.kObject)
 
-        # モーフオフセットを適用
-        if hasattr(morph, "offsets"):
-            for offset in morph.offsets:
-                if "vertex_index" in offset and "position_offset" in offset:
-                    source_vertex_index = int(offset["vertex_index"])
-                    if source_to_local is not None:
-                        if source_vertex_index not in source_to_local:
-                            continue
-                        vertex_index = source_to_local[source_vertex_index]
-                    else:
-                        vertex_index = source_vertex_index
-                    offset_pos = offset["position_offset"]
-                    if vertex_index < len(points):
-                        points[vertex_index] += self._pmx_vertex_offset_to_maya_vector(offset_pos, self.scale)
+        for vertex_index, offset_pos in self._mapped_vertex_morph_deltas(
+            morph,
+            morph_index,
+            source_to_local,
+            len(points),
+        ).items():
+            points[vertex_index] += self._pmx_vertex_offset_to_maya_vector(offset_pos, self.scale)
 
         # 変更された頂点位置を設定
         mesh_fn.setPoints(points, om.MSpace.kObject)

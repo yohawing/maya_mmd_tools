@@ -76,6 +76,10 @@ ATTR_MMD_TOON_TEXTURE_INDEX = "mmd_toon_texture_index"
 ATTR_MMD_TOON_PATH = "mmd_toon_path"
 ATTR_MMD_MATERIAL_INDEX = "mmd_material_index"
 ATTR_MMD_SOURCE_VERTEX_INDICES = "mmd_source_vertex_indices"
+# Full PMX-source to Maya-local mapping.  Entries are local vertex indices and
+# -1 denotes a source vertex absent from a material-split mesh.  The legacy
+# local-to-source attribute above remains the compatibility representation.
+ATTR_MMD_SOURCE_TO_LOCAL_INDICES = "mmd_source_to_local_indices"
 ATTR_MMD_ADDITIONAL_UVS_JSON = "mmd_additional_uvs_json"
 ATTR_MMD_PMX_ADDITIONAL_UV_COUNT = "mmd_pmx_additional_uv_count"
 ATTR_MMD_PMX_SOFT_BODY_COUNT = "mmd_pmx_soft_body_count"

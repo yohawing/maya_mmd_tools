@@ -68,6 +68,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SHARED_TOON_FLAG,
     ATTR_MMD_SHININESS,
     ATTR_MMD_SPECULAR_COLOR,
+    ATTR_MMD_SOURCE_TO_LOCAL_INDICES,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
     ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_SPHERE_PATH,
@@ -148,6 +149,43 @@ def _mesh_source_vertex_indices(
             result.append(value)
         return result
     return list(range(vertex_count))
+
+
+def _mesh_source_vertex_aliases(
+    transform: str,
+    shape: str,
+    vertex_count: int,
+) -> list[list[int]]:
+    """Return every imported PMX source represented by each Maya vertex."""
+
+    for node in (transform, shape):
+        if not cmds.attributeQuery(ATTR_MMD_SOURCE_TO_LOCAL_INDICES, node=node, exists=True):
+            continue
+        values = cmds.getAttr(f"{node}.{ATTR_MMD_SOURCE_TO_LOCAL_INDICES}")
+        if not isinstance(values, (list, tuple)):
+            raise ValueError(
+                f"{node}.{ATTR_MMD_SOURCE_TO_LOCAL_INDICES} is not an integer array"
+            )
+        aliases = [[] for _ in range(vertex_count)]
+        for source_index, local_index in enumerate(values):
+            if (
+                isinstance(local_index, bool)
+                or not isinstance(local_index, int)
+                or local_index < -1
+                or local_index >= vertex_count
+            ):
+                raise ValueError(
+                    f"{node}.{ATTR_MMD_SOURCE_TO_LOCAL_INDICES} contains an invalid local index"
+                )
+            if local_index >= 0:
+                aliases[local_index].append(source_index)
+        if any(not source_indices for source_indices in aliases):
+            raise ValueError(
+                f"{node}.{ATTR_MMD_SOURCE_TO_LOCAL_INDICES} does not cover every Maya vertex"
+            )
+        return aliases
+
+    return [[source_index] for source_index in _mesh_source_vertex_indices(transform, shape, vertex_count)]
 
 
 def _get_model_name(node: str) -> str:
@@ -1268,6 +1306,7 @@ def _remap_vertex_indexed_morph_offsets(
             continue
         remapped_morph = dict(morph)
         remapped_offsets = []
+        offset_by_output = {}
         for offset_index, offset in enumerate(morph.get("offsets", ())):
             source_index = offset.get("vertex_index") if isinstance(offset, dict) else None
             if isinstance(source_index, bool) or not isinstance(source_index, int):
@@ -1284,6 +1323,21 @@ def _remap_vertex_indexed_morph_offsets(
             for output_index in output_indices:
                 remapped_offset = dict(offset)
                 remapped_offset["vertex_index"] = output_index
+                previous = offset_by_output.get(output_index)
+                if previous is not None:
+                    previous_payload = {
+                        key: value for key, value in previous.items() if key != "vertex_index"
+                    }
+                    current_payload = {
+                        key: value for key, value in remapped_offset.items() if key != "vertex_index"
+                    }
+                    if previous_payload != current_payload:
+                        raise ValueError(
+                            f"morph {morph.get('name')!r} has conflicting offsets for "
+                            f"welded output vertex {output_index}"
+                        )
+                    continue
+                offset_by_output[output_index] = remapped_offset
                 remapped_offsets.append(remapped_offset)
         remapped_morph["offsets"] = remapped_offsets
         remapped.append(remapped_morph)
@@ -2225,6 +2279,11 @@ class ExportSceneCollector:
                 shape,
                 vertex_count,
             )
+            model_data["_source_vertex_aliases"] = _mesh_source_vertex_aliases(
+                transform,
+                shape,
+                vertex_count,
+            )
         soft_body_payload = _read_soft_body_payload(transform, shape)
         if soft_body_payload is not None:
             model_data["soft_bodies"] = soft_body_payload
@@ -2324,14 +2383,25 @@ class ExportSceneCollector:
                 raise ValueError(
                     f"mesh '{shape}' has invalid PMX source vertex provenance"
                 )
-            for local_index, source_index in enumerate(source_vertex_indices):
-                if isinstance(source_index, bool) or not isinstance(source_index, int) or source_index < 0:
+            source_vertex_aliases = mesh_data.get("_source_vertex_aliases")
+            if (
+                not isinstance(source_vertex_aliases, list)
+                or len(source_vertex_aliases) != len(mesh_vertices)
+            ):
+                source_vertex_aliases = [[source_index] for source_index in source_vertex_indices]
+            for local_index, source_indices in enumerate(source_vertex_aliases):
+                if not isinstance(source_indices, list) or not source_indices:
                     raise ValueError(
-                        f"mesh '{shape}' has invalid PMX source vertex provenance"
+                        f"mesh '{shape}' has invalid PMX source vertex aliases"
                     )
-                output_indices_by_source.setdefault(source_index, []).append(
-                    vertex_offset + local_index
-                )
+                for source_index in source_indices:
+                    if isinstance(source_index, bool) or not isinstance(source_index, int) or source_index < 0:
+                        raise ValueError(
+                            f"mesh '{shape}' has invalid PMX source vertex aliases"
+                        )
+                    output_indices_by_source.setdefault(source_index, []).append(
+                        vertex_offset + local_index
+                    )
 
             merged_vertices.extend(mesh_vertices)
             mesh_faces = [
