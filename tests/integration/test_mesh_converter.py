@@ -148,25 +148,25 @@ class TestMeshConverter(MayaTestBase):
             [expected_by_source[source_index] for source_index in payload["source_vertex_indices"]],
         )
 
-    def test_uv_seam_duplicates_are_welded_before_mesh_creation(self):
-        """Merge safe UV-split source vertices while retaining corner UV IDs."""
+    def test_uv_seam_duplicates_preserve_source_topology_without_cpp(self):
+        """Keep PMX source vertices when the optional C++ weld command is absent."""
         pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
         pmx_data = parse_pmx_file(pmx_file_path)
         root_group = cmds.group(empty=True, name="test_uv_weld_root")
 
         converter = MeshConverter(pmx_file_path)
         _mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data, root_group)
-        self.assertLess(
+        self.assertEqual(
             int(cmds.polyEvaluate(mesh_name, vertex=True)),
             len(pmx_data.vertices),
-            "UV-split duplicate source vertices were not welded",
+            "Python fallback unexpectedly changed PMX source topology",
         )
         self.assertEqual(
             int(cmds.polyEvaluate(mesh_name, face=True)),
             len(pmx_data.faces),
             "UV weld changed the imported polygon count",
         )
-        self.assertGreater(converter.profile["uv_welded_vertex_count"], 0)
+        self.assertEqual(converter.profile["uv_welded_vertex_count"], 0)
 
         selection = om.MSelectionList()
         selection.add(mesh_name)

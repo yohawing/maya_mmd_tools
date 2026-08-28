@@ -43,6 +43,7 @@ line-length = 128
 indent-width = 4
 target-version = "py310"
 fix = true
+extend-exclude = ["external/mmd-anim"]
 
 [tool.ruff.lint]
 # Ruff 0.16 expanded its implicit defaults substantially. Keep the established
