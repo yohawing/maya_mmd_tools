@@ -7,8 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-28
+
 ### Added
 - Added current-character pose export to VPD through the normal Export workflow, with model-scoped MMD identity checks, Shift-JIS validation, parse verification, and atomic publication.
+- Added VMD camera and light export for evaluated Maya cameras, including dense Bake Timeline export and Preserve Keys export for MMD CameraRig animation.
+
+### Changed
+- Updated the bundled `mmd-anim` runtime to v0.4.3 and limited extreme Bullet effective masses while preserving authored PMX mass values.
+- Added a non-blocking import warning for known legacy soft-constraint PMX physics patterns without changing their solver behavior.
+
+### Fixed
+- Routed normal VMD morph keys through the selected additive Animation Layer for both blendShape and Morph Controller paths.
+- Mirrored MMD joints and Control Rig controls from bind-space skin deltas, including asymmetric and oriented joint hierarchies.
+- Welded UV-seam vertices only when their Vertex, UV, and Additional UV morph signatures are equivalent, preserving morph and skinning boundaries.
 
 ## [0.7.0] - 2026-08-25
 
