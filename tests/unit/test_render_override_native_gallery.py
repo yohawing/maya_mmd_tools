@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-import tools.render_override_native_gallery as gallery
-import tools.render_override_visual_gate as gate
-import tools.render_override_vp2_ownership_e2e as vp2
+import tools.render_override.render_override_native_gallery as gallery
+import tools.render_override.render_override_visual_gate as gate
+import tools.render_override.render_override_vp2_ownership_e2e as vp2
 
 
 def test_publish_case_retains_oracle_native_flip_error_map(tmp_path, monkeypatch):

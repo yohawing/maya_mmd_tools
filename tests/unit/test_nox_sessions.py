@@ -166,7 +166,7 @@ class NoxSessionsTest(unittest.TestCase):
                     (
                         (
                             "python.exe",
-                            "tools/mmd_anim_binding_gate.py",
+                            "tools/gates/mmd_anim_binding_gate.py",
                             "--binding-root",
                             str(binding_dir),
                             "--runtime-library",

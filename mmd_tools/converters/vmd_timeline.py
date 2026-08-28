@@ -20,20 +20,6 @@ FPS_TIME_UNIT_MAPPING = {
 }
 
 
-def get_max_bone_frame(vmd_data: Any) -> int:
-    """Return the largest bone frame number present in VMD data."""
-    max_frame = 0
-    if not hasattr(vmd_data, "bone_frames"):
-        return max_frame
-
-    for frame_data in vmd_data.bone_frames:
-        if hasattr(frame_data, "frame_number"):
-            max_frame = max(max_frame, frame_data.frame_number)
-        else:
-            max_frame = max(max_frame, frame_data.get("frame_number", 0))
-    return max_frame
-
-
 def get_animation_frame_range(vmd_data: Any) -> tuple:
     """Return the inclusive VMD animation frame range across supported tracks."""
     min_frame = 0
@@ -87,7 +73,7 @@ def setup_timeline(converter_or_context: Union[Any, VmdTimelineContext], vmd_dat
     context = _resolve_timeline_context(converter_or_context)
     set_scene_fps(context.fps, context.logger)
 
-    max_frame = get_max_bone_frame(vmd_data)
+    _min_frame, max_frame = get_animation_frame_range(vmd_data)
     if max_frame > 0:
         max_time = context.vmd_frame_to_maya_time(max_frame)
         cmds.playbackOptions(min=0, max=max_time, animationStartTime=0, animationEndTime=max_time)

@@ -11,7 +11,10 @@ from .export_validator import ExportValidationIssue, ExportValidationReport
 
 
 VMD_EXPORT_BAKE_TIMELINE = "bake_timeline"
-VMD_EXPORT_STRATEGIES = frozenset({VMD_EXPORT_BAKE_TIMELINE})
+VMD_EXPORT_PRESERVE_KEYS = "preserve_keys"
+VMD_EXPORT_STRATEGIES = frozenset(
+    {VMD_EXPORT_BAKE_TIMELINE, VMD_EXPORT_PRESERVE_KEYS}
+)
 
 
 # The stream verifier intentionally never retains one issue per record.  A
@@ -160,9 +163,9 @@ def validate_vmd_data(
     frame_range: Optional[Tuple[int, int]] = None,
 ) -> ExportValidationReport:
     """Validate a normalized current-scene VMD payload."""
-    # The character scene is the sole export authority. Legacy callers may
-    # still pass a stale mode value, but it must never select another writer.
-    export_strategy = VMD_EXPORT_BAKE_TIMELINE
+    export_strategy = str(export_strategy or VMD_EXPORT_BAKE_TIMELINE).lower()
+    if export_strategy not in VMD_EXPORT_STRATEGIES:
+        export_strategy = VMD_EXPORT_BAKE_TIMELINE
     issues = []
     if not isinstance(vmd_data, VmdData):
         issues.append(
@@ -365,6 +368,9 @@ def verify_vmd_output(
     expected_counts: Optional[Mapping[str, int]] = None,
 ) -> ExportValidationReport:
     """Parse and structurally validate one temporary VMD output."""
+    normalized_strategy = str(export_strategy or VMD_EXPORT_BAKE_TIMELINE).lower()
+    if normalized_strategy not in VMD_EXPORT_STRATEGIES:
+        normalized_strategy = VMD_EXPORT_BAKE_TIMELINE
     try:
         vmd_data = VmdData().parse_file(file_path)
     except Exception as exc:
@@ -377,7 +383,7 @@ def verify_vmd_output(
                     f"VMD output could not be parsed: {type(exc).__name__}",
                 ),
             ),
-            mode=VMD_EXPORT_BAKE_TIMELINE,
+            mode=normalized_strategy,
         )
     report = validate_vmd_data(
         vmd_data,
@@ -512,7 +518,9 @@ def verify_vmd_output_streaming(
     present to have a complete count and complete records.  The stream writer
     emits all six canonical count fields, including an empty IK section.
     """
-    normalized_strategy = VMD_EXPORT_BAKE_TIMELINE
+    normalized_strategy = str(export_strategy or VMD_EXPORT_BAKE_TIMELINE).lower()
+    if normalized_strategy not in VMD_EXPORT_STRATEGIES:
+        normalized_strategy = VMD_EXPORT_BAKE_TIMELINE
     issues: List[ExportValidationIssue] = []
     metadata_names = frozenset(_STREAM_METADATA_NAMES.values())
     canonical_counts: Optional[Dict[str, int]] = None
@@ -897,6 +905,7 @@ def verify_vmd_output_streaming(
 
 __all__ = [
     "VMD_EXPORT_BAKE_TIMELINE",
+    "VMD_EXPORT_PRESERVE_KEYS",
     "VMD_EXPORT_STRATEGIES",
     "validate_vmd_data",
     "verify_vmd_output",

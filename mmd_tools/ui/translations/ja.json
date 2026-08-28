@@ -31,6 +31,8 @@
     "export_workflow": "エクスポート",
     "export_model": "モデル",
     "export_motion": "アニメーション",
+    "export_camera": "カメラ",
+    "export_pose": "ポーズ",
     "info": "情報",
     "material": "材質",
     "bone": "ボーン",
@@ -61,6 +63,8 @@
     "export_pmx": "モデルを書き出す",
     "validate_animation": "アニメーションを検証",
     "export_vmd": "アニメーションを書き出し",
+    "export_camera_vmd": "カメラを書き出し",
+    "export_vpd": "ポーズを書き出し",
     "apply": "適用",
     "ok": "OK",
     "cancel": "キャンセル",
@@ -205,6 +209,7 @@
   },
   "messages": {
     "vmd_bake_export_help": "現在のタイムラインをベイクしてアニメーションを書き出します。範囲指定時は指定範囲だけを対象にします。",
+    "vpd_current_pose_help": "現在フレームで評価された現在のモデルのポーズを書き出します。",
     "display_element_added": "{element_type}（PMXインデックス {index}）を追加しました",
     "no_display_element_candidates": "表示枠に追加できる要素がありません",
     "duplicate_display_element": "その要素は既にこの表示枠にあります",
@@ -314,6 +319,9 @@
     "morph_create_impulse_unsupported": "PMX 2.1 インパルスモーフは作成できません",
     "create_model_succeeded": "MMDモデルを作成しました: {root}",
     "create_model_failed": "MMDモデルの作成に失敗しました: {error}",
+    "create_camera_warning_title": "MMDカメラの作成",
+    "create_camera_succeeded": "MMDカメラを作成または選択しました: {camera}",
+    "create_camera_failed": "MMDカメラの作成に失敗しました: {error}",
     "changes_reset": "変更をリセットしました",
     "materials_load_failed": "マテリアルの読み込みに失敗しました: {error}",
     "material_authoring_unavailable": "このセッションではマテリアル編集を利用できません",
@@ -368,6 +376,8 @@
   },
   "options": {
     "vmd_export_timeline": "現在のタイムラインをVMD化",
+    "bake_timeline": "Bake Timeline",
+    "preserve_keys": "Preserve Keys",
     "none": "なし",
     "import_mesh": "メッシュをインポート",
     "import_skeleton": "スケルトンをインポート",
@@ -456,6 +466,8 @@
   },
   "checkboxes": {
     "vmd_bake_export": "ベイク書き出し",
+    "vmd_export_camera": "カメラ",
+    "vmd_export_light": "ライト",
     "use_namespace": "ネームスペースを使用",
     "custom_namespace": "カスタムnamespace:",
     "import_models": "モデルをインポート",
@@ -566,6 +578,7 @@
     "log_file": "ログファイル:",
     "command_port": "Command Port:",
     "export_format": "エクスポート形式:",
+    "export_strategy": "書き出し方法:",
     "transparency_mode": "透過モード:",
     "original_texture_path": "元テクスチャパス:",
     "name": "名前:",
@@ -605,6 +618,7 @@
     "new_mmd_model": "MMDモデルを新規作成",
     "create_mmd_model": "モデルを作成",
     "import_animation": "アニメーションをインポート",
+    "create_mmd_camera": "MMDカメラを作成",
     "export": "エクスポート",
     "auto_detect": "<自動検出>",
     "camera_motion": "Camera Motion",
@@ -783,6 +797,7 @@
     "writing_temporary_file": "一時ファイルを書き込み中",
     "finalizing": "最終処理中",
     "completed": "完了",
+    "cancelled": "キャンセル済み",
     "blocked": "ブロック済み"
   }
 }

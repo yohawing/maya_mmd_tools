@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools.model_selection_sync_benchmark import distribution
+from tools.probes.model_selection_sync_benchmark import distribution
 
 
 def test_distribution_empty_is_explicitly_unobserved():

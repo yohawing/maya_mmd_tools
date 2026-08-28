@@ -373,8 +373,15 @@ class ImportExportTab(BaseTab):
         # primary Import Motion action.
         anim_settings_layout.addWidget(self.clear_existing_motion_check)
 
+        animation_button_layout = QHBoxLayout()
         self.import_vmd_button = QPushButton(self.tr("import_animation", "actions"))
-        animation_layout.addRow(self.import_vmd_button)
+        self.create_mmd_camera_button = QPushButton(
+            self.tr("create_mmd_camera", "actions")
+        )
+        animation_button_layout.addWidget(self.import_vmd_button)
+        animation_button_layout.addWidget(self.create_mmd_camera_button)
+        animation_button_layout.addStretch()
+        animation_layout.addRow(animation_button_layout)
 
         self.animation_group.setLayout(animation_layout)
         right_layout.addWidget(self.animation_group)
@@ -761,6 +768,9 @@ class ImportExportTab(BaseTab):
         self.import_button.setText(self.tr("import_model", "actions"))
         self.new_model_button.setText(self.tr("new_mmd_model", "actions"))
         self.import_vmd_button.setText(self.tr("import_animation", "actions"))
+        self.create_mmd_camera_button.setText(
+            self.tr("create_mmd_camera", "actions")
+        )
 
         # Tab widget texts
         if hasattr(self, "animation_settings_group"):

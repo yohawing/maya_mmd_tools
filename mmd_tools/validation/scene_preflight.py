@@ -11,12 +11,18 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from .export_validator import ExportValidationIssue, ExportValidationReport
-from .vmd_validator import VMD_EXPORT_BAKE_TIMELINE
+from .vmd_validator import (
+    VMD_EXPORT_BAKE_TIMELINE,
+    VMD_EXPORT_PRESERVE_KEYS,
+    VMD_EXPORT_STRATEGIES,
+)
 
 
 MODEL_FORMATS = frozenset({"pmx"})
 VMD_FORMATS = frozenset({"vmd"})
-SUPPORTED_FORMATS = MODEL_FORMATS | VMD_FORMATS
+VPD_FORMATS = frozenset({"vpd"})
+SUPPORTED_FORMATS = MODEL_FORMATS | VMD_FORMATS | VPD_FORMATS
+VMD_EXPORT_TARGETS = frozenset({"character", "camera", "camera+light"})
 
 
 @dataclass(frozen=True)
@@ -64,9 +70,20 @@ def _normalize_format(options: Mapping[str, Any]) -> str:
 
 def _normalize_export_strategy(export_format: str, options: Mapping[str, Any]) -> str:
     """Resolve the semantic strategy for a VMD export request."""
+    if export_format == "vpd":
+        return "current_pose"
     if export_format != "vmd":
         return "model"
     return str(options.get("export_strategy") or VMD_EXPORT_BAKE_TIMELINE).lower()
+
+
+def _normalize_vmd_export_target(options: Mapping[str, Any]) -> Optional[str]:
+    """Return the explicit VMD target enum, defaulting to Character."""
+
+    if "export_target" not in options:
+        return "character"
+    value = str(options.get("export_target") or "").strip().lower()
+    return value or None
 
 
 def _resolve_target(options: Mapping[str, Any], scene_service: Any) -> Optional[str]:
@@ -158,6 +175,7 @@ class ScenePreflight:
         export_format = _normalize_format(options)
         export_strategy = _normalize_export_strategy(export_format, options)
         issues = []
+        export_target = _normalize_vmd_export_target(options) if export_format == "vmd" else None
         target = _resolve_target(options, self._scene_service)
         require_current_model = bool(options.get("require_current_model", False))
         require_target = bool(options.get("require_target", True)) or require_current_model
@@ -169,6 +187,43 @@ class ScenePreflight:
                     "export_format",
                     f"export format {export_format or 'empty'} is not supported by the export workflow",
                     details={"format": export_format or "empty"},
+                )
+            )
+        elif export_format == "vmd" and export_target not in VMD_EXPORT_TARGETS:
+            issues.append(
+                _issue(
+                    "EXPORT_OPTIONS_INVALID",
+                    "export_target",
+                    f"VMD export target {export_target or 'empty'} is not supported",
+                    "Choose Character, Camera, or Camera+Light.",
+                    details={"export_target": export_target},
+                )
+            )
+        elif export_format == "vmd" and export_strategy not in VMD_EXPORT_STRATEGIES:
+            issues.append(
+                _issue(
+                    "EXPORT_OPTIONS_INVALID",
+                    "export_strategy",
+                    f"VMD export strategy {export_strategy or 'empty'} is not supported",
+                    "Choose Bake Timeline or Preserve Keys.",
+                    details={"export_strategy": export_strategy},
+                )
+            )
+        elif (
+            export_format == "vmd"
+            and export_strategy == VMD_EXPORT_PRESERVE_KEYS
+            and export_target == "character"
+        ):
+            issues.append(
+                _issue(
+                    "EXPORT_OPTIONS_INVALID",
+                    "export_strategy",
+                    "Preserve Keys is available for Camera export only",
+                    "Use Bake Timeline for Character export.",
+                    details={
+                        "export_strategy": export_strategy,
+                        "export_target": export_target,
+                    },
                 )
             )
 
@@ -213,6 +268,16 @@ class ScenePreflight:
                         details={
                             "frame_range": list(frame_range) if frame_range is not None else None,
                         },
+                    )
+                )
+            elif export_format == "vmd" and export_strategy == VMD_EXPORT_PRESERVE_KEYS:
+                issues.append(
+                    _issue(
+                        "EXPORT_OPTIONS_INVALID",
+                        "frame_range",
+                        "Preserve Keys does not support Frame Range",
+                        "Disable Use Frame Range or use Bake Timeline.",
+                        details={"frame_range": list(frame_range)},
                     )
                 )
 
@@ -307,7 +372,9 @@ class ScenePreflight:
         # Ownership determines which animation path may be sampled. PMX model
         # export does not collect timeline motion, so an active authoring rig
         # must not block the model payload.
-        if export_format == "vmd":
+        if export_format == "vpd" or (
+            export_format == "vmd" and export_target == "character"
+        ):
             control_rig = (
                 ownership.get("control_rig")
                 if isinstance(ownership, Mapping)
@@ -321,7 +388,7 @@ class ScenePreflight:
                         _issue(
                             "OWNERSHIP_CONFLICT",
                             "ownership.control_rig",
-                            "Control Rig owns the authoring path, but its direct VMD export route could not be resolved",
+                            "Control Rig owns the authoring path, but its direct export route could not be resolved",
                             "Repair the Control Rig export mapping, or switch to MMD Rig only if direct export is not required.",
                             details={
                                 "owner": "control_rig",
@@ -369,6 +436,7 @@ class ScenePreflight:
             "schema_version": 1,
             "format": export_format or None,
             "export_strategy": export_strategy,
+            "export_target": export_target,
             "target_identity": target,
             "namespace": _namespace_for_target(target),
             "source_scene": str(source_scene) if source_scene else None,
@@ -391,7 +459,9 @@ class ScenePreflight:
 __all__ = [
     "MODEL_FORMATS",
     "VMD_FORMATS",
+    "VPD_FORMATS",
     "SUPPORTED_FORMATS",
+    "VMD_EXPORT_TARGETS",
     "ScenePreflight",
     "ScenePreflightResult",
 ]

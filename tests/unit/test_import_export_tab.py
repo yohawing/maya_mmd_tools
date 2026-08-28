@@ -121,6 +121,7 @@ class TestExportTabOutputPathResolution(unittest.TestCase):
         owner = export_tab.ExportTab.__new__(export_tab.ExportTab)
         owner.MODEL_PANE = "model"
         owner.MOTION_PANE = "motion"
+        owner.CAMERA_PANE = "camera"
         owner._maya_cmds = cmds
 
         page = export_tab._ExportPage.__new__(export_tab._ExportPage)
@@ -129,10 +130,21 @@ class TestExportTabOutputPathResolution(unittest.TestCase):
         page.export_format = "pmx" if pane == owner.MODEL_PANE else "vmd"
         page.output_path_edit = _FakeLineEdit(text)
         page.apply_scale_check = _FakeCheck(True)
+        page.light_export_check = _FakeCheck(False)
         page.frame_range_check = _FakeCheck(False)
         page.frame_start_spin = _FakeSpinBox(0)
         page.frame_end_spin = _FakeSpinBox(120)
         return page
+
+    def test_camera_request_selects_camera_and_light_without_current_model(self):
+        page = self._page("camera", "scene.vmd", _FakeWorkspaceCmds(root="."))
+        page.light_export_check.checked = True
+
+        request = page.build_request(None)
+
+        self.assertEqual(request.options["export_target"], "camera+light")
+        self.assertFalse(request.options["require_target"])
+        self.assertFalse(request.options["require_current_model"])
 
     def test_relative_model_and_motion_requests_use_set_project_root(self):
         with TemporaryDirectory() as directory:
@@ -207,10 +219,10 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
     def test_supported_languages_define_model_animation_and_format_actions(self):
         translation_dir = Path(export_tab.__file__).resolve().parents[1] / "translations"
         expected = {
-            "ja": ("モデル", "アニメーション", "モデルを書き出す", "アニメーションを書き出し"),
-            "en": ("Model", "Animation", "Export Model", "Export Animation"),
-            "zh_cn": ("模型", "动画", "导出模型", "导出动画"),
-            "zh_tw": ("模型", "動畫", "匯出模型", "匯出動畫"),
+            "ja": ("モデル", "アニメーション", "モデルを書き出す", "アニメーションを書き出し", "ポーズを書き出し"),
+            "en": ("Model", "Animation", "Export Model", "Export Animation", "Export Pose"),
+            "zh_cn": ("模型", "动画", "导出模型", "导出动画", "导出姿势"),
+            "zh_tw": ("模型", "動畫", "匯出模型", "匯出動畫", "匯出姿勢"),
         }
         for language, values in expected.items():
             translations = json.loads(
@@ -220,8 +232,11 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
             self.assertEqual(translations["tabs"]["export_motion"], values[1])
             self.assertEqual(translations["buttons"]["export_pmx"], values[2])
             self.assertEqual(translations["buttons"]["export_vmd"], values[3])
+            self.assertEqual(translations["buttons"]["export_vpd"], values[4])
             self.assertIn("vmd_export_timeline", translations["options"])
             self.assertIn("vmd_bake_export", translations["checkboxes"])
+            self.assertIn("vmd_export_camera", translations["checkboxes"])
+            self.assertIn("vmd_export_light", translations["checkboxes"])
             self.assertIn("vmd_bake_export_help", translations["messages"])
             self.assertEqual(
                 set(translations["export_status"]),
@@ -232,10 +247,13 @@ class TestExportTabNavigationAndActions(unittest.TestCase):
                     "writing_temporary_file",
                     "finalizing",
                     "completed",
+                    "cancelled",
                     "blocked",
                 },
             )
-            self.assertNotIn("export_strategy", translations["fields"])
+            self.assertIn("export_strategy", translations["fields"])
+            self.assertIn("bake_timeline", translations["options"])
+            self.assertIn("preserve_keys", translations["options"])
             self.assertIn("animation_timeline_bake", translations["export_progress"])
 
 

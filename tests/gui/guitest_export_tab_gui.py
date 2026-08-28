@@ -22,6 +22,7 @@ from mmd_tools.validation.export_validator import (
 from mmd_tools.ui.translations import UITranslator
 from mmd_tools.validation.vmd_validator import (
     VMD_EXPORT_BAKE_TIMELINE,
+    VMD_EXPORT_PRESERVE_KEYS,
 )
 from tests.common.ui_action_coverage import (
     ActionInvocationSpy,
@@ -123,23 +124,27 @@ class TestExportTabGUI(GuiTestBase):
         app.sendPostedEvents(tab, QtCore.QEvent.DeferredDelete)
         app.processEvents()
 
-    def test_model_animation_tabs_have_fixed_formats_and_no_target_or_format_widgets(self):
-        """Model/Animation tabs own PMX/VMD and expose no legacy selectors."""
+    def test_animation_page_switches_between_vmd_and_vpd(self):
+        """Animation owns both timeline VMD and current-frame VPD export."""
         tab = self._create_visible_tab()
         try:
             self.assertFalse(hasattr(tab, "target_combo"))
-            self.assertFalse(hasattr(tab, "format_combo"))
-            self.assertEqual(tab.pane_tabs.count(), 2)
+            self.assertTrue(hasattr(tab, "format_combo"))
+            self.assertEqual(tab.pane_tabs.count(), 3)
             self.assertEqual(tab.pane_tabs.tabText(0), "モデル")
             self.assertEqual(tab.pane_tabs.tabText(1), "アニメーション")
+            self.assertEqual(tab.pane_tabs.tabText(2), "カメラ")
             self.assertEqual(tab.export_button.text(), "モデルを書き出す")
             self.assertEqual(tab.build_request("model_ROOT").options["export_format"], "pmx")
             pane_spy = QtSignalInvocationSpy(
                 "ExportTab.pane_changed", tab.pane_tabs.currentChanged, tab.pane_tabs
             )
             tab.pane_tabs.setCurrentIndex(1)
+            pane_spy.stop()
             self.assertTrue(tab.bake_export_check.isChecked())
             self.assertFalse(tab.bake_export_check.isEnabled())
+            self.assertFalse(hasattr(tab._pages[tab.MOTION_PANE], "camera_export_check"))
+            self.assertFalse(hasattr(tab._pages[tab.MOTION_PANE], "light_export_check"))
             self.assertEqual(tab.export_button.text(), "アニメーションを書き出し")
             tab.bake_export_check.click()
             range_spy = QtSignalInvocationSpy(
@@ -158,14 +163,46 @@ class TestExportTabGUI(GuiTestBase):
             self.assertEqual(request.options["export_format"], "vmd")
             self.assertEqual(request.options["current_model_root"], "model_ROOT")
             self.assertEqual(request.options["export_strategy"], VMD_EXPORT_BAKE_TIMELINE)
+            self.assertEqual(request.options["export_target"], "character")
             self.assertTrue(tab.bake_export_check.isChecked())
             self.assertEqual(request.options["frame_range"], (12, 42))
+            tab.pane_tabs.setCurrentIndex(2)
+            self.assertEqual(tab.export_button.text(), "カメラを書き出し")
+            camera_request = tab.build_request(None)
+            self.assertEqual(camera_request.options["export_target"], "camera")
+            self.assertEqual(
+                camera_request.options["export_strategy"],
+                VMD_EXPORT_BAKE_TIMELINE,
+            )
+            self.assertFalse(camera_request.options["require_target"])
+            self.assertFalse(camera_request.options["require_current_model"])
+            self.assertIsNone(camera_request.options["current_model_root"])
+            tab.strategy_combo.setCurrentIndex(
+                tab.strategy_combo.findData(VMD_EXPORT_PRESERVE_KEYS)
+            )
+            self.assertEqual(
+                tab.build_request(None).options["export_strategy"],
+                VMD_EXPORT_PRESERVE_KEYS,
+            )
+            self.assertFalse(tab.frame_range_check.isEnabled())
+            self.assertFalse(tab.frame_range_check.isChecked())
+            tab.light_export_check.setChecked(True)
+            self.assertEqual(
+                tab.build_request(None).options["export_target"],
+                "camera+light",
+            )
+            tab.set_operation_active(True)
+            self.assertFalse(tab.cancel_button.isVisible())
+            self.assertFalse(tab.cancel_button.isEnabled())
+            tab.set_operation_active(False)
+            self.assertFalse(tab.cancel_button.isVisible())
+            tab.pane_tabs.setCurrentIndex(1)
             _emit_witness(
                 "export.pane_selector",
                 "selector",
                 "objectName=exportCategoryStack",
                 "QTest.setCurrentIndex(objectName=exportCategoryStack, animation)",
-                "model and animation panes expose fixed PMX/VMD formats",
+                "model, animation, and camera panes expose scoped export formats",
                 pane_spy,
                 tab.pane_tabs,
             )
@@ -196,6 +233,28 @@ class TestExportTabGUI(GuiTestBase):
                 end_spy,
                 tab.frame_end_spin,
             )
+            tab.pane_tabs.setCurrentIndex(1)
+            format_spy = QtSignalInvocationSpy(
+                "ExportTab.format_changed",
+                tab.format_combo.currentIndexChanged,
+                tab.format_combo,
+            )
+            tab.format_combo.setCurrentIndex(1)
+            pose_request = tab.build_request("model_ROOT")
+            self.assertEqual(pose_request.options["export_format"], "vpd")
+            self.assertEqual(pose_request.options["export_strategy"], "current_pose")
+            self.assertEqual(tab.export_button.text(), "ポーズを書き出し")
+            self.assertTrue(tab.pose_help.isVisible())
+            self.assertFalse(tab.frame_range_check.isVisible())
+            _emit_witness(
+                "export.motion_format",
+                "selector",
+                "objectName=motionExportFormat",
+                "QTest.setCurrentIndex(objectName=motionExportFormat, VPD)",
+                "VPD request uses current-pose export",
+                format_spy,
+                tab.format_combo,
+            )
         finally:
             self._delete_tab(tab)
 
@@ -225,6 +284,27 @@ class TestExportTabGUI(GuiTestBase):
 
             self.assertTrue(tab._pages[tab.MODEL_PANE].export_button.isEnabled())
             self.assertFalse(animation_page.export_button.isEnabled())
+        finally:
+            self._delete_tab(tab)
+
+    def test_vpd_operation_exposes_cancel_only_while_active(self):
+        tab = self._create_visible_tab()
+        try:
+            tab.pane_tabs.setCurrentIndex(1)
+            motion_page = tab._pages[tab.MOTION_PANE]
+            motion_page.format_combo.setCurrentIndex(1)
+            self.assertTrue(motion_page.cancel_button.isVisible())
+            self.assertFalse(motion_page.cancel_button.isEnabled())
+
+            tab.set_operation_active(True)
+            self.assertFalse(motion_page.export_button.isEnabled())
+            self.assertFalse(motion_page.format_combo.isEnabled())
+            self.assertTrue(motion_page.cancel_button.isEnabled())
+
+            tab.set_operation_active(False)
+            self.assertTrue(motion_page.export_button.isEnabled())
+            self.assertTrue(motion_page.format_combo.isEnabled())
+            self.assertFalse(motion_page.cancel_button.isEnabled())
         finally:
             self._delete_tab(tab)
 
@@ -405,20 +485,27 @@ class TestExportTabGUI(GuiTestBase):
                 "ベイク書き出し",
             )
             tab.pane_tabs.setCurrentIndex(0)
+            motion_page = tab._pages[tab.MOTION_PANE]
             self.assertEqual(
                 tab._model_form.labelForField(tab.apply_scale_check).text(),
                 "オプション",
             )
             self.assertEqual(
-                tab._motion_form.labelForField(tab.frame_range_check).text(),
+                motion_page._motion_form.labelForField(
+                    motion_page.frame_range_check
+                ).text(),
                 "範囲",
             )
             self.assertEqual(
-                tab._motion_form.labelForField(tab.frame_start_spin).text(),
+                motion_page._motion_form.labelForField(
+                    motion_page.frame_start_spin
+                ).text(),
                 "開始",
             )
             self.assertEqual(
-                tab._motion_form.labelForField(tab.frame_end_spin).text(),
+                motion_page._motion_form.labelForField(
+                    motion_page.frame_end_spin
+                ).text(),
                 "終了",
             )
             self.assertFalse(hasattr(tab.validation_console, "revalidate_button"))
@@ -462,15 +549,21 @@ class TestExportTabGUI(GuiTestBase):
                 "Options",
             )
             self.assertEqual(
-                tab._motion_form.labelForField(tab.frame_range_check).text(),
+                motion_page._motion_form.labelForField(
+                    motion_page.frame_range_check
+                ).text(),
                 "Range",
             )
             self.assertEqual(
-                tab._motion_form.labelForField(tab.frame_start_spin).text(),
+                motion_page._motion_form.labelForField(
+                    motion_page.frame_start_spin
+                ).text(),
                 "Start",
             )
             self.assertEqual(
-                tab._motion_form.labelForField(tab.frame_end_spin).text(),
+                motion_page._motion_form.labelForField(
+                    motion_page.frame_end_spin
+                ).text(),
                 "End",
             )
             self.assertFalse(hasattr(tab.validation_console, "revalidate_button"))

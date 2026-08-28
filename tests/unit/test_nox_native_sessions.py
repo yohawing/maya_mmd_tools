@@ -287,7 +287,7 @@ class NativeSessionsTest(unittest.TestCase):
             python_executable="python-test",
         )
         args, kwargs = session.runs[0]
-        self.assertEqual(args, ("python-test", str(Path("F:/repo/tools/local_asset_roundtrip.py")), "--maya", "2024", "--case", "miku"))
+        self.assertEqual(args, ("python-test", str(Path("F:/repo/tools/smoke/local_asset_roundtrip.py")), "--maya", "2024", "--case", "miku"))
         self.assertTrue(kwargs["external"])
 
     def test_native_export_smoke_removes_ffi_path_from_child_arguments(self):
@@ -359,11 +359,11 @@ class NativeSessionsTest(unittest.TestCase):
             "tests/cpp/smoke_runtime_node.py",
             "tests/cpp/focused_physics_solver_world_toggle.py",
             "tests/cpp/focused_vmd_batch_sampler.py",
-            "tools/maya_authoring_command_support_smoke.py",
-            "tools/maya_morph_binding_query_smoke.py",
-            "tools/maya_morph_weight_command_smoke.py",
-            "tools/maya_material_value_command_smoke.py",
-            "tools/maya_material_outline_command_smoke.py",
+            "tools/smoke/maya_authoring_command_support_smoke.py",
+            "tools/smoke/maya_morph_binding_query_smoke.py",
+            "tools/smoke/maya_morph_weight_command_smoke.py",
+            "tools/smoke/maya_material_value_command_smoke.py",
+            "tools/smoke/maya_material_outline_command_smoke.py",
         ])
         self.assertTrue(all(kwargs["env"] is env for _args, kwargs in session.runs))
 

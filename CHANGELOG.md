@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-28
+
+### Added
+- Added current-character pose export to VPD through the normal Export workflow, with model-scoped MMD identity checks, Shift-JIS validation, parse verification, and atomic publication.
+- Added VMD camera and light export for evaluated Maya cameras, including dense Bake Timeline export and Preserve Keys export for MMD CameraRig animation.
+
+### Changed
+- Updated the bundled `mmd-anim` runtime to v0.4.3 and limited extreme Bullet effective masses while preserving authored PMX mass values.
+- Added a non-blocking import warning for known legacy soft-constraint PMX physics patterns without changing their solver behavior.
+
+### Fixed
+- Routed normal VMD morph keys through the selected additive Animation Layer for both blendShape and Morph Controller paths.
+- Mirrored MMD joints and Control Rig controls from bind-space skin deltas, including asymmetric and oriented joint hierarchies.
+- Welded UV-seam vertices only when their Vertex, UV, and Additional UV morph signatures are equivalent, preserving morph and skinning boundaries.
+
 ## [0.7.0] - 2026-08-25
 
 ### Added
@@ -16,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Made PMD import-only and standardized PMX vertex export on BDEF4. SDEF/QDEF are imported as linear skin weights without retaining their deformation-specific auxiliary data.
 - Preserved the supported PMX 2.0 bone/IK metadata, additional UV channels, UV/additional-UV morph metadata, display data, materials, and physics data through export and fresh import. Maya UV-set deformation and complete visual parity remain outside the supported claim.
-- Standardized VMD export on a fixed timeline bake with the current character scene as the motion authority. Source-VMD keys, interpolation, and raw payload identity are not export contracts; camera, light, and self-shadow export remain unsupported.
+- Standardized VMD export on a fixed timeline bake with the current scene as the motion authority. Character export remains separate, while explicit camera and light targets export dense evaluated tracks with canonical camera interpolation; self-shadow export remains unsupported. Source-VMD keys, interpolation, and raw payload identity are not export contracts.
 ### Fixed
 - Exported current character motion from both Control Rig and non-Control scene routes, including validated Animation Layer and IK-owned motion.
 - Made Reset Pose restore animated rigs without authoring new keys.

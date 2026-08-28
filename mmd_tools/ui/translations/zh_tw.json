@@ -31,6 +31,7 @@
     "export_workflow": "匯出",
     "export_model": "模型",
     "export_motion": "動畫",
+    "export_pose": "姿勢",
     "info": "資訊",
     "material": "材質",
     "bone": "骨骼",
@@ -60,6 +61,7 @@
     "export_pmx": "匯出模型",
     "validate_animation": "驗證動畫",
     "export_vmd": "匯出動畫",
+    "export_vpd": "匯出姿勢",
     "ok": "確定",
     "apply": "套用",
     "cancel": "取消",
@@ -197,6 +199,7 @@
   },
   "messages": {
     "vmd_bake_export_help": "匯出動畫前烘焙目前時間軸。啟用範圍時，只評估指定範圍。",
+    "vpd_current_pose_help": "匯出目前影格評估的目前模型姿勢。",
     "import_success": "匯入完成",
     "create_model_unavailable": "此工作階段無法建立 MMD 模型",
     "create_model_templates_unavailable": "無法載入內建模型範本。請重新載入外掛程式後再試",
@@ -206,6 +209,9 @@
     "create_model_warning_title": "建立 MMD 模型",
     "create_model_succeeded": "已建立 MMD 模型：{root}",
     "create_model_failed": "建立 MMD 模型失敗：{error}",
+    "create_camera_warning_title": "建立 MMD 攝影機",
+    "create_camera_succeeded": "已建立或選取 MMD 攝影機：{camera}",
+    "create_camera_failed": "建立 MMD 攝影機失敗：{error}",
     "morph_create_vertex_mesh_required": "建立頂點變形至少需要一個屬於模型的網格",
     "morph_create_flip_unsupported": "無法建立 PMX 2.1 翻轉變形",
     "morph_create_impulse_unsupported": "無法建立 PMX 2.1 衝量變形",
@@ -270,6 +276,8 @@
   },
   "options": {
     "vmd_export_timeline": "匯出目前時間軸",
+    "bake_timeline": "Bake Timeline",
+    "preserve_keys": "Preserve Keys",
     "none": "無",
     "import_mesh": "匯入網格",
     "import_skeleton": "匯入骨骼",
@@ -358,6 +366,8 @@
   },
   "checkboxes": {
     "vmd_bake_export": "烘焙匯出",
+    "vmd_export_camera": "相機",
+    "vmd_export_light": "燈光",
     "use_namespace": "使用命名空間",
     "import_models": "匯入模型",
     "create_mmd_shaders": "建立MMD著色器",
@@ -458,6 +468,7 @@
     "log_file": "記錄檔案:",
     "command_port": "Command Port:",
     "export_format": "匯出格式:",
+    "export_strategy": "匯出方式:",
     "transparency_mode": "透明模式:",
     "original_texture_path": "原始紋理路徑:",
     "name": "名稱:",
@@ -497,6 +508,7 @@
     "new_mmd_model": "建立 MMD 模型",
     "create_mmd_model": "建立模型",
     "import_animation": "匯入動畫",
+    "create_mmd_camera": "建立 MMD 攝影機",
     "export": "匯出",
     "auto_detect": "<自動偵測>",
     "camera_motion": "Camera Motion",
@@ -674,6 +686,7 @@
     "writing_temporary_file": "正在寫入暫存檔",
     "finalizing": "正在完成",
     "completed": "已完成",
+    "cancelled": "已取消",
     "blocked": "已封鎖"
   }
 }

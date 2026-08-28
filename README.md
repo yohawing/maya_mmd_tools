@@ -33,14 +33,14 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 | Feature | Status | Notes |
 |---|---|---|
 | Bone animation | ℹ️ | Basic MMD rigs are supported, but complex mechanisms are not. Bake Export uses [mmd-anim](https://github.com/yohawing/mmd-anim). |
-| VPD | ✅ | Drag-and-drop import only |
+| VPD | ✅ | VPD files can be imported by drag-and-drop. |
 | Morph animation | ℹ️ | UV morphs are unverified. Material morphs work only with the DX11 or OpenGL shader. |
 | Camera animation | ✅ | Creates and keys `mmd_camera`. Lighting drives the `mmd_light` controller. |
 | IK on/off frames | ℹ️ | Supported for import and bake. Runtime bake applies the state to the final pose; rig mode keys `mmdCcdIk.enabled`. |
 | Physics | ℹ️ | Supports Bullet-based real-time physics and physics bake. Live evaluation is off by default and can be enabled from the Physics tab. Accuracy is still limited. |
 | HumanIK / retargeting | 🧪 | Experimental support for retargeting between imported MMD models. Try it from `MMD > HumanIK (Experimental)`. |
 | Control Rig | 🧪 | An optional Control Rig can be generated from the semi-standard bone layout. Restore and bake have known issues. |
-| Export | 🧪 | Exports the current character over the selected timeline. Only baked export is currently available. VMD camera, light, and self-shadow export are unsupported. |
+| Export | 🧪 | Supports VMD export for characters, cameras, and lights, as well as VPD export. Export is currently bake-only. Self-shadow is unsupported. |
 
 ## Known Limitations
 

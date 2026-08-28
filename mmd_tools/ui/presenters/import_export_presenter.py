@@ -29,6 +29,14 @@ from ..translations.translator import UITranslator
 logger = get_logger(__name__)
 
 
+def _get_or_create_mmd_camera():
+    """Load the Maya camera helper only when the user requests a camera."""
+
+    from ...converters.vmd_camera_animation import get_or_create_camera
+
+    return get_or_create_camera()
+
+
 class ImportExportPresenter(QObject):
     def __init__(
         self,
@@ -42,6 +50,7 @@ class ImportExportPresenter(QObject):
         create_model_action=None,
         model_template_loader=None,
         create_model_dialog_factory=None,
+        camera_creator=None,
     ):
         super().__init__()
         self.view = view
@@ -56,6 +65,7 @@ class ImportExportPresenter(QObject):
         self.create_model_action = create_model_action
         self.model_template_loader = model_template_loader or list_model_templates
         self.create_model_dialog_factory = create_model_dialog_factory or CreateModelDialog
+        self.camera_creator = camera_creator or _get_or_create_mmd_camera
         self._create_model_templates = ()
         self.view.presenter = self
         self.connect_signals()
@@ -68,6 +78,39 @@ class ImportExportPresenter(QObject):
         self.view.vmd_path_button.clicked.connect(self.select_vmd_file)
         self.view.import_vmd_button.clicked.connect(self.import_vmd_file)
         self.view.new_model_button.clicked.connect(self.open_create_model_dialog)
+        self.view.create_mmd_camera_button.clicked.connect(self.create_mmd_camera)
+
+    def create_mmd_camera(self):
+        """Create or reuse the scene MMD camera rig and select its controller."""
+
+        try:
+            camera = self.camera_creator()
+            if not isinstance(camera, str) or not camera:
+                raise RuntimeError("camera creation returned no camera transform")
+            self.maya_adapter.select(camera, replace=True)
+            self.app_state.emit_status(
+                tr_message_format("create_camera_succeeded", camera=camera)
+            )
+            return camera
+        except Exception as exc:
+            logger.error("Create MMD Camera failed", exc_info=True)
+            message = tr_message_format("create_camera_failed", error=str(exc))
+            self.app_state.emit_status(message)
+            try:
+                from ..qt_compat import QMessageBox
+
+                QMessageBox.warning(
+                    self.view,
+                    tr_message("create_camera_warning_title"),
+                    message,
+                )
+            except Exception as dialog_error:
+                logger.debug(
+                    "Create Camera warning dialog unavailable: %s",
+                    dialog_error,
+                    exc_info=True,
+                )
+            return False
 
     def _populate_create_model_templates(self):
         """Load curated options and gate the New MMD Model button."""

@@ -252,7 +252,7 @@ def run_user_roundtrip_smoke(
         runner_args = ["--maya", "2024"]
     session.run(
         python_executable,
-        str(root / "tools/local_asset_roundtrip.py"),
+        str(root / "tools/smoke/local_asset_roundtrip.py"),
         *runner_args,
         env={
             "MAYA_SKIP_USERSETUP_PY": "1",

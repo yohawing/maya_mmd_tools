@@ -658,6 +658,32 @@ def _snapshot_vertex_scene() -> tuple[FakeCmds, MayaSceneMetadataBackend]:
     return cmds, backend
 
 
+def _add_split_vertex_target(
+    cmds: FakeCmds,
+    point: tuple[float, float, float],
+) -> None:
+    """Add a second material-split target for the same PMX source vertex."""
+
+    cmds.nodes.update({"bs2", "mesh2"})
+    cmds.node_types.update({"bs2": "blendShape", "mesh2": "mesh"})
+    cmds.connections[("controller.outputWeight[0]", None)] = [
+        "bs.weight[3]",
+        "bs2.weight[3]",
+    ]
+    cmds.aliases["bs2"] = ["モーフ0", "weight[3]"]
+    cmds.attrs[("bs2", "mmd_blendshape_morph_names_json")] = cmds.attrs[
+        ("bs", "mmd_blendshape_morph_names_json")
+    ]
+    cmds.attrs[("bs2", "geometry")] = ["mesh2"]
+    cmds.attrs[("bs2", "geometryIndices")] = [0]
+    cmds.attrs[("mesh2", "vertexCount")] = 2
+    cmds.attrs[("mesh2", "mmd_source_vertex_indices")] = [0, 1]
+    cmds.attrs[("bs2.inputTarget[0].inputTargetGroup[3]", "inputTargetItem")] = [6000]
+    item = "bs2.inputTarget[0].inputTargetGroup[3].inputTargetItem[6000]"
+    cmds.attrs[(item, "inputPointsTarget")] = [point]
+    cmds.attrs[(item, "inputComponentsTarget")] = ["vtx[1]"]
+
+
 def test_morph_authoring_snapshot_shares_binding_observations_once() -> None:
     cmds, backend = _snapshot_vertex_scene()
     calls: list[tuple[str, str]] = []
@@ -1379,6 +1405,36 @@ def test_vertex_blendshape_offsets_expand_compressed_component_ranges() -> None:
         {"vertex_index": 1, "position_offset": [0.0, 2.0, 0.0]},
         {"vertex_index": 2, "position_offset": [0.0, 0.0, -3.0]},
     ]
+
+
+def test_vertex_blendshape_offsets_deduplicate_identical_material_split_sources() -> None:
+    cmds, backend = _vertex_scene(source_mapping=[0, 1])
+    _add_split_vertex_target(cmds, (1.0, 2.0, 3.0))
+
+    metadata = list(backend.iter_morph_metadata("|root"))[0]
+
+    assert metadata["offsets"] == [
+        {"vertex_index": 1, "position_offset": [1.0, 2.0, -3.0]}
+    ]
+
+
+def test_vertex_blendshape_offsets_deduplicate_material_split_rounding_noise() -> None:
+    cmds, backend = _vertex_scene(source_mapping=[0, 1])
+    _add_split_vertex_target(cmds, (1.0 + 5.0e-8, 2.0, 3.0))
+
+    metadata = list(backend.iter_morph_metadata("|root"))[0]
+
+    assert metadata["offsets"] == [
+        {"vertex_index": 1, "position_offset": [1.0, 2.0, -3.0]}
+    ]
+
+
+def test_vertex_blendshape_offsets_reject_conflicting_material_split_sources() -> None:
+    cmds, backend = _vertex_scene(source_mapping=[0, 1])
+    _add_split_vertex_target(cmds, (9.0, 2.0, 3.0))
+
+    with pytest.raises(MayaSceneMetadataError, match="conflicting offsets"):
+        list(backend.iter_morph_metadata("|root"))
 
 
 def test_vertex_blendshape_alias_destination_resolves_weight_index() -> None:

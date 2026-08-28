@@ -8,7 +8,7 @@ import unittest
 
 from mmd_tools.validation.export_validator import ExportValidationIssue, ExportValidationReport
 from mmd_tools.validation.report_artifacts import write_validation_report_artifacts
-from tools.export_report_consistency import (
+from tools.gates.export_report_consistency import (
     ReportConsistencyError,
     main,
     validate_report_consistency,

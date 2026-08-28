@@ -18,6 +18,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
+    ATTR_MMD_SOURCE_TO_LOCAL_INDICES,
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
 )
 from mmd_tools.core.logger import get_logger
@@ -907,6 +908,73 @@ class TestMorphConverter(MayaTestBase):
         self.assertIn("mat1_only", mesh_b_aliases)
         self.assertNotIn("mat0_only", mesh_b_aliases)
 
+    def test_material_split_empty_vertex_morph_keeps_single_destination(self):
+        """空の vertex morph は material split mesh のいずれか一つにだけ作成する。"""
+        mesh_a = self._create_test_mesh()
+        mesh_b = self._create_test_mesh()
+        maya_attribute_utils.set_custom_attributes(
+            mesh_a,
+            {
+                "mmd_material_split_mesh": True,
+                "mmd_material_index": 0,
+            },
+        )
+        maya_attribute_utils.set_custom_attributes(
+            mesh_b,
+            {
+                "mmd_material_split_mesh": True,
+                "mmd_material_index": 1,
+            },
+        )
+
+        class FakeFace:
+            def __init__(self, indices):
+                self.indices = indices
+
+        class FakeMaterial:
+            face_count = 3
+
+        class FakeVertexMorph:
+            name = "empty_vertex_morph"
+            name_english = "empty_vertex_morph"
+            panel = 1
+            morph_type = PmxMorphType.VertexMorph
+            offsets = []
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [FakeFace([0, 1, 2]), FakeFace([0, 2, 3])],
+                "materials": [FakeMaterial(), FakeMaterial()],
+                "morphs": [FakeVertexMorph()],
+            },
+        )()
+
+        converter = MorphConverter()
+        result = converter.convert_pmx_morphs(fake_data, [mesh_a, mesh_b])
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 1)
+        self.assertEqual(len(result.get("blend_shape_nodes", [])), 1)
+        self.assertEqual(len(result.get("results", [])), 1)
+
+        root = cmds.group(empty=True, name="empty_vertex_morph_root")
+        controller = converter.build_morph_controller(fake_data, root, result)
+        destinations = cmds.listConnections(
+            f"{controller}.outputWeight[0]",
+            plugs=True,
+            destination=True,
+        ) or []
+        self.assertEqual(len(destinations), 1)
+        self.assertTrue(
+            destinations[0].startswith(f"{result['blend_shape_nodes'][0]}."),
+            destinations,
+        )
+
     def test_vertex_morph_metadata_rejects_malformed_offsets(self):
         """Malformed source offsets fail before the per-mesh preview path can skip them."""
         mesh = self._create_test_mesh()
@@ -1026,6 +1094,66 @@ class TestMorphConverter(MayaTestBase):
         self.assertAlmostEqual(moved_position[0], 1.25, places=5)
         self.assertAlmostEqual(unchanged_position[0], 0.0, places=5)
         cmds.setAttr(f"{bs_node}.{alias}", 0.0)
+
+    def test_equivalent_welded_sources_apply_vertex_morph_delta_once(self):
+        """Several PMX seam sources sharing one local point must not double a morph."""
+        mesh = maya_mesh_utils.create_mesh_with_uvs(
+            "equivalent_weld_mesh",
+            [(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+            [3],
+            [0, 1, 2],
+            [0, 0, 1, 0, 0, 1],
+            [0, 1, 2],
+        )
+        maya_attribute_utils.add_typed_attribute(mesh, ATTR_MMD_SOURCE_TO_LOCAL_INDICES, "longArray")
+        maya_attribute_utils.set_attribute(mesh, ATTR_MMD_SOURCE_TO_LOCAL_INDICES, [0, 0, 1, 2], "longArray")
+
+        class FakeVertexMorph:
+            name = "equivalent_seam_move"
+            morph_type = PmxMorphType.VertexMorph
+            panel = 1
+            offsets = [
+                {"vertex_index": 0, "position_offset": (0.25, 0.0, 0.0)},
+                {"vertex_index": 1, "position_offset": (0.25, 0.0, 0.0)},
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type("FakePmxData", (), {"faces": [], "materials": [], "morphs": [FakeVertexMorph()]})()
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+        blend_shape = result["results"][0]["blend_shape_node"]
+        cmds.setAttr(f"{blend_shape}.{result['results'][0]['alias']}", 1.0)
+        self.assertAlmostEqual(cmds.pointPosition(f"{mesh}.vtx[0]", local=True)[0], 0.25, places=6)
+
+    def test_conflicting_welded_source_morph_deltas_fail_closed(self):
+        """Different source deltas cannot be represented by one blendShape point."""
+        mesh = maya_mesh_utils.create_mesh_with_uvs(
+            "conflicting_weld_mesh",
+            [(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+            [3],
+            [0, 1, 2],
+            [0, 0, 1, 0, 0, 1],
+            [0, 1, 2],
+        )
+        maya_attribute_utils.add_typed_attribute(mesh, ATTR_MMD_SOURCE_TO_LOCAL_INDICES, "longArray")
+        maya_attribute_utils.set_attribute(mesh, ATTR_MMD_SOURCE_TO_LOCAL_INDICES, [0, 0, 1, 2], "longArray")
+
+        class FakeVertexMorph:
+            name = "conflicting_seam_move"
+            morph_type = PmxMorphType.VertexMorph
+            panel = 1
+            offsets = [
+                {"vertex_index": 0, "position_offset": (0.25, 0.0, 0.0)},
+                {"vertex_index": 1, "position_offset": (0.5, 0.0, 0.0)},
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type("FakePmxData", (), {"faces": [], "materials": [], "morphs": [FakeVertexMorph()]})()
+        with self.assertRaisesRegex(ValueError, "conflicting source deltas"):
+            MorphConverter().convert_pmx_morphs(fake_data, mesh)
 
     def test_vertex_morph_stores_raw_name_and_uniquifies_colliding_alias(self):
         """sanitize が衝突する別モーフでも一意 alias を割り当て、生名を JSON に保存する。

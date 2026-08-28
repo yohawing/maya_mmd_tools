@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.local_asset_roundtrip import (
+from tools.smoke.local_asset_roundtrip import (
     VMD_EXPORT_BAKE_TIMELINE_POSE_TOLERANCE,
     _bounded_edit_value,
     _metric_snapshot,
@@ -246,20 +246,20 @@ def test_dense_warm_samples_use_distinct_outputs_and_the_source_target(monkeypat
         worker_context.phases.append({"name": name, "wall_sec": 0.01, "status": "passed"})
         return result
 
-    monkeypatch.setattr("tools.local_asset_roundtrip._phase", fake_phase)
+    monkeypatch.setattr("tools.smoke.local_asset_roundtrip._phase", fake_phase)
     monkeypatch.setattr(
-        "tools.local_asset_roundtrip._export_request",
+        "tools.smoke.local_asset_roundtrip._export_request",
         lambda output, report_dir, **kwargs: export_requests.append(
             {"output": output, "report_dir": report_dir, **kwargs}
         )
         or {"output": output},
     )
     monkeypatch.setattr(
-        "tools.local_asset_roundtrip._allowed_warning_codes",
+        "tools.smoke.local_asset_roundtrip._allowed_warning_codes",
         lambda validation, export_format: ([], []),
     )
     monkeypatch.setattr(
-        "tools.local_asset_roundtrip._assert_execute_warnings",
+        "tools.smoke.local_asset_roundtrip._assert_execute_warnings",
         lambda result, export_format: [],
     )
 
@@ -383,8 +383,8 @@ def test_dense_worker_runs_full_case_once_and_passes_warm_count(monkeypatch, tmp
             },
         }
 
-    monkeypatch.setattr("tools.local_asset_roundtrip._initialize_maya", lambda: None)
-    monkeypatch.setattr("tools.local_asset_roundtrip._run_vmd_case", fake_run_vmd_case)
+    monkeypatch.setattr("tools.smoke.local_asset_roundtrip._initialize_maya", lambda: None)
+    monkeypatch.setattr("tools.smoke.local_asset_roundtrip._run_vmd_case", fake_run_vmd_case)
 
     assert _run_worker(config_path, result_path, checkpoint, 60.0) == 0
     document = json.loads(result_path.read_text(encoding="utf-8"))
@@ -431,9 +431,9 @@ def test_worker_fails_closed_when_warm_samples_are_skipped(monkeypatch, tmp_path
         encoding="utf-8",
     )
 
-    monkeypatch.setattr("tools.local_asset_roundtrip._initialize_maya", lambda: None)
+    monkeypatch.setattr("tools.smoke.local_asset_roundtrip._initialize_maya", lambda: None)
     monkeypatch.setattr(
-        "tools.local_asset_roundtrip._run_vmd_case",
+        "tools.smoke.local_asset_roundtrip._run_vmd_case",
         lambda case, out_dir, context, *, warm_runs=0: {
             "status": "pass",
             "export_samples": {

@@ -38,6 +38,7 @@ from tests.common.ui_action_coverage import QtSignalInvocationSpy, build_surface
 _DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "for_unit_test"
 _PMX_FIXTURE = _DATA_DIR / "test_1bone_cube.pmx"
 _VMD_FIXTURE = _DATA_DIR / "test_1bone_cube_motion.vmd"
+_CAMERA_VMD_FIXTURE = Path(__file__).resolve().parents[1] / "data" / "test_camera_light.vmd"
 
 
 def _emit_witness(surface_id, locator, interaction, oracle, action_spy, control):
@@ -349,6 +350,76 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
             new_model_spy,
             self.window.import_export_tab.new_model_button,
         )
+
+    def test_create_camera_button_builds_and_selects_mmd_camera_rig(self):
+        """The Animation button creates the same tagged rig used by VMD import."""
+        view = self.window.import_export_tab
+        view.import_category_stack.setCurrentIndex(1)
+        camera_spy = QtSignalInvocationSpy(
+            "ImportExportPresenter.create_camera",
+            view.create_mmd_camera_button.clicked,
+            view.create_mmd_camera_button,
+        )
+
+        self._arm_modal_watchdog()
+        view.create_mmd_camera_button.click()
+        self._drain_until(
+            lambda: bool(cmds.ls("*.mmd_camera", objectsOnly=True)),
+            description="tagged MMD camera rig",
+        )
+        self._stop_modal_watchdog()
+
+        camera = (cmds.ls("*.mmd_camera", objectsOnly=True) or [None])[0]
+        self.assertTrue(camera)
+        self.assertEqual(cmds.ls(selection=True), [camera])
+        self.assertTrue(
+            cmds.listConnections(
+                f"{camera}.mmd_camera_target_node",
+                source=True,
+                destination=False,
+            )
+        )
+        self.assertTrue(
+            cmds.listConnections(
+                f"{camera}.mmd_camera_root_node",
+                source=True,
+                destination=False,
+            )
+        )
+        _emit_witness(
+            "import_export.create_camera",
+            "create_mmd_camera_button",
+            "QTest.click(attribute=create_mmd_camera_button)",
+            "tagged MMD camera rig created and selected",
+            camera_spy,
+            view.create_mmd_camera_button,
+        )
+
+    def test_camera_motion_sets_playback_range_from_scene_tracks(self):
+        """Camera/light-only VMD import owns playback max without bone keys."""
+        view = self.window.import_export_tab
+        view.import_category_stack.setCurrentIndex(1)
+        view.vmd_path_edit.setText(str(_CAMERA_VMD_FIXTURE))
+        expected_vmd = VmdData().parse_file(str(_CAMERA_VMD_FIXTURE))
+        expected_max = max(
+            frame.frame_number
+            for frame in (*expected_vmd.camera_frames, *expected_vmd.light_frames)
+        )
+
+        self._arm_modal_watchdog()
+        view.import_vmd_button.click()
+        self._drain_until(
+            lambda: float(cmds.playbackOptions(query=True, maxTime=True))
+            == float(expected_max),
+            description="camera VMD playback range",
+        )
+        self._stop_modal_watchdog()
+
+        self.assertEqual(
+            float(cmds.playbackOptions(query=True, animationEndTime=True)),
+            float(expected_max),
+        )
+        self.assertTrue(cmds.ls("*.mmd_camera", objectsOnly=True))
 
     def test_vmd_button_targets_current_model_and_creates_keys_timeline_history(self):
         """The real VMD button keys the imported PMX joint and updates timeline/history."""

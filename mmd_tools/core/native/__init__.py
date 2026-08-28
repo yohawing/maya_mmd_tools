@@ -38,6 +38,7 @@ from .mmd_anim_runtime import (
     MmdRuntimeModel,
     MmdRuntimePhysicsWorld,
     create_runtime_node_for_model,
+    export_vpd_pose_json,
     export_pmx_model_json,
     get_mmd_runtime_library,
     get_runtime_feature_flags,
@@ -47,6 +48,7 @@ from .mmd_anim_runtime import (
     is_native_pmx_parser_available,
     is_native_pmx_parts_export_available,
     is_rig_primitive_available,
+    parse_vpd_pose_json,
     export_pmx_from_parts,
 )
 from .mmd_anim_runtime_export import (
@@ -69,6 +71,8 @@ __all__ = [
     "get_runtime_feature_flags",
     "export_pmx_from_parts",
     "export_vmd_from_parts",
+    "export_vpd_pose_json",
+    "parse_vpd_pose_json",
     "is_native_vmd_parts_export_available",
     "MmdAnimRuntimeExportError",
     "export_pmx_model_json",

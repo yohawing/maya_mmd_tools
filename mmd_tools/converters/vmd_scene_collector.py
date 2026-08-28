@@ -98,8 +98,11 @@ _CAMERA_EXPORT_ATTRS = (
 _LIGHT_ROTATE_ATTRS = ("rotateX", "rotateY", "rotateZ")
 _LIGHT_COLOR_ATTRS = ("mmd_light_colorR", "mmd_light_colorG", "mmd_light_colorB")
 _LIGHT_SHAPE_COLOR_ATTRS = ("colorR", "colorG", "colorB")
+_DEFAULT_CAMERA_INTERPOLATION = b"\x14" * 24
 _ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
+_ATTR_MMD_CAMERA_INTERPOLATION_JSON = "mmd_camera_interpolation_json"
 _MMD_CAMERA_AIM_ROLL_RIG_TYPE = "mmd_aim_roll"
+_BAKE_TIMELINE_TRACK_TARGETS = frozenset({"character", "camera", "light"})
 
 
 class VmdIkSceneRepresentationMissingError(ValueError):
@@ -123,7 +126,17 @@ class ControlRigDirectVmdExportError(ValueError):
         self.validation_issue_path = str(path)
         super().__init__(str(message))
 _TRANSFORM_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
-_CAMERA_SHAPE_EXPORT_ATTRS = ("focalLength", "orthographic", "orthographicWidth")
+_CAMERA_SHAPE_EXPORT_ATTRS = (
+    "focalLength",
+    "verticalFilmAperture",
+    "orthographic",
+    "orthographicWidth",
+    "centerOfInterest",
+)
+_RIGLESS_CAMERA_TARGET_PLANE_Y = 0.0
+_RIGLESS_CAMERA_MAX_TARGET_DISTANCE = 1000.0
+_RIGLESS_CAMERA_DEFAULT_TARGET_DISTANCE = 45.0
+_RIGLESS_CAMERA_PLANE_EPSILON = 1e-6
 _TRACK_SELECTION_DECISIONS = (
     "omitted_default",
     "omitted_unrepresentable",
@@ -1375,7 +1388,7 @@ class VmdSceneCollector:
         options: Optional[Mapping[str, Any]],
         sink: Any,
     ) -> dict[str, Any]:
-        """Stream standard Bake Timeline sections into a VMD writer-compatible sink.
+        """Stream Bake Timeline or scene-only Preserve Keys into a VMD sink.
 
         This path owns Bake Timeline planning and shares the per-track collectors,
         but keeps only one bone track (and one aggregate morph candidate
@@ -1384,11 +1397,12 @@ class VmdSceneCollector:
         """
 
         if sink is None:
-            raise TypeError("Bake Timeline stream collection requires a sink")
+            raise TypeError("VMD stream collection requires a sink")
         options = options or {}
         export_strategy = str(options.get("export_strategy", "") or "").lower()
-        if export_strategy != "bake_timeline":
-            raise ValueError("collect_to_sink supports standard Bake Timeline only")
+        if export_strategy not in {"bake_timeline", "preserve_keys"}:
+            raise ValueError("unsupported VMD export strategy")
+        preserve_keys = export_strategy == "preserve_keys"
         started = time.perf_counter()
         self._diagnostics = {}
         self._source_omission_identities = set()
@@ -1406,6 +1420,7 @@ class VmdSceneCollector:
             "ik": 0,
         }
         generated_bone_counts: dict[str, int] = {}
+        emitted_frame_bounds = [None, None]
         def emit(section: str, frame: Mapping[str, Any]) -> None:
             if section == "morphs" and not _should_emit_morph_frame(frame):
                 value = float(frame.get("value", frame.get("weight", 0.0)))
@@ -1417,6 +1432,17 @@ class VmdSceneCollector:
                 return
             _write_stream_frame(sink, section, frame)
             section_counts[section] += 1
+            frame_number = int(frame.get("frame_number", frame.get("frame", 0)))
+            emitted_frame_bounds[0] = (
+                frame_number
+                if emitted_frame_bounds[0] is None
+                else min(emitted_frame_bounds[0], frame_number)
+            )
+            emitted_frame_bounds[1] = (
+                frame_number
+                if emitted_frame_bounds[1] is None
+                else max(emitted_frame_bounds[1], frame_number)
+            )
             if section == "bones":
                 bone_name = str(frame.get("bone_name") or "")
                 generated_bone_counts[bone_name] = (
@@ -1425,26 +1451,62 @@ class VmdSceneCollector:
 
         try:
             target_model = options.get("target_model") or options.get("model_root")
-            joints = list(options.get("joints") or self._find_joints(target_model))
+            track_targets = _resolve_bake_timeline_track_targets(options)
+            include_character = "character" in track_targets
+            include_camera = "camera" in track_targets
+            include_light = "light" in track_targets
+            if preserve_keys and include_character:
+                raise ValueError("Preserve Keys is available for Camera/Light export only")
+            joints = (
+                list(options.get("joints") or self._find_joints(target_model))
+                if include_character
+                else []
+            )
             rotation_context_joints = list(joints)
             blend_shapes = list(
                 options.get("blend_shapes") or self._find_blend_shapes(target_model)
+            ) if include_character else []
+            discover_legacy_sections = "export_target" not in options
+            camera_candidates = (
+                self._resolve_tagged_track(options, "cameras", ATTR_MMD_CAMERA, None)
+                if include_camera or discover_legacy_sections
+                else []
             )
-            cameras = self._resolve_tagged_track(
-                options, "cameras", ATTR_MMD_CAMERA, None
+            light_candidates = (
+                self._resolve_tagged_track(options, "lights", ATTR_MMD_LIGHT, None)
+                if include_light or discover_legacy_sections
+                else []
             )
-            lights = self._resolve_tagged_track(options, "lights", ATTR_MMD_LIGHT, None)
-            unsupported_cameras = list(cameras)
-            unsupported_lights = list(lights)
-            cameras = []
-            lights = []
+            cameras = camera_candidates if include_camera else []
+            lights = light_candidates if include_light else []
+            unsupported_cameras = camera_candidates if discover_legacy_sections and not include_camera else []
+            unsupported_lights = light_candidates if discover_legacy_sections and not include_light else []
+            if include_camera and not cameras:
+                raise RuntimeError(
+                    "VMD Camera export target has no tagged mmd_camera node; "
+                    "Reason: an explicit Camera target must resolve exactly one "
+                    "scene-owned camera"
+                )
+            if include_light and not lights:
+                raise RuntimeError(
+                    "VMD Light export target has no tagged mmd_light node; "
+                    "Reason: an explicit Light target must resolve exactly one "
+                    "scene-owned light"
+                )
+            if preserve_keys and any(not _uses_aim_roll_camera(camera) for camera in cameras):
+                raise RuntimeError(
+                    "Preserve Keys requires an MMD CameraRig; use Bake Timeline for a regular Maya Camera"
+                )
             start_frame, end_frame = _resolve_collection_frame_range(options)
+            if preserve_keys and (start_frame is not None or end_frame is not None):
+                raise ValueError("Preserve Keys does not support Frame Range")
             motion_scale = float(options.get("motion_scale", 1.0) or 1.0)
             bone_bind_poses = options.get("bone_bind_poses") or {}
             maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
-            direct_control_rig_plan = self._control_rig_direct_export_plan(
-                target_model,
-                joints,
+            direct_control_rig_plan = (
+                self._control_rig_direct_export_plan(target_model, joints)
+                if include_character
+                else None
             )
             if direct_control_rig_plan is not None and target_model:
                 rotation_context_joints = list(self._find_joints(target_model))
@@ -1453,18 +1515,28 @@ class VmdSceneCollector:
                 if direct_control_rig_plan is not None
                 else None
             )
-            protected_ik_frames = self._bake_timeline_protected_ik_frames(
-                target_model,
-                start_frame,
-                end_frame,
-                maya_time_to_vmd,
-                ik_routes_by_name=direct_ik_routes,
+            protected_ik_frames = (
+                self._bake_timeline_protected_ik_frames(
+                    target_model,
+                    start_frame,
+                    end_frame,
+                    maya_time_to_vmd,
+                    ik_routes_by_name=direct_ik_routes,
+                )
+                if include_character
+                else set()
             )
-            if direct_control_rig_plan is None:
+            if direct_control_rig_plan is None and include_character:
                 self._control_rig_dense_export(target_model)
-            rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
+            rotation_interpolation = (
+                self._rotation_time_curve_interpolation(target_model)
+                if include_character
+                else None
+            )
             selector_key_times_by_joint = None
-            if direct_control_rig_plan is None:
+            if not include_character:
+                authored_routes = {}
+            elif direct_control_rig_plan is None:
                 authored_routes = self._scene_authored_input_routes(
                     joints,
                     target_model,
@@ -1476,17 +1548,29 @@ class VmdSceneCollector:
                 selector_key_times_by_joint = direct_control_rig_plan[
                     "selector_key_times_by_joint"
                 ]
-            bake_timeline_dense_frames = self._bake_timeline_dense_frame_samples(
-                joints,
-                blend_shapes,
-                cameras,
-                lights,
-                target_model,
-                authored_routes,
-                start_frame,
-                end_frame,
-                selector_key_times_by_joint=selector_key_times_by_joint,
-            )
+            bake_timeline_dense_frames = None
+            if not preserve_keys:
+                bake_timeline_dense_frames = self._bake_timeline_dense_frame_samples(
+                    joints,
+                    blend_shapes,
+                    cameras,
+                    lights,
+                    target_model,
+                    authored_routes,
+                    start_frame,
+                    end_frame,
+                    selector_key_times_by_joint=selector_key_times_by_joint,
+                )
+            if (
+                not preserve_keys
+                and not include_character
+                and (include_camera or include_light)
+                and bake_timeline_dense_frames is None
+            ):
+                playback_start, playback_end = _query_playback_range()
+                bake_timeline_dense_frames = _dense_frame_samples(
+                    (), playback_start, playback_end
+                )
             self._diagnostics["route_provenance_dense_planning"] = {
                 "joint_count": len(joints),
                 "blend_shape_count": len(blend_shapes),
@@ -1505,68 +1589,96 @@ class VmdSceneCollector:
             if not callable(begin_section):
                 raise TypeError("VMD stream sink has no begin_section")
             begin_section("bones")
-            self.collect_bone_frames(
-                joints,
-                start_frame,
-                end_frame,
-                motion_scale=motion_scale,
-                bone_bind_poses=bone_bind_poses,
-                input_routes=authored_routes,
-                dense_sample=True,
-                force_dense_sample=True,
-                time_converter=maya_time_to_vmd,
-                rotation_interpolation=rotation_interpolation,
-                dense_frame_samples=bake_timeline_dense_frames,
-                bone_channel_sampler=self._bone_channel_sampler,
-                frame_sink=lambda frame: emit("bones", frame),
-                exact_run_reduction=exact_run_reduction,
-                protected_vmd_frames=protected_ik_frames,
-                key_reduction_report=key_reduction["sections"]["bones"],
-                selector_key_times_by_joint=selector_key_times_by_joint,
-                rotation_context_joints=rotation_context_joints,
-            )
-            self._finalize_direct_dependency_bake_diagnostics(
-                start_frame,
-                end_frame,
-                bake_timeline_dense_frames,
-                maya_time_to_vmd,
-                generated_bone_counts,
-            )
+            if include_character:
+                self.collect_bone_frames(
+                    joints,
+                    start_frame,
+                    end_frame,
+                    motion_scale=motion_scale,
+                    bone_bind_poses=bone_bind_poses,
+                    input_routes=authored_routes,
+                    dense_sample=True,
+                    force_dense_sample=True,
+                    time_converter=maya_time_to_vmd,
+                    rotation_interpolation=rotation_interpolation,
+                    dense_frame_samples=bake_timeline_dense_frames,
+                    bone_channel_sampler=self._bone_channel_sampler,
+                    frame_sink=lambda frame: emit("bones", frame),
+                    exact_run_reduction=exact_run_reduction,
+                    protected_vmd_frames=protected_ik_frames,
+                    key_reduction_report=key_reduction["sections"]["bones"],
+                    selector_key_times_by_joint=selector_key_times_by_joint,
+                    rotation_context_joints=rotation_context_joints,
+                )
+                self._finalize_direct_dependency_bake_diagnostics(
+                    start_frame,
+                    end_frame,
+                    bake_timeline_dense_frames,
+                    maya_time_to_vmd,
+                    generated_bone_counts,
+                )
             begin_section("morphs")
-            self.collect_morph_frames(
-                blend_shapes,
-                start_frame,
-                end_frame,
-                time_converter=maya_time_to_vmd,
-                target_model=target_model,
-                dense_sample=True,
-                dense_frame_samples=bake_timeline_dense_frames,
-                timeline_evaluation=True,
-                frame_sink=lambda frame: emit("morphs", frame),
-                exact_run_reduction=exact_run_reduction,
-                protected_vmd_frames=protected_ik_frames,
-                key_reduction_report=key_reduction["sections"]["morphs"],
-                morph_channel_sampler=self._bone_channel_sampler,
-            )
+            if include_character:
+                self.collect_morph_frames(
+                    blend_shapes,
+                    start_frame,
+                    end_frame,
+                    time_converter=maya_time_to_vmd,
+                    target_model=target_model,
+                    dense_sample=not preserve_keys,
+                    dense_frame_samples=bake_timeline_dense_frames,
+                    timeline_evaluation=not preserve_keys,
+                    frame_sink=lambda frame: emit("morphs", frame),
+                    exact_run_reduction=exact_run_reduction,
+                    protected_vmd_frames=protected_ik_frames,
+                    key_reduction_report=key_reduction["sections"]["morphs"],
+                    morph_channel_sampler=self._bone_channel_sampler,
+                )
             begin_section("cameras")
+            if include_camera:
+                self.collect_camera_frames(
+                    cameras,
+                    start_frame,
+                    end_frame,
+                    motion_scale=motion_scale,
+                    time_converter=maya_time_to_vmd,
+                    dense_sample=not preserve_keys,
+                    dense_frame_samples=bake_timeline_dense_frames,
+                    timeline_evaluation=not preserve_keys,
+                    preserve_interpolation=preserve_keys,
+                    frame_sink=lambda frame: emit("cameras", frame),
+                )
             begin_section("lights")
-            self._diagnostics["unsupported_bake_timeline_sections"] = {
-                "cameras": len(unsupported_cameras),
-                "lights": len(unsupported_lights),
-            }
+            if include_light:
+                self.collect_light_frames(
+                    lights,
+                    start_frame,
+                    end_frame,
+                    time_converter=maya_time_to_vmd,
+                    dense_sample=not preserve_keys,
+                    dense_frame_samples=bake_timeline_dense_frames,
+                    timeline_evaluation=not preserve_keys,
+                    frame_sink=lambda frame: emit("lights", frame),
+                )
+            if unsupported_cameras or unsupported_lights:
+                self._diagnostics["unsupported_bake_timeline_sections"] = {
+                    "cameras": len(unsupported_cameras) if not include_camera else 0,
+                    "lights": len(unsupported_lights) if not include_light else 0,
+                }
             begin_section("shadows")
             begin_section("ik")
-            self.collect_ik_show_hide_frames(
-                target_model,
-                start_frame,
-                end_frame,
-                time_converter=maya_time_to_vmd,
-                dense_sample=False,
-                dense_frame_samples=None,
-                timeline_evaluation=False,
-                frame_sink=lambda frame: emit("ik", frame),
-                ik_routes_by_name=direct_ik_routes,
-            )
+            if include_character:
+                self.collect_ik_show_hide_frames(
+                    target_model,
+                    start_frame,
+                    end_frame,
+                    time_converter=maya_time_to_vmd,
+                    dense_sample=False,
+                    dense_frame_samples=None,
+                    timeline_evaluation=False,
+                    frame_sink=lambda frame: emit("ik", frame),
+                    ik_routes_by_name=direct_ik_routes,
+                )
             self._diagnostics["section_counts"] = dict(section_counts)
             self._diagnostics["streaming"] = {
                 "enabled": True,
@@ -1592,6 +1704,10 @@ class VmdSceneCollector:
                     _vmd_frame_number(start_frame, maya_time_to_vmd),
                     _vmd_frame_number(end_frame, maya_time_to_vmd),
                 )
+            elif emitted_frame_bounds[0] is not None:
+                validation_frame_range = tuple(emitted_frame_bounds)
+            if validation_frame_range is None:
+                raise RuntimeError("the selected Camera/Light has no exportable keys")
             return {
                 "model_name": str(options.get("model_name") or self._model_name(target_model)),
                 "validation_frame_range": validation_frame_range,
@@ -1699,6 +1815,7 @@ class VmdSceneCollector:
             cameras,
             start_frame,
             end_frame,
+            motion_scale=motion_scale,
             time_converter=maya_time_to_vmd,
             dense_sample=False,
             dense_frame_samples=None,
@@ -1807,6 +1924,8 @@ class VmdSceneCollector:
             camera_target = _camera_target_node(camera)
             camera_shape = _camera_shape(camera)
             keyed_times.extend(_key_times(camera, _CAMERA_EXPORT_ATTRS))
+            for ancestor in _transform_ancestors(camera):
+                keyed_times.extend(_key_times(ancestor, _TRANSFORM_EXPORT_ATTRS))
             if camera_root:
                 keyed_times.extend(_key_times(camera_root, _BONE_EXPORT_ATTRS))
             if camera_target:
@@ -1815,6 +1934,9 @@ class VmdSceneCollector:
                 keyed_times.extend(_key_times(camera_shape, _CAMERA_SHAPE_EXPORT_ATTRS))
         for light in lights:
             keyed_times.extend(_key_times(light, _LIGHT_COLOR_ATTRS + _LIGHT_ROTATE_ATTRS))
+            color_node, color_attrs = _light_color_source(light)
+            if color_node != light:
+                keyed_times.extend(_key_times(color_node, color_attrs))
         return _dense_frame_samples(keyed_times, start_frame, end_frame)
 
     @staticmethod
@@ -4494,25 +4616,47 @@ class VmdSceneCollector:
         cameras: Sequence[str],
         start_frame: Optional[float] = None,
         end_frame: Optional[float] = None,
+        motion_scale: float = 1.0,
         time_converter=None,
         dense_sample: bool = False,
         dense_frame_samples: Optional[Sequence[float]] = None,
         timeline_evaluation: bool = False,
+        preserve_interpolation: bool = False,
         frame_sink=None,
     ) -> list[dict]:
-        """Collect keyed MMD camera controller frames."""
+        """Collect MMD camera frames, including dense rigless camera baking."""
+        if abs(float(motion_scale)) < 1e-12:
+            raise ValueError("motion_scale must not be zero")
         time_converter = time_converter or _scene_maya_time_to_vmd_frame()
         frames = [] if frame_sink is None else None
         restore_time = None
+        rigless_target_reasons = {
+            "plane_hit": 0,
+            "distance_capped": 0,
+            "previous_distance": 0,
+            "center_of_interest": 0,
+            "default": 0,
+        }
         timeline_reader = _MayaTimelineReader() if timeline_evaluation else None
         with timeline_reader or nullcontext():
             try:
                 for camera in cameras:
+                    interpolation_by_time = (
+                        _camera_interpolation_by_time(camera)
+                        if preserve_interpolation
+                        else {}
+                    )
                     camera_target = _camera_target_node(camera)
                     camera_root = _camera_root_node(camera)
                     camera_shape = _camera_shape(camera)
+                    ancestor_frames = {
+                        frame
+                        for ancestor in _transform_ancestors(camera)
+                        for frame in _key_times(ancestor, _TRANSFORM_EXPORT_ATTRS)
+                    }
                     source_frames = sorted(
                         set(_key_times(camera, _CAMERA_EXPORT_ATTRS))
+                        | ancestor_frames
                         | (
                             set(_key_times(camera_root, _BONE_EXPORT_ATTRS))
                             if camera_root
@@ -4529,11 +4673,11 @@ class VmdSceneCollector:
                             else set()
                         )
                     )
+                    previous_rigless_distance = None
                     keyed_frames = (
                         sorted(set(dense_frame_samples))
                         if dense_sample
                         and dense_frame_samples is not None
-                        and source_frames
                         else _filter_frame_range(
                             source_frames,
                             start_frame,
@@ -4545,6 +4689,12 @@ class VmdSceneCollector:
                         uses_aim_roll_rig = bool(
                             _uses_aim_roll_camera(camera) and camera_target
                         )
+                        uses_rigless_camera = bool(
+                            camera_shape
+                            and not uses_aim_roll_rig
+                            and not uses_raw_mmd_attrs
+                            and not _has_attr(camera, ATTR_MMD_CAMERA)
+                        )
                         if timeline_reader is not None:
                             timeline_reader.set_frame(frame_number)
                             read_value = _current_plug_float_at_frame
@@ -4555,15 +4705,8 @@ class VmdSceneCollector:
                                 if restore_time is None:
                                     restore_time = _query_current_time()
                                 cmds.currentTime(frame_number, edit=True)
-                            motion_scale = _camera_motion_scale(camera)
-                            eye = om.MVector(
-                                *cmds.xform(
-                                    camera,
-                                    query=True,
-                                    worldSpace=True,
-                                    translation=True,
-                                )
-                            )
+                            camera_motion_scale = _camera_motion_scale(camera)
+                            eye, forward, up = _camera_world_pose(camera)
                             target = om.MVector(
                                 *cmds.xform(
                                     camera_target,
@@ -4573,23 +4716,60 @@ class VmdSceneCollector:
                                 )
                             )
                             position = (
+                                float(target.x) / camera_motion_scale,
+                                float(target.y) / camera_motion_scale,
+                                -float(target.z) / camera_motion_scale,
+                            )
+                            distance = (
+                                _signed_camera_distance(eye, target, forward)
+                                / camera_motion_scale
+                            )
+                            rotation = mmd_camera_rotation_from_maya_forward_up(
+                                (forward.x, forward.y, forward.z),
+                                (up.x, up.y, up.z),
+                            )
+                            viewing_angle = _camera_viewing_angle(
+                                camera, camera_shape, frame_number, read_value
+                            )
+                            perspective = _camera_perspective_value(
+                                camera, camera_shape, frame_number, read_value
+                            )
+                        elif uses_rigless_camera:
+                            if timeline_reader is None:
+                                if restore_time is None:
+                                    restore_time = _query_current_time()
+                                cmds.currentTime(frame_number, edit=True)
+                            eye, forward, up = _camera_world_pose(camera)
+                            center_of_interest = (
+                                read_value(
+                                    camera_shape,
+                                    "centerOfInterest",
+                                    frame_number,
+                                )
+                                if _has_attr(camera_shape, "centerOfInterest")
+                                else None
+                            )
+                            target_distance, target_reason = (
+                                _rigless_camera_target_distance(
+                                    eye.y,
+                                    forward.y,
+                                    previous_distance=previous_rigless_distance,
+                                    center_of_interest=center_of_interest,
+                                )
+                            )
+                            previous_rigless_distance = target_distance
+                            rigless_target_reasons[target_reason] += 1
+                            target = om.MVector(
+                                eye.x + forward.x * target_distance,
+                                eye.y + forward.y * target_distance,
+                                eye.z + forward.z * target_distance,
+                            )
+                            position = (
                                 float(target.x) / motion_scale,
                                 float(target.y) / motion_scale,
                                 -float(target.z) / motion_scale,
                             )
-                            matrix = om.MMatrix(
-                                cmds.getAttr(f"{camera}.worldMatrix[0]")
-                            )
-                            forward = om.MVector(0.0, 0.0, -1.0) * matrix
-                            up = om.MVector(0.0, 1.0, 0.0) * matrix
-                            if forward.length() > 1e-12:
-                                forward.normalize()
-                            if up.length() > 1e-12:
-                                up.normalize()
-                            distance = (
-                                _signed_camera_distance(eye, target, forward)
-                                / motion_scale
-                            )
+                            distance = -float(target_distance) / motion_scale
                             rotation = mmd_camera_rotation_from_maya_forward_up(
                                 (forward.x, forward.y, forward.z),
                                 (up.x, up.y, up.z),
@@ -4625,7 +4805,7 @@ class VmdSceneCollector:
                                 read_value(camera, "translateY", frame_number),
                                 -read_value(camera, "translateZ", frame_number),
                             )
-                        if not uses_aim_roll_rig:
+                        if not uses_aim_roll_rig and not uses_rigless_camera:
                             if uses_raw_mmd_attrs and all(
                                 _has_attr(camera, attr)
                                 for attr in (
@@ -4684,13 +4864,18 @@ class VmdSceneCollector:
                                     )
                                 )
                             )
+                        vmd_frame_number = _vmd_frame_number(
+                            frame_number, time_converter
+                        )
                         payload = {
-                            "frame_number": _vmd_frame_number(
-                                frame_number, time_converter
-                            ),
+                            "frame_number": vmd_frame_number,
                             "distance": distance,
                             "position": position,
                             "rotation": rotation,
+                            "interpolation": interpolation_by_time.get(
+                                float(frame_number),
+                                _DEFAULT_CAMERA_INTERPOLATION,
+                            ),
                             "viewing_angle": viewing_angle,
                             "perspective": perspective,
                         }
@@ -4703,6 +4888,13 @@ class VmdSceneCollector:
                     cmds.currentTime(restore_time, edit=True)
         if frame_sink is None:
             frames.sort(key=lambda item: item["frame_number"])
+        if any(rigless_target_reasons.values()):
+            self._diagnostics["rigless_camera_target"] = {
+                "plane": "XZ (Y=0)",
+                "max_distance": _RIGLESS_CAMERA_MAX_TARGET_DISTANCE,
+                "samples": rigless_target_reasons,
+            }
+        if frame_sink is None:
             return frames
         return []
 
@@ -4731,7 +4923,6 @@ class VmdSceneCollector:
                     sorted(set(dense_frame_samples))
                     if dense_sample
                     and dense_frame_samples is not None
-                    and source_frames
                     else _filter_frame_range(
                         source_frames,
                         start_frame,
@@ -4874,7 +5065,9 @@ class VmdSceneCollector:
         if len(resolved) > 1:
             raise RuntimeError(
                 f"{source} {attr} discovery found multiple tagged nodes; "
-                "VMD export requires one camera/light track"
+                "Reason: VMD export cannot choose between multiple camera/light "
+                "targets automatically; remove the extra marker or pass one "
+                "explicit node"
             )
         return resolved
 
@@ -5056,6 +5249,19 @@ def _query_current_time() -> Optional[float]:
         return float(cmds.currentTime(query=True))
     except Exception:
         return None
+
+
+def _query_playback_range() -> tuple[float, float]:
+    """Return Maya's finite playback range for keyless scene baking."""
+
+    try:
+        start = float(cmds.playbackOptions(query=True, minTime=True))
+        end = float(cmds.playbackOptions(query=True, maxTime=True))
+    except Exception as exc:
+        raise RuntimeError("Camera/Light playback range is unavailable") from exc
+    if not math.isfinite(start) or not math.isfinite(end) or end < start:
+        raise RuntimeError("Camera/Light playback range is invalid")
+    return start, end
 
 
 class _MayaTimelineReader:
@@ -5345,6 +5551,75 @@ def _current_plug_float_at_frame(node: str, attr: str, _frame: float) -> float:
 def _camera_shape(camera: str) -> Optional[str]:
     shapes = cmds.listRelatives(camera, shapes=True, type="camera") or []
     return shapes[0] if shapes else None
+
+
+def _camera_world_pose(camera: str) -> tuple[om.MVector, om.MVector, om.MVector]:
+    """Read a camera's world eye, forward, and up vectors at current time."""
+
+    eye = om.MVector(
+        *cmds.xform(
+            camera,
+            query=True,
+            worldSpace=True,
+            translation=True,
+        )
+    )
+    matrix = om.MMatrix(cmds.getAttr(f"{camera}.worldMatrix[0]"))
+    forward = om.MVector(0.0, 0.0, -1.0) * matrix
+    up = om.MVector(0.0, 1.0, 0.0) * matrix
+    if forward.length() > 1e-12:
+        forward.normalize()
+    if up.length() > 1e-12:
+        up.normalize()
+    return eye, forward, up
+
+
+def _transform_ancestors(node: str) -> list[str]:
+    """Return transform ancestors nearest-first without escaping DAG cycles."""
+
+    result = []
+    visited = {str(node)}
+    current = str(node)
+    while current:
+        parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
+        if not parents:
+            break
+        parent = str(parents[0])
+        if parent in visited:
+            break
+        visited.add(parent)
+        result.append(parent)
+        current = parent
+    return result
+
+
+def _rigless_camera_target_distance(
+    eye_y: float,
+    forward_y: float,
+    *,
+    previous_distance: Optional[float] = None,
+    center_of_interest: Optional[float] = None,
+    plane_y: float = _RIGLESS_CAMERA_TARGET_PLANE_Y,
+    max_distance: float = _RIGLESS_CAMERA_MAX_TARGET_DISTANCE,
+) -> tuple[float, str]:
+    """Choose a bounded forward distance for a rigless camera target."""
+
+    limit = max(float(max_distance), _RIGLESS_CAMERA_PLANE_EPSILON)
+    if abs(float(forward_y)) > _RIGLESS_CAMERA_PLANE_EPSILON:
+        intersection_distance = (float(plane_y) - float(eye_y)) / float(forward_y)
+        if math.isfinite(intersection_distance) and intersection_distance > 0.0:
+            if intersection_distance > limit:
+                return limit, "distance_capped"
+            return intersection_distance, "plane_hit"
+    if previous_distance is not None:
+        value = float(previous_distance)
+        if math.isfinite(value) and value > 0.0:
+            return min(value, limit), "previous_distance"
+    if center_of_interest is not None:
+        value = float(center_of_interest)
+        if math.isfinite(value) and value > 0.0:
+            return min(value, limit), "center_of_interest"
+    return min(_RIGLESS_CAMERA_DEFAULT_TARGET_DISTANCE, limit), "default"
 
 
 def _camera_viewing_angle(
@@ -5718,6 +5993,32 @@ def _uses_aim_roll_camera(camera: str) -> bool:
         return False
 
 
+def _camera_interpolation_by_time(camera: str) -> dict[float, bytes]:
+    """Read optional sparse-import interpolation without making it mandatory."""
+    if not _has_attr(camera, _ATTR_MMD_CAMERA_INTERPOLATION_JSON):
+        return {}
+    try:
+        payload = json.loads(
+            cmds.getAttr(f"{camera}.{_ATTR_MMD_CAMERA_INTERPOLATION_JSON}") or "{}"
+        )
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(payload, Mapping) or payload.get("schema_version") != 1:
+        return {}
+    result: dict[float, bytes] = {}
+    for record in payload.get("frames") or ():
+        if not isinstance(record, Mapping):
+            continue
+        try:
+            maya_time = float(record["maya_time"])
+            interpolation = bytes(record["bytes"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(maya_time) and maya_time >= 0 and len(interpolation) == 24:
+            result[maya_time] = interpolation
+    return result
+
+
 def _camera_target_node(camera: str) -> Optional[str]:
     if not _has_attr(camera, ATTR_MMD_CAMERA_TARGET_NODE):
         return None
@@ -5787,6 +6088,22 @@ def _resolve_collection_frame_range(
         _optional_float(options.get("start_frame")),
         _optional_float(options.get("end_frame")),
     )
+
+
+def _resolve_bake_timeline_track_targets(options: Mapping[str, Any]) -> set[str]:
+    """Resolve the canonical public VMD export target."""
+
+    if "export_target" not in options:
+        return {"character"}
+    target = str(options.get("export_target") or "").strip().lower()
+    targets = {
+        "character": {"character"},
+        "camera": {"camera"},
+        "camera+light": {"camera", "light"},
+    }.get(target)
+    if targets is None:
+        raise ValueError(f"unsupported VMD export target: {target or 'empty'}")
+    return targets
 
 
 _PHYSICS_PRE_INPUT_ATTRS = {

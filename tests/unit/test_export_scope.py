@@ -10,6 +10,7 @@ from tests.common.maya_stub import install_maya_stub
 install_maya_stub()
 
 from mmd_tools.converters import export_scene_collector as export_scene_collector_module  # noqa: E402
+from mmd_tools.converters import mesh_converter as mesh_converter_module  # noqa: E402
 from mmd_tools.converters import morph_converter as morph_converter_module  # noqa: E402
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector  # noqa: E402
 from mmd_tools.converters.material_shader_parameters import (  # noqa: E402
@@ -66,7 +67,6 @@ from mmd_tools.core.constants import (  # noqa: E402
 from mmd_tools.converters.morph_converter import MorphConverter  # noqa: E402
 from mmd_tools.converters.mesh_converter import MeshConverter  # noqa: E402
 from mmd_tools.core import maya_material_utils  # noqa: E402
-from mmd_tools.core.pmx_data.morph import PmxMorphType  # noqa: E402
 
 
 class TestExportScope(unittest.TestCase):
@@ -85,6 +85,88 @@ class TestExportScope(unittest.TestCase):
         )
 
         self.assertEqual(remapped, [8, 9])
+
+    def test_native_uv_weld_requires_source_to_local_capability(self):
+        converter = MeshConverter.__new__(MeshConverter)
+        converter.model_filepath = "model.pmx"
+        converter.logger = mock.Mock()
+
+        with mock.patch.object(
+            mesh_converter_module.cmds,
+            "mmdWeldUvSeamVertices",
+            return_value=["sourceToLocalV1", "morphEquivalentV1"],
+            create=True,
+        ), mock.patch.object(
+            mesh_converter_module.cmds,
+            "help",
+            return_value="-qc -queryCapabilities Boolean",
+            create=True,
+        ):
+            self.assertTrue(converter._cpp_uv_weld_command_available())
+
+        with mock.patch.object(
+            mesh_converter_module.cmds,
+            "mmdWeldUvSeamVertices",
+            create=True,
+        ) as old_command, mock.patch.object(
+            mesh_converter_module.cmds,
+            "help",
+            return_value="-f -file String -m -mesh String",
+            create=True,
+        ):
+            self.assertFalse(converter._cpp_uv_weld_command_available())
+        old_command.assert_not_called()
+        converter.logger.warning.assert_called_once()
+
+    def test_mesh_data_keeps_duplicate_sources_without_native_weld(self):
+        def vertex(uv):
+            return SimpleNamespace(
+                position=(0.0, 0.0, 0.0),
+                uv=uv,
+                normal=(0.0, 1.0, 0.0),
+            )
+
+        vertices = [vertex((0.0, 0.0)), vertex((1.0, 0.0))]
+        converter = MeshConverter.__new__(MeshConverter)
+        converter.scale = 1.0
+
+        data = converter._build_maya_mesh_data(vertices, [], weld_keys=None)
+
+        self.assertEqual(data["source_to_local_indices"], [0, 1])
+        self.assertEqual(data["welded_vertex_count"], 0)
+
+    def test_legacy_pmd_keys_keep_conservative_seam_weld(self):
+        vertex = SimpleNamespace(
+            position=(0.0, 0.0, 0.0),
+            bone_indices=[0, 1],
+            bone_weights=[0.75, 0.25],
+            edge_magnification=1.0,
+        )
+
+        keys = MeshConverter._build_pmd_vertex_weld_keys(
+            [vertex, vertex], [], []
+        )
+
+        self.assertEqual(keys[0], keys[1])
+
+    def test_source_to_local_mapping_is_inverted_to_all_source_aliases(self):
+        with (
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "attributeQuery",
+                side_effect=lambda attr, **_kwargs: attr == "mmd_source_to_local_indices",
+            ),
+            mock.patch.object(
+                export_scene_collector_module.cmds,
+                "getAttr",
+                return_value=[0, 0, 1],
+            ),
+        ):
+            aliases = export_scene_collector_module._mesh_source_vertex_aliases(
+                "mesh", "meshShape", 2
+            )
+
+        self.assertEqual(aliases, [[0, 1], [2]])
 
     def test_model_root_remaps_uv_morph_source_vertices_with_fanout(self):
         morphs = [
@@ -122,28 +204,45 @@ class TestExportScope(unittest.TestCase):
                 {0: [0]},
             )
 
-    def test_uv_morph_source_vertex_is_not_welded(self):
-        vertex = SimpleNamespace(
-            position=(0.0, 0.0, 0.0),
-            bone_indices=[0],
-            bone_weights=[1.0],
-            edge_magnification=1.0,
-            additional_uvs=[],
-        )
-        morph = SimpleNamespace(
-            morph_type=PmxMorphType.UVMorph,
-            offsets=[{"vertex_index": 1}],
+    def test_model_root_deduplicates_equivalent_welded_uv_morph_offsets(self):
+        morphs = [
+            {
+                "type": "uv",
+                "name": "welded_uv",
+                "offsets": [
+                    {"vertex_index": 0, "uv_offset": [0.25, 0.0, 0.0, 0.0]},
+                    {"vertex_index": 1, "uv_offset": [0.25, 0.0, 0.0, 0.0]},
+                ],
+            }
+        ]
+
+        remapped = export_scene_collector_module._remap_vertex_indexed_morph_offsets(
+            morphs,
+            {0: [7], 1: [7]},
         )
 
-        keys = MeshConverter.__new__(MeshConverter)._build_vertex_weld_keys(
-            [vertex, vertex],
-            [],
-            [],
-            [morph],
+        self.assertEqual(
+            remapped[0]["offsets"],
+            [{"vertex_index": 7, "uv_offset": [0.25, 0.0, 0.0, 0.0]}],
         )
 
-        self.assertEqual(keys[1], ("morph_source", 1))
-        self.assertNotEqual(keys[0], keys[1])
+    def test_model_root_rejects_conflicting_welded_uv_morph_offsets(self):
+        morphs = [
+            {
+                "type": "uv",
+                "name": "conflicting_uv",
+                "offsets": [
+                    {"vertex_index": 0, "uv_offset": [0.25, 0.0, 0.0, 0.0]},
+                    {"vertex_index": 1, "uv_offset": [0.5, 0.0, 0.0, 0.0]},
+                ],
+            }
+        ]
+
+        with self.assertRaisesRegex(ValueError, "conflicting offsets"):
+            export_scene_collector_module._remap_vertex_indexed_morph_offsets(
+                morphs,
+                {0: [7], 1: [7]},
+            )
 
     def test_model_root_restores_mixed_morph_order_without_group_morphs(self):
         """Authoring projection receives canonical PMX order for ordinary mixed morphs."""

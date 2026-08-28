@@ -26,7 +26,7 @@ from tests.common.authoring_ui_surface_cases import (  # noqa: E402
     exercise_surface,
     load_headless_surfaces,
 )
-from tools.ui_coverage_gate import validate_report  # noqa: E402
+from tools.gates.ui_coverage_gate import validate_report  # noqa: E402
 
 
 SURFACES = load_headless_surfaces()
