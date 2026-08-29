@@ -387,6 +387,17 @@ def _run_release_gate_tier2_parallel(
             return name.rsplit("-", 1)[-1]
         return name
 
+    def generated_visual_diff_pair_end(index: int, name: str) -> int | None:
+        """Return the end of the exact visual-diff and bundled-smoke pair."""
+        if name != "tier2:generated-pmx-glsl-dx11-diff":
+            return None
+        pair_end = index + 1
+        if pair_end >= len(tier2_commands) or pair_end in lane_indexes:
+            return None
+        if tier2_commands[pair_end][0] != "tier2:bundled-native-smoke":
+            return None
+        return pair_end + 1
+
     def run_group(group: list[tuple[int, str, list[str]]]) -> None:
         """Run a contiguous independent group in safe batches of at most two."""
         batches: list[list[tuple[int, str, list[str]]]] = [[]]
@@ -416,6 +427,18 @@ def _run_release_gate_tier2_parallel(
             index += 1
             continue
         name, command = tier2_commands[index]
+        visual_diff_pair_end = generated_visual_diff_pair_end(index, name)
+        if visual_diff_pair_end is not None:
+            run_group(
+                [
+                    (command_index, group_name, group_command)
+                    for command_index, (group_name, group_command) in enumerate(
+                        tier2_commands[index:visual_diff_pair_end], start=index
+                    )
+                ]
+            )
+            index = visual_diff_pair_end
+            continue
         if name.startswith("tier2:viewport-") or name.startswith("tier2:generated-pmx-visual-"):
             group_start = index
             prefix = "tier2:viewport-" if name.startswith("tier2:viewport-") else "tier2:generated-pmx-visual-"
