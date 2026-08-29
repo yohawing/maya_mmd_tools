@@ -19,6 +19,7 @@ from mmd_tools.core.collider_authoring import (
     connect_collider_authoring_follow,
     set_collider_authoring_pose,
 )
+from mmd_tools.core.coordinate_transform import mmd_point_to_maya
 from mmd_tools.core.maya_angle import radians_to_maya_angle
 
 _logger = get_logger(__name__)
@@ -124,7 +125,14 @@ def _build_rigid_body(
         return None
 
 
-def _build_joint(index: int, jt, rigid_body_transforms: list, parent_group: str, logger) -> Optional[str]:
+def _build_joint(
+    index: int,
+    jt,
+    rigid_body_transforms: list,
+    parent_group: str,
+    logger,
+    display_scale: float,
+) -> Optional[str]:
     base_name = _display_name(jt.name_english, jt.name)
     node_name = f"jt_{index}_{_sanitize_node_name(base_name)}"
     transform = None
@@ -157,7 +165,7 @@ def _build_joint(index: int, jt, rigid_body_transforms: list, parent_group: str,
         if rb_b:
             cmds.connectAttr(f"{rb_b}.message", f"{shape}.rigidBodyB")
 
-        _set_position_attr(transform, "translate", jt.position)
+        _set_position_attr(transform, "translate", mmd_point_to_maya(jt.position, display_scale))
 
         return transform
     except Exception as exc:
@@ -198,7 +206,8 @@ def build_physics_scene(
         for index, rb in enumerate(rigid_bodies)
     ]
     joint_transforms = [
-        _build_joint(index, jt, rigid_body_transforms, constraints_group, log) for index, jt in enumerate(joints)
+        _build_joint(index, jt, rigid_body_transforms, constraints_group, log, scale)
+        for index, jt in enumerate(joints)
     ]
 
     _find_or_create_world_node()

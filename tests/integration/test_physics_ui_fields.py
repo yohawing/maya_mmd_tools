@@ -11,6 +11,7 @@ import maya.api.OpenMaya as om
 from maya import cmds
 
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
+from mmd_tools.core.coordinate_transform import mmd_point_to_maya
 from mmd_tools.core.model_registry import (
     REGISTRY_CATEGORY_PHYSICS,
     list_model_registry_members,
@@ -48,9 +49,10 @@ class _Combo:
         return self._value
 
 
-def _import_fixture(path, namespace):
+def _import_fixture(path, namespace, scale=None):
     return import_mmd_file(
         str(path),
+        scale=scale,
         options={
             "import_physics": True,
             "create_mmd_shaders": False,
@@ -241,6 +243,29 @@ class TestPhysicsUIFields(MayaTestBase):
         self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
 
     @unittest.skipUnless(FIXTURE.exists(), "hair physics fixture not found")
+    def test_apply_joint_scales_display_translation_and_preserves_raw_position(self):
+        scale = 0.5
+        root = _import_fixture(FIXTURE, "JointScale", scale=scale)
+        joint_shape = (cmds.listRelatives(
+            root, allDescendents=True, type="mmdPhysicsJointShape", fullPath=True,
+        ) or [None])[0]
+        self.assertTrue(joint_shape)
+        joint_transform = cmds.listRelatives(joint_shape, parent=True, fullPath=True)[0]
+        position = _vector(joint_shape, "position")
+        view = _joint_view(position, _vector(joint_shape, "rotation"))
+        presenter = _presenter(view, "joint", joint_shape)
+
+        presenter.apply_changes()
+
+        self.assertEqual(_vector(joint_shape, "position"), position)
+        expected_translation = mmd_point_to_maya(position, scale)
+        self.assertNotEqual(position, expected_translation, "fixture must exercise import scaling")
+        self.assertEqual(
+            tuple(cmds.getAttr(f"{joint_transform}.translate")[0]),
+            expected_translation,
+        )
+
+    @unittest.skipUnless(FIXTURE.exists(), "hair physics fixture not found")
     def test_apply_undo_follow_collector_export_and_fresh_reimport(self):
         root = _import_fixture(FIXTURE, "Nested:UIFields")
         rigid_shape = (cmds.listRelatives(root, allDescendents=True, type="mmdRigidBodyShape") or [None])[0]
@@ -301,7 +326,10 @@ class TestPhysicsUIFields(MayaTestBase):
         joint_version = cmds.getAttr(f"{joint_shape}.outDescriptorVersion")
         joint.apply_changes()
         self.assertEqual(_vector(joint_shape, "position"), joint_position)
-        self.assertEqual(tuple(cmds.getAttr(f"{joint_transform}.translate")[0]), joint_position)
+        self.assertEqual(
+            tuple(cmds.getAttr(f"{joint_transform}.translate")[0]),
+            mmd_point_to_maya(joint_position),
+        )
         for actual, expected in zip(_vector(joint_shape, "rotation"), joint_rotation):
             self.assertAlmostEqual(actual, expected, places=5)
         self.assertGreater(cmds.getAttr(f"{joint_shape}.outDescriptorVersion"), joint_version)

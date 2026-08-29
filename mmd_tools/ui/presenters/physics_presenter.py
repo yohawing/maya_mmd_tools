@@ -16,7 +16,13 @@ from mmd_tools.core.collider_authoring import (
 )
 
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
-from ...core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
+from ...core.constants import (
+    ATTR_MMD_IMPORT_SCALE,
+    CONSTRAINTS_GROUP,
+    PHYSICS_GROUP,
+    RIGID_BODIES_GROUP,
+)
+from ...core.coordinate_transform import mmd_point_to_maya
 from ...core.logger import get_logger
 from ...core.model_registry import (
     REGISTRY_CATEGORY_PHYSICS,
@@ -992,7 +998,13 @@ class PhysicsPresenter:
         transform = (cmds.listRelatives(shape, parent=True, fullPath=True) or [None])[0]
         if not transform:
             raise RuntimeError(f"Physics joint transform not found for {shape}")
-        cmds.setAttr(f"{transform}.translate", *parsed.pmx_position, type="double3")
+        root = getattr(self.app_state, "current_model_root", None)
+        display_scale = float(_get_attr(root, ATTR_MMD_IMPORT_SCALE, 1.0))
+        cmds.setAttr(
+            f"{transform}.translate",
+            *mmd_point_to_maya(parsed.pmx_position, display_scale),
+            type="double3",
+        )
         for attr, values in (
             ("translationLimitMin", parsed.translation_limit_min),
             ("translationLimitMax", parsed.translation_limit_max),
