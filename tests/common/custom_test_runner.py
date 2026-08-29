@@ -46,9 +46,21 @@ class CustomTestResult(TextTestResult):
     """
 
     def __init__(self, *args, **kwargs):
+        self._timing_recorder = kwargs.pop("timing_recorder", None)
+        self.timing_recorder = self._timing_recorder
         super(CustomTestResult, self).__init__(*args, **kwargs)
         self.use_colors = sys.stdout.isatty()  # ターミナルの場合のみカラー表示
         self.show_error_details = True
+
+    def startTest(self, test):
+        """Start the shared timer at the beginning of unittest's lifecycle."""
+        super(CustomTestResult, self).startTest(test)
+        if self._timing_recorder is not None:
+            self._timing_recorder.start_test(test)
+
+    def _record_timing_outcome(self, test, outcome):
+        if self._timing_recorder is not None:
+            self._timing_recorder.record_outcome(test, outcome)
 
     def getDescription(self, test):
         """テストの説明を取得します。docstringがあれば表示します。"""
@@ -61,6 +73,7 @@ class CustomTestResult(TextTestResult):
     def addSuccess(self, test):
         """テストが成功した場合の処理"""
         super(CustomTestResult, self).addSuccess(test)
+        self._record_timing_outcome(test, "success")
         if self.showAll:
             if self.use_colors:
                 self.stream.writeln(f"{COLOR['GREEN']}OK{COLOR['RESET']}")
@@ -70,6 +83,7 @@ class CustomTestResult(TextTestResult):
     def addError(self, test, err):
         """テストがエラーになった場合の処理"""
         super(CustomTestResult, self).addError(test, err)
+        self._record_timing_outcome(test, "error")
         if self.showAll:
             if self.use_colors:
                 self.stream.writeln(f"{COLOR['MAGENTA']}ERROR{COLOR['RESET']}")
@@ -79,6 +93,7 @@ class CustomTestResult(TextTestResult):
     def addFailure(self, test, err):
         """テストが失敗した場合の処理"""
         super(CustomTestResult, self).addFailure(test, err)
+        self._record_timing_outcome(test, "failure")
         if self.showAll:
             if self.use_colors:
                 self.stream.writeln(f"{COLOR['RED']}FAIL{COLOR['RESET']}")
@@ -88,6 +103,8 @@ class CustomTestResult(TextTestResult):
     def addSkip(self, test, reason):
         """テストがスキップされた場合の処理"""
         super(CustomTestResult, self).addSkip(test, reason)
+        parent_test = getattr(test, "test_case", None)
+        self._record_timing_outcome(parent_test or test, "skipped")
         if self.showAll:
             if self.use_colors:
                 self.stream.writeln(f"{COLOR['BLUE']}SKIP{COLOR['RESET']}: {reason}")
@@ -97,6 +114,7 @@ class CustomTestResult(TextTestResult):
     def addExpectedFailure(self, test, err):
         """予期された失敗の場合の処理"""
         super(CustomTestResult, self).addExpectedFailure(test, err)
+        self._record_timing_outcome(test, "expected_failure")
         if self.showAll:
             if self.use_colors:
                 self.stream.writeln(f"{COLOR['YELLOW']}expected failure{COLOR['RESET']}")
@@ -106,6 +124,7 @@ class CustomTestResult(TextTestResult):
     def addUnexpectedSuccess(self, test):
         """予期せず成功した場合の処理"""
         super(CustomTestResult, self).addUnexpectedSuccess(test)
+        self._record_timing_outcome(test, "unexpected_success")
         if self.showAll:
             if self.use_colors:
                 self.stream.writeln(f"{COLOR['YELLOW']}unexpected success{COLOR['RESET']}")
@@ -136,6 +155,24 @@ class CustomTestResult(TextTestResult):
         elif self.failures:
             self.stream.writeln("失敗詳細:")
             self.printErrorList("FAIL", self.failures)
+
+    def addSubTest(self, test, subtest, err):
+        """Preserve a failing subtest as the parent test's timing outcome."""
+        super(CustomTestResult, self).addSubTest(test, subtest, err)
+        if err is not None:
+            outcome = (
+                "failure"
+                if issubclass(err[0], test.failureException)
+                else "error"
+            )
+            self._record_timing_outcome(test, outcome)
+
+    def stopTest(self, test):
+        """Finish only after unittest tearDown and cleanup hooks complete."""
+        if self._timing_recorder is not None:
+            outcome = self._timing_recorder.outcome_for(test) or "unknown"
+            self._timing_recorder.finish_test(test, outcome)
+        super(CustomTestResult, self).stopTest(test)
 
     def printErrorList(self, flavour, errors):
         """エラーリストの表示をカスタマイズ"""
@@ -183,12 +220,15 @@ class CustomTestRunner(TextTestRunner):
 
     def __init__(self, *, show_error_details=True, **kwargs):
         self.show_error_details = show_error_details
+        self.timing_recorder = kwargs.pop("timing_recorder", None)
         super(CustomTestRunner, self).__init__(**kwargs)
         enable_windows_ansi_support()
 
     def _makeResult(self):
         result = super()._makeResult()
         result.show_error_details = self.show_error_details
+        result._timing_recorder = self.timing_recorder
+        result.timing_recorder = self.timing_recorder
         return result
 
     def run(self, test):

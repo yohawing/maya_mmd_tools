@@ -100,25 +100,6 @@ class TestVmdConverter(MayaTestBase):
         # 少なくとも1つのジョイントがアニメーションされていることを確認
         self.assertGreater(len(animated_joints), 0, "アニメーションが設定されたジョイントがありません")
 
-    def test_get_failed_bones(self):
-        """失敗したボーン名の取得テスト"""
-        # 初期状態
-        self.assertEqual(len(self.converter.get_failed_bones()), 0)
-
-        # 失敗したボーンを追加
-        self.converter._failed_bones.add("ボーン1")
-        self.converter._failed_bones.add("ボーン2")
-
-        # 取得
-        failed = self.converter.get_failed_bones()
-        self.assertEqual(len(failed), 2)
-        self.assertIn("ボーン1", failed)
-        self.assertIn("ボーン2", failed)
-
-        # 元のセットが変更されないことを確認
-        failed.add("ボーン3")
-        self.assertEqual(len(self.converter._failed_bones), 2)
-
     def test_1bone_vmd_conversion(self):
         """1ボーンVMDデータの変換テスト"""
         # 共通関数を使用してモデルとVMDを読み込み

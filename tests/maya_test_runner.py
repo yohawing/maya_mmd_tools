@@ -28,6 +28,7 @@ from tests.common.custom_test_runner import (  # noqa: E402
     enable_windows_ansi_support,
 )
 from tests.common.output_hygiene import summarize_unittest_result  # noqa: E402
+from tests.common.test_timing import TestTimingRecorder  # noqa: E402
 
 
 def _load_global_test_plugin() -> str | None:
@@ -233,6 +234,9 @@ def _result_payload(test_type, result, duration_sec):
         "status": "pass" if result.wasSuccessful() else "fail",
         "summary": summary,
         "duration_sec": round(duration_sec, 3),
+        "tests": getattr(result, "timing_recorder", None).tests
+        if getattr(result, "timing_recorder", None) is not None
+        else [],
         "first_failure": failed_tests[0] if failed_tests else None,
         "failed_tests": failed_tests,
     }
@@ -272,9 +276,11 @@ def run_tests(
         enable_windows_ansi_support()
 
         # カラー対応のテストランナーを使用
+        timing_recorder = TestTimingRecorder(test.id() for test in get_all_tests(suite))
         runner = CustomTestRunner(
             verbosity=2 if verbose else 1,
             show_error_details=verbose or capture_details,
+            timing_recorder=timing_recorder,
         )
         runner.failfast = False
         # The outer runner owns terminal suppression. Keep successful-test stdout

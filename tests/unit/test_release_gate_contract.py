@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import inspect
+import os
 import re
 import sys
 import tempfile
@@ -454,6 +455,74 @@ class ReleaseGateContractTest(unittest.TestCase):
         input_check = source.index("for required in")
         self.assertLess(cleanup, input_check)
         self.assertIn("(*run_reports, comparison_json, comparison_md)", source)
+
+    def test_native_physics_release_gate_runs_collision_tests_once_with_bundled_ffi(self):
+        class FakeSession:
+            def __init__(self):
+                self.runs = []
+
+            def run(self, *args, **kwargs):
+                self.runs.append((args, kwargs))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pmx = root / "tests" / "data" / "physics" / "test_hair_physics.pmx"
+            vmd = root / "tests" / "data" / "mmt_test_model_test_motion.vmd"
+            mayapy_path = root / "Maya2024" / "bin" / "mayapy.exe"
+            ffi = root / "mmd_runtime_ffi.dll"
+            for path in (pmx, vmd, mayapy_path, ffi):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+
+            session = FakeSession()
+            with mock.patch.dict(os.environ, {"MMD_ANIM_FFI_PATH": "stale.dll"}, clear=False):
+                run_native_physics_release_gate(
+                    session,
+                    root=root,
+                    bundled_physics_runtime=lambda: ffi,
+                    mayapy=lambda _version: mayapy_path,
+                    mayapy_env=lambda _path, **values: values,
+                    mayapy_script=lambda _path, script: script,
+                    maya_process_path=lambda _path, value: str(value),
+                    python_executable="python",
+                )
+
+        def is_script(args, suffix):
+            return str(args[1]).replace("\\", "/").endswith(suffix)
+
+        collision_runs = [
+            (args, kwargs)
+            for args, kwargs in session.runs
+            if args[0] == "python"
+            and is_script(args, "tests/release/test_native_physics_collision.py")
+        ]
+        self.assertEqual(len(collision_runs), 1)
+        collision_args, collision_kwargs = collision_runs[0]
+        self.assertEqual(collision_args[0], "python")
+        self.assertEqual(collision_kwargs["env"]["MMD_ANIM_FFI_PATH"], str(ffi))
+        self.assertTrue(Path(collision_kwargs["env"]["MMD_ANIM_FFI_PATH"]).is_absolute())
+        self.assertNotIn("success_codes", collision_kwargs)
+
+        capture_runs = [
+            (args, kwargs)
+            for args, kwargs in session.runs
+            if is_script(args, "tests/viewport/native_physics_bake_capture.py")
+        ]
+        self.assertEqual(len(capture_runs), 2)
+        self.assertEqual(
+            capture_runs[0][1]["env"]["MMD_ANIM_FFI_PATH"],
+            str(ffi),
+        )
+
+    def test_native_physics_collision_fails_when_runtime_is_unavailable(self):
+        from tests.release import test_native_physics_collision
+
+        with mock.patch.object(
+            test_native_physics_collision,
+            "_native_physics_available",
+            return_value=False,
+        ), self.assertRaisesRegex(RuntimeError, "runtime is unavailable"):
+            test_native_physics_collision.TestNativePhysicsCollision.setUpClass()
 
 
 if __name__ == "__main__":
