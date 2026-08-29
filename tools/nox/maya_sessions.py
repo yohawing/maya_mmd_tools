@@ -1268,13 +1268,13 @@ def run_import_scale_drift_e2e(
     mayapy_script,
     convert_mayapy_path_options,
 ) -> None:
-    """Run mayapy diagnostics for import scale and skin bind drift."""
+    """Run the mayapy import-scale acceptance oracle."""
     maya_version = option(posargs, "--maya", "2024")
     mayapy_path = mayapy(maya_version)
     passthrough: list[str] = []
     args = list(posargs)
     path_options = {"--model", "--log"}
-    value_options = path_options | {"--scale", "--expect", "--clean-threshold", "--drift-threshold", "--parser"}
+    value_options = path_options | {"--scale", "--expect", "--clean-threshold", "--linearity-tolerance", "--parser"}
     i = 0
     while i < len(args):
         if args[i] == "--maya" and i + 1 < len(args):
@@ -1289,7 +1289,12 @@ def run_import_scale_drift_e2e(
         str(mayapy_path),
         mayapy_script(mayapy_path, "tests/viewport/import_scale_drift_e2e.py"),
         *convert_mayapy_path_options(mayapy_path, passthrough, path_options),
-        env=mayapy_env(mayapy_path, preserve_pythonpath=True),
+        env=mayapy_env(
+            mayapy_path,
+            preserve_pythonpath=True,
+            MAYA_SKIP_USERSETUP_PY="1",
+            PYTHONIOENCODING="utf-8",
+        ),
         external=True,
     )
 

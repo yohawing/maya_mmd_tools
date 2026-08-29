@@ -164,6 +164,49 @@ class NativeSessionsTest(unittest.TestCase):
             self.assertEqual(args[1], script)
             self.assertNotIn("--maya", args)
 
+    def test_import_scale_e2e_forwards_repeated_scales_and_linearity_tolerance(self):
+        session = _FakeSession(
+            [
+                "--maya",
+                "2026",
+                "--scale",
+                "0.5",
+                "--scale",
+                "1.5",
+                "--linearity-tolerance",
+                "0.00002",
+            ]
+        )
+        mayapy = mock.Mock()
+        run_import_scale_drift_e2e(
+            session,
+            posargs=session.posargs,
+            option=_option,
+            mayapy=lambda _version: mayapy,
+            mayapy_env=lambda _mayapy, **values: values,
+            mayapy_script=lambda _mayapy, child: child,
+            convert_mayapy_path_options=lambda _mayapy, args, _options: args,
+        )
+
+        args, kwargs = session.runs[0]
+        self.assertEqual(
+            args,
+            (
+                str(mayapy),
+                "tests/viewport/import_scale_drift_e2e.py",
+                "--scale",
+                "0.5",
+                "--scale",
+                "1.5",
+                "--linearity-tolerance",
+                "0.00002",
+            ),
+        )
+        self.assertNotIn("--maya", args)
+        self.assertNotIn("--drift-threshold", args)
+        self.assertEqual(kwargs["env"]["MAYA_SKIP_USERSETUP_PY"], "1")
+        self.assertEqual(kwargs["env"]["PYTHONIOENCODING"], "utf-8")
+
     def test_import_order_e2e_generates_manifest_and_profile_when_requested(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
