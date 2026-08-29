@@ -7,8 +7,8 @@ Coordinate conventions
 ----------------------
 This collector exports Maya world-space geometry back into MMD basis by
 flipping Z for positions/normals and reversing face winding. Scale
-normalization is out of scope for this minimum slice and must be added in a
-later collector pass.
+normalization is applied only to raw PMX semantic fields; scene-derived
+geometry is already in the effective import scale.
 """
 
 import json
@@ -84,6 +84,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_X_AXIS_DIRECTION,
     ATTR_MMD_Z_AXIS_DIRECTION,
 )
+from mmd_tools.core import maya_attribute_utils
 from mmd_tools.core.coordinate_transform import maya_point_to_mmd
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
@@ -543,6 +544,11 @@ def _apply_texture_table(model_data: dict, model_root: str | None) -> None:
 def _maya_to_mmd_vector(values) -> list[float]:
     """Convert a Maya XYZ vector to MMD basis by flipping Z."""
     return list(maya_point_to_mmd(values))
+
+
+def _scale_vector(values, scale: float) -> list[float]:
+    """Scale one PMX-space vector while collecting raw scene metadata."""
+    return [float(value) * scale for value in values]
 
 
 def _list_export_mesh_shapes(root: str) -> list:
@@ -2126,8 +2132,8 @@ class ExportSceneCollector:
     UVs (first-occurrence per vertex), polygon connectivity, per-face
     material assignment, skinCluster weights, vertex blendShape morphs, and
     root-level bone/material morph metadata.  It converts positions, normals,
-    and face winding back to MMD basis; scale normalization belongs to a later
-    collector slice.
+    and face winding back to MMD basis.  Raw PMX semantic fields are scaled by
+    the persisted model import scale while scene-derived geometry is kept as-is.
 
     Example::
 
@@ -2298,7 +2304,7 @@ class ExportSceneCollector:
 
         This keeps the same minimum-slice limitations as ``collect_from_mesh``:
         world-space geometry is converted back to MMD basis, but scale
-        normalization is still out of scope.  Material groups remain paired
+        normalization is applied only to raw PMX semantic fields.  Material groups remain paired
         with their global-index-adjusted faces; complete PMX source material
         provenance restores their canonical order after the merge.
         """
@@ -2311,7 +2317,23 @@ class ExportSceneCollector:
         merged_materials = []
         merged_material_groups = []
         can_reorder_material_groups = True
+        import_scale = maya_attribute_utils.get_effective_import_scale(root)
         merged_bones = _collect_model_bones(root)
+        for bone in merged_bones:
+            source_joint = bone.get("source_joint")
+            if not source_joint:
+                continue
+            # These fields are preserved in PMX units on imported joints.  The
+            # live mesh and bind positions below already contain import_scale.
+            if _has_attr(source_joint, ATTR_MMD_PMX_REST_POSITION):
+                bone["position"] = _scale_vector(bone["position"], import_scale)
+            if (
+                "connect_position_offset" in bone
+                and _has_attr(source_joint, ATTR_MMD_BONE_OFFSET)
+            ):
+                bone["connect_position_offset"] = _scale_vector(
+                    bone["connect_position_offset"], import_scale
+                )
         vertex_morphs_by_name = {}
         global_bone_by_key = {
             _joint_identity(bone["source_joint"]): index
@@ -2462,7 +2484,11 @@ class ExportSceneCollector:
                 bone_index_by_joint[source_joint.rsplit("|", 1)[-1]] = index
 
         from .physics_export_collector import collect_physics_from_scene
-        rigid_bodies, joints = collect_physics_from_scene(root, bone_index_by_joint)
+        rigid_bodies, joints = collect_physics_from_scene(
+            root,
+            bone_index_by_joint,
+            scale=import_scale,
+        )
 
         model_data = {
             "model_name": _get_model_name(root),

@@ -153,18 +153,34 @@ def _copy_vector(value: Sequence[float]) -> list[float]:
     return [float(component) for component in value]
 
 
-def _overlay_bone(oracle: Mapping[str, Any], bone: Any) -> dict[str, Any]:
+def _scale_vector(value: Sequence[float], scale: float) -> list[float]:
+    return [float(component) * scale for component in value]
+
+
+def _validate_spatial_scale(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _fail("spatial_scale must be a finite positive number")
+    scale = float(value)
+    if not math.isfinite(scale) or scale <= 0.0:
+        _fail("spatial_scale must be a finite positive number")
+    return scale
+
+
+def _overlay_bone(oracle: Mapping[str, Any], bone: Any, spatial_scale: float) -> dict[str, Any]:
     result = dict(oracle)
     result.update(
         {
             "name": bone.name,
             "name_english": bone.name_english,
             "parent_index": bone.parent_index,
-            "position": _copy_vector(bone.rest_position),
+            "position": _scale_vector(bone.rest_position, spatial_scale),
             "transform_layer": bone.transform_layer,
             "bone_flag": bone.flags,
             "connect_bone_index": bone.connect_bone_index if bone.connect_bone_index is not None else -1,
-            "connect_position_offset": _copy_vector(bone.tail_offset or (0.0, 0.0, 0.0)),
+            "connect_position_offset": _scale_vector(
+                bone.tail_offset or (0.0, 0.0, 0.0),
+                spatial_scale,
+            ),
             "grant_parent_bone_index": bone.grant_parent_index if bone.grant_parent_index is not None else -1,
             "grant_rate": bone.grant_ratio,
             "axis_direction": _copy_vector(bone.fixed_axis or (0.0, 0.0, 0.0)),
@@ -293,7 +309,11 @@ def _project_material_texture_fields(
     return texture_table
 
 
-def _overlay_morph(oracle: Mapping[str, Any], morph: Any) -> dict[str, Any]:
+def _overlay_morph(
+    oracle: Mapping[str, Any],
+    morph: Any,
+    spatial_scale: float,
+) -> dict[str, Any]:
     result = dict(oracle)
     geometry_owned_types = {
         "vertex": ("position_offset", 3),
@@ -337,6 +357,16 @@ def _overlay_morph(oracle: Mapping[str, Any], morph: Any) -> dict[str, Any]:
             ):
                 _fail(f"{field}.{vector_field} must contain only finite numbers")
             result_offsets.append(dict(offset))
+    elif morph.morph_type == "bone":
+        result_offsets = []
+        for offset in morph.offsets:
+            projected_offset = dict(offset)
+            if "translation" in projected_offset:
+                projected_offset["translation"] = _scale_vector(
+                    projected_offset["translation"],
+                    spatial_scale,
+                )
+            result_offsets.append(projected_offset)
     else:
         result_offsets = [dict(offset) for offset in morph.offsets]
     result.update(
@@ -354,6 +384,8 @@ def _overlay_morph(oracle: Mapping[str, Any], morph: Any) -> dict[str, Any]:
 def project_authoring_spec(
     spec: MmdModelAuthoringSpec,
     oracle_payload: Mapping[str, Any],
+    *,
+    spatial_scale: float = 1.0,
 ) -> dict[str, Any]:
     """Project *spec* onto a fresh writer payload sourced from *oracle_payload*.
 
@@ -361,6 +393,7 @@ def project_authoring_spec(
     by explicit contiguous PMX index and overlaid in canonical index order.
     """
     spec = _require_spec(spec)
+    spatial_scale = _validate_spatial_scale(spatial_scale)
     oracle = _require_mapping(oracle_payload, field="oracle_payload")
     _require_spec_indices(spec)
     try:
@@ -412,7 +445,10 @@ def project_authoring_spec(
     result["model_name_english"] = spec.model.name_english
     result["comment"] = spec.model.comment
     result["comment_english"] = spec.model.comment_english
-    result["bones"] = [_overlay_bone(oracle_bones[index], spec.bones[index]) for index in range(len(spec.bones))]
+    result["bones"] = [
+        _overlay_bone(oracle_bones[index], spec.bones[index], spatial_scale)
+        for index in range(len(spec.bones))
+    ]
     result["materials"] = [
         _overlay_material(material_by_index[index], spec.materials[index])
         for index in range(len(spec.materials))
@@ -422,7 +458,7 @@ def project_authoring_spec(
         oracle_morph = morph_by_index[index]
         if oracle_morph.get("type", _MISSING) != morph.morph_type:
             _fail(f"oracle.morphs[{index}].type does not match spec morph type")
-        projected_morphs.append(_overlay_morph(oracle_morph, morph))
+        projected_morphs.append(_overlay_morph(oracle_morph, morph, spatial_scale))
     result["morphs"] = projected_morphs
     result["textures"] = _project_material_texture_fields(
         spec.materials,

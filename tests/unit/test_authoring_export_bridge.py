@@ -130,6 +130,46 @@ def test_vertex_offsets_are_taken_from_blendshape_oracle() -> None:
     assert projected["morphs"][0]["offsets"][0]["vertex_index"] == 1
 
 
+def test_bone_offsets_keep_spec_edits_and_scale_translation() -> None:
+    morph = MmdMorphSpec(
+        name="Bone",
+        index=0,
+        morph_type="bone",
+        offsets=(
+            {
+                "bone_index": 0,
+                "translation": (2.0, 4.0, 6.0),
+                "rotation": (0.1, 0.2, 0.3, 0.9),
+            },
+        ),
+    )
+    oracle = _oracle(
+        morphs=[
+            {
+                "index": 0,
+                "type": "bone",
+                "offsets": [
+                    {
+                        "bone_index": 0,
+                        "translation": [20.0, 40.0, 60.0],
+                        "rotation": [0.9, 0.8, 0.7, 0.6],
+                    },
+                ],
+            }
+        ]
+    )
+
+    projected = project_authoring_spec(
+        _spec(morphs=(morph,)),
+        oracle,
+        spatial_scale=0.5,
+    )
+
+    projected_offset = projected["morphs"][0]["offsets"][0]
+    assert projected_offset["translation"] == [1.0, 2.0, 3.0]
+    assert projected_offset["rotation"] == (0.1, 0.2, 0.3, 0.9)
+
+
 def test_uv_offsets_keep_collector_post_weld_vertex_indices() -> None:
     morph = MmdMorphSpec(
         name="UV",

@@ -9,6 +9,7 @@ from pathlib import Path
 import tempfile
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from ..core import maya_attribute_utils
 from ..core.logger import get_logger
 from ..validation.export_validator import (
     ExportValidationAcknowledgementRequired,
@@ -118,7 +119,11 @@ def _project_authoring_payload(
         return oracle_payload
     backend = MayaSceneMetadataBackend(adapter)
     spec = SceneMetadataAdapter(backend).read_spec(root)
-    return project_authoring_spec(spec, oracle_payload)
+    return project_authoring_spec(
+        spec,
+        oracle_payload,
+        spatial_scale=maya_attribute_utils.get_effective_import_scale(root),
+    )
 
 
 @dataclass

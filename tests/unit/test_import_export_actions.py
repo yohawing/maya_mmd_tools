@@ -436,8 +436,8 @@ class TestExportModelAction(unittest.TestCase):
                 calls.append(("read", root))
                 return "spec"
 
-        def bridge(spec, payload):
-            calls.append(("bridge", spec, payload))
+        def bridge(spec, payload, *, spatial_scale=1.0):
+            calls.append(("bridge", spec, payload, spatial_scale))
             return {"projected": True}
 
         with (
@@ -454,6 +454,7 @@ class TestExportModelAction(unittest.TestCase):
         self.assertEqual(projected, {"projected": True})
         self.assertEqual([entry[0] for entry in calls], ["collect", "backend", "reader", "read", "bridge"])
         self.assertIs(calls[-1][2], oracle)
+        self.assertEqual(calls[-1][3], 1.0)
 
     def test_default_collector_explicit_legacy_skips_authoring_route(self):
         oracle = {"vertices": [], "faces": [], "marker": "oracle"}
