@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -153,6 +154,104 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(raw_offsets[0]["translation"], [1.0, 2.0, 3.0])
 
         cmds.delete(mesh_name, morph_node)
+
+    def test_import_scale_contract_for_vertex_and_bone_morphs(self):
+        """頂点・ボーンモーフの空間変換が import scale ごとに安定する。"""
+        vertex_offset = {
+            "vertex_index": 1,
+            "position_offset": (0.25, -0.5, 0.75),
+        }
+        bone_offset = {
+            "bone_index": 3,
+            "translation": (1.0, 2.0, 3.0),
+            "rotation": (0.1, 0.2, 0.3, 0.9),
+        }
+
+        class FakeVertexMorph:
+            name = "頂点スケール"
+            name_english = "vertex_scale"
+            panel = 1
+            morph_type = PmxMorphType.VertexMorph
+
+            def __init__(self):
+                self.offsets = [vertex_offset]
+
+            def get_name(self):
+                return self.name
+
+        class FakeBoneMorph:
+            name = "ボーンスケール"
+            name_english = "bone_scale"
+            panel = 4
+            morph_type = PmxMorphType.BoneMorph
+
+            def __init__(self):
+                self.offsets = [bone_offset]
+
+            def get_name(self):
+                return self.name
+
+        vertex_morph = FakeVertexMorph()
+        bone_morph = FakeBoneMorph()
+        fake_data = type("FakePmxData", (), {"morphs": [vertex_morph, bone_morph]})()
+        vertex_offsets_snapshot = deepcopy(vertex_morph.offsets)
+        bone_offsets_snapshot = deepcopy(bone_morph.offsets)
+
+        for scale in (0.5, 1.0, 1.5):
+            with self.subTest(scale=scale):
+                cmds.file(new=True, force=True)
+                try:
+                    mesh_name = self._create_test_mesh()
+                    result = MorphConverter(scale=scale).convert_pmx_morphs(fake_data, mesh_name)
+
+                    self.assertTrue(result.get("success", False))
+                    self.assertEqual(result.get("morphs_converted"), 2)
+                    self.assertEqual(len(result.get("blend_shape_nodes", [])), 1)
+                    self.assertEqual(len(result.get("bone_morph_nodes", [])), 1)
+
+                    vertex_result = next(
+                        row for row in result["results"] if "blend_shape_node" in row
+                    )
+                    cmds.setAttr(
+                        f"{vertex_result['blend_shape_node']}.{vertex_result['alias']}",
+                        1.0,
+                    )
+                    moved_position = cmds.pointPosition(f"{mesh_name}.vtx[1]", local=True)
+                    self.assertAlmostEqual(moved_position[0], 1.0 + 0.25 * scale, places=5)
+                    self.assertAlmostEqual(moved_position[1], -0.5 * scale, places=5)
+                    self.assertAlmostEqual(moved_position[2], -0.75 * scale, places=5)
+
+                    bone_node = result["bone_morph_nodes"][0]
+                    effective_offsets = json.loads(
+                        cmds.getAttr(f"{bone_node}.mmd_bone_morph_offsets_json")
+                    )
+                    raw_offsets = json.loads(
+                        cmds.getAttr(f"{bone_node}.{ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON}")
+                    )
+                    self.assertEqual(len(effective_offsets[0]["translation"]), 3)
+                    for actual, expected in zip(
+                        effective_offsets[0]["translation"],
+                        (1.0 * scale, 2.0 * scale, 3.0 * scale),
+                    ):
+                        self.assertAlmostEqual(actual, expected, places=5)
+                    self.assertEqual(raw_offsets[0]["translation"], [1.0, 2.0, 3.0])
+                    self.assertEqual(effective_offsets[0]["rotation"], [0.1, 0.2, 0.3, 0.9])
+                    self.assertEqual(raw_offsets[0]["rotation"], [0.1, 0.2, 0.3, 0.9])
+                    self.assertEqual(effective_offsets[0]["bone_index"], 3)
+                    self.assertEqual(raw_offsets[0]["bone_index"], 3)
+                finally:
+                    cmds.file(new=True, force=True)
+
+        self.assertEqual(vertex_morph.offsets, vertex_offsets_snapshot)
+        self.assertEqual(bone_morph.offsets, bone_offsets_snapshot)
+        self.assertEqual(vertex_morph.name, "頂点スケール")
+        self.assertEqual(vertex_morph.name_english, "vertex_scale")
+        self.assertEqual(vertex_morph.panel, 1)
+        self.assertEqual(vertex_morph.morph_type, PmxMorphType.VertexMorph)
+        self.assertEqual(bone_morph.name, "ボーンスケール")
+        self.assertEqual(bone_morph.name_english, "bone_scale")
+        self.assertEqual(bone_morph.panel, 4)
+        self.assertEqual(bone_morph.morph_type, PmxMorphType.BoneMorph)
 
     def test_convert_pmx_group_morph_metadata(self):
         """PMX GroupMorph が network node として import されることをテストする。"""
