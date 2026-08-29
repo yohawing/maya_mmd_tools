@@ -200,6 +200,92 @@ class NoxReleaseTest(unittest.TestCase):
         self.assertIn("tier2:mayapy-integration-2024", seen)
         self.assertIn("tier2:mayapy-integration-2025", seen)
 
+    def test_tier2_parallel_groups_respect_viewport_visual_barriers(self):
+        versions = ("2024", "2025")
+        commands = [
+            (f"tier2:{step}-{version}", [step, version])
+            for version in versions
+            for step in ("cpp-debug-prerequisite", "mayapy-unit", "mayapy-integration")
+        ]
+        commands.extend(
+            [
+                ("tier2:viewport-glsl-2025", ["viewport", "2025"]),
+                ("tier2:viewport-dx11-2026", ["viewport", "2026"]),
+                ("tier2:generated-pmx-visual-glsl-2025", ["visual", "2025"]),
+                ("tier2:generated-pmx-visual-dx11-2026", ["visual", "2026"]),
+                ("tier2:generated-pmx-glsl-dx11-diff", ["diff"]),
+                ("tier2:serial-first", ["serial", "first"]),
+                ("tier2:serial-second", ["serial", "second"]),
+            ]
+        )
+        viewport_barrier = threading.Barrier(2)
+        visual_barrier = threading.Barrier(2)
+        viewport_done = threading.Event()
+        visual_done = threading.Event()
+        lock = threading.Lock()
+        active = 0
+        peak_active = 0
+        active_by_version = {}
+        completed_viewports = 0
+        completed_visuals = 0
+        serial_calls = []
+
+        def run_command(name, command, local_results, **_kwargs):
+            nonlocal active, peak_active, completed_viewports, completed_visuals
+            version = name.rsplit("-", 1)[-1] if name.startswith("tier2:viewport-") or name.startswith("tier2:generated-pmx-visual-") else None
+            with lock:
+                active += 1
+                peak_active = max(peak_active, active)
+                if version is not None:
+                    active_by_version[version] = active_by_version.get(version, 0) + 1
+                    self.assertLessEqual(active_by_version[version], 1)
+            try:
+                if name.startswith("tier2:viewport-"):
+                    self.assertFalse(visual_done.is_set())
+                    viewport_barrier.wait(timeout=2)
+                    with lock:
+                        completed_viewports += 1
+                        if completed_viewports == 2:
+                            viewport_done.set()
+                elif name.startswith("tier2:generated-pmx-visual-"):
+                    self.assertTrue(viewport_done.is_set())
+                    visual_barrier.wait(timeout=2)
+                    with lock:
+                        completed_visuals += 1
+                        if completed_visuals == 2:
+                            visual_done.set()
+                elif name == "tier2:generated-pmx-glsl-dx11-diff":
+                    self.assertTrue(visual_done.is_set())
+                    local_results.append(
+                        {"name": name, "status": "pass", "duration_sec": 0.0, "command": command}
+                    )
+                    return
+                elif name.startswith("tier2:serial-"):
+                    self.assertEqual(active, 1)
+                    serial_calls.append(name)
+                local_results.append(
+                    {
+                        "name": name,
+                        "status": "fail" if name == "tier2:generated-pmx-visual-glsl-2025" else "pass",
+                        "duration_sec": 0.0,
+                        "command": command,
+                    }
+                )
+            finally:
+                with lock:
+                    if version is not None:
+                        active_by_version[version] -= 1
+                    active -= 1
+
+        results = _run_release_gate_tier2_parallel(commands, versions, run_command, verbose=False)
+
+        self.assertEqual([result["name"] for result in results], [name for name, _ in commands])
+        self.assertEqual(peak_active, 2)
+        self.assertEqual(serial_calls, ["tier2:serial-first", "tier2:serial-second"])
+        self.assertEqual(results[8]["status"], "fail")
+        self.assertTrue(visual_done.is_set())
+        self.assertEqual(completed_visuals, 2)
+
     def test_release_gate_rejects_invalid_jobs(self):
         session = types.SimpleNamespace(posargs=["--quick", "--jobs", "3"])
         with self.assertRaisesRegex(ValueError, "--jobs must be 1 or 2"):
