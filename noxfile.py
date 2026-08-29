@@ -49,7 +49,6 @@ from tools.nox.native import (  # noqa: E402
     _cpp_build_dir as _common_cpp_build_dir,
     _cpp_smoke_exe as _common_cpp_smoke_exe,
     _find_vsdevcmd as _common_find_vsdevcmd,
-    _is_expected_environment_import_failure as _common_is_expected_environment_import_failure,
     _maya_devkit_root as _common_maya_devkit_root,
     _run_cli_smoke as _common_run_cli_smoke,
     _run_in_vs_dev_cmd as _common_run_in_vs_dev_cmd,
@@ -783,11 +782,6 @@ def _run_cli_smoke(
     return _common_run_cli_smoke(session, ROOT, version, config, manifest, case, limit)
 
 
-def _is_expected_environment_import_failure(stderr: str) -> bool:
-    """Return whether the final exception is an allowlisted missing environment module."""
-    return _common_is_expected_environment_import_failure(stderr)
-
-
 @nox.session(venv_backend="none")
 def ci_unit(session: nox.Session) -> None:
     """Run pure-python unit tests without mayapy.
@@ -796,11 +790,10 @@ def ci_unit(session: nox.Session) -> None:
     without Maya, so any new tests added to tests/unit are automatically
     included — no manual listing required.
 
-    A test file is included when it can be imported successfully in a
-    pytest-enabled ``uvx`` probe (i.e. it has no transitive dependency on an
-    allowlisted environment-only module). Files that fail for one of those
-    expected dependencies are skipped with a notice; other import failures
-    abort the session.
+    A single pytest-enabled ``uvx`` runner resolves the importable subset. It
+    probes each module in a fresh child interpreter, so a transitive dependency
+    on an allowlisted environment-only module is skipped without contaminating
+    other probes; other import failures abort the session.
 
     Examples:
         uvx nox -s ci_unit
@@ -808,9 +801,6 @@ def ci_unit(session: nox.Session) -> None:
     _run_ci_unit(
         session,
         root=ROOT,
-        run_process=subprocess.run,
-        glob_files=Path.glob,
-        is_expected_environment_import_failure=_is_expected_environment_import_failure,
         run_logged_subprocess=_run_logged_subprocess,
     )
 
