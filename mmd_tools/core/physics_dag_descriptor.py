@@ -12,6 +12,7 @@ from typing import List, Optional, Sequence
 
 from maya import cmds
 
+from mmd_tools.core import maya_attribute_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_PMX_REST_POSITION,
     CONSTRAINTS_GROUP,
@@ -86,6 +87,7 @@ def _get_angle_vector_radians(node: str, attr: str) -> tuple[float, float, float
 def _resolve_bone_world_position(
     shape: str,
     bone_joints: Optional[Sequence[Optional[str]]] = None,
+    import_scale: float = 1.0,
 ) -> tuple[float, float, float]:
     """Get rest-pose world position of the bone linked to this rigid body."""
     joint = None
@@ -102,9 +104,12 @@ def _resolve_bone_world_position(
         if cmds.attributeQuery(ATTR_MMD_PMX_REST_POSITION, node=joint, exists=True):
             value = cmds.getAttr(f"{joint}.{ATTR_MMD_PMX_REST_POSITION}")
             if value:
-                return tuple(float(component) for component in value[0])
+                return tuple(float(component) * import_scale for component in value[0])
         pos = cmds.xform(joint, query=True, worldSpace=True, translation=True)
-        return (pos[0], pos[1], pos[2])
+        # Legacy scenes may not have the saved PMX rest position.  Their
+        # joint transform is already in effective Maya units, so only convert
+        # the handedness here; do not apply import_scale a second time.
+        return (pos[0], pos[1], -pos[2])
 
     return (0.0, 0.0, 0.0)
 
@@ -128,6 +133,7 @@ def build_descriptors_from_dag(
     Returns:
         PhysicsDescriptorSet with ctypes arrays ready for FFI.
     """
+    import_scale = maya_attribute_utils.get_effective_import_scale(root_group)
     physics_group = _find_group(root_group, PHYSICS_GROUP)
     if not physics_group:
         return PhysicsDescriptorSet(
@@ -158,8 +164,8 @@ def build_descriptors_from_dag(
 
     for i, (_transform, shape) in enumerate(rb_pairs):
         shape_type = int(_get_attr(shape, "shapeType", 0))
-        shape_size = _get_vector(shape, "shapeSize")
-        position = _get_vector(shape, "position")
+        shape_size = tuple(value * import_scale for value in _get_vector(shape, "shapeSize"))
+        position = tuple(value * import_scale for value in _get_vector(shape, "position"))
         rotation = _get_angle_vector_radians(shape, "rotation")
         mode = int(_get_attr(shape, "physicsMode", 0))
         mass = float(_get_attr(shape, "mass", 0.0))
@@ -179,7 +185,7 @@ def build_descriptors_from_dag(
         )
         errors.extend(errs)
 
-        bone_pos = _resolve_bone_world_position(shape, bone_joints)
+        bone_pos = _resolve_bone_world_position(shape, bone_joints, import_scale)
         bfb_pos, bfb_rot = _body_from_bone(position, rotation, bone_pos)
         bfr_pos, bfr_rot = _bone_from_body(position, rotation, bone_pos)
 
@@ -223,10 +229,14 @@ def build_descriptors_from_dag(
             if raw_type == 0
             else MMD_RUNTIME_PHYSICS_JOINT_KIND_UNSUPPORTED
         )
-        position = _get_vector(shape, "position")
+        position = tuple(value * import_scale for value in _get_vector(shape, "position"))
         rotation = _get_angle_vector_radians(shape, "rotation")
-        trans_min = _get_vector(shape, "translationLimitMin")
-        trans_max = _get_vector(shape, "translationLimitMax")
+        trans_min = tuple(
+            value * import_scale for value in _get_vector(shape, "translationLimitMin")
+        )
+        trans_max = tuple(
+            value * import_scale for value in _get_vector(shape, "translationLimitMax")
+        )
         rot_min = _get_angle_vector_radians(shape, "rotationLimitMin")
         rot_max = _get_angle_vector_radians(shape, "rotationLimitMax")
         spring_trans = _get_vector(shape, "springTranslation")

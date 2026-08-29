@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from maya import cmds
 
+from mmd_tools.core import maya_attribute_utils
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_FLAGS,
@@ -62,6 +63,16 @@ class ModelDagDescriptorSet:
 
 def _has_attr(node: str, attr: str) -> bool:
     return bool(cmds.attributeQuery(attr, node=node, exists=True))
+
+
+def _effective_import_scale(root_group: str) -> float:
+    """Read the persisted PMX-to-Maya scale for runtime linear data."""
+    try:
+        return maya_attribute_utils.get_effective_import_scale(root_group)
+    except ValueError as exc:
+        raise ModelDagDescriptorError(
+            str(exc)
+        ) from exc
 
 
 def _required(node: str, attr: str):
@@ -167,6 +178,7 @@ def _indexed_joints(root_group: str) -> list[str]:
 
 
 def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
+    import_scale = _effective_import_scale(root_group)
     joints = _indexed_joints(root_group)
     bone_count = len(joints)
     bones: list[MmdRuntimeModelBoneDescriptor] = []
@@ -178,7 +190,10 @@ def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
         parent_index = int(_required(joint, ATTR_MMD_BONE_PARENT_INDEX))
         if parent_index < -1 or parent_index >= bone_count or parent_index == bone_index:
             raise ModelDagDescriptorError(f"{joint}: invalid parent index {parent_index}")
-        rest = _vector3(joint, ATTR_MMD_PMX_REST_POSITION)
+        rest = tuple(
+            value * import_scale
+            for value in _vector3(joint, ATTR_MMD_PMX_REST_POSITION)
+        )
         pmx_flags = int(_required(joint, ATTR_MMD_BONE_FLAGS))
         model_flags = 0
         if pmx_flags & int(PmxBoneFlag.DEFORM_AFTER_PHYSICS):
@@ -284,7 +299,9 @@ def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
                 if not isinstance(entry, dict) or "bone_index" not in entry:
                     raise ModelDagDescriptorError(f"{metadata.node}: invalid bone morph offset")
                 target = int(entry["bone_index"])
-                position = tuple(float(v) for v in entry.get("translation", ()))
+                position = tuple(
+                    float(v) * import_scale for v in entry.get("translation", ())
+                )
                 rotation = tuple(float(v) for v in entry.get("rotation", ()))
                 if target < 0 or target >= bone_count or len(position) != 3 or len(rotation) != 4:
                     raise ModelDagDescriptorError(f"{metadata.node}: invalid bone morph offset")

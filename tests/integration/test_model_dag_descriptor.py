@@ -13,6 +13,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_FIXED_AXIS,
     ATTR_MMD_GRANT_PARENT_INDEX,
     ATTR_MMD_GRANT_RATE,
+    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_IK_LIMIT_ANGLE,
     ATTR_MMD_IK_LINKS,
     ATTR_MMD_IK_LOOP,
@@ -145,6 +146,31 @@ class TestModelDagDescriptor(MayaTestBase):
         self.assertEqual([round(value, 5) for value in matrices[1][12:15]], [5.0, 2.0, 3.0])
         instance.free()
         model.free()
+
+    def test_import_scale_scales_runtime_linear_model_data(self):
+        root = self._scene()
+        cmds.addAttr(root, longName=ATTR_MMD_IMPORT_SCALE, attributeType="double")
+        cmds.setAttr(f"{root}.{ATTR_MMD_IMPORT_SCALE}", 0.5)
+
+        descriptors = build_model_descriptors_from_dag(root)
+
+        self.assertEqual(list(descriptors.bones[0].rest_position_xyz), [0.5, 1.0, 1.5])
+        self.assertEqual(list(descriptors.bones[1].rest_position_xyz), [2.5, 1.0, 1.5])
+        self.assertEqual(
+            list(descriptors.bone_morph_offsets[0].position_offset_xyz),
+            [0.25, 0.0, 0.0],
+        )
+        self.assertEqual(
+            json.loads(cmds.getAttr(f"bone_morph.{ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON}"))[0]["translation"],
+            [0.5, 0.0, 0.0],
+        )
+
+    def test_rejects_invalid_import_scale(self):
+        root = self._scene()
+        cmds.addAttr(root, longName=ATTR_MMD_IMPORT_SCALE, attributeType="double")
+        cmds.setAttr(f"{root}.{ATTR_MMD_IMPORT_SCALE}", 0.0)
+        with self.assertRaisesRegex(ModelDagDescriptorError, "expected finite positive float"):
+            build_model_descriptors_from_dag(root)
 
     def test_rejects_unindexed_joint(self):
         root = self._scene()

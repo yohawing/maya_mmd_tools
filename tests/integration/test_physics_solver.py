@@ -14,6 +14,16 @@ from maya import cmds
 
 from tests.common.maya_test_base import MayaTestBase
 
+from mmd_tools.core import maya_attribute_utils
+from mmd_tools.core.constants import (
+    ATTR_MMD_BONE_FLAGS,
+    ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_DEFORM_LAYER,
+    ATTR_MMD_IMPORT_SCALE,
+    ATTR_MMD_PMX_REST_POSITION,
+)
+from mmd_tools.core.coordinate_transform import mmd_point_to_maya
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
 from mmd_tools.core.physics_solver import PhysicsSolverSession
@@ -29,11 +39,25 @@ def _native_physics_available() -> bool:
         return False
 
 
-def _create_minimal_joints(bones) -> list[str]:
+def _create_minimal_joints(bones, scale=1.0, parent=None) -> list[str]:
     joints = []
     for i, bone in enumerate(bones):
-        jnt = cmds.createNode("joint", name=f"bone_{i}")
-        cmds.xform(jnt, worldSpace=True, translation=list(bone.position))
+        jnt = cmds.createNode("joint", name=f"bone_{i}", parent=parent)
+        cmds.xform(
+            jnt,
+            worldSpace=True,
+            translation=list(mmd_point_to_maya(bone.position, scale)),
+        )
+        maya_attribute_utils.set_custom_attributes(
+            jnt,
+            {
+                ATTR_MMD_BONE_INDEX: i,
+                ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
+                ATTR_MMD_PMX_REST_POSITION: bone.position,
+                ATTR_MMD_BONE_FLAGS: 0,
+                ATTR_MMD_DEFORM_LAYER: 0,
+            },
+        )
         joints.append(jnt)
     return joints
 
@@ -57,15 +81,17 @@ class TestPhysicsSolverSession(MayaTestBase):
     def tearDownClass(cls):
         super().tearDownClass()
 
-    def _build_scene(self):
+    def _build_scene(self, scale=1.0):
         root = cmds.group(empty=True, name="test_solver_root")
-        maya_joints = _create_minimal_joints(self.pmx.bones)
+        maya_attribute_utils.set_custom_attributes(root, {ATTR_MMD_IMPORT_SCALE: scale})
+        maya_joints = _create_minimal_joints(self.pmx.bones, scale, parent=root)
         build_physics_scene(
             rigid_bodies=self.pmx.rigid_bodies,
             joints=self.pmx.joints,
             bones=self.pmx.bones,
             maya_joints=maya_joints,
             root_group=root,
+            scale=scale,
         )
         return root, maya_joints
 
@@ -74,6 +100,44 @@ class TestPhysicsSolverSession(MayaTestBase):
         session = PhysicsSolverSession.create(root, self.pmx_bytes, maya_joints)
         self.assertIsNotNone(session)
         session.free()
+
+    def test_create_scaled_scene_uses_dag_model_descriptors(self):
+        """The public create path must preserve DAG model scale too."""
+        from mmd_tools.core.native.mmd_anim_runtime_handles import (
+            MmdRuntimeInstance,
+            MmdRuntimeModel,
+        )
+
+        scale = 0.5
+        root, maya_joints = self._build_scene(scale=scale)
+        session = PhysicsSolverSession.create(root, self.pmx_bytes, maya_joints)
+        self.assertIsNotNone(session)
+
+        raw_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
+        raw_instance = MmdRuntimeInstance.for_model(raw_model)
+        self.assertIsNotNone(raw_model)
+        self.assertIsNotNone(raw_instance)
+        try:
+            self.assertTrue(session.reset())
+            actual = session.get_bone_world_matrices()
+            self.assertTrue(raw_instance.evaluate_rest_pose())
+            raw = raw_instance.get_world_matrices()
+            self.assertIsNotNone(actual)
+            self.assertIsNotNone(raw)
+            self.assertEqual(len(actual), len(raw))
+            for bone_index, (actual_matrix, raw_matrix) in enumerate(zip(actual, raw)):
+                for component in range(16):
+                    expected = raw_matrix[component]
+                    if component in (12, 13, 14):
+                        expected *= scale
+                    self.assertAlmostEqual(
+                        actual_matrix[component], expected, delta=5e-3,
+                        msg=f"bone[{bone_index}] matrix[{component}]",
+                    )
+        finally:
+            raw_instance.free()
+            raw_model.free()
+            session.free()
 
     def test_reset_succeeds(self):
         root, maya_joints = self._build_scene()

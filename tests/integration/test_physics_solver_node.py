@@ -33,7 +33,7 @@ def _native_physics_available() -> bool:
         return False
 
 
-def _import_payload_free_scene(pmx_file):
+def _import_payload_free_scene(pmx_file, scale=1.0):
     """Import a normal physics scene and resolve its registry-owned solver."""
     from mmd_tools.io.pmx_importer import import_pmx_file
 
@@ -41,6 +41,7 @@ def _import_payload_free_scene(pmx_file):
     root = import_pmx_file(
         parser,
         str(pmx_file),
+        scale=scale,
         options={"import_physics": True, "create_mmd_shaders": False},
     )
     solvers = _model_physics_solvers(root)
@@ -263,6 +264,40 @@ class TestPhysicsSolverNode(MayaTestBase):
         cmds.currentTime(0)
         status = cmds.getAttr(f"{solver}.outStatus")
         self.assertIn(status, ("reset", "stepped", "cached", "pose-updated"))
+
+    def test_scaled_import_solver_output_scales_rest_translation_once(self):
+        """Solver output must apply import scale exactly once to rest positions."""
+        from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
+        from mmd_tools.core.native.mmd_anim_runtime_handles import (
+            MmdRuntimeInstance,
+            MmdRuntimeModel,
+        )
+
+        scale = 0.5
+        root, _joints, solver = _import_payload_free_scene(FIXTURE_PATH, scale=scale)
+        _connect_enabled_world(solver)
+        cmds.currentTime(0)
+        solver_flat = list(cmds.getAttr(f"{solver}.outBoneMatrices"))
+
+        raw_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
+        raw_instance = MmdRuntimeInstance.for_model(raw_model)
+        self.assertIsNotNone(raw_model)
+        self.assertIsNotNone(raw_instance)
+        try:
+            self.assertTrue(raw_instance.evaluate_rest_pose())
+            raw_matrices = raw_instance.get_world_matrices()
+            expected_flat = []
+            for raw_matrix in raw_matrices:
+                expected = list(mmd_matrix_to_maya(raw_matrix))
+                expected[12:15] = [value * scale for value in expected[12:15]]
+                expected_flat.extend(expected)
+
+            self.assertEqual(len(solver_flat), len(expected_flat))
+            for index, (actual, expected) in enumerate(zip(solver_flat, expected_flat)):
+                self.assertAlmostEqual(actual, expected, delta=1.0e-3, msg=f"matrix[{index}]")
+        finally:
+            raw_instance.free()
+            raw_model.free()
 
     def test_solver_disabled_outputs_not_solved(self):
         root, _ = self._build_scene()
