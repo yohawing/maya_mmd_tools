@@ -56,13 +56,14 @@ def test_main_window_disables_authoring_when_composition_is_absent() -> None:
     assert MainWindow._create_model_action(window) is None
 
 
-def test_setup_tabs_injects_only_create_model_action_into_file_presenter(monkeypatch) -> None:
+def test_setup_tabs_shares_settings_service_with_file_tab_and_presenter(monkeypatch) -> None:
     create_action = object()
     calls = []
+    tab_calls = []
 
     class Tab:
-        def __init__(self, *_args, **_kwargs):
-            pass
+        def __init__(self, *args, **kwargs):
+            tab_calls.append((args, kwargs))
 
     class Presenter:
         def __init__(self, *args, **kwargs):
@@ -123,7 +124,11 @@ def test_setup_tabs_injects_only_create_model_action_into_file_presenter(monkeyp
     MainWindow.setup_tabs(Window())
 
     file_call = next(call for call in calls if call[0] == "FilePresenter")
-    assert file_call[2] == {"create_model_action": create_action}
+    assert tab_calls[0][1] == {"settings_service": Window.settings_service}
+    assert file_call[2] == {
+        "create_model_action": create_action,
+        "settings_service": Window.settings_service,
+    }
     display_call = next(call for call in calls if call[0] == "DisplayPresenter")
     assert display_call[2] == {"authoring_coordinator": None}
     info_calls = [call for call in calls if call[0] == "Presenter" and call[2]]

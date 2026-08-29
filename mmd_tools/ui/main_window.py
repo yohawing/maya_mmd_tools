@@ -343,12 +343,13 @@ class MainWindow(QMainWindow):
         translator.set_language(current_language)
 
         # Import Tab
-        import_export_tab = ImportExportTab()
+        import_export_tab = ImportExportTab(settings_service=self.settings_service)
         self.import_export_tab = import_export_tab
         self.import_export_presenter = ImportExportPresenter(
             import_export_tab,
             self.app_state,
             create_model_action=self._create_model_action(),
+            settings_service=self.settings_service,
         )
         self.tab_widget.addTab(import_export_tab, translator.translate("file_io", "tabs"))
 

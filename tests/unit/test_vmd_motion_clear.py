@@ -81,6 +81,37 @@ class TestVmdMotionClear(MayaTestBase):
         self.assertFalse(cmds.objExists(layer))
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateY"), 0.0, places=4)
 
+    def test_clear_existing_motion_clears_owned_morph_controller_only(self):
+        """正式な morph controller のキーを対象モデルだけ消去する。"""
+        root_a = cmds.group(empty=True, name="clear_morph_model_a")
+        root_b = cmds.group(empty=True, name="clear_morph_model_b")
+        controller_a = cmds.createNode("mmdMorphController", name="clear_morph_controller_a")
+        controller_b = cmds.createNode("mmdMorphController", name="clear_morph_controller_b")
+        for root, controller in ((root_a, controller_a), (root_b, controller_b)):
+            cmds.addAttr(root, longName="mmd_morph_controller", attributeType="message")
+            cmds.connectAttr(f"{controller}.message", f"{root}.mmd_morph_controller")
+            cmds.setKeyframe(controller, attribute="inputWeight[0]", time=12, value=0.75)
+
+        self.converter.morph_name_mapping = {
+            "smile": (controller_b, "inputWeight[0]", "smile")
+        }
+        layer = cmds.animLayer("VMD_Motion_morph_controller_clear", override=False, weight=1.0)
+
+        clear_existing_motion(
+            self._import_state_context(),
+            layer,
+            target_namespace=None,
+            target_model=root_b,
+        )
+
+        self.assertEqual(
+            cmds.keyframe(controller_a, attribute="inputWeight[0]", query=True, timeChange=True),
+            [12.0],
+        )
+        self.assertIsNone(
+            cmds.keyframe(controller_b, attribute="inputWeight[0]", query=True, timeChange=True)
+        )
+
     def test_clear_existing_motion_restores_bind_pose_for_accurate_reimport(self):
         """cutKey 後にジョイントが rest position に戻り、後続の bind pose 記録が正確になる。"""
         joint = cmds.joint(name="clear_restore_bind_joint")
@@ -520,3 +551,58 @@ class TestVmdMotionClear(MayaTestBase):
 
         self.assertNotIn(1.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
         self.assertIn(8.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
+
+    def test_convert_clear_existing_motion_removes_tracks_omitted_by_next_vmd(self):
+        """A two-import replacement must remove tracks absent from the second VMD."""
+        target_model = cmds.group(empty=True, name="clear_two_import_model_root")
+        cmds.select(clear=True)
+        center = cmds.joint(name="clear_two_import_center")
+        cmds.addAttr(center, longName=ATTR_MMD_BONE_NAME, dataType="string")
+        cmds.setAttr(f"{center}.{ATTR_MMD_BONE_NAME}", "センター", type="string")
+        cmds.select(clear=True)
+        upper = cmds.joint(name="clear_two_import_upper")
+        cmds.addAttr(upper, longName=ATTR_MMD_BONE_NAME, dataType="string")
+        cmds.setAttr(f"{upper}.{ATTR_MMD_BONE_NAME}", "上半身", type="string")
+        cmds.parent(center, upper, target_model)
+
+        motion_a = type("VmdDataStub", (), {})()
+        motion_a.bone_frames = [
+            _bone_frame("センター", 4, (3.0, 0.0, 0.0)),
+            _bone_frame("上半身", 4, (0.0, 1.0, 0.0)),
+        ]
+        motion_a.morph_frames = []
+        motion_a.camera_frames = []
+        motion_a.light_frames = []
+        motion_a.ik_show_hide_frames = []
+
+        motion_b = type("VmdDataStub", (), {})()
+        motion_b.bone_frames = [_bone_frame("上半身", 9, (0.0, 2.0, 0.0))]
+        motion_b.morph_frames = []
+        motion_b.camera_frames = []
+        motion_b.light_frames = []
+        motion_b.ik_show_hide_frames = []
+
+        def compiled_frames(**kwargs):
+            return tuple(kwargs["source_bone_frames"]), {}
+
+        with patch.object(
+            self.converter,
+            "_compiled_registered_sparse_frames",
+            side_effect=compiled_frames,
+        ):
+            self.assertTrue(self.converter.convert(motion_a, target_model=target_model))
+            self.assertTrue(
+                self.converter.convert(
+                    motion_b,
+                    clear_existing_motion=True,
+                    target_model=target_model,
+                )
+            )
+
+        self.assertIsNone(
+            cmds.keyframe(center, attribute="translateX", query=True, timeChange=True)
+        )
+        self.assertEqual(
+            cmds.keyframe(upper, attribute="translateY", query=True, timeChange=True),
+            [9.0],
+        )
