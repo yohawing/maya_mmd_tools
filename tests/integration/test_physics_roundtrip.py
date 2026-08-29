@@ -670,10 +670,10 @@ class TestPhysicsRoundTrip(MayaTestBase):
         self.assertListAlmostEqual(collected_body["position"], source.position)
         self.assertListAlmostEqual(collected_body["rotation"], source.rotation)
 
-    def test_nondefault_import_scale_applies_only_to_collider_display_dag(self):
-        display_scale = 2.5
+    def test_nondefault_import_scale_bakes_effective_collider_scene_values(self):
+        import_scale = 2.5
         source_pmx = parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
-        root = self._import_fixture(scale=display_scale)
+        root = self._import_fixture(scale=import_scale)
         presenter = self._presenter(root)
         physics_group = presenter._find_child(root, PHYSICS_GROUP)
         rb_group = presenter._find_child(physics_group, RIGID_BODIES_GROUP)
@@ -681,7 +681,7 @@ class TestPhysicsRoundTrip(MayaTestBase):
 
         for transform, shape in rigid_pairs:
             source = source_pmx.rigid_bodies[cmds.getAttr(f"{shape}.pmxIndex")]
-            expected_position = mmd_point_to_maya(source.position, display_scale)
+            expected_position = mmd_point_to_maya(source.position, import_scale)
             bones = cmds.listConnections(
                 f"{shape}.relatedBone", source=True, destination=False, type="joint"
             ) or []
@@ -713,12 +713,19 @@ class TestPhysicsRoundTrip(MayaTestBase):
             )
             self.assertListAlmostEqual(
                 cmds.getAttr(f"{transform}.scale")[0],
-                (display_scale, display_scale, display_scale),
+                (1.0, 1.0, 1.0),
             )
-            self.assertListAlmostEqual(cmds.getAttr(f"{shape}.position")[0], source.position)
+            self.assertListAlmostEqual(
+                cmds.getAttr(f"{shape}.position")[0],
+                tuple(value * import_scale for value in source.position),
+            )
+            self.assertListAlmostEqual(
+                cmds.getAttr(f"{shape}.shapeSize")[0],
+                tuple(value * import_scale for value in source.size),
+            )
 
-    def test_import_scale_scales_joint_transform_and_preserves_raw_metadata(self):
-        """Joint placement scales in Maya space without rewriting PMX metadata."""
+    def test_import_scale_bakes_effective_joint_spatial_metadata(self):
+        """Joint spatial values are scaled once while spring coefficients stay unchanged."""
         scale = 0.5
         source_data = _build_synthetic_supported_full_dict("physics_import_scale")
         source_joint = source_data["joints"][0]
@@ -753,14 +760,19 @@ class TestPhysicsRoundTrip(MayaTestBase):
                 ("position", source.position),
                 ("translationLimitMin", source.translation_limit_min),
                 ("translationLimitMax", source.translation_limit_max),
-                ("springTranslation", source.spring_translation),
             ):
                 self.assertListAlmostEqual(
                     cmds.getAttr(f"{joint_shape}.{attr}")[0],
-                    source_values,
+                    tuple(value * scale for value in source_values),
                     places=5,
-                    msg=f"raw PMX joint metadata {attr}",
+                    msg=f"effective PMX joint metadata {attr}",
                 )
+            self.assertListAlmostEqual(
+                cmds.getAttr(f"{joint_shape}.springTranslation")[0],
+                source.spring_translation,
+                places=5,
+                msg="joint spring translation coefficient",
+            )
             self.assertListAlmostEqual(
                 cmds.xform(joint_transform, query=True, worldSpace=True, translation=True),
                 mmd_point_to_maya(source.position, scale),

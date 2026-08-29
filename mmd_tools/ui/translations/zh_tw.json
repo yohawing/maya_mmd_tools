@@ -474,7 +474,7 @@
     "name_english": "英文名稱:",
     "shape": "形狀:",
     "shape_size": "形狀尺寸:",
-    "pmx_position": "原始 PMX 位置:",
+    "pmx_position": "PMX 位置:",
     "pmx_rotation_degrees": "原始 PMX 旋轉角度:",
     "bodies": "剛體:",
     "physics_mode": "物理模式:",

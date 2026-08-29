@@ -26,12 +26,10 @@ from mmd_tools.adapters.maya_morph_binding_query import (
 from mmd_tools.core import model_registry
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
-    ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_UV_MORPH_OFFSETS_JSON,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
-    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_MODEL_REGISTRY,
 )
@@ -56,10 +54,9 @@ REGISTRY_CATEGORY_MORPH = "morph"
 logger = get_logger(__name__)
 _UNSUPPORTED_TYPES = {"flip", "impulse"}
 _OFFSET_ATTRS = {
-    # Vertex offsets live in the owned blendShape target.  Keep no duplicate
-    # JSON attribute on the registry node; the remaining entries are the raw
-    # metadata used by non-Vertex morph evaluators/export.
-    "bone": (ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON, "mmd_bone_morph_offsets_json"),
+    # Vertex offsets live in the owned blendShape target.  The remaining
+    # entries are metadata used by non-Vertex morph evaluators/export.
+    "bone": ("mmd_bone_morph_offsets_json",),
     "group": ("mmd_group_morph_offsets_json",),
     "material": ("mmd_material_morph_offsets_json",),
     "uv": (ATTR_MMD_UV_MORPH_OFFSETS_JSON,),
@@ -278,7 +275,6 @@ def apply_morph_create(
     morph: MmdMorphSpec,
     adapter: Any,
     registry_api: Any = model_registry,
-    model_scale_resolver: Any | None = None,
 ) -> MmdMorphSpec:
     """Create one empty-offset morph through a narrow Maya transaction.
 
@@ -328,10 +324,8 @@ def apply_morph_create(
     registry = _resolve_registry_for_write(adapter, root)
     vertex_plan = ()
     if candidate.morph_type == "vertex":
-        if not callable(model_scale_resolver):
-            _fail("vertex morph creation requires a model scale resolver")
         vertex_plan = tuple(
-            _new_vertex_target_plans(adapter, root, [candidate], model_scale_resolver)
+            _new_vertex_target_plans(adapter, root, [candidate])
         )
     node = _canonical_node(
         adapter,
@@ -818,7 +812,6 @@ def apply_morph_spec_change(
     adapter: Any,
     registry_api: Any = model_registry,
     runtime_rebuilders: Mapping[str, Any] | None = None,
-    model_scale_resolver: Any | None = None,
 ) -> MmdModelAuthoringSpec:
     """Apply one precomputed semantic morph change to Maya bindings.
 
@@ -868,7 +861,6 @@ def apply_morph_spec_change(
         new_by_old_binding,
         created,
         controller_plan,
-        model_scale_resolver,
     )
 
     created_nodes: dict[int, str] = {}
@@ -985,7 +977,6 @@ def _vertex_target_plan(
     new_by_binding: Mapping[str, MmdMorphSpec],
     created: list[MmdMorphSpec],
     controller_plan: Mapping[str, Any],
-    model_scale_resolver: Any | None,
 ) -> tuple[dict[str, Any], ...]:
     """Preflight exact blendShape targets for changed existing vertex morphs."""
     plans: list[dict[str, Any]] = []
@@ -1018,7 +1009,6 @@ def _vertex_target_plan(
                 )
             )
 
-        scale = _resolve_vertex_scale(root, model_scale_resolver) if offsets_changed else 1.0
         geometry_plans: list[dict[str, Any]] = []
         covered: set[int] = set()
         for node, target_index, _alias in targets:
@@ -1041,7 +1031,7 @@ def _vertex_target_plan(
                             continue
                         covered.add(source_index)
                         components.append(f"vtx[{local_index}]")
-                        points.append((*pmx_vertex_offset_to_maya_tuple(offset["position_offset"], scale), 1.0))
+                        points.append((*pmx_vertex_offset_to_maya_tuple(offset["position_offset"]), 1.0))
                 group = f"{node}.inputTarget[{int(geometry_index)}].inputTargetGroup[{target_index}]"
                 item_indices = tuple(
                     _call(adapter, "get_attr", f"{group}.inputTargetItem", multiIndices=True) or ()
@@ -1073,7 +1063,6 @@ def _vertex_target_plan(
             adapter,
             root,
             [morph for morph in created if morph.morph_type == "vertex"],
-            model_scale_resolver,
         )
     )
     return tuple(plans)
@@ -1083,7 +1072,6 @@ def _new_vertex_target_plans(
     adapter: Any,
     root: str,
     created: list[MmdMorphSpec],
-    model_scale_resolver: Any | None,
 ) -> list[dict[str, Any]]:
     if not created:
         return []
@@ -1101,7 +1089,6 @@ def _new_vertex_target_plans(
         _fail("vertex target creation requires at least one owned mesh shape")
     plans: list[dict[str, Any]] = []
     for morph in created:
-        scale = _resolve_vertex_scale(root, model_scale_resolver) if morph.offsets else 1.0
         targets = []
         covered: set[int] = set()
         seen_blend_shapes: set[str] = set()
@@ -1159,7 +1146,7 @@ def _new_vertex_target_plans(
                     continue
                 covered.add(source_index)
                 components.append(f"vtx[{local_index}]")
-                points.append((*pmx_vertex_offset_to_maya_tuple(offset["position_offset"], scale), 1.0))
+                points.append((*pmx_vertex_offset_to_maya_tuple(offset["position_offset"]), 1.0))
             targets.append(
                 {
                     "blend_shape": blend_shape,
@@ -1189,21 +1176,6 @@ def _read_vertex_name_mapping(adapter: Any, blend_shape: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         _fail(f"blendShape {blend_shape!r} morph name mapping must be an object")
     return parsed
-
-
-def _resolve_vertex_scale(root: str, resolver: Any | None) -> float:
-    if not callable(resolver):
-        _fail("vertex offset authoring requires an explicit model scale resolver")
-    try:
-        value = resolver(root)
-    except Exception as exc:
-        raise MayaMorphAuthoringError(f"vertex model scale resolution failed: {exc}") from exc
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        _fail("vertex model scale must be a finite positive number")
-    scale = float(value)
-    if not math.isfinite(scale) or scale <= 0.0:
-        _fail("vertex model scale must be a finite positive number")
-    return scale
 
 
 def _source_vertex_map(adapter: Any, geometry: str) -> dict[int, int]:
@@ -1861,7 +1833,6 @@ def _patch_vertex_runtime_values(
     vertex_bindings: tuple[MorphBinding, ...],
 ) -> None:
     """Update selected imported blendShape target point arrays in place."""
-    scale = _read_model_scale(adapter, root)
     covered: set[int] = set()
     target_count = 0
     for resolved in vertex_bindings:
@@ -1907,7 +1878,7 @@ def _patch_vertex_runtime_values(
                     _fail(f"vertex morph {new.index} references unmapped source index {source_index}")
                 covered.add(source_index)
                 components.append(f"vtx[{local_index}]")
-                points.append((*pmx_vertex_offset_to_maya_tuple(offset["position_offset"], scale), 1.0))
+                points.append((*pmx_vertex_offset_to_maya_tuple(offset["position_offset"]), 1.0))
             item = (
                 f"{node}.inputTarget[{int(geometry_index)}].inputTargetGroup[{target_index}]"
                 ".inputTargetItem[6000]"
@@ -1917,15 +1888,6 @@ def _patch_vertex_runtime_values(
     expected = {int(offset["vertex_index"]) for offset in new.offsets}
     if target_count == 0 or covered != expected:
         _fail(f"selected vertex morph {binding!r} has no exact blendShape target binding")
-
-
-def _read_model_scale(adapter: Any, root: str) -> float:
-    if not _has_attr(adapter, root, ATTR_MMD_IMPORT_SCALE):
-        _fail(f"vertex morph runtime patch requires {ATTR_MMD_IMPORT_SCALE} on {root!r}")
-    value = _call(adapter, "get_attr", f"{root}.{ATTR_MMD_IMPORT_SCALE}")
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) <= 0:
-        _fail(f"{root}.{ATTR_MMD_IMPORT_SCALE} must be a finite positive number")
-    return float(value)
 
 
 def _set_typed(adapter: Any, node: str, attr: str, attr_type: str, value: Any) -> None:

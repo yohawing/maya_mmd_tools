@@ -257,11 +257,10 @@ class TestVmdBoneAnimation(MayaTestBase):
 
         cmds.delete(joint)
 
-    def test_legacy_bone_motion_combines_model_and_motion_scale(self):
+    def test_bone_motion_uses_motion_scale_only(self):
         self.converter.motion_scale = 1.5
-        self.converter._model_import_scale = 0.5
 
-        self.assertEqual(self.converter._bone_animation_context().motion_scale, 0.75)
+        self.assertEqual(self.converter._bone_animation_context().motion_scale, 1.5)
 
     def test_fps_60_bone_keys_vmd_frame_30_at_maya_time_60(self):
         """60fps import では VMD frame 30 の bone key を Maya time 60 に置く。"""

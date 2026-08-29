@@ -9,8 +9,6 @@ def _result(scale: float, parser: str = "legacy", *, bounds=None, positions=None
     return {
         "parser": parser,
         "scale": scale,
-        "rootImportScale": scale,
-        "rootImportScaleMatches": True,
         "rootScale": [1.0, 1.0, 1.0],
         "visibleMeshCount": 1,
         "invalidMeshBoundsCount": 0,
@@ -53,13 +51,11 @@ class ImportScaleDriftE2ETest(unittest.TestCase):
 
     def test_evaluate_results_fails_when_a_required_witness_is_missing(self):
         results = [_result(scale) for scale in (0.5, 1.0, 1.5)]
-        results[1]["rootImportScaleMatches"] = False
         results[1]["skinClusterCount"] = 0
 
         evaluation = runner.evaluate_results(results, clean_threshold=1.0e-4)
 
         self.assertEqual(evaluation["status"], "fail")
-        self.assertTrue(any("persisted root mmd_import_scale" in value for value in evaluation["failures"]))
         self.assertTrue(any("no skinCluster" in value for value in evaluation["failures"]))
 
     def test_evaluate_results_fails_when_scale_normalized_bounds_drift(self):

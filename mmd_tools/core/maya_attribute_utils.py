@@ -1,13 +1,11 @@
 """Maya attribute helper APIs used by importers, converters, and presenters."""
 
 import json
-import math
 
 from maya import cmds
 from maya.api import OpenMaya as om
 
 from .logger import get_logger
-from .constants import ATTR_MMD_IMPORT_SCALE
 
 logger = get_logger(__name__)
 
@@ -415,23 +413,6 @@ def attribute_exists(node, attr):
         return bool(node and cmds.objExists(node) and cmds.attributeQuery(attr, node=node, exists=True))
     except Exception:
         return False
-
-
-def get_effective_import_scale(node):
-    """Read the persisted positive PMX-to-Maya scale from a model root."""
-    if not attribute_exists(node, ATTR_MMD_IMPORT_SCALE):
-        return 1.0
-    try:
-        scale = float(cmds.getAttr(f"{node}.{ATTR_MMD_IMPORT_SCALE}"))
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"{node}.{ATTR_MMD_IMPORT_SCALE}: expected finite positive float"
-        ) from exc
-    if not math.isfinite(scale) or scale <= 0.0:
-        raise ValueError(
-            f"{node}.{ATTR_MMD_IMPORT_SCALE}: expected finite positive float"
-        )
-    return scale
 
 
 def get_attr_safe(node, attr, default=None, cast=None):

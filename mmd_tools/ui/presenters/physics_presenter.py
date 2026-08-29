@@ -13,7 +13,6 @@ from mmd_tools.core.collider_authoring import (
     migrate_legacy_collider_authoring_pose,
     set_collider_authoring_pose,
 )
-from mmd_tools.core import maya_attribute_utils
 
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
@@ -957,14 +956,11 @@ class PhysicsPresenter:
         transform = (cmds.listRelatives(shape, parent=True, fullPath=True) or [None])[0]
         if not transform:
             raise RuntimeError(f"Rigid body transform not found for {shape}")
-        root = getattr(self.app_state, "current_model_root", None)
-        display_scale = maya_attribute_utils.get_effective_import_scale(root)
         set_collider_authoring_pose(
             transform,
             shape,
             parsed.pmx_position,
             tuple(math.radians(value) for value in parsed.pmx_rotation_degrees),
-            display_scale,
         )
         _mark_geometry_draw_dirty(shape)
         try:
@@ -994,11 +990,9 @@ class PhysicsPresenter:
         transform = (cmds.listRelatives(shape, parent=True, fullPath=True) or [None])[0]
         if not transform:
             raise RuntimeError(f"Physics joint transform not found for {shape}")
-        root = getattr(self.app_state, "current_model_root", None)
-        display_scale = maya_attribute_utils.get_effective_import_scale(root)
         cmds.setAttr(
             f"{transform}.translate",
-            *mmd_point_to_maya(parsed.pmx_position, display_scale),
+            *mmd_point_to_maya(parsed.pmx_position),
             type="double3",
         )
         for attr, values in (
@@ -1149,7 +1143,6 @@ class PhysicsPresenter:
             shape,
             (0.0, 0.0, 0.0),
             (0.0, 0.0, 0.0),
-            maya_attribute_utils.get_effective_import_scale(root),
         )
         logger.info("Created rigid body '%s'", transform)
 
@@ -1205,7 +1198,6 @@ class PhysicsPresenter:
             shape,
             position,
             tuple(math.radians(value) for value in rotation_degrees),
-            maya_attribute_utils.get_effective_import_scale(root),
         )
         bone_conn = cmds.listConnections(f"{source_shape}.relatedBone", source=True, destination=False) or []
         if bone_conn:
@@ -1245,7 +1237,6 @@ class PhysicsPresenter:
             f"{transform}.translate",
             *mmd_point_to_maya(
                 tuple(_get_attr(shape, f"position{axis}", 0.0) for axis in "XYZ"),
-                maya_attribute_utils.get_effective_import_scale(root),
             ),
             type="double3",
         )

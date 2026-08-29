@@ -1,9 +1,9 @@
 """Accept the legacy/native PMX mesh, joint, and skin import scale contract.
 
 Run with mayapy.  The default acceptance matrix imports scales ``0.5``, ``1.0``
-and ``1.5`` through both parser routes.  Each import must retain its requested
-``mmd_import_scale``, keep the model root at identity scale, produce visible
-skinned geometry, and keep ``bindPreMatrix`` aligned with its influence joints.
+and ``1.5`` through both parser routes.  Each import must keep the model root at
+identity scale, produce visible skinned geometry, and keep ``bindPreMatrix``
+aligned with its influence joints.
 World bounds and influence-joint positions are normalized by the requested
 scale before comparison.  The normalized comparison tolerance is deliberately
 small (``LINEARITY_TOLERANCE``) and is reported in the JSON output.
@@ -23,7 +23,6 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SCALES = (0.5, 1.0, 1.5)
 IDENTITY_SCALE_TOLERANCE = 1.0e-6
-SCALE_MATCH_TOLERANCE = 1.0e-6
 LINEARITY_TOLERANCE = 1.0e-5
 
 
@@ -172,7 +171,6 @@ def _analyze_scale(pmx_path: Path, scale: float, parser_route: str) -> dict[str,
     import maya.api.OpenMaya as om
     import maya.cmds as cmds
 
-    from mmd_tools.core.constants import ATTR_MMD_IMPORT_SCALE
     from mmd_tools.core import settings
     from mmd_tools.io.mmd_importer import import_mmd_file
 
@@ -195,22 +193,6 @@ def _analyze_scale(pmx_path: Path, scale: float, parser_route: str) -> dict[str,
     )
     if not root:
         raise RuntimeError(f"PMX import failed: {pmx_path}")
-
-    root_import_scale = None
-    try:
-        root_import_scale = float(cmds.getAttr(f"{root}.{ATTR_MMD_IMPORT_SCALE}"))
-    except Exception:
-        pass
-    root_import_scale_matches = (
-        root_import_scale is not None
-        and math.isfinite(root_import_scale)
-        and math.isclose(
-            root_import_scale,
-            scale,
-            rel_tol=0.0,
-            abs_tol=SCALE_MATCH_TOLERANCE,
-        )
-    )
 
     root_scale = _vector_values(cmds.getAttr(f"{root}.scale"), 3)
     visible_meshes = _visible_mesh_transforms(cmds, root)
@@ -291,8 +273,6 @@ def _analyze_scale(pmx_path: Path, scale: float, parser_route: str) -> dict[str,
         "parser": parser_route,
         "scale": scale,
         "root": root,
-        "rootImportScale": root_import_scale,
-        "rootImportScaleMatches": root_import_scale_matches,
         "rootScale": [round(value, 9) for value in root_scale],
         "visibleMeshCount": len(visible_meshes),
         "invalidMeshBoundsCount": invalid_mesh_bounds_count,
@@ -320,14 +300,6 @@ def _validate_result(item: dict[str, Any], clean_threshold: float) -> list[str]:
     if clean_value is None:
         failures.append("clean threshold must be finite and non-negative")
         clean_value = 0.0
-    expected_scale = float(item.get("scale", 0.0))
-    persisted_scale = item.get("rootImportScale")
-    if not item.get("rootImportScaleMatches", False):
-        failures.append(
-            "persisted root mmd_import_scale does not match requested "
-            f"scale ({persisted_scale!r} != {expected_scale!r})"
-        )
-
     root_scale = item.get("rootScale") or []
     try:
         root_scale_values = [float(value) for value in root_scale]

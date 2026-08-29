@@ -722,11 +722,7 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
         ) as build_model_descriptors, patch(
             "mmd_tools.core.physics_dag_descriptor.build_descriptors_from_dag",
             return_value=physics_descriptors,
-        ) as build_physics_descriptors, patch.object(
-            vmd_converter_module.maya_attribute_utils,
-            "get_effective_import_scale",
-            return_value=0.5,
-        ), patch(
+        ) as build_physics_descriptors, patch(
             "mmd_tools.core.physics_solver._collect_bone_joints",
             return_value=["|joint0", "|joint1"],
         ), patch.object(
@@ -748,7 +744,7 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
         self.assertIs(FakeClip.registration_model, FakeModel.registration)
         self.assertEqual(
             struct.unpack_from("<fff", FakeClip.runtime_bytes, 73),
-            (1.5, 3.0, 4.5),
+            (3.0, 6.0, 9.0),
         )
         self.assertIs(FakeInstance.last.model, FakeModel.evaluation)
         self.assertIs(FakeModel.evaluation.source, model_descriptors)

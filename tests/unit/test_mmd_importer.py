@@ -176,7 +176,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
     def tearDown(self):
         settings.set("import.general.scale_factor", self._saved_scale)
 
-    def _assert_model_import_scale(self, extension, importer_patch, expected_scale, **kwargs):
+    def _assert_import_scale_forwarded(self, extension, importer_patch, expected_scale, **kwargs):
         parsed_data = object()
 
         with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
@@ -190,7 +190,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
     def test_explicit_scale_argument_overrides_options_and_settings_for_pmx(self):
         settings.set("import.general.scale_factor", 3.0)
 
-        self._assert_model_import_scale(
+        self._assert_import_scale_forwarded(
             ".pmx",
             "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
             2.0,
@@ -201,7 +201,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
     def test_explicit_scale_argument_overrides_options_and_settings_for_pmd(self):
         settings.set("import.general.scale_factor", 3.0)
 
-        self._assert_model_import_scale(
+        self._assert_import_scale_forwarded(
             ".pmd",
             "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
             2.0,
@@ -217,7 +217,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
             (".pmd", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
         ):
             with self.subTest(extension=extension):
-                self._assert_model_import_scale(
+                self._assert_import_scale_forwarded(
                     extension,
                     importer_patch,
                     4.0,
@@ -236,7 +236,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
                 (".pmd", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
             ):
                 with self.subTest(extension=extension, mode="normal"):
-                    self._assert_model_import_scale(
+                    self._assert_import_scale_forwarded(
                         extension,
                         importer_patch,
                         1.0,
@@ -249,7 +249,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
                 (".pmd", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
             ):
                 with self.subTest(extension=extension, mode="dev"):
-                    self._assert_model_import_scale(
+                    self._assert_import_scale_forwarded(
                         extension,
                         importer_patch,
                         3.0,
@@ -263,7 +263,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
         try:
             settings.set("ui.general.development_mode", False)
             settings.set("import.general.scale_factor", 9.0)
-            self._assert_model_import_scale(
+            self._assert_import_scale_forwarded(
                 ".pmx",
                 "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
                 2.0,

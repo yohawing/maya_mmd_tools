@@ -20,7 +20,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_PARENT_INDEX,
     ATTR_MMD_DEFORM_LAYER,
-    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_PMX_REST_POSITION,
 )
 from mmd_tools.core.coordinate_transform import mmd_point_to_maya
@@ -53,7 +52,7 @@ def _create_minimal_joints(bones, scale=1.0, parent=None) -> list[str]:
             {
                 ATTR_MMD_BONE_INDEX: i,
                 ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
-                ATTR_MMD_PMX_REST_POSITION: bone.position,
+                ATTR_MMD_PMX_REST_POSITION: tuple(value * scale for value in bone.position),
                 ATTR_MMD_BONE_FLAGS: 0,
                 ATTR_MMD_DEFORM_LAYER: 0,
             },
@@ -83,7 +82,6 @@ class TestPhysicsSolverSession(MayaTestBase):
 
     def _build_scene(self, scale=1.0):
         root = cmds.group(empty=True, name="test_solver_root")
-        maya_attribute_utils.set_custom_attributes(root, {ATTR_MMD_IMPORT_SCALE: scale})
         maya_joints = _create_minimal_joints(self.pmx.bones, scale, parent=root)
         build_physics_scene(
             rigid_bodies=self.pmx.rigid_bodies,

@@ -29,7 +29,6 @@ install_maya_stub()
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.core.settings import settings
 from mmd_tools.core.exceptions import MMDImportException
-from mmd_tools.core.constants import ATTR_MMD_IMPORT_SCALE
 from mmd_tools.io import cpp_fast_importer
 from mmd_tools.io.cpp_fast_importer import (
     _apply_basic_materials,
@@ -670,8 +669,8 @@ class TestFastSkeletonSkin(unittest.TestCase):
             (1.0, 5.0, -1.5),
         )
 
-    def test_fast_import_persists_scale_on_root_without_transforming_root(self):
-        """Fast import stores scale metadata while preserving raw PMX header data."""
+    def test_fast_import_keeps_root_identity_without_persisting_scale(self):
+        """Fast import preserves PMX header metadata without root scale state."""
         raw_metadata = {
             "metadata": {
                 "name": "Raw model",
@@ -712,17 +711,16 @@ class TestFastSkeletonSkin(unittest.TestCase):
             s=0.5,
             mo=False,
         )
-        scale_writes = [
-            call
-            for call in cmds.setAttr.call_args_list
-            if call.args and call.args[0] == f"root1.{ATTR_MMD_IMPORT_SCALE}"
-        ]
-        self.assertEqual(len(scale_writes), 1)
-        self.assertEqual(scale_writes[0].args[1], 0.5)
-
-        # Import scale is metadata for downstream conversions, not a Maya
-        # transform on the root; preserve the raw PMX header values as-is.
+        # Import scale is applied to spatial values at their import boundaries,
+        # not persisted as a root attribute.
         cmds.scale.assert_not_called()
+        self.assertFalse(
+            any(
+                call.args
+                and call.args[0] == "root1.mmd_import_scale"
+                for call in cmds.setAttr.call_args_list
+            )
+        )
         self.assertFalse(
             any(
                 call.args

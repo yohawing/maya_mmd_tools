@@ -80,8 +80,6 @@ def main() -> int:
         body_bs, body_plug = _target(root, "body", (9, 12, 13, 15), 8)
         controller = cmds.createNode("mmdMorphController", name="vertexSmokeController")
         cmds.addAttr(root, longName="mmd_morph_controller", attributeType="message")
-        cmds.addAttr(root, longName="mmd_import_scale", attributeType="double")
-        cmds.setAttr(f"{root}.mmd_import_scale", 2.0)
         cmds.connectAttr(f"{controller}.message", f"{root}.mmd_morph_controller")
         cmds.connectAttr(f"{controller}.outputWeight[0]", face_plug)
         cmds.connectAttr(f"{controller}.outputWeight[0]", body_plug)

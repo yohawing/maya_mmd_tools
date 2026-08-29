@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 from typing import Any
 
 import pytest
@@ -17,7 +16,6 @@ from mmd_tools.adapters.maya_bone_authoring import (
 )
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_INDEX,
-    ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_PARENT_INDEX,
     ATTR_MMD_CONNECT_BONE_INDEX,
@@ -197,7 +195,6 @@ def _seed_reindex_scene(adapter: FakeMayaCmds) -> None:
             ),
             ("|rigid", "relatedBoneIndex"): 1,
             ("|morph0", "mmd_morph_type"): "bone",
-            ("|morph0", ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON): json.dumps([{"bone_index": 1}]),
             ("|morph0", "mmd_bone_morph_offsets_json"): json.dumps([{"bone_index": 1}]),
             ("|morph0", ATTR_MMD_MODEL_ROOT): True,
         }
@@ -260,17 +257,14 @@ def test_register_rejects_duplicate_identity_without_writes() -> None:
     assert adapter.write_calls == []
 
 
-def test_capture_rest_position_scales_and_flips_z() -> None:
+def test_capture_rest_position_keeps_effective_units_and_flips_z() -> None:
     adapter = FakeMayaCmds()
     joint = "|モデル|骨"
     adapter.nodes.add(joint)
     adapter.joints.append(joint)
     adapter.world_translation[joint] = [4.0, 6.0, -8.0]
 
-    assert capture_rest_position("|モデル", joint, 2.0, adapter) == (2.0, 3.0, 4.0)
-    for invalid in (0.0, -1.0, math.nan, math.inf):
-        with pytest.raises(MayaBoneAuthoringError):
-            capture_rest_position("|モデル", joint, invalid, adapter)
+    assert capture_rest_position("|モデル", joint, adapter) == (4.0, 6.0, 8.0)
 
 
 def test_reindex_remaps_direct_ik_display_physics_and_morph_references() -> None:
@@ -291,7 +285,6 @@ def test_reindex_remaps_direct_ik_display_physics_and_morph_references() -> None
     display = json.loads(adapter.attrs[("|モデル", ATTR_MMD_DISPLAY_FRAMES_JSON)])
     assert display[0]["elements"][0]["index"] == 1
     assert adapter.attrs[("|rigid", "relatedBoneIndex")] == 0
-    assert json.loads(adapter.attrs[("|morph0", ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON)])[0]["bone_index"] == 0
     assert json.loads(adapter.attrs[("|morph0", "mmd_bone_morph_offsets_json")])[0]["bone_index"] == 0
 
 
@@ -316,7 +309,7 @@ def test_reindex_discovers_registry_owned_bone_morphs() -> None:
 
     apply_bone_reindex("|モデル", old, new, adapter)
 
-    assert json.loads(adapter.attrs[("|morph0", ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON)])[0]["bone_index"] == 0
+    assert json.loads(adapter.attrs[("|morph0", "mmd_bone_morph_offsets_json")])[0]["bone_index"] == 0
 
 
 def test_reindex_malformed_display_fails_before_any_write() -> None:
@@ -352,7 +345,6 @@ def test_unregister_rejects_reference_then_removes_metadata_without_deleting_joi
         unregister_existing_joint("|モデル", "|モデル|root", adapter)
     adapter.attrs[("|モデル|child", ATTR_MMD_IK_LINKS)] = "[]"
     adapter.attrs[("|rigid", "relatedBoneIndex")] = -1
-    adapter.attrs[("|morph0", ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON)] = "[]"
     adapter.attrs[("|morph0", "mmd_bone_morph_offsets_json")] = "[]"
 
     unregister_existing_joint("|モデル", "|モデル|root", adapter)

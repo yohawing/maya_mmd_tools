@@ -29,7 +29,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
-    ATTR_MMD_IMPORT_SCALE,
+    ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_PMX_SOFT_BODY_COUNT,
 )
 from mmd_tools.core import cpp_plugin_locator, maya_mesh_utils, maya_name_utils
@@ -213,7 +214,7 @@ def fast_import(
     mesh_node = str(result[1]) if len(result) >= 2 else None
 
     metadata = _apply_basic_materials(filepath, mesh_node, cmds) if mesh_node else None
-    _apply_fast_root_metadata(filepath, transform_node, metadata, cmds, scale=scale)
+    _apply_fast_root_metadata(filepath, transform_node, metadata, cmds)
     try:
         from mmd_tools.core.model_registry import ensure_model_registry
 
@@ -574,10 +575,8 @@ def _apply_fast_root_metadata(
     root_node: str,
     metadata: Optional[dict],
     cmds_module,
-    scale: float = 1.0,
 ) -> None:
-    """Preserve PMX metadata and the requested import scale on fast roots."""
-    _set_fast_double_attr(cmds_module, root_node, ATTR_MMD_IMPORT_SCALE, scale)
+    """Preserve PMX metadata on fast-import roots."""
     header = metadata.get("metadata") if isinstance(metadata, dict) else None
     soft_body_count = _fast_soft_body_count(metadata)
     if not isinstance(header, dict):
@@ -798,7 +797,7 @@ def _apply_fast_skeleton_skin(
             position=mmd_point_to_maya(pos, scale),
         )
         cmds_module.setAttr(f"{jnt}.segmentScaleCompensate", False)
-        _tag_fast_joint_metadata(cmds_module, jnt, i, b)
+        _tag_fast_joint_metadata(cmds_module, jnt, i, b, scale=scale)
         joints.append(jnt)
 
     # ---- parent joints according to parentIndex ----
@@ -910,10 +909,23 @@ def _apply_fast_skeleton_skin(
         logger.debug("Failed to apply vertex weights: %s", exc)
 
 
-def _tag_fast_joint_metadata(cmds_module, joint: str, bone_index: int, bone: dict) -> None:
+def _tag_fast_joint_metadata(
+    cmds_module,
+    joint: str,
+    bone_index: int,
+    bone: dict,
+    *,
+    scale: float = 1.0,
+) -> None:
     """Attach MMD bone metadata expected by VMD/runtime paths."""
     attrs = (
         (ATTR_MMD_BONE_INDEX, "long", int(bone_index)),
+        (ATTR_MMD_BONE_PARENT_INDEX, "long", int(bone.get("parentIndex", -1))),
+        (
+            ATTR_MMD_PMX_REST_POSITION,
+            "double3",
+            tuple(float(value) * scale for value in bone.get("position", (0.0, 0.0, 0.0))),
+        ),
         (ATTR_MMD_BONE_NAME, "string", str(bone.get("name") or "")),
         (ATTR_MMD_BONE_NAME_EN, "string", str(bone.get("englishName") or "")),
     )
@@ -922,10 +934,21 @@ def _tag_fast_joint_metadata(cmds_module, joint: str, bone_index: int, bone: dic
             if not cmds_module.attributeQuery(attr, node=joint, exists=True):
                 if attr_type == "string":
                     cmds_module.addAttr(joint, longName=attr, dataType="string")
+                elif attr_type == "double3":
+                    cmds_module.addAttr(joint, longName=attr, attributeType=attr_type)
+                    for axis in "XYZ":
+                        cmds_module.addAttr(
+                            joint,
+                            longName=f"{attr}{axis}",
+                            attributeType="double",
+                            parent=attr,
+                        )
                 else:
                     cmds_module.addAttr(joint, longName=attr, attributeType=attr_type)
             if attr_type == "string":
                 cmds_module.setAttr(f"{joint}.{attr}", value, type="string")
+            elif attr_type == "double3":
+                cmds_module.setAttr(f"{joint}.{attr}", *value, type=attr_type)
             else:
                 cmds_module.setAttr(f"{joint}.{attr}", value)
         except Exception:

@@ -8,8 +8,7 @@ cmds adapter, metadata backend, undo owner, and runtime morph rebuilders.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
-from typing import Any, Callable
+from typing import Any
 
 from mmd_tools.actions.create_model_action import CreateModelAction
 from mmd_tools.adapters.maya_cmds_adapter import MayaCmdsAdapter
@@ -21,7 +20,6 @@ from mmd_tools.adapters.maya_morph_authoring import apply_morph_spec_change, may
 from mmd_tools.adapters.maya_scene_metadata_backend import MayaSceneMetadataBackend
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter
 from mmd_tools.core import model_registry
-from mmd_tools.core.constants import ATTR_MMD_IMPORT_SCALE
 
 
 @dataclass(frozen=True)
@@ -33,7 +31,6 @@ class MayaAuthoringComposition:
     metadata_adapter: SceneMetadataAdapter
     material_authoring: MayaMaterialAuthoring
     coordinator: MayaModelAuthoringCoordinator
-    model_scale_resolver: Callable[[str], float]
     model_initializer: MayaModelTemplateInitializer
     create_model_action: CreateModelAction
     material_morph_work: MayaMaterialMorphWork
@@ -63,22 +60,7 @@ def build_maya_authoring_composition(
             cmds_adapter,
             registry_api=registry_api,
             runtime_rebuilders=rebuilders,
-            model_scale_resolver=resolve_model_scale,
         )
-
-    def resolve_model_scale(root: str) -> float:
-        if not cmds_adapter.attribute_exists(ATTR_MMD_IMPORT_SCALE, root):
-            raise RuntimeError(
-                f"{root!r} has no persisted MMD import scale; "
-                "Capture Rest is unavailable for this legacy model"
-            )
-        value = cmds_adapter.get_attr(f"{root}.{ATTR_MMD_IMPORT_SCALE}")
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise RuntimeError(f"{root!r} has an invalid persisted MMD import scale")
-        scale = float(value)
-        if not math.isfinite(scale) or scale <= 0.0:
-            raise RuntimeError(f"{root!r} has a non-positive or non-finite persisted MMD import scale")
-        return scale
 
     coordinator = MayaModelAuthoringCoordinator(
         metadata_adapter,
@@ -86,7 +68,6 @@ def build_maya_authoring_composition(
         material_authoring,
         cmds_adapter,
         morph_authoring=apply_morph_change,
-        model_scale_resolver=resolve_model_scale,
     )
     model_initializer = MayaModelTemplateInitializer(
         cmds_adapter,
@@ -105,7 +86,6 @@ def build_maya_authoring_composition(
         metadata_adapter=metadata_adapter,
         material_authoring=material_authoring,
         coordinator=coordinator,
-        model_scale_resolver=resolve_model_scale,
         model_initializer=model_initializer,
         create_model_action=CreateModelAction(model_initializer),
         material_morph_work=material_morph_work,

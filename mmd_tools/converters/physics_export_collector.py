@@ -54,11 +54,6 @@ def _get_angle_vector_attr(shape: str, attr: str) -> tuple[float, float, float]:
     return maya_angle_to_radians(values)
 
 
-def _scale_vector(values, scale: float) -> tuple[float, float, float]:
-    """Scale one raw PMX-space vector for export."""
-    return tuple(float(value) * scale for value in values)
-
-
 def _resolve_message_target(shape: str, attr: str) -> Optional[str]:
     """Follow a message connection and return the source node, or None."""
     connections = cmds.listConnections(f"{shape}.{attr}", source=True, destination=False) or []
@@ -90,7 +85,6 @@ def _resolve_bone_index(
 def _collect_rigid_body(
     shape: str,
     bone_index_by_joint: dict[str, int],
-    scale: float,
 ) -> dict:
     return {
         "name": _get_attr(shape, "nameJp", "") or "",
@@ -99,8 +93,8 @@ def _collect_rigid_body(
         "group": int(_get_attr(shape, "collisionGroup", 0)),
         "collision_mask": int(_get_attr(shape, "collisionMask", 0)),
         "shape_type": int(_get_attr(shape, "shapeType", 0)),
-        "size": _scale_vector(_get_vector_attr(shape, "shapeSize"), scale),
-        "position": _scale_vector(_get_vector_attr(shape, "position"), scale),
+        "size": _get_vector_attr(shape, "shapeSize"),
+        "position": _get_vector_attr(shape, "position"),
         "rotation": _get_angle_vector_attr(shape, "rotation"),
         "mass": float(_get_attr(shape, "mass", 0.0)),
         "velocity_attenuation": float(_get_attr(shape, "linearDamping", 0.0)),
@@ -114,7 +108,6 @@ def _collect_rigid_body(
 def _collect_joint(
     shape: str,
     rb_transform_to_index: dict[str, int],
-    scale: float,
 ) -> dict:
     def _resolve_rb_index(attr_msg: str, attr_fallback: str) -> int:
         target = _resolve_message_target(shape, attr_msg)
@@ -134,14 +127,10 @@ def _collect_joint(
         "joint_type": int(_get_attr(shape, "jointType", 0)),
         "rigid_body_a_index": _resolve_rb_index("rigidBodyA", "rigidBodyAIndex"),
         "rigid_body_b_index": _resolve_rb_index("rigidBodyB", "rigidBodyBIndex"),
-        "position": _scale_vector(_get_vector_attr(shape, "position"), scale),
+        "position": _get_vector_attr(shape, "position"),
         "rotation": _get_angle_vector_attr(shape, "rotation"),
-        "translation_limit_min": _scale_vector(
-            _get_vector_attr(shape, "translationLimitMin"), scale
-        ),
-        "translation_limit_max": _scale_vector(
-            _get_vector_attr(shape, "translationLimitMax"), scale
-        ),
+        "translation_limit_min": _get_vector_attr(shape, "translationLimitMin"),
+        "translation_limit_max": _get_vector_attr(shape, "translationLimitMax"),
         "rotation_limit_min": _get_angle_vector_attr(shape, "rotationLimitMin"),
         "rotation_limit_max": _get_angle_vector_attr(shape, "rotationLimitMax"),
         "spring_translation": _get_vector_attr(shape, "springTranslation"),
@@ -152,15 +141,13 @@ def _collect_joint(
 def collect_physics_from_scene(
     root_group: str,
     bone_index_by_joint: dict[str, int],
-    *,
-    scale: float = 1.0,
 ) -> tuple[list[dict], list[dict]]:
     """Collect rigid bodies and joints from the Physics DAG hierarchy.
 
     Returns ``(rigid_body_dicts, joint_dicts)`` ready for ``PmxExporter``.
     If the Physics hierarchy does not exist, returns empty lists.
-    Raw PMX-space lengths are multiplied by ``scale`` while rotations and
-    physical coefficients remain unchanged.
+    Spatial attributes are already stored in effective PMX units by the
+    import/authoring boundary and are returned unchanged.
     """
     physics_group = _find_group(root_group, PHYSICS_GROUP)
     if not physics_group:
@@ -176,7 +163,7 @@ def collect_physics_from_scene(
         pairs = _find_shapes_of_type(rb_group, "mmdRigidBodyShape")
         pairs.sort(key=lambda p: int(_get_attr(p[1], "pmxIndex", 9999)))
         for transform, shape in pairs:
-            rb_dict = _collect_rigid_body(shape, bone_index_by_joint, scale)
+            rb_dict = _collect_rigid_body(shape, bone_index_by_joint)
             export_index = len(rigid_bodies)
             rigid_bodies.append(rb_dict)
             for name in cmds.ls(transform, long=True) or []:
@@ -188,7 +175,7 @@ def collect_physics_from_scene(
         pairs = _find_shapes_of_type(jt_group, "mmdPhysicsJointShape")
         pairs.sort(key=lambda p: int(_get_attr(p[1], "pmxIndex", 9999)))
         for _transform, shape in pairs:
-            jt_dict = _collect_joint(shape, rb_transform_to_index, scale)
+            jt_dict = _collect_joint(shape, rb_transform_to_index)
             joints.append(jt_dict)
 
     return rigid_bodies, joints

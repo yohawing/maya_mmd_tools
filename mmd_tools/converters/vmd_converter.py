@@ -21,7 +21,6 @@ import maya.cmds as cmds
 
 from ..core.exceptions import MMDImportException
 from ..core.logger import get_logger
-from ..core import maya_attribute_utils
 from ..core.native.native_pmx_parser import parse_pmx_native
 from ..core.settings import settings
 from ..core import settings_keys as setting_keys
@@ -225,7 +224,6 @@ class VmdConverter:
         # 単一 mapping の既存コード互換を保つため、値は list / tuple のいずれも許容。
         self.fps = 30.0  # デフォルトのFPS (VMD import setting)
         self.motion_scale = float(settings.get(setting_keys.IMPORT_ANIMATION_MOTION_SCALE, 1.0))
-        self._model_import_scale = 1.0
         self._failed_bones = set()  # 変換に失敗したボーン名を記録
         self._bone_bind_poses: Dict[str, Tuple[float, float, float]] = {}  # ボーンの初期位置
         # VMD rotation channels carry per-segment Bezier controls.  Maya's
@@ -271,7 +269,7 @@ class VmdConverter:
             failed_bones=self._failed_bones,
             use_animation_layers=self.use_animation_layers,
             anim_layer=self.anim_layer,
-            motion_scale=self.motion_scale * self._model_import_scale,
+            motion_scale=self.motion_scale,
             use_quaternion_interpolation=self.use_quaternion_interpolation,
             use_vmd_rotation_time_curve=self.use_vmd_rotation_time_curve,
             rotation_time_curve_records=self._rotation_time_curve_records,
@@ -573,9 +571,6 @@ class VmdConverter:
         if not target_model:
             self.logger.error("VMD model motion requires an explicit target model")
             return False
-        self._model_import_scale = maya_attribute_utils.get_effective_import_scale(
-            target_model
-        )
         if create_mmd_control_rig and bake_mode:
             self._record_profile_warning(
                 profile,
@@ -2864,12 +2859,7 @@ class VmdConverter:
         try:
             runtime_vmd_bytes = scale_vmd_bone_translation_bytes(
                 vmd_bytes,
-                self.motion_scale
-                * (
-                    maya_attribute_utils.get_effective_import_scale(target_model)
-                    if target_model
-                    else 1.0
-                ),
+                self.motion_scale,
             )
         except (ValueError, TypeError, OverflowError, struct.error):
             _registration_failed("vmd_translation_scale_failed")
@@ -2878,8 +2868,7 @@ class VmdConverter:
 
         # The PMX-backed model owns the name maps required to register VMD
         # tracks.  Evaluation uses a fresh DAG descriptor model when a Maya
-        # target is present so imported model scale is part of every runtime
-        # rest position and bone-morph translation.
+        # target is present, so the model's stored effective values are used.
         registration_model = MmdRuntimeModel.from_pmx_bytes(resolved_pmx_bytes)
         if registration_model is None:
             _registration_failed("model_create_failed")

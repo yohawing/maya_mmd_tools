@@ -296,7 +296,7 @@ def set_collider_authoring_pose(
     rotation_radians,
     display_scale: float = 1.0,
 ) -> None:
-    """Persist a raw PMX pose and place the display transform in Maya space."""
+    """Persist an effective PMX pose and place the display transform in Maya space."""
     _remove_authoring_follow_nodes(transform)
     cmds.setAttr(f"{shape}.position", *position, type="double3")
     to_ui_angle = radians_to_maya_angle

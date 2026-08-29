@@ -18,7 +18,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
-    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_MATERIAL,
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
@@ -187,7 +186,6 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
             ATTR_MMD_MODEL_NAME_EN,
             ATTR_MMD_COMMENT,
             ATTR_MMD_COMMENT_EN,
-            ATTR_MMD_IMPORT_SCALE,
             ATTR_MMD_DISPLAY_FRAMES_JSON,
             ATTR_MMD_TEXTURE_TABLE_JSON,
         ):
@@ -196,7 +194,6 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
         self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_MODEL_NAME_EN}"), source.header.model_name_english)
         self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_COMMENT}"), source.header.comment)
         self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_COMMENT_EN}"), source.header.comment_english)
-        self.assertAlmostEqual(cmds.getAttr(f"{root}.{ATTR_MMD_IMPORT_SCALE}"), 1.0)
 
         meshes = cmds.listRelatives(root, allDescendents=True, type="mesh", fullPath=True) or []
         joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []

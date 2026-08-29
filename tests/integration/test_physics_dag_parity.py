@@ -17,7 +17,7 @@ from maya import cmds
 from tests.common.maya_test_base import MayaTestBase
 
 from mmd_tools.core.mmd_parser import parse_pmx_file
-from mmd_tools.core.constants import ATTR_MMD_IMPORT_SCALE, ATTR_MMD_PMX_REST_POSITION
+from mmd_tools.core.constants import ATTR_MMD_PMX_REST_POSITION
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
 from mmd_tools.core.native.mmd_anim_runtime_handles import (
     MmdRuntimeInstance,
@@ -94,8 +94,6 @@ class TestPhysicsDagParity(MayaTestBase):
     def _build_dag_scene(self, scale=1.0):
         """Import physics DAG from parsed PMX into current scene."""
         root = cmds.group(empty=True, name="test_model_root")
-        cmds.addAttr(root, longName=ATTR_MMD_IMPORT_SCALE, attributeType="double")
-        cmds.setAttr(f"{root}.{ATTR_MMD_IMPORT_SCALE}", scale)
         maya_joints = _create_minimal_joints(self.pmx.bones, scale)
         rb_transforms, jt_transforms = build_physics_scene(
             rigid_bodies=self.pmx.rigid_bodies,
@@ -164,7 +162,7 @@ class TestPhysicsDagParity(MayaTestBase):
             self.assertEqual(dag_joint.rigidbody_a, pmx_joint.rigid_body_a_index)
             self.assertEqual(dag_joint.rigidbody_b, pmx_joint.rigid_body_b_index)
 
-    def test_scaled_dag_physics_descriptors_scale_linear_data_only(self):
+    def test_scaled_dag_physics_descriptors_use_effective_linear_data_only(self):
         scale = 0.5
         root, maya_joints, rb_transforms, _ = self._build_dag_scene(scale=scale)
         dag_desc_set = build_descriptors_from_dag(
@@ -219,15 +217,8 @@ class TestPhysicsDagParity(MayaTestBase):
         )[0]
         self.assertEqual(
             tuple(cmds.getAttr(f"{shape}.shapeSize")[0]),
-            tuple(self.pmx.rigid_bodies[0].size),
+            tuple(value * scale for value in self.pmx.rigid_bodies[0].size),
         )
-
-    def test_invalid_import_scale_fails_before_physics_descriptor_build(self):
-        root = cmds.group(empty=True, name="invalid_scale_model_root")
-        cmds.addAttr(root, longName=ATTR_MMD_IMPORT_SCALE, attributeType="double")
-        cmds.setAttr(f"{root}.{ATTR_MMD_IMPORT_SCALE}", 0.0)
-        with self.assertRaisesRegex(ValueError, "expected finite positive float"):
-            build_descriptors_from_dag(root)
 
     def test_missing_rigid_body_reference_fails_closed(self):
         root, maya_joints, _rb_transforms, jt_transforms = self._build_dag_scene()

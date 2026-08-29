@@ -48,7 +48,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_EXTERNAL_PARENT_KEY,
     ATTR_MMD_FIXED_AXIS,
-    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_GRANT_PARENT,
     ATTR_MMD_GRANT_PARENT_INDEX,
     ATTR_MMD_GRANT_RATE,
@@ -226,8 +225,6 @@ class TestPmxExporter(MayaTestBase):
         cmds.setAttr(f"{root}.{ATTR_MMD_COMMENT}", "", type="string")
         cmds.addAttr(root, longName=ATTR_MMD_COMMENT_EN, dataType="string")
         cmds.setAttr(f"{root}.{ATTR_MMD_COMMENT_EN}", "", type="string")
-        cmds.addAttr(root, longName=ATTR_MMD_IMPORT_SCALE, attributeType="double")
-        cmds.setAttr(f"{root}.{ATTR_MMD_IMPORT_SCALE}", 1.0)
 
         bone = cmds.createNode("joint", name=f"{root_name}_bone", parent=root)
         for attr, attr_type, value in (
@@ -1248,7 +1245,6 @@ class TestPmxExporter(MayaTestBase):
                 ATTR_MMD_MODEL_NAME_EN: "ZeroWeight",
                 ATTR_MMD_COMMENT: "",
                 ATTR_MMD_COMMENT_EN: "",
-                ATTR_MMD_IMPORT_SCALE: 1.0,
             },
         )
         cmds.parent(transform, root)

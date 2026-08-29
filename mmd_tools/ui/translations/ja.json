@@ -584,7 +584,7 @@
     "name_english": "英語名:",
     "shape": "形状:",
     "shape_size": "形状サイズ:",
-    "pmx_position": "PMX生座標:",
+    "pmx_position": "PMX座標:",
     "pmx_rotation_degrees": "PMX生回転・度:",
     "bodies": "ボディ:",
     "physics_mode": "物理モード:",
