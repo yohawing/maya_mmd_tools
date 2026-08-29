@@ -257,6 +257,12 @@ class TestVmdBoneAnimation(MayaTestBase):
 
         cmds.delete(joint)
 
+    def test_legacy_bone_motion_combines_model_and_motion_scale(self):
+        self.converter.motion_scale = 1.5
+        self.converter._model_import_scale = 0.5
+
+        self.assertEqual(self.converter._bone_animation_context().motion_scale, 0.75)
+
     def test_fps_60_bone_keys_vmd_frame_30_at_maya_time_60(self):
         """60fps import では VMD frame 30 の bone key を Maya time 60 に置く。"""
         joint = cmds.joint(name="legacy_fps_60_joint")
@@ -272,7 +278,7 @@ class TestVmdBoneAnimation(MayaTestBase):
         cmds.delete(joint)
 
     def test_motion_scale_affects_runtime_local_translate_delta_only(self):
-        """runtime bake の local translate も bind pose からの差分だけ倍率化する。"""
+        """runtime local values are not post-scaled after clip preparation."""
         joint = cmds.joint(name="runtime_motion_scale_joint")
         self.converter.motion_scale = 2.0
         self.converter.bone_index_to_joint = {0: joint}
@@ -286,9 +292,9 @@ class TestVmdBoneAnimation(MayaTestBase):
             static_state,
         )
 
-        self.assertAlmostEqual(static_state[joint]["translateX"]["first"], 5.0, places=6)
-        self.assertAlmostEqual(static_state[joint]["translateY"]["first"], 8.0, places=6)
-        self.assertAlmostEqual(static_state[joint]["translateZ"]["first"], -1.0, places=6)
+        self.assertAlmostEqual(static_state[joint]["translateX"]["first"], 4.0, places=6)
+        self.assertAlmostEqual(static_state[joint]["translateY"]["first"], 6.0, places=6)
+        self.assertAlmostEqual(static_state[joint]["translateZ"]["first"], 2.0, places=6)
         self.assertAlmostEqual(static_state[joint]["rotateX"]["first"], math.radians(10.0), places=6)
 
         cmds.delete(joint)

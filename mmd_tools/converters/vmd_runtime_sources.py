@@ -2,12 +2,38 @@
 
 import os
 from pathlib import Path
+import struct
 from typing import Callable, List, Optional, Tuple
 
 import maya.cmds as cmds
 
 from ..core.import_strategy import resolve_vmd_runtime_bake_strategy
 from ..core.namespace_utils import NamespaceUtils
+
+
+def scale_vmd_bone_translation_bytes(vmd_bytes: bytes, scale: float) -> bytes:
+    """Scale only VMD bone translation tracks in an owned byte copy."""
+    if scale == 1.0:
+        return vmd_bytes
+    if len(vmd_bytes) < 54:
+        raise ValueError("VMD data is too short to contain the bone frame count")
+
+    data = bytearray(vmd_bytes)
+    frame_count = struct.unpack_from("<I", data, 50)[0]
+    frame_size = 111
+    frame_start = 54
+    if frame_start + frame_count * frame_size > len(data):
+        raise ValueError("VMD bone frame section is truncated")
+    for index in range(frame_count):
+        position_offset = frame_start + index * frame_size + 19
+        position = struct.unpack_from("<fff", data, position_offset)
+        struct.pack_into(
+            "<fff",
+            data,
+            position_offset,
+            *(value * scale for value in position),
+        )
+    return bytes(data)
 
 
 def should_use_mmd_runtime_bake(
