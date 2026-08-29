@@ -269,6 +269,7 @@ def _write_release_gate_reports(
     *,
     run_id: str | None = None,
     timestamp: str | None = None,
+    duration_sec: float | None = None,
 ) -> tuple[Path, Path]:
     """Write release-gate Markdown and JSON summaries."""
     run_id, timestamp = (run_id, timestamp) if run_id and timestamp else _new_release_gate_run()
@@ -288,6 +289,8 @@ def _write_release_gate_reports(
         "log_dir": str(report_dir / "release_gate"),
         "results": results,
     }
+    if duration_sec is not None:
+        payload["duration_sec"] = round(float(duration_sec), 3)
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     lines = [
@@ -299,10 +302,16 @@ def _write_release_gate_reports(
         f"- Status: {payload['status']}",
         f"- Summary: pass={counts['pass']}, fail={counts['fail']}, skip={counts['skip']}",
         f"- Log directory: {payload['log_dir']}",
-        "",
+    ]
+    if duration_sec is not None:
+        lines.append(f"- Duration (seconds): {payload['duration_sec']}")
+    lines.extend(
+        [
+            "",
         "| Step | Status | Seconds | Command |",
         "| --- | --- | ---: | --- |",
-    ]
+        ]
+    )
     for result in results:
         command = " ".join(str(part) for part in result.get("command") or [])
         if not command:

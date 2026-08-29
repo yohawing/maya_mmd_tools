@@ -6,7 +6,9 @@ import json
 import os
 import sys
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import perf_counter
 
 
 def run_native_physics_release_gate(
@@ -328,6 +330,59 @@ def run_release_camera_motion_oracle(
         session.error("Camera motion release gate failed; reports: " + ", ".join(failed_reports))
 
 
+def _run_release_gate_tier2_parallel(
+    tier2_commands: list[tuple[str, list[str]]],
+    release_maya_versions: tuple[str, ...],
+    run_release_gate_command,
+    *,
+    verbose: bool,
+) -> list[dict[str, object]]:
+    """Run Maya-version Tier 2 lanes concurrently and restore declaration order."""
+    lane_commands: list[list[tuple[int, str, list[str]]]] = []
+    for maya_version in release_maya_versions:
+        lane_names = {
+            f"tier2:cpp-debug-prerequisite-{maya_version}",
+            f"tier2:mayapy-unit-{maya_version}",
+            f"tier2:mayapy-integration-{maya_version}",
+        }
+        lane = [
+            (index, name, command)
+            for index, (name, command) in enumerate(tier2_commands)
+            if name in lane_names
+        ]
+        if lane:
+            lane_commands.append(lane)
+
+    def run_lane(lane: list[tuple[int, str, list[str]]]) -> list[dict[str, object]]:
+        local_results: list[dict[str, object]] = []
+        for _index, name, command in lane:
+            run_release_gate_command(name, command, local_results, verbose=verbose)
+        return local_results
+
+    lane_results: list[tuple[list[tuple[int, str, list[str]]], list[dict[str, object]]]] = []
+    if lane_commands:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(run_lane, lane) for lane in lane_commands]
+            for lane, future in zip(lane_commands, futures):
+                lane_results.append((lane, future.result()))
+
+    ordered_results: list[dict[str, object] | None] = [None] * len(tier2_commands)
+    assigned_indexes: set[int] = set()
+    for lane, local_results in lane_results:
+        for (index, _name, _command), result in zip(lane, local_results):
+            ordered_results[index] = result
+            assigned_indexes.add(index)
+
+    for index, (name, command) in enumerate(tier2_commands):
+        if index in assigned_indexes:
+            continue
+        local_results: list[dict[str, object]] = []
+        run_release_gate_command(name, command, local_results, verbose=verbose)
+        ordered_results[index] = local_results[0]
+
+    return [result for result in ordered_results if result is not None]
+
+
 def run_release_gate(
     session,
     *,
@@ -359,9 +414,17 @@ def run_release_gate(
     environment=None,
 ) -> None:
     """Run release verification tiers with keep-going reporting."""
+    started = perf_counter()
     run_id, run_timestamp = new_release_gate_run()
     args = list(posargs)
     quick = has_flag(args, "--quick")
+    jobs_text = option(args, "--jobs", "1")
+    try:
+        jobs = int(jobs_text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("--jobs must be 1 or 2") from exc
+    if jobs not in (1, 2):
+        raise ValueError("--jobs must be 1 or 2")
     version = option(args, "--maya", default_maya_version)
     cpp_versions = options(args, "--cpp-maya") or list(default_cpp_versions)
     cpp_config = option(args, "--cpp-config", default_cpp_config)
@@ -387,11 +450,13 @@ def run_release_gate(
     if not quick:
         run_release_gate_callable("tier0:mmd-anim-pin", release_gate_pin_check, results)
         if results[-1]["status"] == "fail":
+            duration_sec = perf_counter() - started
             md_path, json_path = write_release_gate_reports(
                 results,
                 quick,
                 run_id=run_id,
                 timestamp=run_timestamp,
+                duration_sec=duration_sec,
             )
             session.log(f"Release gate report: {md_path}")
             session.log(f"Release gate JSON: {json_path}")
@@ -423,7 +488,7 @@ def run_release_gate(
                 ),
                 results,
             )
-        for name, command in release_gate_tier2_commands(
+        tier2_commands = release_gate_tier2_commands(
             version=version,
             cpp_versions=cpp_versions,
             cpp_config=cpp_config,
@@ -434,8 +499,19 @@ def run_release_gate(
             visual_cases=release_visual_cases,
             include_cpp=has_flag(args, "--with-cpp"),
             verbose=verbose,
-        ):
-            run_release_gate_command(name, command, results, verbose=verbose)
+        )
+        if jobs == 1:
+            for name, command in tier2_commands:
+                run_release_gate_command(name, command, results, verbose=verbose)
+        else:
+            results.extend(
+                _run_release_gate_tier2_parallel(
+                    tier2_commands,
+                    release_maya_versions,
+                    run_release_gate_command,
+                    verbose=verbose,
+                )
+            )
 
         for name, command, result_report in release_gate_tier3_commands(
             root=root,
@@ -455,11 +531,13 @@ def run_release_gate(
                 verbose=verbose,
             )
 
+    duration_sec = perf_counter() - started
     md_path, json_path = write_release_gate_reports(
         results,
         quick,
         run_id=run_id,
         timestamp=run_timestamp,
+        duration_sec=duration_sec,
     )
     counts = {
         status: sum(result["status"] == status for result in results)
@@ -472,7 +550,7 @@ def run_release_gate(
             passed=counts["pass"],
             skipped=counts["skip"],
             failed=counts["fail"],
-            duration_sec=sum(float(result["duration_sec"]) for result in results),
+            duration_sec=duration_sec,
         )
     )
     session.log(f"Release gate report: {md_path}")
