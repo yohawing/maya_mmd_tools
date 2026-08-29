@@ -195,9 +195,6 @@ def connect_collider_authoring_follow(
         body_bind_local = om.MTransformationMatrix(
             _pose_matrix(position, rotation_radians, display_scale, legacy=False)
         )
-        # Collider display scale is shape geometry, not part of the rigid
-        # transform offset from its related bone.
-        body_bind_local.setScale((1.0, 1.0, 1.0), om.MSpace.kTransform)
         body_bind_world = body_bind_local.asMatrix() * parent_world
         if bone_bind_world is None:
             bone_bind_world = om.MMatrix(
