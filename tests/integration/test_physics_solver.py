@@ -152,6 +152,40 @@ class TestPhysicsSolverSession(MayaTestBase):
         self.assertTrue(session.step(dt=1.0 / 30.0))
         session.free()
 
+    def test_scaled_scene_step_and_reset_restore_same_pose(self):
+        root, maya_joints = self._build_scene(scale=1.5)
+        session = PhysicsSolverSession.create(root, self.pmx_bytes, maya_joints)
+        try:
+            self.assertTrue(session.reset())
+            initial = session.get_bone_world_matrices()
+            self.assertIsNotNone(initial)
+            for _ in range(30):
+                self.assertTrue(session.step(dt=1.0 / 30.0))
+            stepped = session.get_bone_world_matrices()
+            self.assertIsNotNone(stepped)
+            self.assertTrue(
+                any(
+                    abs(before[index] - after[index]) > 1.0e-4
+                    for before, after in zip(initial, stepped)
+                    for index in (12, 13, 14)
+                ),
+                "scaled physics simulation must advance before reset",
+            )
+
+            self.assertTrue(session.reset())
+            restored = session.get_bone_world_matrices()
+            self.assertIsNotNone(restored)
+            for bone_index, (before, after) in enumerate(zip(initial, restored)):
+                for component, (expected, actual) in enumerate(zip(before, after)):
+                    self.assertAlmostEqual(
+                        actual,
+                        expected,
+                        delta=5.0e-3,
+                        msg=f"bone[{bone_index}] matrix[{component}]",
+                    )
+        finally:
+            session.free()
+
     def test_get_bone_world_matrices_returns_data(self):
         root, maya_joints = self._build_scene()
         session = PhysicsSolverSession.create(root, self.pmx_bytes, maya_joints)

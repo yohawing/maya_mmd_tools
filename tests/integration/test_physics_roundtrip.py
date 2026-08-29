@@ -879,6 +879,65 @@ class TestPhysicsRoundTrip(MayaTestBase):
                     msg=f"joint {field}",
                 )
 
+    def test_scale_1_5_physics_export_survives_fresh_scene_reimport(self):
+        scale = 1.5
+        source = parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_path = Path(temp_dir) / "physics_scale_1_5.pmx"
+            root = self._import_fixture(scale=scale)
+            result = ExportModelAction().execute(
+                ExportModelRequest(
+                    file_path=str(export_path),
+                    options={"export_format": "pmx", "target_model": root},
+                )
+            )
+            self.assertTrue(result.succeeded, result.status_message)
+            exported = parse_pmx_file(str(export_path), use_native_pmx_parse=False)
+
+            self.assertEqual(len(exported.rigid_bodies), len(source.rigid_bodies))
+            for actual, expected in zip(exported.rigid_bodies, source.rigid_bodies):
+                self.assertListAlmostEqual(
+                    actual.size, [value * scale for value in expected.size], places=5
+                )
+                self.assertListAlmostEqual(
+                    actual.position,
+                    [value * scale for value in expected.position],
+                    places=5,
+                )
+            self.assertEqual(len(exported.joints), len(source.joints))
+            for actual, expected in zip(exported.joints, source.joints):
+                for field in (
+                    "position",
+                    "translation_limit_min",
+                    "translation_limit_max",
+                ):
+                    self.assertListAlmostEqual(
+                        getattr(actual, field),
+                        [value * scale for value in getattr(expected, field)],
+                        places=5,
+                    )
+
+            cmds.file(new=True, force=True)
+            fresh_root = self._import_fixture(export_path)
+            fresh = ExportSceneCollector().collect_from_model_root(fresh_root)
+            self.assertEqual(len(fresh["rigid_bodies"]), len(exported.rigid_bodies))
+            for actual, expected in zip(fresh["rigid_bodies"], exported.rigid_bodies):
+                self.assertListAlmostEqual(actual["size"], expected.size, places=5)
+                self.assertListAlmostEqual(actual["position"], expected.position, places=5)
+            self.assertEqual(len(fresh["joints"]), len(exported.joints))
+            for actual, expected in zip(fresh["joints"], exported.joints):
+                self.assertListAlmostEqual(actual["position"], expected.position, places=5)
+                self.assertListAlmostEqual(
+                    actual["translation_limit_min"],
+                    expected.translation_limit_min,
+                    places=5,
+                )
+                self.assertListAlmostEqual(
+                    actual["translation_limit_max"],
+                    expected.translation_limit_max,
+                    places=5,
+                )
+
     def test_vertex_morph_and_physics_survive_collector_roundtrip(self):
         """A deleted-target PMX morph and every Physics field survive scene collection."""
         with tempfile.TemporaryDirectory() as temp_dir:
