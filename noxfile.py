@@ -539,17 +539,15 @@ def _write_release_gate_reports(
     *,
     run_id: str | None = None,
     timestamp: str | None = None,
+    duration_sec: float | None = None,
 ) -> tuple[Path, Path]:
     """Write release-gate Markdown and JSON summaries."""
-    if run_id is None and timestamp is None:
+    if run_id is None and timestamp is None and duration_sec is None:
         return _common_write_release_gate_reports(ROOT, results, quick)
-    return _common_write_release_gate_reports(
-        ROOT,
-        results,
-        quick,
-        run_id=run_id,
-        timestamp=timestamp,
-    )
+    report_options = {"run_id": run_id, "timestamp": timestamp}
+    if duration_sec is not None:
+        report_options["duration_sec"] = duration_sec
+    return _common_write_release_gate_reports(ROOT, results, quick, **report_options)
 
 
 def _normalize_local_gate_report(
@@ -2059,6 +2057,7 @@ def release_gate(session: nox.Session) -> None:
 
     Examples:
         uvx nox -s release_gate -- --quick
+        uvx nox -s release_gate -- --jobs 2
         uvx nox -s release_gate -- --maya 2024
         uvx nox -s release_gate -- --with-cpp
         uvx nox -s release_gate -- --with-cpp --cpp-maya 2024 --cpp-maya 2026 --cpp-config Release
