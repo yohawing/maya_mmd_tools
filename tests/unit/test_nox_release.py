@@ -104,6 +104,12 @@ class NoxReleaseTest(unittest.TestCase):
             for version in ("2024", "2025")
             for step in ("cpp-debug-prerequisite", "mayapy-unit", "mayapy-integration")
         ]
+        commands.extend(
+            [
+                ("tier2:generated-pmx-glsl-dx11-diff", ["diff"]),
+                ("tier2:bundled-native-smoke", ["bundled-native-smoke"]),
+            ]
+        )
         for posargs in ([], ["--jobs", "1"]):
             calls = []
 
@@ -285,6 +291,81 @@ class NoxReleaseTest(unittest.TestCase):
         self.assertEqual(results[8]["status"], "fail")
         self.assertTrue(visual_done.is_set())
         self.assertEqual(completed_visuals, 2)
+
+    def test_tier2_parallel_visual_diff_pair_waits_before_native_physics(self):
+        commands = [
+            ("tier2:generated-pmx-visual-glsl-2025", ["visual", "2025"]),
+            ("tier2:generated-pmx-visual-dx11-2026", ["visual", "2026"]),
+            ("tier2:generated-pmx-glsl-dx11-diff", ["diff"]),
+            ("tier2:bundled-native-smoke", ["bundled-native-smoke"]),
+            ("tier2:native-physics-release-gate", ["native-physics-release-gate"]),
+            ("tier2:pmx-roundtrip-v0_4", ["pmx-roundtrip"]),
+        ]
+        visual_barrier = threading.Barrier(2)
+        pair_barrier = threading.Barrier(2)
+        visuals_done = threading.Event()
+        pair_done = threading.Event()
+        native_done = threading.Event()
+        lock = threading.Lock()
+        active = 0
+        peak_active = 0
+        completed_visuals = 0
+        completed_pair = 0
+        seen = []
+
+        def run_command(name, command, local_results, **_kwargs):
+            nonlocal active, peak_active, completed_visuals, completed_pair
+            with lock:
+                active += 1
+                peak_active = max(peak_active, active)
+                seen.append(name)
+            try:
+                if name.startswith("tier2:generated-pmx-visual-"):
+                    visual_barrier.wait(timeout=2)
+                    with lock:
+                        completed_visuals += 1
+                        if completed_visuals == 2:
+                            visuals_done.set()
+                elif name in {
+                    "tier2:generated-pmx-glsl-dx11-diff",
+                    "tier2:bundled-native-smoke",
+                }:
+                    self.assertTrue(visuals_done.is_set())
+                    pair_barrier.wait(timeout=2)
+                    with lock:
+                        completed_pair += 1
+                        if completed_pair == 2:
+                            pair_done.set()
+                elif name == "tier2:native-physics-release-gate":
+                    self.assertTrue(pair_done.is_set())
+                    native_done.set()
+                elif name == "tier2:pmx-roundtrip-v0_4":
+                    self.assertTrue(native_done.is_set())
+                local_results.append(
+                    {
+                        "name": name,
+                        "status": "fail" if name == "tier2:generated-pmx-glsl-dx11-diff" else "pass",
+                        "duration_sec": 0.0,
+                        "command": command,
+                    }
+                )
+            finally:
+                with lock:
+                    active -= 1
+
+        results = _run_release_gate_tier2_parallel(commands, (), run_command, verbose=False)
+
+        self.assertEqual(peak_active, 2)
+        self.assertEqual(completed_visuals, 2)
+        self.assertEqual(completed_pair, 2)
+        self.assertTrue(visuals_done.is_set())
+        self.assertTrue(pair_done.is_set())
+        self.assertTrue(native_done.is_set())
+        self.assertEqual(len(results), len(commands))
+        self.assertEqual([result["name"] for result in results], [name for name, _ in commands])
+        self.assertEqual(results[2]["status"], "fail")
+        self.assertGreater(seen.index("tier2:generated-pmx-glsl-dx11-diff"), seen.index("tier2:generated-pmx-visual-dx11-2026"))
+        self.assertGreater(seen.index("tier2:bundled-native-smoke"), seen.index("tier2:generated-pmx-visual-glsl-2025"))
 
     def test_release_gate_rejects_invalid_jobs(self):
         session = types.SimpleNamespace(posargs=["--quick", "--jobs", "3"])
