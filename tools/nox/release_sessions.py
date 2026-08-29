@@ -22,7 +22,7 @@ def run_native_physics_release_gate(
     maya_process_path,
     python_executable: str = sys.executable,
 ) -> None:
-    """Run the bundled native physics route twice and compare deterministic output."""
+    """Run the bundled collision test and compare two deterministic physics runs."""
     maya_version = "2024"
     mayapy_path = mayapy(maya_version)
     pmx = (root / "tests/data/physics/test_hair_physics.pmx").resolve()
@@ -47,6 +47,14 @@ def run_native_physics_release_gate(
         MMD_ANIM_FFI_PATH=str(ffi),
         MAYA_SKIP_USERSETUP_PY="1",
         MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
+    )
+    collision_env = os.environ.copy()
+    collision_env["MMD_ANIM_FFI_PATH"] = str(ffi)
+    session.run(
+        python_executable,
+        str(root / "tests/release/test_native_physics_collision.py"),
+        env=collision_env,
+        external=True,
     )
     for report in run_reports:
         session.run(

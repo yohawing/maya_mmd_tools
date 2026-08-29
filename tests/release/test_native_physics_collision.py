@@ -1,19 +1,22 @@
-"""Bullet collision verification for the mmd_tools physics plugin (PHS-COLLISION-BASE-1).
+"""Bullet collision verification for the mmd_tools physics runtime.
 
 Verifies that Bullet collision actually works through the mmd-anim FFI
 bindings, independent of Maya pose input. Rigid bodies are built directly as
-typed descriptors with ``bone_index=-1`` (unbound), so ``copy_rigidbody_states``
-reflects raw Bullet simulation results rather than bone-driven readback.
+typed descriptors with ``bone_index=-1`` (unbound), so
+``copy_rigidbody_states`` reflects raw Bullet simulation results rather than
+bone-driven readback.
 """
 
 from __future__ import annotations
 
 import unittest
 from pathlib import Path
+import sys
 
-from maya import cmds
 
-from tests.common.maya_test_base import MayaTestBase
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
@@ -31,6 +34,7 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MmdRuntimeFfiPhysicsRigidbodyDesc,
 )
 from mmd_tools.core.physics_descriptor import build_descriptors_from_pmx
+
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
 
@@ -83,24 +87,16 @@ def _make_rigidbody_desc(
     return desc
 
 
-@unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
-@unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
-class TestPhysicsCollisionBase(MayaTestBase):
-    """Verify Bullet collision behavior via the mmd-anim FFI, independent of Maya pose."""
+class TestNativePhysicsCollision(unittest.TestCase):
+    """Verify Bullet collision through the mmd-anim FFI without Maya."""
 
     @classmethod
     def setUpClass(cls):
-        super().setUpClass()
-        plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
-        try:
-            cmds.loadPlugin(plugin_path)
-        except Exception:
-            pass
+        if not FIXTURE_PATH.is_file():
+            raise RuntimeError(f"Native physics fixture not found: {FIXTURE_PATH}")
+        if not _native_physics_available():
+            raise RuntimeError("Native physics runtime is unavailable")
         cls.pmx_bytes = FIXTURE_PATH.read_bytes()
-
-    @classmethod
-    def tearDownClass(cls):
-        super().tearDownClass()
 
     def _build_instance(self):
         """Create a model+instance pair to drive reset()/step_runtime() calls.
