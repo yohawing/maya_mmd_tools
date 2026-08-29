@@ -383,7 +383,6 @@
     "vmd_rotation_time_curve": "保留VMD旋轉時間曲線（實驗性）",
     "use_cpp_fast_load": "使用 C++ Fast Load（實驗性）",
     "use_cpp_vp2_ownership": "使用 C++ VP2 RenderOverride（實驗性）",
-    "apply_scale": "套用縮放",
     "new_file": "新建檔案",
     "enable_ik": "啟用IK",
     "invert_value": "反轉值",

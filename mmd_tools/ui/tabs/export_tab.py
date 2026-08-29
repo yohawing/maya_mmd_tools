@@ -126,21 +126,13 @@ class _ExportPage(QWidget):
         return scroll, widget, layout
 
     def _build_settings(self) -> None:
+        if self.pane == self.owner.MODEL_PANE:
+            self.settings_layout.addStretch()
+            return
         self.settings_group = QGroupBox(self.owner.tr("export", "settings"))
         self.settings_layout.addWidget(self.settings_group)
-        if self.pane == self.owner.MODEL_PANE:
-            self._model_form = QFormLayout(self.settings_group)
-            self.apply_scale_check = QCheckBox(
-                self.owner.tr("apply_scale", "checkboxes")
-            )
-            self.apply_scale_check.setObjectName("modelApplyScale")
-            self.apply_scale_check.setChecked(True)
-            self.apply_scale_check.toggled.connect(self.owner._mark_editing)
-            self._model_form.addRow(
-                self.owner.tr("options", "fields"), self.apply_scale_check
-            )
-        elif self.pane in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
-            self._motion_form = QFormLayout(self.settings_group)
+        self._motion_form = QFormLayout(self.settings_group)
+        if self.pane in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
             if self.pane == self.owner.MOTION_PANE:
                 self.format_combo = QComboBox(self)
                 self.format_combo.setObjectName("motionExportFormat")
@@ -306,9 +298,7 @@ class _ExportPage(QWidget):
             "require_current_model": requires_model,
             "current_model_root": str(current_model_root or "") or None,
         }
-        if self.pane == self.owner.MODEL_PANE:
-            options["apply_scale"] = self.apply_scale_check.isChecked()
-        elif self.export_format == "vpd":
+        if self.export_format == "vpd":
             options["export_strategy"] = "current_pose"
         elif self.pane in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
             options["export_strategy"] = self._export_strategy()
@@ -471,7 +461,8 @@ class _ExportPage(QWidget):
         self.bake_export_check.setEnabled(False)
 
     def retranslate(self) -> None:
-        self.settings_group.setTitle(self.owner.tr("export", "settings"))
+        if self.pane in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
+            self.settings_group.setTitle(self.owner.tr("export", "settings"))
         self.export_group.setTitle(self.owner.tr("export", "groups"))
         self.output_browse_button.setText(self.owner.tr("browse", "buttons"))
         self.export_button.setText(self._button_text("export"))
@@ -482,14 +473,7 @@ class _ExportPage(QWidget):
             self.output_path_edit,
             self.owner.tr("file_path", "labels"),
         )
-        if self.pane == self.owner.MODEL_PANE:
-            self.apply_scale_check.setText(self.owner.tr("apply_scale", "checkboxes"))
-            self._set_form_label(
-                self._model_form,
-                self.apply_scale_check,
-                self.owner.tr("options", "fields"),
-            )
-        elif self.pane in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
+        if self.pane in {self.owner.MOTION_PANE, self.owner.CAMERA_PANE}:
             if self.pane == self.owner.MOTION_PANE:
                 self._set_form_label(
                     self._motion_form,
@@ -694,14 +678,8 @@ class ExportTab(BaseTab):
         if not callable(getter):
             def getter(_key, default=None):
                 return default
-        model = self._pages[self.MODEL_PANE]
         motion = self._pages[self.MOTION_PANE]
         camera = self._pages[self.CAMERA_PANE]
-        model.apply_scale_check.setChecked(
-            bool(getter(settings_keys.EXPORT_GENERAL_APPLY_SCALE, True))
-        )
-        # Read the legacy key only to consume old settings; its value cannot
-        # select a second mode after the export contract was simplified.
         motion.set_export_strategy(getter(settings_keys.EXPORT_MOTION_STRATEGY, VMD_EXPORT_BAKE_TIMELINE))
         motion.frame_range_check.setChecked(
             bool(getter(settings_keys.EXPORT_MOTION_USE_FRAME_RANGE, False))
@@ -767,10 +745,8 @@ class ExportTab(BaseTab):
         setter = getattr(service, "set", None) if service is not None else None
         if not callable(setter):
             return
-        model = self._pages[self.MODEL_PANE]
         motion = self._pages[self.MOTION_PANE]
         camera = self._pages[self.CAMERA_PANE]
-        setter(settings_keys.EXPORT_GENERAL_APPLY_SCALE, model.apply_scale_check.isChecked())
         setter(settings_keys.EXPORT_MOTION_STRATEGY, VMD_EXPORT_BAKE_TIMELINE)
         setter(
             settings_keys.EXPORT_MOTION_USE_FRAME_RANGE,
@@ -865,7 +841,6 @@ class ExportTab(BaseTab):
             "cancel_button",
             "state_label",
             "validation_console",
-            "apply_scale_check",
             "bake_export_check",
             "light_export_check",
             "strategy_combo",
@@ -874,7 +849,6 @@ class ExportTab(BaseTab):
             "frame_start_spin",
             "frame_end_spin",
             "pose_help",
-            "_model_form",
             "_motion_form",
             "_export_form",
             "export_group",
@@ -882,8 +856,6 @@ class ExportTab(BaseTab):
         }:
             pages = self.__dict__.get("_pages", {})
             pane_by_attribute = {
-                "_model_form": self.MODEL_PANE,
-                "apply_scale_check": self.MODEL_PANE,
                 "_motion_form": self.MOTION_PANE,
                 "format_combo": self.MOTION_PANE,
                 "pose_help": self.MOTION_PANE,

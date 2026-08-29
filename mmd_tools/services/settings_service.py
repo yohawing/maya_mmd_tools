@@ -178,12 +178,12 @@ class SettingsService:
             category: copy.deepcopy(all_settings.get(category, {}))
             for category in _SETTINGS_EXPORT_CATEGORIES
         }
-        # ``export.general.export_format`` was a dead PMX/PMD selector.  Drop
-        # it from exported settings so stale PMD values cannot become a future
-        # export authority when a settings file is migrated.
+        # These legacy export options are no longer part of the public
+        # settings contract.
         export_general = exported.get("export", {}).get("general")
         if isinstance(export_general, dict):
             export_general.pop("export_format", None)
+            export_general.pop("apply_scale", None)
         return exported
 
     def write_settings_json(self, file_path):
@@ -216,10 +216,10 @@ class SettingsService:
         if isinstance(export_settings, dict):
             export_general = export_settings.get("general")
             if isinstance(export_general, dict):
-                # Legacy PMD/PMX export-format persistence is no longer part
-                # of the public settings contract.  The current Export tab
-                # owns its PMX/VMD choice, so never persist this stale key.
+                # Legacy PMD/PMX export-format and Apply Scale persistence are
+                # no longer part of the public settings contract.
                 export_general.pop("export_format", None)
+                export_general.pop("apply_scale", None)
 
         for category in _SETTINGS_EXPORT_CATEGORIES:
             if category in normalized_data:

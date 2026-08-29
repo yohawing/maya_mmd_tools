@@ -53,7 +53,6 @@ IMPORT_LIGHT_CREATE_CONTROLLER = "import.light.create_controller"
 IMPORT_VIEW_SETUP_COLOR_MANAGEMENT = "import.view.setup_color_management"
 IMPORT_VIEW_SETUP_TRANSPARENCY = "import.view.setup_transparency"
 
-EXPORT_GENERAL_APPLY_SCALE = "export.general.apply_scale"
 EXPORT_MOTION_STRATEGY = "export.motion.strategy"
 EXPORT_MOTION_USE_FRAME_RANGE = "export.motion.use_frame_range"
 EXPORT_MOTION_START_FRAME = "export.motion.start_frame"

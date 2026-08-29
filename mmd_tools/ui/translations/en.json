@@ -486,7 +486,6 @@
     "use_cpp_fast_load": "Use C++ Fast Load (Experimental)",
     "use_cpp_vp2_ownership": "Use C++ VP2 RenderOverride (Experimental)",
     "use_cpp_rig_nodes": "Use C++ Rig Nodes (Experimental)",
-    "apply_scale": "Apply Scale",
     "use_frame_range": "Use frame range",
     "new_file": "New File",
     "enable_ik": "Enable IK",

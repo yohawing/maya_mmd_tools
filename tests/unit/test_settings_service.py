@@ -53,7 +53,7 @@ class _FakeSettingsStore:
                     "use_native_physics_bake": True,
                 },
             },
-            "export": {"general": {"apply_scale": False}},
+            "export": {"general": {}},
             "logging": {"enabled": False, "level": "ERROR", "log_file_path": "custom.log"},
             "ui": {"general": {"development_mode": False, "language": "en"}},
             "internal": {"ignored": True},
@@ -164,6 +164,7 @@ class TestSettingsServiceJson(unittest.TestCase):
         self.assertEqual(set(data), {"import", "export", "logging", "ui"})
         self.assertNotIn("internal", data)
         self.assertNotIn("export_format", data["export"].get("general", {}))
+        self.assertNotIn("apply_scale", data["export"].get("general", {}))
 
     def test_write_and_import_settings_json(self):
         path = "settings.json"
@@ -207,7 +208,7 @@ class TestSettingsServiceJson(unittest.TestCase):
         self.assertFalse(self.service.get("import.model.create_mmd_control_rig"))
         self.assertIsNone(self.service.get("import.animation.create_mmd_control_rig"))
 
-    def test_import_settings_drops_legacy_export_format(self):
+    def test_import_settings_drops_legacy_export_options(self):
         self.service.import_settings_data(
             {"export": {"general": {"export_format": "pmd", "apply_scale": False}}}
         )
@@ -217,7 +218,7 @@ class TestSettingsServiceJson(unittest.TestCase):
             ("export.general.export_format", "pmd"),
             self.store.set_calls,
         )
-        self.assertFalse(self.service.get("export.general.apply_scale"))
+        self.assertNotIn("apply_scale", self.store.data["export"]["general"])
 
 
 class TestSettingsServiceImportOptions(unittest.TestCase):

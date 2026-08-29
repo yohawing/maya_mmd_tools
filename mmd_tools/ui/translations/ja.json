@@ -486,7 +486,6 @@
     "use_cpp_fast_load": "C++ Fast Loadを使用（実験的）",
     "use_cpp_vp2_ownership": "C++ VP2 RenderOverrideを使用（実験的）",
     "use_cpp_rig_nodes": "C++リグノードを使用（実験的）",
-    "apply_scale": "スケールを適用",
     "use_frame_range": "フレーム範囲を使用",
     "new_file": "新規ファイル",
     "enable_ik": "IKを有効にする",
