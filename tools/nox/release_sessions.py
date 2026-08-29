@@ -337,8 +337,9 @@ def _run_release_gate_tier2_parallel(
     *,
     verbose: bool,
 ) -> list[dict[str, object]]:
-    """Run Maya-version Tier 2 lanes concurrently and restore declaration order."""
+    """Run independent Tier 2 groups concurrently and restore declaration order."""
     lane_commands: list[list[tuple[int, str, list[str]]]] = []
+    lane_indexes: set[int] = set()
     for maya_version in release_maya_versions:
         lane_names = {
             f"tier2:cpp-debug-prerequisite-{maya_version}",
@@ -352,11 +353,14 @@ def _run_release_gate_tier2_parallel(
         ]
         if lane:
             lane_commands.append(lane)
+            lane_indexes.update(index for index, _name, _command in lane)
 
     def run_lane(lane: list[tuple[int, str, list[str]]]) -> list[dict[str, object]]:
         local_results: list[dict[str, object]] = []
         for _index, name, command in lane:
             run_release_gate_command(name, command, local_results, verbose=verbose)
+        if len(local_results) != len(lane):
+            raise RuntimeError("Tier 2 Maya lane did not produce one result per command")
         return local_results
 
     lane_results: list[tuple[list[tuple[int, str, list[str]]], list[dict[str, object]]]] = []
@@ -367,18 +371,72 @@ def _run_release_gate_tier2_parallel(
                 lane_results.append((lane, future.result()))
 
     ordered_results: list[dict[str, object] | None] = [None] * len(tier2_commands)
-    assigned_indexes: set[int] = set()
     for lane, local_results in lane_results:
         for (index, _name, _command), result in zip(lane, local_results):
             ordered_results[index] = result
-            assigned_indexes.add(index)
 
-    for index, (name, command) in enumerate(tier2_commands):
-        if index in assigned_indexes:
-            continue
+    def run_one(index: int, name: str, command: list[str]) -> tuple[int, dict[str, object]]:
         local_results: list[dict[str, object]] = []
         run_release_gate_command(name, command, local_results, verbose=verbose)
-        ordered_results[index] = local_results[0]
+        if len(local_results) != 1:
+            raise RuntimeError(f"Tier 2 command did not produce one result: {name}")
+        return index, local_results[0]
+
+    def group_key(name: str) -> str:
+        if name.startswith("tier2:viewport-") or name.startswith("tier2:generated-pmx-visual-"):
+            return name.rsplit("-", 1)[-1]
+        return name
+
+    def run_group(group: list[tuple[int, str, list[str]]]) -> None:
+        """Run a contiguous independent group in safe batches of at most two."""
+        batches: list[list[tuple[int, str, list[str]]]] = [[]]
+        for entry in group:
+            _index, name, _command = entry
+            current = batches[-1]
+            if len(current) >= 2 or group_key(name) in {group_key(item[1]) for item in current}:
+                current = []
+                batches.append(current)
+            current.append(entry)
+
+        for batch in batches:
+            if len(batch) == 1:
+                command_index, name, command = batch[0]
+                result_index, result = run_one(command_index, name, command)
+                ordered_results[result_index] = result
+                continue
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(run_one, *entry) for entry in batch]
+                for future in futures:
+                    result_index, result = future.result()
+                    ordered_results[result_index] = result
+
+    index = 0
+    while index < len(tier2_commands):
+        if index in lane_indexes:
+            index += 1
+            continue
+        name, command = tier2_commands[index]
+        if name.startswith("tier2:viewport-") or name.startswith("tier2:generated-pmx-visual-"):
+            group_start = index
+            prefix = "tier2:viewport-" if name.startswith("tier2:viewport-") else "tier2:generated-pmx-visual-"
+            index += 1
+            while index < len(tier2_commands) and index not in lane_indexes:
+                next_name, _next_command = tier2_commands[index]
+                if not next_name.startswith(prefix):
+                    break
+                index += 1
+            run_group(
+                [
+                    (command_index, group_name, group_command)
+                    for command_index, (group_name, group_command) in enumerate(
+                        tier2_commands[group_start:index], start=group_start
+                    )
+                ]
+            )
+            continue
+        result_index, result = run_one(index, name, command)
+        ordered_results[result_index] = result
+        index += 1
 
     return [result for result in ordered_results if result is not None]
 
