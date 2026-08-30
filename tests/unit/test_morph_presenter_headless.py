@@ -539,6 +539,29 @@ def _freeze(value):
 
 
 class TestMorphPresenterHeadless(unittest.TestCase):
+    def test_owned_mesh_queries_request_full_dag_paths(self):
+        adapter = _FakeMayaAdapter()
+        adapter.relatives[(
+            TEST_MODEL,
+            (("allDescendents", True), ("fullPath", True), ("type", "mesh")),
+        )] = ["|test_model|Geometry|body|bodyShape"]
+        adapter.attr_values["|test_model|Geometry|body|bodyShape.intermediateObject"] = False
+        presenter, _, _, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
+
+        self.assertEqual(
+            presenter._owned_mesh_shapes(),
+            ("|test_model|Geometry|body|bodyShape",),
+        )
+        self.assertIn(
+            (
+                "list_relatives",
+                TEST_MODEL,
+                (),
+                {"allDescendents": True, "type": "mesh", "fullPath": True},
+            ),
+            adapter.calls,
+        )
+
     def test_slider_drag_is_one_fixed_target_session_without_scene_reads_per_move(self):
         presenter, view, _, adapter = _make_presenter(model=TEST_MODEL)
         presenter._morph_controller = "controller"

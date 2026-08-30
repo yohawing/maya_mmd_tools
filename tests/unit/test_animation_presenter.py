@@ -458,6 +458,7 @@ class _FakeAdapter:
         self._node_types: dict[str, str] = {}
         self._long_paths = dict(long_paths or {})
         self._ls_long_calls = 0
+        self._list_relatives_calls = []
         self._transforms: dict[str, tuple[list, list]] = {}
         self._undo_chunks: list[str] = []
 
@@ -482,6 +483,7 @@ class _FakeAdapter:
         return resolved
 
     def list_relatives(self, node, **kwargs):
+        self._list_relatives_calls.append((node, kwargs))
         if kwargs.get("parent"):
             return [node.rsplit("|", 1)[0] or node]
         if kwargs.get("children") and kwargs.get("type") == "transform":
@@ -640,6 +642,18 @@ class TestAnimationPresenter(unittest.TestCase):
     def test_initial_no_model(self):
         presenter, view, _, _ = self._make()
         self.assertEqual(view.display_frame_tree.topLevelItemCount(), 0)
+
+    def test_model_joint_queries_request_full_dag_paths(self):
+        presenter, _, _, adapter = self._make(joints={0: "center"})
+
+        self.assertEqual(presenter._build_bone_index_map("|test_model"), {0: "center"})
+        self.assertEqual(presenter._build_bone_name_map("|test_model"), {})
+        self.assertEqual(
+            [kwargs["fullPath"] for _node, kwargs in adapter._list_relatives_calls
+            if kwargs.get("type") == "joint" and kwargs.get("allDescendents")
+        ],
+            [True, True],
+        )
 
     def test_model_change_populates_tree(self):
         joints = {0: "center", 3: "upper_body", 4: "neck"}

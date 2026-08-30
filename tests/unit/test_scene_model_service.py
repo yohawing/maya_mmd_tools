@@ -107,6 +107,64 @@ class _FakeCmds:
 
 
 class TestSceneModelService(unittest.TestCase):
+    def test_model_info_keeps_duplicate_leaf_shapes_and_joints_on_full_paths(self):
+        class _FullPathOnlyCmds(_FakeCmds):
+            def __init__(self):
+                super().__init__()
+                self.relative_calls = []
+
+            def listRelatives(self, node, **kwargs):
+                self.relative_calls.append((node, kwargs))
+                if kwargs.get("allDescendents") and kwargs.get("type") in {"mesh", "joint"}:
+                    if not kwargs.get("fullPath"):
+                        raise AssertionError("model descendants must be queried by full DAG path")
+                return super().listRelatives(node, **kwargs)
+
+            def polyEvaluate(self, shape, vertex):
+                if not str(shape).startswith("|"):
+                    raise AssertionError(f"ambiguous short shape passed to polyEvaluate: {shape!r}")
+                return super().polyEvaluate(shape, vertex)
+
+        cmds = _FullPathOnlyCmds()
+        model_a = "|modelA|model_root"
+        model_b = "|modelB|model_root"
+        shape_a = "|modelA|model_root|Geometry|body|bodyShape"
+        shape_b = "|modelB|model_root|Geometry|body|bodyShape"
+        joint_a = "|modelA|model_root|Skeleton|rootJoint"
+        joint_b = "|modelB|model_root|Skeleton|rootJoint"
+        cmds.existing = {model_a, model_b}
+        cmds.attrs = {
+            model_a: {ATTR_MMD_MODEL_NAME: "Model A"},
+            model_b: {ATTR_MMD_MODEL_NAME: "Model B"},
+        }
+        cmds.meshes = {model_a: [shape_a], model_b: [shape_b]}
+        cmds.vertices = {shape_a: 8, shape_b: 4}
+        cmds.joints = {model_a: [joint_a], model_b: [joint_b]}
+        cmds.connections = {
+            shape_a: ["sgA"],
+            shape_b: ["sgB"],
+            "sgA": ["matA"],
+            "sgB": ["matB"],
+        }
+        cmds.materials_for_connections = {"matA": ["matA"], "matB": ["matB"]}
+        cmds.history = {shape_a: ["bsA"], shape_b: ["bsB"]}
+        cmds.blend_targets = {"bsA": ["smile"], "bsB": ["blink", "angry"]}
+        service = SceneModelService(cmds_module=cmds)
+
+        info_a = service.get_model_info(model_a)
+        info_b = service.get_model_info(model_b)
+
+        self.assertEqual(info_a["vertex_count"], 8)
+        self.assertEqual(info_a["bone_count"], 1)
+        self.assertEqual(info_a["morph_count"], 1)
+        self.assertEqual(info_b["vertex_count"], 4)
+        self.assertEqual(info_b["bone_count"], 1)
+        self.assertEqual(info_b["morph_count"], 2)
+        self.assertEqual(
+            [kwargs["fullPath"] for _node, kwargs in cmds.relative_calls],
+            [True, True, True, True],
+        )
+
     def test_cmds_module_legacy_injection_still_works(self):
         cmds = _FakeCmds()
         cmds.existing = {"model_root"}
