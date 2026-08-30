@@ -210,6 +210,8 @@ class TestMayaE2EHarness(unittest.TestCase):
                 harness.maya_commandport, "terminate_detached_maya", return_value=1234
             ) as terminate_detached, mock.patch.object(
                 harness.maya_commandport, "close_process_logs"
+            ), mock.patch.object(
+                harness.sys, "platform", "win32"
             ):
                 harness.run_maya_e2e(
                     project_root=project_root,
