@@ -125,9 +125,10 @@ class MorphRowWidget(QWidget):
 
     _STYLE_SHEET = (
         "QWidget#MorphRow { background: #383838; border: 1px solid transparent; "
-        "border-radius: 3px; } "
-        'QWidget#MorphRow[selected="true"] { background: #3f6275; '
-        "border: 1px solid #79cfff; }"
+        "border-left: 5px solid transparent; border-radius: 3px; } "
+        'QWidget#MorphRow[selected="true"] { background: #24546b; '
+        "border: 1px solid #79cfff; border-left: 5px solid #79cfff; } "
+        'QWidget#MorphRow[selected="true"] QLabel { color: #ffffff; font-weight: 700; }'
     )
 
     def __init__(self, icon, label, slider, editor, plugs, parent=None):
