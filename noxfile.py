@@ -891,6 +891,18 @@ def mmd_control_rig_vmd_import_parity_matrix(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def vmd_clear_existing_motion_e2e_matrix(session: nox.Session) -> None:
+    """Run real PMX/VMD A-to-B replacement across Maya versions and EM modes."""
+    _run_python_module(
+        session,
+        module="tests.viewport.vmd_clear_existing_motion_e2e_matrix",
+        posargs=session.posargs,
+        python_executable=sys.executable,
+        environment=dict(os.environ),
+    )
+
+
+@nox.session(venv_backend="none")
 def real_asset_bake_rig_parity(session: nox.Session) -> None:
     """Run the fail-closed five-pair Maya 2024/2026 Control Rig parity matrix.
 
