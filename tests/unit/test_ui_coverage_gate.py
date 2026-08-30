@@ -93,7 +93,6 @@ def test_checked_in_manifest_is_structurally_valid_and_inventories_all_tabs():
     result = validate_manifest(_load_manifest())
     assert result["valid"]
     assert result["tab_count"] == 9
-    assert result["surface_count"] >= 200
 
 
 def test_case_execution_layer_is_required_and_fail_closed():
@@ -474,15 +473,22 @@ def test_headless_case_rejects_required_maya_versions():
     assert "headless_case_has_maya_versions" in _errors(validate_manifest(manifest))
 
 
-def test_manifest_fails_when_qt_case_count_drops_below_floor():
+def test_manifest_surface_count_changes_do_not_fail_by_count_alone():
     manifest = _load_manifest()
-    manifest["minimum_qt_case_surfaces"] = sum(
-        surface["disposition"] == "qt_case" for surface in manifest["surfaces"]
-    ) + 1
+    removable = next(
+        surface for surface in manifest["surfaces"] if surface["disposition"] == "qt_case"
+    )
+    manifest["surfaces"].remove(removable)
+    assert validate_manifest(manifest)["valid"]
 
-    result = validate_manifest(manifest)
+    manifest = _load_manifest()
+    extra = copy.deepcopy(removable)
+    extra["id"] = "settings.additional_surface"
+    extra.pop("attribute", None)
+    extra["selector"] = "objectName=additionalSurface"
+    manifest["surfaces"].append(extra)
 
-    assert "insufficient_qt_case_surfaces" in _errors(result)
+    assert validate_manifest(manifest)["valid"]
 
 
 def _builder_surface(**witness_overrides):

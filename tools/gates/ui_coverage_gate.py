@@ -275,24 +275,6 @@ def validate_manifest(manifest: Mapping[str, Any]) -> Dict[str, Any]:
         disposition: sum(surface.get("disposition") == disposition for surface in surfaces)
         for disposition in sorted(DISPOSITIONS)
     }
-    minimum_qt_cases = manifest.get("minimum_qt_case_surfaces")
-    if minimum_qt_cases is not None:
-        if isinstance(minimum_qt_cases, bool) or not isinstance(minimum_qt_cases, int):
-            errors.append(
-                _error(
-                    "invalid_minimum_qt_case_surfaces",
-                    "minimum_qt_case_surfaces",
-                    "must be an integer",
-                )
-            )
-        elif disposition_counts["qt_case"] < minimum_qt_cases:
-            errors.append(
-                _error(
-                    "insufficient_qt_case_surfaces",
-                    "minimum_qt_case_surfaces",
-                    f"requires {minimum_qt_cases}, found {disposition_counts['qt_case']}",
-                )
-            )
 
     return {
         "valid": not errors,

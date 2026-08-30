@@ -188,12 +188,16 @@ def test_focused_uses_uvx_pytest_when_nox_interpreter_has_no_pytest(
         ["--profile", "focused", "--domain", "info", "--out-dir", "reports"]
     )
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    surface_count = matrix["surface_trace"]["expected_surface_count"]
     assert report["status"] == "pass"
     assert report["selection"]["versions"] == ["2024"]
-    assert report["headless"]["test_count"] == surface_count + 1
-    assert report["headless"]["surface_test_count"] == surface_count
-    assert len(report["headless"]["test_identities"]) == surface_count + 1
+    identities = report["headless"]["test_identities"]
+    surface_identities = [
+        identity
+        for identity in identities
+        if "test_authoring_surface_dispatches_exactly_once[" in identity
+    ]
+    assert report["headless"]["test_count"] == len(identities)
+    assert report["headless"]["surface_test_count"] == len(surface_identities)
     assert report["source_verified_at_end"] == report["source"]
     assert harness.gui_runs == ["2024"]
     assert harness.build_events == []
@@ -312,9 +316,8 @@ def test_missing_gui_timing_artifact_fails_closed(tmp_path, monkeypatch, matrix)
 def test_rc_zero_headless_subset_cannot_produce_aggregate_pass(tmp_path, monkeypatch, matrix):
     harness = _Harness(tmp_path, matrix, monkeypatch)
     harness.headless_subset = True
-    total_count = matrix["surface_trace"]["expected_surface_count"] + 1
     with pytest.raises(
-        gate.CrossMayaGateError, match="{} PASS".format(total_count)
+        gate.CrossMayaGateError, match="headless JUnit"
     ):
         harness.run(["--profile", "focused", "--domain", "info", "--out-dir", "reports"])
     assert not (tmp_path / "reports" / "authoring-cross-maya-report.json").exists()

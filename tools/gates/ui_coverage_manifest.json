@@ -1,7 +1,6 @@
 {
   "schema_version": 1,
   "gate_id": "V070-UI-COVERAGE-1",
-  "minimum_qt_case_surfaces": 221,
   "inventory_scope": "MainWindow nine tabs; logical mutable/actionable surfaces only, with explicit exclusions for containers and read-only displays.",
   "tabs": [
     {

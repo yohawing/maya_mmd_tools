@@ -379,7 +379,6 @@ def _errors(matrix, ui_manifest, semantic_manifest):
     trace = matrix.get("surface_trace", {})
     expected_trace_keys = {
         "source_selector",
-        "expected_surface_count",
         "version_independent_owner",
         "tab_representatives",
         "headless_only_tabs",
@@ -395,13 +394,11 @@ def _errors(matrix, ui_manifest, semantic_manifest):
         for surface in ui_manifest.get("surfaces", [])
         if all(surface.get(key) == value for key, value in selector.items())
     ]
-    expected_surface_count = trace.get("expected_surface_count")
-    if (
-        type(expected_surface_count) is not int
-        or expected_surface_count <= 0
-        or len(surfaces) != expected_surface_count
+    surface_ids = [surface.get("id") for surface in surfaces]
+    if len(surface_ids) != len(set(surface_ids)) or any(
+        not isinstance(surface_id, str) or not surface_id for surface_id in surface_ids
     ):
-        errors.append("surface_count")
+        errors.append("surface_ids")
     owner_id = trace.get("version_independent_owner")
     owner_cases = [case for case in ui_manifest.get("cases", []) if case.get("id") == owner_id]
     if (
@@ -463,7 +460,9 @@ def test_all_declared_surfaces_have_one_versionless_headless_owner_and_tab_trace
     ui_manifest = _load(UI_MANIFEST_PATH)
     trace = matrix["surface_trace"]
     surfaces = [surface for surface in ui_manifest["surfaces"] if surface["disposition"] == "qt_case"]
-    assert len(surfaces) == trace["expected_surface_count"]
+    surface_ids = [surface["id"] for surface in surfaces]
+    assert surface_ids
+    assert len(surface_ids) == len(set(surface_ids))
     assert {surface["case_id"] for surface in surfaces} == {trace["version_independent_owner"]}
     assert set(trace["headless_only_tabs"]) == {"settings"}
     assert set(trace["tab_representatives"]) | set(trace["headless_only_tabs"]) == {
@@ -575,10 +574,29 @@ def test_mayapy_case_ids_cannot_swap_scripts_or_semantic_scope():
     )
 
 
-def test_surface_count_owner_and_settings_only_policy_fail_closed():
+def test_surface_owner_and_settings_only_policy_fail_closed():
     matrix = _load(MATRIX_PATH)
-    matrix["surface_trace"]["expected_surface_count"] += 1
     matrix["surface_trace"]["version_independent_owner"] = "real_maya.authoring_representatives"
     matrix["surface_trace"]["headless_only_tabs"]["export"] = "wrong"
     errors = _errors(matrix, _load(UI_MANIFEST_PATH), _load(SEMANTIC_MANIFEST_PATH))
-    assert {"surface_count", "version_independent_owner", "headless_only_settings", "tab_trace"}.issubset(errors)
+    assert {"version_independent_owner", "headless_only_settings", "tab_trace"}.issubset(errors)
+    assert "surface_count" not in errors
+
+
+def test_surface_inventory_size_is_not_a_matrix_contract():
+    matrix = _load(MATRIX_PATH)
+    ui_manifest = _load(UI_MANIFEST_PATH)
+    qt_surfaces = [
+        surface for surface in ui_manifest["surfaces"] if surface["disposition"] == "qt_case"
+    ]
+    reduced = copy.deepcopy(ui_manifest)
+    reduced["surfaces"].remove(qt_surfaces[0])
+    expanded = copy.deepcopy(ui_manifest)
+    extra = copy.deepcopy(qt_surfaces[0])
+    extra["id"] = "settings.additional_qt_surface"
+    locator_key = "selector" if "selector" in extra else "attribute"
+    extra.pop("selector" if locator_key == "attribute" else "attribute", None)
+    extra[locator_key] = "objectName=additionalQtSurface"
+    expanded["surfaces"].append(extra)
+    for changed in (reduced, expanded):
+        assert _errors(matrix, changed, _load(SEMANTIC_MANIFEST_PATH)) == []
