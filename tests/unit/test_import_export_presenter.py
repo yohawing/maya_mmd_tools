@@ -1893,8 +1893,6 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         "import.model.separate_meshes_by_material",
         "import.model.auto_resolve_textures",
         "import.model.disable_backface_culling",
-        "import.model.uv_set_name",
-        "import.model.texture_search_path",
         "import.rig.add_semi_standard_bones",
         "import.naming.translate_names",
         "import.rig.bake_mode",
@@ -1925,12 +1923,12 @@ class TestDevModeBehaviorGating(unittest.TestCase):
             presenter.import_file()
         return mock_import.call_args.kwargs["options"]
 
-    def test_normal_mode_forces_import_scale_to_default(self):
+    def test_normal_mode_preserves_import_scale(self):
         settings.set("ui.general.development_mode", False)
         settings.set("import.general.scale_factor", 5.0)
         opts = self._run_import()
-        self.assertEqual(opts["scale"], 1.0)
-        # Policy must not overwrite the persisted development scale.
+        self.assertEqual(opts["scale"], 5.0)
+        # Normal mode uses the same persisted scale owner.
         self.assertEqual(settings.get("import.general.scale_factor"), 5.0)
 
     def test_dev_mode_preserves_import_scale(self):
@@ -1939,11 +1937,11 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         opts = self._run_import()
         self.assertEqual(opts["scale"], 5.0)
 
-    def test_normal_mode_forces_pmd_import_scale_to_default(self):
+    def test_normal_mode_preserves_pmd_import_scale(self):
         settings.set("ui.general.development_mode", False)
         settings.set("import.general.scale_factor", 5.0)
         opts = self._run_import(path="model.pmd")
-        self.assertEqual(opts["scale"], 1.0)
+        self.assertEqual(opts["scale"], 5.0)
         self.assertEqual(settings.get("import.general.scale_factor"), 5.0)
 
     def test_normal_mode_forces_import_models_true(self):
@@ -2001,18 +1999,6 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         settings.set("import.model.disable_backface_culling", False)
         opts = self._run_import()
         self.assertTrue(opts["disable_backface_culling"])
-
-    def test_normal_mode_forces_uv_set_name_default(self):
-        settings.set("ui.general.development_mode", False)
-        settings.set("import.model.uv_set_name", "customUV")
-        opts = self._run_import()
-        self.assertEqual(opts["uv_set_name"], "map#")
-
-    def test_normal_mode_forces_texture_search_path_empty(self):
-        settings.set("ui.general.development_mode", False)
-        settings.set("import.model.texture_search_path", "/some/path")
-        opts = self._run_import()
-        self.assertEqual(opts["texture_search_path"], "")
 
     def test_normal_mode_preserves_auto_resolve_textures_option(self):
         settings.set("ui.general.development_mode", False)

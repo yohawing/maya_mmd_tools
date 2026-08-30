@@ -192,6 +192,31 @@ class TestImportExportTabGUI(GuiTestBase):
         finally:
             tab.deleteLater()
 
+    def test_model_category_uses_general_and_model_groups_without_removed_controls(self):
+        """The public model workflow keeps one owner for each surviving control."""
+        tab = self._create_tab()
+        try:
+            self.assertEqual(tab.import_category_stack.count(), 2)
+            self.assertGreaterEqual(tab.general_group.layout().indexOf(tab.scale_row), 0)
+            self.assertGreaterEqual(tab.general_group.layout().indexOf(tab.new_file_check), 0)
+            self.assertGreaterEqual(tab.model_group.layout().indexOf(tab.import_morphs_check), 0)
+            self.assertGreaterEqual(tab.model_group.layout().indexOf(tab.import_physics_check), 0)
+            for attr in (
+                "morph_group",
+                "physics_group",
+                "texture_search_path_edit",
+                "uv_set_name_edit",
+            ):
+                self.assertFalse(hasattr(tab, attr), attr)
+
+            tab.settings_service.set("ui.general.development_mode", True)
+            tab._apply_dev_mode_visibility()
+            tab.retranslateUi()
+            self.assertGreaterEqual(tab.general_group.layout().indexOf(tab.scale_row), 0)
+            self.assertGreaterEqual(tab.model_group.layout().indexOf(tab.import_physics_check), 0)
+        finally:
+            tab.deleteLater()
+
     def test_vpd_ui_is_not_in_import_export_tab(self):
         """VPD は pose apply / D&D 導線で扱い、Import タブには置かない（B-3）。"""
         tab = self._create_tab()

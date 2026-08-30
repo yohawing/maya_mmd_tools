@@ -14,9 +14,7 @@
       "create_mmd_shaders": true,
       "create_mmd_control_rig": false,
       "mmd_shader_backend": "auto",
-      "texture_search_path": "",
       "show_texture_issue_dialog": true,
-      "uv_set_name": "map#",
       "disable_backface_culling": true
     },
     "physics": {

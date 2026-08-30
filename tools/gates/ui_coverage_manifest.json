@@ -275,24 +275,6 @@
       "expected_handler": "mmd_tools.ui.presenters.import_export_presenter.ImportExportPresenter.import_file"
     },
     {
-      "id": "import_export.texture_search_path",
-      "tab": "import_export",
-      "kind": "text",
-      "attribute": "texture_search_path_edit",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.import_export_presenter.ImportExportPresenter.import_file"
-    },
-    {
-      "id": "import_export.uv_set_name",
-      "tab": "import_export",
-      "kind": "text",
-      "attribute": "uv_set_name_edit",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.import_export_presenter.ImportExportPresenter.import_file"
-    },
-    {
       "id": "import_export.import_morphs",
       "tab": "import_export",
       "kind": "check",
