@@ -148,7 +148,6 @@ def test_measured_witness_preserves_coverage_report_schema(qapp):
     manifest = {
         "schema_version": 1,
         "gate_id": "V070-UI-COVERAGE-1",
-        "minimum_qt_case_surfaces": 1,
         "tabs": [
             {
                 "id": tab_id,

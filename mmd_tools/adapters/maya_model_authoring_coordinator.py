@@ -86,7 +86,6 @@ class MayaModelAuthoringCoordinator:
         *,
         bone_api: Any = maya_bone_authoring,
         morph_authoring: Any | None = None,
-        model_scale_resolver: Callable[[str], float] | None = None,
     ) -> None:
         self._require_methods(metadata_adapter, ("read_spec",), "metadata_adapter")
         self._require_methods(
@@ -129,7 +128,6 @@ class MayaModelAuthoringCoordinator:
         self._cmds = cmds_adapter
         self._bones = bone_api
         self._morphs = morph_authoring
-        self._model_scale_resolver = model_scale_resolver
 
     def read_spec(self, model_root: str) -> MmdModelAuthoringSpec:
         """Read the current strict scene specification for UI refreshes."""
@@ -1172,12 +1170,10 @@ class MayaModelAuthoringCoordinator:
             raise MayaModelAuthoringCoordinatorError(
                 f"joint {canonical!r} is not the binding for bone {index}"
             )
-        model_scale = self._resolve_model_scale(model_root)
         try:
             position = self._bones.capture_rest_position(
                 model_root,
                 bone.binding_identity,
-                model_scale,
                 self._cmds,
             )
         except Exception as exc:
@@ -1249,10 +1245,9 @@ class MayaModelAuthoringCoordinator:
                     "world_position must contain exactly three finite numbers"
                 )
             values.append(float(value))
-        scale = self._resolve_model_scale(model_root)
         bone = replace(
             bone,
-            rest_position=(values[0] / scale, values[1] / scale, -values[2] / scale),
+            rest_position=(values[0], values[1], -values[2]),
         )
         target = self._pure("replace_bone", lambda: replace_bone_spec(current, bone))
 
@@ -1337,26 +1332,6 @@ class MayaModelAuthoringCoordinator:
                 )
         return self._execute(model_root, "replace_bone_semantic", target, lambda: target)
 
-    def _resolve_model_scale(self, model_root: str) -> float:
-        if not callable(self._model_scale_resolver):
-            raise MayaModelAuthoringCoordinatorError(
-                "bone rest capture requires persisted model import scale; no Maya writes were performed"
-            )
-        try:
-            scale = self._model_scale_resolver(model_root)
-        except Exception as exc:
-            raise MayaModelAuthoringCoordinatorError(
-                f"model import scale resolution failed for root {model_root!r}: {exc}"
-            ) from exc
-        if (
-            isinstance(scale, bool)
-            or not isinstance(scale, (int, float))
-            or not math.isfinite(float(scale))
-            or float(scale) <= 0.0
-        ):
-            raise MayaModelAuthoringCoordinatorError("persisted model import scale must be positive")
-        return float(scale)
-
     # Morph operations ----------------------------------------------------
     def create_morph(self, model_root: str, morph: MmdMorphSpec) -> MmdMorphSpec:
         """Create one empty-offset morph through a narrow transaction."""
@@ -1398,7 +1373,6 @@ class MayaModelAuthoringCoordinator:
                     model_root,
                     candidate,
                     self._cmds,
-                    model_scale_resolver=self._model_scale_resolver,
                 )
             else:
                 result = structural_change(model_root, candidate, self._cmds)
@@ -1652,13 +1626,11 @@ class MayaModelAuthoringCoordinator:
     ) -> BoneResetPlan:
         """Build an immutable scene-as-authority reset plan without writes."""
         current = self._read_current(model_root, "plan_bone_reset")
-        scale = self._resolve_model_scale(model_root)
         planner = getattr(self._bones, "plan_bone_reset", None)
         if callable(planner):
             plan = planner(
                 model_root,
                 current,
-                scale,
                 self._cmds,
                 requested_order=requested_order,
             )

@@ -129,7 +129,6 @@ class TestExportTabOutputPathResolution(unittest.TestCase):
         page.pane = pane
         page.export_format = "pmx" if pane == owner.MODEL_PANE else "vmd"
         page.output_path_edit = _FakeLineEdit(text)
-        page.apply_scale_check = _FakeCheck(True)
         page.light_export_check = _FakeCheck(False)
         page.frame_range_check = _FakeCheck(False)
         page.frame_start_spin = _FakeSpinBox(0)
@@ -157,6 +156,7 @@ class TestExportTabOutputPathResolution(unittest.TestCase):
             motion_request = motion_page.build_request("model_ROOT")
 
             self.assertEqual(model_request.file_path, str(root / "typed-motion.pmx"))
+            self.assertNotIn("apply_scale", model_request.options)
             self.assertEqual(
                 motion_request.file_path,
                 str(root / "sub" / "typed-model.vmd"),

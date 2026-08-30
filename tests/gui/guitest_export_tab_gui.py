@@ -478,7 +478,7 @@ class TestExportTabGUI(GuiTestBase):
         tab = self._create_visible_tab()
         try:
             self.assertEqual(tab.export_button.text(), "モデルを書き出す")
-            self.assertEqual(tab.apply_scale_check.text(), "スケールを適用")
+            self.assertFalse(hasattr(tab, "apply_scale_check"))
             tab.pane_tabs.setCurrentIndex(1)
             self.assertEqual(
                 tab.bake_export_check.text(),
@@ -486,10 +486,6 @@ class TestExportTabGUI(GuiTestBase):
             )
             tab.pane_tabs.setCurrentIndex(0)
             motion_page = tab._pages[tab.MOTION_PANE]
-            self.assertEqual(
-                tab._model_form.labelForField(tab.apply_scale_check).text(),
-                "オプション",
-            )
             self.assertEqual(
                 motion_page._motion_form.labelForField(
                     motion_page.frame_range_check
@@ -533,21 +529,17 @@ class TestExportTabGUI(GuiTestBase):
 
             translator.set_language("en")
             translate_spy = ActionInvocationSpy.wrap(
-                "ExportTab.retranslateUi", tab.retranslateUi, tab.apply_scale_check
+                "ExportTab.retranslateUi", tab.retranslateUi, tab.export_button
             )
             translate_spy()
             self.assertEqual(tab.export_button.text(), "Export Model")
-            self.assertEqual(tab.apply_scale_check.text(), "Apply Scale")
+            self.assertFalse(hasattr(tab, "apply_scale_check"))
             tab.pane_tabs.setCurrentIndex(1)
             self.assertEqual(
                 tab.bake_export_check.text(),
                 "Bake Export",
             )
             tab.pane_tabs.setCurrentIndex(0)
-            self.assertEqual(
-                tab._model_form.labelForField(tab.apply_scale_check).text(),
-                "Options",
-            )
             self.assertEqual(
                 motion_page._motion_form.labelForField(
                     motion_page.frame_range_check
@@ -567,15 +559,6 @@ class TestExportTabGUI(GuiTestBase):
                 "End",
             )
             self.assertFalse(hasattr(tab.validation_console, "revalidate_button"))
-            _emit_witness(
-                "export.apply_scale",
-                "selector",
-                "objectName=modelApplyScale",
-                "QTest.inspect(objectName=modelApplyScale)",
-                "apply-scale control follows Japanese then English translation",
-                translate_spy,
-                tab.apply_scale_check,
-            )
             tab.pane_tabs.setCurrentIndex(1)
             self.assertEqual(tab.pane_tabs.tabText(1), "Animation")
             self.assertEqual(tab.export_button.text(), "Export Animation")
@@ -630,7 +613,7 @@ class TestExportTabGUI(GuiTestBase):
             self.assertIs(tab.validation_console.report, model_report)
             self.assertEqual(tab.output_path_edit.text(), "model.vmd")
 
-            tab.apply_scale_check.setChecked(not tab.apply_scale_check.isChecked())
+            tab.output_path_edit.setText("model-2.vmd")
             self.assertIsNone(tab.validation_console.report)
             tab.pane_tabs.setCurrentIndex(1)
             self.assertIs(tab.validation_console.report, motion_report)

@@ -19,7 +19,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
-    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_MODEL_REGISTRY,
@@ -226,8 +225,6 @@ class MayaModelTemplateInitializer:
         ):
             self._ensure_attr(root, attr, "string")
             self._set_attr(root, attr, value, "string")
-        self._ensure_attr(root, ATTR_MMD_IMPORT_SCALE, "double")
-        self._set_attr(root, ATTR_MMD_IMPORT_SCALE, 1.0, "double")
 
     def _register_bones(self, root: str, bones: Sequence[Any]) -> None:
         from mmd_tools.adapters.maya_bone_authoring import register_existing_joints

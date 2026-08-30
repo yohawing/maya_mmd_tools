@@ -10,13 +10,13 @@ import maya.api.OpenMayaRender as omr
 
 from mmd_tools.core.collider_authoring import (
     connect_collider_authoring_follow,
-    connect_collider_authoring_transform,
     migrate_legacy_collider_authoring_pose,
     set_collider_authoring_pose,
 )
 
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
+from ...core.coordinate_transform import mmd_point_to_maya
 from ...core.logger import get_logger
 from ...core.model_registry import (
     REGISTRY_CATEGORY_PHYSICS,
@@ -956,13 +956,11 @@ class PhysicsPresenter:
         transform = (cmds.listRelatives(shape, parent=True, fullPath=True) or [None])[0]
         if not transform:
             raise RuntimeError(f"Rigid body transform not found for {shape}")
-        display_scale = float(_get_attr(transform, "scaleX", 1.0))
         set_collider_authoring_pose(
             transform,
             shape,
             parsed.pmx_position,
             tuple(math.radians(value) for value in parsed.pmx_rotation_degrees),
-            display_scale,
         )
         _mark_geometry_draw_dirty(shape)
         try:
@@ -992,7 +990,11 @@ class PhysicsPresenter:
         transform = (cmds.listRelatives(shape, parent=True, fullPath=True) or [None])[0]
         if not transform:
             raise RuntimeError(f"Physics joint transform not found for {shape}")
-        cmds.setAttr(f"{transform}.translate", *parsed.pmx_position, type="double3")
+        cmds.setAttr(
+            f"{transform}.translate",
+            *mmd_point_to_maya(parsed.pmx_position),
+            type="double3",
+        )
         for attr, values in (
             ("translationLimitMin", parsed.translation_limit_min),
             ("translationLimitMax", parsed.translation_limit_max),
@@ -1136,7 +1138,12 @@ class PhysicsPresenter:
         cmds.setAttr(f"{shape}.mass", 1.0)
         cmds.setAttr(f"{shape}.collisionGroup", 0)
         cmds.setAttr(f"{shape}.collisionMask", 0xFFFF)
-        connect_collider_authoring_transform(transform, shape)
+        set_collider_authoring_pose(
+            transform,
+            shape,
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+        )
         logger.info("Created rigid body '%s'", transform)
 
     def _create_joint(self, root):
@@ -1186,14 +1193,11 @@ class PhysicsPresenter:
                 cmds.setAttr(f"{shape}.{vec_attr}{axis}", val)
         position = tuple(_get_attr(source_shape, f"position{axis}", 0.0) for axis in "XYZ")
         rotation_degrees = tuple(_get_attr(source_shape, f"rotation{axis}", 0.0) for axis in "XYZ")
-        source_transform = (cmds.listRelatives(source_shape, parent=True, fullPath=True) or [None])[0]
-        display_scale = _get_attr(source_transform, "scaleX", 1.0) if source_transform else 1.0
         set_collider_authoring_pose(
             transform,
             shape,
             position,
             tuple(math.radians(value) for value in rotation_degrees),
-            display_scale,
         )
         bone_conn = cmds.listConnections(f"{source_shape}.relatedBone", source=True, destination=False) or []
         if bone_conn:
@@ -1229,6 +1233,13 @@ class PhysicsPresenter:
             for axis in ("X", "Y", "Z"):
                 val = _get_attr(source_shape, f"{vec_attr}{axis}", 0.0)
                 cmds.setAttr(f"{shape}.{vec_attr}{axis}", val)
+        cmds.setAttr(
+            f"{transform}.translate",
+            *mmd_point_to_maya(
+                tuple(_get_attr(shape, f"position{axis}", 0.0) for axis in "XYZ"),
+            ),
+            type="double3",
+        )
         for rb_attr in ("rigidBodyA", "rigidBodyB"):
             conn = cmds.listConnections(f"{source_shape}.{rb_attr}", source=True, destination=False) or []
             if conn:

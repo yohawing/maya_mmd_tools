@@ -574,7 +574,7 @@ def _morph(
 ) -> None:
     attr_by_type = {
         "vertex": "mmd_vertex_morph_offsets_raw_json",
-        "bone": "mmd_bone_morph_offsets_raw_json",
+        "bone": "mmd_bone_morph_offsets_json",
         "group": "mmd_group_morph_offsets_json",
         "material": "mmd_material_morph_offsets_json",
         "uv": "mmd_uv_morph_offsets_json",
@@ -622,7 +622,6 @@ def _vertex_scene(
             "meshTransform": "transform",
         }
     )
-    cmds.attrs[("|root", "mmd_import_scale")] = 1.0
     cmds.connections[("|root.mmd_morph_controller", None)] = ["controller"]
     cmds.connections[("controller.outputWeight[0]", None)] = [destination]
     cmds.aliases["bs"] = alias_pairs or ["モーフ0", "weight[3]"]

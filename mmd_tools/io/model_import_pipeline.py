@@ -23,7 +23,6 @@ from ..core.model_registry import (
 )
 from ..core.visibility_state import sync_visibility_connections
 from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
-from .import_scale import apply_import_scale
 
 
 class ModelImportPipeline:
@@ -246,7 +245,7 @@ class ModelImportPipeline:
                 transform, shapes=True, fullPath=True, type="mmdRigidBodyShape"
             ) or []
             if shapes:
-                refresh_collider_authoring_pose(transform, shapes[0], self.scale)
+                refresh_collider_authoring_pose(transform, shapes[0])
         if live_graph.get("solver"):
             self.logger.debug(
                 "Internal physics solver graph built (unsupported): solver=%s, bone drivers=%d",
@@ -280,11 +279,9 @@ class ModelImportPipeline:
             self.logger.debug("Failed to create MMD light controller", exc_info=True)
             return None
 
-    def apply_scale_and_select(self, root_group: str, *, apply_scale: bool = True) -> None:
-        """Finalize root visibility, apply import scale, and select the model."""
+    def apply_scale_and_select(self, root_group: str) -> None:
+        """Finalize import-time visibility and select the model."""
         sync_visibility_connections(MayaCmdsAdapter(cmds), root_group)
-        if apply_scale:
-            apply_import_scale(root_group, self.scale, self.logger)
         self.emit_progress(92)
         cmds.select(root_group)
 

@@ -19,6 +19,7 @@ from mmd_tools.core.collider_authoring import (
     connect_collider_authoring_follow,
     set_collider_authoring_pose,
 )
+from mmd_tools.core.coordinate_transform import mmd_point_to_maya
 from mmd_tools.core.maya_angle import radians_to_maya_angle
 
 _logger = get_logger(__name__)
@@ -63,6 +64,10 @@ def _set_position_attr(node: str, attr_prefix: str, position) -> None:
     cmds.setAttr(f"{node}.{attr_prefix}Z", z)
 
 
+def _scaled_vector(values, scale: float) -> tuple[float, float, float]:
+    return tuple(float(value) * scale for value in values)
+
+
 def _resolve_rigid_body_transform(rigid_body_transforms: list, index: int) -> Optional[str]:
     if index is None or index < 0 or index >= len(rigid_body_transforms):
         return None
@@ -76,7 +81,7 @@ def _build_rigid_body(
     maya_joints: list,
     parent_group: str,
     logger,
-    display_scale: float,
+    scale: float,
 ) -> Optional[str]:
     base_name = _display_name(rb.name_english, rb.name)
     node_name = f"rb_{index}_{_sanitize_node_name(base_name)}"
@@ -91,13 +96,13 @@ def _build_rigid_body(
         cmds.setAttr(f"{shape}.enable", True)
         cmds.setAttr(f"{shape}.shapeType", rb.shape_type)
 
-        _set_vector_attr(shape, "shapeSize", rb.size)
+        effective_position = _scaled_vector(rb.position, scale)
+        _set_vector_attr(shape, "shapeSize", _scaled_vector(rb.size, scale))
         set_collider_authoring_pose(
             transform,
             shape,
-            rb.position,
+            effective_position,
             rb.rotation,
-            display_scale,
         )
 
         cmds.setAttr(f"{shape}.physicsMode", rb.physics_mode)
@@ -124,7 +129,14 @@ def _build_rigid_body(
         return None
 
 
-def _build_joint(index: int, jt, rigid_body_transforms: list, parent_group: str, logger) -> Optional[str]:
+def _build_joint(
+    index: int,
+    jt,
+    rigid_body_transforms: list,
+    parent_group: str,
+    logger,
+    scale: float,
+) -> Optional[str]:
     base_name = _display_name(jt.name_english, jt.name)
     node_name = f"jt_{index}_{_sanitize_node_name(base_name)}"
     transform = None
@@ -138,10 +150,19 @@ def _build_joint(index: int, jt, rigid_body_transforms: list, parent_group: str,
         cmds.setAttr(f"{shape}.enable", True)
         cmds.setAttr(f"{shape}.jointType", jt.joint_type)
 
-        _set_vector_attr(shape, "position", jt.position)
+        effective_position = _scaled_vector(jt.position, scale)
+        _set_vector_attr(shape, "position", effective_position)
         _set_angle_vector_attr(shape, "rotation", jt.rotation)
-        _set_vector_attr(shape, "translationLimitMin", jt.translation_limit_min)
-        _set_vector_attr(shape, "translationLimitMax", jt.translation_limit_max)
+        _set_vector_attr(
+            shape,
+            "translationLimitMin",
+            _scaled_vector(jt.translation_limit_min, scale),
+        )
+        _set_vector_attr(
+            shape,
+            "translationLimitMax",
+            _scaled_vector(jt.translation_limit_max, scale),
+        )
         _set_angle_vector_attr(shape, "rotationLimitMin", jt.rotation_limit_min)
         _set_angle_vector_attr(shape, "rotationLimitMax", jt.rotation_limit_max)
         _set_vector_attr(shape, "springTranslation", jt.spring_translation)
@@ -157,7 +178,7 @@ def _build_joint(index: int, jt, rigid_body_transforms: list, parent_group: str,
         if rb_b:
             cmds.connectAttr(f"{rb_b}.message", f"{shape}.rigidBodyB")
 
-        _set_position_attr(transform, "translate", jt.position)
+        _set_position_attr(transform, "translate", mmd_point_to_maya(effective_position))
 
         return transform
     except Exception as exc:
@@ -198,7 +219,8 @@ def build_physics_scene(
         for index, rb in enumerate(rigid_bodies)
     ]
     joint_transforms = [
-        _build_joint(index, jt, rigid_body_transforms, constraints_group, log) for index, jt in enumerate(joints)
+        _build_joint(index, jt, rigid_body_transforms, constraints_group, log, scale)
+        for index, jt in enumerate(joints)
     ]
 
     _find_or_create_world_node()

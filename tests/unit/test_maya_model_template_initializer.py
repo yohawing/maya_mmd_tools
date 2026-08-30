@@ -21,7 +21,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_DRAW_FLAGS,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
-    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_MATERIAL,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_MATERIAL_NAME,
@@ -222,7 +221,6 @@ def test_create_model_initializes_root_registry_bindings_and_display_frames() ->
     frames = json.loads(adapter.attrs[(result.root, ATTR_MMD_DISPLAY_FRAMES_JSON)])
     assert frames[0]["elements"] == [{"type": 0, "index": 0}]
     assert adapter.connections[f"{result.registry}.{ATTR_MMD_REGISTRY_MATERIAL_MEMBERS}[0]"]
-    assert adapter.attrs[(result.root, ATTR_MMD_IMPORT_SCALE)] == 1.0
     assert adapter.mesh_calls
     assert adapter.undo_open_count == adapter.undo_close_count == 1
     assert adapter.undo_count == 0

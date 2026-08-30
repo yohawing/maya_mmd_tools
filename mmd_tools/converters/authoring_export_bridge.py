@@ -293,7 +293,10 @@ def _project_material_texture_fields(
     return texture_table
 
 
-def _overlay_morph(oracle: Mapping[str, Any], morph: Any) -> dict[str, Any]:
+def _overlay_morph(
+    oracle: Mapping[str, Any],
+    morph: Any,
+) -> dict[str, Any]:
     result = dict(oracle)
     geometry_owned_types = {
         "vertex": ("position_offset", 3),
@@ -412,7 +415,10 @@ def project_authoring_spec(
     result["model_name_english"] = spec.model.name_english
     result["comment"] = spec.model.comment
     result["comment_english"] = spec.model.comment_english
-    result["bones"] = [_overlay_bone(oracle_bones[index], spec.bones[index]) for index in range(len(spec.bones))]
+    result["bones"] = [
+        _overlay_bone(oracle_bones[index], spec.bones[index])
+        for index in range(len(spec.bones))
+    ]
     result["materials"] = [
         _overlay_material(material_by_index[index], spec.materials[index])
         for index in range(len(spec.materials))

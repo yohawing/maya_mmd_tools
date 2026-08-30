@@ -7,7 +7,6 @@ from mmd_tools.core import maya_attribute_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_INDEX,
-    ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_BONE_PARENT_INDEX,
     ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_FIXED_AXIS,
@@ -79,7 +78,7 @@ class TestModelDagDescriptor(MayaTestBase):
                 "bone_morph",
                 "bone",
                 0,
-                ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
+                "mmd_bone_morph_offsets_json",
                 [{"bone_index": 1, "translation": [0.5, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}],
             ),
             (
@@ -145,6 +144,21 @@ class TestModelDagDescriptor(MayaTestBase):
         self.assertEqual([round(value, 5) for value in matrices[1][12:15]], [5.0, 2.0, 3.0])
         instance.free()
         model.free()
+
+    def test_runtime_uses_stored_effective_linear_model_data(self):
+        root = self._scene()
+        descriptors = build_model_descriptors_from_dag(root)
+
+        self.assertEqual(list(descriptors.bones[0].rest_position_xyz), [1.0, 2.0, 3.0])
+        self.assertEqual(list(descriptors.bones[1].rest_position_xyz), [5.0, 2.0, 3.0])
+        self.assertEqual(
+            list(descriptors.bone_morph_offsets[0].position_offset_xyz),
+            [0.5, 0.0, 0.0],
+        )
+        self.assertEqual(
+            json.loads(cmds.getAttr("bone_morph.mmd_bone_morph_offsets_json"))[0]["translation"],
+            [0.5, 0.0, 0.0],
+        )
 
     def test_rejects_unindexed_joint(self):
         root = self._scene()
@@ -221,7 +235,7 @@ class TestModelDagDescriptor(MayaTestBase):
             {
                 "mmd_morph_type": "bone",
                 "mmd_morph_index": 131,
-                ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON: "[]",
+                "mmd_bone_morph_offsets_json": "[]",
             },
         )
         cmds.addAttr(node, longName="mmd_model_root", attributeType="message")

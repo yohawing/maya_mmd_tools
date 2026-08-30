@@ -333,7 +333,7 @@ class BoneConverter:
             self._add_profile_time("joint_create_sec", joint_create_start)
 
             joint_attr_start = time.perf_counter()
-            self._set_extra_attributes(i, joint, bone, format_type)
+            self._set_extra_attributes(i, joint, bone, format_type, scale=scale)
             self._add_profile_time("joint_attr_sec", joint_attr_start)
             maya_joints.append(joint)
             joint_uuids.append(joint_uuid)
@@ -410,7 +410,7 @@ class BoneConverter:
 
         return maya_joints
 
-    def _set_extra_attributes(self, i, joint, bone, format_type):
+    def _set_extra_attributes(self, i, joint, bone, format_type, scale=1.0):
         # フォーマットに応じたカスタム属性を設定
         if format_type == "pmx":
             attrs = {
@@ -418,7 +418,9 @@ class BoneConverter:
                 ATTR_MMD_BONE_NAME_EN: bone.name_english,
                 ATTR_MMD_BONE_FLAGS: int(bone.bone_flag),
                 ATTR_MMD_DEFORM_LAYER: getattr(bone, "deform_layer", getattr(bone, "transform_layer", 0)),
-                ATTR_MMD_PMX_REST_POSITION: bone.position,
+                ATTR_MMD_PMX_REST_POSITION: tuple(
+                    float(value) * scale for value in bone.position
+                ),
                 ATTR_MMD_BONE_INDEX: i,
                 ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
             }
@@ -426,7 +428,9 @@ class BoneConverter:
             # 接続先ボーンの属性を設定
             if not bone.get_flag(PmxBoneFlag.CONNECT_BONE):
                 # 座標オフセットの場合
-                attrs[ATTR_MMD_BONE_OFFSET] = bone.connect_position_offset
+                attrs[ATTR_MMD_BONE_OFFSET] = tuple(
+                    float(value) * scale for value in bone.connect_position_offset
+                )
 
             # 接続先属性
             attrs[ATTR_MMD_CONNECT_TYPE] = "BONE_INDEX" if bone.get_flag(PmxBoneFlag.CONNECT_BONE) else "RELATIVE"

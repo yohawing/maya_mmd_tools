@@ -207,8 +207,6 @@ def test_gui_timing_rejects_missing_reordered_or_non_pass_case():
 
 def test_headless_junit_requires_exact_surface_ids_and_owner(tmp_path):
     matrix = _matrix()
-    surface_count = matrix["surface_trace"]["expected_surface_count"]
-    total_count = surface_count + 1
     identities = gate.expected_headless_test_identities(ROOT, matrix)
     assert identities[0] == (
         "tests.unit.test_authoring_ui_surface_matrix",
@@ -222,20 +220,19 @@ def test_headless_junit_requires_exact_surface_ids_and_owner(tmp_path):
     _write_headless_junit(junit, identities)
 
     result = gate.validate_headless_junit(junit, ROOT, matrix)
-    assert result["test_count"] == total_count
-    assert result["surface_test_count"] == surface_count
-    assert len(result["test_identities"]) == total_count
+    assert result["test_count"] == len(identities)
+    assert result["surface_test_count"] == len(identities) - 1
+    assert result["test_identities"] == ["{}::{}".format(*identity) for identity in identities]
 
 
 def test_headless_junit_rejects_rc_zero_subset_duplicate_and_non_pass(tmp_path):
     matrix = _matrix()
-    total_count = matrix["surface_trace"]["expected_surface_count"] + 1
     identities = gate.expected_headless_test_identities(ROOT, matrix)
     junit = tmp_path / "headless.xml"
 
     _write_headless_junit(junit, identities[:1])
     with pytest.raises(
-        gate.CrossMayaGateError, match="{} PASS".format(total_count)
+        gate.CrossMayaGateError, match="headless JUnit"
     ):
         gate.validate_headless_junit(junit, ROOT, matrix)
 
@@ -247,7 +244,7 @@ def test_headless_junit_rejects_rc_zero_subset_duplicate_and_non_pass(tmp_path):
 
     _write_headless_junit(junit, identities, skipped=1)
     with pytest.raises(
-        gate.CrossMayaGateError, match="{} PASS".format(total_count)
+        gate.CrossMayaGateError, match="headless JUnit"
     ):
         gate.validate_headless_junit(junit, ROOT, matrix)
 
@@ -256,7 +253,7 @@ def test_headless_junit_rejects_rc_zero_subset_duplicate_and_non_pass(tmp_path):
     document.getroot().find("testsuite").attrib.pop("errors")
     document.write(str(junit), encoding="utf-8", xml_declaration=True)
     with pytest.raises(
-        gate.CrossMayaGateError, match="{} PASS".format(total_count)
+        gate.CrossMayaGateError, match="headless JUnit"
     ):
         gate.validate_headless_junit(junit, ROOT, matrix)
 

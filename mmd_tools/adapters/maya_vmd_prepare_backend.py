@@ -89,8 +89,6 @@ def _request_options(request: Any) -> dict[str, Any]:
         "frame_end",
         "frame_step",
         "motion_scale",
-        "scale",
-        "apply_scale",
         "model_name",
         "cameras",
         "lights",

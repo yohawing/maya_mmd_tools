@@ -613,6 +613,133 @@ class TestFastSkeletonSkin(unittest.TestCase):
             ],
         )
 
+    def test_fast_import_scale_is_applied_to_basic_skeleton(self):
+        """Fast mesh and skeleton imports must share the requested scale."""
+        metadata_json = json.dumps({
+            "bones": [{
+                "name": "center",
+                "englishName": "center",
+                "parentIndex": -1,
+                "position": [2.0, 10.0, 3.0],
+            }]
+        })
+        mock_parsed = MagicMock()
+        mock_parsed.metadata_json = metadata_json
+        mock_parsed.skin_indices = [(0, 0, 0, 0)]
+        mock_parsed.skin_weights = [(1.0, 0.0, 0.0, 0.0)]
+        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
+
+        cmds = self._make_cmds_mock()
+        cmds.mmdFastLoad.return_value = ["root1", "mesh1"]
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+
+        maya_module = __import__("maya")
+        with patch.object(maya_module, "cmds", cmds), patch.dict(
+            "sys.modules", {"maya.cmds": cmds}
+        ), patch.object(
+            cpp_fast_importer, "_candidate_plugin_paths", return_value=[plugin_path]
+        ), patch.object(Path, "exists", return_value=True), patch.object(
+            cpp_fast_importer, "_setup_plugin_directory"
+        ), patch.object(
+            cpp_fast_importer, "_apply_basic_materials", return_value=None
+        ), patch.object(cpp_fast_importer, "_apply_fast_root_metadata"), patch.object(
+            cpp_fast_importer, "_apply_fast_morph_metadata"
+        ), patch(
+            "mmd_tools.core.model_registry.ensure_model_registry"
+        ):
+            result = fast_import(
+                "model.pmx",
+                base_name="my_model",
+                scale=0.5,
+                mesh_only=False,
+            )
+
+        self.assertEqual(result, "root1")
+        # The C++ mesh command already receives the requested import scale.
+        cmds.mmdFastLoad.assert_called_once_with(
+            f="model.pmx",
+            n="my_model",
+            s=0.5,
+            mo=True,
+        )
+        # The skeleton must occupy the same scaled space (and retain Maya's
+        # handedness conversion on Z) as the mesh produced above.
+        self.assertEqual(
+            cmds.joint.call_args[1]["position"],
+            (1.0, 5.0, -1.5),
+        )
+
+    def test_fast_import_keeps_root_identity_without_persisting_scale(self):
+        """Fast import preserves PMX header metadata without root scale state."""
+        raw_metadata = {
+            "metadata": {
+                "name": "Raw model",
+                "englishName": "Raw Model EN",
+                "comment": "Raw comment",
+                "englishComment": "Raw comment EN",
+            }
+        }
+        original_metadata = json.loads(json.dumps(raw_metadata))
+        cmds = self._make_cmds_mock()
+        cmds.mmdFastLoad.return_value = ["root1", "mesh1"]
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+
+        maya_module = __import__("maya")
+        with patch.object(maya_module, "cmds", cmds), patch.dict(
+            "sys.modules", {"maya.cmds": cmds}
+        ), patch.object(
+            cpp_fast_importer, "_candidate_plugin_paths", return_value=[plugin_path]
+        ), patch.object(Path, "exists", return_value=True), patch.object(
+            cpp_fast_importer, "_setup_plugin_directory"
+        ), patch.object(
+            cpp_fast_importer, "_apply_basic_materials", return_value=raw_metadata
+        ), patch(
+            "mmd_tools.core.model_registry.ensure_model_registry"
+        ):
+            result = fast_import(
+                "model.pmx",
+                base_name="my_model",
+                scale=0.5,
+                mesh_only=True,
+                include_morphs=False,
+            )
+
+        self.assertEqual(result, "root1")
+        cmds.mmdFastLoad.assert_called_once_with(
+            f="model.pmx",
+            n="my_model",
+            s=0.5,
+            mo=False,
+        )
+        # Import scale is applied to spatial values at their import boundaries,
+        # not persisted as a root attribute.
+        cmds.scale.assert_not_called()
+        self.assertFalse(
+            any(
+                call.args
+                and call.args[0] == "root1.mmd_import_scale"
+                for call in cmds.setAttr.call_args_list
+            )
+        )
+        self.assertFalse(
+            any(
+                call.args
+                and isinstance(call.args[0], str)
+                and call.args[0].startswith("root1.scale")
+                for call in cmds.setAttr.call_args_list
+            )
+        )
+        self.assertEqual(raw_metadata, original_metadata)
+        raw_writes = {
+            call.args[0]: call.args[1]
+            for call in cmds.setAttr.call_args_list
+            if call.args and call.args[0].startswith("root1.mmd_")
+        }
+        self.assertEqual(raw_writes["root1.mmd_model_name"], "Raw model")
+        self.assertEqual(raw_writes["root1.mmd_model_name_en"], "Raw Model EN")
+        self.assertEqual(raw_writes["root1.mmd_comment"], "Raw comment")
+        self.assertEqual(raw_writes["root1.mmd_comment_en"], "Raw comment EN")
+
     def test_skeleton_skin_blocks_gpu_for_authored_normal_difference(self):
         """Only a materially different authored normal opts the deformer out of GPU."""
         metadata_json = json.dumps({

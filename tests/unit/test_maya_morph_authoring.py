@@ -22,7 +22,6 @@ from mmd_tools.core.model_authoring_spec import (  # noqa: E402
 )
 from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
-    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
 
@@ -396,7 +395,6 @@ def test_selected_vertex_patch_resolves_old_alias_before_rename() -> None:
     old = _morph("Smile", 0, "vertex", "vertexNode")
     _install_morph(adapter, old)
     _install_vertex_target(adapter, old)
-    adapter.attrs[("|Model", ATTR_MMD_IMPORT_SCALE)] = 1.0
     new = replace(old, name="Smile Wide")
 
     result = apply_morph_value_patch(
@@ -488,7 +486,6 @@ def test_vertex_offsets_rewrite_split_mesh_full_weight_sparse_targets() -> None:
         _spec(new),
         adapter,
         FakeRegistry(["vertexNode"]),
-        model_scale_resolver=lambda _root: 2.0,
     )
 
     component_calls = [call for call in adapter.calls if call[0] == "set_attr" and call[2].get("type") == "componentList"]
@@ -498,8 +495,8 @@ def test_vertex_offsets_rewrite_split_mesh_full_weight_sparse_targets() -> None:
         "faceBS.inputTarget[2].inputTargetGroup[3].inputTargetItem[6000].inputComponentsTarget",
     ]
     assert component_calls[0][1][1:] == (1, "vtx[0]")
-    assert point_calls[0][1][1:] == (1, (-2.0, 1.0, 4.0, 1.0))
-    assert point_calls[1][1][1:] == (1, (2.0, 4.0, -6.0, 1.0))
+    assert point_calls[0][1][1:] == (1, (-1.0, 0.5, 2.0, 1.0))
+    assert point_calls[1][1][1:] == (1, (1.0, 2.0, -3.0, 1.0))
 
 
 def test_vertex_offset_preflight_rejects_missing_full_weight_item_without_write() -> None:
@@ -518,7 +515,6 @@ def test_vertex_offset_preflight_rejects_missing_full_weight_item_without_write(
             _spec(new),
             adapter,
             FakeRegistry(["vertexNode"]),
-            model_scale_resolver=lambda _root: 1.0,
         )
 
     assert adapter.calls == calls_before

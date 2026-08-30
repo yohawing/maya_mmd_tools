@@ -104,7 +104,9 @@ def _resolve_bone_world_position(
             if value:
                 return tuple(float(component) for component in value[0])
         pos = cmds.xform(joint, query=True, worldSpace=True, translation=True)
-        return (pos[0], pos[1], pos[2])
+        # Legacy scenes may not have the saved PMX rest position.  Their joint
+        # transform is already in effective Maya units; only convert handedness.
+        return (pos[0], pos[1], -pos[2])
 
     return (0.0, 0.0, 0.0)
 

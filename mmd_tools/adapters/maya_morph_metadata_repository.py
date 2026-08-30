@@ -19,10 +19,8 @@ from mmd_tools.adapters.maya_morph_read_projection import (
     MayaMorphReadProjectionAdapter,
 )
 from mmd_tools.core.constants import (
-    ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
-    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_MODEL_REGISTRY,
     ATTR_MMD_MODEL_ROOT,
     ATTR_MMD_REGISTRY_MORPH_MEMBERS,
@@ -361,7 +359,7 @@ class MayaMorphMetadataRepository:
 
         morph_type = self._required_string(node, "mmd_morph_type")
         attr_by_type = {
-            "bone": ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
+            "bone": "mmd_bone_morph_offsets_json",
             "group": "mmd_group_morph_offsets_json",
             "material": "mmd_material_morph_offsets_json",
             "uv": ATTR_MMD_UV_MORPH_OFFSETS_JSON,
@@ -502,9 +500,6 @@ class MayaMorphMetadataRepository:
                 )
             context.resolutions[morph_index] = resolution
 
-        scale = self._required_number(root, ATTR_MMD_IMPORT_SCALE)
-        if scale <= 0.0:
-            raise self._error(f"{root}.{ATTR_MMD_IMPORT_SCALE} must be positive")
         offsets: dict[int, tuple[float, float, float]] = {}
         target_seen = False
         for resolved_binding in resolution.bindings:
@@ -572,7 +567,7 @@ class MayaMorphMetadataRepository:
                             f"{item} component index {local_index} is out of range"
                         )
                     try:
-                        delta = tuple(float(point[axis]) / scale for axis in range(3))
+                        delta = tuple(float(point[axis]) for axis in range(3))
                     except (IndexError, TypeError, ValueError) as exc:
                         raise self._error(
                             f"{item} contains invalid point data {point!r}"
@@ -838,9 +833,6 @@ class MayaMorphMetadataRepository:
             minimum=minimum,
             maximum=maximum,
         )
-
-    def _required_number(self, node: str, attr: str) -> float:
-        return self._read.required_number(node, attr)
 
     def _has_attr(self, node: str, attr: str) -> bool:
         return self._read.has_attr(node, attr)

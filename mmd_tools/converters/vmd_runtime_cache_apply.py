@@ -79,16 +79,8 @@ def apply_runtime_cache_to_scene(converter, runtime_cache: List[dict], pmx_morph
 
 
 def scale_motion_translate_from_bind(converter, joint: str, tx: float, ty: float, tz: float) -> Tuple[float, float, float]:
-    """Scale a local translate sample as bind pose plus motion delta."""
-    if converter.motion_scale == 1.0:
-        return float(tx), float(ty), float(tz)
-    bind = converter._bone_bind_poses.get(joint, (0.0, 0.0, 0.0))
-    bx, by, bz = float(bind[0]), float(bind[1]), float(bind[2])
-    return (
-        bx + (float(tx) - bx) * converter.motion_scale,
-        by + (float(ty) - by) * converter.motion_scale,
-        bz + (float(tz) - bz) * converter.motion_scale,
-    )
+    """Return runtime local translation; VMD track scaling happens pre-evaluation."""
+    return float(tx), float(ty), float(tz)
 
 
 def is_static_channel(samples: List[Tuple[float, float]], tolerance: float = 1e-10) -> bool:

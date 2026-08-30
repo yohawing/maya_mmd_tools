@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from mmd_tools.adapters import maya_authoring_factory as factory
-from mmd_tools.core.constants import ATTR_MMD_IMPORT_SCALE
 
 
 class _CmdsAdapter:
@@ -48,7 +45,6 @@ class _Coordinator:
         self.materials = materials
         self.adapter = adapter
         self.morph_authoring = kwargs["morph_authoring"]
-        self.model_scale_resolver = kwargs["model_scale_resolver"]
 
 
 class _Initializer:
@@ -65,9 +61,7 @@ class _CreateModelAction:
 
 def test_factory_shares_one_graph_and_injects_runtime_rebuilders(monkeypatch) -> None:
     registry = object()
-    module = SimpleNamespace(
-        scales={f"|root.{ATTR_MMD_IMPORT_SCALE}": 0.1}
-    )
+    module = SimpleNamespace(scales={})
     observed = {}
     rebuilders = {"bone": object(), "material": object()}
 
@@ -96,42 +90,7 @@ def test_factory_shares_one_graph_and_injects_runtime_rebuilders(monkeypatch) ->
     assert composition.coordinator.morph_authoring("|root", "old", "new") == "bound"
     assert observed["registry_api"] is registry
     assert observed["runtime_rebuilders"] is rebuilders
-    assert composition.coordinator.model_scale_resolver("|root") == 0.1
-    assert composition.model_scale_resolver("|root") == 0.1
     assert composition.model_initializer.adapter is composition.cmds_adapter
     assert composition.model_initializer.metadata_backend_factory(None) is composition.metadata_backend
     assert composition.model_initializer.material_authoring_factory(None) is composition.material_authoring
     assert composition.create_model_action.initializer is composition.model_initializer
-
-
-def test_factory_model_scale_resolver_rejects_legacy_root_without_persisted_scale(monkeypatch) -> None:
-    monkeypatch.setattr(factory, "MayaCmdsAdapter", _CmdsAdapter)
-    monkeypatch.setattr(factory, "MayaSceneMetadataBackend", _Backend)
-    monkeypatch.setattr(factory, "SceneMetadataAdapter", _Metadata)
-    monkeypatch.setattr(factory, "MayaMaterialAuthoring", _Materials)
-    monkeypatch.setattr(factory, "MayaModelAuthoringCoordinator", _Coordinator)
-    monkeypatch.setattr(factory, "MayaModelTemplateInitializer", _Initializer)
-    monkeypatch.setattr(factory, "CreateModelAction", _CreateModelAction)
-    monkeypatch.setattr(factory, "maya_runtime_rebuilders", dict)
-    module = SimpleNamespace(scales={})
-    composition = factory.build_maya_authoring_composition(module, registry_api=object())
-
-    with pytest.raises(RuntimeError, match="legacy model"):
-        composition.coordinator.model_scale_resolver("|root")
-
-
-@pytest.mark.parametrize("value", [0.0, -1.0, float("inf"), float("nan"), True, "1"])
-def test_factory_model_scale_resolver_rejects_invalid_persisted_scale(monkeypatch, value) -> None:
-    monkeypatch.setattr(factory, "MayaCmdsAdapter", _CmdsAdapter)
-    monkeypatch.setattr(factory, "MayaSceneMetadataBackend", _Backend)
-    monkeypatch.setattr(factory, "SceneMetadataAdapter", _Metadata)
-    monkeypatch.setattr(factory, "MayaMaterialAuthoring", _Materials)
-    monkeypatch.setattr(factory, "MayaModelAuthoringCoordinator", _Coordinator)
-    monkeypatch.setattr(factory, "MayaModelTemplateInitializer", _Initializer)
-    monkeypatch.setattr(factory, "CreateModelAction", _CreateModelAction)
-    monkeypatch.setattr(factory, "maya_runtime_rebuilders", dict)
-    module = SimpleNamespace(scales={f"|root.{ATTR_MMD_IMPORT_SCALE}": value})
-    composition = factory.build_maya_authoring_composition(module, registry_api=object())
-
-    with pytest.raises(RuntimeError, match="persisted MMD import scale"):
-        composition.model_scale_resolver("|root")
