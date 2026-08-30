@@ -100,8 +100,10 @@ class TestScopedSettingsOverride(unittest.TestCase):
             self.assertTrue(settings.get("import.rig.add_semi_standard_bones"))
 
     def test_empty_options_changes_nothing(self):
+        settings.set("import.general.scale_factor", 2.5)
+
         with _scoped_settings_override({}):
-            self.assertEqual(settings.get("import.model.uv_set_name"), None)
+            self.assertEqual(settings.get("import.general.scale_factor"), 2.5)
 
     def test_unknown_option_keys_are_ignored(self):
         options = {"nonexistent_key": "value", "another_unknown": 42}

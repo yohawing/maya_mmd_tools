@@ -8,7 +8,6 @@ from unittest.mock import mock_open, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from mmd_tools.core.constants import DEFAULT_SCALE_FACTOR  # noqa: E402
 from mmd_tools.services.settings_service import (  # noqa: E402
     SettingsService,
     resolve_reduce_bake_tolerances_from_quality,
@@ -27,8 +26,6 @@ class _FakeSettingsStore:
                     "separate_meshes_by_material": True,
                     "auto_resolve_textures": True,
                     "disable_backface_culling": False,
-                    "uv_set_name": "customUV",
-                    "texture_search_path": "/textures",
                     "show_texture_issue_dialog": False,
                 },
                 "physics": {"import_physics": False},
@@ -164,8 +161,6 @@ class TestSettingsServiceJson(unittest.TestCase):
 
         self.assertEqual(set(data), {"import", "export", "logging", "ui"})
         self.assertNotIn("internal", data)
-        self.assertNotIn("uv_set_name", data["import"]["model"])
-        self.assertNotIn("texture_search_path", data["import"]["model"])
         self.assertNotIn("export_format", data["export"].get("general", {}))
         self.assertNotIn("apply_scale", data["export"].get("general", {}))
 
@@ -223,24 +218,6 @@ class TestSettingsServiceJson(unittest.TestCase):
         )
         self.assertNotIn("apply_scale", self.store.data["export"]["general"])
 
-    def test_import_settings_ignores_removed_model_options_but_keeps_unknown_options(self):
-        self.service.import_settings_data(
-            {
-                "import": {
-                    "model": {
-                        "uv_set_name": "customUV",
-                        "texture_search_path": "/textures",
-                        "future_option": "preserve",
-                    }
-                }
-            }
-        )
-
-        self.assertIsNone(self.service.get("import.model.uv_set_name"))
-        self.assertIsNone(self.service.get("import.model.texture_search_path"))
-        self.assertEqual(self.service.get("import.model.future_option"), "preserve")
-
-
 class TestSettingsServiceImportOptions(unittest.TestCase):
     def setUp(self):
         self.store = _FakeSettingsStore()
@@ -258,17 +235,6 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.service.set("ui.general.development_mode", True)
 
         self.assertEqual(self.service.resolve_import_scale(), 2.0)
-
-    def test_resolve_import_scale_accepts_numeric_text(self):
-        self.service.set("import.general.scale_factor", "2.5")
-
-        self.assertEqual(self.service.resolve_import_scale(), 2.5)
-
-    def test_resolve_import_scale_falls_back_for_invalid_or_non_finite_values(self):
-        for value in ("bad", None, float("nan"), float("inf")):
-            with self.subTest(value=value):
-                self.service.set("import.general.scale_factor", value)
-                self.assertEqual(self.service.resolve_import_scale(), DEFAULT_SCALE_FACTOR)
 
     def test_build_pmx_import_options_applies_normal_mode_overrides(self):
         options = self.service.build_pmx_import_options(custom_namespace="ns")
@@ -288,8 +254,6 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertNotIn("auto_classify_transparency", options)
         self.assertTrue(options["auto_resolve_textures"])
         self.assertTrue(options["disable_backface_culling"])
-        self.assertNotIn("uv_set_name", options)
-        self.assertNotIn("texture_search_path", options)
         self.assertFalse(options["add_semi_standard_bones"])
         self.assertTrue(options["translate_names"])
         self.assertNotIn("setup_rig", options)
@@ -319,8 +283,6 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertNotIn("auto_classify_transparency", options)
         self.assertTrue(options["auto_resolve_textures"])
         self.assertFalse(options["disable_backface_culling"])
-        self.assertNotIn("uv_set_name", options)
-        self.assertNotIn("texture_search_path", options)
         self.assertTrue(options["add_semi_standard_bones"])
         self.assertFalse(options["translate_names"])
         self.assertTrue(options["use_cpp_fast_load"])

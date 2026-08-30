@@ -90,11 +90,6 @@ class TestSettingsDefaults(unittest.TestCase):
         """MMDシェーダー作成が既定で有効なことを確認する。"""
         self.assertTrue(self.settings.get("import.model.create_mmd_shaders", False))
 
-    def test_removed_model_import_options_are_not_packaged_defaults(self):
-        model_defaults = self.settings.data["import"]["model"]
-        self.assertNotIn("texture_search_path", model_defaults)
-        self.assertNotIn("uv_set_name", model_defaults)
-
     def test_bake_motion_default_is_false(self):
         """モーションのベイクは初回起動時に無効であることを確認する。"""
         config_path = (

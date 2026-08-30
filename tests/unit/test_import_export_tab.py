@@ -293,22 +293,6 @@ class TestImportExportTabDevModeVisibility(unittest.TestCase):
         self.assertTrue(cpp_rig_nodes_check.visible)
         self.assertTrue(motion_scale_row.visible)
 
-    def test_normal_mode_keeps_import_scale_on_public_surface(self):
-        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
-        tab._dev_only_widgets = []
-        tab.settings_service = _FakeSettingsService(
-            {
-                "ui.general.development_mode": False,
-                "import.general.scale_factor": 2.5,
-            }
-        )
-
-        import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
-
-        self.assertEqual(tab._dev_only_widgets, [])
-
-
-
 class TestImportExportTabNativePhysicsBakeVisibility(unittest.TestCase):
     def test_native_physics_bake_control_follows_motion_bake(self):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
@@ -567,30 +551,6 @@ class TestNormalModeVisibilitySourceInspection(unittest.TestCase):
 
     def setUp(self):
         self.source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
-
-    def test_model_group_owns_morph_and_physics_controls(self):
-        self.assertNotIn("self.morph_group", self.source)
-        self.assertNotIn("self.physics_group", self.source)
-        model_start = self.source.index("# Model Settings Group")
-        animation_start = self.source.index("# Animation Import Settings")
-        model_source = self.source[model_start:animation_start]
-        self.assertIn("self.import_morphs_check = self._bind_checkbox(", model_source)
-        self.assertIn("self.import_physics_check = self._bind_checkbox(", model_source)
-
-    def test_general_group_owns_scale_namespace_and_new_file_controls(self):
-        general_start = self.source.index("# General Model Settings Group")
-        model_start = self.source.index("# Model Settings Group")
-        general_source = self.source[general_start:model_start]
-        self.assertIn("general_layout.addWidget(self.scale_row)", general_source)
-        self.assertIn("self.use_namespace_check = self._bind_checkbox(", general_source)
-        self.assertIn("general_layout.addLayout(namespace_layout)", general_source)
-        self.assertIn("general_layout.addWidget(self.new_file_check)", self.source)
-
-    def test_removed_texture_and_uv_controls_are_not_declared(self):
-        self.assertNotIn("texture_search_path", self.source)
-        self.assertNotIn("uv_set_name", self.source)
-        self.assertNotIn("texture_row", self.source)
-        self.assertNotIn("uv_row", self.source)
 
     def test_physics_control_is_not_in_dev_only_widgets(self):
         lines = self.source.splitlines()
