@@ -46,7 +46,7 @@ class ImportExportTab(BaseTab):
         self.left_widget = QWidget()
         model_settings_layout = QVBoxLayout(self.left_widget)
 
-        # Import scale (dev-only control; normal mode always uses 1.0)
+        # Import scale is a persisted General import setting.
         self.scale_row = QWidget()
         scale_layout = QHBoxLayout(self.scale_row)
         scale_layout.setContentsMargins(0, 0, 0, 0)
@@ -55,8 +55,6 @@ class ImportExportTab(BaseTab):
         self.scale_spin = QDoubleSpinBox()
         self.scale_spin.setRange(0.001, 1000.0)
         self.scale_spin.setDecimals(3)
-        # Normal mode always displays 1.0; persisted scale is only shown in dev mode.
-        # Do not write 1.0 back over a previously stored development scale.
         initial_scale = (
             self.settings_service.resolve_import_scale()
             if hasattr(self.settings_service, "resolve_import_scale")
@@ -67,11 +65,11 @@ class ImportExportTab(BaseTab):
         self.scale_spin.setToolTip(self.tr("import_scale", "tooltips"))
         scale_layout.addWidget(self.scale_spin)
         scale_layout.addStretch()
-        model_settings_layout.addWidget(self.scale_row)
 
         # General Model Settings Group
         self.general_group = QGroupBox(self.tr("general", "groups"))
         general_layout = QVBoxLayout()
+        general_layout.addWidget(self.scale_row)
 
         self.use_namespace_check = self._bind_checkbox(
             "use_namespace", setting_keys.IMPORT_GENERAL_USE_NAMESPACE, False, general_layout, tooltip_key="use_namespace"
@@ -157,57 +155,20 @@ class ImportExportTab(BaseTab):
             tooltip_key="disable_backface_culling",
         )
 
-        # Texture search path
-        self.texture_row = QWidget()
-        texture_layout = QHBoxLayout(self.texture_row)
-        texture_layout.setContentsMargins(0, 0, 0, 0)
-        self.texture_search_label = QLabel(self.tr("texture_search_path", "fields"))
-        texture_layout.addWidget(self.texture_search_label)
-        self.texture_search_path_edit = QLineEdit(self.settings_service.get(setting_keys.IMPORT_MODEL_TEXTURE_SEARCH_PATH, ""))
-        self.texture_search_path_edit.textChanged.connect(
-            lambda v: self.settings_service.set(setting_keys.IMPORT_MODEL_TEXTURE_SEARCH_PATH, v)
-        )
-        texture_layout.addWidget(self.texture_search_path_edit)
-        model_layout.addWidget(self.texture_row)
-
-        # UV set name
-        self.uv_row = QWidget()
-        uv_layout = QHBoxLayout(self.uv_row)
-        uv_layout.setContentsMargins(0, 0, 0, 0)
-        self.uv_set_label = QLabel(self.tr("uv_set_name", "fields"))
-        uv_layout.addWidget(self.uv_set_label)
-        self.uv_set_name_edit = QLineEdit(self.settings_service.get(setting_keys.IMPORT_MODEL_UV_SET_NAME, "map#"))
-        self.uv_set_name_edit.textChanged.connect(lambda v: self.settings_service.set(setting_keys.IMPORT_MODEL_UV_SET_NAME, v))
-        uv_layout.addWidget(self.uv_set_name_edit)
-        uv_layout.addStretch()
-        model_layout.addWidget(self.uv_row)
-
-        self.model_group.setLayout(model_layout)
-        model_settings_layout.addWidget(self.model_group)
-
-        # Morph Group
-        self.morph_group = QGroupBox(self.tr("morph", "groups"))
-        morph_layout = QVBoxLayout()
-
+        # Morph and physics options belong to the model settings surface.
         self.import_morphs_check = self._bind_checkbox(
-            "import_morphs", setting_keys.IMPORT_MORPH_IMPORT_MORPHS, True, morph_layout
+            "import_morphs", setting_keys.IMPORT_MORPH_IMPORT_MORPHS, True, model_layout
         )
-
-        self.morph_group.setLayout(morph_layout)
-        model_settings_layout.addWidget(self.morph_group)
-
-        # Physics Group
-        self.physics_group = QGroupBox(self.tr("physics_settings", "groups"))
-        physics_layout = QVBoxLayout()
         self.import_physics_check = self._bind_checkbox(
             "import_physics",
             setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS,
             True,
-            physics_layout,
+            model_layout,
             tooltip_key="import_physics",
         )
-        self.physics_group.setLayout(physics_layout)
-        model_settings_layout.addWidget(self.physics_group)
+
+        self.model_group.setLayout(model_layout)
+        model_settings_layout.addWidget(self.model_group)
 
         # Animation Import Settings
         self.animation_settings_group = QGroupBox(self.tr("animation", "tabs"))
@@ -340,8 +301,8 @@ class ImportExportTab(BaseTab):
         import_button_layout.addWidget(self.new_model_button)
         import_button_layout.addStretch()
         model_import_layout.addRow(import_button_layout)
-        # This is a model-import setting, not a third primary action.
-        model_layout.addWidget(self.new_file_check)
+        # This is a general import setting, not a third primary action.
+        general_layout.addWidget(self.new_file_check)
 
         self.model_import_group.setLayout(model_import_layout)
         right_layout.addWidget(self.model_import_group)
@@ -398,11 +359,8 @@ class ImportExportTab(BaseTab):
 
         # Dev-only controls: shown only when development_mode=True.
         self._dev_only_widgets = [
-            self.scale_row,
             self.disable_backface_culling_check,
-            self.texture_row,
-            self.uv_row,
-            self.morph_group,
+            self.import_morphs_check,
             self.motion_scale_row,
             self.vmd_rotation_time_curve_check,
         ]
@@ -473,12 +431,9 @@ class ImportExportTab(BaseTab):
         )
         self._active_import_category = "model"
 
-        self._take_layout_widget(settings_layout, self.scale_row)
         for widget in (
             self.general_group,
             self.model_group,
-            self.morph_group,
-            self.physics_group,
         ):
             self._take_layout_widget(settings_layout, widget)
         self._take_layout_widget(settings_layout, self.animation_settings_group)
@@ -490,11 +445,8 @@ class ImportExportTab(BaseTab):
             "Model",
             self.tr("model", "groups"),
             [
-                self.scale_row,
                 self.general_group,
                 self.model_group,
-                self.morph_group,
-                self.physics_group,
             ],
             [self.model_import_group],
         )
@@ -621,31 +573,7 @@ class ImportExportTab(BaseTab):
         is_dev = self.settings_service.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
         for widget in self._dev_only_widgets:
             widget.setVisible(is_dev)
-        # Import scale: normal mode displays 1.0 without overwriting the persisted value.
-        self._sync_import_scale_control(is_dev)
         self._sync_reduce_bake_quality_control()
-
-    def _sync_import_scale_control(self, is_dev):
-        """Sync scale spin display for the current mode without clobbering settings.
-
-        Normal mode shows DEFAULT 1.0 while the valueChanged handler is blocked so a
-        previously persisted development scale remains stored. Development mode
-        reloads the persisted value into the control (binding remains active).
-        """
-        if not hasattr(self, "scale_spin"):
-            return
-        if is_dev:
-            if hasattr(self.settings_service, "resolve_import_scale"):
-                value = self.settings_service.resolve_import_scale()
-            else:
-                value = self.settings_service.get(setting_keys.IMPORT_GENERAL_SCALE_FACTOR, 1.0)
-        else:
-            value = 1.0
-        blocked = self.scale_spin.blockSignals(True)
-        try:
-            self.scale_spin.setValue(value)
-        finally:
-            self.scale_spin.blockSignals(blocked)
 
     def _sync_reduce_bake_quality_control(self):
         """Reload persisted Reduce Quality without writing it back."""
@@ -677,10 +605,6 @@ class ImportExportTab(BaseTab):
         # Labels
         if hasattr(self, "scale_label"):
             self.scale_label.setText(self.tr("import_scale", "fields"))
-        if hasattr(self, "texture_search_label"):
-            self.texture_search_label.setText(self.tr("texture_search_path", "fields"))
-        if hasattr(self, "uv_set_label"):
-            self.uv_set_label.setText(self.tr("uv_set_name", "fields"))
         if hasattr(self, "start_frame_label"):
             self.start_frame_label.setText(self.tr("start_frame", "fields"))
         if hasattr(self, "vmd_fps_label"):
@@ -698,10 +622,6 @@ class ImportExportTab(BaseTab):
             self.general_group.setTitle(self.tr("general", "groups"))
         if hasattr(self, "model_group"):
             self.model_group.setTitle(self.tr("model", "groups"))
-        if hasattr(self, "morph_group"):
-            self.morph_group.setTitle(self.tr("morph", "groups"))
-        if hasattr(self, "physics_group"):
-            self.physics_group.setTitle(self.tr("physics_settings", "groups"))
         if hasattr(self, "model_import_group"):
             self.model_import_group.setTitle(self.tr("model_import", "groups"))
         if hasattr(self, "animation_group"):

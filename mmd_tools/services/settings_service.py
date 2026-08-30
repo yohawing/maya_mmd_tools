@@ -16,14 +16,13 @@ from ..core.settings import get_settings
 _SETTINGS_EXPORT_CATEGORIES = ("import", "export", "logging", "ui")
 _FILE_HISTORY_LIMIT_DEFAULT = 20
 _FILE_HISTORY_LIMIT_MAX = 100
+_REMOVED_IMPORT_MODEL_OPTION_KEYS = ("uv_set_name", "texture_search_path")
 
 # Dev-only import keys: forced to these values in normal mode (development_mode=False).
 # In dev mode the saved setting is used instead.
 _NORMAL_MODE_IMPORT_OVERRIDES = {
     "import_models": True,
     "disable_backface_culling": True,
-    "uv_set_name": "map#",
-    "texture_search_path": "",
     "add_semi_standard_bones": False,
     "translate_names": True,
 }
@@ -111,15 +110,13 @@ class SettingsService:
         return self.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
 
     def resolve_import_scale(self):
-        """Return the effective PMX/PMD import scale for the current mode.
-
-        Development mode uses the persisted ``import.general.scale_factor``.
-        Normal mode always returns ``DEFAULT_SCALE_FACTOR`` (1.0) and never
-        writes over the stored development value.
-        """
-        if self.is_development_mode():
-            return float(self.get(setting_keys.IMPORT_GENERAL_SCALE_FACTOR, DEFAULT_SCALE_FACTOR))
-        return float(DEFAULT_SCALE_FACTOR)
+        """Return the persisted PMX/PMD import scale for every UI mode."""
+        value = self.get(setting_keys.IMPORT_GENERAL_SCALE_FACTOR, DEFAULT_SCALE_FACTOR)
+        try:
+            resolved = float(value)
+        except (TypeError, ValueError):
+            return float(DEFAULT_SCALE_FACTOR)
+        return resolved if math.isfinite(resolved) else float(DEFAULT_SCALE_FACTOR)
 
     def resolve_reduce_bake_tolerances(self):
         """Return effective reduction tolerances from persisted quality."""
@@ -178,6 +175,12 @@ class SettingsService:
             category: copy.deepcopy(all_settings.get(category, {}))
             for category in _SETTINGS_EXPORT_CATEGORIES
         }
+        import_settings = exported.get("import")
+        if isinstance(import_settings, dict):
+            import_model = import_settings.get("model")
+            if isinstance(import_model, dict):
+                for key in _REMOVED_IMPORT_MODEL_OPTION_KEYS:
+                    import_model.pop(key, None)
         # These legacy export options are no longer part of the public
         # settings contract.
         export_general = exported.get("export", {}).get("general")
@@ -201,6 +204,13 @@ class SettingsService:
         normalized_data = copy.deepcopy(data)
         import_settings = normalized_data.get("import")
         if isinstance(import_settings, dict):
+            model_settings = import_settings.get("model")
+            if isinstance(model_settings, dict):
+                # These options were removed from the public import surface.
+                # Ignore only the two known legacy keys while preserving all
+                # other unknown settings for forward compatibility.
+                for key in _REMOVED_IMPORT_MODEL_OPTION_KEYS:
+                    model_settings.pop(key, None)
             animation_settings = import_settings.get("animation")
             if isinstance(animation_settings, dict) and "create_mmd_control_rig" in animation_settings:
                 model_settings = import_settings.get("model")
@@ -288,8 +298,6 @@ class SettingsService:
             "separate_meshes_by_material": self.get(setting_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False),
             "auto_resolve_textures": self.get(setting_keys.IMPORT_MODEL_AUTO_RESOLVE_TEXTURES, True),
             "disable_backface_culling": self.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True),
-            "uv_set_name": self.get(setting_keys.IMPORT_MODEL_UV_SET_NAME, "map#"),
-            "texture_search_path": self.get(setting_keys.IMPORT_MODEL_TEXTURE_SEARCH_PATH, ""),
             "import_physics": self.get(setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS, DEFAULT_IMPORT_PHYSICS),
             "import_morphs": self.get(setting_keys.IMPORT_MORPH_IMPORT_MORPHS, True),
             "add_semi_standard_bones": self.get(setting_keys.IMPORT_RIG_ADD_SEMI_STANDARD_BONES, False),
