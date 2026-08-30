@@ -1,7 +1,7 @@
 """Import state and cleanup helpers for VMD conversion."""
 
 import json
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Set, Tuple, Union
 
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
@@ -13,6 +13,7 @@ from ..core.namespace_utils import NamespaceUtils
 from .vmd_context import VmdImportStateContext
 from .vmd_ik_enabled_animation import ik_node_is_owned_by_root, root_owned_joints
 from .vmd_morph_mapping import morph_node_is_owned_by_root
+from .vmd_redirected_authoring_proxy import resolve_redirected_authoring_proxy
 from .vmd_rotation_time_curve import delete_vmd_rotation_time_curves_for_controls
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 from ..core.mmd_control_rig_builder import CONTROL_RIG_CONTROL_OWNED, read_mmd_control_rig_metadata
@@ -22,6 +23,9 @@ from ..core.mmd_control_rig_motion import (
 )
 
 _ATTR_VMD_BIND_TRANSLATE = "mmd_vmd_bind_translate"
+_CLEARABLE_PHYSICAL_ROUTE_TYPES = frozenset(
+    {"mmdBoneMorphAccum", "mmdPhysicsBoneDriver"}
+)
 _LOGGER = get_logger(__name__)
 
 
@@ -148,6 +152,55 @@ def restore_anim_layer_selection(selection: Optional[Dict[str, bool]]) -> None:
             _LOGGER.debug("Failed to restore animLayer selection for %s: %s", layer, exc)
 
 
+def collect_clearable_authoring_attrs(
+    authored_routes: Optional[Dict[str, dict]],
+    target_joints,
+    logger,
+) -> Dict[str, Set[str]]:
+    """Resolve target-owned non-joint plugs used by VMD authoring."""
+    owned_joint_paths = set()
+    for joint in target_joints:
+        matches = cmds.ls(joint, long=True) or []
+        if len(matches) == 1:
+            owned_joint_paths.add(str(matches[0]))
+
+    routed_attrs: Dict[str, Set[str]] = {}
+    for joint, route in (authored_routes or {}).items():
+        matches = cmds.ls(joint, long=True) or []
+        if len(matches) != 1 or str(matches[0]) not in owned_joint_paths:
+            continue
+        if not isinstance(route, dict):
+            continue
+        for channel, destination in (route.get("attr_targets") or {}).items():
+            try:
+                node, attribute = destination
+                node_type = str(cmds.nodeType(node))
+            except (TypeError, ValueError, RuntimeError):
+                continue
+            # Append, Control Rig, and IK routes have their own ownership
+            # checks below.  Only the two route planners that already prove a
+            # native node belongs to this joint are accepted here.
+            if node_type not in _CLEARABLE_PHYSICAL_ROUTE_TYPES:
+                continue
+            if str(node) == str(joint) and str(attribute) == str(channel):
+                continue
+            routed_attrs.setdefault(str(node), set()).add(str(attribute))
+
+    # Persisted proxies validate target UUID, destination-owner UUID, and the
+    # live connection before returning a route, so a stale claim clears none.
+    for joint in target_joints:
+        try:
+            proxy_route, claimed = resolve_redirected_authoring_proxy(joint)
+        except Exception as exc:
+            logger.debug("Failed to resolve redirected VMD route for %s: %s", joint, exc)
+            continue
+        if not claimed:
+            continue
+        for node, attribute in proxy_route.values():
+            routed_attrs.setdefault(str(node), set()).add(str(attribute))
+    return routed_attrs
+
+
 def clear_existing_motion(
     converter_or_context: Union[Any, VmdImportStateContext],
     layer_name: str,
@@ -156,6 +209,7 @@ def clear_existing_motion(
     *,
     preserve_curve_nodes: bool = False,
     detached_curve_nodes=None,
+    authored_routes: Optional[Dict[str, dict]] = None,
 ) -> None:
     """Delete all existing character motion keys for the target model.
 
@@ -189,6 +243,20 @@ def clear_existing_motion(
             ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"),
             preserve_curve_nodes=preserve_curve_nodes,
             detached_curve_nodes=detached_curve_nodes,
+        )
+
+    # Clear the validated physical destinations selected by the keying route
+    # planner so an omitted track cannot survive upstream of its joint.
+    for node, attrs in collect_clearable_authoring_attrs(
+        authored_routes,
+        target_joints,
+        context.logger,
+    ).items():
+        owned_motion_nodes.add(node)
+        cleared += cut_keyable_attrs(
+            node,
+            tuple(sorted(attrs)),
+            preserve_curve_nodes=True,
         )
 
     # In CONTROL_OWNED/EDIT, authored VMD channels are redirected to the

@@ -66,6 +66,7 @@ from .vmd_import_state import (
     clear_existing_camera_motion,
     clear_existing_light_motion,
     clear_existing_motion,
+    collect_clearable_authoring_attrs,
     record_bind_poses,
     restore_anim_layer_selection,
     restore_import_scene_updates,
@@ -685,6 +686,7 @@ class VmdConverter:
         anim_layer_selection = None
         undo_was_enabled = True
         refresh_suspended = False
+        legacy_bone_key_routes = None
         import_context = self._import_context(
             vmd_data=vmd_data,
             target_namespace=target_namespace,
@@ -760,10 +762,15 @@ class VmdConverter:
                     and control_rig_transaction.get("motion_cleared")
                 )
             ):
+                try:
+                    legacy_bone_key_routes = self._build_legacy_bone_key_routes()
+                except Exception:
+                    self.logger.debug("Failed to build VMD clear routes", exc_info=True)
                 self._clear_existing_motion(
                     import_context.layer_name,
                     import_context.target_namespace,
                     target_model=import_context.target_model,
+                    authored_routes=legacy_bone_key_routes,
                 )
 
             # ボーンの初期位置を記録
@@ -950,7 +957,10 @@ class VmdConverter:
                             # hide a new partial-write error.
                             self._failed_bones.clear()
                             try:
-                                bone_success = self._convert_bone_animation(bone_frames)
+                                bone_success = self._convert_bone_animation(
+                                    bone_frames,
+                                    key_routes=legacy_bone_key_routes,
+                                )
                             except Exception as exc:
                                 failed_after = set(self._failed_bones)
                                 self._failed_bones.update(failed_before)
@@ -1660,6 +1670,7 @@ class VmdConverter:
         prior_rotation_time_curve_snapshot = capture_vmd_rotation_time_curve_snapshot(
             metadata
         )
+        outgoing_authored_routes = None
 
         # Capture the scene channels which a mixed VMD import can mutate before
         # the rig transition or ``clear_existing_motion`` runs.  The control
@@ -1674,10 +1685,20 @@ class VmdConverter:
                 # remains best-effort here so a mapping diagnostic does not
                 # mask the original preflight error.
                 self.logger.debug("Failed to refresh mappings before scene snapshot", exc_info=True)
+        if (
+            clear_existing_motion
+            and vmd_data is not None
+            and self._detect_vmd_motion_kind(vmd_data) in {"model", "mixed"}
+        ):
+            try:
+                outgoing_authored_routes = self._build_legacy_bone_key_routes()
+            except Exception:
+                self.logger.debug("Failed to build outgoing VMD routes", exc_info=True)
         scene_snapshot = self._capture_mmd_control_rig_scene_snapshot(
             target_model,
             vmd_data,
             target_namespace=target_namespace,
+            authored_routes=outgoing_authored_routes,
         )
         created = False
         entered_here = False
@@ -1707,6 +1728,7 @@ class VmdConverter:
                 target_namespace,
                 target_model=target_model,
                 preserve_curve_nodes=True,
+                authored_routes=outgoing_authored_routes,
             )
             transaction_detached_curve_nodes.extend(detached_curve_nodes or [])
 
@@ -1988,6 +2010,7 @@ class VmdConverter:
         vmd_data,
         *,
         target_namespace: Optional[str] = None,
+        authored_routes: Optional[Dict[str, dict]] = None,
     ) -> Dict[str, object]:
         """Capture mixed-import scene state before any destructive mutation.
 
@@ -2021,18 +2044,37 @@ class VmdConverter:
             self.logger.debug("Failed to capture VMD scene timeline", exc_info=True)
 
         nodes = set()
+        target_joints = {
+            str(node) for node in self.bone_name_mapping.values() if node
+        }
         explicit_attrs_by_node = {}
         explicit_only_nodes = set()
-        nodes.update(str(node) for node in self.bone_name_mapping.values() if node)
+        nodes.update(target_joints)
         if target_model and cmds.objExists(target_model):
             nodes.add(str(target_model))
-            nodes.update(
+            descendants = {
                 str(node)
                 for node in (
                     cmds.listRelatives(target_model, allDescendents=True, fullPath=True) or []
                 )
                 if cmds.nodeType(node) == "joint"
-            )
+            }
+            target_joints.update(descendants)
+            if cmds.nodeType(target_model) == "joint":
+                target_joints.add(str(target_model))
+            nodes.update(target_joints)
+
+        # Non-DAG physical authoring inputs and persisted proxies are outside
+        # the model hierarchy, so include their exact cleared plugs in the
+        # existing Control Rig rollback snapshot.
+        for node, attrs in collect_clearable_authoring_attrs(
+            authored_routes,
+            target_joints,
+            self.logger,
+        ).items():
+            nodes.add(node)
+            explicit_only_nodes.add(node)
+            explicit_attrs_by_node.setdefault(node, set()).update(attrs)
 
         # Legacy IK fallback writes the solver's enabled state directly.  Its
         # node is not a DAG descendant, so include the target-owned solver and
@@ -2546,9 +2588,15 @@ class VmdConverter:
         target_model: Optional[str] = None,
         *,
         preserve_curve_nodes: bool = False,
+        authored_routes: Optional[Dict[str, dict]] = None,
     ) -> list:
         """対象モデルに残っている既存 VMD motion keys/layer を削除する。"""
         detached_curve_nodes = []
+        if authored_routes is None:
+            try:
+                authored_routes = self._build_legacy_bone_key_routes()
+            except Exception as exc:
+                self.logger.debug("Failed to build VMD clear routes: %s", exc)
         clear_existing_motion(
             self._import_state_context(),
             layer_name,
@@ -2556,6 +2604,7 @@ class VmdConverter:
             target_model=target_model,
             preserve_curve_nodes=preserve_curve_nodes,
             detached_curve_nodes=detached_curve_nodes,
+            authored_routes=authored_routes,
         )
         return detached_curve_nodes
 
@@ -3595,7 +3644,12 @@ class VmdConverter:
         """
         setup_timeline(self._timeline_context(), vmd_data)
 
-    def _convert_bone_animation(self, bone_frames: List) -> bool:
+    def _convert_bone_animation(
+        self,
+        bone_frames: List,
+        *,
+        key_routes: Optional[Dict[str, dict]] = None,
+    ) -> bool:
         """ボーンアニメーションを変換
 
         Args:
@@ -3604,7 +3658,11 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        return convert_bone_animation(self._bone_animation_context(), bone_frames)
+        return convert_bone_animation(
+            self._bone_animation_context(),
+            bone_frames,
+            key_routes=key_routes,
+        )
 
     @staticmethod
     def _collect_ik_link_joints() -> dict:

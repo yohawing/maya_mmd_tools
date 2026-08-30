@@ -81,6 +81,96 @@ class TestVmdMotionClear(MayaTestBase):
         self.assertFalse(cmds.objExists(layer))
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateY"), 0.0, places=4)
 
+    def test_clear_existing_motion_clears_physical_and_redirected_authoring_routes(self):
+        """Clear and rollback only validated upstream VMD destinations."""
+        root = cmds.group(empty=True, name="clear_authored_routes_root")
+        cmds.select(clear=True)
+        joint = cmds.joint(name="clear_authored_routes_joint")
+        cmds.parent(joint, root)
+        physical = cmds.createNode("transform", name="clear_authored_routes_physical")
+        proxy = cmds.createNode("transform", name="clear_authored_routes_proxy")
+        foreign = cmds.createNode("transform", name="clear_authored_routes_foreign")
+        for node in (physical, proxy, foreign):
+            cmds.setKeyframe(node, attribute="translateX", time=4, value=3.0)
+
+        context = VmdImportStateContext(
+            logger=self.converter.logger,
+            bone_name_mapping={"center": joint},
+            bone_bind_poses={},
+            morph_name_mapping={},
+            collect_append_info=lambda: {},
+            iter_morph_mappings=self.converter._iter_morph_mappings,
+            set_refresh_suspended=self.converter._set_vmd_import_refresh_suspended,
+        )
+        authored_routes = {
+            joint: {
+                "attr_targets": {
+                    "translateX": (physical, "translateX"),
+                    "translateY": (foreign, "translateX"),
+                }
+            }
+        }
+        self.converter.bone_name_mapping = {"center": joint}
+        node_type = cmds.nodeType
+
+        def authored_node_type(node):
+            if str(node) == physical:
+                return "mmdBoneMorphAccum"
+            return node_type(node)
+
+        with patch(
+            "mmd_tools.converters.vmd_import_state.resolve_redirected_authoring_proxy",
+            return_value=({"translateX": (proxy, "translateX")}, True),
+        ), patch(
+            "mmd_tools.converters.vmd_import_state.cmds.nodeType",
+            side_effect=authored_node_type,
+        ):
+            snapshot = self.converter._capture_mmd_control_rig_scene_snapshot(
+                root,
+                None,
+                authored_routes=authored_routes,
+            )
+            clear_existing_motion(
+                context,
+                "missing_layer",
+                target_model=root,
+                authored_routes=authored_routes,
+            )
+
+        self.assertIsNone(cmds.keyframe(physical, attribute="translateX", query=True))
+        self.assertIsNone(cmds.keyframe(proxy, attribute="translateX", query=True))
+        self.assertEqual(
+            cmds.keyframe(foreign, attribute="translateX", query=True, timeChange=True),
+            [4.0],
+        )
+        self.assertIsNone(self.converter._restore_mmd_control_rig_scene_snapshot(snapshot))
+        self.assertEqual(
+            cmds.keyframe(physical, attribute="translateX", query=True, timeChange=True),
+            [4.0],
+        )
+        self.assertEqual(
+            cmds.keyframe(proxy, attribute="translateX", query=True, timeChange=True),
+            [4.0],
+        )
+
+    def test_converter_reuses_legacy_key_routes_for_motion_clear(self):
+        routes = {"joint": {"attr_targets": {"translateX": ("proxy", "inputX")}}}
+        with patch.object(
+            self.converter,
+            "_build_legacy_bone_key_routes",
+        ) as build_routes, patch(
+            "mmd_tools.converters.vmd_converter.clear_existing_motion"
+        ) as clear:
+            self.converter._clear_existing_motion(
+                "VMD_Motion",
+                target_namespace="character",
+                target_model="|character|model",
+                authored_routes=routes,
+            )
+
+        build_routes.assert_not_called()
+        self.assertEqual(clear.call_args.kwargs["authored_routes"], routes)
+
     def test_clear_existing_motion_clears_owned_morph_controller_only(self):
         """正式な morph controller のキーを対象モデルだけ消去する。"""
         root_a = cmds.group(empty=True, name="clear_morph_model_a")
