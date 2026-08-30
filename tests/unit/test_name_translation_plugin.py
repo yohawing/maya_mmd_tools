@@ -48,24 +48,6 @@ def test_format_dialog_preview_is_english_first_and_hides_original_by_default():
     )
 
 
-def test_build_translation_preview_is_read_only_and_uses_core_policy(monkeypatch, tmp_path):
-    dictionary = tmp_path / "names.csv"
-    dictionary.write_text("左腕,left arm\n", encoding="utf-8")
-    entries = (_entry("bone", "|root|joint", "左腕"),)
-    cmds = SimpleNamespace(ls=lambda **_kwargs: ["|root", "|root|joint"])
-
-    monkeypatch.setattr(name_translation_dialog, "resolve_model_root", lambda *_a, **_k: "|root")
-    monkeypatch.setattr(name_translation_dialog, "collect_name_entries", lambda *_a, **_k: entries)
-
-    root, plan = name_translation_dialog.build_translation_preview(str(dictionary), cmds_module=cmds)
-
-    assert root == "|root"
-    assert len(plan) == 1
-    assert plan[0].english_name == "left arm"
-    assert not hasattr(cmds, "setAttr")
-    assert not hasattr(cmds, "rename")
-
-
 def test_build_translation_preview_details_reports_dictionary_coverage(monkeypatch, tmp_path):
     dictionary = tmp_path / "names.csv"
     dictionary.write_text("左腕,left arm\n", encoding="utf-8")

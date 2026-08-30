@@ -97,30 +97,6 @@ def build_translation_preview_details(
     )
 
 
-def build_translation_preview(
-    dictionary_path: str,
-    *,
-    model_root: Optional[str] = None,
-    overwrite: bool = False,
-    rename_nodes: bool = False,
-    cmds_module=None,
-) -> Tuple[str, Tuple[NameChange, ...]]:
-    """Build the changes shown by the dialog without mutating Maya.
-
-    The helper intentionally mirrors the existing script entry point while
-    keeping the dialog's initial display and preview phases read-only.
-    """
-
-    preview = build_translation_preview_details(
-        dictionary_path,
-        model_root=model_root,
-        overwrite=overwrite,
-        rename_nodes=rename_nodes,
-        cmds_module=cmds_module,
-    )
-    return preview.root, preview.plan
-
-
 def format_dialog_preview(
     plan: Sequence[NameChange],
     *,
@@ -251,7 +227,6 @@ class NameTranslationDialog:
         self._preview_plan: Optional[Tuple[NameChange, ...]] = None
         self._preview_state = None
         self._model_root = None
-        self._preview_details: Optional[TranslationPreview] = None
         self._on_applied = on_applied
 
         self._dialog = QDialog(parent)
@@ -343,12 +318,6 @@ class NameTranslationDialog:
 
         return self._model_root
 
-    @property
-    def preview_plan(self) -> Optional[Tuple[NameChange, ...]]:
-        """Return the last successful preview, if one exists."""
-
-        return self._preview_plan
-
     def exec_modal(self) -> bool:
         """Execute the modal using the available Qt binding."""
 
@@ -369,7 +338,6 @@ class NameTranslationDialog:
         self._preview_plan = None
         self._preview_root = None
         self._preview_state = None
-        self._preview_details = None
         self.apply_button.setEnabled(False)
 
     def _render_preview(self, *_args):
@@ -403,7 +371,6 @@ class NameTranslationDialog:
             self._preview_root = details.root
             self._preview_plan = details.plan
             self._preview_state = preview_state
-            self._preview_details = details
             self._render_preview()
             self.status_label.setText(
                 "Coverage: "
@@ -442,7 +409,6 @@ class NameTranslationDialog:
             changes = apply_translation_plan(plan, cmds_module=cmds)
             self._preview_plan = None
             self._preview_state = None
-            self._preview_details = None
             self.apply_button.setEnabled(False)
             refresh_error = None
             if callable(self._on_applied):
@@ -511,7 +477,6 @@ __all__ = [
     "TranslationPreview",
     "apply_translation_plan",
     "build_translation_plan",
-    "build_translation_preview",
     "build_translation_preview_details",
     "collect_name_entries",
     "format_dialog_preview",

@@ -21,10 +21,9 @@ def _candidate_module_names() -> Tuple[str, ...]:
     )
 
 
-def discover_tool_plugins() -> Tuple[str, ...]:
-    """Return deterministic import paths for modules that opt into the menu."""
+def _iter_tool_plugins():
+    """Yield modules that opt into the menu in deterministic order."""
 
-    discovered = []
     for module_name in _candidate_module_names():
         try:
             module = import_module(module_name)
@@ -35,8 +34,7 @@ def discover_tool_plugins() -> Tuple[str, ...]:
             and str(getattr(module, "MENU_ITEM_ID", "")).strip()
             and callable(getattr(module, "install_menu_item", None))
         ):
-            discovered.append(module_name)
-    return tuple(discovered)
+            yield module
 
 
 def install_tool_plugins(
@@ -49,9 +47,9 @@ def install_tool_plugins(
     """Discover and install tools without making the host know their names."""
 
     installed = []
-    for module_name in discover_tool_plugins():
+    for module in _iter_tool_plugins():
+        module_name = module.__name__
         try:
-            module = import_module(module_name)
             menu_id = module.install_menu_item(
                 parent=parent,
                 cmds_module=cmds_module,
@@ -64,4 +62,4 @@ def install_tool_plugins(
     return tuple(installed)
 
 
-__all__ = ["discover_tool_plugins", "install_tool_plugins"]
+__all__ = ["install_tool_plugins"]
