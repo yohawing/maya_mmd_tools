@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mmd_tools.tools.translate_names import (
+from mmd_tools.core.name_translation import (
     NameEntry,
     NameTranslationError,
     build_translation_plan,

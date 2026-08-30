@@ -278,7 +278,6 @@ def install_mmd_menu():
         "MMD Tools",
         "MMD Editor",
         "Repair Texture Paths",
-        "Translate MMD Names",
         "Tools",
         "Animator Toolset",
         "コントロールリグを管理",
@@ -308,11 +307,13 @@ def install_mmd_menu():
         subMenu=True,
         parent="MMD",
     )
-    cmds.menuItem(
-        "MMDTranslateNamesMenuItem",
-        label="Translate MMD Names",
-        command=lambda *args: _run_mmd_name_translation(),
-        parent="MMDToolsSubMenu",
+    from mmd_tools.tools import install_tool_plugins
+
+    install_tool_plugins(
+        "MMDToolsSubMenu",
+        cmds_module=cmds,
+        on_applied=_refresh_tool_ui,
+        on_error=om.MGlobal.displayWarning,
     )
     cmds.menuItem(
         "MMDAnimatorToolsetMenuItem",
@@ -342,16 +343,8 @@ def uninstall_mmd_menu():
         cmds.deleteUI("MMD", menu=True)
 
 
-def _run_mmd_name_translation():
-    """Open the standalone name-translation preview/apply dialog."""
-
-    from mmd_tools.ui.name_translation_dialog import show_name_translation_dialog
-
-    return show_name_translation_dialog(on_applied=_refresh_name_translation_ui)
-
-
-def _refresh_name_translation_ui(_changes=()):
-    """Refresh each open MMD Tools view after translated metadata changes."""
+def _refresh_tool_ui(_changes=()):
+    """Refresh each open MMD Tools view after a tool mutates model metadata."""
 
     app_states = []
     for window in (_main_window, _animator_toolset_window):

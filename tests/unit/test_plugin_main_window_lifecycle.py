@@ -1,6 +1,7 @@
 """plugin_main の MMD Tools ウィンドウ所有権管理を検証するテスト。"""
 
 import importlib
+from pathlib import Path
 import sys
 import types
 import unittest
@@ -253,31 +254,36 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         ]
         self.assertEqual(len(manager_calls), 1)
 
+    def test_host_menu_has_no_individual_tool_module_dependency(self):
+        source = Path(self.plugin_main.__file__).read_text(encoding="utf-8")
+
+        self.assertNotIn("name_translation", source)
+        self.assertNotIn("MMDTranslateNamesMenuItem", source)
+
     def test_translate_names_menu_dispatches_standalone_dialog(self):
+        from mmd_tools.tools import translate_names as name_translation
+
         self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
             False if kwargs.get("exists") else [] if kwargs.get("query") else "MMD"
         )
-        self.plugin_main._run_mmd_name_translation = MagicMock(return_value=True)
+        with unittest.mock.patch.object(
+            name_translation,
+            "show_name_translation_dialog",
+            return_value=True,
+        ) as show_dialog:
+            self.plugin_main.install_mmd_menu()
 
-        self.plugin_main.install_mmd_menu()
+            menu_call = next(
+                call
+                for call in self.plugin_main.cmds.menuItem.call_args_list
+                if call[1].get("label") == "Translate MMD Names"
+            )
+            self.assertTrue(menu_call[1]["command"]("menu-click"))
 
-        menu_call = next(
-            call
-            for call in self.plugin_main.cmds.menuItem.call_args_list
-            if call[1].get("label") == "Translate MMD Names"
+        show_dialog.assert_called_once_with(
+            cmds_module=self.plugin_main.cmds,
+            on_applied=self.plugin_main._refresh_tool_ui,
         )
-        self.assertTrue(menu_call[1]["command"]("menu-click"))
-        self.plugin_main._run_mmd_name_translation.assert_called_once_with()
-
-    def test_translate_dialog_receives_open_ui_refresh_callback(self):
-        dialog_module = types.ModuleType("mmd_tools.ui.name_translation_dialog")
-        dialog_module.show_name_translation_dialog = MagicMock(return_value=True)
-        self._inject_module("mmd_tools.ui.name_translation_dialog", dialog_module)
-
-        self.assertTrue(self.plugin_main._run_mmd_name_translation())
-
-        callback = dialog_module.show_name_translation_dialog.call_args.kwargs["on_applied"]
-        self.assertIs(callback, self.plugin_main._refresh_name_translation_ui)
 
     def test_name_translation_refreshes_each_open_state_once(self):
         shared_state = MagicMock()
@@ -291,7 +297,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         )
         self.plugin_main._control_rig_manager_window = manager
 
-        self.plugin_main._refresh_name_translation_ui(("change",))
+        self.plugin_main._refresh_tool_ui(("change",))
 
         shared_state.refresh_model_list.assert_called_once_with(explicit=True)
         animator_state.refresh_model_list.assert_called_once_with(explicit=True)

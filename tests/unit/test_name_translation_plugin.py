@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mmd_tools.tools.translate_names import NameEntry, NameTranslationError
-from mmd_tools.ui import name_translation_dialog
+from mmd_tools.core.name_translation import NameEntry, NameTranslationError
+from mmd_tools.tools import translate_names as name_translation_dialog
 
 
 def _entry(kind, node, source, english="", index=None, rename_allowed=True):
@@ -20,6 +20,14 @@ def _entry(kind, node, source, english="", index=None, rename_allowed=True):
         index=index,
         rename_allowed=rename_allowed,
     )
+
+
+def test_documented_mayapy_entry_point_delegates_to_core(monkeypatch):
+    core_main = MagicMock(return_value=7)
+    monkeypatch.setattr(name_translation_dialog, "_core_main", core_main)
+
+    assert name_translation_dialog.main(["names.csv", "--dry-run"]) == 7
+    core_main.assert_called_once_with(["names.csv", "--dry-run"])
 
 
 def test_format_dialog_preview_is_english_first_and_hides_original_by_default():
