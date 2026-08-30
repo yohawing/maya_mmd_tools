@@ -72,7 +72,7 @@ def test_selected_adapter_writes_only_changed_morph_attrs() -> None:
             ("morph", "mmd_morph_name"): "Morph",
             ("morph", "mmd_morph_name_en"): "Morph",
             ("morph", "mmd_morph_panel"): 4,
-            ("morph", "mmd_bone_morph_offsets_raw_json"): "[{\"bone_index\":1,\"translation\":[0,0,0],\"rotation\":[0,0,0,1]}]",
+            ("morph", "mmd_bone_morph_offsets_json"): "[{\"bone_index\":1,\"translation\":[0,0,0],\"rotation\":[0,0,0,1]}]",
         }
     )
     old = _morph(offsets=({"bone_index": 1, "translation": [0, 0, 0], "rotation": [0, 0, 0, 1]},))
@@ -109,7 +109,7 @@ def test_selected_adapter_updates_only_matching_runtime_target_slots() -> None:
             ("morph", "mmd_morph_name"): "Morph",
             ("morph", "mmd_morph_name_en"): "Morph",
             ("morph", "mmd_morph_panel"): 4,
-            ("morph", "mmd_bone_morph_offsets_raw_json"): "[{\"bone_index\":0,\"translation\":[0,0,0],\"rotation\":[0,0,0,1]}]",
+            ("morph", "mmd_bone_morph_offsets_json"): "[{\"bone_index\":0,\"translation\":[0,0,0],\"rotation\":[0,0,0,1]}]",
             ("accum", "contribution"): [0],
             ("accum", "mmd_target_joint"): "joint",
             ("joint", "mmd_bone_index"): 0,
@@ -154,7 +154,7 @@ def test_selected_runtime_target_count_mismatch_fails_closed() -> None:
             ("morph", "mmd_morph_name"): "Morph",
             ("morph", "mmd_morph_name_en"): "Morph",
             ("morph", "mmd_morph_panel"): 4,
-            ("morph", "mmd_bone_morph_offsets_raw_json"): "[{\"bone_index\":0,\"translation\":[0,0,0],\"rotation\":[0,0,0,1]}]",
+            ("morph", "mmd_bone_morph_offsets_json"): "[{\"bone_index\":0,\"translation\":[0,0,0],\"rotation\":[0,0,0,1]}]",
             ("accum", "contribution"): [0, 1],
             ("accum", "mmd_target_joint"): "joint",
             ("joint", "mmd_bone_index"): 0,
@@ -236,7 +236,6 @@ def test_vertex_runtime_patch_writes_exact_selected_target() -> None:
             ("morph", "mmd_morph_name_en"): "Morph",
             ("morph", "mmd_morph_panel"): 4,
             ("morph", "mmd_vertex_morph_offsets_raw_json"): "[{\"vertex_index\":0,\"position_offset\":[0,0,0]}]",
-            ("|Model", "mmd_import_scale"): 1.0,
             ("bs", "mmd_blendshape_morph_names_json"): '{"3":{"name":"Morph","index":0}}',
             ("mesh", "vertexCount"): 1,
         }
@@ -268,7 +267,6 @@ def test_vertex_name_only_patch_updates_alias_and_mapping() -> None:
             ("morph", "mmd_morph_name"): "Morph",
             ("morph", "mmd_morph_name_en"): "Morph",
             ("morph", "mmd_morph_panel"): 4,
-            ("|Model", "mmd_import_scale"): 1.0,
             ("bs", "mmd_blendshape_morph_names_json"): '{"3":{"name":"Morph","index":0}}',
             ("bs", "geometry"): ["mesh"],
             ("bs", "geometryIndices"): [0],
@@ -311,7 +309,7 @@ def test_bone_runtime_patch_reuses_bind_orientation_converter(monkeypatch) -> No
             ("morph", "mmd_morph_name"): "Morph",
             ("morph", "mmd_morph_name_en"): "Morph",
             ("morph", "mmd_morph_panel"): 4,
-            ("morph", "mmd_bone_morph_offsets_raw_json"): "[{\"bone_index\":0,\"translation\":[0,0,0],\"rotation\":[0,0,0,1]}]",
+            ("morph", "mmd_bone_morph_offsets_json"): "[{\"bone_index\":0,\"translation\":[0,0,0],\"rotation\":[0,0,0,1]}]",
             ("accum", "contribution"): [0],
             ("accum", "mmd_target_joint"): "joint",
             ("joint", "mmd_bone_index"): 0,

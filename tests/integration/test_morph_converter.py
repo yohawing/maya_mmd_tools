@@ -15,7 +15,6 @@ from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
-    ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
@@ -150,8 +149,6 @@ class TestMorphConverter(MayaTestBase):
         offsets = json.loads(cmds.getAttr(f"{morph_node}.mmd_bone_morph_offsets_json"))
         self.assertEqual(offsets[0]["bone_index"], 3)
         self.assertEqual(offsets[0]["translation"], [2.0, 4.0, 6.0])
-        raw_offsets = json.loads(cmds.getAttr(f"{morph_node}.{ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON}"))
-        self.assertEqual(raw_offsets[0]["translation"], [1.0, 2.0, 3.0])
 
         cmds.delete(mesh_name, morph_node)
 
@@ -225,20 +222,14 @@ class TestMorphConverter(MayaTestBase):
                     effective_offsets = json.loads(
                         cmds.getAttr(f"{bone_node}.mmd_bone_morph_offsets_json")
                     )
-                    raw_offsets = json.loads(
-                        cmds.getAttr(f"{bone_node}.{ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON}")
-                    )
                     self.assertEqual(len(effective_offsets[0]["translation"]), 3)
                     for actual, expected in zip(
                         effective_offsets[0]["translation"],
                         (1.0 * scale, 2.0 * scale, 3.0 * scale),
                     ):
                         self.assertAlmostEqual(actual, expected, places=5)
-                    self.assertEqual(raw_offsets[0]["translation"], [1.0, 2.0, 3.0])
                     self.assertEqual(effective_offsets[0]["rotation"], [0.1, 0.2, 0.3, 0.9])
-                    self.assertEqual(raw_offsets[0]["rotation"], [0.1, 0.2, 0.3, 0.9])
                     self.assertEqual(effective_offsets[0]["bone_index"], 3)
-                    self.assertEqual(raw_offsets[0]["bone_index"], 3)
                 finally:
                     cmds.file(new=True, force=True)
 

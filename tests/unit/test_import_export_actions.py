@@ -606,7 +606,7 @@ class TestExportModelAction(unittest.TestCase):
         self.assertIn("model export format obj is not supported", result.status_message)
 
     def test_request_preserves_options_for_future_exporter_boundary(self):
-        options = {"file_path": "out.pmx", "export_format": "pmx", "apply_scale": False}
+        options = {"file_path": "out.pmx", "export_format": "pmx"}
 
         request = ExportModelRequest(file_path="out.pmx", options=options)
 

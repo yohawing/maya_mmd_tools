@@ -22,7 +22,6 @@ from ..core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
-    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_MORPH_DATA,
@@ -189,7 +188,6 @@ def import_pmx_file(
                 {
                     ATTR_MMD_MODEL_NAME: parser.header.model_name,
                     ATTR_MMD_MODEL_NAME_EN: parser.header.model_name_english,
-                    ATTR_MMD_IMPORT_SCALE: scale,
                     ATTR_MMD_COMMENT: parser.header.comment,
                     ATTR_MMD_COMMENT_EN: parser.header.comment_english,
                     ATTR_MMD_DISPLAY_FRAMES_JSON: display_frames_to_json(
@@ -297,9 +295,8 @@ def import_pmx_file(
             # ここでは transform 名だけ控えておく。
             light_ctrl = pipeline.create_light_controller()
 
-            # PMX座標は mesh / bone / morph 生成時点で scale 済み。
-            # bind 後の root scale freeze は skinCluster.bindPreMatrix を stale にするため避ける。
-            pipeline.apply_scale_and_select(root_group, apply_scale=False)
+            # PMX spatial values are scaled at each import boundary.
+            pipeline.apply_scale_and_select(root_group)
             try:
                 # Generated dx11 uniforms (DiffuseColorRGB etc.) only materialize
                 # after VP2 refresh; material morph routing must run after this.

@@ -12,7 +12,6 @@ from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadat
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_INDEX,
-    ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_BONE_PARENT_INDEX,
     ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_FIXED_AXIS,
@@ -280,7 +279,7 @@ def build_model_descriptors_from_dag(root_group: str) -> ModelDagDescriptorSet:
             )
         morph_count = max(morph_count, metadata.index + 1)
         if metadata.morph_type == "bone":
-            for entry in _json_list(metadata.node, ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON):
+            for entry in _json_list(metadata.node, "mmd_bone_morph_offsets_json"):
                 if not isinstance(entry, dict) or "bone_index" not in entry:
                     raise ModelDagDescriptorError(f"{metadata.node}: invalid bone morph offset")
                 target = int(entry["bone_index"])

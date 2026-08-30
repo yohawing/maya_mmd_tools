@@ -67,10 +67,6 @@
   },
   "export": {
     "_comment": "Settings related to exporting to MMD formats",
-    "general": {
-      "_comment": "General export settings",
-      "apply_scale": true
-    },
     "motion": {
       "_comment": "VMD motion export settings",
       "strategy": "bake_timeline",

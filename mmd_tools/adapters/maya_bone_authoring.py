@@ -43,7 +43,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_REGISTRY_MORPH_MEMBERS,
     ATTR_MMD_REGISTRY_ROOT,
     ATTR_MMD_REGISTRY_SCHEMA,
-    ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON,
     ATTR_MMD_CONTROL_RIG_JSON,
     ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_X_AXIS_DIRECTION,
@@ -331,10 +330,9 @@ def _validate_reindex_specs(old_spec: MmdModelAuthoringSpec, new_spec: MmdModelA
     return mapping
 
 
-def capture_rest_position(root: str, joint: str, model_scale: float, adapter: Any) -> tuple[float, float, float]:
+def capture_rest_position(root: str, joint: str, adapter: Any) -> tuple[float, float, float]:
     """Capture world translation as PMX absolute rest coordinates."""
     _require_root_joint(adapter, root, joint)
-    scale = _require_number(model_scale, field="model_scale", positive=True)
     if hasattr(adapter, "xform"):
         raw = _call(adapter, "xform", joint, query=True, worldSpace=True, translation=True)
     else:
@@ -346,7 +344,7 @@ def capture_rest_position(root: str, joint: str, model_scale: float, adapter: An
         if isinstance(raw, Sequence) and len(raw) >= 15:
             raw = (raw[12], raw[13], raw[14])
     x, y, z = _require_vector(raw, field="world translation")
-    return (x / scale, y / scale, -z / scale)
+    return (x, y, -z)
 
 
 def apply_bone_value_patch(
@@ -987,7 +985,7 @@ def apply_bone_reindex(
         morph_type = _get(adapter, node, "mmd_morph_type")
         if morph_type != "bone":
             continue
-        for attr in (ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON, "mmd_bone_morph_offsets_json"):
+        for attr in ("mmd_bone_morph_offsets_json",):
             updated = _remap_bone_morph_json(adapter, node, attr, mapping)
             if updated is not None:
                 morph_updates.append((node, attr, updated))
@@ -1042,7 +1040,7 @@ def unregister_existing_joint(root: str, joint: str, adapter: Any) -> None:
     for node in _morph_nodes(adapter, root):
         if _get(adapter, node, "mmd_morph_type") != "bone":
             continue
-        for attr in (ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON, "mmd_bone_morph_offsets_json"):
+        for attr in ("mmd_bone_morph_offsets_json",):
             if not _exists(adapter, node, attr):
                 continue
             offsets = _mapping_list(_read_json(adapter, node, attr, field=f"{node}.{attr}"), field=f"{node}.{attr}")
@@ -1197,7 +1195,7 @@ def _validate_removed_scene_references(
     for node in _morph_nodes(adapter, root):
         if _get(adapter, node, "mmd_morph_type") != "bone":
             continue
-        for attr in (ATTR_MMD_BONE_MORPH_OFFSETS_RAW_JSON, "mmd_bone_morph_offsets_json"):
+        for attr in ("mmd_bone_morph_offsets_json",):
             if not _exists(adapter, node, attr):
                 continue
             offsets = _mapping_list(_read_json(adapter, node, attr, field=f"{node}.{attr}"), field=f"{node}.{attr}")
@@ -1263,7 +1261,6 @@ def _validate_scene_binding_payload(
 def plan_bone_reset(
     root: str,
     current_spec: MmdModelAuthoringSpec,
-    model_scale: float,
     adapter: Any,
     *,
     requested_order: Sequence[str] | None = None,
@@ -1271,7 +1268,6 @@ def plan_bone_reset(
     """Read-only scene-as-authority preflight for the Bone Tab Reset action."""
     try:
         _require_string(root, field="root")
-        scale = _require_number(model_scale, field="model_scale", positive=True)
         descendants = []
         for item in _descendant_joints(adapter, root):
             canonical = _canonical_identity(adapter, item)
@@ -1323,7 +1319,7 @@ def plan_bone_reset(
             )
         }
         for joint in descendants:
-            position = capture_rest_position(root, joint, scale, adapter)
+            position = capture_rest_position(root, joint, adapter)
             existing = by_binding.get(joint)
             if existing is not None:
                 descriptors.append(replace(existing, rest_position=position, binding_identity=joint))

@@ -11,6 +11,7 @@ Phase 1 以降:
 from __future__ import annotations
 
 import math
+import struct
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -131,6 +132,7 @@ from .vmd_runtime_scene_apply import (
 from .vmd_runtime_sources import (
     resolve_runtime_bake_sources,
     resolve_runtime_pmx_bytes_and_morph_names,
+    scale_vmd_bone_translation_bytes,
     should_use_mmd_runtime_bake,
 )
 from .vmd_runtime_world_bake import bake_bone_poses_from_world_matrices, convert_mmd_world_matrix_to_maya
@@ -2854,19 +2856,54 @@ class VmdConverter:
             registration_profile["status"] = "failed"
             registration_profile["reason"] = reason
 
-        # モデル・クリップ・インスタンス作成
-        model = MmdRuntimeModel.from_pmx_bytes(resolved_pmx_bytes)
-        if model is None:
+        try:
+            runtime_vmd_bytes = scale_vmd_bone_translation_bytes(
+                vmd_bytes,
+                self.motion_scale,
+            )
+        except (ValueError, TypeError, OverflowError, struct.error):
+            _registration_failed("vmd_translation_scale_failed")
+            self.logger.error("Failed to scale VMD bone translation tracks", exc_info=True)
+            return False
+
+        # The PMX-backed model owns the name maps required to register VMD
+        # tracks.  Evaluation uses a fresh DAG descriptor model when a Maya
+        # target is present, so the model's stored effective values are used.
+        registration_model = MmdRuntimeModel.from_pmx_bytes(resolved_pmx_bytes)
+        if registration_model is None:
             _registration_failed("model_create_failed")
             self.logger.error("Failed to create MmdRuntimeModel")
             return False
 
-        clip = MmdRuntimeClip.from_vmd_bytes_for_model(model, vmd_bytes)
+        clip = MmdRuntimeClip.from_vmd_bytes_for_model(
+            registration_model, runtime_vmd_bytes
+        )
         if clip is None:
             _registration_failed("registered_clip_create_failed")
             self.logger.error("Failed to create MmdRuntimeClip")
-            model.free()
+            registration_model.free()
             return False
+
+        model = registration_model
+        if target_model:
+            try:
+                from mmd_tools.core.model_dag_descriptor import (
+                    build_model_descriptors_from_dag,
+                )
+
+                model_descriptors = build_model_descriptors_from_dag(target_model)
+                model = MmdRuntimeModel.from_descriptors(model_descriptors)
+            except Exception:
+                model = None
+                self.logger.error(
+                    "Failed to create scaled runtime model from Maya DAG",
+                    exc_info=True,
+                )
+            if model is None:
+                _registration_failed("scene_model_create_failed")
+                clip.free()
+                registration_model.free()
+                return False
 
         instance = MmdRuntimeInstance.for_model(model)
         if instance is None:
@@ -2874,6 +2911,8 @@ class VmdConverter:
             self.logger.error("Failed to create MmdRuntimeInstance")
             clip.free()
             model.free()
+            if registration_model is not model:
+                registration_model.free()
             return False
 
         physics_world = None
@@ -2919,7 +2958,40 @@ class VmdConverter:
                         physics_routing["feature_flags"],
                     )
                 else:
-                    physics_world = MmdRuntimePhysicsWorld.from_pmx_bytes(resolved_pmx_bytes)
+                    if target_model:
+                        try:
+                            from mmd_tools.core.physics_dag_descriptor import (
+                                build_descriptors_from_dag,
+                            )
+
+                            from mmd_tools.core.physics_solver import (
+                                _collect_bone_joints,
+                            )
+
+                            bone_joints = _collect_bone_joints(target_model)
+                            bone_count = len(bone_joints)
+                            physics_descriptors = build_descriptors_from_dag(
+                                target_model,
+                                bone_joints=bone_joints,
+                                bone_count=bone_count,
+                            )
+                            if physics_descriptors.validation_errors:
+                                raise ValueError("physics descriptor validation failed")
+                            physics_world = MmdRuntimePhysicsWorld.from_descriptors(
+                                physics_descriptors.rigid_bodies,
+                                physics_descriptors.joints,
+                            )
+                        except Exception:
+                            physics_world = None
+                            self.logger.warning(
+                                "Scaled native physics world could not be created from Maya DAG; "
+                                "falling back to non-physics runtime batch",
+                                exc_info=True,
+                            )
+                    else:
+                        physics_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
+                            resolved_pmx_bytes
+                        )
                     if physics_world is None:
                         physics_routing["reason"] = "physics_world_create_failed"
                         self.logger.warning(
@@ -3103,6 +3175,8 @@ class VmdConverter:
             instance.free()
             clip.free()
             model.free()
+            if registration_model is not model:
+                registration_model.free()
 
     def _get_animation_frame_range(self, vmd_data: VmdData):
         """VMDデータからアニメーションのフレーム範囲を取得"""

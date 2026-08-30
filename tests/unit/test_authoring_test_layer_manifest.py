@@ -83,8 +83,6 @@ def _errors(manifest, ui_manifest):
         if all(surface.get(key) == value for key, value in selector.items())
     ]
     surface_ids = [surface.get("id") for surface in source_surfaces]
-    if len(source_surfaces) != coverage.get("expected_surface_count"):
-        errors.append("surface_count")
     if len(surface_ids) != len(set(surface_ids)) or any(not value for value in surface_ids):
         errors.append("surface_ids")
     if coverage.get("target_primary_layer") != "headless_qt":
@@ -238,20 +236,37 @@ def test_schema_and_layer_mutations_fail_closed():
     assert {"schema_version", "layers"}.issubset(_errors(manifest, ui_manifest))
 
 
-def test_surface_count_owner_and_gap_mutations_fail_closed():
+def test_surface_owner_and_gap_mutations_fail_closed():
     manifest = _load(MANIFEST_PATH)
     ui_manifest = _load(UI_MANIFEST_PATH)
-    declared_surface_count = manifest["surface_coverage"]["expected_surface_count"]
     manifest["surface_coverage"].update(
         {
-            "expected_surface_count": declared_surface_count + 1,
             "target_owner": "manual",
             "status": "gap",
         }
     )
-    assert {"surface_count", "surface_owner_rule", "surface_completion"}.issubset(
+    assert {"surface_owner_rule", "surface_completion"}.issubset(
         _errors(manifest, ui_manifest)
     )
+
+
+def test_surface_inventory_size_is_not_a_test_layer_contract():
+    manifest = _load(MANIFEST_PATH)
+    ui_manifest = _load(UI_MANIFEST_PATH)
+    qt_surfaces = [
+        surface for surface in ui_manifest["surfaces"] if surface["disposition"] == "qt_case"
+    ]
+    reduced = copy.deepcopy(ui_manifest)
+    reduced["surfaces"].remove(qt_surfaces[0])
+    expanded = copy.deepcopy(ui_manifest)
+    extra = copy.deepcopy(qt_surfaces[0])
+    extra["id"] = "settings.additional_qt_surface"
+    locator_key = "selector" if "selector" in extra else "attribute"
+    extra.pop("selector" if locator_key == "attribute" else "attribute", None)
+    extra[locator_key] = "objectName=additionalQtSurface"
+    expanded["surfaces"].append(extra)
+    for changed in (reduced, expanded):
+        assert _errors(manifest, changed) == ["source_manifest"]
 
 
 def test_source_manifest_must_resolve_to_the_loaded_ui_inventory():
@@ -294,7 +309,7 @@ def test_duplicate_surface_and_contract_ids_fail_closed():
     ui_manifest = copy.deepcopy(_load(UI_MANIFEST_PATH))
     ui_manifest["surfaces"].append(copy.deepcopy(ui_manifest["surfaces"][0]))
     manifest["contracts"].append(copy.deepcopy(manifest["contracts"][0]))
-    assert {"surface_count", "surface_ids", "contract_ids"}.issubset(
+    assert {"surface_ids", "contract_ids"}.issubset(
         _errors(manifest, ui_manifest)
     )
 

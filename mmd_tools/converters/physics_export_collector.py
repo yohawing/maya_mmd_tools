@@ -82,7 +82,10 @@ def _resolve_bone_index(
     return -1
 
 
-def _collect_rigid_body(shape: str, bone_index_by_joint: dict[str, int]) -> dict:
+def _collect_rigid_body(
+    shape: str,
+    bone_index_by_joint: dict[str, int],
+) -> dict:
     return {
         "name": _get_attr(shape, "nameJp", "") or "",
         "name_english": _get_attr(shape, "nameEn", "") or "",
@@ -143,6 +146,8 @@ def collect_physics_from_scene(
 
     Returns ``(rigid_body_dicts, joint_dicts)`` ready for ``PmxExporter``.
     If the Physics hierarchy does not exist, returns empty lists.
+    Spatial attributes are already stored in effective PMX units by the
+    import/authoring boundary and are returned unchanged.
     """
     physics_group = _find_group(root_group, PHYSICS_GROUP)
     if not physics_group:

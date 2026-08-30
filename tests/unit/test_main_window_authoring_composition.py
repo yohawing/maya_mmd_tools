@@ -32,13 +32,11 @@ def test_main_window_factory_failure_keeps_startup_path_available(monkeypatch, c
 def test_main_window_presenters_receive_same_composition_dependencies() -> None:
     adapter = object()
     coordinator = object()
-    scale_resolver = object()
     create_model_action = object()
     window = SimpleNamespace(
         authoring_composition=SimpleNamespace(
             cmds_adapter=adapter,
             coordinator=coordinator,
-            model_scale_resolver=scale_resolver,
             create_model_action=create_model_action,
         )
     )

@@ -159,7 +159,7 @@ class _Bones:
         self.backend = backend
         self.events = []
 
-    def plan_bone_reset(self, _root, current, _scale, _cmds, **_kwargs):
+    def plan_bone_reset(self, _root, current, _cmds, **_kwargs):
         target = replace(
             current,
             bones=(replace(current.bones[0], rest_position=(1.0, 2.0, -3.0)),),
@@ -229,14 +229,13 @@ def _coordinator(backend, bones):
     return MayaModelAuthoringCoordinator(
         _Metadata(backend), backend, _Materials(), _Cmds(),
         bone_api=bones,
-        model_scale_resolver=lambda _root: 1.0,
     )
 
 
 def test_reset_uses_one_structural_transaction_and_one_rebase():
     backend = _Backend(_spec())
     bones = _Bones(backend)
-    result = _coordinator(backend, bones).reset_bones("|root", bones.plan_bone_reset("|root", backend.scene, 1.0, _Cmds()))
+    result = _coordinator(backend, bones).reset_bones("|root", bones.plan_bone_reset("|root", backend.scene, _Cmds()))
     assert result.bones[0].rest_position == (1.0, 2.0, -3.0)
     assert bones.events == ["reset"]
     assert backend.events.count("begin") == 1
@@ -301,18 +300,18 @@ def test_plan_adds_descendant_updates_rest_and_compacts_indices():
 
 def test_animation_warning_is_non_blocking_and_read_only_is_blocking():
     current = _spec()
-    animated = plan_bone_reset("|root", current, 1.0, _SceneAdapter(animated=True))
+    animated = plan_bone_reset("|root", current, _SceneAdapter(animated=True))
     assert animated.is_valid
     assert animated.warnings and "current frame 24" in animated.warnings[0]
-    ordinary = plan_bone_reset("|root", current, 1.0, _SceneAdapter(ordinary_connection=True))
+    ordinary = plan_bone_reset("|root", current, _SceneAdapter(ordinary_connection=True))
     assert ordinary.is_valid and not ordinary.warnings
-    blocked = plan_bone_reset("|root", current, 1.0, _SceneAdapter(referenced=True))
+    blocked = plan_bone_reset("|root", current, _SceneAdapter(referenced=True))
     assert not blocked.is_valid
     assert any("read-only" in item for item in blocked.blockers)
 
 
 def test_owned_control_rig_metadata_is_a_non_blocking_animation_warning():
-    plan = plan_bone_reset("|root", _spec(), 1.0, _SceneAdapter(control_rig=True))
+    plan = plan_bone_reset("|root", _spec(), _SceneAdapter(control_rig=True))
     assert plan.is_valid
     assert any("Control Rig" in warning and "current frame 24" in warning for warning in plan.warnings)
 
@@ -323,7 +322,7 @@ def test_reset_derives_connect_to_the_unique_direct_child_for_new_bones():
         "|root|joint|new_parent": ["|root|joint|new_parent|new_child"],
     }
     current = _spec()
-    plan = plan_bone_reset("|root", current, 1.0, _DerivedSceneAdapter(hierarchy))
+    plan = plan_bone_reset("|root", current, _DerivedSceneAdapter(hierarchy))
 
     assert plan.is_valid
     parent = next(item for item in plan.target_spec.bones if item.name == "new_parent")
@@ -342,7 +341,7 @@ def test_reset_uses_deterministic_offset_and_warning_for_ambiguous_or_leaf_new_b
         ],
     }
     current = _spec()
-    plan = plan_bone_reset("|root", current, 1.0, _DerivedSceneAdapter(hierarchy))
+    plan = plan_bone_reset("|root", current, _DerivedSceneAdapter(hierarchy))
 
     assert plan.is_valid
     parent = next(item for item in plan.target_spec.bones if item.name == "new_parent")
@@ -355,7 +354,7 @@ def test_reset_uses_deterministic_offset_and_warning_for_ambiguous_or_leaf_new_b
 
 def test_reset_blocks_when_hierarchy_query_fails_instead_of_deriving_zero_children():
     hierarchy = {"|root|joint": ["|root|joint|new_child"]}
-    plan = plan_bone_reset("|root", _spec(), 1.0, _BrokenHierarchyAdapter(hierarchy))
+    plan = plan_bone_reset("|root", _spec(), _BrokenHierarchyAdapter(hierarchy))
 
     assert not plan.is_valid
     assert plan.target_spec is None
@@ -364,7 +363,7 @@ def test_reset_blocks_when_hierarchy_query_fails_instead_of_deriving_zero_childr
 
 def test_reset_blocks_when_joint_identity_cannot_be_canonicalized():
     hierarchy = {"|root|joint": ["|root|joint|new_child"]}
-    plan = plan_bone_reset("|root", _spec(), 1.0, _BrokenIdentityAdapter(hierarchy))
+    plan = plan_bone_reset("|root", _spec(), _BrokenIdentityAdapter(hierarchy))
 
     assert not plan.is_valid
     assert plan.target_spec is None

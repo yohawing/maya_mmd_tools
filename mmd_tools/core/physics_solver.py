@@ -90,7 +90,8 @@ class PhysicsSolverSession:
 
         Args:
             root_group: Model root transform containing the Physics hierarchy.
-            pmx_bytes: Raw PMX file bytes for creating the runtime model/instance.
+            pmx_bytes: Retained for compatibility; the runtime model is compiled
+                from the model DAG so it shares units with the physics world.
             bone_joints: Maya joint paths indexed by PMX bone index.
 
         Returns:
@@ -116,10 +117,16 @@ class PhysicsSolverSession:
             logger.error("Failed to create physics world from DAG descriptors")
             return None
 
-        model = MmdRuntimeModel.from_pmx_bytes(pmx_bytes)
+        try:
+            model_descriptors = build_model_descriptors_from_dag(root_group)
+        except Exception as exc:
+            world.free()
+            logger.error("Failed to compile model DAG descriptors: %s", exc)
+            return None
+        model = MmdRuntimeModel.from_descriptors(model_descriptors)
         if model is None:
             world.free()
-            logger.error("Failed to create runtime model from PMX bytes")
+            logger.error("Failed to create runtime model")
             return None
 
         instance = MmdRuntimeInstance.for_model(model)

@@ -15,7 +15,6 @@ from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import (
     ATTR_MMD_DISPLAY_FRAMES_JSON,
-    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_TEXTURE_TABLE_JSON,
 )
@@ -106,6 +105,10 @@ class TestPmxImporter(MayaTestBase):
         self.assertTrue(
             cmds.attributeQuery(ATTR_MMD_DISPLAY_FRAMES_JSON, node=result, exists=True),
             "表示枠 metadata が root に保存されていません",
+        )
+        self.assertFalse(
+            cmds.attributeQuery("mmd_import_scale", node=result, exists=True),
+            "persisted import scale must not be stored on the model root",
         )
         self.assertTrue(cmds.getAttr(f"{result}.{ATTR_MMD_DISPLAY_FRAMES_JSON}"))
         texture_table = json.loads(cmds.getAttr(f"{result}.{ATTR_MMD_TEXTURE_TABLE_JSON}"))
@@ -274,7 +277,6 @@ class TestPmxImporter(MayaTestBase):
                 )
 
                 self.assertTrue(result)
-                self.assertAlmostEqual(cmds.getAttr(f"{result}.{ATTR_MMD_IMPORT_SCALE}"), scale)
                 matches = [
                     joint
                     for joint in (cmds.ls(type="joint", long=True) or [])

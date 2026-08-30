@@ -243,9 +243,8 @@ class TestPhysicsUIFields(MayaTestBase):
         self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
 
     @unittest.skipUnless(FIXTURE.exists(), "hair physics fixture not found")
-    def test_apply_joint_scales_display_translation_and_preserves_raw_position(self):
-        scale = 0.5
-        root = _import_fixture(FIXTURE, "JointScale", scale=scale)
+    def test_apply_joint_uses_effective_position_for_display_translation(self):
+        root = _import_fixture(FIXTURE, "JointScale", scale=0.5)
         joint_shape = (cmds.listRelatives(
             root, allDescendents=True, type="mmdPhysicsJointShape", fullPath=True,
         ) or [None])[0]
@@ -258,11 +257,69 @@ class TestPhysicsUIFields(MayaTestBase):
         presenter.apply_changes()
 
         self.assertEqual(_vector(joint_shape, "position"), position)
-        expected_translation = mmd_point_to_maya(position, scale)
-        self.assertNotEqual(position, expected_translation, "fixture must exercise import scaling")
+        expected_translation = mmd_point_to_maya(position)
         self.assertEqual(
             tuple(cmds.getAttr(f"{joint_transform}.translate")[0]),
             expected_translation,
+        )
+
+    @unittest.skipUnless(FIXTURE.exists(), "hair physics fixture not found")
+    def test_create_and_duplicate_physics_items_preserve_effective_values(self):
+        root = _import_fixture(FIXTURE, "AuthoringScale", scale=1.5)
+        presenter = object.__new__(PhysicsPresenter)
+        presenter.app_state = SimpleNamespace(current_model_root=root)
+
+        presenter._create_rigid_body(root)
+        rigid_shapes = cmds.listRelatives(
+            root, allDescendents=True, type="mmdRigidBodyShape", fullPath=True
+        ) or []
+        created_rigid = max(rigid_shapes, key=lambda node: cmds.getAttr(f"{node}.pmxIndex"))
+        created_transform = cmds.listRelatives(
+            created_rigid, parent=True, fullPath=True
+        )[0]
+        self.assertEqual(_vector(created_rigid, "shapeSize"), (0.5, 0.5, 0.5))
+        self.assertEqual(tuple(cmds.getAttr(f"{created_transform}.scale")[0]), (1.0,) * 3)
+
+        source_rigid = min(rigid_shapes, key=lambda node: cmds.getAttr(f"{node}.pmxIndex"))
+        presenter._duplicate_rigid_body(root, source_rigid)
+        rigid_shapes = cmds.listRelatives(
+            root, allDescendents=True, type="mmdRigidBodyShape", fullPath=True
+        ) or []
+        duplicated_rigid = max(
+            rigid_shapes, key=lambda node: cmds.getAttr(f"{node}.pmxIndex")
+        )
+        duplicated_transform = cmds.listRelatives(
+            duplicated_rigid, parent=True, fullPath=True
+        )[0]
+        source_position = _vector(source_rigid, "position")
+        self.assertEqual(_vector(duplicated_rigid, "position"), source_position)
+        self.assertEqual(
+            tuple(cmds.getAttr(f"{duplicated_transform}.scale")[0]), (1.0,) * 3
+        )
+        self.assertEqual(
+            tuple(cmds.getAttr(f"{duplicated_transform}.translate")[0]),
+            mmd_point_to_maya(source_position),
+        )
+
+        joint_shapes = cmds.listRelatives(
+            root, allDescendents=True, type="mmdPhysicsJointShape", fullPath=True
+        ) or []
+        source_joint = min(joint_shapes, key=lambda node: cmds.getAttr(f"{node}.pmxIndex"))
+        presenter._duplicate_joint(root, source_joint)
+        joint_shapes = cmds.listRelatives(
+            root, allDescendents=True, type="mmdPhysicsJointShape", fullPath=True
+        ) or []
+        duplicated_joint = max(
+            joint_shapes, key=lambda node: cmds.getAttr(f"{node}.pmxIndex")
+        )
+        duplicated_joint_transform = cmds.listRelatives(
+            duplicated_joint, parent=True, fullPath=True
+        )[0]
+        source_joint_position = _vector(source_joint, "position")
+        self.assertEqual(_vector(duplicated_joint, "position"), source_joint_position)
+        self.assertEqual(
+            tuple(cmds.getAttr(f"{duplicated_joint_transform}.translate")[0]),
+            mmd_point_to_maya(source_joint_position),
         )
 
     @unittest.skipUnless(FIXTURE.exists(), "hair physics fixture not found")

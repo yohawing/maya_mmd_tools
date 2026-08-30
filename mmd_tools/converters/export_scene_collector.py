@@ -6,9 +6,9 @@ compatible with ``PmxExporter.export_pmx_model``.
 Coordinate conventions
 ----------------------
 This collector exports Maya world-space geometry back into MMD basis by
-flipping Z for positions/normals and reversing face winding. Scale
-normalization is out of scope for this minimum slice and must be added in a
-later collector pass.
+flipping Z for positions/normals and reversing face winding. Spatial values
+stored in the scene are already in effective PMX units because import scale
+is applied at import boundaries.
 """
 
 import json
@@ -2126,8 +2126,8 @@ class ExportSceneCollector:
     UVs (first-occurrence per vertex), polygon connectivity, per-face
     material assignment, skinCluster weights, vertex blendShape morphs, and
     root-level bone/material morph metadata.  It converts positions, normals,
-    and face winding back to MMD basis; scale normalization belongs to a later
-    collector slice.
+    and face winding back to MMD basis.  Spatial scene values are already stored
+    in effective PMX units by the importer.
 
     Example::
 
@@ -2297,8 +2297,7 @@ class ExportSceneCollector:
         """Collect and merge all polygon meshes below an MMD model root.
 
         This keeps the same minimum-slice limitations as ``collect_from_mesh``:
-        world-space geometry is converted back to MMD basis, but scale
-        normalization is still out of scope.  Material groups remain paired
+        world-space geometry is converted back to MMD basis. Material groups remain paired
         with their global-index-adjusted faces; complete PMX source material
         provenance restores their canonical order after the merge.
         """
@@ -2462,7 +2461,10 @@ class ExportSceneCollector:
                 bone_index_by_joint[source_joint.rsplit("|", 1)[-1]] = index
 
         from .physics_export_collector import collect_physics_from_scene
-        rigid_bodies, joints = collect_physics_from_scene(root, bone_index_by_joint)
+        rigid_bodies, joints = collect_physics_from_scene(
+            root,
+            bone_index_by_joint,
+        )
 
         model_data = {
             "model_name": _get_model_name(root),
