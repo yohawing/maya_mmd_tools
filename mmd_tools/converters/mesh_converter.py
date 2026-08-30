@@ -1184,6 +1184,8 @@ class MeshConverter:
         # compatibility path for installations that only load the Python
         # plugin.
         self._use_cpp_uv_weld = False
+        self._use_cpp_uv_weld_batch = False
+        self._cpp_uv_weld_capabilities = set()
         self.profile = {
             "mesh_create_sec": 0.0,
             "material_create_sec": 0.0,
@@ -1197,6 +1199,14 @@ class MeshConverter:
             "material_count_processed": 0,
             "unresolved_texture_count": 0,
             "unresolved_textures": [],
+            "native_uv_weld_sec": 0.0,
+            "native_uv_weld_prep_sec": 0.0,
+            "native_uv_weld_apply_sec": 0.0,
+            "native_uv_weld_command_calls": 0,
+            "native_uv_weld_pmx_read_count": 0,
+            "native_uv_weld_geometry_parse_count": 0,
+            "native_uv_weld_non_geometry_parse_count": 0,
+            "native_uv_weld_meshes": [],
         }
         if pmx_filepath:
             self.texture_dir = os.path.dirname(pmx_filepath)
@@ -1272,6 +1282,7 @@ class MeshConverter:
                     and "sourceToLocalV1" in capabilities
                     and "morphEquivalentV1" in capabilities
                 ):
+                    self._cpp_uv_weld_capabilities = set(capabilities)
                     return True
         except Exception:
             pass
@@ -1280,6 +1291,39 @@ class MeshConverter:
             "native welding is disabled and PMX source topology will be preserved."
         )
         return False
+
+    def _cpp_uv_weld_batch_command_available(self) -> bool:
+        """Return whether the loaded native command supports one-read batches."""
+        return {"batchV1", "profileV1"}.issubset(
+            self._cpp_uv_weld_capabilities
+        )
+
+    def _record_cpp_uv_weld_profile(
+        self,
+        *,
+        elapsed,
+        preparation=0.0,
+        application=0.0,
+        pmx_reads=0,
+        geometry_parses=0,
+        non_geometry_parses=0,
+        meshes=(),
+    ):
+        """Accumulate native UV weld timings and per-mesh diagnostics."""
+        self.profile["native_uv_weld_sec"] = round(
+            float(self.profile.get("native_uv_weld_sec", 0.0)) + float(elapsed), 6
+        )
+        self.profile["native_uv_weld_prep_sec"] = round(
+            float(self.profile.get("native_uv_weld_prep_sec", 0.0)) + float(preparation), 6
+        )
+        self.profile["native_uv_weld_apply_sec"] = round(
+            float(self.profile.get("native_uv_weld_apply_sec", 0.0)) + float(application), 6
+        )
+        self.profile["native_uv_weld_command_calls"] += 1
+        self.profile["native_uv_weld_pmx_read_count"] += int(pmx_reads)
+        self.profile["native_uv_weld_geometry_parse_count"] += int(geometry_parses)
+        self.profile["native_uv_weld_non_geometry_parse_count"] += int(non_geometry_parses)
+        self.profile["native_uv_weld_meshes"].extend(dict(mesh) for mesh in meshes)
 
     def _run_cpp_uv_weld(self, mesh_node: str, source_vertex_indices) -> Optional[int]:
         """Run the C++ topology command and return merged vertex count.
@@ -1293,35 +1337,131 @@ class MeshConverter:
         if not self._use_cpp_uv_weld:
             return None
 
+        started = time.perf_counter()
         try:
-            if not cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mesh_node, exists=True):
-                maya_attribute_utils.add_typed_attribute(
-                    mesh_node,
-                    ATTR_MMD_SOURCE_VERTEX_INDICES,
-                    "longArray",
-                )
-            maya_attribute_utils.set_attribute(
-                mesh_node,
-                ATTR_MMD_SOURCE_VERTEX_INDICES,
-                [int(index) for index in source_vertex_indices],
-                "longArray",
-            )
-            result = cmds.mmdWeldUvSeamVertices(
-                m=mesh_node,
-                f=self.model_filepath,
-            )
+            self._persist_source_vertex_indices(mesh_node, source_vertex_indices)
+            kwargs = {"m": mesh_node, "f": self.model_filepath}
+            if "profileV1" in self._cpp_uv_weld_capabilities:
+                kwargs["profile"] = True
+            result = cmds.mmdWeldUvSeamVertices(**kwargs)
             if isinstance(result, (list, tuple)) and len(result) >= 3:
                 old_count = int(result[1])
                 new_count = int(result[2])
+                profiled = len(result) >= 8
+                self._record_cpp_uv_weld_profile(
+                    elapsed=time.perf_counter() - started,
+                    preparation=float(result[3]) if profiled else 0.0,
+                    application=float(result[4]) if profiled else 0.0,
+                    pmx_reads=int(result[5]) if profiled else 1,
+                    geometry_parses=int(result[6]) if profiled else 1,
+                    non_geometry_parses=int(result[7]) if profiled else 1,
+                    meshes=(
+                        {
+                            "mesh": mesh_node,
+                            "oldVertexCount": old_count,
+                            "newVertexCount": new_count,
+                            "status": "ok",
+                        },
+                    ),
+                )
                 return max(0, old_count - new_count)
+            self._record_cpp_uv_weld_profile(
+                elapsed=time.perf_counter() - started,
+                meshes=(
+                    {
+                        "mesh": mesh_node,
+                        "oldVertexCount": 0,
+                        "newVertexCount": 0,
+                        "status": "malformed",
+                    },
+                ),
+            )
             return 0
         except Exception as exc:
+            self._record_cpp_uv_weld_profile(
+                elapsed=time.perf_counter() - started,
+                meshes=(
+                    {
+                        "mesh": mesh_node,
+                        "oldVertexCount": 0,
+                        "newVertexCount": 0,
+                        "status": "failed",
+                    },
+                ),
+            )
             self.logger.warning(
                 "C++ UV seam weld failed for '%s'; keeping the native-created topology: %s",
                 mesh_node,
                 exc,
             )
             return None
+
+    def _run_cpp_uv_weld_batch(self, mesh_payloads):
+        """Weld all material meshes using one native PMX read and parse."""
+        if not self._use_cpp_uv_weld_batch or not mesh_payloads:
+            return {}
+
+        expected_names = [payload["mesh"] for payload in mesh_payloads]
+        if len(set(expected_names)) != len(expected_names):
+            raise ValueError("native UV weld batch received duplicate mesh targets")
+        started = time.perf_counter()
+        try:
+            result = cmds.mmdWeldUvSeamVertices(
+                m=[payload["mesh"] for payload in mesh_payloads],
+                f=self.model_filepath,
+                batch=True,
+                profile=True,
+            )
+        except Exception:
+            self._record_cpp_uv_weld_profile(elapsed=time.perf_counter() - started)
+            raise
+
+        expected_count = len(mesh_payloads)
+        profile_offset = expected_count * 4
+        expected_length = profile_offset + 6
+        if not isinstance(result, (list, tuple)) or len(result) != expected_length:
+            self._record_cpp_uv_weld_profile(elapsed=time.perf_counter() - started)
+            raise RuntimeError(f"native UV weld batch returned malformed result: {result!r}")
+
+        records = {}
+        for offset in range(0, profile_offset, 4):
+            mesh_name = str(result[offset])
+            records[mesh_name] = {
+                "mesh": mesh_name,
+                "oldVertexCount": int(result[offset + 2]),
+                "newVertexCount": int(result[offset + 3]),
+                "status": str(result[offset + 1]),
+            }
+
+        if str(result[profile_offset]) != "__profile__":
+            raise RuntimeError(f"native UV weld batch omitted profile metadata: {result!r}")
+        preparation = float(result[profile_offset + 1])
+        application = float(result[profile_offset + 2])
+        pmx_reads = int(result[profile_offset + 3])
+        geometry_parses = int(result[profile_offset + 4])
+        non_geometry_parses = int(result[profile_offset + 5])
+        missing = [name for name in expected_names if name not in records]
+        failed = [record for record in records.values() if record["status"] != "ok"]
+        self._record_cpp_uv_weld_profile(
+            elapsed=time.perf_counter() - started,
+            preparation=preparation,
+            application=application,
+            pmx_reads=pmx_reads,
+            geometry_parses=geometry_parses,
+            non_geometry_parses=non_geometry_parses,
+            meshes=(records.get(name, {
+                "mesh": name,
+                "oldVertexCount": 0,
+                "newVertexCount": 0,
+                "status": "missing",
+            }) for name in expected_names),
+        )
+        if missing or failed:
+            raise RuntimeError(
+                "native UV weld batch failed: "
+                f"missing={missing!r}, records={list(records.values())!r}"
+            )
+        return records
 
     @staticmethod
     def _validate_pmx_additional_uvs(all_vertices, additional_uv_count: int) -> int:
@@ -1369,6 +1509,30 @@ class MeshConverter:
                             f"{channel_index}[{value_index}] must be finite"
                         )
         return additional_uv_count
+
+    @staticmethod
+    def _persist_source_vertex_indices(mesh_node: str, source_vertex_indices) -> None:
+        """Persist and verify the local-to-PMX source mapping."""
+        values = [int(index) for index in source_vertex_indices]
+        maya_attribute_utils.add_typed_attribute(
+            mesh_node,
+            ATTR_MMD_SOURCE_VERTEX_INDICES,
+            "longArray",
+        )
+        maya_attribute_utils.set_attribute(
+            mesh_node,
+            ATTR_MMD_SOURCE_VERTEX_INDICES,
+            values,
+            "longArray",
+        )
+        persisted = maya_attribute_utils.get_int_array_attribute(
+            mesh_node,
+            ATTR_MMD_SOURCE_VERTEX_INDICES,
+        )
+        if persisted != values:
+            raise ValueError(
+                f"failed to persist {ATTR_MMD_SOURCE_VERTEX_INDICES} on '{mesh_node}'"
+            )
 
     @staticmethod
     def _post_weld_source_indices(mesh_node: str, fallback_source_indices, native_welded_count) -> list[int]:
@@ -1734,6 +1898,11 @@ class MeshConverter:
             },
         )
         self._use_cpp_uv_weld = not is_pmd and self._cpp_uv_weld_command_available()
+        self._use_cpp_uv_weld_batch = (
+            self._use_cpp_uv_weld
+            and not is_pmd
+            and self._cpp_uv_weld_batch_command_available()
+        )
         # Preserve PMX source topology until the optional native command has
         # built the exact sparse morph signatures. Without C++, welding is
         # disabled instead of rebuilding large signature arrays in Python.
@@ -2008,6 +2177,7 @@ class MeshConverter:
             return []
 
         mesh_names = []
+        pending_native_welds = []
         face_offset = 0
 
         for i, material in enumerate(all_materials):
@@ -2061,24 +2231,37 @@ class MeshConverter:
                 created_mesh,
                 mesh_data["source_to_local_indices"],
             )
-            native_welded_count = self._run_cpp_uv_weld(
-                created_mesh,
-                mesh_data["source_vertex_indices"],
-            )
-            post_weld_source_indices = self._post_weld_source_indices(
-                created_mesh,
-                mesh_data["source_vertex_indices"],
-                native_welded_count,
-            )
-            self._persist_additional_uvs(
-                created_mesh,
-                all_vertices,
-                post_weld_source_indices,
-                additional_uv_count,
-            )
-            self.profile["uv_welded_vertex_count"] += mesh_data["welded_vertex_count"]
-            if native_welded_count is not None:
-                self.profile["uv_welded_vertex_count"] += native_welded_count
+            if self._use_cpp_uv_weld_batch:
+                self._persist_source_vertex_indices(
+                    created_mesh,
+                    mesh_data["source_vertex_indices"],
+                )
+                pending_native_welds.append(
+                    {
+                        "mesh": created_mesh,
+                        "source_vertex_indices": mesh_data["source_vertex_indices"],
+                        "mesh_data": mesh_data,
+                    }
+                )
+            else:
+                native_welded_count = self._run_cpp_uv_weld(
+                    created_mesh,
+                    mesh_data["source_vertex_indices"],
+                )
+                post_weld_source_indices = self._post_weld_source_indices(
+                    created_mesh,
+                    mesh_data["source_vertex_indices"],
+                    native_welded_count,
+                )
+                self._persist_additional_uvs(
+                    created_mesh,
+                    all_vertices,
+                    post_weld_source_indices,
+                    additional_uv_count,
+                )
+                self.profile["uv_welded_vertex_count"] += mesh_data["welded_vertex_count"]
+                if native_welded_count is not None:
+                    self.profile["uv_welded_vertex_count"] += native_welded_count
             self.profile["face_count"] += len(mesh_data["face_counts"])
             _set_mesh_double_sided(created_mesh, _material_is_double_sided(material))
             maya_attribute_utils.set_custom_attributes(
@@ -2130,7 +2313,40 @@ class MeshConverter:
             parent_start = time.perf_counter()
             created_mesh = self._parent_mesh_to_group(created_mesh, geo_group)
             self._add_profile_time("parent_sec", parent_start)
+            if self._use_cpp_uv_weld_batch:
+                pending_native_welds[-1]["mesh"] = created_mesh
             mesh_names.append(created_mesh)
+
+        if pending_native_welds:
+            try:
+                batch_results = self._run_cpp_uv_weld_batch(pending_native_welds)
+                for payload in pending_native_welds:
+                    created_mesh = payload["mesh"]
+                    mesh_data = payload["mesh_data"]
+                    result = batch_results[created_mesh]
+                    native_welded_count = max(
+                        0,
+                        int(result["oldVertexCount"]) - int(result["newVertexCount"]),
+                    )
+                    post_weld_source_indices = self._post_weld_source_indices(
+                        created_mesh,
+                        payload["source_vertex_indices"],
+                        native_welded_count,
+                    )
+                    self._persist_additional_uvs(
+                        created_mesh,
+                        all_vertices,
+                        post_weld_source_indices,
+                        additional_uv_count,
+                    )
+                    self.profile["uv_welded_vertex_count"] += mesh_data["welded_vertex_count"]
+                    self.profile["uv_welded_vertex_count"] += native_welded_count
+            except Exception:
+                for payload in pending_native_welds:
+                    mesh = payload["mesh"]
+                    if cmds.objExists(mesh):
+                        cmds.delete(mesh)
+                raise
 
         # MMDモデル表示用にバックフェイスカリングを無効化（設定に応じて）
         disable_backface_culling = settings.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True)
