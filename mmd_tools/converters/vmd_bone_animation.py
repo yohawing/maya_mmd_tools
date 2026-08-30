@@ -200,7 +200,12 @@ def _configure_sparse_rotation_track(
     return quaternion_plugs
 
 
-def convert_bone_animation(context: VmdBoneAnimationContext, bone_frames: List) -> bool:
+def convert_bone_animation(
+    context: VmdBoneAnimationContext,
+    bone_frames: List,
+    *,
+    key_routes: Optional[Mapping[str, dict]] = None,
+) -> bool:
     """Convert VMD bone frames using explicit bone keying context."""
     bone_frame_map: Dict[object, List] = {}
 
@@ -222,7 +227,8 @@ def convert_bone_animation(context: VmdBoneAnimationContext, bone_frames: List) 
     success_count = 0
     total_count = len(bone_frame_map)
     animated_joints = []
-    key_routes = context.build_legacy_bone_key_routes()
+    if key_routes is None:
+        key_routes = context.build_legacy_bone_key_routes()
 
     for bone_identity, frames in bone_frame_map.items():
         indexed_identity = isinstance(bone_identity, tuple) and bone_identity[0] == "index"
