@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 from ..qt_compat import (
     QLabel,
     QDoubleSpinBox,
+    QHBoxLayout,
+    QObject,
     QPainter,
     QPixmap,
-    QSlider,
     QSvgRenderer,
     Signal,
     Qt,
+    QtCore,
+    QWidget,
 )
 
 _ICON_DIR = Path(__file__).resolve().parents[1] / "assets" / "morph_types"
@@ -93,39 +95,112 @@ class MorphWeightSpinBox(QDoubleSpinBox):
         return self._editing
 
 
-def create_morph_type_icon(morph_type: str) -> QLabel:
-    """Create an accessible SVG icon label with a generic fallback."""
-    normalized = normalized_morph_type(morph_type)
-    path = _ICON_DIR / f"{normalized}.svg"
-    if not path.is_file():
-        normalized = "generic"
-        path = _ICON_DIR / "generic.svg"
+class _MorphRowEventFilter(QObject):
+    """Forward child mouse presses without consuming the child event."""
 
-    label = QLabel()
-    label.setFixedSize(22, 22)
-    label.setAlignment(Qt.AlignCenter)
-    renderer = QSvgRenderer(str(path))
-    if renderer.isValid():
-        pixmap = QPixmap(18, 18)
-        pixmap.fill(Qt.transparent)
-        painter = QPainter(pixmap)
-        renderer.render(painter)
-        painter.end()
-        label.setPixmap(pixmap)
-    label.setToolTip(f"Morph type: {normalized}")
-    label.setAccessibleName(f"{normalized} morph")
-    return label
+    def __init__(self, row, editor_line_edit):
+        super().__init__(row)
+        self._row = row
+        self._editor_line_edit = editor_line_edit
+
+    def eventFilter(self, watched, event):
+        if (
+            event.type() == QtCore.QEvent.MouseButtonPress
+            and self._row._is_left_button(event)
+        ):
+            self._row.activated.emit()
+        elif (
+            watched is self._editor_line_edit
+            and event.type() == QtCore.QEvent.KeyPress
+            and event.key() in (Qt.Key_Enter, Qt.Key_Return)
+        ):
+            QtCore.QTimer.singleShot(0, self._row.focus_after_edit_commit)
+        return False
 
 
-@dataclass
-class MorphRowWidgets:
-    """Widgets and state belonging to one logical morph row."""
+class MorphRowWidget(QWidget):
+    """Single-selectable container for one logical Morph and its editors."""
 
-    icon: QLabel
-    label: ElidedMorphLabel
-    slider: QSlider
-    editor: MorphWeightSpinBox
-    plugs: tuple[str, ...]
+    activated = Signal()
+
+    _STYLE_SHEET = (
+        "QWidget#MorphRow { background: #383838; border: 1px solid transparent; "
+        "border-radius: 3px; } "
+        'QWidget#MorphRow[selected="true"] { background: #3f6275; '
+        "border: 1px solid #79cfff; }"
+    )
+
+    def __init__(self, icon, label, slider, editor, plugs, parent=None):
+        super().__init__(parent)
+        self.icon = icon
+        self.label = label
+        self.slider = slider
+        self.editor = editor
+        self.plugs = tuple(plugs or ())
+        self._selected = False
+        self.setObjectName("MorphRow")
+        self.setProperty("selected", False)
+        self.setStyleSheet(self._STYLE_SHEET)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(7)
+        layout.addWidget(icon)
+        layout.addWidget(label)
+        layout.addWidget(slider, 1)
+        layout.addWidget(editor)
+        self.setLayout(layout)
+
+        editor_line_edit = getattr(editor, "lineEdit", lambda: None)()
+        self._event_filter = _MorphRowEventFilter(self, editor_line_edit)
+        for child in (icon, label, slider, editor, editor_line_edit):
+            if child is None:
+                continue
+            child.installEventFilter(self._event_filter)
+        self._update_accessibility()
+
+    def mousePressEvent(self, event):
+        if self._is_left_button(event):
+            self.activated.emit()
+        super().mousePressEvent(event)
+
+    def focus_after_edit_commit(self) -> None:
+        """Return Enter/Return edits to Maya's non-text hotkey context."""
+        self.setFocus(Qt.OtherFocusReason)
+
+    @staticmethod
+    def _is_left_button(event) -> bool:
+        button = getattr(event, "button", None)
+        if not callable(button):
+            return True
+        button = button()
+        left_button = getattr(Qt, "LeftButton", None)
+        return left_button is None or button == left_button
+
+    @property
+    def is_selected(self) -> bool:
+        """Whether this row matches Maya's current active plug selection."""
+        return self._selected
+
+    def set_selected(self, selected: bool) -> None:
+        """Render the exact active-plug match as the selected row."""
+        selected = bool(selected)
+        if selected == self._selected:
+            return
+        self._selected = selected
+        self.setProperty("selected", selected)
+        # Reparse the small dynamic stylesheet so the property selector is
+        # applied immediately after a SelectionChanged callback.
+        self.setStyleSheet(self._STYLE_SHEET)
+        self._update_accessibility()
+
+    def _update_accessibility(self) -> None:
+        name = getattr(self.label, "accessibleName", lambda: "")()
+        if name:
+            self.setAccessibleName(name)
+        state = "Selected" if self._selected else "Not selected"
+        self.setAccessibleDescription(f"{state} morph row")
 
     def set_value(self, value: float) -> None:
         """Update evaluated value without feeding signals back into Maya."""
@@ -154,3 +229,31 @@ class MorphRowWidgets:
         self.editor.setStyleSheet(styles[state])
         self.editor.setToolTip(descriptions[state])
         self.editor.setAccessibleDescription(descriptions[state])
+
+
+# Existing extensions imported this non-underscored helper directly.
+MorphRowWidgets = MorphRowWidget
+
+
+def create_morph_type_icon(morph_type: str) -> QLabel:
+    """Create an accessible SVG icon label with a generic fallback."""
+    normalized = normalized_morph_type(morph_type)
+    path = _ICON_DIR / f"{normalized}.svg"
+    if not path.is_file():
+        normalized = "generic"
+        path = _ICON_DIR / "generic.svg"
+
+    label = QLabel()
+    label.setFixedSize(22, 22)
+    label.setAlignment(Qt.AlignCenter)
+    renderer = QSvgRenderer(str(path))
+    if renderer.isValid():
+        pixmap = QPixmap(18, 18)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        renderer.render(painter)
+        painter.end()
+        label.setPixmap(pixmap)
+    label.setToolTip(f"Morph type: {normalized}")
+    label.setAccessibleName(f"{normalized} morph")
+    return label

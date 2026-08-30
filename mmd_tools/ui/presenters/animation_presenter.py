@@ -623,8 +623,11 @@ class AnimationPresenter:
         from ..widgets.body_picker_widget import _BODY_REGIONS
         from ..widgets.finger_picker_widget import _FINGER_REGIONS
 
+        active_plugs = tuple(
+            self._canonical_morph_selection_plug(node) for node in (nodes or [])
+        )
         resolved_nodes = []
-        for node in nodes:
+        for node in active_plugs:
             joint = self._joint_for_rig_control(node)
             if joint:
                 resolved_nodes.append(joint)
@@ -657,6 +660,18 @@ class AnimationPresenter:
             self.view.body_picker.set_selected_regions(selected_ids(_BODY_REGIONS))
         if hasattr(self.view.finger_picker, "set_selected_regions"):
             self.view.finger_picker.set_selected_regions(selected_ids(_FINGER_REGIONS))
+
+        # Morph rows are selected only when Maya's active plug set is exactly
+        # the row's authoritative set.  This intentionally clears every row
+        # for mixed node/plug selections or an unrelated external selection.
+        for row in tuple(getattr(self, "_morph_rows", {}).values()):
+            set_selected = getattr(row, "set_selected", None)
+            if callable(set_selected):
+                plugs = tuple(str(plug) for plug in (getattr(row, "plugs", ()) or ()))
+                selected = bool(plugs) and len(active_plugs) == len(plugs) and set(
+                    active_plugs
+                ) == set(plugs)
+                set_selected(selected)
 
     def _select_nodes(self, nodes: list[str], *, replace: bool = True) -> list[str]:
         """Select only candidates inside currently visible model boundaries.
@@ -737,6 +752,22 @@ class AnimationPresenter:
         except Exception:
             actual = []
         self._set_picker_selection_from_nodes(actual)
+
+    def _canonical_morph_selection_plug(self, item: str) -> str:
+        """Resolve Maya's alias spelling back to the authored plug path."""
+
+        plug = str(item)
+        node, separator, attribute = plug.partition(".")
+        if not separator:
+            return plug
+        try:
+            aliases = self.maya_adapter.alias_attr(node, query=True) or []
+        except Exception:
+            return plug
+        for index in range(0, len(aliases) - 1, 2):
+            if str(aliases[index]) == attribute:
+                return f"{node}.{aliases[index + 1]}"
+        return plug
 
     def _resolve_selection_path(self, candidate: str) -> str | None:
         """Resolve one candidate to exactly one full DAG path."""
@@ -2041,6 +2072,10 @@ class AnimationPresenter:
     def _clear_morph_tab(self):
         self._end_morph_edit()
         self._last_morph_refresh_time = None
+        for row in tuple(self._morph_rows.values()):
+            set_selected = getattr(row, "set_selected", None)
+            if callable(set_selected):
+                set_selected(False)
         self._morph_sliders.clear()
         self._morph_rows.clear()
         self._morph_group_headers.clear()
@@ -2190,7 +2225,7 @@ class AnimationPresenter:
         )
         from ..widgets.morph_editor_widgets import (
             ElidedMorphLabel,
-            MorphRowWidgets,
+            MorphRowWidget,
             MorphWeightSpinBox,
             create_morph_type_icon,
         )
@@ -2275,15 +2310,15 @@ class AnimationPresenter:
                         name, value
                     )
                 )
-                row_widgets = MorphRowWidgets(icon, label, slider, editor, plugs)
+                row_widgets = MorphRowWidget(icon, label, slider, editor, plugs)
                 row_widgets.set_value(self._morph_value(morph_name))
                 row_widgets.set_animation_state(self._morph_animation_state(plugs))
+                row_widgets.activated.connect(
+                    lambda name=morph_name: self._on_morph_row_activated(name)
+                )
                 self._morph_sliders[morph_name] = slider
                 self._morph_rows[morph_name] = row_widgets
-                content_layout.addWidget(icon, row_index, 0)
-                content_layout.addWidget(label, row_index, 1)
-                content_layout.addWidget(slider, row_index, 2)
-                content_layout.addWidget(editor, row_index, 3)
+                content_layout.addWidget(row_widgets, row_index, 0, 1, 4)
 
             group.setLayout(group_layout)
             group_layout.addWidget(content)
@@ -2302,6 +2337,22 @@ class AnimationPresenter:
             header.toggled.connect(toggle_group)
             insert_pos = max(0, layout.count() - 1)
             layout.insertWidget(insert_pos, group)
+
+    def _on_morph_row_activated(self, morph_name: str) -> None:
+        """Select exactly one Morph's authoritative plugs for Maya keying."""
+
+        plugs = self._morph_plugs(morph_name)
+        if not plugs:
+            self._sync_picker_to_actual_selection()
+            return
+        try:
+            # Morph plugs are intentionally selected directly: unlike picker
+            # nodes they are not subject to DAG visibility guards, and Maya's
+            # standard Set Key command consumes this active plug selection.
+            self._write_selection(plugs, replace=True)
+        except Exception:
+            logger.debug("Morph plug selection failed for %s", morph_name, exc_info=True)
+        self._sync_picker_to_actual_selection()
 
     def _on_morph_slider_changed(self, morph_name: str, value: int, label):
         """Compatibility entry point for existing extensions and tests."""
