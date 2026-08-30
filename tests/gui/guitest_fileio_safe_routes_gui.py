@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import maya.cmds as cmds
 
@@ -518,17 +519,14 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
             for frame in VmdData().parse_file(str(self.vmd_path)).bone_frames
         )
         stale_frame = float(max_frame + 40)
-        cmds.animLayer("BaseAnimation", edit=True, selected=True)
-        cmds.setKeyframe(
-            animated_joint,
-            attribute="translateX",
-            time=stale_frame,
-            value=17.0,
-        )
+        animated_curves = cmds.keyframe(animated_joint, query=True, name=True) or []
+        self.assertTrue(animated_curves, "initial VMD import produced no animCurve")
+        stale_curve = animated_curves[0]
+        cmds.setKeyframe(stale_curve, time=stale_frame, value=17.0)
         self.assertGreater(
             int(
                 cmds.keyframe(
-                    f"{animated_joint}.translateX",
+                    stale_curve,
                     query=True,
                     time=(stale_frame, stale_frame),
                     keyframeCount=True,
@@ -549,22 +547,36 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
                 "clear_existing_motion"
             ]
         )
+        presenter = self.window.import_export_presenter
+        with patch.object(
+            presenter,
+            "_vmd_import_success_status",
+            wraps=presenter._vmd_import_success_status,
+        ) as success_status:
+            self._arm_modal_watchdog()
+            view.import_vmd_button.click()
+            self._drain_until(
+                lambda: not cmds.objExists(stale_curve)
+                or not int(
+                    cmds.keyframe(
+                        stale_curve,
+                        query=True,
+                        time=(stale_frame, stale_frame),
+                        keyframeCount=True,
+                    )
+                    or 0
+                ),
+                description="stale motion key removal",
+            )
+            self._stop_modal_watchdog()
 
-        self._arm_modal_watchdog()
-        view.import_vmd_button.click()
-        self._drain_until(
-            lambda: not int(
-                cmds.keyframe(
-                    f"{animated_joint}.translateX",
-                    query=True,
-                    time=(stale_frame, stale_frame),
-                    keyframeCount=True,
-                )
-                or 0
-            ),
-            description="stale motion key removal",
-        )
-        self._stop_modal_watchdog()
+        self.assertTrue(success_status.called)
+        profile = success_status.call_args.args[1]
+        clear_report = profile["motion_clear"]
+        self.assertTrue(clear_report["requested"]["clear_existing_motion"])
+        self.assertGreater(clear_report["effective"]["route_count"], 0)
+        self.assertGreater(clear_report["effective"]["cleared_key_count"], 0)
+        self.assertEqual(clear_report["status"], "success")
 
         self.assertGreater(_key_count(animated_joint), 0)
 

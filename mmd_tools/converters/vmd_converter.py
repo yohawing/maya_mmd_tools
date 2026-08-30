@@ -62,6 +62,7 @@ from .vmd_context import (
     VmdTimelineContext,
 )
 from .vmd_import_state import (
+    build_motion_clear_inventory,
     capture_anim_layer_selection,
     clear_existing_camera_motion,
     clear_existing_light_motion,
@@ -548,6 +549,8 @@ class VmdConverter:
         Returns:
             変換が成功した場合True、失敗した場合False
         """
+        if not isinstance(profile, dict):
+            profile = {}
         if reduce_bake_keys and scene_animation_only:
             self.logger.error(
                 "Reduce Bake Keys is unsupported for camera/light-only scene animation imports"
@@ -594,6 +597,7 @@ class VmdConverter:
         registered_sparse_frames = None
         registered_sparse_provenance = None
         raw_source_provenance = None
+        pre_import_motion_inventory = None
         runtime_bake_requested = False
         if not bake_mode and getattr(vmd_data, "bone_frames", None):
             # Resolve the imported PMX index table before any Control Rig or
@@ -650,6 +654,7 @@ class VmdConverter:
                     profile=profile,
                 )
         control_rig_transaction = None
+        motion_clear_transaction = None
         if create_mmd_control_rig:
             control_rig_transaction = self._prepare_mmd_control_rig_import(
                 target_model,
@@ -750,8 +755,31 @@ class VmdConverter:
                     import_context.target_namespace,
                     target_model=import_context.target_model,
                 )
+            if isinstance(import_context.profile, dict):
+                pre_import_motion_inventory = self._capture_motion_clear_inventory(
+                    import_context.layer_name,
+                    import_context.target_namespace,
+                    import_context.target_model,
+                )
             _emit_progress(40)
             motion_kind = self._detect_vmd_motion_kind(import_context.vmd_data)
+            if (
+                import_context.clear_existing_motion
+                and motion_kind in {"model", "mixed"}
+                and control_rig_transaction is None
+            ):
+                motion_clear_transaction = {
+                    "root": import_context.target_model,
+                    "created": False,
+                    "entered_here": False,
+                    "scene_snapshot": self._capture_mmd_control_rig_scene_snapshot(
+                        import_context.target_model,
+                        import_context.vmd_data,
+                        target_namespace=import_context.target_namespace,
+                        layer_name=import_context.layer_name,
+                    ),
+                    "detached_motion_curve_nodes": (),
+                }
             if (
                 import_context.clear_existing_motion
                 and motion_kind in {"model", "mixed"}
@@ -760,11 +788,18 @@ class VmdConverter:
                     and control_rig_transaction.get("motion_cleared")
                 )
             ):
-                self._clear_existing_motion(
+                detached_curve_nodes = self._clear_existing_motion(
                     import_context.layer_name,
                     import_context.target_namespace,
                     target_model=import_context.target_model,
+                    preserve_curve_nodes=motion_clear_transaction is not None,
+                    profile=import_context.profile,
+                    strict=True,
                 )
+                if motion_clear_transaction is not None:
+                    motion_clear_transaction["detached_motion_curve_nodes"] = tuple(
+                        dict.fromkeys(detached_curve_nodes or [])
+                    )
 
             # ボーンの初期位置を記録
             self._record_bind_poses()
@@ -883,6 +918,11 @@ class VmdConverter:
                                     reason_code=failure.reason_code,
                                 ) from failure
                             raise failure
+                        if motion_clear_transaction is not None:
+                            raise MMDImportException(
+                                "Runtime reduction failed after existing motion was cleared",
+                                reason_code="vmd_import_runtime_failed",
+                            )
                         return False
                     self.logger.warning("Runtime bake failed; falling back to legacy path")
                     self._record_profile_warning(
@@ -1021,6 +1061,54 @@ class VmdConverter:
             _emit_progress(94)
 
             self._restore_import_timeline_state(import_start_time)
+            runtime_registration = profile.get("vmd_converter", {}).get(
+                "runtime_registration"
+            )
+            provenance_payload = (
+                registered_sparse_provenance
+                if registered_sparse_provenance is not None
+                else runtime_registration
+                if runtime_success and isinstance(runtime_registration, dict)
+                else raw_source_provenance
+            )
+            if (
+                isinstance(provenance_payload, dict)
+                and import_context.target_model
+            ):
+                post_import_inventory = self._capture_motion_clear_inventory(
+                    import_context.layer_name,
+                    import_context.target_namespace,
+                    import_context.target_model,
+                )
+                baseline_curves = set(
+                    (pre_import_motion_inventory or {}).get("curve_uuids", [])
+                )
+                prior_vmd_curves = set(
+                    (pre_import_motion_inventory or {}).get("known_curve_uuids", [])
+                )
+                post_curves = set(post_import_inventory.get("curve_uuids", []))
+                imported_curves = (post_curves - baseline_curves) | (
+                    prior_vmd_curves & post_curves
+                )
+                root_uuids = cmds.ls(import_context.target_model, uuid=True) or []
+                provenance_payload["clear_scope"] = {
+                    "schema": 1,
+                    "target_model_uuid": str(root_uuids[0]) if root_uuids else "",
+                    "layer_name": import_context.layer_name,
+                    "curve_uuids": sorted(str(value) for value in imported_curves if value),
+                }
+            if isinstance(provenance_payload, dict):
+                provenance_payload["status"] = "success"
+                provenance_stored = store_runtime_registration_provenance(
+                    import_context.target_model,
+                    provenance_payload,
+                )
+                provenance_payload["scene_metadata_stored"] = provenance_stored
+                if import_context.clear_existing_motion and not provenance_stored:
+                    raise MMDImportException(
+                        "VMD import provenance could not be stored after motion replacement",
+                        reason_code="vmd_import_provenance_store_failed",
+                    )
             if control_rig_transaction is not None:
                 from .vmd_rotation_time_curve import (
                     commit_vmd_rotation_time_curve_disable,
@@ -1036,41 +1124,39 @@ class VmdConverter:
                 self._discard_mmd_control_rig_detached_motion_curves(
                     control_rig_transaction
                 )
-            if registered_sparse_provenance is not None:
-                registered_sparse_provenance["scene_metadata_stored"] = (
-                    store_runtime_registration_provenance(
-                        import_context.target_model,
-                        registered_sparse_provenance,
-                    )
-                )
-            elif not runtime_success and raw_source_provenance is not None:
-                raw_source_provenance["status"] = "success"
-                raw_source_provenance["scene_metadata_stored"] = (
-                    store_runtime_registration_provenance(
-                        import_context.target_model,
-                        raw_source_provenance,
-                    )
+            elif motion_clear_transaction is not None:
+                self._discard_mmd_control_rig_detached_motion_curves(
+                    motion_clear_transaction
                 )
             self.logger.info("VMD animation conversion completed")
             return True
 
         except MMDImportException as exc:
             self._restore_import_timeline_state(import_start_time)
-            rollback_error = self._rollback_mmd_control_rig_import(control_rig_transaction)
+            rollback_error = self._rollback_mmd_control_rig_import(
+                control_rig_transaction or motion_clear_transaction
+            )
             self.logger.error(f"Error occurred during VMD animation conversion: {exc}", exc_info=True)
+            if rollback_error:
+                raise MMDImportException(
+                    f"{exc}; {rollback_error}",
+                    reason_code=exc.reason_code or "vmd_import_rollback_failed",
+                ) from exc
             if import_context.create_mmd_control_rig:
                 self._record_control_rig_import_failure(import_context.profile, exc, rollback_error)
-                if rollback_error:
-                    raise MMDImportException(
-                        f"{exc}; {rollback_error}",
-                        reason_code=exc.reason_code or "control_rig_import_failed",
-                    ) from exc
                 raise
             raise
         except Exception as e:
             self._restore_import_timeline_state(import_start_time)
-            rollback_error = self._rollback_mmd_control_rig_import(control_rig_transaction)
+            rollback_error = self._rollback_mmd_control_rig_import(
+                control_rig_transaction or motion_clear_transaction
+            )
             self.logger.error(f"Error occurred during VMD animation conversion: {str(e)}", exc_info=True)
+            if rollback_error:
+                raise MMDImportException(
+                    f"VMD import failed and rollback was incomplete: {e}; {rollback_error}",
+                    reason_code="vmd_import_rollback_failed",
+                ) from e
             if import_context.create_mmd_control_rig:
                 failure = MMDImportException(
                     f"MMD Control Rig VMD import failed: {e}",
@@ -1678,6 +1764,7 @@ class VmdConverter:
             target_model,
             vmd_data,
             target_namespace=target_namespace,
+            layer_name=layer_name or "VMD_Motion",
         )
         created = False
         entered_here = False
@@ -1702,11 +1789,16 @@ class VmdConverter:
             # Mark the transaction before entering the mutating helper.  A
             # partial clear that raises still requires scene-snapshot restore.
             motion_cleared = True
+            clear_kwargs = {
+                "preserve_curve_nodes": True,
+                "profile": profile,
+                "strict": True,
+            }
             detached_curve_nodes = self._clear_existing_motion(
                 layer_name or "VMD_Motion",
                 target_namespace,
                 target_model=target_model,
-                preserve_curve_nodes=True,
+                **clear_kwargs,
             )
             transaction_detached_curve_nodes.extend(detached_curve_nodes or [])
 
@@ -1937,7 +2029,9 @@ class VmdConverter:
         """Capture existing controller keys before an EDIT-owned import mutates them."""
         if not isinstance(metadata, dict):
             return []
-        from ..core.mmd_control_rig_motion import _capture_animation_channel_snapshot
+        from ..core.mmd_control_rig_motion import (
+            _capture_animation_channel_snapshot,
+        )
 
         snapshot = []
         seen_controls = set()
@@ -1982,12 +2076,138 @@ class VmdConverter:
                 )
         return snapshot
 
+    @staticmethod
+    def _capture_vmd_animation_layer(layer_name: str) -> Dict[str, object]:
+        """Capture the exact VMD layer payload needed by rollback."""
+        snapshot: Dict[str, object] = {
+            "name": str(layer_name),
+            "exists": bool(cmds.objExists(layer_name)),
+            "attributes": [],
+            "settings": {},
+            "curves": [],
+        }
+        if not snapshot["exists"]:
+            return snapshot
+        from ..core.mmd_control_rig_motion import _capture_animation_curve_payload
+
+        uuids = cmds.ls(layer_name, uuid=True) or []
+        snapshot["uuid"] = str(uuids[0]) if len(uuids) == 1 else ""
+        attributes = [
+            str(value)
+            for value in (cmds.animLayer(layer_name, query=True, attribute=True) or [])
+        ]
+        snapshot["attributes"] = attributes
+        settings = {}
+        for flag in (
+            "weight",
+            "mute",
+            "solo",
+            "passthrough",
+            "override",
+            "selected",
+            "preferred",
+            "lock",
+        ):
+            try:
+                settings[flag] = cmds.animLayer(layer_name, query=True, **{flag: True})
+            except Exception:
+                continue
+        snapshot["settings"] = settings
+        curves = []
+        seen = set()
+        for plug in attributes:
+            for curve in cmds.animLayer(layer_name, query=True, findCurveForPlug=plug) or []:
+                curve = str(curve)
+                curve_uuids = cmds.ls(curve, uuid=True) or []
+                curve_uuid = str(curve_uuids[0]) if len(curve_uuids) == 1 else ""
+                if not curve_uuid or curve_uuid in seen:
+                    continue
+                seen.add(curve_uuid)
+                curves.append(
+                    {
+                        "name": curve,
+                        "uuid": curve_uuid,
+                        "payload": _capture_animation_curve_payload(cmds, curve),
+                    }
+                )
+        snapshot["curves"] = curves
+        return snapshot
+
+    @staticmethod
+    def _restore_vmd_animation_layer(snapshot: Optional[Dict[str, object]]) -> Optional[str]:
+        """Restore VMD layer membership, settings, and curve keys exactly."""
+        if not snapshot:
+            return None
+        from ..core.mmd_control_rig_motion import (
+            _clear_animation_curve_keys,
+            _restore_animation_curve_payload,
+        )
+
+        layer_name = str(snapshot.get("name") or "")
+        errors = []
+        if not snapshot.get("exists"):
+            if layer_name and cmds.objExists(layer_name):
+                try:
+                    cmds.delete(layer_name)
+                except Exception as exc:
+                    errors.append(f"remove created animation layer {layer_name} failed: {exc}")
+            return "; ".join(errors) if errors else None
+
+        layer_uuid = str(snapshot.get("uuid") or "")
+        matches = cmds.ls(layer_uuid, long=True) if layer_uuid else []
+        if len(matches) != 1:
+            return f"restore animation layer failed: original layer is missing ({layer_name})"
+        layer = str(matches[0])
+        settings = snapshot.get("settings") or {}
+        try:
+            cmds.animLayer(layer, edit=True, lock=False)
+        except Exception:
+            pass
+        baseline_attributes = {
+            str(value) for value in (snapshot.get("attributes") or [])
+        }
+        current_attributes = {
+            str(value)
+            for value in (cmds.animLayer(layer, query=True, attribute=True) or [])
+        }
+        for plug in sorted(current_attributes - baseline_attributes):
+            try:
+                cmds.animLayer(layer, edit=True, removeAttribute=plug)
+            except Exception as exc:
+                errors.append(f"remove animation layer member {plug} failed: {exc}")
+        for row in snapshot.get("curves", []) or []:
+            curve_uuid = str(row.get("uuid") or "")
+            curves = cmds.ls(curve_uuid, long=True) if curve_uuid else []
+            if len(curves) != 1:
+                errors.append(f"restore animation curve failed: {row.get('name')}")
+                continue
+            try:
+                curve = str(curves[0])
+                _clear_animation_curve_keys(cmds, curve)
+                payload = row.get("payload") or {}
+                for key in payload.get("keys", ()):
+                    cmds.setKeyframe(
+                        curve,
+                        time=float(key.get("time", 0.0)),
+                        value=float(key.get("value", 0.0)),
+                    )
+                _restore_animation_curve_payload(cmds, curve, payload)
+            except Exception as exc:
+                errors.append(f"restore animation curve {row.get('name')} failed: {exc}")
+        for flag, value in settings.items():
+            try:
+                cmds.animLayer(layer, edit=True, **{str(flag): value})
+            except Exception as exc:
+                errors.append(f"restore animation layer setting {flag} failed: {exc}")
+        return "; ".join(errors) if errors else None
+
     def _capture_mmd_control_rig_scene_snapshot(
         self,
         target_model: str,
         vmd_data,
         *,
         target_namespace: Optional[str] = None,
+        layer_name: str = "VMD_Motion",
     ) -> Dict[str, object]:
         """Capture mixed-import scene state before any destructive mutation.
 
@@ -1998,16 +2218,32 @@ class VmdConverter:
         It is used only by the ON-path transaction rollback, so normal VMD
         imports retain their historical performance and behavior.
         """
-        from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
+        from ..core.constants import (
+            ATTR_MMD_CAMERA,
+            ATTR_MMD_LIGHT,
+            ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
+        )
         from ..core.mmd_control_rig_motion import _capture_animation_channel_snapshot
 
         snapshot: Dict[str, object] = {
+            "target_model": str(target_model or ""),
             "timeline": {},
             "channels": [],
             "known_dag_nodes": set(cmds.ls(dag=True, long=True) or []),
             "camera_markers": set(cmds.ls(f"*.{ATTR_MMD_CAMERA}", objectsOnly=True, long=True) or []),
             "light_markers": set(cmds.ls(f"*.{ATTR_MMD_LIGHT}", objectsOnly=True, long=True) or []),
+            "vmd_layer": self._capture_vmd_animation_layer(layer_name),
+            "vmd_provenance": {"exists": False, "raw": None},
         }
+        provenance_plug = f"{target_model}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}"
+        try:
+            if target_model and cmds.objExists(provenance_plug):
+                snapshot["vmd_provenance"] = {
+                    "exists": True,
+                    "raw": cmds.getAttr(provenance_plug),
+                }
+        except Exception:
+            self.logger.debug("Failed to capture VMD provenance", exc_info=True)
         try:
             snapshot["timeline"] = {
                 "current_time": float(cmds.currentTime(query=True)),
@@ -2105,6 +2341,36 @@ class VmdConverter:
                 if not target_model or self._node_is_owned_by_target(morph_node, target_model):
                     nodes.add(str(morph_node))
                     explicit_attrs_by_node.setdefault(str(morph_node), set()).add(str(weight_attr))
+
+        # The legacy route planner is the single source of truth for physical
+        # authoring destinations.  Include its upstream nodes in the rollback
+        # snapshot so physics pre-inputs, append bases, and bone-morph bases
+        # are restored along with ordinary joint channels.
+        try:
+            legacy_routes = self._build_legacy_bone_key_routes()
+            for route in legacy_routes.values():
+                if not isinstance(route, dict):
+                    continue
+                for node, attribute in (route.get("attr_targets") or {}).values():
+                    nodes.add(str(node))
+                    explicit_attrs_by_node.setdefault(str(node), set()).add(str(attribute))
+        except Exception:
+            self.logger.debug("Failed to capture legacy authoring routes", exc_info=True)
+
+        # Redirected proxies are not DAG descendants of the target joint.  The
+        # proxy marker and validated authority are the ownership boundary.
+        try:
+            from .vmd_redirected_authoring_proxy import resolve_redirected_authoring_proxy
+
+            for joint in self.bone_name_mapping.values():
+                proxy_route, claimed = resolve_redirected_authoring_proxy(joint)
+                if not claimed:
+                    continue
+                for node, attribute in proxy_route.values():
+                    nodes.add(str(node))
+                    explicit_attrs_by_node.setdefault(str(node), set()).add(str(attribute))
+        except Exception:
+            self.logger.debug("Failed to capture redirected authoring proxies", exc_info=True)
 
         camera_markers = set(snapshot["camera_markers"])
         light_markers = set(snapshot["light_markers"])
@@ -2239,10 +2505,39 @@ class VmdConverter:
         """Restore mixed-channel curves, timeline, and newly-created markers."""
         if not snapshot:
             return None
-        from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
+        from ..core.constants import (
+            ATTR_MMD_CAMERA,
+            ATTR_MMD_LIGHT,
+            ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
+        )
         from ..core.mmd_control_rig_motion import _restore_animation_channel_snapshot
 
         errors = []
+        layer_error = self._restore_vmd_animation_layer(snapshot.get("vmd_layer"))
+        if layer_error:
+            errors.append(layer_error)
+        provenance = snapshot.get("vmd_provenance") or {}
+        root = snapshot.get("target_model")
+        provenance_plug = (
+            f"{root}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}" if root else ""
+        )
+        try:
+            if provenance.get("exists"):
+                if not cmds.objExists(provenance_plug):
+                    cmds.addAttr(
+                        root,
+                        longName=ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
+                        dataType="string",
+                    )
+                cmds.setAttr(
+                    provenance_plug,
+                    provenance.get("raw") or "",
+                    type="string",
+                )
+            elif provenance_plug and cmds.objExists(provenance_plug):
+                cmds.deleteAttr(provenance_plug)
+        except Exception as exc:
+            errors.append(f"restore VMD provenance failed: {exc}")
         for row in snapshot.get("channels", []) or []:
             node = row.get("node")
             attr = row.get("attribute")
@@ -2539,6 +2834,25 @@ class VmdConverter:
         """VMD import 中に変わった animLayer selected 状態を元に戻す。"""
         restore_anim_layer_selection(selection)
 
+    def _capture_motion_clear_inventory(
+        self,
+        layer_name: str,
+        target_namespace: Optional[str],
+        target_model: Optional[str],
+    ) -> dict:
+        """Capture target-scoped VMD authoring routes before a new import."""
+        try:
+            legacy_routes = self._build_legacy_bone_key_routes()
+        except Exception:
+            legacy_routes = None
+        return build_motion_clear_inventory(
+            self._import_state_context(),
+            layer_name,
+            target_namespace,
+            target_model,
+            legacy_routes=legacy_routes,
+        )
+
     def _clear_existing_motion(
         self,
         layer_name: str,
@@ -2546,9 +2860,21 @@ class VmdConverter:
         target_model: Optional[str] = None,
         *,
         preserve_curve_nodes: bool = False,
+        profile: Optional[Dict[str, Any]] = None,
+        strict: bool = False,
     ) -> list:
         """対象モデルに残っている既存 VMD motion keys/layer を削除する。"""
         detached_curve_nodes = []
+        legacy_routes = None
+        try:
+            legacy_routes = self._build_legacy_bone_key_routes()
+        except Exception as exc:
+            if strict:
+                raise MMDImportException(
+                    "Unable to resolve VMD authoring route ownership before clear",
+                    reason_code="vmd_clear_route_inventory_failed",
+                ) from exc
+            self.logger.debug("Failed to build VMD clear route inventory: %s", exc)
         clear_existing_motion(
             self._import_state_context(),
             layer_name,
@@ -2556,6 +2882,9 @@ class VmdConverter:
             target_model=target_model,
             preserve_curve_nodes=preserve_curve_nodes,
             detached_curve_nodes=detached_curve_nodes,
+            profile=profile,
+            strict=strict,
+            legacy_routes=legacy_routes,
         )
         return detached_curve_nodes
 

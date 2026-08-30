@@ -15,6 +15,7 @@ from mmd_tools.converters.vmd_import_state import clear_existing_motion
 from mmd_tools.converters.vmd_rotation_time_curve import (
     rotation_time_curve_interpolation_by_bone,
 )
+from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from mmd_tools.core import mmd_control_rig_builder
@@ -234,9 +235,10 @@ class TestCr06103SceneTransaction(MayaTestBase):
 
         center_after = _curve_state(f"{center_control}.translateX")
         groove_after = _curve_state(f"{groove_control}.translateX")
-        self.assertEqual(center_after["curve"], center_before["curve"])
-        self.assertEqual(center_after["uuid"], center_before["uuid"])
-        self.assertEqual(center_after["input"], center_before["input"])
+        self.assertIsNone(
+            center_after["curve"],
+            "A-only controller curve should be removed after a successful replacement",
+        )
         self.assertFalse(center_after["times"], "A-only center keys survived clear_existing_motion")
         self.assertTrue(groove_after["times"], "B-only groove keys were not authored")
         self.assertEqual(
@@ -462,6 +464,49 @@ class TestCr06103SceneTransaction(MayaTestBase):
         self.assertIn("forced basis rollback", str(raised.exception))
         self.assertEqual(_curve_state(f"{center_joint}.translateX"), before)
         self.assertFalse(cmds.objExists(f"{target_root}.mmd_control_rig_json"))
+
+    def test_provenance_store_failure_rolls_back_animation_layer_replacement(self):
+        """A replacement is not committed unless its ownership journal persists."""
+        target_root = self._import_control_fixture("cr06103_provenance_rollback")
+        motion_a = _synthetic_motion(
+            ("センター", 6, (0.2, 0.0, 0.0)),
+            ("センター", 12, (0.9, 0.0, 0.0)),
+        )
+        converter_a = VmdConverter()
+        self.assertTrue(_registered_convert(converter_a, motion_a, target_model=target_root))
+        before_layer = converter_a._capture_vmd_animation_layer("VMD_Motion")
+        self.assertTrue(before_layer["exists"])
+        self.assertTrue(before_layer["curves"])
+        before_provenance = cmds.getAttr(f"{target_root}.mmd_vmd_import_provenance_json")
+        cmds.currentTime(37, edit=True)
+
+        motion_b = _synthetic_motion(
+            ("センター", 18, (2.0, 0.0, 0.0)),
+            ("センター", 24, (3.0, 0.0, 0.0)),
+        )
+        converter_b = VmdConverter()
+        with patch(
+            "mmd_tools.converters.vmd_converter.store_runtime_registration_provenance",
+            return_value=False,
+        ):
+            with self.assertRaises(MMDImportException) as raised:
+                _registered_convert(
+                    converter_b,
+                    motion_b,
+                    target_model=target_root,
+                    clear_existing_motion=True,
+                )
+
+        self.assertEqual(raised.exception.reason_code, "vmd_import_provenance_store_failed")
+        self.assertEqual(
+            converter_b._capture_vmd_animation_layer("VMD_Motion"),
+            before_layer,
+        )
+        self.assertEqual(
+            cmds.getAttr(f"{target_root}.mmd_vmd_import_provenance_json"),
+            before_provenance,
+        )
+        self.assertEqual(cmds.currentTime(query=True), 37.0)
 
     def test_late_failure_restores_curve_timeline_and_created_camera_light(self):
         root = cmds.group(empty=True, name="cr06103_transaction_model")

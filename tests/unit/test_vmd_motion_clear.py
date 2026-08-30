@@ -12,6 +12,7 @@ from mmd_tools.converters.vmd_import_state import (
     record_bind_poses,
 )
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
+from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from tests.common.maya_test_base import MayaTestBase
 
@@ -517,8 +518,8 @@ class TestVmdMotionClear(MayaTestBase):
 
         self.assertEqual(cmds.keyframe(f"{append_node}.baseRotateX", query=True, timeChange=True), [5.0])
 
-    def test_convert_clear_existing_motion_replaces_previous_bone_keys(self):
-        """clear ON の再 import は古いキーを残さず新しい VMD キーだけにする。"""
+    def test_convert_clear_existing_motion_preserves_unprovenanced_foreign_keys(self):
+        """clear ON refuses to guess that an unjournaled curve belongs to VMD."""
         joint = cmds.joint(name="clear_existing_convert_center")
         target_model = cmds.group(empty=True, name="clear_existing_model_root")
         cmds.parent(joint, target_model)
@@ -536,21 +537,25 @@ class TestVmdMotionClear(MayaTestBase):
         # The fixture has no paired raw PMX/VMD bytes; bypass only the
         # registered sparse compiler so this test remains focused on clearing
         # and replacing legacy scene keys.
+        profile = {}
         with patch.object(
             self.converter,
             "_compiled_registered_sparse_frames",
             return_value=(tuple(vmd_data.bone_frames), {}),
         ):
-            self.assertTrue(
+            with self.assertRaises(MMDImportException):
                 self.converter.convert(
                     vmd_data,
                     clear_existing_motion=True,
                     target_model=target_model,
+                    profile=profile,
                 )
-            )
 
-        self.assertNotIn(1.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
-        self.assertIn(8.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
+        self.assertEqual(
+            cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True),
+            [1.0],
+        )
+        self.assertEqual(profile["motion_clear"]["status"], "blocked")
 
     def test_convert_clear_existing_motion_removes_tracks_omitted_by_next_vmd(self):
         """A two-import replacement must remove tracks absent from the second VMD."""

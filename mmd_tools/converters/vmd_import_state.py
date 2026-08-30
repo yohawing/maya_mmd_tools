@@ -7,12 +7,21 @@ import maya.cmds as cmds
 import maya.api.OpenMaya as om
 import maya.api.OpenMayaAnim as oma
 
-from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
+from ..core.constants import (
+    ATTR_MMD_CAMERA,
+    ATTR_MMD_LIGHT,
+    ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON,
+)
+from ..core.exceptions import MMDImportException
 from ..core.logger import get_logger
 from ..core.namespace_utils import NamespaceUtils
 from .vmd_context import VmdImportStateContext
 from .vmd_ik_enabled_animation import ik_node_is_owned_by_root, root_owned_joints
 from .vmd_morph_mapping import morph_node_is_owned_by_root
+from .bone_morph_runtime import resolve_owned_bone_morph_base_routes
+from .vmd_redirected_authoring_proxy import (
+    resolve_redirected_authoring_proxy_authority,
+)
 from .vmd_rotation_time_curve import delete_vmd_rotation_time_curves_for_controls
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 from ..core.mmd_control_rig_builder import CONTROL_RIG_CONTROL_OWNED, read_mmd_control_rig_metadata
@@ -148,6 +157,400 @@ def restore_anim_layer_selection(selection: Optional[Dict[str, bool]]) -> None:
             _LOGGER.debug("Failed to restore animLayer selection for %s: %s", layer, exc)
 
 
+def _canonical_node_path(node: Optional[str]) -> str:
+    """Resolve one Maya node to a stable long name when possible."""
+    if not node:
+        return ""
+    try:
+        matches = cmds.ls(str(node), long=True) or []
+    except Exception:
+        matches = []
+    return str(matches[0]) if len(matches) == 1 else str(node)
+
+
+def _curve_uuid(curve: str) -> str:
+    """Return an animCurve UUID for diagnostics, without making queries fatal."""
+    try:
+        values = cmds.ls(curve, uuid=True) or []
+    except Exception:
+        values = []
+    return str(values[0]) if len(values) == 1 else ""
+
+
+def _key_count_for_plug(plug: str) -> int:
+    """Return the current key count for a plug or curve node."""
+    try:
+        values = cmds.keyframe(plug, query=True, timeChange=True) or []
+    except Exception:
+        values = []
+    return len(values)
+
+
+def _curve_records_for_plug(node: str, attribute: str) -> list:
+    """Describe every animCurve currently driving one logical channel."""
+    plug = f"{node}.{attribute}"
+    try:
+        direct = cmds.listConnections(
+            plug,
+            source=True,
+            destination=False,
+            type="animCurve",
+        ) or []
+    except Exception:
+        direct = []
+    curves = _animation_curve_nodes_for_plug(node, attribute, direct_curves=direct)
+    records = []
+    for curve in curves:
+        records.append(
+            {
+                "name": str(curve),
+                "uuid": _curve_uuid(str(curve)),
+                "key_count": _key_count_for_plug(str(curve)),
+            }
+        )
+    return records
+
+
+def _read_vmd_clear_scope(target_model: Optional[str]) -> dict:
+    """Read the small curve-identity journal stored on a model root."""
+    if not target_model:
+        return {}
+    try:
+        plug = f"{target_model}.{ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON}"
+        if not cmds.objExists(plug):
+            return {}
+        raw = cmds.getAttr(plug)
+        payload = json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+    scope = payload.get("clear_scope") if isinstance(payload, dict) else None
+    if not isinstance(scope, dict) or scope.get("schema") != 1:
+        return {}
+    try:
+        root_uuids = cmds.ls(target_model, uuid=True) or []
+    except Exception:
+        root_uuids = []
+    if len(root_uuids) != 1 or str(scope.get("target_model_uuid") or "") != str(root_uuids[0]):
+        return {}
+    return dict(scope)
+
+
+def _append_clear_route(routes: list, seen: set, node: str, attribute: str, source: str) -> None:
+    """Append a unique logical clear route."""
+    if not node or not attribute:
+        return
+    key = (_canonical_node_path(node), str(attribute))
+    if key in seen:
+        return
+    seen.add(key)
+    routes.append(
+        {
+            "source": str(source),
+            "node": key[0],
+            "attribute": key[1],
+            "plug": f"{key[0]}.{key[1]}",
+            "curves": _curve_records_for_plug(key[0], key[1]),
+        }
+    )
+
+
+def build_motion_clear_inventory(
+    converter_or_context: Union[Any, VmdImportStateContext],
+    layer_name: str,
+    target_namespace: Optional[str] = None,
+    target_model: Optional[str] = None,
+    *,
+    legacy_routes: Optional[Dict[str, dict]] = None,
+) -> dict:
+    """Collect the physical authoring routes in one target-scoped report.
+
+    The result is deliberately JSON-friendly.  It is used both before and
+    after a clear operation, so a caller can distinguish an attempted
+    attribute from actual keys removed and can report an unresolved ownership
+    claim before Maya is mutated.
+    """
+    context = _resolve_import_state_context(converter_or_context)
+    owned_joints = root_owned_joints(target_model) if target_model else set()
+    target_joints = sorted(
+        owned_joints if target_model else set(context.bone_name_mapping.values())
+    )
+    routes = []
+    seen = set()
+    for joint in target_joints:
+        for attribute in (
+            "translateX",
+            "translateY",
+            "translateZ",
+            "rotateX",
+            "rotateY",
+            "rotateZ",
+        ):
+            _append_clear_route(routes, seen, joint, attribute, "joint")
+
+    blockers = []
+    route_nodes = set(target_joints)
+    route_map = legacy_routes or {}
+    for joint, route in route_map.items():
+        if not isinstance(route, dict):
+            continue
+        blocked_channels = route.get("blocked_channels") or ()
+        if blocked_channels:
+            blockers.append(
+                {
+                    "code": "route_ownership_blocked",
+                    "reason": str(route.get("block_reason") or "route_ownership_unknown"),
+                    "node": _canonical_node_path(joint),
+                    "channels": sorted(str(channel) for channel in blocked_channels),
+                    "source": "legacy_route_inventory",
+                }
+            )
+        for channel, destination in (route.get("attr_targets") or {}).items():
+            try:
+                node, attribute = destination
+            except (TypeError, ValueError):
+                blockers.append(
+                    {
+                        "code": "route_ownership_blocked",
+                        "reason": "malformed_authoring_route",
+                        "node": _canonical_node_path(joint),
+                        "channels": [str(channel)],
+                        "source": "legacy_route_inventory",
+                    }
+                )
+                continue
+            route_nodes.add(_canonical_node_path(node))
+            _append_clear_route(routes, seen, node, attribute, "legacy_route")
+
+    if target_model:
+        try:
+            accumulator = resolve_owned_bone_morph_base_routes(target_joints)
+        except Exception as exc:
+            accumulator = None
+            blockers.append(
+                {
+                    "code": "route_ownership_blocked",
+                    "reason": "bone_morph_inventory_failed",
+                    "detail": str(exc),
+                    "source": "bone_morph_accumulator",
+                }
+            )
+        if accumulator is not None:
+            for joint, route in accumulator.routes.items():
+                for channel, destination in route.items():
+                    node, attribute = destination
+                    route_nodes.add(_canonical_node_path(node))
+                    _append_clear_route(routes, seen, node, attribute, "bone_morph_accumulator")
+            for joint, (channels, reason) in accumulator.blocked.items():
+                blockers.append(
+                    {
+                        "code": "route_ownership_blocked",
+                        "reason": str(reason),
+                        "node": _canonical_node_path(joint),
+                        "channels": sorted(str(channel) for channel in channels),
+                        "source": "bone_morph_accumulator",
+                    }
+                )
+
+    for target_joint, info in context.collect_append_info().items():
+        append_node = info.get("node") if isinstance(info, dict) else None
+        if not append_node:
+            continue
+        owned = (
+            _append_node_is_owned_by_root(
+                append_node,
+                target_joint,
+                target_model,
+                owned_joints,
+                source_joint=info.get("source_joint") if isinstance(info, dict) else None,
+            )
+            if target_model
+            else node_matches_target_namespace(target_joint, target_namespace)
+            or node_matches_target_namespace(append_node, target_namespace)
+        )
+        if not owned:
+            if not target_model or _canonical_node_path(target_joint) in owned_joints:
+                blockers.append(
+                    {
+                        "code": "route_ownership_blocked",
+                        "reason": "append_route_shared_or_unowned",
+                        "node": _canonical_node_path(append_node),
+                        "source": "append",
+                    }
+                )
+            continue
+        route_nodes.add(_canonical_node_path(append_node))
+        for attribute in (
+            "baseTranslateX",
+            "baseTranslateY",
+            "baseTranslateZ",
+            "baseRotateX",
+            "baseRotateY",
+            "baseRotateZ",
+        ):
+            _append_clear_route(routes, seen, append_node, attribute, "append")
+
+    for ik_node in _ls_mmd_ccd_ik_nodes():
+        owned = (
+            ik_node_is_owned_by_root(ik_node, target_model, owned_joints)
+            if target_model
+            else node_matches_target_namespace(ik_node, target_namespace)
+        )
+        if not owned:
+            continue
+        route_nodes.add(_canonical_node_path(ik_node))
+        _append_clear_route(routes, seen, ik_node, "enabled", "ik")
+        _append_clear_route(routes, seen, ik_node, "inputRotate", "ik")
+
+    for mapping_entry in context.morph_name_mapping.values():
+        for morph_node, weight_attr, _morph_name in context.iter_morph_mappings(mapping_entry):
+            owned = (
+                morph_node_is_owned_by_root(morph_node, target_model)
+                if target_model
+                else node_matches_target_namespace(morph_node, target_namespace)
+            )
+            if owned:
+                route_nodes.add(_canonical_node_path(morph_node))
+                _append_clear_route(routes, seen, morph_node, weight_attr, "morph")
+
+    if target_model:
+        control_metadata = read_mmd_control_rig_metadata(target_model)
+        if control_metadata and control_metadata.get("owner") == CONTROL_RIG_CONTROL_OWNED:
+            try:
+                control_routes = control_rig_edit_routes_for_joints(target_joints)
+                for route in control_routes.values():
+                    for node, attribute in route.values():
+                        route_nodes.add(_canonical_node_path(node))
+                        _append_clear_route(routes, seen, node, attribute, "control_rig")
+                for plug in control_rig_edit_ik_enabled_plugs_for_model(target_model):
+                    node, attribute = str(plug).rsplit(".", 1)
+                    route_nodes.add(_canonical_node_path(node))
+                    _append_clear_route(routes, seen, node, attribute, "control_rig_ik")
+            except Exception as exc:
+                blockers.append(
+                    {
+                        "code": "route_ownership_blocked",
+                        "reason": "control_rig_inventory_failed",
+                        "detail": str(exc),
+                        "source": "control_rig",
+                    }
+                )
+
+    for joint in target_joints:
+        proxy_route, authority, claimed = resolve_redirected_authoring_proxy_authority(joint)
+        if not claimed:
+            continue
+        if not proxy_route:
+            blockers.append(
+                {
+                    "code": "route_ownership_blocked",
+                    "reason": "redirected_proxy_authority_stale_or_ambiguous",
+                    "node": _canonical_node_path(joint),
+                    "source": "redirected_proxy",
+                }
+            )
+            continue
+        for _channel, (node, attribute) in proxy_route.items():
+            route_nodes.add(_canonical_node_path(node))
+            _append_clear_route(routes, seen, node, attribute, "redirected_proxy")
+
+    layer_attributes = []
+    try:
+        layer_attributes = cmds.animLayer(layer_name, query=True, attribute=True) or []
+    except Exception:
+        layer_attributes = []
+    for attribute in layer_attributes:
+        node = str(attribute).split(".", 1)[0]
+        if target_model and not _nodes_are_exclusively_owned([node], set(route_nodes)):
+            blockers.append(
+                {
+                    "code": "shared_animation_layer",
+                    "reason": "animation_layer_contains_foreign_attribute",
+                    "node": _canonical_node_path(node),
+                    "layer": str(layer_name),
+                    "source": "anim_layer",
+                }
+            )
+
+    scope = _read_vmd_clear_scope(target_model)
+    known_curve_uuids = {
+        str(value)
+        for value in (scope.get("curve_uuids") or [])
+        if value
+    }
+    for route in routes:
+        for curve in route["curves"]:
+            if curve["key_count"] <= 0:
+                continue
+            if curve["uuid"] and curve["uuid"] in known_curve_uuids:
+                curve["ownership"] = "vmd"
+            else:
+                curve["ownership"] = "unknown"
+                blockers.append(
+                    {
+                        "code": "unknown_curve_ownership",
+                        "reason": "curve_has_keys_without_vmd_provenance",
+                        "node": route["node"],
+                        "attribute": route["attribute"],
+                        "curve_uuid": curve["uuid"],
+                        "source": route["source"],
+                    }
+                )
+
+    return {
+        "schema": 1,
+        "target_model": _canonical_node_path(target_model),
+        "target_namespace": str(target_namespace or ""),
+        "layer_name": str(layer_name),
+        "routes": routes,
+        "route_count": len(routes),
+        "key_count": sum(
+            int(curve.get("key_count", 0))
+            for route in routes
+            for curve in route.get("curves", [])
+        ),
+        "curve_uuids": sorted(
+            {
+                curve["uuid"]
+                for route in routes
+                for curve in route.get("curves", [])
+                if curve.get("uuid")
+            }
+        ),
+        "known_curve_uuids": sorted(known_curve_uuids),
+        "blockers": blockers,
+    }
+
+
+def refresh_motion_clear_inventory(inventory: dict) -> dict:
+    """Recount curves on an already validated physical route plan."""
+    routes = []
+    for route in inventory.get("routes", []) or []:
+        refreshed = dict(route)
+        refreshed["curves"] = _curve_records_for_plug(
+            str(route.get("node") or ""),
+            str(route.get("attribute") or ""),
+        )
+        routes.append(refreshed)
+    result = dict(inventory)
+    result["routes"] = routes
+    result["route_count"] = len(routes)
+    result["key_count"] = sum(
+        int(curve.get("key_count", 0))
+        for route in routes
+        for curve in route.get("curves", [])
+    )
+    result["curve_uuids"] = sorted(
+        {
+            curve["uuid"]
+            for route in routes
+            for curve in route.get("curves", [])
+            if curve.get("uuid")
+        }
+    )
+    result["blockers"] = []
+    return result
+
+
 def clear_existing_motion(
     converter_or_context: Union[Any, VmdImportStateContext],
     layer_name: str,
@@ -156,7 +559,10 @@ def clear_existing_motion(
     *,
     preserve_curve_nodes: bool = False,
     detached_curve_nodes=None,
-) -> None:
+    profile: Optional[Dict[str, Any]] = None,
+    strict: bool = False,
+    legacy_routes: Optional[Dict[str, dict]] = None,
+) -> dict:
     """Delete all existing character motion keys for the target model.
 
     When ``target_model`` is explicit, every joint below that model root is
@@ -170,152 +576,92 @@ def clear_existing_motion(
     detached after their keys are removed and are deleted on successful commit.
     """
     context = _resolve_import_state_context(converter_or_context)
+    before = build_motion_clear_inventory(
+        context,
+        layer_name,
+        target_namespace,
+        target_model,
+        legacy_routes=legacy_routes,
+    )
+    clear_profile = {
+        "schema": 1,
+        "requested": {
+            "clear_existing_motion": True,
+            "target_model": before.get("target_model", ""),
+            "target_namespace": before.get("target_namespace", ""),
+            "layer_name": str(layer_name),
+            "strict_ownership": bool(strict),
+        },
+        "effective": {
+            "target_model": before.get("target_model", ""),
+            "route_count": before.get("route_count", 0),
+            "known_curve_count": len(before.get("known_curve_uuids", [])),
+        },
+        "before": before,
+        "status": "pending",
+    }
+    if isinstance(profile, dict):
+        profile["motion_clear"] = clear_profile
+    if strict and before.get("blockers"):
+        clear_profile["status"] = "blocked"
+        clear_profile["failure"] = {
+            "code": "vmd_clear_ownership_blocked",
+            "reasons": sorted(
+                {
+                    str(item.get("reason") or item.get("code") or "unknown")
+                    for item in before["blockers"]
+                }
+            ),
+        }
+        raise MMDImportException(
+            "Existing VMD motion clear blocked by unresolved ownership: "
+            + "; ".join(clear_profile["failure"]["reasons"]),
+            reason_code="vmd_clear_ownership_blocked",
+        )
     cleared = 0
-    owned_motion_nodes = set()
-
-    owned_joints = root_owned_joints(target_model) if target_model else None
+    owned_motion_nodes = {
+        str(route.get("node") or "")
+        for route in before.get("routes", [])
+        if route.get("node")
+    }
     target_joints = (
-        set(owned_joints)
+        set(root_owned_joints(target_model))
         if target_model
         else set(context.bone_name_mapping.values())
     )
     fallback_translates = _capture_fallback_rest_translates(target_joints, context.logger)
     if not preserve_curve_nodes:
         cleared += len(delete_vmd_rotation_time_curves_for_controls(target_joints))
-    for joint in target_joints:
-        owned_motion_nodes.add(joint)
+
+    for route in before.get("routes", []) or []:
+        source = str(route.get("source") or "")
+        keep_curve = preserve_curve_nodes or source != "joint"
         cleared += cut_keyable_attrs(
-            joint,
-            ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"),
-            preserve_curve_nodes=preserve_curve_nodes,
-            detached_curve_nodes=detached_curve_nodes,
+            str(route.get("node") or ""),
+            (str(route.get("attribute") or ""),),
+            preserve_curve_nodes=keep_curve,
+            detached_curve_nodes=(
+                detached_curve_nodes if preserve_curve_nodes else None
+            ),
         )
 
-    # In CONTROL_OWNED/EDIT, authored VMD channels are redirected to the
-    # controller curves.  Clear those curves as part of the same root-scoped
-    # operation; otherwise Clear Existing Motion would leave old controller
-    # keys driving the freshly imported motion.
-    control_routes = {}
-    control_metadata = None
-    if target_model:
-        control_metadata = read_mmd_control_rig_metadata(target_model)
-        if control_metadata and control_metadata.get("owner") == CONTROL_RIG_CONTROL_OWNED:
-            control_routes = control_rig_edit_routes_for_joints(target_joints)
-    for route in control_routes.values():
-        by_node = {}
-        for target_node, target_attr in route.values():
-            by_node.setdefault(target_node, set()).add(target_attr)
-        for node, attrs in by_node.items():
-            owned_motion_nodes.add(node)
-            cleared += cut_keyable_attrs(
-                node,
-                tuple(sorted(attrs)),
-                preserve_curve_nodes=True,
-            )
-
-    # IK visibility animation is authored on the Control Rig controller rather
-    # than on the legacy solver.  Resolve only UUID-backed controls owned by
-    # this model root, then clear their existing animCurve keys in place.
-    if control_metadata and control_metadata.get("owner") == CONTROL_RIG_CONTROL_OWNED:
-        for plug in control_rig_edit_ik_enabled_plugs_for_model(
-            target_model,
-        ):
-            control, attribute = plug.rsplit(".", 1)
-            owned_motion_nodes.add(control)
-            cleared += cut_keyable_attrs(
-                control,
-                (attribute,),
-                preserve_curve_nodes=True,
-            )
-
-    for target_joint, info in context.collect_append_info().items():
-        append_node = info.get("node")
-        if append_node and (
-            (
-                target_model
-                and _append_node_is_owned_by_root(
-                    append_node,
-                    target_joint,
-                    target_model,
-                    owned_joints,
-                    source_joint=info.get("source_joint"),
-                )
-            )
-            or (
-                not target_model
-                and (
-                    node_matches_target_namespace(target_joint, target_namespace)
-                    or node_matches_target_namespace(append_node, target_namespace)
-                )
-            )
-        ):
-            owned_motion_nodes.add(append_node)
-            # Append nodes are part of the authored rig graph.  Clear only
-            # the key payload in the existing animCurves so the append node,
-            # curve identity, and direct joint/root connections survive a
-            # root-scoped re-import.
-            cleared += cut_keyable_attrs(
-                append_node,
-                (
-                    "baseTranslateX",
-                    "baseTranslateY",
-                    "baseTranslateZ",
-                    "baseRotateX",
-                    "baseRotateY",
-                    "baseRotateZ",
-                ),
-                preserve_curve_nodes=True,
-            )
-
-    for ik_node in _ls_mmd_ccd_ik_nodes():
-        if (
-            ik_node_is_owned_by_root(ik_node, target_model, owned_joints)
-            if target_model
-            else node_matches_target_namespace(ik_node, target_namespace)
-        ):
-            owned_motion_nodes.add(ik_node)
-            # ``cutKey`` on the custom compound array can tear down the
-            # solver node when it removes the last inputRotate curve.  Remove
-            # keys through the existing animCurve nodes instead so solver
-            # graph connections remain intact during a root-scoped clear.
-            cleared += cut_keyable_attrs(
-                ik_node,
-                ("enabled", "inputRotate"),
-                preserve_curve_nodes=True,
-            )
-
-    morph_nodes = set()
-    for mapping_entry in context.morph_name_mapping.values():
-        for morph_node, weight_attr, _morph_name in context.iter_morph_mappings(mapping_entry):
-            if (
-                morph_node_is_owned_by_root(morph_node, target_model)
-                if target_model
-                else node_matches_target_namespace(morph_node, target_namespace)
-            ):
-                owned_motion_nodes.add(morph_node)
-                # Remove only the key payload.  Bone morph weights feed the
-                # accumulator contribution graph; using ``cutKey`` here can
-                # delete an otherwise still-connected animCurve when it is
-                # the last key on the network node.  Keep the curve node and
-                # its downstream accumulator wiring intact for re-import.
-                cleared += cut_keyable_attrs(
-                    morph_node,
-                    (weight_attr,),
-                    preserve_curve_nodes=True,
-                )
-                morph_nodes.add(morph_node)
+    morph_nodes = {
+        str(route.get("node") or "")
+        for route in before.get("routes", [])
+        if route.get("source") == "morph"
+    }
 
     can_delete_layer = not target_model or _anim_layer_is_exclusively_owned_by(
         layer_name,
         owned_motion_nodes,
     )
-    if cmds.objExists(layer_name) and can_delete_layer:
+    if cmds.objExists(layer_name) and can_delete_layer and not preserve_curve_nodes:
         try:
             cmds.delete(layer_name)
             cleared += 1
         except Exception as exc:
             context.logger.debug(f"failed to delete existing animLayer {layer_name}: {exc}")
-    elif cmds.objExists(layer_name):
+    elif cmds.objExists(layer_name) and not can_delete_layer:
         context.logger.warning(
             "Preserving shared/unowned animation layer during root-scoped VMD clear: %s",
             layer_name,
@@ -325,12 +671,45 @@ def clear_existing_motion(
     # 後続の _record_bind_poses が正しい rest position を取得できるよう dagPose で復元する。
     _restore_joints_to_rest(target_joints, fallback_translates, context.logger)
 
+    after = refresh_motion_clear_inventory(before)
+    clear_profile["after"] = after
+    clear_profile["effective"]["cleared_key_count"] = max(
+        int(before.get("key_count", 0)) - int(after.get("key_count", 0)),
+        0,
+    )
+    residuals = [
+        {
+            "plug": route.get("plug", ""),
+            "curves": [
+                curve
+                for curve in route.get("curves", [])
+                if int(curve.get("key_count", 0)) > 0
+            ],
+        }
+        for route in after.get("routes", [])
+        if any(int(curve.get("key_count", 0)) > 0 for curve in route.get("curves", []))
+    ]
+    if residuals:
+        clear_profile["status"] = "residual"
+        clear_profile["failure"] = {
+            "code": "vmd_clear_residual_keys",
+            "residuals": residuals,
+        }
+        if strict:
+            raise MMDImportException(
+                "Existing VMD motion clear left residual keys",
+                reason_code="vmd_clear_residual_keys",
+            )
+    else:
+        clear_profile["status"] = "success"
+
     context.logger.info(
         "Cleared existing VMD motion: keys_or_layers=%d joints=%d morph_nodes=%d",
         cleared,
         len(target_joints),
         len(morph_nodes),
     )
+    return clear_profile
 
 
 def _capture_fallback_rest_translates(joints, logger) -> Dict[str, Tuple[float, float, float]]:
@@ -511,7 +890,7 @@ def cut_keyable_attrs(
     preserve_curve_nodes: bool = False,
     detached_curve_nodes=None,
 ) -> int:
-    """Delete keys for existing attrs and return the number of attrs attempted."""
+    """Delete keys for existing attrs and return the number of keys removed."""
     if not node or not cmds.objExists(node):
         return 0
 
@@ -549,8 +928,10 @@ def cut_keyable_attrs(
                         except Exception as exc:
                             _LOGGER.debug("Failed to resolve animation curve %s: %s", curve, exc)
                             continue
+                        removed = curve_fn.numKeys
                         for index in reversed(range(curve_fn.numKeys)):
                             curve_fn.remove(index)
+                        cleared += removed
                     if detached_curve_nodes is not None:
                         for source in cmds.listConnections(
                             plug,
@@ -576,8 +957,10 @@ def cut_keyable_attrs(
                                 continue
                             detached_curve_nodes.append(source_node)
                     continue
+                before = _key_count_for_plug(plug)
                 cmds.cutKey(node, attribute=target_attr)
-            cleared += 1
+                after = _key_count_for_plug(plug)
+                cleared += max(before - after, 0)
         except Exception as exc:
             _LOGGER.debug("Failed to cut key %s.%s: %s", node, attr, exc)
     return cleared
