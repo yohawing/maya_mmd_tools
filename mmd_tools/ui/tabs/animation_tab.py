@@ -148,7 +148,6 @@ class AnimationTab(BaseTab):
         # Kept as hidden compatibility endpoints; the visible actions live in
         # the two blue Body picker buttons.
         self.select_all_btn = QPushButton("Select All", self)
-        self.select_all_btn.setToolTip("現在のMMDモデルの全ボーンを選択")
         self.select_all_btn.hide()
         self.clear_btn = QPushButton("Clear", self)
         self.clear_btn.hide()

@@ -18,6 +18,7 @@ from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
 from ...core.coordinate_transform import mmd_point_to_maya
 from ...core.logger import get_logger
+from ...core.name_display import preferred_pmx_display_name
 from ...core.model_registry import (
     REGISTRY_CATEGORY_PHYSICS,
     list_model_registry_members,
@@ -28,6 +29,7 @@ from ..translations import UITranslator
 from .list_presenter_helpers import (
     apply_list_filter,
     format_indexed_name_label,
+    maya_node_leaf_name,
     reload_for_current_model_change,
     select_existing_user_role_nodes,
 )
@@ -126,9 +128,26 @@ def _long_name(node):
     return matches[0] if matches else ""
 
 
-def _candidate_display(index, name_jp, name_en, node):
-    name = name_jp or node.rsplit("|", 1)[-1]
-    return f"{index}: {name}" + (f" [{name_en}]" if name_en else "")
+def _candidate_display(index, name_jp, name_en, node, prefix=""):
+    leaf = maya_node_leaf_name(node)
+    return format_indexed_name_label(
+        index,
+        name_jp,
+        name_en,
+        prefix=prefix,
+        fallback=leaf,
+    ).replace(":", ": ", 1)
+
+
+def _related_bone_display(name_jp, name_en, node):
+    """Return a locale-safe related-bone label for rigid-body list rows."""
+
+    return preferred_pmx_display_name(
+        name_jp,
+        name_en,
+        fallback=maya_node_leaf_name(node),
+        language=UITranslator.instance().get_language(),
+    )
 
 
 class PhysicsPresenter:
@@ -608,16 +627,18 @@ class PhysicsPresenter:
             name_en = _get_attr(shape, "nameEn", "") or ""
             group = max(0, min(15, int(_get_attr(shape, "collisionGroup", 0)))) + 1
             bone = _resolve_message_name(shape, "relatedBone")
-            bone_name = (
-                (_get_attr(bone, "mmd_bone_name", "") or "")
-                if bone else ""
-            )
-            if not bone_name and bone:
-                bone_name = bone.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
-            display = format_indexed_name_label(
+            bone_name = ""
+            if bone:
+                bone_name = _related_bone_display(
+                    _get_attr(bone, "mmd_bone_name", "") or "",
+                    _get_attr(bone, "mmd_bone_name_en", "") or "",
+                    bone,
+                )
+            display = _candidate_display(
                 index,
-                name_jp or ("" if name_en else transform.rsplit("|", 1)[-1]),
+                name_jp,
                 name_en,
+                transform,
                 prefix=f"G{group} ",
             )
             display += f" - [{bone_name or '-'}]"
@@ -633,10 +654,11 @@ class PhysicsPresenter:
             index = int(_get_attr(shape, "pmxIndex", -1))
             name_jp = _get_attr(shape, "nameJp", "") or ""
             name_en = _get_attr(shape, "nameEn", "") or ""
-            display = format_indexed_name_label(
+            display = _candidate_display(
                 index,
-                name_jp or ("" if name_en else transform.rsplit("|", 1)[-1]),
+                name_jp,
                 name_en,
+                transform,
             )
             item = QListWidgetItem(display)
             item.setData(Qt.UserRole, shape)

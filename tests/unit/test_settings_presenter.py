@@ -6,6 +6,7 @@ Development Mode チェックボックス変更時に logging.level が決定論
 import os
 import sys
 import unittest
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
@@ -444,6 +445,39 @@ class TestLoadSettings(unittest.TestCase):
         self.assertFalse(self.view.use_cpp_vp2_ownership_check.isChecked())
         self.assertFalse(self.view.use_cpp_vp2_ownership_check.isEnabled())
         self.assertFalse(settings.get(settings_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP))
+
+
+class TestLanguageChange(unittest.TestCase):
+    def setUp(self):
+        _reset_singleton()
+        self.view = _FakeView()
+        self.app_state = _FakeAppState()
+        self.presenter = SettingsPresenter(
+            self.view,
+            self.app_state,
+            maya_cmds=_FakeMayaCmds(),
+        )
+
+    def tearDown(self):
+        from mmd_tools.ui.translations import UITranslator
+
+        UITranslator.instance().set_language("ja")
+        _reset_singleton()
+
+    def test_language_change_refreshes_dynamic_names_in_open_windows(self):
+        self.view.language_combo.currentData = lambda: "en"
+        self.view.retranslate_all_tabs = MagicMock()
+        other_window = MagicMock()
+
+        with patch(
+            "mmd_tools.ui.qt_compat.QApplication.topLevelWidgets",
+            return_value=[self.view, other_window],
+        ):
+            self.presenter.on_language_changed()
+
+        self.view.retranslate_all_tabs.assert_called_once_with()
+        other_window.retranslateUi.assert_called_once_with()
+        other_window.refresh_for_language_change.assert_called_once_with()
 
 
 class TestSaveSettings(unittest.TestCase):

@@ -172,6 +172,11 @@ class ControlRigManagerWindow(QWidget):
             button.setText(tr(f"{action}"))
             button.setToolTip(tr(f"{action}_tooltip"))
 
+    def refresh_for_language_change(self) -> None:
+        """Rebuild locale-dependent model labels after a language switch."""
+
+        self.refresh()
+
     def refresh(self) -> None:
         """Read model roots/UUIDs and metadata; never writes to the scene."""
 
@@ -187,7 +192,10 @@ class ControlRigManagerWindow(QWidget):
             if not uuid:
                 continue
             try:
-                display_name = self._scene_model_service.get_model_display_name(root)
+                display_name = self._scene_model_service.get_model_display_name(
+                    root,
+                    language=self._translator.get_language(),
+                )
             except Exception:
                 display_name = root
             records.append({"root": str(root), "uuid": uuid, "label": str(display_name or root)})

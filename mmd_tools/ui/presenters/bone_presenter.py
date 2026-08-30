@@ -332,7 +332,7 @@ class BonePresenter:
 
             item = QListWidgetItem(display_text)
             item.setData(Qt.UserRole, joint)  # 実際のジョイント名を保存
-            item.setToolTip(joint)
+            item.setToolTip(display_text)
             self.view.bone_list.addItem(item)
             self.bone_list_items[joint] = item
         self._update_authoring_actions()

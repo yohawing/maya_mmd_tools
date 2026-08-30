@@ -85,7 +85,7 @@ class FingerPickerWidget(SvgPickerWidget):
             _ASSET_DIR / "animpicker_finger.svg",
             ordered_region_ids=_FINGER_SHAPE_REGION_IDS,
             region_labels={"back_to_body": "‹  Body"},
-            tooltip_labels={region["id"]: region["bone_name"] for region in _FINGER_REGIONS},
+            tooltip_labels={region["id"]: region["id"] for region in _FINGER_REGIONS},
             parent=parent,
         )
         self.setObjectName("FingerPickerWidget")

@@ -198,6 +198,7 @@
     "use_cpp_vp2_ownership": "使用原生 mmdRenderShape 的 VP2 RenderOverride。需要啟用 C++ Fast Load，僅用於網格顯示（實驗性）"
   },
   "messages": {
+    "ready": "準備就緒",
     "vmd_bake_export_help": "匯出動畫前烘焙目前時間軸。啟用範圍時，只評估指定範圍。",
     "vpd_current_pose_help": "匯出目前影格評估的目前模型姿勢。",
     "import_success": "匯入完成",

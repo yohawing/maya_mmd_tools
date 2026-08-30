@@ -510,6 +510,9 @@ class SettingsPresenter:
         for widget in QApplication.topLevelWidgets():
             if widget is not main_window and hasattr(widget, "retranslateUi"):
                 widget.retranslateUi()
+                refresh = getattr(widget, "refresh_for_language_change", None)
+                if callable(refresh):
+                    refresh()
         self.refresh_command_port_status()
 
         # ステータスメッセージ

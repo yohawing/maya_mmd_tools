@@ -2,7 +2,7 @@
 
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
 from tests.common.maya_stub import install_headless_ui_stubs
@@ -664,6 +664,17 @@ class TestAnimationPresenter(unittest.TestCase):
         self.assertEqual(app_state.cache_clear_count, 1)
         reload_model.assert_called_once_with("test_model")
 
+    def test_name_change_rebuilds_picker_without_scene_refresh(self):
+        presenter, _, app_state, _ = self._make(model_root="test_model")
+        app_state.refresh_model_list = MagicMock()
+
+        with patch.object(presenter, "_reload_for_model") as reload_model:
+            presenter.refresh_for_name_change()
+
+        reload_model.assert_called_once_with("test_model")
+        app_state.refresh_model_list.assert_not_called()
+        self.assertEqual(app_state.cache_clear_count, 0)
+
     def test_scene_change_drops_same_path_control_authority_on_metadata_failure(self):
         presenter, _, _, _ = self._make(model_root="test_model")
         presenter._ik_authority_owner = "CONTROL_OWNED"
@@ -826,21 +837,29 @@ class TestAnimationPresenter(unittest.TestCase):
         group = view.display_frame_tree.topLevelItem(0)
         self.assertEqual(group.childCount(), 2)
 
-    def test_special_flag_group_count(self):
-        joints = {0: "center"}
-        presenter, view, _, _ = self._make(
-            joints=joints,
-            display_json=SAMPLE_FRAMES_JSON,
-            model_root="test_model",
-        )
+    def test_english_special_flag_group_names(self):
+        from mmd_tools.ui.translations import UITranslator
 
-        special = [
-            view.display_frame_tree.topLevelItem(i)
-            for i in range(view.display_frame_tree.topLevelItemCount())
-        ]
-        self.assertEqual(view.display_frame_tree.topLevelItemCount(), 3)
-        self.assertIn("Root", special[0].text(0))
-        self.assertIn("表情", special[1].text(0))
+        translator = UITranslator.instance()
+        previous = translator.get_language()
+        translator.set_language("en")
+        joints = {0: "center"}
+        try:
+            _presenter, view, _, _ = self._make(
+                joints=joints,
+                display_json=SAMPLE_FRAMES_JSON,
+                model_root="test_model",
+            )
+
+            special = [
+                view.display_frame_tree.topLevelItem(i)
+                for i in range(view.display_frame_tree.topLevelItemCount())
+            ]
+            self.assertEqual(view.display_frame_tree.topLevelItemCount(), 3)
+            self.assertIn("Root", special[0].text(0))
+            self.assertIn("Exp", special[1].text(0))
+        finally:
+            translator.set_language(previous)
 
     def test_item_display_text_strips_namespace_and_path(self):
         joints = {0: "|root|ns:center_jnt"}
@@ -858,26 +877,81 @@ class TestAnimationPresenter(unittest.TestCase):
         child = view.display_frame_tree.topLevelItem(0).child(0)
         self.assertEqual(child.text(0), "center_jnt")
 
-    def test_display_uses_japanese_bone_and_morph_metadata_names(self):
-        with patch(
-            "mmd_tools.ui.presenters.animation_presenter"
-            ".AnimationPresenter._populate_morph_groups"
-        ):
-            _presenter, view, _, _ = self._make(
-                joints={0: "|root|ns:center_jnt"},
-                bone_names={"|root|ns:center_jnt": "センター"},
-                display_json=SAMPLE_FRAMES_JSON,
-                morph_data=[
-                    {"index": 0, "name_jp": "笑い", "name_en": "Smile", "panel": 2, "type": 1},
-                    {"index": 1, "name_jp": "まばたき", "name_en": "Blink", "panel": 2, "type": 1},
-                ],
-                model_root="test_model",
-            )
+    def test_english_display_hides_japanese_bone_and_morph_metadata_names(self):
+        from mmd_tools.ui.translations import UITranslator
 
-        self.assertEqual(view.display_frame_tree.topLevelItem(0).child(0).text(0), "センター")
-        expressions = view.display_frame_tree.topLevelItem(1)
-        self.assertEqual(expressions.child(0).text(0), "笑い")
-        self.assertEqual(expressions.child(1).text(0), "まばたき")
+        translator = UITranslator.instance()
+        previous = translator.get_language()
+        translator.set_language("en")
+        try:
+            with patch(
+                "mmd_tools.ui.presenters.animation_presenter"
+                ".AnimationPresenter._populate_morph_groups"
+            ):
+                _presenter, view, _, _ = self._make(
+                    joints={0: "|root|ns:center_jnt"},
+                    bone_names={"|root|ns:center_jnt": "センター"},
+                    display_json=SAMPLE_FRAMES_JSON,
+                    morph_data=[
+                        {"index": 0, "name_jp": "笑い", "name_en": "Smile", "panel": 2, "type": 1},
+                        {"index": 1, "name_jp": "まばたき", "name_en": "Blink", "panel": 2, "type": 1},
+                    ],
+                    model_root="test_model",
+                )
+
+            self.assertEqual(
+                view.display_frame_tree.topLevelItem(0).child(0).text(0),
+                "center_jnt",
+            )
+            expressions = view.display_frame_tree.topLevelItem(1)
+            self.assertEqual(expressions.child(0).text(0), "Smile")
+            self.assertEqual(expressions.child(1).text(0), "Blink")
+        finally:
+            translator.set_language(previous)
+
+    def test_english_display_uses_unique_ascii_fallbacks_for_untranslated_items(self):
+        from mmd_tools.ui.translations import UITranslator
+
+        frames_json = json.dumps(
+            [
+                {
+                    "name": "表情一",
+                    "name_english": "",
+                    "special_flag": 0,
+                    "elements": [{"type": 1, "index": 0}],
+                },
+                {
+                    "name": "表情二",
+                    "name_english": "",
+                    "special_flag": 0,
+                    "elements": [{"type": 1, "index": 1}],
+                },
+            ],
+            ensure_ascii=False,
+        )
+        translator = UITranslator.instance()
+        previous = translator.get_language()
+        translator.set_language("en")
+        try:
+            with patch(
+                "mmd_tools.ui.presenters.animation_presenter"
+                ".AnimationPresenter._populate_morph_groups"
+            ):
+                _presenter, view, _, _ = self._make(
+                    display_json=frames_json,
+                    morph_data=[
+                        {"index": 0, "name_jp": "笑い", "name_en": "", "panel": 2, "type": 1},
+                        {"index": 1, "name_jp": "怒り", "name_en": "", "panel": 2, "type": 1},
+                    ],
+                    model_root="test_model",
+                )
+
+            self.assertEqual(view.display_frame_tree.topLevelItem(0).text(0), "Display Frame 0")
+            self.assertEqual(view.display_frame_tree.topLevelItem(1).text(0), "Display Frame 1")
+            self.assertEqual(view.display_frame_tree.topLevelItem(0).child(0).text(0), "Morph 0")
+            self.assertEqual(view.display_frame_tree.topLevelItem(1).child(0).text(0), "Morph 1")
+        finally:
+            translator.set_language(previous)
 
     def test_model_combo_updated_on_model_list_signal(self):
         presenter, view, app_state, _ = self._make()
@@ -1517,6 +1591,18 @@ class TestBodyPickerPresenter(unittest.TestCase):
         presenter._retranslate_picker_bone_tooltips()
 
         self.assertEqual(view.body_picker.region_tooltips["waist"], "腰")
+
+    def test_english_finger_tooltip_without_metadata_uses_ascii_region_id(self):
+        presenter, view, _, _adapter = self._make_with_bones()
+        view.current_language = lambda: "en"
+        presenter._picker_english_tooltips["finger"] = {}
+
+        presenter._retranslate_picker_bone_tooltips()
+
+        self.assertEqual(
+            view.finger_picker.region_tooltips["left_thumb_0"],
+            "left_thumb_0",
+        )
 
     def test_region_click_unmapped_bone(self):
         presenter, view, _, adapter = self._make_with_bones(bone_names={})

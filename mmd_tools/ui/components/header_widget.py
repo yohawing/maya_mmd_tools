@@ -6,6 +6,7 @@
 import inspect
 
 from ...core.logger import get_logger
+from ...core.name_display import preferred_pmx_display_name
 from ..combo_box_utils import add_combo_item_with_tooltip, configure_model_combo_width
 from ..qt_compat import (
     QWidget,
@@ -14,6 +15,7 @@ from ..qt_compat import (
     QComboBox,
 )
 from ..translations import UITranslator
+from ..presenters.list_presenter_helpers import maya_node_leaf_name
 from .symbol_tool_button import SymbolToolButton
 
 logger = get_logger(__name__)
@@ -120,9 +122,23 @@ class HeaderWidget(QWidget):
             for model in models:
                 info = self.app_state.get_model_info(model)
                 if info:
-                    display_name = info["display_name"]
+                    leaf = maya_node_leaf_name(model)
+                    display_name = preferred_pmx_display_name(
+                        info.get("name_jp"),
+                        info.get("name_en"),
+                        fallback=leaf,
+                        language=self._translator.get_language(),
+                    )
                     namespace = info.get("namespace")
-                    if namespace:
+                    if self._translator.get_language() == "en":
+                        if namespace:
+                            # English labels must distinguish same-named PMX
+                            # roots loaded into different Maya namespaces,
+                            # without falling back to the Japanese PMX name.
+                            label = f"{display_name} [{namespace}]"
+                        else:
+                            label = f"{display_name} [{leaf}]" if leaf.isascii() else display_name
+                    elif namespace:
                         # namespace付きの場合
                         label = f"{display_name} [{namespace}:{model.split(':')[-1]}]"
                     else:

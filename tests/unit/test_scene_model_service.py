@@ -301,6 +301,43 @@ class TestSceneModelService(unittest.TestCase):
         self.assertEqual(service.get_model_display_name("en_root"), "English")
         self.assertEqual(service.get_model_display_name("plain_root"), "plain")
 
+    def test_get_model_display_name_english_ui_hides_japanese_fallback(self):
+        cmds = _FakeCmds()
+        cmds.attrs.update(
+            {
+                "jp_root": {
+                    ATTR_MMD_MODEL_NAME: "日本語名",
+                    ATTR_MMD_MODEL_NAME_EN: "English Name",
+                },
+                "missing_en_root": {
+                    ATTR_MMD_MODEL_NAME: "日本語名",
+                    ATTR_MMD_MODEL_NAME_EN: "",
+                },
+            }
+        )
+        service = SceneModelService(cmds_module=cmds)
+
+        self.assertEqual(service.get_model_display_name("jp_root", language="en"), "English Name")
+        self.assertEqual(
+            service.get_model_display_name("missing_en_root", language="en"),
+            "missing_en",
+        )
+
+    def test_get_model_display_name_english_ui_prefers_ascii_original_name(self):
+        cmds = _FakeCmds()
+        cmds.attrs = {
+            "generic_node_root": {
+                ATTR_MMD_MODEL_NAME: "Center",
+                ATTR_MMD_MODEL_NAME_EN: "",
+            }
+        }
+        service = SceneModelService(cmds_module=cmds)
+
+        self.assertEqual(
+            service.get_model_display_name("generic_node_root", language="en"),
+            "Center",
+        )
+
     def test_get_model_info_collects_summary_counts(self):
         cmds = _FakeCmds()
         cmds.existing = {"ns:model_root"}

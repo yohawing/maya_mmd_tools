@@ -1,442 +1,493 @@
-"""Translate imported MMD names using an explicit user dictionary.
+"""Translate MMD Names tool plug-in.
 
-The dictionary and planning functions are Maya independent so they can be
-used from tests, ``mayapy`` and the Maya menu through the same entry point.
-EnglishName writes and Maya node renames intentionally remain separate
-options.  The original MMD name attributes are never changed.
+This is the single product entry script for the menu item and modal UI.  The
+Maya-independent translation policy lives in ``mmd_tools.core`` so the tool
+depends on the application API, while the application never imports this tool
+by name.
 """
 
 from __future__ import annotations
 
-import argparse
-import csv
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Optional, Sequence, Tuple
 
-from mmd_tools.core.maya_name_utils import sanitize_unique_name
+from mmd_tools.services.scene_model_service import SceneModelService
+from mmd_tools.core.name_translation import (
+    NameChange,
+    NameEntry,
+    NameTranslationError,
+    _node_leaf,
+    apply_translation_plan,
+    build_translation_plan,
+    collect_name_entries,
+    format_preview,
+    load_translation_dictionary,
+    main as _core_main,
+    resolve_model_root,
+    run,
+)
 
 
+_SOURCE_ATTRIBUTES = {
+    "model": "mmd_model_name",
+    "bone": "mmd_bone_name",
+    "material": "mmd_material_name",
+    "morph": "mmd_morph_name",
+    "rigid_body": "nameJp",
+    "joint": "nameJp",
+}
+
+MENU_ITEM_ID = "MMDTranslateNamesMenuItem"
+MENU_ITEM_NAME = MENU_ITEM_ID
 MENU_LABEL = "Translate MMD Names"
-MENU_ITEM_NAME = "MMDTranslateNamesMenuItem"
-
-
-class NameTranslationError(ValueError):
-    """Raised when a translation dictionary or Maya target is invalid."""
 
 
 @dataclass(frozen=True)
-class NameEntry:
-    """One MMD name-bearing scene element."""
+class TranslationPreview:
+    """Read-only translation plan plus dictionary coverage information."""
 
-    kind: str
-    node: str
-    source_name: str
-    english_name: str
-    english_attr: str
-    index: Optional[int] = None
-    rename_allowed: bool = True
-
-
-@dataclass(frozen=True)
-class NameChange:
-    """The planned changes for one :class:`NameEntry`."""
-
-    entry: NameEntry
-    translated_name: Optional[str]
-    english_name: Optional[str]
-    maya_name: Optional[str]
-
-    @property
-    def has_changes(self) -> bool:
-        """Return whether this plan item changes either destination."""
-
-        return self.english_name is not None or self.maya_name is not None
+    root: str
+    plan: Tuple[NameChange, ...]
+    total: int
+    matched: int
+    missing: int
+    already_english: int
 
 
-def load_translation_dictionary(path: str) -> Dict[str, str]:
-    """Load a strict UTF-8 two-column Japanese-to-English CSV dictionary.
-
-    Blank lines are ignored.  A conventional ``日本語,英語`` or
-    ``Japanese,English`` header is accepted, but malformed rows and duplicate
-    keys fail closed instead of silently choosing one translation.
-    """
-
-    translations: Dict[str, str] = {}
-    try:
-        with Path(path).open("r", encoding="utf-8-sig", newline="") as stream:
-            rows = csv.reader(stream)
-            for line_number, row in enumerate(rows, start=1):
-                if not row or not any(cell.strip() for cell in row):
-                    continue
-                if len(row) != 2:
-                    raise NameTranslationError(
-                        f"translation dictionary row {line_number} must have exactly two columns"
-                    )
-                source, translated = (cell.strip() for cell in row)
-                if not translations and _is_header(source, translated):
-                    continue
-                if not source or not translated:
-                    raise NameTranslationError(
-                        f"translation dictionary row {line_number} cannot contain an empty cell"
-                    )
-                if source in translations:
-                    raise NameTranslationError(
-                        f"translation dictionary row {line_number} duplicates {source!r}"
-                    )
-                translations[source] = translated
-    except OSError as exc:
-        raise NameTranslationError(f"cannot read translation dictionary {path!r}: {exc}") from exc
-    return translations
-
-
-def _is_header(source: str, translated: str) -> bool:
-    return source.casefold() in {"日本語", "japanese", "ja"} and translated.casefold() in {
-        "英語",
-        "english",
-        "en",
-    }
-
-
-def build_translation_plan(
-    entries: Iterable[NameEntry],
-    translations: Mapping[str, str],
+def build_translation_preview_details(
+    dictionary_path: str,
     *,
-    set_english: bool = True,
-    overwrite: bool = False,
-    rename_nodes: bool = False,
-    used_names: Optional[Set[str]] = None,
-) -> Tuple[NameChange, ...]:
-    """Build deterministic EnglishName and optional Maya rename changes.
-
-    ``used_names`` represents names occupied by nodes outside ``entries``.
-    Names allocated for entries are added to a private copy in stable order.
-    This makes duplicate translations deterministic without applying Maya
-    sanitization to EnglishName values.
-    """
-
-    allocated = set(used_names or set())
-    ordered_entries = sorted(entries, key=_entry_sort_key)
-    plan: List[NameChange] = []
-    for entry in ordered_entries:
-        translated = translations.get(entry.source_name)
-        english_name = None
-        if set_english and translated and (overwrite or not entry.english_name):
-            if translated != entry.english_name:
-                english_name = translated
-
-        maya_name = None
-        if rename_nodes and entry.rename_allowed:
-            rename_source = translated or entry.source_name
-            candidate = sanitize_unique_name(
-                rename_source,
-                allocated,
-                fallback=f"{entry.kind}_{entry.index if entry.index is not None else 'node'}",
-            )
-            if candidate != _node_leaf(entry.node):
-                maya_name = candidate
-
-        plan.append(
-            NameChange(
-                entry=entry,
-                translated_name=translated,
-                english_name=english_name,
-                maya_name=maya_name,
-            )
-        )
-    return tuple(plan)
-
-
-def _entry_sort_key(entry: NameEntry) -> Tuple[str, int, str]:
-    return (entry.kind, entry.index if entry.index is not None else 2**31 - 1, entry.node)
-
-
-def _node_leaf(node: str) -> str:
-    return str(node).rsplit("|", 1)[-1]
-
-
-def collect_name_entries(model_root: str, *, cmds_module=None) -> Tuple[NameEntry, ...]:
-    """Collect model, bone, material and morph metadata owned by ``model_root``."""
-
-    cmds = cmds_module or _maya_cmds()
-    root = _canonical_node(cmds, model_root)
-    if not root:
-        raise NameTranslationError(f"model root does not resolve to one Maya node: {model_root!r}")
-
-    entries: List[NameEntry] = []
-    _append_entry(
-        entries,
-        cmds,
-        kind="model",
-        node=root,
-        source_attr="mmd_model_name",
-        english_attr="mmd_model_name_en",
-        rename_allowed=False,
-    )
-
-    joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
-    for joint in sorted(str(node) for node in joints):
-        _append_entry(
-            entries,
-            cmds,
-            kind="bone",
-            node=joint,
-            source_attr="mmd_bone_name",
-            english_attr="mmd_bone_name_en",
-            index=_read_int_attr(cmds, joint, "mmd_bone_index"),
-        )
-
-    for kind, category, source_attr, english_attr in (
-        ("material", "material", "mmd_material_name", "mmd_material_name_en"),
-        ("morph", "morph", "mmd_morph_name", "mmd_morph_name_en"),
-    ):
-        for node in _owned_nodes(root, category, source_attr, cmds):
-            _append_entry(
-                entries,
-                cmds,
-                kind=kind,
-                node=node,
-                source_attr=source_attr,
-                english_attr=english_attr,
-                index=_read_int_attr(cmds, node, "mmd_morph_index"),
-            )
-    return tuple(sorted(entries, key=_entry_sort_key))
-
-
-def _append_entry(
-    entries: List[NameEntry],
-    cmds,
-    *,
-    kind: str,
-    node: str,
-    source_attr: str,
-    english_attr: str,
-    index: Optional[int] = None,
-    rename_allowed: bool = True,
-) -> None:
-    if not _has_attr(cmds, node, source_attr):
-        return
-    entries.append(
-        NameEntry(
-            kind=kind,
-            node=node,
-            source_name=_read_string_attr(cmds, node, source_attr),
-            english_name=_read_string_attr(cmds, node, english_attr),
-            english_attr=english_attr,
-            index=index,
-            rename_allowed=rename_allowed,
-        )
-    )
-
-
-def _owned_nodes(root: str, category: str, source_attr: str, cmds) -> Tuple[str, ...]:
-    from mmd_tools.core import model_registry
-
-    members = model_registry.list_model_registry_members(root, category)
-    if members is not None:
-        return tuple(sorted(_canonical_node(cmds, node) for node in members if _canonical_node(cmds, node)))
-
-    # Legacy scenes have no registry.  Use only the explicit reverse ownership
-    # link and the requested metadata attribute; never scan unrelated names.
-    owned: List[str] = []
-    for node in cmds.ls() or []:
-        node = _canonical_node(cmds, node)
-        if not node or not _has_attr(cmds, node, source_attr) or not _has_attr(cmds, node, "mmd_model_root"):
-            continue
-        roots = cmds.listConnections(
-            f"{node}.mmd_model_root",
-            source=True,
-            destination=False,
-        ) or []
-        if any(_canonical_node(cmds, candidate) == root for candidate in roots):
-            owned.append(node)
-    return tuple(sorted(set(owned)))
-
-
-def resolve_model_root(model_root: Optional[str] = None, *, cmds_module=None) -> str:
-    """Resolve an explicit root or one unambiguous selected/scene model."""
-
-    cmds = cmds_module or _maya_cmds()
-    if model_root:
-        root = _canonical_node(cmds, model_root)
-        if root:
-            return root
-        raise NameTranslationError(f"model root does not resolve: {model_root!r}")
-
-    from mmd_tools.services.scene_model_service import SceneModelService
-
-    service = SceneModelService(cmds_module=cmds)
-    models = service.list_mmd_models()
-    selected = service.resolve_model_from_selection(models)
-    if selected:
-        return selected
-    if len(models) == 1:
-        return models[0]
-    if not models:
-        raise NameTranslationError("no MMD model root was found in the scene")
-    raise NameTranslationError("select exactly one MMD model or pass model_root explicitly")
-
-
-def apply_translation_plan(plan: Sequence[NameChange], *, cmds_module=None) -> Tuple[NameChange, ...]:
-    """Apply one validated plan in a single Maya undo chunk."""
-
-    changes = tuple(change for change in plan if change.has_changes)
-    if not changes:
-        return changes
-    cmds = cmds_module or _maya_cmds()
-    opened = False
-    try:
-        cmds.undoInfo(openChunk=True, chunkName="Translate MMD Names")
-        opened = True
-        for change in changes:
-            if change.english_name is not None:
-                cmds.setAttr(
-                    f"{change.entry.node}.{change.entry.english_attr}",
-                    change.english_name,
-                    type="string",
-                )
-        # Rename deepest DAG nodes first so a parent rename never invalidates a
-        # descendant path that is still waiting to be applied.
-        renames = sorted(
-            (change for change in changes if change.maya_name is not None),
-            key=lambda change: change.entry.node.count("|"),
-            reverse=True,
-        )
-        for change in renames:
-            cmds.rename(change.entry.node, change.maya_name)
-    except Exception:
-        if opened:
-            cmds.undoInfo(closeChunk=True)
-            opened = False
-            try:
-                cmds.undo()
-            except Exception:
-                pass
-        raise
-    finally:
-        if opened:
-            cmds.undoInfo(closeChunk=True)
-    return changes
-
-
-def run(
-    *_args,
-    dictionary_path: Optional[str] = None,
     model_root: Optional[str] = None,
-    dry_run: bool = False,
-    set_english: bool = True,
     overwrite: bool = False,
     rename_nodes: bool = False,
     cmds_module=None,
-):
-    """Run the tool from the menu, Script Editor or a Python caller."""
+) -> TranslationPreview:
+    """Build a read-only plan and coverage summary from one scene snapshot."""
 
-    cmds = cmds_module or _maya_cmds()
-    if not dictionary_path:
-        selected = cmds.fileDialog2(
-            fileMode=1,
-            caption="Select MMD name translation dictionary",
-            fileFilter="CSV files (*.csv);;All files (*.*)",
-        ) or []
-        if not selected:
-            return tuple()
-        dictionary_path = selected[0]
-    root = resolve_model_root(model_root, cmds_module=cmds)
-    entries = collect_name_entries(root, cmds_module=cmds)
+    if not str(dictionary_path or "").strip():
+        raise NameTranslationError("choose a UTF-8 translation dictionary CSV")
+
+    root = resolve_model_root(model_root, cmds_module=cmds_module)
+    entries = collect_name_entries(root, cmds_module=cmds_module)
+    translations = load_translation_dictionary(dictionary_path)
     target_names = {_node_leaf(entry.node) for entry in entries if entry.rename_allowed}
+    cmds = cmds_module
+    if cmds is None:
+        from maya import cmds as maya_cmds
+
+        cmds = maya_cmds
     scene_names = {_node_leaf(node) for node in (cmds.ls(long=True) or [])}
-    plan = build_translation_plan(
+    full_plan = build_translation_plan(
         entries,
-        load_translation_dictionary(dictionary_path),
-        set_english=set_english,
+        translations,
+        set_english=True,
         overwrite=overwrite,
         rename_nodes=rename_nodes,
         used_names=scene_names - target_names,
     )
-    changes = tuple(change for change in plan if change.has_changes)
-    for line in format_preview(changes):
-        print(line)
-    if dry_run:
-        return changes
-    return apply_translation_plan(changes, cmds_module=cmds)
+    plan = tuple(change for change in full_plan if change.has_changes)
+    matched = sum(entry.source_name in translations for entry in entries)
+    return TranslationPreview(
+        root=root,
+        plan=plan,
+        total=len(entries),
+        matched=matched,
+        missing=len(entries) - matched,
+        already_english=sum(bool(entry.english_name) for entry in entries),
+    )
 
 
-def format_preview(plan: Sequence[NameChange]) -> Tuple[str, ...]:
-    """Format stable, human-readable preview lines."""
+def format_dialog_preview(
+    plan: Sequence[NameChange],
+    *,
+    show_original: bool = False,
+) -> Tuple[str, ...]:
+    """Format English-first rows, revealing original metadata only on request."""
 
     lines = []
     for change in plan:
-        label = change.entry.kind
-        if change.entry.index is not None:
-            label = f"{label}[{change.entry.index}]"
-        details = [f"{label}: {change.entry.node}"]
+        entry = change.entry
+        label = entry.kind
+        if entry.index is not None:
+            label = f"{label}[{entry.index}]"
+        details = [f"{label}:"]
         if change.english_name is not None:
             details.append(f"EnglishName={change.english_name!r}")
+        else:
+            details.append("EnglishName=(unchanged)")
         if change.maya_name is not None:
-            details.append(f"node={change.maya_name!r}")
-        lines.append("; ".join(details))
+            details.append(f"Maya node rename={change.maya_name!r}")
+        if show_original:
+            details.append(f"OriginalPMXName={entry.source_name!r}")
+            details.append(f"MayaNode={entry.node}")
+        lines.append(" ".join(details[:2]) + ("; " + "; ".join(details[2:]) if len(details) > 2 else ""))
     return tuple(lines)
 
 
-def _read_string_attr(cmds, node: str, attr: str) -> str:
-    if not _has_attr(cmds, node, attr):
-        return ""
-    return str(cmds.getAttr(f"{node}.{attr}") or "")
+def _capture_preview_state(plan: Sequence[NameChange], *, cmds_module):
+    """Capture identity and name snapshots that make Apply fail closed."""
+
+    snapshots = {}
+    for change in plan:
+        entry = change.entry
+        source_attr = _SOURCE_ATTRIBUTES.get(entry.kind)
+        if source_attr is None:
+            raise NameTranslationError(f"unsupported translation target kind: {entry.kind}")
+        try:
+            uuids = cmds_module.ls(entry.node, uuid=True) or []
+            if len(uuids) != 1:
+                raise NameTranslationError(f"cannot capture Maya UUID for {entry.node}")
+            if not cmds_module.attributeQuery(source_attr, node=entry.node, exists=True):
+                raise NameTranslationError(f"stale original-name attribute: {entry.node}.{source_attr}")
+            if not cmds_module.attributeQuery(entry.english_attr, node=entry.node, exists=True):
+                raise NameTranslationError(f"stale EnglishName attribute: {entry.node}.{entry.english_attr}")
+            source_name = str(cmds_module.getAttr(f"{entry.node}.{source_attr}") or "")
+            english_name = str(cmds_module.getAttr(f"{entry.node}.{entry.english_attr}") or "")
+        except NameTranslationError:
+            raise
+        except Exception as exc:
+            raise NameTranslationError(f"cannot capture translation target {entry.node!r}: {exc}") from exc
+        snapshots[entry.node] = (str(uuids[0]), source_name, english_name)
+    return snapshots
 
 
-def _read_int_attr(cmds, node: str, attr: str) -> Optional[int]:
-    if not _has_attr(cmds, node, attr):
-        return None
-    try:
-        return int(cmds.getAttr(f"{node}.{attr}"))
-    except (TypeError, ValueError):
-        return None
+def _validate_preview_targets(
+    plan: Sequence[NameChange],
+    *,
+    cmds_module,
+    preview_state=None,
+) -> None:
+    """Fail before writes when a node, identity, or name became stale."""
+
+    for change in plan:
+        entry = change.entry
+        try:
+            if not cmds_module.objExists(entry.node):
+                raise NameTranslationError(f"stale translation target: {entry.node}")
+            matches = cmds_module.ls(entry.node, long=True) or []
+            if len(matches) != 1 or str(matches[0]) != entry.node:
+                raise NameTranslationError(f"stale translation target: {entry.node}")
+            if change.english_name is not None and not cmds_module.attributeQuery(
+                entry.english_attr,
+                node=entry.node,
+                exists=True,
+            ):
+                raise NameTranslationError(
+                    f"stale EnglishName attribute: {entry.node}.{entry.english_attr}"
+                )
+            if preview_state is not None:
+                snapshot = preview_state.get(entry.node)
+                if snapshot is None:
+                    raise NameTranslationError(f"missing preview state for {entry.node}")
+                source_attr = _SOURCE_ATTRIBUTES.get(entry.kind)
+                if source_attr is None:
+                    raise NameTranslationError(f"unsupported translation target kind: {entry.kind}")
+                uuids = cmds_module.ls(entry.node, uuid=True) or []
+                current_uuid = str(uuids[0]) if len(uuids) == 1 else None
+                current_source = str(cmds_module.getAttr(f"{entry.node}.{source_attr}") or "")
+                current_english = str(cmds_module.getAttr(f"{entry.node}.{entry.english_attr}") or "")
+                if current_uuid != snapshot[0]:
+                    raise NameTranslationError(f"stale translation target identity: {entry.node}")
+                if current_source != snapshot[1] or current_source != entry.source_name:
+                    raise NameTranslationError(f"stale original MMD name: {entry.node}")
+                if current_english != snapshot[2] or current_english != entry.english_name:
+                    raise NameTranslationError(f"stale EnglishName: {entry.node}")
+        except NameTranslationError:
+            raise
+        except Exception as exc:
+            raise NameTranslationError(f"cannot validate translation target {entry.node!r}: {exc}") from exc
 
 
-def _has_attr(cmds, node: str, attr: str) -> bool:
-    try:
-        return bool(cmds.attributeQuery(attr, node=node, exists=True))
-    except Exception:
-        return False
+class NameTranslationDialog:
+    """Small modal Qt dialog for previewing and applying one translation plan."""
+
+    def __init__(self, *, cmds_module=None, parent=None, on_applied=None):
+        from mmd_tools.ui.qt_compat import (
+            QCheckBox,
+            QDialog,
+            QFileDialog,
+            QFormLayout,
+            QHBoxLayout,
+            QLabel,
+            QLineEdit,
+            QMessageBox,
+            QPushButton,
+            QTextEdit,
+            QVBoxLayout,
+        )
+
+        # Keep the Qt imports local to the dialog entry point.  Importing the
+        # Maya-independent translation core never requires PySide.
+        self._qt = {
+            "QFileDialog": QFileDialog,
+            "QMessageBox": QMessageBox,
+        }
+        self._cmds = cmds_module
+        self._preview_root = None
+        self._preview_plan: Optional[Tuple[NameChange, ...]] = None
+        self._preview_state = None
+        self._model_root = None
+        self._on_applied = on_applied
+
+        self._dialog = QDialog(parent)
+        self._dialog.setObjectName("MMDNameTranslationDialog")
+        self._dialog.setWindowTitle("Translate MMD Names")
+        self._dialog.setModal(True)
+
+        self.model_label = QLabel("Model: resolving…", self._dialog)
+        self.model_label.setObjectName("modelLabel")
+        self.dictionary_edit = QLineEdit(self._dialog)
+        self.dictionary_edit.setObjectName("dictionaryPathEdit")
+        self.browse_button = QPushButton("Browse…", self._dialog)
+        self.browse_button.setObjectName("browseButton")
+        self.overwrite_checkbox = QCheckBox("Overwrite existing EnglishName", self._dialog)
+        self.overwrite_checkbox.setObjectName("overwriteCheckBox")
+        self.rename_checkbox = QCheckBox("Also rename Maya nodes", self._dialog)
+        self.rename_checkbox.setObjectName("renameNodesCheckBox")
+        self.original_checkbox = QCheckBox("Show original PMX names", self._dialog)
+        self.original_checkbox.setObjectName("showOriginalNamesCheckBox")
+        self.rename_note_label = QLabel(
+            "Maya Outliner names stay unchanged unless node renaming is enabled.",
+            self._dialog,
+        )
+        self.rename_note_label.setObjectName("renameNodesNoteLabel")
+        self.preview_text = QTextEdit(self._dialog)
+        self.preview_text.setObjectName("previewText")
+        self.preview_text.setReadOnly(True)
+        self.preview_text.setMinimumHeight(240)
+        self.status_label = QLabel("Choose a CSV, then click Preview.", self._dialog)
+        self.status_label.setObjectName("statusLabel")
+        self.preview_button = QPushButton("Preview", self._dialog)
+        self.preview_button.setObjectName("previewButton")
+        self.apply_button = QPushButton("Apply", self._dialog)
+        self.apply_button.setObjectName("applyButton")
+        self.cancel_button = QPushButton("Cancel", self._dialog)
+        self.cancel_button.setObjectName("cancelButton")
+        self.apply_button.setEnabled(False)
+        self.preview_button.setDefault(True)
+
+        dictionary_row = QHBoxLayout()
+        dictionary_row.addWidget(self.dictionary_edit)
+        dictionary_row.addWidget(self.browse_button)
+        form = QFormLayout()
+        form.addRow(self.model_label)
+        form.addRow("Dictionary CSV", dictionary_row)
+        form.addRow(self.overwrite_checkbox)
+        form.addRow(self.rename_checkbox)
+        form.addRow(self.rename_note_label)
+        form.addRow(self.original_checkbox)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        buttons.addWidget(self.preview_button)
+        buttons.addWidget(self.apply_button)
+        buttons.addWidget(self.cancel_button)
+        layout = QVBoxLayout(self._dialog)
+        layout.addLayout(form)
+        layout.addWidget(self.preview_text)
+        layout.addWidget(self.status_label)
+        layout.addLayout(buttons)
+
+        self.browse_button.clicked.connect(self._choose_dictionary)
+        self.preview_button.clicked.connect(self.preview)
+        self.apply_button.clicked.connect(self.apply)
+        self.cancel_button.clicked.connect(self._dialog.reject)
+        self.dictionary_edit.textChanged.connect(self._invalidate_preview)
+        self.overwrite_checkbox.stateChanged.connect(self._invalidate_preview)
+        self.rename_checkbox.stateChanged.connect(self._invalidate_preview)
+        self.original_checkbox.stateChanged.connect(self._render_preview)
+
+        try:
+            self._model_root = resolve_model_root(cmds_module=self._cmds)
+            display_name = SceneModelService(cmds_module=self._cmds).get_model_display_name(
+                self._model_root,
+                language="en",
+            )
+            self.model_label.setText(f"Model: {display_name}")
+        except Exception as exc:
+            self._report_error(str(exc), show_dialog=True)
+
+    def __getattr__(self, name):
+        """Delegate Qt window methods (show, close, exec, and so on)."""
+
+        return getattr(self._dialog, name)
+
+    @property
+    def model_root(self):
+        """Return the model root resolved while the dialog is open."""
+
+        return self._model_root
+
+    def exec_modal(self) -> bool:
+        """Execute the modal using the available Qt binding."""
+
+        exec_method = getattr(self._dialog, "exec", None) or getattr(self._dialog, "exec_", None)
+        return bool(exec_method()) if callable(exec_method) else False
+
+    def _choose_dictionary(self, *_args):
+        path, _ = self._qt["QFileDialog"].getOpenFileName(
+            self._dialog,
+            "Select MMD name translation dictionary",
+            "",
+            "CSV files (*.csv);;All files (*)",
+        )
+        if path:
+            self.dictionary_edit.setText(path)
+
+    def _invalidate_preview(self, *_args):
+        self._preview_plan = None
+        self._preview_root = None
+        self._preview_state = None
+        self.apply_button.setEnabled(False)
+
+    def _render_preview(self, *_args):
+        plan = self._preview_plan
+        if plan is None:
+            return
+        lines = format_dialog_preview(
+            plan,
+            show_original=self.original_checkbox.isChecked(),
+        )
+        self.preview_text.setPlainText("\n".join(lines) if lines else "No changes planned.")
+
+    def preview(self, *_args):
+        """Build and display a read-only plan; never mutate the scene."""
+
+        self._invalidate_preview()
+        try:
+            details = build_translation_preview_details(
+                self.dictionary_edit.text().strip(),
+                model_root=self._model_root,
+                overwrite=self.overwrite_checkbox.isChecked(),
+                rename_nodes=self.rename_checkbox.isChecked(),
+                cmds_module=self._cmds,
+            )
+            cmds = self._cmds
+            if cmds is None:
+                from maya import cmds as maya_cmds
+
+                cmds = maya_cmds
+            preview_state = _capture_preview_state(details.plan, cmds_module=cmds)
+            self._preview_root = details.root
+            self._preview_plan = details.plan
+            self._preview_state = preview_state
+            self._render_preview()
+            self.status_label.setText(
+                "Coverage: "
+                f"{details.matched}/{details.total} dictionary matches; "
+                f"{details.missing} missing; {details.already_english} already named; "
+                f"{len(details.plan)} change(s)."
+            )
+            self.apply_button.setEnabled(bool(details.plan))
+            return details.plan
+        except Exception as exc:
+            self.preview_text.clear()
+            self._report_error(str(exc), show_dialog=True)
+            return None
+
+    def apply(self, *_args):
+        """Apply the successful preview as one existing core undo chunk."""
+
+        plan = self._preview_plan
+        if not plan or not self._preview_root or self._preview_state is None:
+            return None
+        try:
+            root = resolve_model_root(self._preview_root, cmds_module=self._cmds)
+            if root != self._preview_root:
+                raise NameTranslationError("the selected MMD model changed; preview again")
+            cmds = self._cmds
+            if cmds is None:
+                from maya import cmds as maya_cmds
+
+                cmds = maya_cmds
+
+            _validate_preview_targets(
+                plan,
+                cmds_module=cmds,
+                preview_state=self._preview_state,
+            )
+            changes = apply_translation_plan(plan, cmds_module=cmds)
+            self._preview_plan = None
+            self._preview_state = None
+            self.apply_button.setEnabled(False)
+            refresh_error = None
+            if callable(self._on_applied):
+                try:
+                    self._on_applied(changes)
+                except Exception as exc:
+                    refresh_error = str(exc)
+            if refresh_error:
+                self._report_error(
+                    f"Names were applied, but the open UI could not refresh: {refresh_error}",
+                    show_dialog=True,
+                )
+            else:
+                self.status_label.setText(f"Applied {len(changes)} change(s).")
+            self._dialog.accept()
+            return changes
+        except Exception as exc:
+            self._report_error(str(exc), show_dialog=True)
+            return None
+
+    def _report_error(self, message: str, *, show_dialog: bool):
+        self.status_label.setText(f"Error: {message}")
+        if show_dialog:
+            warning = getattr(self._qt["QMessageBox"], "warning", None)
+            if callable(warning):
+                warning(self._dialog, "Translate MMD Names", message)
 
 
-def _canonical_node(cmds, node: str) -> Optional[str]:
-    if not node or not cmds.objExists(node):
-        return None
-    matches = cmds.ls(node, long=True) or []
-    if len(matches) != 1:
-        return None
-    return str(matches[0])
+def show_name_translation_dialog(*, cmds_module=None, parent=None, on_applied=None) -> bool:
+    """Open the standalone modal dialog and return its accepted state."""
+
+    dialog = NameTranslationDialog(
+        cmds_module=cmds_module,
+        parent=parent,
+        on_applied=on_applied,
+    )
+    return dialog.exec_modal()
 
 
-def _maya_cmds():
-    try:
-        from maya import cmds
-    except ImportError as exc:
-        raise NameTranslationError("translate_names.py must run inside Maya or mayapy") from exc
-    return cmds
+def install_menu_item(*, parent, cmds_module, on_applied=None) -> str:
+    """Install this tool below the host-owned Tools submenu."""
+
+    cmds_module.menuItem(
+        MENU_ITEM_ID,
+        label=MENU_LABEL,
+        command=lambda *_args: show_name_translation_dialog(
+            cmds_module=cmds_module,
+            on_applied=on_applied,
+        ),
+        parent=parent,
+    )
+    return MENU_ITEM_ID
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """CLI entry point for ``mayapy mmd_tools/tools/translate_names.py``."""
+    """Preserve the documented mayapy entry point for this tool script."""
 
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("dictionary", help="UTF-8 two-column Japanese-to-English CSV")
-    parser.add_argument("--root", dest="model_root", help="explicit MMD model root")
-    parser.add_argument("--dry-run", action="store_true", help="print changes without writing")
-    parser.add_argument("--no-english", action="store_true", help="do not update EnglishName attributes")
-    parser.add_argument("--overwrite", action="store_true", help="overwrite non-empty EnglishName attributes")
-    parser.add_argument("--rename-nodes", action="store_true", help="also rename eligible Maya nodes")
-    args = parser.parse_args(argv)
-    run(
-        dictionary_path=args.dictionary,
-        model_root=args.model_root,
-        dry_run=args.dry_run,
-        set_english=not args.no_english,
-        overwrite=args.overwrite,
-        rename_nodes=args.rename_nodes,
-    )
-    return 0
+    return _core_main(argv)
+
+
+__all__ = [
+    "NameTranslationDialog",
+    "NameChange",
+    "NameEntry",
+    "NameTranslationError",
+    "TranslationPreview",
+    "apply_translation_plan",
+    "build_translation_plan",
+    "build_translation_preview_details",
+    "collect_name_entries",
+    "format_dialog_preview",
+    "format_preview",
+    "install_menu_item",
+    "load_translation_dictionary",
+    "main",
+    "resolve_model_root",
+    "run",
+    "show_name_translation_dialog",
+]
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised by mayapy/Script Editor

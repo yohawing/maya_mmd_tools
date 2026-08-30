@@ -20,6 +20,7 @@ from ..qt_compat import (
     QMenu,
 )
 from ..base_tab import BaseTab
+from ...core.name_display import original_pmx_fields_visible
 from ..components.authoring_toolbar import AuthoringToolbar
 from .translation_registry import apply_translation_registry
 
@@ -69,6 +70,9 @@ class MorphTab(BaseTab):
 
         main_layout.addWidget(splitter)
         self.set_work_material_controls(False)
+        original_visible = original_pmx_fields_visible(self._translator.get_language())
+        self.morph_name_jp_label.setVisible(original_visible)
+        self.morph_name_jp_edit.setVisible(original_visible)
 
     def _create_morph_list_section(self):
         """モーフリストセクションを作成"""
@@ -407,6 +411,9 @@ class MorphTab(BaseTab):
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
+        original_visible = original_pmx_fields_visible(self._translator.get_language())
+        self.morph_name_jp_label.setVisible(original_visible)
+        self.morph_name_jp_edit.setVisible(original_visible)
 
         self.morph_refresh_toolbar.retranslate(
             {"refresh": self.tr("refresh", "buttons")},

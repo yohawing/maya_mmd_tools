@@ -782,7 +782,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
             {"name": "笑顔", "name_english": "smile", "index": 0, "panel": 1,
              "bindings": (("|faceBlendShape", "smile", 0),)},))
         self.assertEqual(presenter.blend_shape_node, "|faceBlendShape")
-        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|笑顔 [smile]"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|smile"])
         self.assertFalse(any(call[0] in {"list_relatives", "list_history", "alias_attr",
                                         "list_connections"} for call in adapter.calls))
 
@@ -820,8 +820,10 @@ class TestMorphPresenterHeadless(unittest.TestCase):
             "b": {"name_jp": "同名", "type": 2, "index": 7, "_pmx_type_raw": True},
             "v": {"name_jp": "同名", "type": 1, "index": 4, "_pmx_type_raw": True}}
         presenter._display_all_morphs()
-        self.assertEqual([item.text() for item in view.morph_list.items],
-                         ["4:V|同名", "7:B|同名", "-:M|同名"])
+        self.assertEqual(
+            [item.text() for item in view.morph_list.items],
+            ["4:V|Morph 4", "7:B|Morph 7", "-:M|Morph 2"],
+        )
         self.assertEqual([item.data(256) for item in view.morph_list.items], ["v", "b", "m"])
 
     def test_duplicate_blendshape_names_bind_by_weight_index_deterministically(self):
@@ -947,7 +949,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
                 ("|a", "smile_a", 0), ("|b", "smile_b", 0))},))
         presenter.current_morph = "笑顔"
         presenter.on_morph_slider_changed(65)
-        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|笑顔"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|Morph 0"])
         self.assertEqual(len(presenter.morph_data["笑顔"]["blend_shape_targets"]), 2)
         self.assertIn(("set_attr", "controller.inputWeight[0]", 0.65), adapter.calls)
 
@@ -1085,7 +1087,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
                 ("|faceBlendShapeB", "smile_b", 3),
             )},
         ))
-        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|笑顔"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|Morph 0"])
         self.assertEqual(presenter.morph_data["笑顔"]["blend_shape_targets"], [
             {"node": "|ns:faceBlendShapeA", "target": "smile_a", "weight_attr": "weight[0]"},
             {"node": "|faceBlendShapeB", "target": "smile_b", "weight_attr": "weight[3]"},

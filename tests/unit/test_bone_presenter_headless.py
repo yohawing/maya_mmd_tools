@@ -729,7 +729,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
         self.assertEqual(presenter.all_bones, ["center_jnt", "arm_jnt"])
         self.assertEqual(
             [item.text() for item in view.bone_list.items],
-            ["0:センター（center_jnt） [Center]", "7:腕（arm_jnt） [Arm]"],
+            ["0:Center (center_jnt)", "7:Arm (arm_jnt)"],
         )
         self.assertEqual(
             [item.data(bone_presenter_module.Qt.UserRole) for item in view.bone_list.items],
@@ -769,7 +769,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
                 ("node_type", "leg_jnt"),
             ],
         )
-        self.assertEqual([item.text() for item in view.bone_list.items], ["2:足（leg_jnt）"])
+        self.assertEqual([item.text() for item in view.bone_list.items], ["2:leg_jnt"])
 
     def test_load_bones_hides_namespace_and_path_but_preserves_full_node(self):
         joint = "|root|outer:model:manipulation_center"
@@ -791,10 +791,10 @@ class TestBonePresenterHeadless(unittest.TestCase):
         item = view.bone_list.items[0]
         self.assertEqual(
             item.text(),
-            "0:操作中心（manipulation_center） [Manipulation Center]",
+            "0:Manipulation Center (manipulation_center)",
         )
         self.assertEqual(item.data(bone_presenter_module.Qt.UserRole), joint)
-        self.assertEqual(item.toolTip(), joint)
+        self.assertEqual(item.toolTip(), "0:Manipulation Center (manipulation_center)")
 
     def test_filter_bones_uses_display_japanese_english_and_joint_names(self):
         presenter, _, _, _ = _make_presenter()
@@ -1003,7 +1003,7 @@ class TestBonePresenterHeadless(unittest.TestCase):
         reload.assert_not_called()
         coordinator.read_spec.assert_not_called()
         coordinator.apply_bone_value_patch.assert_called_once()
-        self.assertIn("3:センター", item.text())
+        self.assertIn("3:Center", item.text())
 
     def test_apply_changes_structural_edit_keeps_full_route(self):
         coordinator = Mock()
