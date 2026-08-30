@@ -195,3 +195,34 @@ def test_development_visibility_refresh_keeps_always_present_physics_tab():
     assert window.tab_widget.widgets == [physics_tab]
     assert window.tabs is tabs
     assert window.tabs == [physics_tab]
+
+
+def test_retranslate_rebuilds_locale_dependent_model_labels():
+    presenters = [Mock() for _ in range(5)]
+    window = type(
+        "Window",
+        (),
+        {
+            "import_export_tab": object(),
+            "export_tab": object(),
+            "info_presenter": presenters[0],
+            "material_presenter": presenters[1],
+            "bone_presenter": presenters[2],
+            "morph_presenter": presenters[3],
+            "morph_tab": object(),
+            "display_pane_presenter": presenters[4],
+            "display_pane_tab": object(),
+            "physics_tab": object(),
+            "settings_presenter": Mock(),
+            "tabs": [],
+            "tab_widget": _Tabs([]),
+            "header_widget": Mock(),
+            "retranslateUi": Mock(),
+            "app_state": Mock(),
+        },
+    )()
+
+    MainWindow.retranslate_all_tabs(window)
+
+    window.header_widget.retranslateUi.assert_called_once_with()
+    window.app_state.refresh_model_list.assert_called_once_with(explicit=True)

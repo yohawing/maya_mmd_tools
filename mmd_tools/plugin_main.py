@@ -347,7 +347,32 @@ def _run_mmd_name_translation():
 
     from mmd_tools.ui.name_translation_dialog import show_name_translation_dialog
 
-    return show_name_translation_dialog()
+    return show_name_translation_dialog(on_applied=_refresh_name_translation_ui)
+
+
+def _refresh_name_translation_ui(_changes=()):
+    """Refresh each open MMD Tools view after translated metadata changes."""
+
+    app_states = []
+    for window in (_main_window, _animator_toolset_window):
+        state = getattr(window, "app_state", None) if window is not None else None
+        if state is not None and all(state is not existing for existing in app_states):
+            app_states.append(state)
+    manager_state = (
+        getattr(_control_rig_manager_window, "_app_state", None)
+        if _control_rig_manager_window is not None
+        else None
+    )
+    if manager_state is not None and all(manager_state is not existing for existing in app_states):
+        app_states.append(manager_state)
+
+    for state in app_states:
+        state.refresh_model_list(explicit=True)
+
+    if _animator_toolset_window is not None:
+        _animator_toolset_window.refresh_for_language_change()
+    if _control_rig_manager_window is not None:
+        _control_rig_manager_window.refresh()
 
 
 def _node_type_registered(type_name: str) -> bool:

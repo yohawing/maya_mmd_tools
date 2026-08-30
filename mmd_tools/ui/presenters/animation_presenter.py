@@ -19,6 +19,7 @@ from ...core.display_frame_resolver import PickerGroup, resolve_display_frames
 from ...core.logger import get_logger
 from ...core.maya_identity import same_node_identity
 from ...core.mmd_bone_names import normalize_mmd_bone_name
+from ...core.name_display import preferred_pmx_display_name
 from ...core.mmd_control_rig_builder import inspect_mmd_control_rig
 from ...core.morph_metadata_reader import (
     CategorizedMorphs,
@@ -42,6 +43,7 @@ from ...core.visibility_state import (
     sync_visibility_connections,
 )
 from ..combo_box_utils import add_combo_item_with_tooltip
+from ..translations import UITranslator
 
 if TYPE_CHECKING:
     from ..application_state import ApplicationState
@@ -399,6 +401,17 @@ class AnimationPresenter:
         # change signals when the string-valued model list is unchanged, so a
         # scene callback must explicitly reload UUID-backed rig metadata and
         # picker state instead of leaving the previous scene cached in the UI.
+        model = self.app_state.current_model_root
+        if model:
+            self._reload_for_model(model)
+        else:
+            self._clear_all()
+
+    def refresh_for_name_change(self) -> None:
+        """Rebuild locale-dependent picker labels without changing scene state."""
+
+        if self._disposed:
+            return
         model = self.app_state.current_model_root
         if model:
             self._reload_for_model(model)
@@ -1419,8 +1432,15 @@ class AnimationPresenter:
         bone_display_names = self._build_bone_display_name_map(bone_map)
         morph_metadata = self._read_morph_metadata(model_root)
         self._morph_controller = self._find_morph_controller(model_root)
+        language = UITranslator.instance().get_language()
         morph_display_names = {
-            index: info.name for index, info in morph_metadata.items()
+            index: preferred_pmx_display_name(
+                info.name,
+                info.name_english,
+                fallback=f"Morph {index}",
+                language=language,
+            )
+            for index, info in morph_metadata.items()
         }
         display_json = self._read_display_frames_json(model_root)
         self._picker_groups = resolve_display_frames(
@@ -1741,7 +1761,7 @@ class AnimationPresenter:
             self._picker_english_tooltips[picker] = english
 
     def _retranslate_picker_bone_tooltips(self) -> None:
-        """Use PMX English names outside Japanese, falling back to PMX Japanese."""
+        """Use locale-safe picker labels without exposing Japanese in English UI."""
 
         from ..widgets.body_picker_widget import _BODY_REGIONS
         from ..widgets.finger_picker_widget import _FINGER_REGIONS
@@ -1766,7 +1786,7 @@ class AnimationPresenter:
                 tooltips[region_id] = (
                     translated
                     if translated != region_id
-                    else english.get(region_id, region["bone_name"])
+                    else english.get(region_id, region_id)
                 )
             widget.update_region_texts(tooltips=tooltips)
 
@@ -1936,12 +1956,21 @@ class AnimationPresenter:
 
     def _build_bone_display_name_map(self, bone_map: dict[int, str]) -> dict[int, str]:
         names = {}
+        language = UITranslator.instance().get_language()
         for index, joint in bone_map.items():
             try:
+                name_jp = ""
+                name_en = ""
                 if self.maya_adapter.attribute_exists(ATTR_MMD_BONE_NAME, joint):
-                    name = self.maya_adapter.get_attr(f"{joint}.{ATTR_MMD_BONE_NAME}")
-                    if name:
-                        names[index] = str(name)
+                    name_jp = self.maya_adapter.get_attr(f"{joint}.{ATTR_MMD_BONE_NAME}") or ""
+                if self.maya_adapter.attribute_exists(ATTR_MMD_BONE_NAME_EN, joint):
+                    name_en = self.maya_adapter.get_attr(f"{joint}.{ATTR_MMD_BONE_NAME_EN}") or ""
+                names[index] = preferred_pmx_display_name(
+                    name_jp,
+                    name_en,
+                    fallback=joint.rsplit("|", 1)[-1].rsplit(":", 1)[-1],
+                    language=language,
+                )
             except Exception:
                 continue
         return names
@@ -2002,8 +2031,13 @@ class AnimationPresenter:
         tree = self.view.display_frame_tree
         tree.clear()
 
-        for group in groups:
-            label = group.name or group.name_english
+        for group_index, group in enumerate(groups):
+            label = preferred_pmx_display_name(
+                group.name,
+                group.name_english,
+                fallback=f"Display Frame {group_index}",
+                language=UITranslator.instance().get_language(),
+            )
             group_item = QTreeWidgetItem([label])
 
             for picker_item in group.items:
@@ -2237,13 +2271,18 @@ class AnimationPresenter:
             content_layout.setColumnStretch(2, 1)
 
             for row_index, morph in enumerate(morphs):
-                tooltip_parts = [morph.name]
-                if morph.name_english:
-                    tooltip_parts.append(morph.name_english)
+                language = UITranslator.instance().get_language()
+                display_name = preferred_pmx_display_name(
+                    morph.name,
+                    morph.name_english,
+                    fallback=f"Morph {morph.index}",
+                    language=language,
+                )
+                tooltip_parts = [display_name]
                 tooltip_parts.append(f"Type: {morph.morph_type}")
                 tooltip = "\n".join(tooltip_parts)
                 icon = create_morph_type_icon(morph.morph_type)
-                label = ElidedMorphLabel(morph.name, tooltip)
+                label = ElidedMorphLabel(display_name, tooltip)
 
                 slider = QSlider(Qt.Horizontal)
                 slider.setRange(0, 100)

@@ -156,7 +156,7 @@ def _node_leaf(node: str) -> str:
 
 
 def collect_name_entries(model_root: str, *, cmds_module=None) -> Tuple[NameEntry, ...]:
-    """Collect model, bone, material and morph metadata owned by ``model_root``."""
+    """Collect bilingual name metadata owned by ``model_root``."""
 
     cmds = cmds_module or _maya_cmds()
     root = _canonical_node(cmds, model_root)
@@ -199,6 +199,32 @@ def collect_name_entries(model_root: str, *, cmds_module=None) -> Tuple[NameEntr
                 source_attr=source_attr,
                 english_attr=english_attr,
                 index=_read_int_attr(cmds, node, "mmd_morph_index"),
+            )
+
+    # Physics names live on custom DAG shapes.  Descendant traversal from the
+    # selected root is an explicit ownership boundary and avoids any global
+    # scene scan.  Shape renaming is intentionally excluded; the existing
+    # node-rename option remains limited to normal authoring nodes.
+    for kind, node_type in (
+        ("rigid_body", "mmdRigidBodyShape"),
+        ("joint", "mmdPhysicsJointShape"),
+    ):
+        shapes = cmds.listRelatives(
+            root,
+            allDescendents=True,
+            type=node_type,
+            fullPath=True,
+        ) or []
+        for shape in sorted(str(node) for node in shapes):
+            _append_entry(
+                entries,
+                cmds,
+                kind=kind,
+                node=shape,
+                source_attr="nameJp",
+                english_attr="nameEn",
+                index=_read_int_attr(cmds, shape, "pmxIndex"),
+                rename_allowed=False,
             )
     return tuple(sorted(entries, key=_entry_sort_key))
 

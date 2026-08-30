@@ -1,6 +1,7 @@
 """Maya-independent tests for the MMD name translation tool."""
 
 import csv
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +9,7 @@ from mmd_tools.tools.translate_names import (
     NameEntry,
     NameTranslationError,
     build_translation_plan,
+    collect_name_entries,
     format_preview,
     load_translation_dictionary,
 )
@@ -108,3 +110,36 @@ def test_model_root_never_enters_node_rename_path():
     )
     assert plan[0].english_name == "Miku"
     assert plan[0].maya_name is None
+
+
+def test_collect_entries_includes_owned_physics_shapes_without_rename(monkeypatch):
+    attrs = {
+        "|root|rbShape": {"nameJp": "髪剛体", "nameEn": "", "pmxIndex": 4},
+        "|root|jointShape": {"nameJp": "髪ジョイント", "nameEn": "Hair Joint", "pmxIndex": 2},
+    }
+
+    def list_relatives(_root, **kwargs):
+        return {
+            "joint": [],
+            "mmdRigidBodyShape": ["|root|rbShape"],
+            "mmdPhysicsJointShape": ["|root|jointShape"],
+        }.get(kwargs.get("type"), [])
+
+    cmds = SimpleNamespace(
+        objExists=lambda node: node == "|root",
+        ls=lambda node=None, **kwargs: [node] if node and kwargs.get("long") else [],
+        listRelatives=list_relatives,
+        attributeQuery=lambda attr, node, exists: exists and attr in attrs.get(node, {}),
+        getAttr=lambda path: attrs[path.rsplit(".", 1)[0]][path.rsplit(".", 1)[1]],
+    )
+    from mmd_tools.core import model_registry
+
+    monkeypatch.setattr(model_registry, "list_model_registry_members", lambda *_args: ())
+
+    entries = collect_name_entries("|root", cmds_module=cmds)
+
+    assert [(entry.kind, entry.index, entry.english_attr) for entry in entries] == [
+        ("joint", 2, "nameEn"),
+        ("rigid_body", 4, "nameEn"),
+    ]
+    assert all(not entry.rename_allowed for entry in entries)

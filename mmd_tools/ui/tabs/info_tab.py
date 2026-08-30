@@ -9,6 +9,7 @@ from ..qt_compat import (
     Signal,
 )
 from ..base_tab import BaseTab
+from ...core.name_display import original_pmx_fields_visible
 
 
 class _InfoEditEventFilter(QObject):
@@ -85,8 +86,10 @@ class InfoTab(BaseTab):
         self.comment_en_edit.setMaximumHeight(100)
 
         # モデル名
-        info_layout.addRow(self.tr("model_name_jp", "fields"), self.model_name_jp_edit)
-        info_layout.addRow(self.tr("model_name_en", "fields"), self.model_name_en_edit)
+        self.model_name_jp_label = QLabel(self.tr("model_name_jp", "fields"))
+        self.model_name_en_label = QLabel(self.tr("model_name_en", "fields"))
+        info_layout.addRow(self.model_name_jp_label, self.model_name_jp_edit)
+        info_layout.addRow(self.model_name_en_label, self.model_name_en_edit)
 
         # コメントは縦に配置
         self.comment_jp_label = QLabel(self.tr("comment_jp", "fields"))
@@ -109,6 +112,19 @@ class InfoTab(BaseTab):
 
         # 初期状態では編集不可
         self.set_fields_enabled(False)
+        self._sync_original_fields_visibility()
+
+    def _sync_original_fields_visibility(self):
+        """Keep Japanese PMX metadata out of the normal English workflow."""
+
+        visible = original_pmx_fields_visible(self._translator.get_language())
+        for widget in (
+            self.model_name_jp_label,
+            self.model_name_jp_edit,
+            self.comment_jp_label,
+            self.comment_jp_edit,
+        ):
+            widget.setVisible(visible)
 
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method
         """Notify the presenter before the tab is torn down."""
@@ -145,12 +161,9 @@ class InfoTab(BaseTab):
         if hasattr(self, "info_group"):
             info_layout = self.info_group.layout()
             if info_layout:
-                label = info_layout.labelForField(self.model_name_jp_edit)
-                if label:
-                    label.setText(self.tr("model_name_jp", "fields"))
-                label = info_layout.labelForField(self.model_name_en_edit)
-                if label:
-                    label.setText(self.tr("model_name_en", "fields"))
+                self.model_name_jp_label.setText(self.tr("model_name_jp", "fields"))
+                self.model_name_en_label.setText(self.tr("model_name_en", "fields"))
 
         # Info label
         self.info_label.setText(self.tr("no_model_loaded", "placeholders"))
+        self._sync_original_fields_visibility()

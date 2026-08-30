@@ -23,6 +23,7 @@ from ..qt_compat import (
     Qt,
 )
 from ..base_tab import BaseTab
+from ...core.name_display import original_pmx_fields_visible
 from .translation_registry import apply_translation_registry
 from ..components.symbol_tool_button import SymbolToolButton
 
@@ -238,6 +239,10 @@ class PhysicsTab(BaseTab):
         main_layout.addWidget(self.splitter)
 
         self.set_physics_details_enabled(False)
+        original_visible = original_pmx_fields_visible(self._translator.get_language())
+        for editor_key in ("rigid_name", "joint_name"):
+            self._form_labels[editor_key][1].setVisible(original_visible)
+            self._physics_editors[editor_key][1].setVisible(original_visible)
 
     def _create_list_section(self):
         """Left pane: toolbar, Rigid Bodies / Joints tabs, per-tab search."""
@@ -608,6 +613,10 @@ class PhysicsTab(BaseTab):
         self.joint_form_group.setTitle(self.tr("joint_values", "groups"))
         for field_key, label in self._form_labels.values():
             label.setText(self.tr(field_key, "fields"))
+        original_visible = original_pmx_fields_visible(self._translator.get_language())
+        for editor_key in ("rigid_name", "joint_name"):
+            self._form_labels[editor_key][1].setVisible(original_visible)
+            self._physics_editors[editor_key][1].setVisible(original_visible)
         for editor_key, option_keys in self._combo_options.items():
             editor = self._physics_editors[editor_key][1]
             for index, option_key in enumerate(option_keys):

@@ -28,6 +28,7 @@ from mmd_tools.core.material_read_projection import (  # noqa: E402
     MaterialTextureProvenance,
     MaterialTextureSlot,
 )
+from mmd_tools.ui.translations import UITranslator  # noqa: E402
 
 
 class TestMaterialPresenter(unittest.TestCase):
@@ -35,6 +36,8 @@ class TestMaterialPresenter(unittest.TestCase):
 
     def setUp(self):
         """テスト前の準備"""
+        self.previous_language = UITranslator.instance().get_language()
+        UITranslator.instance().set_language("en")
         # モックビューを作成
         self.mock_view = Mock()
         attach_mocks(
@@ -134,7 +137,7 @@ class TestMaterialPresenter(unittest.TestCase):
 
     def tearDown(self):
         """テスト後のクリーンアップ"""
-        pass
+        UITranslator.instance().set_language(self.previous_language)
 
     def _configure_apply_inputs(self):
         self.presenter.current_material = "test_material"
@@ -694,7 +697,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.presenter.load_materials()
 
         item = self.mock_view.material_list.addItem.call_args[0][0]
-        self.assertEqual(item.text(), "1:顔材質（face_material） [Face]")
+        self.assertEqual(item.text(), "1:Face (face_material)")
         self.assertEqual(item.data(Qt.UserRole), material)
         self.assertEqual(item.data(Qt.UserRole + 2), "meshes=0, faces=?")
         self.assertNotEqual(item.toolTip(), material)

@@ -269,6 +269,35 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         self.assertTrue(menu_call[1]["command"]("menu-click"))
         self.plugin_main._run_mmd_name_translation.assert_called_once_with()
 
+    def test_translate_dialog_receives_open_ui_refresh_callback(self):
+        dialog_module = types.ModuleType("mmd_tools.ui.name_translation_dialog")
+        dialog_module.show_name_translation_dialog = MagicMock(return_value=True)
+        self._inject_module("mmd_tools.ui.name_translation_dialog", dialog_module)
+
+        self.assertTrue(self.plugin_main._run_mmd_name_translation())
+
+        callback = dialog_module.show_name_translation_dialog.call_args.kwargs["on_applied"]
+        self.assertIs(callback, self.plugin_main._refresh_name_translation_ui)
+
+    def test_name_translation_refreshes_each_open_state_once(self):
+        shared_state = MagicMock()
+        animator_state = MagicMock()
+        manager = MagicMock()
+        manager._app_state = shared_state
+        self.plugin_main._main_window = types.SimpleNamespace(app_state=shared_state)
+        self.plugin_main._animator_toolset_window = types.SimpleNamespace(
+            app_state=animator_state,
+            refresh_for_language_change=MagicMock(),
+        )
+        self.plugin_main._control_rig_manager_window = manager
+
+        self.plugin_main._refresh_name_translation_ui(("change",))
+
+        shared_state.refresh_model_list.assert_called_once_with(explicit=True)
+        animator_state.refresh_model_list.assert_called_once_with(explicit=True)
+        self.plugin_main._animator_toolset_window.refresh_for_language_change.assert_called_once_with()
+        manager.refresh.assert_called_once_with()
+
     def test_install_menu_keeps_one_translation_item_after_reload(self):
         items = {}
 

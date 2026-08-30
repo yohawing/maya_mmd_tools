@@ -208,6 +208,7 @@
     "use_cpp_rig_nodes": "IK/付与制約に実験的なC++リグノードを使います。利用できない場合はPythonノードにフォールバックします"
   },
   "messages": {
+    "ready": "準備完了",
     "vmd_bake_export_help": "現在のタイムラインをベイクしてアニメーションを書き出します。範囲指定時は指定範囲だけを対象にします。",
     "vpd_current_pose_help": "現在フレームで評価された現在のモデルのポーズを書き出します。",
     "display_element_added": "{element_type}（PMXインデックス {index}）を追加しました",

@@ -9,6 +9,8 @@ from maya import cmds, mel
 
 from mmd_tools.core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_entries
+from mmd_tools.core.name_display import preferred_pmx_display_name
+from mmd_tools.ui.translations import UITranslator
 
 
 _WEIGHT_INDEX = re.compile(r"(?:weight|w)\[(\d+)\]$")
@@ -30,8 +32,16 @@ def _destination_label(node_name: str, index: int) -> str | None:
                 if int(cmds.getAttr(f"{target}.mmd_morph_index")) != index:
                     continue
                 name = cmds.getAttr(f"{target}.mmd_morph_name")
-                if name:
-                    return str(name)
+                name_en = ""
+                if cmds.attributeQuery("mmd_morph_name_en", node=target, exists=True):
+                    name_en = cmds.getAttr(f"{target}.mmd_morph_name_en") or ""
+                if name or name_en:
+                    return preferred_pmx_display_name(
+                        name,
+                        name_en,
+                        fallback=target.rsplit("|", 1)[-1].rsplit(":", 1)[-1],
+                        language=UITranslator.instance().get_language(),
+                    )
             if (
                 cmds.nodeType(target) == "blendShape"
                 and cmds.attributeQuery(
@@ -47,7 +57,13 @@ def _destination_label(node_name: str, index: int) -> str | None:
                 entries = parse_blendshape_morph_entries(json.loads(raw or "{}"))
                 entry = entries.get(int(match.group(1)))
                 if entry and entry.get("name"):
-                    return str(entry["name"])
+                    target_leaf = target.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+                    return preferred_pmx_display_name(
+                        entry["name"],
+                        "",
+                        fallback=f"{target_leaf}[{match.group(1)}]",
+                        language=UITranslator.instance().get_language(),
+                    )
         except (RuntimeError, TypeError, ValueError, json.JSONDecodeError):
             continue
     return None
@@ -70,7 +86,10 @@ def _build_weight_controls(node_name: str) -> list[str]:
     for index in indices:
         plug = f"{node_name}.inputWeight[{index}]"
         label = _destination_label(node_name, int(index))
-        label = label or cmds.aliasAttr(plug, query=True) or f"Morph {index}"
+        alias = cmds.aliasAttr(plug, query=True)
+        if UITranslator.instance().get_language() == "en" and not str(alias or "").isascii():
+            alias = ""
+        label = label or alias or f"Morph {index}"
         # editorTemplate(addControl=...) does not reliably materialize controls
         # for multi elements.  Bind a concrete AE slider to the full plug.
         controls.append(

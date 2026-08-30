@@ -9,10 +9,19 @@ from mmd_tools.ui.presenters.list_presenter_helpers import (
     maya_node_leaf_name,
     reload_for_current_model_change,
 )
+from mmd_tools.ui.translations import UITranslator
 
 
 class TestNodeListLabels(unittest.TestCase):
     """Material/Bone list labels hide Maya qualification consistently."""
+
+    def setUp(self):
+        self.translator = UITranslator.instance()
+        self.previous_language = self.translator.get_language()
+        self.translator.set_language("ja")
+
+    def tearDown(self):
+        self.translator.set_language(self.previous_language)
 
     def test_leaf_name_removes_dag_path_and_nested_namespace(self):
         cases = {
@@ -49,6 +58,28 @@ class TestNodeListLabels(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertIn("（body）", first)
         self.assertIn("（body）", second)
+
+    def test_english_ui_prefers_english_and_never_falls_back_to_japanese(self):
+        self.translator.set_language("en")
+        try:
+            self.assertEqual(
+                format_indexed_node_label(2, "左腕", "|root|left_arm", "Left Arm"),
+                "2:Left Arm (left_arm)",
+            )
+            self.assertEqual(
+                format_indexed_node_label(3, "右腕", "|root|right_arm", ""),
+                "3:right_arm",
+            )
+            self.assertEqual(
+                format_indexed_name_label(4, "笑顔", "", fallback="Morph 4"),
+                "4:Morph 4",
+            )
+            self.assertEqual(
+                format_indexed_name_label(5, "blink", ""),
+                "5:blink",
+            )
+        finally:
+            self.translator.set_language("ja")
 
 
 def _msgs(mock_log):

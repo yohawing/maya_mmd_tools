@@ -138,6 +138,24 @@ def test_manager_has_no_internal_metadata_or_diagnostics_surface():
     assert actions == {"setup", "bake_control", "bake_mmd", "restore", "delete"}
 
 
+def test_manager_language_change_rebuilds_model_labels():
+    manager = _manager()
+
+    manager.refresh_for_language_change()
+
+    manager.refresh.assert_called_once_with()
+
+
+def test_animator_language_change_rebuilds_presenter_names():
+    window = AnimatorToolsetWindow.__new__(AnimatorToolsetWindow)
+    window._cleanup_done = False
+    window.animation_presenter = MagicMock()
+
+    AnimatorToolsetWindow.refresh_for_language_change(window)
+
+    window.animation_presenter.refresh_for_name_change.assert_called_once_with()
+
+
 
 def test_animator_cleanup_detaches_manager_callbacks_before_presenter_teardown():
     manager = MagicMock()

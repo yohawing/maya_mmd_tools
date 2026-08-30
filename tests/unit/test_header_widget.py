@@ -129,6 +129,50 @@ class TestHeaderWidgetTranslation(unittest.TestCase):
         self.assertEqual(self.widget.app_state.explicit_calls, [True])
         self.assertEqual(self.widget.app_state.selection_sync_calls, 0)
 
+    def test_english_model_label_uses_english_name_and_ascii_leaf_only(self):
+        self.translator.set_language("en")
+        self.widget.app_state.current_model_root = "|日本語グループ|character_root"
+        self.widget.app_state.get_model_info = lambda _model: {
+            "name_jp": "日本語モデル",
+            "name_en": "English Character",
+            "display_name": "日本語モデル",
+            "namespace": None,
+        }
+
+        HeaderWidget.on_model_list_updated(
+            self.widget,
+            ["|日本語グループ|character_root"],
+        )
+
+        self.assertEqual(
+            self.widget.model_combo.items,
+            [["English Character [character_root]", "|日本語グループ|character_root"]],
+        )
+
+    def test_english_model_labels_show_namespace_without_japanese_name(self):
+        self.translator.set_language("en")
+        models = ["|charA:character_root", "|charB:character_root"]
+
+        def get_model_info(model):
+            return {
+                "name_jp": "日本語モデル",
+                "name_en": "English Character",
+                "display_name": "日本語モデル",
+                "namespace": model.split(":", 1)[0].lstrip("|"),
+            }
+
+        self.widget.app_state.get_model_info = get_model_info
+        HeaderWidget.on_model_list_updated(self.widget, models)
+
+        self.assertEqual(
+            self.widget.model_combo.items,
+            [
+                ["English Character [charA]", "|charA:character_root"],
+                ["English Character [charB]", "|charB:character_root"],
+            ],
+        )
+        self.assertTrue(all("日本語" not in label for label, _model in self.widget.model_combo.items))
+
 
 class TestHeaderWidgetModelSelectionLogging(unittest.TestCase):
     """コンボ選択の副作用とログ境界を headless で検証する。"""

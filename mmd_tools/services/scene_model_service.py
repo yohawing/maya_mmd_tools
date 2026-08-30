@@ -8,6 +8,7 @@ from ..adapters import MayaCmdsAdapter
 from ..core.constants import ATTR_MMD_MODEL_NAME, ATTR_MMD_MODEL_NAME_EN, SCENE_ROOT_SUFFIX
 from ..core.logger import get_logger
 from ..core.maya_identity import canonical_node_identity
+from ..core.name_display import preferred_pmx_display_name
 
 logger = get_logger(__name__)
 
@@ -80,22 +81,26 @@ class SceneModelService:
 
         return None
 
-    def get_model_display_name(self, model_root):
+    def get_model_display_name(self, model_root, language="ja"):
         """MMDモデルの表示名を返す。"""
+        name_jp = ""
+        name_en = ""
         try:
             if self._cmds_adapter.attribute_exists(ATTR_MMD_MODEL_NAME, node=model_root):
                 name_jp = self._cmds_adapter.get_attr(f"{model_root}.{ATTR_MMD_MODEL_NAME}")
-                if name_jp:
-                    return name_jp
 
             if self._cmds_adapter.attribute_exists(ATTR_MMD_MODEL_NAME_EN, node=model_root):
                 name_en = self._cmds_adapter.get_attr(f"{model_root}.{ATTR_MMD_MODEL_NAME_EN}")
-                if name_en:
-                    return name_en
         except Exception:
             pass
 
-        return model_root.replace(SCENE_ROOT_SUFFIX, "")
+        fallback = str(model_root).rsplit("|", 1)[-1].replace(SCENE_ROOT_SUFFIX, "")
+        return preferred_pmx_display_name(
+            name_jp,
+            name_en,
+            fallback=fallback,
+            language=language,
+        )
 
     def get_selected_nodes(self, node_type=None):
         """Mayaの現在選択を返す。"""

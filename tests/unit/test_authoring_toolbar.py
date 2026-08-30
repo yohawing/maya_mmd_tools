@@ -201,3 +201,41 @@ def test_disabled_reason_retranslates_and_display_add_actions_fail_closed(qapp):
             assert "先に項目を選択してください" in button.toolTip()
     finally:
         translator.set_language(original)
+
+
+def test_english_ui_hides_original_pmx_name_fields(qapp):
+    from mmd_tools.ui.tabs.bone_tab import BoneTab
+    from mmd_tools.ui.tabs.display_pane_tab import DisplayPaneTab
+    from mmd_tools.ui.tabs.info_tab import InfoTab
+    from mmd_tools.ui.tabs.material_tab import MaterialTab
+    from mmd_tools.ui.tabs.morph_tab import MorphTab
+    from mmd_tools.ui.tabs.physics_tab import PhysicsTab
+    from mmd_tools.ui.translations import UITranslator
+
+    translator = UITranslator.instance()
+    original = translator.get_language()
+    tabs = []
+    try:
+        translator.set_language("en")
+        tabs = [InfoTab(), BoneTab(), MaterialTab(), MorphTab(), DisplayPaneTab(), PhysicsTab()]
+        original_widgets = (
+            tabs[0].model_name_jp_edit,
+            tabs[0].comment_jp_edit,
+            tabs[1].bone_name_jp_edit,
+            tabs[2].material_jp_name_edit,
+            tabs[3].morph_name_jp_edit,
+            tabs[4].name_jp_edit,
+            tabs[5].rigid_name_edit,
+            tabs[5].joint_name_edit,
+        )
+        assert all(widget.isHidden() for widget in original_widgets)
+
+        translator.set_language("ja")
+        for tab in tabs:
+            tab.retranslateUi()
+        assert all(not widget.isHidden() for widget in original_widgets)
+    finally:
+        for tab in tabs:
+            tab.close()
+            tab.deleteLater()
+        translator.set_language(original)

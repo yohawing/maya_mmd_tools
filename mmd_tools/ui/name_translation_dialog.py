@@ -8,8 +8,10 @@ plan after a second stale-target check.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
+from mmd_tools.services.scene_model_service import SceneModelService
 from mmd_tools.tools.translate_names import (
     NameChange,
     NameTranslationError,
@@ -27,7 +29,64 @@ _SOURCE_ATTRIBUTES = {
     "bone": "mmd_bone_name",
     "material": "mmd_material_name",
     "morph": "mmd_morph_name",
+    "rigid_body": "nameJp",
+    "joint": "nameJp",
 }
+
+
+@dataclass(frozen=True)
+class TranslationPreview:
+    """Read-only translation plan plus dictionary coverage information."""
+
+    root: str
+    plan: Tuple[NameChange, ...]
+    total: int
+    matched: int
+    missing: int
+    already_english: int
+
+
+def build_translation_preview_details(
+    dictionary_path: str,
+    *,
+    model_root: Optional[str] = None,
+    overwrite: bool = False,
+    rename_nodes: bool = False,
+    cmds_module=None,
+) -> TranslationPreview:
+    """Build a read-only plan and coverage summary from one scene snapshot."""
+
+    if not str(dictionary_path or "").strip():
+        raise NameTranslationError("choose a UTF-8 translation dictionary CSV")
+
+    root = resolve_model_root(model_root, cmds_module=cmds_module)
+    entries = collect_name_entries(root, cmds_module=cmds_module)
+    translations = load_translation_dictionary(dictionary_path)
+    target_names = {_node_leaf(entry.node) for entry in entries if entry.rename_allowed}
+    cmds = cmds_module
+    if cmds is None:
+        from maya import cmds as maya_cmds
+
+        cmds = maya_cmds
+    scene_names = {_node_leaf(node) for node in (cmds.ls(long=True) or [])}
+    full_plan = build_translation_plan(
+        entries,
+        translations,
+        set_english=True,
+        overwrite=overwrite,
+        rename_nodes=rename_nodes,
+        used_names=scene_names - target_names,
+    )
+    plan = tuple(change for change in full_plan if change.has_changes)
+    matched = sum(entry.source_name in translations for entry in entries)
+    return TranslationPreview(
+        root=root,
+        plan=plan,
+        total=len(entries),
+        matched=matched,
+        missing=len(entries) - matched,
+        already_english=sum(bool(entry.english_name) for entry in entries),
+    )
 
 
 def build_translation_preview(
@@ -44,32 +103,22 @@ def build_translation_preview(
     keeping the dialog's initial display and preview phases read-only.
     """
 
-    if not str(dictionary_path or "").strip():
-        raise NameTranslationError("choose a UTF-8 translation dictionary CSV")
-
-    root = resolve_model_root(model_root, cmds_module=cmds_module)
-    entries = collect_name_entries(root, cmds_module=cmds_module)
-    translations = load_translation_dictionary(dictionary_path)
-    target_names = {_node_leaf(entry.node) for entry in entries if entry.rename_allowed}
-    cmds = cmds_module
-    if cmds is None:
-        from maya import cmds as maya_cmds
-
-        cmds = maya_cmds
-    scene_names = {_node_leaf(node) for node in (cmds.ls(long=True) or [])}
-    plan = build_translation_plan(
-        entries,
-        translations,
-        set_english=True,
+    preview = build_translation_preview_details(
+        dictionary_path,
+        model_root=model_root,
         overwrite=overwrite,
         rename_nodes=rename_nodes,
-        used_names=scene_names - target_names,
+        cmds_module=cmds_module,
     )
-    return root, tuple(change for change in plan if change.has_changes)
+    return preview.root, preview.plan
 
 
-def format_dialog_preview(plan: Sequence[NameChange]) -> Tuple[str, ...]:
-    """Format preview rows with kind, original name, and planned destinations."""
+def format_dialog_preview(
+    plan: Sequence[NameChange],
+    *,
+    show_original: bool = False,
+) -> Tuple[str, ...]:
+    """Format English-first rows, revealing original metadata only on request."""
 
     lines = []
     for change in plan:
@@ -77,14 +126,17 @@ def format_dialog_preview(plan: Sequence[NameChange]) -> Tuple[str, ...]:
         label = entry.kind
         if entry.index is not None:
             label = f"{label}[{entry.index}]"
-        details = [f"{label}: source={entry.source_name!r}", f"node={entry.node}"]
+        details = [f"{label}:"]
         if change.english_name is not None:
             details.append(f"EnglishName={change.english_name!r}")
         else:
             details.append("EnglishName=(unchanged)")
         if change.maya_name is not None:
-            details.append(f"rename={change.maya_name!r}")
-        lines.append("; ".join(details))
+            details.append(f"Maya node rename={change.maya_name!r}")
+        if show_original:
+            details.append(f"OriginalPMXName={entry.source_name!r}")
+            details.append(f"MayaNode={entry.node}")
+        lines.append(" ".join(details[:2]) + ("; " + "; ".join(details[2:]) if len(details) > 2 else ""))
     return tuple(lines)
 
 
@@ -165,7 +217,7 @@ def _validate_preview_targets(
 class NameTranslationDialog:
     """Small modal Qt dialog for previewing and applying one translation plan."""
 
-    def __init__(self, *, cmds_module=None, parent=None):
+    def __init__(self, *, cmds_module=None, parent=None, on_applied=None):
         from .qt_compat import (
             QCheckBox,
             QDialog,
@@ -191,6 +243,8 @@ class NameTranslationDialog:
         self._preview_plan: Optional[Tuple[NameChange, ...]] = None
         self._preview_state = None
         self._model_root = None
+        self._preview_details: Optional[TranslationPreview] = None
+        self._on_applied = on_applied
 
         self._dialog = QDialog(parent)
         self._dialog.setObjectName("MMDNameTranslationDialog")
@@ -207,6 +261,13 @@ class NameTranslationDialog:
         self.overwrite_checkbox.setObjectName("overwriteCheckBox")
         self.rename_checkbox = QCheckBox("Also rename Maya nodes", self._dialog)
         self.rename_checkbox.setObjectName("renameNodesCheckBox")
+        self.original_checkbox = QCheckBox("Show original PMX names", self._dialog)
+        self.original_checkbox.setObjectName("showOriginalNamesCheckBox")
+        self.rename_note_label = QLabel(
+            "Maya Outliner names stay unchanged unless node renaming is enabled.",
+            self._dialog,
+        )
+        self.rename_note_label.setObjectName("renameNodesNoteLabel")
         self.preview_text = QTextEdit(self._dialog)
         self.preview_text.setObjectName("previewText")
         self.preview_text.setReadOnly(True)
@@ -230,6 +291,8 @@ class NameTranslationDialog:
         form.addRow("Dictionary CSV", dictionary_row)
         form.addRow(self.overwrite_checkbox)
         form.addRow(self.rename_checkbox)
+        form.addRow(self.rename_note_label)
+        form.addRow(self.original_checkbox)
 
         buttons = QHBoxLayout()
         buttons.addStretch()
@@ -249,10 +312,15 @@ class NameTranslationDialog:
         self.dictionary_edit.textChanged.connect(self._invalidate_preview)
         self.overwrite_checkbox.stateChanged.connect(self._invalidate_preview)
         self.rename_checkbox.stateChanged.connect(self._invalidate_preview)
+        self.original_checkbox.stateChanged.connect(self._render_preview)
 
         try:
             self._model_root = resolve_model_root(cmds_module=self._cmds)
-            self.model_label.setText(f"Model: {self._model_root}")
+            display_name = SceneModelService(cmds_module=self._cmds).get_model_display_name(
+                self._model_root,
+                language="en",
+            )
+            self.model_label.setText(f"Model: {display_name}")
         except Exception as exc:
             self._report_error(str(exc), show_dialog=True)
 
@@ -293,14 +361,25 @@ class NameTranslationDialog:
         self._preview_plan = None
         self._preview_root = None
         self._preview_state = None
+        self._preview_details = None
         self.apply_button.setEnabled(False)
+
+    def _render_preview(self, *_args):
+        plan = self._preview_plan
+        if plan is None:
+            return
+        lines = format_dialog_preview(
+            plan,
+            show_original=self.original_checkbox.isChecked(),
+        )
+        self.preview_text.setPlainText("\n".join(lines) if lines else "No changes planned.")
 
     def preview(self, *_args):
         """Build and display a read-only plan; never mutate the scene."""
 
         self._invalidate_preview()
         try:
-            root, plan = build_translation_preview(
+            details = build_translation_preview_details(
                 self.dictionary_edit.text().strip(),
                 model_root=self._model_root,
                 overwrite=self.overwrite_checkbox.isChecked(),
@@ -312,15 +391,20 @@ class NameTranslationDialog:
                 from maya import cmds as maya_cmds
 
                 cmds = maya_cmds
-            preview_state = _capture_preview_state(plan, cmds_module=cmds)
-            self._preview_root = root
-            self._preview_plan = plan
+            preview_state = _capture_preview_state(details.plan, cmds_module=cmds)
+            self._preview_root = details.root
+            self._preview_plan = details.plan
             self._preview_state = preview_state
-            lines = format_dialog_preview(plan)
-            self.preview_text.setPlainText("\n".join(lines) if lines else "No changes planned.")
-            self.status_label.setText(f"Preview ready: {len(plan)} change(s). Apply to commit them.")
-            self.apply_button.setEnabled(bool(plan))
-            return plan
+            self._preview_details = details
+            self._render_preview()
+            self.status_label.setText(
+                "Coverage: "
+                f"{details.matched}/{details.total} dictionary matches; "
+                f"{details.missing} missing; {details.already_english} already named; "
+                f"{len(details.plan)} change(s)."
+            )
+            self.apply_button.setEnabled(bool(details.plan))
+            return details.plan
         except Exception as exc:
             self.preview_text.clear()
             self._report_error(str(exc), show_dialog=True)
@@ -348,10 +432,23 @@ class NameTranslationDialog:
                 preview_state=self._preview_state,
             )
             changes = apply_translation_plan(plan, cmds_module=cmds)
-            self.status_label.setText(f"Applied {len(changes)} change(s).")
             self._preview_plan = None
             self._preview_state = None
+            self._preview_details = None
             self.apply_button.setEnabled(False)
+            refresh_error = None
+            if callable(self._on_applied):
+                try:
+                    self._on_applied(changes)
+                except Exception as exc:
+                    refresh_error = str(exc)
+            if refresh_error:
+                self._report_error(
+                    f"Names were applied, but the open UI could not refresh: {refresh_error}",
+                    show_dialog=True,
+                )
+            else:
+                self.status_label.setText(f"Applied {len(changes)} change(s).")
             self._dialog.accept()
             return changes
         except Exception as exc:
@@ -366,16 +463,22 @@ class NameTranslationDialog:
                 warning(self._dialog, "Translate MMD Names", message)
 
 
-def show_name_translation_dialog(*, cmds_module=None, parent=None) -> bool:
+def show_name_translation_dialog(*, cmds_module=None, parent=None, on_applied=None) -> bool:
     """Open the standalone modal dialog and return its accepted state."""
 
-    dialog = NameTranslationDialog(cmds_module=cmds_module, parent=parent)
+    dialog = NameTranslationDialog(
+        cmds_module=cmds_module,
+        parent=parent,
+        on_applied=on_applied,
+    )
     return dialog.exec_modal()
 
 
 __all__ = [
     "NameTranslationDialog",
+    "TranslationPreview",
     "build_translation_preview",
+    "build_translation_preview_details",
     "format_dialog_preview",
     "show_name_translation_dialog",
 ]

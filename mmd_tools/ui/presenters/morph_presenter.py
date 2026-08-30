@@ -657,7 +657,7 @@ class MorphPresenter:
                 index = -1
             return (index < 0, index if index >= 0 else 0, morph_key)
 
-        for morph_key in sorted(morph_keys, key=sort_key):
+        for fallback_order, morph_key in enumerate(sorted(morph_keys, key=sort_key)):
             data = self.morph_data[morph_key]
             try:
                 index = int(data.get("index", -1))
@@ -669,12 +669,14 @@ class MorphPresenter:
             type_letter = _MORPH_TYPE_LETTERS.get(int(raw_type), "?")
             name = data.get("name_jp") or morph_key
             index_text = str(index) if index >= 0 else "-"
+            fallback_index = index if index >= 0 else fallback_order
             item = QListWidgetItem(
                 format_indexed_name_label(
                     index_text,
                     name,
                     data.get("name_en", ""),
                     prefix=f"{type_letter}|",
+                    fallback=f"Morph {fallback_index}",
                 )
             )
             item.setData(Qt.UserRole, morph_key)
@@ -1100,6 +1102,7 @@ class MorphPresenter:
                 morph.name,
                 morph.name_english,
                 prefix=f"{type_letter}|",
+                fallback=f"Morph {morph.index}",
             )
         )
         item.setData(Qt.UserRole, key)
@@ -1300,6 +1303,7 @@ class MorphPresenter:
                                 data.get("name_jp") or key,
                                 data.get("name_en", ""),
                                 prefix=f"{_MORPH_TYPE_LETTERS.get(int(raw_type), '?')}|",
+                                fallback=f"Morph {data['index']}",
                             )
                         )
                     break
@@ -1427,6 +1431,7 @@ class MorphPresenter:
                     result.name,
                     result.name_english,
                     prefix=f"{type_letter}|",
+                    fallback=f"Morph {index_text}",
                 )
             )
             break

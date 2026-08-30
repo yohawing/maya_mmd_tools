@@ -10,6 +10,16 @@ import ast
 import unittest
 from pathlib import Path
 
+from tests.common.maya_stub import install_headless_ui_stubs
+
+install_headless_ui_stubs()
+
+from mmd_tools.ui.presenters.physics_presenter import (  # noqa: E402
+    _candidate_display,
+    _related_bone_display,
+)
+from mmd_tools.ui.translations import UITranslator  # noqa: E402
+
 PRESENTER_PATH = Path(__file__).resolve().parents[2] / "mmd_tools" / "ui" / "presenters" / "physics_presenter.py"
 TAB_PATH = Path(__file__).resolve().parents[2] / "mmd_tools" / "ui" / "tabs" / "physics_tab.py"
 
@@ -125,6 +135,46 @@ class TestPresenterModuleStructure(unittest.TestCase):
         self.assertTrue(
             any(isinstance(node, ast.Break) for node in ast.walk(connect_loop)),
             "dirty tracking must stop after the first supported semantic signal",
+        )
+
+
+class TestPhysicsBindingCandidateDisplay(unittest.TestCase):
+    def setUp(self):
+        self.translator = UITranslator.instance()
+        self.previous_language = self.translator.get_language()
+        self.translator.set_language("en")
+
+    def tearDown(self):
+        self.translator.set_language(self.previous_language)
+
+    def test_empty_english_name_uses_ascii_maya_leaf_for_non_ascii_japanese_name(self):
+        self.assertEqual(
+            _candidate_display(3, "笑い", "", "|char:rig|char:joint"),
+            "3: joint",
+        )
+
+    def test_rigid_body_list_prefix_keeps_ascii_leaf_fallback(self):
+        self.assertEqual(
+            _candidate_display(
+                4,
+                "剛体",
+                "",
+                "|char:physics|char:rigid_body_4",
+                prefix="G2 ",
+            ),
+            "4: G2 rigid_body_4",
+        )
+
+    def test_related_bone_never_exposes_japanese_name_in_english_ui(self):
+        self.assertEqual(
+            _related_bone_display("右腕", "", "|char:rig|char:right_arm"),
+            "right_arm",
+        )
+
+    def test_related_bone_prefers_english_metadata(self):
+        self.assertEqual(
+            _related_bone_display("右腕", "Right Arm", "|char:rig|char:right_arm"),
+            "Right Arm",
         )
 
 

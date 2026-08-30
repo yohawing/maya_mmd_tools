@@ -208,6 +208,7 @@
     "use_cpp_rig_nodes": "Use experimental C++ rig nodes for IK/append constraints. Falls back to Python nodes when unavailable"
   },
   "messages": {
+    "ready": "Ready",
     "vmd_bake_export_help": "Bake the current timeline before exporting the animation. When a range is enabled, only that range is evaluated.",
     "vpd_current_pose_help": "Export the evaluated current pose of the Current Model at the current frame.",
     "display_element_added": "Added {element_type} (PMX index {index})",

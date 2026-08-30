@@ -22,7 +22,7 @@ def _entry(kind, node, source, english="", index=None, rename_allowed=True):
     )
 
 
-def test_format_dialog_preview_includes_kind_source_and_destinations():
+def test_format_dialog_preview_is_english_first_and_hides_original_by_default():
     plan = [
         SimpleNamespace(
             entry=_entry("bone", "|root|joint", "左腕", index=2),
@@ -32,7 +32,11 @@ def test_format_dialog_preview_includes_kind_source_and_destinations():
     ]
 
     assert name_translation_dialog.format_dialog_preview(plan) == (
-        "bone[2]: source='左腕'; node=|root|joint; EnglishName='left arm'; rename='left_arm'",
+        "bone[2]: EnglishName='left arm'; Maya node rename='left_arm'",
+    )
+    assert name_translation_dialog.format_dialog_preview(plan, show_original=True) == (
+        "bone[2]: EnglishName='left arm'; Maya node rename='left_arm'; "
+        "OriginalPMXName='左腕'; MayaNode=|root|joint",
     )
 
 
@@ -52,6 +56,29 @@ def test_build_translation_preview_is_read_only_and_uses_core_policy(monkeypatch
     assert plan[0].english_name == "left arm"
     assert not hasattr(cmds, "setAttr")
     assert not hasattr(cmds, "rename")
+
+
+def test_build_translation_preview_details_reports_dictionary_coverage(monkeypatch, tmp_path):
+    dictionary = tmp_path / "names.csv"
+    dictionary.write_text("左腕,left arm\n", encoding="utf-8")
+    entries = (
+        _entry("bone", "|root|left", "左腕"),
+        _entry("bone", "|root|right", "右腕", english="Right Arm"),
+    )
+    cmds = SimpleNamespace(ls=lambda **_kwargs: ["|root", "|root|left", "|root|right"])
+    monkeypatch.setattr(name_translation_dialog, "resolve_model_root", lambda *_a, **_k: "|root")
+    monkeypatch.setattr(name_translation_dialog, "collect_name_entries", lambda *_a, **_k: entries)
+
+    preview = name_translation_dialog.build_translation_preview_details(
+        str(dictionary),
+        cmds_module=cmds,
+    )
+
+    assert preview.total == 2
+    assert preview.matched == 1
+    assert preview.missing == 1
+    assert preview.already_english == 1
+    assert len(preview.plan) == 1
 
 
 def test_validate_preview_targets_rejects_stale_nodes():
@@ -203,13 +230,19 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
     monkeypatch.setattr(name_translation_dialog, "resolve_model_root", lambda *_a, **_k: "|root")
     monkeypatch.setattr(
         name_translation_dialog,
-        "build_translation_preview",
-        lambda *_a, **_k: ("|root", (change,)),
+        "build_translation_preview_details",
+        lambda *_a, **_k: name_translation_dialog.TranslationPreview(
+            "|root", (change,), 1, 1, 0, 0
+        ),
     )
     apply_plan = MagicMock(return_value=(change,))
     monkeypatch.setattr(name_translation_dialog, "apply_translation_plan", apply_plan)
 
-    dialog = name_translation_dialog.NameTranslationDialog(cmds_module=cmds)
+    on_applied = MagicMock()
+    dialog = name_translation_dialog.NameTranslationDialog(
+        cmds_module=cmds,
+        on_applied=on_applied,
+    )
     assert not dialog.apply_button.isEnabled()
     assert dialog.apply() is None
     assert not apply_plan.called
@@ -220,11 +253,15 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
     dialog.cancel_button.clicked.emit()
     assert not apply_plan.called
 
-    dialog = name_translation_dialog.NameTranslationDialog(cmds_module=cmds)
+    dialog = name_translation_dialog.NameTranslationDialog(
+        cmds_module=cmds,
+        on_applied=on_applied,
+    )
     dialog.dictionary_edit.setText("names.csv")
     dialog.preview()
     assert dialog.apply() == (change,)
     apply_plan.assert_called_once_with((change,), cmds_module=cmds)
+    on_applied.assert_called_once_with((change,))
 
 
 @pytest.mark.parametrize(
@@ -256,8 +293,10 @@ def test_dialog_rejects_stale_preview_before_apply(monkeypatch, field, value, me
     monkeypatch.setattr(name_translation_dialog, "resolve_model_root", lambda *_a, **_k: "|root")
     monkeypatch.setattr(
         name_translation_dialog,
-        "build_translation_preview",
-        lambda *_a, **_k: ("|root", (change,)),
+        "build_translation_preview_details",
+        lambda *_a, **_k: name_translation_dialog.TranslationPreview(
+            "|root", (change,), 1, 1, 0, 0
+        ),
     )
     apply_plan = MagicMock(return_value=(change,))
     monkeypatch.setattr(name_translation_dialog, "apply_translation_plan", apply_plan)

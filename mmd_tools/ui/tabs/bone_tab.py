@@ -18,6 +18,7 @@ from ..qt_compat import (
     QScrollArea,
 )
 from ..base_tab import BaseTab
+from ...core.name_display import original_pmx_fields_visible
 from .translation_registry import apply_translation_registry
 from ..components.authoring_toolbar import AuthoringToolbar
 
@@ -94,6 +95,9 @@ class BoneTab(BaseTab):
         splitter.setSizes([400, 600])
 
         main_layout.addWidget(splitter)
+        original_visible = original_pmx_fields_visible(self._translator.get_language())
+        self.bone_name_jp_label.setVisible(original_visible)
+        self.bone_name_jp_edit.setVisible(original_visible)
 
     def _create_bone_tree_section(self):
         """ボーンツリーセクションを作成"""
@@ -604,6 +608,9 @@ class BoneTab(BaseTab):
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)
+        original_visible = original_pmx_fields_visible(self._translator.get_language())
+        self.bone_name_jp_label.setVisible(original_visible)
+        self.bone_name_jp_edit.setVisible(original_visible)
         self.animation_warning_label.setText("")
         self.bone_authoring_toolbar.retranslate(
             {
