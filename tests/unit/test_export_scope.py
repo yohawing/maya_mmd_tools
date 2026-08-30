@@ -118,6 +118,53 @@ class TestExportScope(unittest.TestCase):
         old_command.assert_not_called()
         converter.logger.warning.assert_called_once()
 
+    def test_native_uv_weld_batch_requires_profile_capability(self):
+        converter = MeshConverter.__new__(MeshConverter)
+        converter._cpp_uv_weld_capabilities = {"batchV1"}
+        self.assertFalse(converter._cpp_uv_weld_batch_command_available())
+
+        converter._cpp_uv_weld_capabilities.add("profileV1")
+        self.assertTrue(converter._cpp_uv_weld_batch_command_available())
+
+    def test_native_uv_weld_failure_is_counted_in_profile(self):
+        converter = MeshConverter.__new__(MeshConverter)
+        converter._use_cpp_uv_weld = True
+        converter._cpp_uv_weld_capabilities = {"profileV1"}
+        converter.model_filepath = "model.pmx"
+        converter.logger = mock.Mock()
+        converter.profile = {
+            "native_uv_weld_sec": 0.0,
+            "native_uv_weld_prep_sec": 0.0,
+            "native_uv_weld_apply_sec": 0.0,
+            "native_uv_weld_command_calls": 0,
+            "native_uv_weld_pmx_read_count": 0,
+            "native_uv_weld_geometry_parse_count": 0,
+            "native_uv_weld_non_geometry_parse_count": 0,
+            "native_uv_weld_meshes": [],
+        }
+        converter._persist_source_vertex_indices = mock.Mock()
+
+        with mock.patch.object(
+            mesh_converter_module.cmds,
+            "mmdWeldUvSeamVertices",
+            side_effect=RuntimeError("native failure"),
+            create=True,
+        ):
+            self.assertIsNone(converter._run_cpp_uv_weld("mesh", [0]))
+
+        self.assertEqual(converter.profile["native_uv_weld_command_calls"], 1)
+        self.assertEqual(
+            converter.profile["native_uv_weld_meshes"],
+            [
+                {
+                    "mesh": "mesh",
+                    "oldVertexCount": 0,
+                    "newVertexCount": 0,
+                    "status": "failed",
+                }
+            ],
+        )
+
     def test_mesh_data_keeps_duplicate_sources_without_native_weld(self):
         def vertex(uv):
             return SimpleNamespace(

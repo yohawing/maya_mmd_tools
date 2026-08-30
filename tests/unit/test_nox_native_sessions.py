@@ -438,6 +438,7 @@ class NativeSessionsTest(unittest.TestCase):
         self.assertEqual(session.runs[0][0][1], "tests/cpp/a.py")
         self.assertEqual(session.runs[1][0][1], "tests/cpp/b.py")
         self.assertEqual(env["MMD_TOOLS_CPP_CONFIG"], "Debug")
+        self.assertEqual(env["MAYA_SKIP_USERSETUP_PY"], "1")
         self.assertEqual(Path(env["MMD_TOOLS_CPP_PLUGIN"]), plugin)
 
     def test_viewport_capture_forwards_dimensions_without_plugin_environment(self):

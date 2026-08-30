@@ -37,3 +37,16 @@ def test_weld_advertises_source_to_local_mapping_capability() -> None:
     assert '"-qc", "-queryCapabilities", MSyntax::kBoolean' in source
     assert 'kSourceToLocalCapability = "sourceToLocalV1"' in source
     assert "capabilities.append(kSourceToLocalCapability)" in source
+
+
+def test_weld_batch_contract_is_capability_gated_and_multiuse() -> None:
+    """The one-read path must remain opt-in for older plugin binaries."""
+    source = SOURCE.read_text(encoding="utf-8")
+
+    assert 'kBatchCapability = "batchV1"' in source
+    assert 'kProfileCapability = "profileV1"' in source
+    assert 'syntax.addFlag("-b", "-batch", MSyntax::kBoolean)' in source
+    assert 'syntax.addFlag("-p", "-profile", MSyntax::kBoolean)' in source
+    assert 'syntax.makeFlagMultiUse("-m")' in source
+    assert "capabilities.append(kBatchCapability)" in source
+    assert "capabilities.append(kProfileCapability)" in source

@@ -125,6 +125,7 @@ from tools.nox.maya_sessions import (  # noqa: E402
     run_native_physics_bake as _run_native_physics_bake,
     run_pmx_roundtrip as _run_pmx_roundtrip,
     run_user_roundtrip_smoke as _run_user_roundtrip_smoke,
+    run_uv_weld_profile as _run_uv_weld_profile,
     run_physics_solver_cycle_probe as _run_physics_solver_cycle_probe,
     run_root_move_ik_target_probe as _run_root_move_ik_target_probe,
     run_root_move_skin_parity_probe as _run_root_move_skin_parity_probe,
@@ -1295,6 +1296,23 @@ def uv_weld_smoke(session: nox.Session) -> None:
         mayapy_script=_mayapy_script,
         scripts=("tests/cpp/focused_uv_weld.py",),
         require_plugin=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def uv_weld_profile(session: nox.Session) -> None:
+    """Profile material-split UV weld preparation and application costs."""
+    _run_uv_weld_profile(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
     )
 
 
