@@ -118,6 +118,15 @@ class _FakeLabel:
         pass
 
 
+class _FakeMorphRow:
+    def __init__(self, plugs):
+        self.plugs = tuple(plugs)
+        self.selected = False
+
+    def set_selected(self, selected):
+        self.selected = bool(selected)
+
+
 class _FakeTreeItem:
     def __init__(self, texts=None):
         self._texts = texts or [""]
@@ -1792,6 +1801,57 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         self.assertEqual([morph.name for morph in morphs], ["LegacyBone"])
         self.assertEqual(presenter._network_morph_targets["LegacyBone"], ["legacyMorph.weight"])
 
+    def test_legacy_network_morph_selection_is_model_scoped_for_non_vertex_types(self):
+        presenter, _, _, adapter = self._make_with_morphs(model_root="modelA")
+        model_a_nodes = {
+            "modelA:boneMorph": ("bone", "LegacyBone"),
+            "modelA:materialMorph": ("material", "LegacyMaterial"),
+            "modelA:groupMorph": ("group", "LegacyGroup"),
+        }
+        all_nodes = {**model_a_nodes, "modelB:boneMorph": ("bone", "OtherBone")}
+        for node, (morph_type, name) in all_nodes.items():
+            adapter._attrs.update(
+                {
+                    (node, "mmd_morph_type"): morph_type,
+                    (node, "mmd_model_root"): True,
+                    (node, "mmd_morph_name"): name,
+                }
+            )
+        adapter._long_paths.update(
+            {
+                "modelA": "|modelA",
+                "|modelA": "|modelA",
+                "modelB": "|modelB",
+                "|modelB": "|modelB",
+            }
+        )
+        original_ls = adapter.ls
+        adapter.ls = lambda nodes=None, type=None, **kwargs: (
+            list(all_nodes)
+            if type == "network"
+            else original_ls(nodes, type=type, **kwargs)
+        )
+        original_connections = adapter.list_connections
+        adapter.list_connections = lambda node, **kwargs: (
+            ["modelA" if node.startswith("modelA:") else "modelB"]
+            if node.endswith(".mmd_model_root")
+            else original_connections(node, **kwargs)
+        )
+        morphs = []
+
+        presenter._collect_network_morph_targets("modelA", {}, morphs, set())
+
+        self.assertEqual(
+            {morph.name for morph in morphs},
+            {name for _morph_type, name in model_a_nodes.values()},
+        )
+        self.assertNotIn("OtherBone", presenter._network_morph_targets)
+        for node, (_morph_type, name) in model_a_nodes.items():
+            plug = f"{node}.weight"
+            presenter._morph_rows = {name: _FakeMorphRow((plug,))}
+            presenter._on_morph_row_activated(name)
+            self.assertEqual(adapter.selected, [plug])
+
     def test_clear_morph_tab(self):
         presenter, view, _, _ = self._make_with_morphs(
             blend_shapes=SAMPLE_BLEND_SHAPES,
@@ -1827,6 +1887,98 @@ class TestAnimationPresenterMorph(unittest.TestCase):
             adapter._set_attrs["morphController.inputWeight[19]"], 0.375
         )
         self.assertNotIn("blendShape1.weight[0]", adapter._set_attrs)
+
+    def test_controller_morph_row_selects_only_authoritative_plug(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        presenter._morph_controller = "morphController"
+        presenter._morph_indices["笑い"] = 19
+        row = _FakeMorphRow(("morphController.inputWeight[19]",))
+        presenter._morph_rows = {"笑い": row}
+        presenter._joint_for_rig_control = lambda node: None
+
+        presenter._on_morph_row_activated("笑い")
+
+        self.assertEqual(adapter.selected, ["morphController.inputWeight[19]"])
+        self.assertTrue(row.selected)
+
+    def test_controller_alias_selection_matches_canonical_row_plug(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        row = _FakeMorphRow(("morphController.inputWeight[19]",))
+        presenter._morph_rows = {"笑い": row}
+        presenter._joint_for_rig_control = lambda node: None
+        adapter.alias_attr = lambda node, query=False: (
+            ["Smile", "inputWeight[19]"] if node == "morphController" else []
+        )
+        adapter.selected = ["morphController.Smile"]
+
+        presenter._sync_picker_to_actual_selection()
+
+        self.assertTrue(row.selected)
+
+    def test_split_legacy_morph_row_selects_all_and_only_existing_plugs(self):
+        split_bs = {
+            "mesh_face": {
+                "bs_face": {
+                    "type": "blendShape",
+                    "morph_json": {"0": "笑い"},
+                }
+            },
+            "mesh_hair": {
+                "bs_hair": {
+                    "type": "blendShape",
+                    "morph_json": {"0": "笑い"},
+                }
+            },
+        }
+        presenter, _, _, adapter = self._make_with_morphs(blend_shapes=split_bs)
+        row = _FakeMorphRow(
+            ("bs_face.weight[0]", "bs_hair.weight[0]"),
+        )
+        presenter._morph_rows = {"笑い": row}
+        presenter._joint_for_rig_control = lambda node: None
+
+        presenter._on_morph_row_activated("笑い")
+
+        self.assertEqual(
+            adapter.selected,
+            ["bs_face.weight[0]", "bs_hair.weight[0]"],
+        )
+        self.assertTrue(row.selected)
+
+    def test_external_selection_clears_morph_highlight_without_changing_values(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        row = _FakeMorphRow(("blendShape1.weight[0]",))
+        row.value = 0.625
+        presenter._morph_rows = {"笑い": row}
+        presenter._joint_for_rig_control = lambda node: None
+        row.selected = True
+        adapter.selected = ["blendShape1.weight[0]", "unrelated.weight[3]"]
+
+        presenter._sync_picker_to_actual_selection()
+
+        self.assertFalse(row.selected)
+        self.assertEqual(row.value, 0.625)
+
+    def test_exact_morph_plug_set_highlights_one_row_only(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        first = _FakeMorphRow(("blendShape1.weight[0]",))
+        second = _FakeMorphRow(("blendShape1.weight[1]",))
+        presenter._morph_rows = {"笑い": first, "怒り": second}
+        presenter._joint_for_rig_control = lambda node: None
+        adapter.selected = ["blendShape1.weight[0]"]
+
+        presenter._sync_picker_to_actual_selection()
+
+        self.assertTrue(first.selected)
+        self.assertFalse(second.selected)
 
     def test_animation_state_distinguishes_current_key_and_interpolation(self):
         presenter, _, _, adapter = self._make_with_morphs(
@@ -1915,6 +2067,18 @@ class TestAnimationPresenterMorph(unittest.TestCase):
             app_state.current_model_changed.emit("")
         self.assertEqual(len(presenter._morph_targets), 0)
         self.assertEqual(len(presenter._morph_rows), 0)
+
+    def test_morph_tab_clear_removes_stale_row_selection(self):
+        presenter, _, _, _ = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        row = _FakeMorphRow(("blendShape1.weight[0]",))
+        row.selected = True
+        presenter._morph_rows = {"笑い": row}
+
+        presenter._clear_morph_tab()
+
+        self.assertFalse(row.selected)
 
     def test_split_morph_drives_all_nodes(self):
         split_bs = {

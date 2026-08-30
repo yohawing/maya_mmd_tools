@@ -7,6 +7,7 @@ from tests.common.maya_stub import install_headless_ui_stubs
 install_headless_ui_stubs()
 
 from mmd_tools.ui.widgets.morph_editor_widgets import (  # noqa: E402
+    MorphRowWidget,
     normalized_morph_type,
 )
 
@@ -40,3 +41,11 @@ def test_all_supported_morph_type_icons_are_bundled():
         "generic",
     }
     assert expected == {path.stem for path in icon_dir.glob("*.svg")}
+
+
+def test_selected_morph_row_has_a_distinct_marker_and_label_weight():
+    style = "".join(MorphRowWidget._STYLE_SHEET.split())
+
+    assert "background:#24546b" in style
+    assert "border-left:5pxsolid#79cfff" in style
+    assert "font-weight:700" in style
