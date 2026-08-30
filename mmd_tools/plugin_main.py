@@ -303,6 +303,18 @@ def install_mmd_menu():
         parent="MMD",
     )
     cmds.menuItem(
+        "MMDToolsSubMenu",
+        label="Tools",
+        subMenu=True,
+        parent="MMD",
+    )
+    cmds.menuItem(
+        "MMDTranslateNamesMenuItem",
+        label="Translate MMD Names",
+        command=lambda *args: _run_mmd_name_translation(),
+        parent="MMDToolsSubMenu",
+    )
+    cmds.menuItem(
         "MMDAnimatorToolsetMenuItem",
         label="Animator Toolset",
         command=lambda *args: open_animator_toolset(dockable=True),
@@ -331,11 +343,11 @@ def uninstall_mmd_menu():
 
 
 def _run_mmd_name_translation():
-    """Dispatch the explicit name-translation tool entry point."""
+    """Open the standalone name-translation preview/apply dialog."""
 
-    from mmd_tools.tools import translate_names
+    from mmd_tools.ui.name_translation_dialog import show_name_translation_dialog
 
-    return translate_names.run()
+    return show_name_translation_dialog()
 
 
 def _node_type_registered(type_name: str) -> bool:

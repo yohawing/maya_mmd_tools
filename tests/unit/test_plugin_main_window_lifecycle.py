@@ -227,14 +227,17 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             for call in self.plugin_main.cmds.menuItem.call_args_list
             if call[1].get("label") == "Translate MMD Names"
         ]
-        self.assertFalse(translate_calls)
+        self.assertEqual(len(translate_calls), 1)
+        self.assertEqual(translate_calls[0][0], ("MMDTranslateNamesMenuItem",))
+        self.assertEqual(translate_calls[0][1]["parent"], "MMDToolsSubMenu")
+        self.assertTrue(callable(translate_calls[0][1]["command"]))
 
         tools_submenus = [
             call
             for call in self.plugin_main.cmds.menuItem.call_args_list
             if call[0] == ("MMDToolsSubMenu",) and call[1].get("subMenu") is True
         ]
-        self.assertFalse(tools_submenus)
+        self.assertEqual(len(tools_submenus), 1)
 
         animator_calls = [
             call
@@ -249,6 +252,56 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             if call[1].get("label") == "Manage Control Rig"
         ]
         self.assertEqual(len(manager_calls), 1)
+
+    def test_translate_names_menu_dispatches_standalone_dialog(self):
+        self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
+            False if kwargs.get("exists") else [] if kwargs.get("query") else "MMD"
+        )
+        self.plugin_main._run_mmd_name_translation = MagicMock(return_value=True)
+
+        self.plugin_main.install_mmd_menu()
+
+        menu_call = next(
+            call
+            for call in self.plugin_main.cmds.menuItem.call_args_list
+            if call[1].get("label") == "Translate MMD Names"
+        )
+        self.assertTrue(menu_call[1]["command"]("menu-click"))
+        self.plugin_main._run_mmd_name_translation.assert_called_once_with()
+
+    def test_install_menu_keeps_one_translation_item_after_reload(self):
+        items = {}
+
+        def menu(*args, **kwargs):
+            if kwargs.get("exists"):
+                return bool(items) if args and args[0] == "MMD" else False
+            if kwargs.get("query"):
+                return list(items)
+            return "MMD"
+
+        def menu_item(name, **kwargs):
+            if kwargs.get("exists"):
+                return name in items
+            if kwargs.get("query") and kwargs.get("label"):
+                return items[name]["label"]
+            items[name] = dict(kwargs)
+            return name
+
+        def delete_ui(name, **_kwargs):
+            items.pop(name, None)
+
+        self.plugin_main.cmds.menu.side_effect = menu
+        self.plugin_main.cmds.menuItem.side_effect = menu_item
+        self.plugin_main.cmds.deleteUI.side_effect = delete_ui
+
+        with unittest.mock.patch("mmd_tools.ui.humanik_menu_actions.install_humanik_menu"):
+            self.plugin_main.install_mmd_menu()
+            self.plugin_main.install_mmd_menu()
+
+        translation_items = [
+            name for name, data in items.items() if data.get("label") == "Translate MMD Names"
+        ]
+        self.assertEqual(translation_items, ["MMDTranslateNamesMenuItem"])
 
     def test_control_rig_manager_menu_opens_the_shared_manager(self):
         self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
@@ -355,7 +408,8 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             for call in self.plugin_main.cmds.menuItem.call_args_list
             if not call[1].get("query") and call[1].get("label") == "Tools"
         ]
-        self.assertFalse(created_tools)
+        self.assertEqual(len(created_tools), 1)
+        self.assertEqual(created_tools[0][0], ("MMDToolsSubMenu",))
 
     def test_humanik_action_dispatch_is_lazy(self):
         with unittest.mock.patch(
