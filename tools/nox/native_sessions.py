@@ -220,9 +220,15 @@ def run_maya_smoke(
     mayapy_path = mayapy(version)
     if not mayapy_path.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy_path}")
-    env = mayapy_env(mayapy_path, MAYA_VERSION=version, MMD_TOOLS_CPP_CONFIG=config)
+    env = mayapy_env(
+        mayapy_path,
+        MAYA_VERSION=version,
+        MAYA_SKIP_USERSETUP_PY="1",
+        MMD_TOOLS_CPP_CONFIG=config,
+    )
     for script in (
         "tests/cpp/smoke_python_rig_fallback.py",
+        "tools/smoke/maya_cpp_dg_ownership_smoke.py",
         "tests/cpp/smoke_runtime_node.py",
         "tests/cpp/focused_physics_solver_world_toggle.py",
         "tests/cpp/focused_vmd_batch_sampler.py",

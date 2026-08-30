@@ -386,7 +386,12 @@ class NativeSessionsTest(unittest.TestCase):
     def test_maya_smoke_runs_all_runtime_scripts_with_one_environment(self):
         session = _FakeSession(["--maya", "2024", "--config", "Debug"])
         mayapy = types.SimpleNamespace(exists=lambda: True)
-        env = {"MAYA_VERSION": "2024"}
+        env = {}
+
+        def mayapy_env(_mayapy, **values):
+            env.update(values)
+            return env
+
         run_maya_smoke(
             session,
             posargs=session.posargs,
@@ -394,11 +399,12 @@ class NativeSessionsTest(unittest.TestCase):
             default_maya_version="2026",
             default_config="Release",
             mayapy=lambda _version: mayapy,
-            mayapy_env=lambda _mayapy, **_values: env,
+            mayapy_env=mayapy_env,
             mayapy_script=lambda _mayapy, script: script,
         )
         self.assertEqual([args[1] for args, _kwargs in session.runs], [
             "tests/cpp/smoke_python_rig_fallback.py",
+            "tools/smoke/maya_cpp_dg_ownership_smoke.py",
             "tests/cpp/smoke_runtime_node.py",
             "tests/cpp/focused_physics_solver_world_toggle.py",
             "tests/cpp/focused_vmd_batch_sampler.py",
@@ -408,6 +414,14 @@ class NativeSessionsTest(unittest.TestCase):
             "tools/smoke/maya_material_value_command_smoke.py",
             "tools/smoke/maya_material_outline_command_smoke.py",
         ])
+        self.assertEqual(
+            {
+                "MAYA_VERSION": "2024",
+                "MAYA_SKIP_USERSETUP_PY": "1",
+                "MMD_TOOLS_CPP_CONFIG": "Debug",
+            },
+            env,
+        )
         self.assertTrue(all(kwargs["env"] is env for _args, kwargs in session.runs))
 
     def test_cpp_plugin_smoke_constructs_plugin_environment_for_each_script(self):
