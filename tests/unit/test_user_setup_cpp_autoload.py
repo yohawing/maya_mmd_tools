@@ -130,6 +130,62 @@ class TestUserSetupCppAutoload(unittest.TestCase):
         prepare.assert_not_called()
         self.cmds.loadPlugin.assert_not_called()
 
+    def test_setup_attempts_cpp_before_python_plugin(self):
+        events = []
+        self.cmds.loadPlugin.reset_mock()
+        self.cmds.loadPlugin.side_effect = lambda path, quiet: events.append("python")
+
+        try:
+            with patch.object(
+                self.user_setup,
+                "_load_mmd_tools_cpp_plugin",
+                side_effect=lambda: events.append("cpp"),
+            ):
+                with patch.object(
+                    self.user_setup, "_mmd_tools_plugin_path", return_value="mmd_tools_plugin.py"
+                ):
+                    with patch.object(
+                        self.user_setup, "_mmd_tools_plugin_loaded", return_value=False
+                    ):
+                        self.user_setup.mmd_tools_setup()
+        finally:
+            self.cmds.loadPlugin.side_effect = None
+
+        self.assertEqual(events, ["cpp", "python"])
+
+    def test_setup_loads_python_plugin_when_cpp_load_fails(self):
+        self.cmds.loadPlugin.reset_mock()
+        with patch.object(
+            self.user_setup,
+            "_load_mmd_tools_cpp_plugin",
+            side_effect=RuntimeError("native load failed"),
+        ):
+            with patch.object(
+                self.user_setup, "_mmd_tools_plugin_path", return_value="mmd_tools_plugin.py"
+            ):
+                with patch.object(
+                    self.user_setup, "_mmd_tools_plugin_loaded", return_value=False
+                ):
+                    self.user_setup.mmd_tools_setup()
+
+        self.cmds.loadPlugin.assert_called_once_with("mmd_tools_plugin.py", quiet=True)
+
+    def test_setup_loads_python_plugin_when_cpp_artifact_is_missing(self):
+        self.cmds.loadPlugin.reset_mock()
+        with patch.dict(os.environ, {"MMD_TOOLS_CPP_AUTOLOAD": "1"}, clear=False):
+            with patch.object(
+                self.user_setup, "_mmd_tools_cpp_plugin_path", return_value=None
+            ):
+                with patch.object(
+                    self.user_setup, "_mmd_tools_plugin_path", return_value="mmd_tools_plugin.py"
+                ):
+                    with patch.object(
+                        self.user_setup, "_mmd_tools_plugin_loaded", return_value=False
+                    ):
+                        self.user_setup.mmd_tools_setup()
+
+        self.cmds.loadPlugin.assert_called_once_with("mmd_tools_plugin.py", quiet=True)
+
 
 if __name__ == "__main__":
     unittest.main()

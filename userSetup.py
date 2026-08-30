@@ -134,6 +134,14 @@ def _load_mmd_tools_cpp_plugin():
 
 
 def mmd_tools_setup():
+    try:
+        _load_mmd_tools_cpp_plugin()
+    except Exception as exc:
+        try:
+            om.MGlobal.displayWarning(f"[MMD] C++ plugin auto-load failed: {exc}")
+        except Exception:
+            pass
+
     # Plugin load failures must remain visible; otherwise the UI can be left
     # partially available while custom node types are silently absent.
     try:
@@ -156,14 +164,6 @@ def mmd_tools_setup():
         try:
             om.MGlobal.displayError(message)
             om.MGlobal.displayError(traceback.format_exc())
-        except Exception:
-            pass
-
-    try:
-        _load_mmd_tools_cpp_plugin()
-    except Exception as exc:
-        try:
-            om.MGlobal.displayWarning(f"[MMD] C++ plugin auto-load failed: {exc}")
         except Exception:
             pass
 
