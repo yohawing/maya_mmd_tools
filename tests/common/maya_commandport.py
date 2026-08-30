@@ -211,6 +211,39 @@ def wait_for_port_close(port: int, timeout: float) -> None:
     raise TimeoutError(f"Timed out waiting for commandPort :{port} to close")
 
 
+def terminate_detached_maya(*, output_dir: Path, port: int) -> int:
+    """Terminate exactly one Explorer-launched Maya owned by a commandPort probe."""
+
+    if platform.system() != "Windows":
+        raise RuntimeError("detached Maya termination is only supported on Windows")
+    mel_path = (Path(output_dir) / f"commandport_{int(port)}.mel").resolve()
+    escaped_path = str(mel_path).replace("'", "''")
+    script = (
+        f"$target = [System.IO.Path]::GetFullPath('{escaped_path}'); "
+        "$matches = @(Get-CimInstance Win32_Process -Filter \"Name='maya.exe'\" | "
+        "Where-Object { $_.CommandLine -and $_.CommandLine.Contains($target) }); "
+        "if ($matches.Count -ne 1) { "
+        "throw \"Expected exactly one detached Maya for $target; found $($matches.Count)\" }; "
+        "$targetPid = [int]$matches[0].ProcessId; "
+        "Stop-Process -Id $targetPid -Force; Write-Output $targetPid"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown PowerShell failure").strip()
+        raise RuntimeError(f"failed to terminate detached Maya for commandPort :{port}: {detail}")
+    try:
+        return int(result.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError) as exc:
+        raise RuntimeError(
+            f"detached Maya termination returned no process id for commandPort :{port}"
+        ) from exc
+
+
 def send_python(port: int, code: str, label: str = "<maya-commandport>") -> None:
     """Send Python code through commandPort as one compiled exec payload.
 

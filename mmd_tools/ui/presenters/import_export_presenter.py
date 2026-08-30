@@ -396,7 +396,12 @@ class ImportExportPresenter(QObject):
         model_root = getattr(self.app_state, "current_model_root", None)
         if not model_root or not self.maya_adapter.object_exists(model_root):
             return []
-        shapes = self.maya_adapter.list_relatives(model_root, allDescendents=True, type="mesh") or []
+        shapes = self.maya_adapter.list_relatives(
+            model_root,
+            allDescendents=True,
+            type="mesh",
+            fullPath=True,
+        ) or []
         shading_groups = self.maya_adapter.list_connections(shapes, type="shadingEngine") or []
         materials = []
         for shading_group in set(shading_groups):

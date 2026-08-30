@@ -164,7 +164,12 @@ class SceneModelService:
                 "morph_count": 0,
             }
 
-            shapes = self._cmds_adapter.list_relatives(model_root, allDescendents=True, type="mesh") or []
+            shapes = self._cmds_adapter.list_relatives(
+                model_root,
+                allDescendents=True,
+                type="mesh",
+                fullPath=True,
+            ) or []
             for shape in shapes:
                 vertex_count = self._cmds_adapter.poly_evaluate(shape, vertex=True)
                 if vertex_count:
@@ -180,7 +185,12 @@ class SceneModelService:
                     materials.extend(mats)
                 info["material_count"] = len(set(materials))
 
-            joints = self._cmds_adapter.list_relatives(model_root, allDescendents=True, type="joint") or []
+            joints = self._cmds_adapter.list_relatives(
+                model_root,
+                allDescendents=True,
+                type="joint",
+                fullPath=True,
+            ) or []
             info["bone_count"] = len(joints)
 
             if shapes:

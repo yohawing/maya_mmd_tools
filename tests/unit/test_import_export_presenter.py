@@ -203,6 +203,7 @@ class _FakeMayaAdapter:
         self.existing = set(existing or [])
         self.attribute_exists_calls = []
         self.list_connections_calls = []
+        self.list_relatives_calls = []
         self.ls_calls = []
         self.select_calls = []
 
@@ -229,6 +230,7 @@ class _FakeMayaAdapter:
         return list(self.connections.get(node, []))
 
     def list_relatives(self, node, **kwargs):
+        self.list_relatives_calls.append((node, kwargs))
         return list(self.relatives.get(node, []))
 
     def object_exists(self, node):
@@ -832,6 +834,10 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertNotIn(
             ("root.message", {"source": False, "destination": True, "type": "file"}),
             maya_adapter.list_connections_calls,
+        )
+        self.assertEqual(
+            maya_adapter.list_relatives_calls,
+            [("root", {"allDescendents": True, "type": "mesh", "fullPath": True})],
         )
 
     def test_fix_texture_paths_no_current_model_prompts_for_selection(self):

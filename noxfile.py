@@ -2316,6 +2316,78 @@ def runtime_bake_bench(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def model_switch_dag_identity_e2e(session: nox.Session) -> None:
+    """Run the namespaced two-model GUI switch matrix in split and unified modes.
+
+    Examples:
+        uvx nox -s model_switch_dag_identity_e2e -- --maya 2024
+        uvx nox -s model_switch_dag_identity_e2e -- --maya 2026 --switches 4
+    """
+
+    from tests.common import maya_commandport
+
+    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    model = Path(
+        _option(
+            session.posargs,
+            "--model",
+            str(ROOT / "tests/data/mmt_test_model.pmx"),
+        )
+    ).resolve()
+    switches = int(_option(session.posargs, "--switches", "6"))
+    base_port = int(_option(session.posargs, "--port", "7771"))
+    out_dir = Path(
+        _option(
+            session.posargs,
+            "--out-dir",
+            str(ROOT / "build/reports/model_switch_dag_identity"),
+        )
+    ).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for offset, (mode, separate) in enumerate((("split", True), ("unified", False))):
+        port = base_port + offset
+        report_path = out_dir / f"model_switch_dag_identity_maya{maya_version}-{mode}.json"
+        session.run(
+            sys.executable,
+            "tools/probes/model_switch_dag_identity_e2e.py",
+            "--maya",
+            maya_version,
+            "--model",
+            str(model),
+            "--separate",
+            str(separate).lower(),
+            "--switches",
+            str(switches),
+            "--port",
+            str(port),
+            "--out-dir",
+            str(out_dir),
+            external=True,
+        )
+
+        # Explorer-launched Maya is detached.  If its first shutdown request
+        # raced the completed command, retry only after the child runner has
+        # exited, then remove that exact isolated profile.
+        if maya_commandport.is_port_open(port):
+            maya_commandport.quit_maya(port)
+            maya_commandport.wait_for_port_close(port, timeout=30)
+        profile_path = (out_dir / f"maya-app-{maya_version}-{port}").resolve()
+        if profile_path.parent != out_dir:
+            session.error(f"unexpected Maya profile path: {profile_path}")
+        if profile_path.exists():
+            shutil.rmtree(profile_path)
+
+        if not report_path.is_file():
+            session.error(f"model switch report is missing: {report_path}")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if report.get("status") != "pass":
+            session.error(f"model switch {mode} report failed: {report_path}")
+        if not report.get("models", {}).get("materialSplitModeVerified"):
+            session.error(f"model switch {mode} import mode was not verified: {report_path}")
+
+
+@nox.session(venv_backend="none")
 def maya_vertex_morph_authoring_smoke(session: nox.Session) -> None:
     """Run the split-mesh Vertex Morph target writer in Maya standalone.
 

@@ -1945,9 +1945,11 @@ class AnimationPresenter:
 
     def _build_bone_index_map(self, model_root: str) -> dict[int, str]:
         try:
-            joints = self.maya_adapter.ls(
-                self.maya_adapter.list_relatives(model_root, allDescendents=True, type="joint") or [],
+            joints = self.maya_adapter.list_relatives(
+                model_root,
+                allDescendents=True,
                 type="joint",
+                fullPath=True,
             ) or []
         except Exception:
             return {}
@@ -1965,9 +1967,11 @@ class AnimationPresenter:
 
     def _build_bone_name_map(self, model_root: str) -> dict[str, str]:
         try:
-            joints = self.maya_adapter.ls(
-                self.maya_adapter.list_relatives(model_root, allDescendents=True, type="joint") or [],
+            joints = self.maya_adapter.list_relatives(
+                model_root,
+                allDescendents=True,
                 type="joint",
+                fullPath=True,
             ) or []
         except Exception:
             return {}
@@ -2217,7 +2221,10 @@ class AnimationPresenter:
     def _find_blend_shape_nodes(self, model_root: str) -> list[str]:
         try:
             meshes = self.maya_adapter.list_relatives(
-                model_root, allDescendents=True, type="mesh"
+                model_root,
+                allDescendents=True,
+                type="mesh",
+                fullPath=True,
             ) or []
             bs_nodes = []
             for mesh in meshes:

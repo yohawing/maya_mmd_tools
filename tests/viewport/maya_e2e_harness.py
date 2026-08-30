@@ -145,7 +145,13 @@ def run_maya_e2e(
             finally:
                 try:
                     if proc is None:
-                        maya_commandport.wait_for_port_close(port, timeout=30)
+                        try:
+                            maya_commandport.wait_for_port_close(port, timeout=30)
+                        except TimeoutError:
+                            if not terminate_process or sys.platform != "win32":
+                                raise
+                            maya_commandport.terminate_detached_maya(output_dir=out_dir, port=port)
+                            maya_commandport.wait_for_port_close(port, timeout=10)
                         process_exited = True
                     elif proc.poll() is not None:
                         process_exited = True

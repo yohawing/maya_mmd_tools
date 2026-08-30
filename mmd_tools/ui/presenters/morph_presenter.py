@@ -1131,7 +1131,12 @@ class MorphPresenter:
         root = self.app_state.current_model_root
         try:
             candidates = tuple(
-                self.maya_adapter.list_relatives(root, allDescendents=True, type="mesh")
+                self.maya_adapter.list_relatives(
+                    root,
+                    allDescendents=True,
+                    type="mesh",
+                    fullPath=True,
+                )
                 if root
                 else ()
             )

@@ -182,8 +182,13 @@ class TestMayaE2EHarness(unittest.TestCase):
                 self.assertNotIn("startup_mel", _kwargs)
                 return None
 
+            close_attempts = []
+
             def wait_for_close(*_args, **_kwargs):
                 self.assertTrue(profile.exists())
+                close_attempts.append(True)
+                if len(close_attempts) == 1:
+                    raise TimeoutError("detached Maya ignored the first quit")
 
             with mock.patch.object(harness.maya_commandport, "remove_stale_logs"), mock.patch.object(
                 harness.maya_commandport, "is_port_open", return_value=False
@@ -202,6 +207,8 @@ class TestMayaE2EHarness(unittest.TestCase):
             ), mock.patch.object(
                 harness.maya_commandport, "wait_for_port_close", side_effect=wait_for_close
             ), mock.patch.object(
+                harness.maya_commandport, "terminate_detached_maya", return_value=1234
+            ) as terminate_detached, mock.patch.object(
                 harness.maya_commandport, "close_process_logs"
             ):
                 harness.run_maya_e2e(
@@ -219,6 +226,8 @@ class TestMayaE2EHarness(unittest.TestCase):
                 )
 
             self.assertFalse(profile.exists())
+            self.assertEqual(len(close_attempts), 2)
+            terminate_detached.assert_called_once_with(output_dir=out_dir, port=7788)
 
 
 if __name__ == "__main__":
