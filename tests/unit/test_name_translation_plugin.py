@@ -239,6 +239,7 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
     )
     assert dialog.dictionary_edit.text() == str(name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH)
     assert name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH.is_file()
+    assert dialog._dialog.modal is False
     dialog.preset_folder_button.clicked.emit()
     open_url.assert_called_once_with(
         f"folder:{name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH.parent}"
@@ -262,6 +263,24 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
     assert dialog.apply() == (change,)
     apply_plan.assert_called_once_with((change,), cmds_module=cmds)
     on_applied.assert_called_once_with((change,))
+
+
+def test_show_dialog_is_modeless_and_reuses_the_visible_window(monkeypatch):
+    dialog = MagicMock()
+    dialog.isVisible.return_value = False
+    factory = MagicMock(return_value=dialog)
+    monkeypatch.setattr(name_translation_dialog, "_ACTIVE_DIALOG", None)
+    monkeypatch.setattr(name_translation_dialog, "NameTranslationDialog", factory)
+
+    assert name_translation_dialog.show_name_translation_dialog(cmds_module="cmds") is True
+    factory.assert_called_once_with(cmds_module="cmds", parent=None, on_applied=None)
+    dialog.show.assert_called_once_with()
+
+    dialog.isVisible.return_value = True
+    assert name_translation_dialog.show_name_translation_dialog(cmds_module="cmds") is True
+    factory.assert_called_once()
+    dialog.raise_.assert_called_once_with()
+    dialog.activateWindow.assert_called_once_with()
 
 
 @pytest.mark.parametrize(

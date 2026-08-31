@@ -47,6 +47,7 @@ DEFAULT_TRANSLATION_DICTIONARY_PATH = (
     / "name_translation_presets"
     / "mmd_standard_names.csv"
 )
+_ACTIVE_DIALOG: Optional["NameTranslationDialog"] = None
 
 
 @dataclass(frozen=True)
@@ -243,7 +244,7 @@ class NameTranslationDialog:
         self._dialog = QDialog(parent)
         self._dialog.setObjectName("MMDNameTranslationDialog")
         self._dialog.setWindowTitle("Translate MMD Names")
-        self._dialog.setModal(True)
+        self._dialog.setModal(False)
 
         self.model_label = QLabel("Model: resolving…", self._dialog)
         self.model_label.setObjectName("modelLabel")
@@ -333,12 +334,6 @@ class NameTranslationDialog:
         """Return the model root resolved while the dialog is open."""
 
         return self._model_root
-
-    def exec_modal(self) -> bool:
-        """Execute the modal using the available Qt binding."""
-
-        exec_method = getattr(self._dialog, "exec", None) or getattr(self._dialog, "exec_", None)
-        return bool(exec_method()) if callable(exec_method) else False
 
     def _choose_dictionary(self, *_args):
         path, _ = self._qt["QFileDialog"].getOpenFileName(
@@ -459,14 +454,21 @@ class NameTranslationDialog:
 
 
 def show_name_translation_dialog(*, cmds_module=None, parent=None, on_applied=None) -> bool:
-    """Open the standalone modal dialog and return its accepted state."""
+    """Show one modeless translation dialog without blocking the host UI."""
 
-    dialog = NameTranslationDialog(
+    global _ACTIVE_DIALOG
+    if _ACTIVE_DIALOG is not None and _ACTIVE_DIALOG.isVisible():
+        _ACTIVE_DIALOG.raise_()
+        _ACTIVE_DIALOG.activateWindow()
+        return True
+
+    _ACTIVE_DIALOG = NameTranslationDialog(
         cmds_module=cmds_module,
         parent=parent,
         on_applied=on_applied,
     )
-    return dialog.exec_modal()
+    _ACTIVE_DIALOG.show()
+    return True
 
 
 def install_menu_item(*, parent, cmds_module, on_applied=None) -> str:
