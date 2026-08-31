@@ -33,6 +33,10 @@ public:
     static const MTypeId id;
     static const MString drawDbClassification;
     static const MString drawRegistrantId;
+    // Maya's evaluated source mesh.  The importer may leave this input
+    // unconnected while the static VP2 witness is used; a later authoring
+    // path can connect a standard mesh without changing the render queue.
+    static MObject aInputMesh;
 
     MmdRenderShape();
     ~MmdRenderShape() override;
@@ -61,6 +65,28 @@ public:
         const std::vector<std::vector<uint32_t>>& submeshIndices,
         const std::vector<mmd::MmdRenderQueueInput>& queueInputs,
         double scale);
+
+    bool setMaterialSplitGeometry(
+        const std::vector<std::vector<float>>& submeshPositions,
+        const std::vector<std::vector<float>>& submeshNormals,
+        const std::vector<std::vector<float>>& submeshUvs,
+        const std::vector<std::vector<uint32_t>>& submeshIndices,
+        const std::vector<mmd::MmdRenderQueueInput>& queueInputs,
+        double scale,
+        const std::vector<std::vector<uint32_t>>& submeshSourceIndices);
+
+    /**
+     * Replace only the flattened position/normal streams with an evaluated
+     * Maya mesh.  Queue order, UVs, and indices remain owned by the static
+     * material split.  No state is changed when validation fails.
+     */
+    bool updateEvaluatedMesh(const MObject& meshObject);
+
+    /** Mark the static geometry usable after an absent input mesh. */
+    void useStaticGeometry();
+
+    /** Return false after an invalid connected input has failed closed. */
+    bool hasValidGeometry() const;
 
     /** Update one material's effective alpha and rebuild the ordered items. */
     bool updateMaterialAlpha(std::size_t materialIndex, float diffuseAlpha);
@@ -133,6 +159,9 @@ public:
         std::vector<float> positions;
         std::vector<float> normals;
         std::vector<float> uvs;
+        // One source mesh vertex index per flattened render vertex.  Material
+        // seams may therefore repeat the same source index in this stream.
+        std::vector<uint32_t> sourceVertexIndices;
         std::vector<mmd::MmdRenderQueueInput> queueInputs;
         std::vector<mmd::MmdRenderQueueEntry> renderQueue;
         std::vector<QueueGeometry> queueGeometry;
@@ -157,7 +186,14 @@ public:
 
 private:
     GeometryData geometry_;
+    // Immutable authored streams used when the optional input mesh is absent
+    // again after an evaluated update.
+    std::vector<float> staticPositions_;
+    std::vector<float> staticNormals_;
     MBoundingBox boundingBox_;
+    MBoundingBox staticBoundingBox_;
+    bool geometryValid_ = true;
+    bool evaluatedGeometryActive_ = false;
     bool renderItemWitnessValid_ = false;
     std::vector<mmd::MmdRenderQueueEntry> renderItemWitnessEntries_;
     bool geometryWitnessValid_ = false;

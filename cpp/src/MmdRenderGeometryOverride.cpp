@@ -8,8 +8,11 @@
 #include "MmdRenderShape.h"
 #include "MmdRenderOverride.h"
 
+#include <maya/MDataHandle.h>
 #include <maya/MHWGeometry.h>
+#include <maya/MFnData.h>
 #include <maya/MGlobal.h>
+#include <maya/MPlug.h>
 #include <maya/MShaderManager.h>
 #include <maya/MTextureManager.h>
 #include <maya/MViewport2Renderer.h>
@@ -445,8 +448,42 @@ bool MmdRenderGeometryOverride::requiresUpdateRenderItems(
 
 void MmdRenderGeometryOverride::updateDG()
 {
-    // All witness data is populated before the shape is made visible.  No
-    // built-in mesh plugs are read here, preserving the ordinary importer.
+    if (!shape_) {
+        return;
+    }
+
+    MPlug inputPlug(shape_->thisMObject(), MmdRenderShape::aInputMesh);
+    if (inputPlug.isNull()) {
+        // A shape created by an older scene/plugin version may not expose the
+        // optional input.  Preserve its static geometry in that case.
+        shape_->useStaticGeometry();
+        return;
+    }
+
+    MStatus connectionStatus;
+    const bool connected = inputPlug.isConnected(&connectionStatus);
+    if (!connectionStatus) {
+        shape_->updateEvaluatedMesh(MObject::kNullObj);
+        return;
+    }
+
+    MStatus meshStatus;
+    const MDataHandle inputHandle = inputPlug.asMDataHandle(&meshStatus);
+    if (meshStatus && inputHandle.type() == MFnData::kMesh) {
+        const MObject meshObject = inputHandle.asMesh();
+        if (!meshObject.isNull()) {
+            shape_->updateEvaluatedMesh(meshObject);
+            return;
+        }
+    }
+
+    if (connected || !meshStatus) {
+        // A connected but unevaluable mesh is an input failure, not a request
+        // to silently keep stale render data visible.
+        shape_->updateEvaluatedMesh(MObject::kNullObj);
+    } else {
+        shape_->useStaticGeometry();
+    }
 }
 
 void MmdRenderGeometryOverride::updateRenderItems(
@@ -462,6 +499,9 @@ void MmdRenderGeometryOverride::updateRenderItems(
     shape_->clearRenderItemWitness();
     shape_->clearMaterialBindingDiagnostics();
     disableItems(list);
+    if (!shape_->hasValidGeometry()) {
+        return;
+    }
 
     MRenderer* renderer = MRenderer::theRenderer();
     const MShaderManager* shaderManager =
@@ -674,6 +714,12 @@ void MmdRenderGeometryOverride::populateGeometry(
     MHWRender::MGeometry& data)
 {
     if (!shape_) {
+        return;
+    }
+
+    if (!shape_->hasValidGeometry()) {
+        disableItems(renderItems);
+        shape_->clearRenderItemWitness();
         return;
     }
 

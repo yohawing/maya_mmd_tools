@@ -7,7 +7,12 @@
 
 #include <maya/MArgDatabase.h>
 #include <maya/MFnDependencyNode.h>
+#include <maya/MFnData.h>
+#include <maya/MFnMesh.h>
+#include <maya/MFnTypedAttribute.h>
+#include <maya/MFloatVectorArray.h>
 #include <maya/MGlobal.h>
+#include <maya/MPointArray.h>
 #include <maya/MPoint.h>
 #include <maya/MSelectionList.h>
 #include <maya/MSyntax.h>
@@ -164,6 +169,7 @@ const MTypeId MmdRenderShape::id(kMmdRenderShapeId);
 const MString MmdRenderShape::drawDbClassification(
     kMmdRenderShapeClassification);
 const MString MmdRenderShape::drawRegistrantId(kMmdRenderShapeRegistrantId);
+MObject MmdRenderShape::aInputMesh;
 
 MmdRenderShape::MmdRenderShape() = default;
 MmdRenderShape::~MmdRenderShape() = default;
@@ -175,10 +181,18 @@ void* MmdRenderShape::creator()
 
 MStatus MmdRenderShape::initialize()
 {
-    // Geometry is intentionally transient for this first ownership witness.
-    // No built-in mesh attributes are added, so this node cannot accidentally
-    // enter the regular MFnMesh importer path or receive a mesh override.
-    return MS::kSuccess;
+    MStatus status;
+    MFnTypedAttribute typedAttribute;
+    aInputMesh = typedAttribute.create(
+        "inputMesh", "in", MFnData::kMesh, MObject::kNullObj, &status);
+    if (!status) {
+        return status;
+    }
+    typedAttribute.setStorable(true);
+    typedAttribute.setWritable(true);
+    typedAttribute.setReadable(false);
+    status = addAttribute(aInputMesh);
+    return status;
 }
 
 void MmdRenderShape::postConstructor()
@@ -246,6 +260,20 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     const std::vector<mmd::MmdRenderQueueInput>& queueInputs,
     double scale)
 {
+    return setMaterialSplitGeometry(
+        submeshPositions, submeshNormals, submeshUvs, submeshIndices,
+        queueInputs, scale, {});
+}
+
+bool MmdRenderShape::setMaterialSplitGeometry(
+    const std::vector<std::vector<float>>& submeshPositions,
+    const std::vector<std::vector<float>>& submeshNormals,
+    const std::vector<std::vector<float>>& submeshUvs,
+    const std::vector<std::vector<uint32_t>>& submeshIndices,
+    const std::vector<mmd::MmdRenderQueueInput>& queueInputs,
+    double scale,
+    const std::vector<std::vector<uint32_t>>& submeshSourceIndices)
+{
     auto reject = [](const std::string& reason) {
         MGlobal::displayError(
             MString("[mmdRenderShape] Geometry rejected: ") + reason.c_str());
@@ -255,7 +283,9 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     if (!std::isfinite(scale) || scale <= 0.0 || queueInputs.empty() ||
         submeshPositions.size() != submeshNormals.size() ||
         submeshPositions.size() != submeshUvs.size() ||
-        submeshPositions.size() != submeshIndices.size()) {
+        submeshPositions.size() != submeshIndices.size() ||
+        (!submeshSourceIndices.empty() &&
+         submeshPositions.size() != submeshSourceIndices.size())) {
         return reject("invalid scale, empty queue, or mismatched submesh buffers");
     }
 
@@ -299,6 +329,13 @@ bool MmdRenderShape::setMaterialSplitGeometry(
             (!uvs.empty() && uvs.size() != vertexCount * 2U)) {
             return reject("queue entry has mismatched normal or UV data");
         }
+        const std::vector<uint32_t>* sourceIndices = nullptr;
+        if (!submeshSourceIndices.empty()) {
+            sourceIndices = &submeshSourceIndices[entry.submeshIndex];
+            if (!sourceIndices->empty() && sourceIndices->size() != vertexCount) {
+                return reject("queue entry has mismatched source-index data");
+            }
+        }
         for (std::size_t indexOffset = 0; indexOffset < indices.size();
              ++indexOffset) {
             const uint32_t index = indices[indexOffset];
@@ -338,6 +375,12 @@ bool MmdRenderShape::setMaterialSplitGeometry(
         queueGeometry.material = *material;
         queueGeometry.vertexOffset =
             static_cast<uint32_t>(next.positions.size() / 3U);
+        const std::vector<uint32_t>* sourceIndices = nullptr;
+        if (!submeshSourceIndices.empty()) {
+            sourceIndices = &submeshSourceIndices[entry.submeshIndex];
+        }
+        const uint32_t fallbackSourceOffset =
+            static_cast<uint32_t>(next.sourceVertexIndices.size());
 
         for (std::size_t i = 0; i < positions.size(); i += 3U) {
             const double x = static_cast<double>(positions[i]) * scale;
@@ -349,6 +392,10 @@ bool MmdRenderShape::setMaterialSplitGeometry(
             next.positions.push_back(static_cast<float>(x));
             next.positions.push_back(static_cast<float>(y));
             next.positions.push_back(static_cast<float>(z));
+            next.sourceVertexIndices.push_back(
+                sourceIndices && !sourceIndices->empty()
+                    ? (*sourceIndices)[i / 3U]
+                    : fallbackSourceOffset + static_cast<uint32_t>(i / 3U));
 
             if (normals.empty()) {
                 next.normals.push_back(0.0F);
@@ -407,11 +454,167 @@ bool MmdRenderShape::setMaterialSplitGeometry(
         return reject("no bounded position data");
     }
 
+    // Prepare the immutable fallback before publishing any part of the new
+    // geometry.  A later disconnect can therefore restore the exact authored
+    // streams without reconstructing the material split.
+    std::vector<float> nextStaticPositions = next.positions;
+    std::vector<float> nextStaticNormals = next.normals;
     geometry_ = std::move(next);
+    staticPositions_ = std::move(nextStaticPositions);
+    staticNormals_ = std::move(nextStaticNormals);
     boundingBox_ = nextBounds;
+    staticBoundingBox_ = nextBounds;
+    geometryValid_ = true;
+    evaluatedGeometryActive_ = false;
     clearRenderItemWitness();
     clearMaterialBindingDiagnostics();
     return true;
+}
+
+bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
+{
+    auto reject = [this](const std::string& reason) {
+        MGlobal::displayError(
+            MString("[mmdRenderShape] Evaluated mesh rejected: ") +
+            reason.c_str());
+        // Keep the previous streams intact, but make them unavailable to the
+        // override until a later DG update supplies a valid mesh (or the
+        // input is disconnected and static geometry is explicitly restored).
+        geometryValid_ = false;
+        clearRenderItemWitness();
+        clearMaterialBindingDiagnostics();
+        return false;
+    };
+
+    if (meshObject.isNull()) {
+        return reject("input mesh data is null");
+    }
+
+    MStatus status;
+    MFnMesh meshFn(meshObject, &status);
+    if (!status) {
+        return reject("input data is not a mesh");
+    }
+
+    const std::size_t renderVertexCount = geometry_.positions.size() / 3U;
+    if (geometry_.positions.empty() || geometry_.positions.size() % 3U != 0U ||
+        geometry_.sourceVertexIndices.size() != renderVertexCount) {
+        return reject("static geometry has no complete source mapping");
+    }
+
+    std::size_t expectedSourceVertexCount = 0U;
+    for (const uint32_t sourceIndex : geometry_.sourceVertexIndices) {
+        const std::size_t nextCount = static_cast<std::size_t>(sourceIndex) + 1U;
+        if (nextCount > expectedSourceVertexCount) {
+            expectedSourceVertexCount = nextCount;
+        }
+    }
+    if (expectedSourceVertexCount == 0U) {
+        return reject("source mapping is empty");
+    }
+
+    MPointArray points;
+    if (!meshFn.getPoints(points, MSpace::kObject)) {
+        return reject("could not read object-space positions");
+    }
+    MFloatVectorArray normals;
+    if (!meshFn.getVertexNormals(true, normals, MSpace::kObject)) {
+        return reject("could not read object-space vertex normals");
+    }
+    if (static_cast<std::size_t>(points.length()) < expectedSourceVertexCount ||
+        normals.length() != points.length()) {
+        return reject("input mesh vertex/normal count does not match source topology");
+    }
+
+    std::vector<float> nextPositions;
+    std::vector<float> nextNormals;
+    nextPositions.reserve(renderVertexCount * 3U);
+    nextNormals.reserve(renderVertexCount * 3U);
+    MBoundingBox nextBounds;
+    bool hasBounds = false;
+    for (const uint32_t sourceIndex : geometry_.sourceVertexIndices) {
+        if (sourceIndex >= points.length()) {
+            return reject("source mapping index exceeds input mesh vertex count");
+        }
+
+        const MPoint& point = points[sourceIndex];
+        const MFloatVector& normal = normals[sourceIndex];
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+            !std::isfinite(point.z) || !std::isfinite(point.w) ||
+            !std::isfinite(normal.x) || !std::isfinite(normal.y) ||
+            !std::isfinite(normal.z)) {
+            return reject("input mesh contains a non-finite position or normal");
+        }
+
+        const double normalLength =
+            std::sqrt(normal.x * normal.x + normal.y * normal.y +
+                      normal.z * normal.z);
+        if (!std::isfinite(normalLength) || normalLength <= 0.0) {
+            return reject("input mesh contains a zero-length normal");
+        }
+        const float px = static_cast<float>(point.x);
+        const float py = static_cast<float>(point.y);
+        const float pz = static_cast<float>(point.z);
+        const float nx = static_cast<float>(normal.x / normalLength);
+        const float ny = static_cast<float>(normal.y / normalLength);
+        const float nz = static_cast<float>(normal.z / normalLength);
+        if (!std::isfinite(px) || !std::isfinite(py) ||
+            !std::isfinite(pz) || !std::isfinite(nx) ||
+            !std::isfinite(ny) || !std::isfinite(nz)) {
+            return reject("evaluated mesh values overflow float streams");
+        }
+        nextPositions.push_back(px);
+        nextPositions.push_back(py);
+        nextPositions.push_back(pz);
+        nextNormals.push_back(nx);
+        nextNormals.push_back(ny);
+        nextNormals.push_back(nz);
+
+        if (!hasBounds) {
+            nextBounds = MBoundingBox(point, point);
+            hasBounds = true;
+        } else {
+            nextBounds.expand(point);
+        }
+    }
+
+    if (!hasBounds || nextPositions.size() != geometry_.positions.size() ||
+        nextNormals.size() != geometry_.normals.size()) {
+        return reject("evaluated mesh expansion changed render topology");
+    }
+
+    // Commit only after every source index and every expanded value has been
+    // validated.  Queue/material/UV/index data is deliberately untouched.
+    geometry_.positions = std::move(nextPositions);
+    geometry_.normals = std::move(nextNormals);
+    boundingBox_ = nextBounds;
+    geometryValid_ = true;
+    evaluatedGeometryActive_ = true;
+    clearRenderItemWitness();
+    clearMaterialBindingDiagnostics();
+    return true;
+}
+
+void MmdRenderShape::useStaticGeometry()
+{
+    if (!geometryValid_ || evaluatedGeometryActive_) {
+        // Build both replacements before swapping either stream so a failed
+        // allocation cannot expose a half-restored geometry state.
+        std::vector<float> restoredPositions = staticPositions_;
+        std::vector<float> restoredNormals = staticNormals_;
+        geometry_.positions.swap(restoredPositions);
+        geometry_.normals.swap(restoredNormals);
+        boundingBox_ = staticBoundingBox_;
+        geometryValid_ = true;
+        evaluatedGeometryActive_ = false;
+        clearRenderItemWitness();
+        clearMaterialBindingDiagnostics();
+    }
+}
+
+bool MmdRenderShape::hasValidGeometry() const
+{
+    return geometryValid_ && !geometry_.positions.empty();
 }
 
 bool MmdRenderShape::updateMaterialAlpha(std::size_t materialIndex,
