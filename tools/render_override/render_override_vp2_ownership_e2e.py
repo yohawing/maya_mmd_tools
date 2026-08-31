@@ -366,10 +366,24 @@ def run_probe(
         log(f"vp2 device: {cmds.ogs(deviceInformation=True)}")
 
         if ui_import:
+            from mmd_tools.core import settings_keys
             from mmd_tools.io.mmd_importer import import_mmd_file
             from mmd_tools.services.settings_service import SettingsService
 
             settings_service = SettingsService()
+            # This probe runs under a disposable MAYA_APP_DIR.  Enable the
+            # same opt-in settings a user selects in the Settings tab before
+            # asking the settings service to build the import request.
+            settings_service.set(settings_keys.UI_GENERAL_DEVELOPMENT_MODE, True)
+            settings_service.set(
+                settings_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, True
+            )
+            settings_service.set(
+                settings_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP, True
+            )
+            settings_service.set(
+                settings_keys.IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY, True
+            )
             ui_options = settings_service.build_pmx_import_options(
                 custom_namespace="render_override_vp2_ownership",
                 development_mode=True,
@@ -423,7 +437,7 @@ def run_probe(
                 for candidate in (
                     cmds.listRelatives(
                         root_name,
-                        children=True,
+                        allDescendents=True,
                         fullPath=True,
                     )
                     or []
@@ -635,10 +649,49 @@ def run_probe(
                 or []
             )
         ]
+        connected_source_meshes = [
+            str(item)
+            for item in (
+                cmds.listConnections(
+                    f"{shape_name}.inputMesh",
+                    source=True,
+                    destination=False,
+                    shapes=True,
+                    type="mesh",
+                )
+                or []
+            )
+        ]
+        connected_source_meshes = [
+            str(item)
+            for item in (
+                cmds.ls(connected_source_meshes, long=True) or connected_source_meshes
+            )
+        ]
+        source_mesh_set = set(connected_source_meshes)
+        intermediate_custom_meshes = [
+            mesh
+            for mesh in custom_meshes
+            if bool(cmds.getAttr(f"{mesh}.intermediateObject"))
+        ]
+        intermediate_mesh_set = set(intermediate_custom_meshes)
+        unexpected_custom_meshes = [
+            mesh
+            for mesh in custom_meshes
+            if mesh not in source_mesh_set and mesh not in intermediate_mesh_set
+        ]
+        source_meshes_hidden = bool(connected_source_meshes) and all(
+            not bool(cmds.getAttr(f"{mesh}.visibility"))
+            for mesh in connected_source_meshes
+        )
         report["sceneOwnership"] = {
             "ordinaryMeshCount": len(ordinary_meshes),
             "ordinaryMeshes": ordinary_meshes,
             "customShapeMeshDescendants": custom_meshes,
+            "connectedSourceMeshes": connected_source_meshes,
+            "connectedSourceMeshesHidden": source_meshes_hidden,
+            "intermediateCustomMeshDescendants": intermediate_custom_meshes,
+            "unexpectedCustomMeshDescendants": unexpected_custom_meshes,
             "ordinaryControlExists": bool(
                 control_transform and cmds.objExists(control_transform)
             ),
@@ -729,9 +782,9 @@ def run_probe(
                 "geometryBuffersPrepared": "geometry=vertices=" in witness
                 and ",indices=" in witness,
                 "captureCreated": capture.is_file() and capture.stat().st_size > 0,
-                "noCustomMfnMeshDuplicate": not report["sceneOwnership"][
-                    "customShapeMeshDescendants"
-                ],
+                "connectedSourceMeshPresent": bool(connected_source_meshes),
+                "connectedSourceMeshHidden": source_meshes_hidden,
+                "noCustomMfnMeshDuplicate": not unexpected_custom_meshes,
                 "hudPreserved": (
                     report["headsUpDisplay"]["before"]
                     == report["headsUpDisplay"]["afterSetup"]
@@ -742,6 +795,8 @@ def run_probe(
                 "drawPreparationReady",
                 "geometryBuffersPrepared",
                 "captureCreated",
+                "connectedSourceMeshPresent",
+                "connectedSourceMeshHidden",
                 "noCustomMfnMeshDuplicate",
                 "hudPreserved",
             ]
@@ -875,9 +930,9 @@ def run_probe(
                 else report["sceneOwnership"]["ordinaryControlExists"]
                 and report["sceneOwnership"]["ordinaryControlVisible"]
             ),
-            "noCustomMfnMeshDuplicate": not report["sceneOwnership"][
-                "customShapeMeshDescendants"
-            ],
+            "connectedSourceMeshPresent": bool(connected_source_meshes),
+            "connectedSourceMeshHidden": source_meshes_hidden,
+            "noCustomMfnMeshDuplicate": not unexpected_custom_meshes,
             "selectionPreserved": (
                 None if parity_mode else report["selection"]["controlSelectable"]
             ),
@@ -905,6 +960,8 @@ def run_probe(
             "cameraCaptureCreated",
             "queueOpaqueCaptureCreated",
             "queueRestoredCaptureCreated",
+            "connectedSourceMeshPresent",
+            "connectedSourceMeshHidden",
             "noCustomMfnMeshDuplicate",
             "hudPreserved",
         ]
