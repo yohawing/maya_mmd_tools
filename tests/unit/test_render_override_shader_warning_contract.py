@@ -9,6 +9,7 @@ SOURCE = (
     / "src"
     / "MmdRenderGeometryOverride.cpp"
 )
+FAST_LOAD_SOURCE = SOURCE.with_name("mmdFastLoad.cpp")
 
 
 def test_shader_setup_failures_warn_without_becoming_import_errors() -> None:
@@ -34,3 +35,24 @@ def test_geometry_population_failures_remain_errors() -> None:
 
     assert "MGlobal::displayError(" in populate
     assert "Geometry population failed:" in populate
+
+
+def test_hlsl_native_shader_is_advertised_only_to_directx11() -> None:
+    """OpenGL must keep the source-mesh fallback instead of compiling HLSL."""
+    source = SOURCE.read_text(encoding="utf-8")
+    api_block = source[source.index("MHWRender::DrawAPI MmdRenderGeometryOverride::supportedDrawAPIs()") :]
+    api_block = api_block[: api_block.index("bool MmdRenderGeometryOverride::hasUIDrawables()")]
+
+    assert "kDirectX11" in api_block
+    assert "kOpenGL" not in api_block
+    assert "kOpenGLCoreProfile" not in api_block
+
+
+def test_vp2_source_mesh_has_a_neutral_unsupported_api_fallback() -> None:
+    """The visible OpenGL fallback must not use Maya's green error material."""
+    source = FAST_LOAD_SOURCE.read_text(encoding="utf-8")
+    vp2_loader = source[source.index("MStatus MmdFastLoad::loadVp2Ownership(") :]
+
+    assert "assignInitialShadingGroup(sourceMeshObject)" in vp2_loader
+    assert 'selection.add("initialShadingGroup")' in source
+    assert "shadingSet.addMember(meshPath)" in source

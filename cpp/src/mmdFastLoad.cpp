@@ -29,6 +29,7 @@
 #include <maya/MFnDagNode.h>
 #include <maya/MFnIntArrayData.h>
 #include <maya/MFnMesh.h>
+#include <maya/MFnSet.h>
 #include <maya/MFnTransform.h>
 #include <maya/MFnTypedAttribute.h>
 #include <maya/MGlobal.h>
@@ -69,6 +70,28 @@ MString mStringFromUtf8(const std::string& value)
     MString result;
     result.setUTF8(value.c_str());
     return result;
+}
+
+bool assignInitialShadingGroup(const MObject& meshObject)
+{
+    MStatus status;
+    MFnDagNode meshFn(meshObject, &status);
+    if (!status) {
+        return false;
+    }
+    MDagPath meshPath;
+    if (!meshFn.getPath(meshPath)) {
+        return false;
+    }
+
+    MSelectionList selection;
+    MObject shadingGroup;
+    if (!selection.add("initialShadingGroup") ||
+        !selection.getDependNode(0, shadingGroup)) {
+        return false;
+    }
+    MFnSet shadingSet(shadingGroup, &status);
+    return status && shadingSet.addMember(meshPath);
 }
 
 } // namespace
@@ -1647,6 +1670,17 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
     if (!sourceSelection.add(sourceMesh.meshName) ||
         !sourceSelection.getDependNode(0, sourceMeshObject)) {
         MGlobal::displayError("[mmdFastLoad] Failed to resolve VP2 source mesh.");
+        deleteRoot(sourceTransformObject);
+        return MS::kFailure;
+    }
+    // The HLSL native override is intentionally DX11-only.  Give the ordinary
+    // source mesh Maya's default material so unsupported VP2 APIs display a
+    // neutral fallback instead of Maya's bright-green unassigned-material
+    // diagnostic.  The Python wrapper may replace this with authored PMX
+    // materials after the command returns.
+    if (!assignInitialShadingGroup(sourceMeshObject)) {
+        MGlobal::displayError(
+            "[mmdFastLoad] Failed to assign the VP2 source fallback material.");
         deleteRoot(sourceTransformObject);
         return MS::kFailure;
     }

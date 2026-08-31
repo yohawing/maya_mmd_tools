@@ -1,4 +1,4 @@
-"""Real Maya GUI/DX11 smoke for the opt-in VP2 render shape.
+"""Real Maya GUI smoke for native DX11 drawing and OpenGL fallback.
 
 This is intentionally an acceptance smoke, not a visual-parity gate.  It
 proves only the ready/source-visibility contract and captures shaded and wire
@@ -21,8 +21,12 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tests.viewport.maya_e2e_harness import run_maya_e2e
-from tools.render_override.common import capture_view, require_requested_plugin, write_report
+from tests.viewport.maya_e2e_harness import run_maya_e2e  # noqa: E402
+from tools.render_override.common import (  # noqa: E402
+    capture_view,
+    require_requested_plugin,
+    write_report,
+)
 
 
 MARKER = "//-- MAYA RENDER OVERRIDE GUI SMOKE FINISHED --//"
@@ -69,14 +73,16 @@ def _surface_hit(panel: str) -> list[str]:
 
 
 def run_probe(log_path: str, report_path: str, out_dir: str, model: str,
-              plugin: str, width: int = 640, height: int = 480) -> None:
+              plugin: str, width: int = 640, height: int = 480,
+              vp2_backend: str = "dx11") -> None:
     """Execute the GUI-only side through commandPort and always emit JSON."""
     import maya.cmds as cmds
 
     log_file, report_file, output_dir = Path(log_path), Path(report_path), Path(out_dir)
     report: dict[str, Any] = {
         "status": "fail", "model": model, "plugin": plugin, "checks": {},
-        "captures": {}, "selection": {"componentSelection": "not-run"}, "errors": [],
+        "captures": {}, "selection": {"componentSelection": "not-run"},
+        "vp2Backend": vp2_backend, "errors": [],
     }
 
     def log(value: object) -> None:
@@ -89,8 +95,11 @@ def run_probe(log_path: str, report_path: str, out_dir: str, model: str,
         report["loadedPluginPath"] = str(require_requested_plugin(cmds, plugin, log))
         device = str(cmds.ogs(deviceInformation=True))
         report["vp2Device"] = device
-        if "DirectX V.11" not in device and "DirectX11" not in device:
-            raise RuntimeError(f"DX11 VP2 device required, got: {device}")
+        if vp2_backend == "dx11":
+            if "DirectX V.11" not in device and "DirectX11" not in device:
+                raise RuntimeError(f"DX11 VP2 device required, got: {device}")
+        elif "OpenGL" not in device:
+            raise RuntimeError(f"OpenGL VP2 device required, got: {device}")
 
         result = cmds.mmdFastLoad(
             file=str(Path(model).resolve()), name="render_override_gui_smoke",
@@ -116,7 +125,15 @@ def run_probe(log_path: str, report_path: str, out_dir: str, model: str,
         cmds.select(shape, replace=True)
         cmds.viewFit("persp", all=False, animate=False, fitFactor=0.8)
         cmds.select(clear=True)
-        witness = _wait_ready(cmds, shape, log)
+        if vp2_backend == "dx11":
+            witness = _wait_ready(cmds, shape, log)
+        else:
+            # The bundled native effect is HLSL-only.  On OpenGL the geometry
+            # override must not initialize, leaving the connected source mesh
+            # as the visible compatibility path.
+            cmds.refresh(force=True)
+            time.sleep(0.5)
+            witness = str(cmds.mmdRenderWitness(node=shape))
         source_hidden = not bool(cmds.getAttr(f"{source}.visibility"))
         shaded = capture_view(cmds, output_dir / "render_override_gui_shaded.png",
                               panel, width, height)
@@ -139,14 +156,24 @@ def run_probe(log_path: str, report_path: str, out_dir: str, model: str,
             "componentSelection": "not-supported",
         })
         report["checks"] = {
-            "dx11": True,
+            "requestedVp2Device": True,
             "proxyInputConnected": True,
-            "drawPreparationReady": witness.startswith("ready"),
-            "sourceHiddenAfterReady": source_hidden,
             "smoothCapture": shaded.is_file() and shaded.stat().st_size > 0,
             "wireCapture": wire.is_file() and wire.stat().st_size > 0,
             "objectHitTest": object_hit,
         }
+        if vp2_backend == "dx11":
+            report["checks"].update({
+                "dx11": True,
+                "nativeDrawPreparationReady": witness.startswith("ready"),
+                "sourceHiddenAfterReady": source_hidden,
+            })
+        else:
+            report["checks"].update({
+                "openGL": True,
+                "nativeDrawSkippedOnUnsupportedApi": not witness.startswith("ready"),
+                "sourceVisibleOnUnsupportedApi": not source_hidden,
+            })
         failed = [name for name, ok in report["checks"].items() if not ok]
         if failed:
             raise RuntimeError("GUI smoke checks failed: " + ", ".join(failed))
@@ -170,6 +197,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
+    parser.add_argument("--vp2-device", choices=("dx11", "glcore"), default="dx11")
     args = parser.parse_args()
     if not args.model.is_file():
         parser.error(f"model does not exist: {args.model}")
@@ -181,7 +209,8 @@ def main() -> int:
     command = (
         "from tools.smoke.maya_render_override_gui_smoke import run_probe\n"
         f"run_probe({str(log_path)!r}, {str(report_path)!r}, {str(out)!r}, "
-        f"{str(args.model.resolve())!r}, {str(plugin.resolve())!r}, {args.width}, {args.height})\n"
+        f"{str(args.model.resolve())!r}, {str(plugin.resolve())!r}, {args.width}, {args.height}, "
+        f"{args.vp2_device!r})\n"
     )
     report = run_maya_e2e(
         project_root=ROOT, version=str(args.maya), out_dir=out, port=args.port,
@@ -193,7 +222,11 @@ def main() -> int:
         port_error=f"commandPort :{args.port} is already open; choose another --port",
         report_error=f"GUI smoke report missing: {report_path}", log_ready=LOGGER,
         warn_detached=True,
-        env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",
+        env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": (
+                           "VirtualDeviceDx11"
+                           if args.vp2_device == "dx11"
+                           else "VirtualDeviceGLCore"
+                       ),
                        "MMD_TOOLS_CPP_PLUGIN": str(plugin.resolve()),
                        "PATH": os.pathsep.join((str(plugin.parent), os.environ.get("PATH", "")))},
     )

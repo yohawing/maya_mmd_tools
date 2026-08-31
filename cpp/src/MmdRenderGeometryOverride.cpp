@@ -426,9 +426,13 @@ MmdRenderGeometryOverride::~MmdRenderGeometryOverride()
 
 MHWRender::DrawAPI MmdRenderGeometryOverride::supportedDrawAPIs() const
 {
-    return MHWRender::DrawAPI::kOpenGL |
-           MHWRender::DrawAPI::kDirectX11 |
-           MHWRender::DrawAPI::kOpenGLCoreProfile;
+    // MMDNativeShader.fx is an HLSL effect (technique11, Shader Model 5,
+    // BlendState/DepthStencilState).  Advertising either OpenGL API makes
+    // Maya feed that file to its GLSL compiler, producing a cascade of
+    // misleading FLOAT3_TYPE/state-definition errors.  Unsupported devices
+    // deliberately leave proxyReady false so the ordinary source mesh stays
+    // visible as the compatibility fallback.
+    return MHWRender::DrawAPI::kDirectX11;
 }
 
 bool MmdRenderGeometryOverride::hasUIDrawables() const
