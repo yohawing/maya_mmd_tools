@@ -70,6 +70,7 @@ set(SOURCES
     MmdRenderShape.cpp
     MmdRenderGeometryOverride.cpp
     MmdRenderOverride.cpp
+    MmdUvSeamWeldPlan.cpp
     MmdWeldUvSeamVertices.cpp
     MmdAppendNode.cpp
     MmdCcdIkNode.cpp
@@ -91,6 +92,7 @@ set(HEADERS
     MmdRenderShape.h
     MmdRenderGeometryOverride.h
     MmdRenderOverride.h
+    MmdUvSeamWeldPlan.h
     MmdWeldUvSeamVertices.h
     MmdAppendNode.h
     MmdCcdIkNode.h

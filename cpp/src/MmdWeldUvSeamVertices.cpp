@@ -11,6 +11,7 @@
  */
 
 #include "MmdWeldUvSeamVertices.h"
+#include "MmdUvSeamWeldPlan.h"
 
 #include <maya/MArgDatabase.h>
 #include <maya/MDagPath.h>
@@ -78,42 +79,7 @@ struct UvSetData {
     MIntArray   ids;
 };
 
-struct RawGeometry {
-    std::vector<float>              positions;
-    std::vector<uint32_t>           skinIndices;
-    std::vector<float>              skinWeights;
-    std::vector<float>              edgeScale;
-    std::vector<uint8_t>            sdefEnabled;
-    std::vector<float>              sdefC;
-    std::vector<float>              sdefR0;
-    std::vector<float>              sdefR1;
-    std::vector<float>              sdefRw0;
-    std::vector<float>              sdefRw1;
-    std::vector<uint8_t>            qdefEnabled;
-    std::vector<std::vector<float>>    additionalUvs;
-    std::vector<std::vector<uint32_t>> morphSignatures;
-};
-
-struct WeldKey {
-    std::vector<uint32_t> words;
-
-    bool operator==(const WeldKey& other) const
-    {
-        return words == other.words;
-    }
-};
-
-struct WeldKeyHash {
-    size_t operator()(const WeldKey& key) const noexcept
-    {
-        size_t hash = 1469598103934665603ULL;
-        for (uint32_t word : key.words) {
-            hash ^= static_cast<size_t>(word);
-            hash *= 1099511628211ULL;
-        }
-        return hash;
-    }
-};
+using RawGeometry = MmdUvSeamWeldGeometry;
 
 std::vector<uint8_t> readBinaryFile(const std::string& path)
 {
@@ -176,14 +142,6 @@ json takeJsonBuffer(mmd_runtime_ffi_byte_buffer_t buffer)
     }
     mmd_runtime_byte_buffer_free(buffer);
     return result;
-}
-
-uint32_t floatBits(float value)
-{
-    uint32_t bits = 0;
-    static_assert(sizeof(bits) == sizeof(value), "float and uint32_t must match");
-    std::memcpy(&bits, &value, sizeof(bits));
-    return bits;
 }
 
 void appendDoubleBits(std::vector<uint32_t>& words, double value)
@@ -320,50 +278,6 @@ bool buildMorphSignatures(const json& nonGeometry, size_t sourceCount,
     return true;
 }
 
-void appendMarker(WeldKey& key, uint32_t marker, size_t count)
-{
-    key.words.push_back(marker);
-    key.words.push_back(static_cast<uint32_t>(std::min<size_t>(count, std::numeric_limits<uint32_t>::max())));
-}
-
-void appendFloats(WeldKey& key, uint32_t marker, const std::vector<float>& values,
-                  size_t offset, size_t count)
-{
-    appendMarker(key, marker, count);
-    if (offset > values.size() || count > values.size() - offset) {
-        key.words.push_back(0xFFFFFFFFU);
-        return;
-    }
-    for (size_t i = 0; i < count; ++i) {
-        key.words.push_back(floatBits(values[offset + i]));
-    }
-}
-
-void appendU32(WeldKey& key, uint32_t marker, const std::vector<uint32_t>& values,
-               size_t offset, size_t count)
-{
-    appendMarker(key, marker, count);
-    if (offset > values.size() || count > values.size() - offset) {
-        key.words.push_back(0xFFFFFFFFU);
-        return;
-    }
-    key.words.insert(key.words.end(), values.begin() + static_cast<std::ptrdiff_t>(offset),
-                     values.begin() + static_cast<std::ptrdiff_t>(offset + count));
-}
-
-void appendU8(WeldKey& key, uint32_t marker, const std::vector<uint8_t>& values,
-              size_t offset, size_t count)
-{
-    appendMarker(key, marker, count);
-    if (offset > values.size() || count > values.size() - offset) {
-        key.words.push_back(0xFFFFFFFFU);
-        return;
-    }
-    for (size_t i = 0; i < count; ++i) {
-        key.words.push_back(values[offset + i]);
-    }
-}
-
 bool loadRawGeometry(const std::vector<uint8_t>& bytes, RawGeometry& raw,
                      WeldProfile* profile = nullptr)
 {
@@ -413,39 +327,6 @@ bool loadRawGeometry(const std::vector<uint8_t>& bytes, RawGeometry& raw,
     const json nonGeometry = takeJsonBuffer(
         mmd_runtime_parse_pmx_non_geometry_json(bytes.data(), bytes.size()));
     return buildMorphSignatures(nonGeometry, sourceCount, raw.morphSignatures);
-}
-
-WeldKey makeWeldKey(const RawGeometry& raw, size_t sourceIndex)
-{
-    WeldKey key;
-    appendFloats(key, 1U, raw.positions, sourceIndex * 3U, 3U);
-
-    // Primary UV and authored normals are intentionally absent.  They are
-    // face-corner data in Maya and are exactly what this command must split.
-    appendU32(key, 2U, raw.skinIndices, sourceIndex * 4U, 4U);
-    appendFloats(key, 3U, raw.skinWeights, sourceIndex * 4U, 4U);
-    appendFloats(key, 4U, raw.edgeScale, sourceIndex, 1U);
-    appendU8(key, 5U, raw.sdefEnabled, sourceIndex, 1U);
-    appendFloats(key, 6U, raw.sdefC, sourceIndex * 3U, 3U);
-    appendFloats(key, 7U, raw.sdefR0, sourceIndex * 3U, 3U);
-    appendFloats(key, 8U, raw.sdefR1, sourceIndex * 3U, 3U);
-    appendFloats(key, 9U, raw.sdefRw0, sourceIndex * 3U, 3U);
-    appendFloats(key, 10U, raw.sdefRw1, sourceIndex * 3U, 3U);
-    appendU8(key, 11U, raw.qdefEnabled, sourceIndex, 1U);
-    for (size_t uvIndex = 0; uvIndex < raw.additionalUvs.size(); ++uvIndex) {
-        appendFloats(key, static_cast<uint32_t>(100U + uvIndex), raw.additionalUvs[uvIndex],
-                     sourceIndex * 4U, 4U);
-    }
-
-    // Exact sparse morph signatures make seam copies weldable when every
-    // Vertex/UV/Additional-UV morph deforms them identically. Missing and
-    // explicitly-zero offsets both contribute an empty signature.
-    if (sourceIndex < raw.morphSignatures.size()) {
-        appendMarker(key, 200U, raw.morphSignatures[sourceIndex].size());
-        key.words.insert(key.words.end(), raw.morphSignatures[sourceIndex].begin(),
-                         raw.morphSignatures[sourceIndex].end());
-    }
-    return key;
 }
 
 bool readSourceVertexIndices(const MObject& transform, size_t vertexCount,
@@ -862,74 +743,24 @@ MStatus weldMesh(const MString& meshName, const RawGeometry& raw,
         }
     }
 
-    std::unordered_map<WeldKey, unsigned int, WeldKeyHash> candidateGroups;
-    candidateGroups.reserve(oldVertexCount);
-    std::vector<unsigned int> groupByVertex(oldVertexCount, 0U);
-    unsigned int groupCount = 0;
-    for (unsigned int vertex = 0; vertex < oldVertexCount; ++vertex) {
-        WeldKey key = makeWeldKey(raw, sourceIndices[vertex]);
-        const auto inserted = candidateGroups.emplace(std::move(key), groupCount);
-        if (inserted.second) {
-            ++groupCount;
-        }
-        groupByVertex[vertex] = inserted.first->second;
-    }
-
-    // Do not turn a face into a degenerate polygon.  This is rare for UV
-    // seam duplicates, but it matters for malformed/overlapping PMX meshes.
-    std::vector<bool> conflictingGroup(groupCount, false);
-    size_t cursor = 0;
+    std::vector<int> planFaceCounts(faceCounts.length());
     for (unsigned int face = 0; face < faceCounts.length(); ++face) {
-        std::unordered_map<unsigned int, unsigned int> firstVertex;
-        const int count = faceCounts[face];
-        if (count < 0 || cursor + static_cast<size_t>(count) > polygonConnects.length()) {
-            return MS::kFailure;
-        }
-        for (int local = 0; local < count; ++local) {
-            const int oldVertex = polygonConnects[static_cast<unsigned int>(cursor + local)];
-            if (oldVertex < 0 || oldVertex >= static_cast<int>(oldVertexCount)) {
-                return MS::kFailure;
-            }
-            const unsigned int group = groupByVertex[static_cast<unsigned int>(oldVertex)];
-            const auto inserted = firstVertex.emplace(group, static_cast<unsigned int>(oldVertex));
-            if (!inserted.second && inserted.first->second != static_cast<unsigned int>(oldVertex)) {
-                conflictingGroup[group] = true;
-            }
-        }
-        cursor += static_cast<size_t>(count);
+        planFaceCounts[face] = faceCounts[face];
     }
-
-    std::vector<unsigned int> localByVertex(oldVertexCount, 0U);
-    std::vector<uint32_t> newSourceIndices;
-    std::vector<unsigned int> representativeByGroup(groupCount, std::numeric_limits<unsigned int>::max());
-    unsigned int localCount = 0;
-    for (unsigned int vertex = 0; vertex < oldVertexCount; ++vertex) {
-        const unsigned int group = groupByVertex[vertex];
-        if (conflictingGroup[group]) {
-            localByVertex[vertex] = localCount++;
-            newSourceIndices.push_back(sourceIndices[vertex]);
-            continue;
-        }
-        unsigned int& representative = representativeByGroup[group];
-        if (representative == std::numeric_limits<unsigned int>::max()) {
-            representative = vertex;
-            localByVertex[vertex] = localCount++;
-            newSourceIndices.push_back(sourceIndices[vertex]);
-        } else {
-            localByVertex[vertex] = localByVertex[representative];
-        }
+    std::vector<int> planPolygonConnects(polygonConnects.length());
+    for (unsigned int corner = 0; corner < polygonConnects.length(); ++corner) {
+        planPolygonConnects[corner] = polygonConnects[corner];
     }
-    newVertexCount = localCount;
-    std::vector<int> sourceToNewLocal(sourceCount, -1);
-    for (size_t source = 0; source < sourceToOldLocal.size(); ++source) {
-        const int oldLocal = sourceToOldLocal[source];
-        if (oldLocal >= 0) {
-            sourceToNewLocal[source] = static_cast<int>(
-                localByVertex[static_cast<unsigned int>(oldLocal)]);
-        }
+    MmdUvSeamWeldPlan weldPlan;
+    if (!buildMmdUvSeamWeldPlan(raw, sourceIndices, sourceToOldLocal,
+                                planFaceCounts, planPolygonConnects, weldPlan)) {
+        MGlobal::displayWarning(
+            "[mmdWeldUvSeamVertices] Mesh topology is invalid; keeping original topology.");
+        return failOnNoOp ? MS::kFailure : MS::kSuccess;
     }
+    newVertexCount = weldPlan.vertexCount;
     if (newVertexCount >= oldVertexCount) {
-        if (!writeSourceToLocalIndices(transformObject, sourceToNewLocal)) {
+        if (!writeSourceToLocalIndices(transformObject, weldPlan.sourceToLocal)) {
             MGlobal::displayWarning(
                 "[mmdWeldUvSeamVertices] Failed to write source-to-local mapping; keeping original topology.");
             return failOnNoOp ? MS::kFailure : MS::kSuccess;
@@ -962,25 +793,21 @@ MStatus weldMesh(const MString& meshName, const RawGeometry& raw,
 
     MPointArray newPoints;
     newPoints.setLength(newVertexCount);
-    // Assign representatives explicitly so an actual origin vertex is handled
-    // the same way as every other point.
-    for (unsigned int group = 0; group < groupCount; ++group) {
-        const unsigned int representative = representativeByGroup[group];
-        if (representative != std::numeric_limits<unsigned int>::max()) {
-            newPoints[localByVertex[representative]] = oldPoints[representative];
-        }
-    }
+    // The first old vertex for each planned local is the deterministic
+    // representative selected by the plan.
+    std::vector<bool> assignedPoint(newVertexCount, false);
     for (unsigned int vertex = 0; vertex < oldVertexCount; ++vertex) {
-        if (conflictingGroup[groupByVertex[vertex]]) {
-            newPoints[localByVertex[vertex]] = oldPoints[vertex];
+        const uint32_t local = weldPlan.localByVertex[vertex];
+        if (!assignedPoint[local]) {
+            newPoints[local] = oldPoints[vertex];
+            assignedPoint[local] = true;
         }
     }
 
     MIntArray newPolygonConnects;
     newPolygonConnects.setLength(polygonConnects.length());
     for (unsigned int i = 0; i < polygonConnects.length(); ++i) {
-        newPolygonConnects[i] = static_cast<int>(
-            localByVertex[static_cast<unsigned int>(polygonConnects[i])]);
+        newPolygonConnects[i] = weldPlan.remappedPolygonConnects[i];
     }
 
     MStatus createStatus;
@@ -1042,7 +869,7 @@ MStatus weldMesh(const MString& meshName, const RawGeometry& raw,
     MVectorArray normals;
     MIntArray normalFaces;
     MIntArray normalVertices;
-    cursor = 0;
+    size_t cursor = 0;
     for (unsigned int face = 0; face < faceCounts.length(); ++face) {
         for (int localVertex = 0; localVertex < faceCounts[face]; ++localVertex) {
             normals.append(faceVertexNormals[cursor]);
@@ -1068,7 +895,7 @@ MStatus weldMesh(const MString& meshName, const RawGeometry& raw,
         return MS::kFailure;
     }
 
-    if (!writeSourceVertexIndices(transformObject, newSourceIndices)) {
+    if (!writeSourceVertexIndices(transformObject, weldPlan.localToSource)) {
         MDagModifier cleanup;
         cleanup.deleteNode(newMeshObject);
         cleanup.doIt();
@@ -1076,7 +903,7 @@ MStatus weldMesh(const MString& meshName, const RawGeometry& raw,
         return MS::kFailure;
     }
 
-    if (!writeSourceToLocalIndices(transformObject, sourceToNewLocal)) {
+    if (!writeSourceToLocalIndices(transformObject, weldPlan.sourceToLocal)) {
         writeSourceVertexIndices(transformObject, sourceIndices);
         MDagModifier cleanup;
         cleanup.deleteNode(newMeshObject);
