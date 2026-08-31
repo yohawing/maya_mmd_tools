@@ -183,8 +183,10 @@ class _FakeDialog(_Widget):
 
 
 def _install_dialog_qt_stub(monkeypatch):
+    open_url = MagicMock(return_value=True)
     qt = SimpleNamespace(
         QCheckBox=_Widget,
+        QDesktopServices=SimpleNamespace(openUrl=open_url),
         QDialog=_FakeDialog,
         QFileDialog=SimpleNamespace(getOpenFileName=staticmethod(lambda *_args: ("", ""))),
         QFormLayout=_Widget,
@@ -194,13 +196,15 @@ def _install_dialog_qt_stub(monkeypatch):
         QMessageBox=SimpleNamespace(warning=staticmethod(lambda *_args: None)),
         QPushButton=_Widget,
         QTextEdit=_Widget,
+        QUrl=SimpleNamespace(fromLocalFile=staticmethod(lambda path: f"folder:{path}")),
         QVBoxLayout=_Widget,
     )
     monkeypatch.setitem(sys.modules, "mmd_tools.ui.qt_compat", qt)
+    return open_url
 
 
 def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatch):
-    _install_dialog_qt_stub(monkeypatch)
+    open_url = _install_dialog_qt_stub(monkeypatch)
     entry = _entry("bone", "|root|joint", "左腕")
     change = name_translation_dialog.NameChange(entry, "left arm", "left arm", None)
     state = {"uuid": "uuid-1", "source": "左腕", "english": ""}
@@ -235,6 +239,10 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
     )
     assert dialog.dictionary_edit.text() == str(name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH)
     assert name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH.is_file()
+    dialog.preset_folder_button.clicked.emit()
+    open_url.assert_called_once_with(
+        f"folder:{name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH.parent}"
+    )
     assert not dialog.apply_button.isEnabled()
     assert dialog.apply() is None
     assert not apply_plan.called

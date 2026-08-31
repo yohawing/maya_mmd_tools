@@ -211,6 +211,7 @@ class NameTranslationDialog:
     def __init__(self, *, cmds_module=None, parent=None, on_applied=None):
         from mmd_tools.ui.qt_compat import (
             QCheckBox,
+            QDesktopServices,
             QDialog,
             QFileDialog,
             QFormLayout,
@@ -220,14 +221,17 @@ class NameTranslationDialog:
             QMessageBox,
             QPushButton,
             QTextEdit,
+            QUrl,
             QVBoxLayout,
         )
 
         # Keep the Qt imports local to the dialog entry point.  Importing the
         # Maya-independent translation core never requires PySide.
         self._qt = {
+            "QDesktopServices": QDesktopServices,
             "QFileDialog": QFileDialog,
             "QMessageBox": QMessageBox,
+            "QUrl": QUrl,
         }
         self._cmds = cmds_module
         self._preview_root = None
@@ -248,6 +252,8 @@ class NameTranslationDialog:
         self.dictionary_edit.setText(str(DEFAULT_TRANSLATION_DICTIONARY_PATH))
         self.browse_button = QPushButton("Browse…", self._dialog)
         self.browse_button.setObjectName("browseButton")
+        self.preset_folder_button = QPushButton("Open Preset Folder", self._dialog)
+        self.preset_folder_button.setObjectName("presetFolderButton")
         self.overwrite_checkbox = QCheckBox("Overwrite existing EnglishName", self._dialog)
         self.overwrite_checkbox.setObjectName("overwriteCheckBox")
         self.rename_checkbox = QCheckBox("Also rename Maya nodes", self._dialog)
@@ -277,6 +283,7 @@ class NameTranslationDialog:
         dictionary_row = QHBoxLayout()
         dictionary_row.addWidget(self.dictionary_edit)
         dictionary_row.addWidget(self.browse_button)
+        dictionary_row.addWidget(self.preset_folder_button)
         form = QFormLayout()
         form.addRow(self.model_label)
         form.addRow("Dictionary CSV", dictionary_row)
@@ -297,6 +304,7 @@ class NameTranslationDialog:
         layout.addLayout(buttons)
 
         self.browse_button.clicked.connect(self._choose_dictionary)
+        self.preset_folder_button.clicked.connect(self._open_preset_folder)
         self.preview_button.clicked.connect(self.preview)
         self.apply_button.clicked.connect(self.apply)
         self.cancel_button.clicked.connect(self._dialog.reject)
@@ -341,6 +349,11 @@ class NameTranslationDialog:
         )
         if path:
             self.dictionary_edit.setText(path)
+
+    def _open_preset_folder(self, *_args):
+        folder_url = self._qt["QUrl"].fromLocalFile(str(DEFAULT_TRANSLATION_DICTIONARY_PATH.parent))
+        if not self._qt["QDesktopServices"].openUrl(folder_url):
+            self._report_error("Cannot open the preset CSV folder.", show_dialog=True)
 
     def _invalidate_preview(self, *_args):
         self._preview_plan = None
