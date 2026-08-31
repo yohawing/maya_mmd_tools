@@ -62,16 +62,21 @@ def test_shipped_standard_name_preset_is_loadable_and_broad():
     assert path.is_file()
     translations = load_translation_dictionary(str(path))
 
-    assert len(translations) >= 200
+    assert len(translations) >= 400
     assert translations["センター"] == "Center"
+    assert translations["ボーン"] == "Bone"
     assert translations["左腕"] == "Left Arm"
+    assert translations["左腕捩先"] == "Left Arm Twist End"
     assert translations["左足ＩＫ"] == "Left Leg IK"
     assert translations["左足IK"] == "Left Leg IK"
     assert translations["左親指０"] == "Left Thumb 0"
     assert translations["前髪"] == "Bangs"
+    assert translations["左リボン"] == "Left Ribbon"
+    assert translations["金属"] == "Metal"
     assert translations["顔"] == "Face"
     assert translations["スカート"] == "Skirt"
     assert translations["まばたき"] == "Blink"
+    assert translations["光消"] == "Highlight Off"
     assert translations["眉上"] == "Brows Up"
     assert translations["口開き"] == "Mouth Open"
 

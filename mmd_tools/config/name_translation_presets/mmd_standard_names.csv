@@ -265,3 +265,162 @@ Japanese,English
 赤面,Blush
 ガーン,Shock
 えーん,Crying
+なし,None
+全て,All
+ボーン,Bone
+腕,Arm
+表情,Expression
+表情モーション,Expression Motion
+グループ,Group
+肩,Shoulder
+肩P,Shoulder P
+胸部,Chest
+腹,Abdomen
+お腹,Belly
+腰飾り,Waist Decoration
+ひじ,Elbow
+手,Hand
+手首,Wrist
+足,Leg
+ひざ,Knee
+足首,Ankle
+つま先,Toe
+足先,Toe
+目,Eye
+人差指,Index Finger
+親指,Thumb
+中指,Middle Finger
+薬指,Ring Finger
+小指,Little Finger
+骨盤,Pelvis
+もも,Thigh
+太もも,Thigh
+ｽｶｰﾄ,Skirt
+二重まぶた,Double Eyelid
+星目,Star Eyes
+ﾈｸﾀｲ,Necktie
+袖,Sleeve
+つま先ＩＫ,Toe IK
+ダミー,Dummy
+おっぱい,Breast
+頭飾り,Head Accessory
+目光,Eye Light
+左リボン,Left Ribbon
+右リボン,Right Ribbon
+左手持ちダミー,Left Hand Dummy
+右手持ちダミー,Right Hand Dummy
+体,Body
+髮,Hair
+耳,Ear
+爪,Fingernail
+牙,Fang
+尾,Tail
+帽,Hat
+帽子,Hat
+帽子非表示,Hide Hat
+金属,Metal
+胸親,Breast Parent
+腰キャンセル左,Waist Cancel Left
+腰キャンセル右,Waist Cancel Right
+左腕捩先,Left Arm Twist End
+右腕捩先,Right Arm Twist End
+左手捩先,Left Wrist Twist End
+右手捩先,Right Wrist Twist End
+左足IK先,Left Leg IK End
+右足IK先,Right Leg IK End
+左つま先IK先,Left Toe IK End
+右つま先IK先,Right Toe IK End
+左腕D,Left Arm D
+右腕D,Right Arm D
+左腕捩D,Left Arm Twist D
+右腕捩D,Right Arm Twist D
+左ひじD,Left Elbow D
+右ひじD,Right Elbow D
+左手首D,Left Wrist D
+右手首D,Right Wrist D
+左手捩D,Left Wrist Twist D
+右手捩D,Right Wrist Twist D
+左ひざD,Left Knee D
+右ひざD,Right Knee D
+左足首D,Left Ankle D
+右足首D,Right Ankle D
+向き,Direction
+補助,Assist
+調整,Adjust
+抽出,Extract
+軸,Axis
+光消,Highlight Off
+呼吸,Breathing
+深呼吸,Deep Breath
+ぐるぐる,Dizzy
+たくらむ,Scheming
+はぁと,Heart
+むすっ,Annoyed
+やや驚く,Slightly Surprised
+イライラ,Irritated
+キラキラ,Sparkle
+グルグル,Dizzy
+コッチミンナ,Don't Look At Me
+デフォ,Default
+ニカッ,Grin
+ニッ,Grin
+ハイライト←,Highlight Left
+ハイライト↑,Highlight Up
+ハイライト→,Highlight Right
+ハイライト↓,Highlight Down
+ハイライト下,Highlight Down
+ハイライト拡大,Expand Highlights
+ハイライト除去,Remove Highlights
+ハート,Heart
+ベルト,Belt
+マジメ,Serious
+上がる,Raised
+下がる,Lowered
+下まぶた,Lower Eyelid
+下瞼上げ,Raise Lower Eyelid
+下瞼上げ右,Raise Lower Eyelid Right
+下瞼上げ左,Raise Lower Eyelid Left
+不機嫌,Cranky
+前進,Forward
+叫び,Shout
+嘲笑,Sneer
+平行,Flat Brows
+平行右,Flat Brows Right
+平行左,Flat Brows Left
+影化,Shadow
+後退,Backward
+怒,Angry
+怒る,Angry
+怒る右,Angry Right
+怒る左,Angry Left
+悲しむ,Sad
+見開き,Eyes Wide
+見開く,Eyes Wide
+驚く,Surprised
+驚く右,Surprised Right
+驚く左,Surprised Left
+笑,Smile
+絶望,Despair
+眇める,Squint
+照れ斜線,Blush Lines
+照れ消,Remove Blush
+青ざめる,Pale
+高さ調整,Height Adjust
+鼻上,Nose Up
+鼻下,Nose Down
+にやり,Grin
+ワ,Wa
+ω,Omega
+てへぺろ,Tehepero
+ぺろっ,Tongue Out
+口横狭め,Mouth Narrow
+舌広げ,Tongue Spread
+喜び,Joy
+怒り目,Angry Eyes
+眼角,Eye Corner
+下眼上,Lower Eye Up
+にこり,Gentle Smile
+恥ずかしい,Shy
+瞳小,Small Pupils
+ジト目,Stare
+ハイライト消,Highlight Off
