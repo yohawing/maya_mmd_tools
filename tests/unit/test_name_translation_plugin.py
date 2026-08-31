@@ -203,7 +203,7 @@ def _install_dialog_qt_stub(monkeypatch):
     return open_url
 
 
-def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatch):
+def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatch, tmp_path):
     open_url = _install_dialog_qt_stub(monkeypatch)
     entry = _entry("bone", "|root|joint", "左腕")
     change = name_translation_dialog.NameChange(entry, "left arm", "left arm", None)
@@ -240,10 +240,10 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
     assert dialog.dictionary_edit.text() == str(name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH)
     assert name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH.is_file()
     assert dialog._dialog.modal is False
-    dialog.preset_folder_button.clicked.emit()
-    open_url.assert_called_once_with(
-        f"folder:{name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH.parent}"
-    )
+    custom_dictionary = tmp_path / "custom.csv"
+    dialog.dictionary_edit.setText(str(custom_dictionary))
+    dialog.csv_folder_button.clicked.emit()
+    open_url.assert_called_once_with(f"folder:{tmp_path}")
     assert not dialog.apply_button.isEnabled()
     assert dialog.apply() is None
     assert not apply_plan.called

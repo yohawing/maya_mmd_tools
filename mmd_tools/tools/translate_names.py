@@ -253,8 +253,8 @@ class NameTranslationDialog:
         self.dictionary_edit.setText(str(DEFAULT_TRANSLATION_DICTIONARY_PATH))
         self.browse_button = QPushButton("Browse…", self._dialog)
         self.browse_button.setObjectName("browseButton")
-        self.preset_folder_button = QPushButton("Open Preset Folder", self._dialog)
-        self.preset_folder_button.setObjectName("presetFolderButton")
+        self.csv_folder_button = QPushButton("Open CSV Folder", self._dialog)
+        self.csv_folder_button.setObjectName("csvFolderButton")
         self.overwrite_checkbox = QCheckBox("Overwrite existing EnglishName", self._dialog)
         self.overwrite_checkbox.setObjectName("overwriteCheckBox")
         self.rename_checkbox = QCheckBox("Also rename Maya nodes", self._dialog)
@@ -284,7 +284,7 @@ class NameTranslationDialog:
         dictionary_row = QHBoxLayout()
         dictionary_row.addWidget(self.dictionary_edit)
         dictionary_row.addWidget(self.browse_button)
-        dictionary_row.addWidget(self.preset_folder_button)
+        dictionary_row.addWidget(self.csv_folder_button)
         form = QFormLayout()
         form.addRow(self.model_label)
         form.addRow("Dictionary CSV", dictionary_row)
@@ -305,7 +305,7 @@ class NameTranslationDialog:
         layout.addLayout(buttons)
 
         self.browse_button.clicked.connect(self._choose_dictionary)
-        self.preset_folder_button.clicked.connect(self._open_preset_folder)
+        self.csv_folder_button.clicked.connect(self._open_csv_folder)
         self.preview_button.clicked.connect(self.preview)
         self.apply_button.clicked.connect(self.apply)
         self.cancel_button.clicked.connect(self._dialog.reject)
@@ -345,10 +345,15 @@ class NameTranslationDialog:
         if path:
             self.dictionary_edit.setText(path)
 
-    def _open_preset_folder(self, *_args):
-        folder_url = self._qt["QUrl"].fromLocalFile(str(DEFAULT_TRANSLATION_DICTIONARY_PATH.parent))
+    def _open_csv_folder(self, *_args):
+        dictionary_path = self.dictionary_edit.text().strip()
+        if not dictionary_path:
+            self._report_error("Choose a translation dictionary CSV first.", show_dialog=True)
+            return
+        folder = Path(dictionary_path).expanduser().resolve(strict=False).parent
+        folder_url = self._qt["QUrl"].fromLocalFile(str(folder))
         if not self._qt["QDesktopServices"].openUrl(folder_url):
-            self._report_error("Cannot open the preset CSV folder.", show_dialog=True)
+            self._report_error("Cannot open the dictionary CSV folder.", show_dialog=True)
 
     def _invalidate_preview(self, *_args):
         self._preview_plan = None
