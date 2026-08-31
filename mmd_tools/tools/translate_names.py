@@ -68,6 +68,7 @@ def build_translation_preview_details(
     model_root: Optional[str] = None,
     overwrite: bool = False,
     rename_nodes: bool = False,
+    exact_only: bool = False,
     cmds_module=None,
 ) -> TranslationPreview:
     """Build a read-only plan and coverage summary from one scene snapshot."""
@@ -91,6 +92,7 @@ def build_translation_preview_details(
         set_english=True,
         overwrite=overwrite,
         rename_nodes=rename_nodes,
+        exact_only=exact_only,
         used_names=scene_names - target_names,
     )
     plan = tuple(change for change in full_plan if change.has_changes)
@@ -263,6 +265,11 @@ class NameTranslationDialog:
             "When enabled, Maya Outliner node names are changed to safe unique names. "
             "Original PMX names are preserved."
         )
+        self.exact_only_checkbox = QCheckBox("Use exact CSV matches only", self._dialog)
+        self.exact_only_checkbox.setObjectName("exactOnlyCheckBox")
+        self.exact_only_checkbox.setToolTip(
+            "When enabled, only exact CSV keys are translated; automatic underscore suffix inheritance is disabled."
+        )
         self.original_checkbox = QCheckBox("Show original PMX names", self._dialog)
         self.original_checkbox.setObjectName("showOriginalNamesCheckBox")
         self.preview_text = QTextEdit(self._dialog)
@@ -297,6 +304,7 @@ class NameTranslationDialog:
         form.addRow("Dictionary CSV", dictionary_row)
         form.addRow(self.overwrite_checkbox)
         form.addRow(self.rename_checkbox)
+        form.addRow(self.exact_only_checkbox)
         form.addRow(self.original_checkbox)
 
         buttons = QHBoxLayout()
@@ -319,6 +327,7 @@ class NameTranslationDialog:
         self.dictionary_edit.textChanged.connect(self._invalidate_preview)
         self.overwrite_checkbox.stateChanged.connect(self._invalidate_preview)
         self.rename_checkbox.stateChanged.connect(self._invalidate_preview)
+        self.exact_only_checkbox.stateChanged.connect(self._invalidate_preview)
         self.original_checkbox.stateChanged.connect(self._render_preview)
 
         try:
@@ -391,6 +400,7 @@ class NameTranslationDialog:
                 model_root=self._model_root,
                 overwrite=self.overwrite_checkbox.isChecked(),
                 rename_nodes=self.rename_checkbox.isChecked(),
+                exact_only=self.exact_only_checkbox.isChecked(),
                 cmds_module=self._cmds,
             )
             cmds = self._cmds

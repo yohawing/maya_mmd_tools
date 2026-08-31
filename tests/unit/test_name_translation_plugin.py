@@ -71,6 +71,15 @@ def test_build_translation_preview_details_reports_dictionary_coverage(monkeypat
     assert preview.already_english == 1
     assert len(preview.plan) == 2
 
+    exact_preview = name_translation_dialog.build_translation_preview_details(
+        str(dictionary),
+        cmds_module=cmds,
+        exact_only=True,
+    )
+    assert exact_preview.matched == 1
+    assert exact_preview.missing == 2
+    assert len(exact_preview.plan) == 1
+
 
 def test_validate_preview_targets_rejects_stale_nodes():
     cmds = SimpleNamespace(
@@ -230,12 +239,19 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
         getAttr=get_attr,
     )
     monkeypatch.setattr(name_translation_dialog, "resolve_model_root", lambda *_a, **_k: "|root")
+
+    preview_calls = []
+
+    def build_preview(*_args, **kwargs):
+        preview_calls.append(kwargs)
+        return name_translation_dialog.TranslationPreview(
+            "|root", (change,), 1, 1, 0, 0
+        )
+
     monkeypatch.setattr(
         name_translation_dialog,
         "build_translation_preview_details",
-        lambda *_a, **_k: name_translation_dialog.TranslationPreview(
-            "|root", (change,), 1, 1, 0, 0
-        ),
+        build_preview,
     )
     apply_plan = MagicMock(return_value=(change,))
     monkeypatch.setattr(name_translation_dialog, "apply_translation_plan", apply_plan)
@@ -258,6 +274,8 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
         "When enabled, Maya Outliner node names are changed to safe unique names. "
         "Original PMX names are preserved."
     )
+    assert dialog.exact_only_checkbox.text() == "Use exact CSV matches only"
+    assert "underscore suffix inheritance" in dialog.exact_only_checkbox.toolTip()
     custom_dictionary = tmp_path / "custom.csv"
     dialog.dictionary_edit.setText(str(custom_dictionary))
     dialog.csv_folder_button.clicked.emit()
@@ -266,8 +284,12 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
     assert dialog.apply() is None
     assert not apply_plan.called
 
+    dialog.exact_only_checkbox.setChecked(True)
+    assert not dialog.apply_button.isEnabled()
+
     dialog.dictionary_edit.setText("names.csv")
     assert dialog.preview() == (change,)
+    assert preview_calls[0]["exact_only"] is True
     assert dialog.apply_button.isEnabled()
     assert dialog.apply_button.toolTip() == "Apply 1 previewed change(s)."
     dialog.cancel_button.clicked.emit()

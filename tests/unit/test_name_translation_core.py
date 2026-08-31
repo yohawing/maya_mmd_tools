@@ -13,6 +13,7 @@ from mmd_tools.core.name_translation import (
     collect_name_entries,
     format_preview,
     load_translation_dictionary,
+    main,
 )
 
 
@@ -107,16 +108,26 @@ def test_plan_updates_only_empty_english_names_without_sanitizing_english_name()
     assert plan[0].maya_name is None
 
 
-def test_numbered_suffix_inherits_base_translation_with_exact_override():
+def test_ascii_suffix_inherits_base_translation_with_exact_override():
     plan = build_translation_plan(
         [
             _entry("material", "|root|base", "スカート", index=0),
             _entry("material", "|root|derived", "スカート_1", index=1),
             _entry("material", "|root|padded", "スカート_02", index=2),
             _entry("material", "|root|exact", "スカート_3", index=3),
-            _entry("material", "|root|unrelated", "スカート親", index=4),
+            _entry("material", "|root|left", "スカート_L", index=4),
+            _entry("material", "|root|right", "スカート_R", index=5),
+            _entry("material", "|root|named", "スカート_left", index=6),
+            _entry("material", "|root|multi", "スカート_left_02", index=7),
+            _entry("material", "|root|punctuation", "スカート_1-2", index=8),
+            _entry("material", "|root|space", "スカート_left side", index=9),
+            _entry("material", "|root|japanese", "スカート_左", index=10),
+            _entry("material", "|root|empty", "スカート_", index=11),
         ],
-        {"スカート": "Skirt", "スカート_3": "Pleated Skirt"},
+        {
+            "スカート": "Skirt",
+            "スカート_3": "Pleated Skirt",
+        },
         rename_nodes=True,
     )
 
@@ -125,6 +136,13 @@ def test_numbered_suffix_inherits_base_translation_with_exact_override():
         "Skirt_1",
         "Skirt_02",
         "Pleated Skirt",
+        "Skirt_L",
+        "Skirt_R",
+        "Skirt_left",
+        "Skirt_left_02",
+        None,
+        None,
+        None,
         None,
     ]
     assert [change.english_name for change in plan] == [
@@ -132,6 +150,13 @@ def test_numbered_suffix_inherits_base_translation_with_exact_override():
         "Skirt_1",
         "Skirt_02",
         "Pleated Skirt",
+        "Skirt_L",
+        "Skirt_R",
+        "Skirt_left",
+        "Skirt_left_02",
+        None,
+        None,
+        None,
         None,
     ]
     assert [change.maya_name for change in plan[:4]] == [
@@ -140,6 +165,37 @@ def test_numbered_suffix_inherits_base_translation_with_exact_override():
         "Skirt_02",
         "Pleated_Skirt",
     ]
+
+    longest_base_plan = build_translation_plan(
+        [_entry("material", "|root|multi", "スカート_left_02")],
+        {"スカート": "Skirt", "スカート_left": "Left Skirt Panel"},
+    )
+    assert longest_base_plan[0].translated_name == "Left Skirt Panel_02"
+
+
+def test_exact_only_disables_suffix_inheritance_but_keeps_exact_match():
+    plan = build_translation_plan(
+        [
+            _entry("material", "|root|inherited", "スカート_1", index=0),
+            _entry("material", "|root|exact", "スカート_L", index=1),
+        ],
+        {"スカート": "Skirt", "スカート_L": "Left Skirt Panel"},
+        exact_only=True,
+    )
+
+    assert [change.translated_name for change in plan] == [None, "Left Skirt Panel"]
+
+
+def test_cli_forwards_exact_only_to_core_run(monkeypatch):
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr("mmd_tools.core.name_translation.run", fake_run)
+
+    assert main(["names.csv", "--dry-run", "--exact-only"]) == 0
+    assert calls[0][1]["exact_only"] is True
 
 
 def test_plan_overwrite_and_node_rename_are_independent():

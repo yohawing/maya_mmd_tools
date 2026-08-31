@@ -18,7 +18,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 from mmd_tools.core.maya_name_utils import sanitize_unique_name
 
 
-_NUMBERED_TRANSLATION_SUFFIX = re.compile(r"^(?P<base>.+)(?P<suffix>_[0-9]+)$")
+_TRANSLATION_SUFFIX_TOKEN = re.compile(r"^[A-Za-z0-9]+$")
 
 
 class NameTranslationError(ValueError):
@@ -98,19 +98,32 @@ def _is_header(source: str, translated: str) -> bool:
     }
 
 
-def _resolve_translation(source_name: str, translations: Mapping[str, str]) -> Optional[str]:
-    """Resolve an exact translation or inherit one ``_<digits>`` suffix."""
+def _resolve_translation(
+    source_name: str,
+    translations: Mapping[str, str],
+    *,
+    exact_only: bool = False,
+) -> Optional[str]:
+    """Resolve an exact translation or inherit ASCII underscore suffixes."""
 
     exact = translations.get(source_name)
     if exact is not None:
         return exact
-    numbered = _NUMBERED_TRANSLATION_SUFFIX.fullmatch(source_name)
-    if numbered is None:
+    if exact_only:
         return None
-    base_translation = translations.get(numbered.group("base"))
-    if base_translation is None:
+    parts = source_name.split("_")
+    if len(parts) < 2:
         return None
-    return f"{base_translation}{numbered.group('suffix')}"
+    for boundary in range(len(parts) - 1, 0, -1):
+        suffix_parts = parts[boundary:]
+        if not all(_TRANSLATION_SUFFIX_TOKEN.fullmatch(token) for token in suffix_parts):
+            continue
+        base = "_".join(parts[:boundary])
+        base_translation = translations.get(base)
+        if base_translation is not None:
+            suffix = "_" + "_".join(suffix_parts)
+            return f"{base_translation}{suffix}"
+    return None
 
 
 def build_translation_plan(
@@ -120,6 +133,7 @@ def build_translation_plan(
     set_english: bool = True,
     overwrite: bool = False,
     rename_nodes: bool = False,
+    exact_only: bool = False,
     used_names: Optional[Set[str]] = None,
 ) -> Tuple[NameChange, ...]:
     """Build deterministic EnglishName and optional Maya rename changes.
@@ -134,7 +148,7 @@ def build_translation_plan(
     ordered_entries = sorted(entries, key=_entry_sort_key)
     plan: List[NameChange] = []
     for entry in ordered_entries:
-        translated = _resolve_translation(entry.source_name, translations)
+        translated = _resolve_translation(entry.source_name, translations, exact_only=exact_only)
         english_name = None
         if set_english and translated and (overwrite or not entry.english_name):
             if translated != entry.english_name:
@@ -368,6 +382,7 @@ def run(
     set_english: bool = True,
     overwrite: bool = False,
     rename_nodes: bool = False,
+    exact_only: bool = False,
     cmds_module=None,
 ):
     """Run the tool from the menu, Script Editor or a Python caller."""
@@ -392,6 +407,7 @@ def run(
         set_english=set_english,
         overwrite=overwrite,
         rename_nodes=rename_nodes,
+        exact_only=exact_only,
         used_names=scene_names - target_names,
     )
     changes = tuple(change for change in plan if change.has_changes)
@@ -468,6 +484,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--no-english", action="store_true", help="do not update EnglishName attributes")
     parser.add_argument("--overwrite", action="store_true", help="overwrite non-empty EnglishName attributes")
     parser.add_argument("--rename-nodes", action="store_true", help="also rename eligible Maya nodes")
+    parser.add_argument(
+        "--exact-only",
+        action="store_true",
+        help="use exact CSV keys only; disable underscore suffix inheritance",
+    )
     args = parser.parse_args(argv)
     run(
         dictionary_path=args.dictionary,
@@ -476,6 +497,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         set_english=not args.no_english,
         overwrite=args.overwrite,
         rename_nodes=args.rename_nodes,
+        exact_only=args.exact_only,
     )
     return 0
 

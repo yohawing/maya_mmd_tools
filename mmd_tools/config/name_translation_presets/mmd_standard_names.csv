@@ -178,8 +178,18 @@ Japanese,English
 髪,Hair
 前髪,Bangs
 後髪,Back Hair
+横髪,Side Hair
+左横髪,Left Side Hair
+右横髪,Right Side Hair
 左髪,Left Hair
 右髪,Right Hair
+髪親,Hair Parent
+前髪親,Bangs Parent
+後髪親,Back Hair Parent
+ツインテール,Twin Tail
+ポニーテール,Ponytail
+アホ毛,Ahoge
+もみあげ,Sideburns
 髪1,Hair 1
 髪2,Hair 2
 髪3,Hair 3
@@ -189,6 +199,11 @@ Japanese,English
 まつ毛,Eyelashes
 服,Clothes
 スカート,Skirt
+左スカート,Left Skirt
+右スカート,Right Skirt
+前スカート,Front Skirt
+後スカート,Back Skirt
+スカート親,Skirt Parent
 靴,Shoes
 靴下,Socks
 ネクタイ,Necktie
