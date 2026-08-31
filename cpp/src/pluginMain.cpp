@@ -459,6 +459,17 @@ MStatus uninitializePlugin(MObject obj)
     MStatus status;
     MFnPlugin plugin(obj);
 
+    // Check live proxy state before deregistering any other plugin feature.
+    // Maya cannot unload a registered node type while such nodes exist; this
+    // restores the ordinary source mesh first and avoids a partial teardown.
+    if (sCppRegisteredMmdRenderShape &&
+        !MmdRenderShape::prepareForPluginUnload()) {
+        MGlobal::displayError(
+            "Cannot unload mmd_tools_cpp while mmdRenderShape nodes are live; "
+            "their source visibility has been restored.");
+        return MS::kFailure;
+    }
+
     if (sCppRegisteredMmdVmdBatchSamplerCommand) {
         status = plugin.deregisterCommand("mmdVmdBatchSample");
         if (!status) {
@@ -562,8 +573,9 @@ MStatus uninitializePlugin(MObject obj)
             MmdRenderShape::drawDbClassification,
             MmdRenderShape::drawRegistrantId);
         if (!status) {
-            MGlobal::displayWarning(
-                "Failed to deregister mmdRenderShape geometry override.");
+            MGlobal::displayError(
+                "Failed to deregister mmdRenderShape geometry override; plugin remains loaded.");
+            return status;
         }
         sCppRegisteredMmdRenderOverride = false;
     }
@@ -571,7 +583,9 @@ MStatus uninitializePlugin(MObject obj)
     if (sCppRegisteredMmdRenderShape) {
         status = plugin.deregisterNode(MmdRenderShape::id);
         if (!status) {
-            MGlobal::displayWarning("Failed to deregister mmdRenderShape node.");
+            MGlobal::displayError(
+                "Failed to deregister mmdRenderShape node; plugin remains loaded.");
+            return status;
         }
         sCppRegisteredMmdRenderShape = false;
     }

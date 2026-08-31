@@ -13,6 +13,7 @@
 #pragma once
 
 #include <maya/MBoundingBox.h>
+#include <maya/MDataBlock.h>
 #include <maya/MObject.h>
 #include <maya/MObjectHandle.h>
 #include <maya/MPxCommand.h>
@@ -23,6 +24,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -37,6 +39,9 @@ public:
     // unconnected while the static VP2 witness is used; a later authoring
     // path can connect a standard mesh without changing the render queue.
     static MObject aInputMesh;
+    // Transient output driving the ordinary source mesh visibility.  It is
+    // true until a proxy has valid DG data and committed VP2 buffers.
+    static MObject aSourceVisibility;
 
     MmdRenderShape();
     ~MmdRenderShape() override;
@@ -45,8 +50,10 @@ public:
     static MStatus initialize();
     static MmdRenderShape* fromMObject(const MObject& object,
                                        MStatus* status = nullptr);
+    static bool prepareForPluginUnload();
 
     void postConstructor() override;
+    MStatus compute(const MPlug& plug, MDataBlock& data) override;
     bool isBounded() const override;
     MBoundingBox boundingBox() const override;
     MSelectionMask getShapeSelectionMask() const override;
@@ -87,6 +94,13 @@ public:
 
     /** Return false after an invalid connected input has failed closed. */
     bool hasValidGeometry() const;
+
+    /**
+     * Publish transient proxy readiness and update the connected source
+     * visibility output.  The output remains source-visible whenever the
+     * proxy is not fully ready.
+     */
+    bool setProxyReady(bool ready);
 
     /** Update one material's effective alpha and rebuild the ordered items. */
     bool updateMaterialAlpha(std::size_t materialIndex, float diffuseAlpha);
@@ -194,6 +208,7 @@ private:
     MBoundingBox staticBoundingBox_;
     bool geometryValid_ = true;
     bool evaluatedGeometryActive_ = false;
+    std::atomic<bool> proxyReady_{false};
     bool renderItemWitnessValid_ = false;
     std::vector<mmd::MmdRenderQueueEntry> renderItemWitnessEntries_;
     bool geometryWitnessValid_ = false;

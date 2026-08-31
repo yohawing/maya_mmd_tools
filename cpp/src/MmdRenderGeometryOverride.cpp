@@ -902,6 +902,12 @@ void MmdRenderGeometryOverride::populateGeometry(
     // prepares item metadata; recording here makes the commandPort evidence
     // fail closed when geometry population is skipped or fails.
     shape_->recordRenderItemWitness(geometry.renderQueue);
+    if (!shape_->setProxyReady(true)) {
+        MGlobal::displayError(
+            "[mmdRenderOverride] Could not publish source visibility state.");
+        disableItems(renderItems);
+        shape_->clearRenderItemWitness();
+    }
 }
 
 void MmdRenderGeometryOverride::cleanUp()

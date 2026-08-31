@@ -22,6 +22,48 @@ def test_render_shape_exposes_storable_mesh_input_and_source_mapping():
     assert "mismatched source-index data" in source
 
 
+def test_proxy_readiness_is_a_nonpersistent_dg_output():
+    header = SHAPE_HEADER.read_text(encoding="utf-8")
+    source = SHAPE_SOURCE.read_text(encoding="utf-8")
+    override = OVERRIDE_SOURCE.read_text(encoding="utf-8")
+
+    assert "static MObject aSourceVisibility;" in header
+    assert '"sourceVisibility", "sv", MFnNumericData::kBoolean, true' in source
+    assert "numericAttribute.setStorable(false);" in source
+    assert "numericAttribute.setCached(false);" in source
+    assert "numericAttribute.setWritable(false);" in source
+    assert "output.setBool(!proxyReady_.load(std::memory_order_acquire));" in source
+    assert "must be deleted before plugin unload" in source
+
+    readiness_helper = source[source.index("bool MmdRenderShape::setProxyReady") :]
+    assert "proxyReady_.store(nextReady, std::memory_order_release);" in readiness_helper
+    assert "sourceVisibility.setBool" not in readiness_helper
+
+    cleanup = override[override.index("void MmdRenderGeometryOverride::cleanUp()") :]
+    assert "setProxyReady(false)" not in cleanup
+
+    plugin_main = (ROOT / "cpp" / "src" / "pluginMain.cpp").read_text(encoding="utf-8")
+    unload = plugin_main[plugin_main.index("MStatus uninitializePlugin") :]
+    assert unload.index("MmdRenderShape::prepareForPluginUnload()") < unload.index(
+        'plugin.deregisterCommand("mmdVmdBatchSample")'
+    )
+
+
+def test_proxy_ready_is_published_only_after_committed_geometry():
+    override = OVERRIDE_SOURCE.read_text(encoding="utf-8")
+
+    populate = override[override.index("void MmdRenderGeometryOverride::populateGeometry") :]
+    assert "buffer->commit(destination);" in populate
+    assert "indexBuffer->commit(destination);" in populate
+    assert "shape_->recordGeometryWitness(" in populate
+    assert "shape_->recordRenderItemWitness(geometry.renderQueue);" in populate
+    assert "shape_->setProxyReady(true)" in populate
+    assert populate.index("indexBuffer->commit(destination);") < populate.index(
+        "shape_->setProxyReady(true)"
+    )
+    assert "shape_->clearRenderItemWitness();" in populate
+
+
 def test_update_dg_reads_evaluated_mesh_and_fails_closed():
     shape = SHAPE_SOURCE.read_text(encoding="utf-8")
     override = OVERRIDE_SOURCE.read_text(encoding="utf-8")

@@ -9,11 +9,14 @@
 #include <maya/MFnDependencyNode.h>
 #include <maya/MFnData.h>
 #include <maya/MFnMesh.h>
+#include <maya/MFnNumericAttribute.h>
 #include <maya/MFnTypedAttribute.h>
 #include <maya/MFloatVectorArray.h>
 #include <maya/MGlobal.h>
+#include <maya/MItDependencyNodes.h>
 #include <maya/MPointArray.h>
 #include <maya/MPoint.h>
+#include <maya/MPlug.h>
 #include <maya/MSelectionList.h>
 #include <maya/MSyntax.h>
 #include <maya/MViewport2Renderer.h>
@@ -170,6 +173,7 @@ const MString MmdRenderShape::drawDbClassification(
     kMmdRenderShapeClassification);
 const MString MmdRenderShape::drawRegistrantId(kMmdRenderShapeRegistrantId);
 MObject MmdRenderShape::aInputMesh;
+MObject MmdRenderShape::aSourceVisibility;
 
 MmdRenderShape::MmdRenderShape() = default;
 MmdRenderShape::~MmdRenderShape() = default;
@@ -192,7 +196,33 @@ MStatus MmdRenderShape::initialize()
     typedAttribute.setWritable(true);
     typedAttribute.setReadable(false);
     status = addAttribute(aInputMesh);
-    return status;
+    if (!status) {
+        return status;
+    }
+
+    MFnNumericAttribute numericAttribute;
+    aSourceVisibility = numericAttribute.create(
+        "sourceVisibility", "sv", MFnNumericData::kBoolean, true, &status);
+    if (!status) {
+        return status;
+    }
+    // This is a transient source-control output.  It is intentionally not
+    // storable, so a saved scene always reopens source-visible by default.
+    // The VP2 override may run outside the DG evaluation path.  It therefore
+    // only updates an atomic readiness flag; this non-cached output is
+    // evaluated by compute() on Maya's normal DG path when source visibility
+    // is requested.  Do not write this plug directly from VP2 callbacks.
+    numericAttribute.setWritable(false);
+    numericAttribute.setReadable(true);
+    numericAttribute.setStorable(false);
+    numericAttribute.setCached(false);
+    numericAttribute.setKeyable(false);
+    status = addAttribute(aSourceVisibility);
+    if (!status) {
+        return status;
+    }
+    attributeAffects(aInputMesh, aSourceVisibility);
+    return MS::kSuccess;
 }
 
 void MmdRenderShape::postConstructor()
@@ -200,6 +230,22 @@ void MmdRenderShape::postConstructor()
     // MPxSurfaceShape instances can receive shading assignments only after
     // Maya has created their internal DAG object.
     setRenderable(true);
+}
+
+MStatus MmdRenderShape::compute(const MPlug& plug, MDataBlock& data)
+{
+    if (plug != aSourceVisibility) {
+        return MS::kUnknownParameter;
+    }
+
+    MStatus status;
+    MDataHandle output = data.outputValue(aSourceVisibility, &status);
+    if (!status) {
+        return status;
+    }
+    output.setBool(!proxyReady_.load(std::memory_order_acquire));
+    output.setClean();
+    return MS::kSuccess;
 }
 
 MSelectionMask MmdRenderShape::getShapeSelectionMask() const
@@ -240,6 +286,78 @@ MmdRenderShape* MmdRenderShape::fromMObject(const MObject& object,
         *status = localStatus;
     }
     return shape;
+}
+
+bool MmdRenderShape::prepareForPluginUnload()
+{
+    MStatus status;
+    bool foundLiveProxy = false;
+    // A plug-in surface shape is still enumerated as a dependency node here;
+    // filtering by kPluginShape skips live instances in Maya 2024.
+    MItDependencyNodes iterator(MFn::kDependencyNode, &status);
+    if (!status) {
+        return false;
+    }
+
+    for (; !iterator.isDone(&status);) {
+        if (!status) {
+            return false;
+        }
+        MStatus nodeStatus;
+        const MObject node = iterator.thisNode(&nodeStatus);
+        if (!nodeStatus) {
+            return false;
+        }
+
+        MFnDependencyNode dependency(node, &nodeStatus);
+        if (!nodeStatus) {
+            return false;
+        }
+        if (dependency.typeId(&nodeStatus) == MmdRenderShape::id) {
+            if (!nodeStatus) {
+                return false;
+            }
+            MmdRenderShape* shape = fromMObject(node, &nodeStatus);
+            if (!nodeStatus || !shape || !shape->setProxyReady(false)) {
+                MGlobal::displayError(
+                    "[mmdRenderShape] Failed to restore source visibility before plugin unload.");
+                return false;
+            }
+            MPlug sourceVisibility(node, aSourceVisibility);
+            bool sourceVisible = false;
+            if (sourceVisibility.isNull() ||
+                !sourceVisibility.getValue(sourceVisible) || !sourceVisible) {
+                MGlobal::displayError(
+                    "[mmdRenderShape] Source visibility output did not evaluate true before plugin unload.");
+                return false;
+            }
+            foundLiveProxy = true;
+        }
+
+        status = iterator.next();
+        if (!status) {
+            return false;
+        }
+    }
+    if (foundLiveProxy) {
+        MGlobal::displayError(
+            "[mmdRenderShape] Source visibility was restored, but live VP2 proxy nodes "
+            "must be deleted before plugin unload.");
+        return false;
+    }
+    return true;
+}
+
+bool MmdRenderShape::setProxyReady(bool ready)
+{
+    const bool nextReady = ready && geometryValid_ && geometryWitnessValid_ &&
+                           renderItemWitnessValid_;
+    if (aSourceVisibility.isNull()) {
+        proxyReady_.store(false, std::memory_order_release);
+        return false;
+    }
+    proxyReady_.store(nextReady, std::memory_order_release);
+    return true;
 }
 
 bool MmdRenderShape::isBounded() const
@@ -797,6 +915,7 @@ void MmdRenderShape::clearRenderItemWitness()
     geometryWitnessVertexCount_ = 0U;
     geometryWitnessIndexCount_ = 0U;
     geometryWitnessDescriptorSummary_.clear();
+    setProxyReady(false);
 }
 
 void MmdRenderShape::clearMaterialBindingDiagnostics()

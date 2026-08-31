@@ -1457,10 +1457,21 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
     MStatus visibilityStatus;
     MPlug sourceVisibility =
         sourceDependency.findPlug("visibility", true, &visibilityStatus);
-    if (!visibilityStatus || sourceVisibility.isNull() ||
-        !sourceVisibility.setBool(false)) {
+    MStatus proxyVisibilityStatus;
+    MPlug proxyVisibility = shapeDependency.findPlug(
+        MmdRenderShape::aSourceVisibility, true, &proxyVisibilityStatus);
+    if (!visibilityStatus || !proxyVisibilityStatus ||
+        sourceVisibility.isNull() || proxyVisibility.isNull()) {
         MGlobal::displayError(
-            "[mmdFastLoad] Failed to hide VP2 source mesh shape.");
+            "[mmdFastLoad] Failed to resolve VP2 source visibility plugs.");
+        deleteRoot(sourceTransformObject);
+        return MS::kFailure;
+    }
+    MDGModifier visibilityConnection;
+    if (!visibilityConnection.connect(proxyVisibility, sourceVisibility) ||
+        !visibilityConnection.doIt()) {
+        MGlobal::displayError(
+            "[mmdFastLoad] Failed to connect VP2 source visibility.");
         deleteRoot(sourceTransformObject);
         return MS::kFailure;
     }
