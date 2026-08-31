@@ -37,7 +37,6 @@
 #include "MmdAuthoringMaterialValueCommand.h"
 #include "MmdAuthoringMaterialOutlineCommand.h"
 #include "MmdVmdBatchSamplerCommand.h"
-#include "MmdVmdClearCurvesCommand.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -60,7 +59,6 @@ static bool sCppRegisteredMmdAuthoringMorphWeightCommand = false;
 static bool sCppRegisteredMmdAuthoringMaterialValueCommand = false;
 static bool sCppRegisteredMmdAuthoringMaterialOutlineCommand = false;
 static bool sCppRegisteredMmdVmdBatchSamplerCommand = false;
-static bool sCppRegisteredMmdVmdClearCurvesCommand = false;
 static MmdNativeCasterRenderOverride* sMmdNativeCasterOverride = nullptr;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
@@ -453,19 +451,6 @@ MStatus initializePlugin(MObject obj)
         sCppRegisteredMmdVmdBatchSamplerCommand = true;
     }
 
-    // Destructive VMD clear capability.  The command deliberately has no
-    // Maya undo contract; callers must handle a mutation-phase failure as
-    // fatal because already removed keys are not restored.
-    status = plugin.registerCommand("mmdVmdClearCurves",
-                                    MmdVmdClearCurvesCommand::creator,
-                                    MmdVmdClearCurvesCommand::newSyntax);
-    if (!status) {
-        MGlobal::displayWarning(
-            "mmdVmdClearCurves registration failed; native VMD clear is unavailable.");
-    } else {
-        sCppRegisteredMmdVmdClearCurvesCommand = true;
-    }
-
     return MS::kSuccess;
 }
 
@@ -480,14 +465,6 @@ MStatus uninitializePlugin(MObject obj)
             MGlobal::displayWarning("Failed to deregister mmdVmdBatchSample command.");
         }
         sCppRegisteredMmdVmdBatchSamplerCommand = false;
-    }
-
-    if (sCppRegisteredMmdVmdClearCurvesCommand) {
-        status = plugin.deregisterCommand("mmdVmdClearCurves");
-        if (!status) {
-            MGlobal::displayWarning("Failed to deregister mmdVmdClearCurves command.");
-        }
-        sCppRegisteredMmdVmdClearCurvesCommand = false;
     }
 
     // Receiver body shaders keep a supported MRenderTargetAssignment to the

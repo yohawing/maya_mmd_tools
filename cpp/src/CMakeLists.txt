@@ -80,7 +80,6 @@ set(SOURCES
     MmdAuthoringMaterialValueCommand.cpp
     MmdAuthoringMaterialOutlineCommand.cpp
     MmdVmdBatchSamplerCommand.cpp
-    MmdVmdClearCurvesCommand.cpp
 )
 
 set(HEADERS
@@ -103,7 +102,6 @@ set(HEADERS
     MmdAuthoringMaterialValueCommand.h
     MmdAuthoringMaterialOutlineCommand.h
     MmdVmdBatchSamplerCommand.h
-    MmdVmdClearCurvesCommand.h
 )
 
 add_library(mmd_tools_cpp SHARED ${SOURCES} ${HEADERS})
