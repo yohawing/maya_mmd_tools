@@ -94,7 +94,7 @@ def build_translation_preview_details(
         used_names=scene_names - target_names,
     )
     plan = tuple(change for change in full_plan if change.has_changes)
-    matched = sum(entry.source_name in translations for entry in entries)
+    matched = sum(change.translated_name is not None for change in full_plan)
     return TranslationPreview(
         root=root,
         plan=plan,

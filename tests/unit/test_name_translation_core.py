@@ -107,6 +107,41 @@ def test_plan_updates_only_empty_english_names_without_sanitizing_english_name()
     assert plan[0].maya_name is None
 
 
+def test_numbered_suffix_inherits_base_translation_with_exact_override():
+    plan = build_translation_plan(
+        [
+            _entry("material", "|root|base", "スカート", index=0),
+            _entry("material", "|root|derived", "スカート_1", index=1),
+            _entry("material", "|root|padded", "スカート_02", index=2),
+            _entry("material", "|root|exact", "スカート_3", index=3),
+            _entry("material", "|root|unrelated", "スカート親", index=4),
+        ],
+        {"スカート": "Skirt", "スカート_3": "Pleated Skirt"},
+        rename_nodes=True,
+    )
+
+    assert [change.translated_name for change in plan] == [
+        "Skirt",
+        "Skirt_1",
+        "Skirt_02",
+        "Pleated Skirt",
+        None,
+    ]
+    assert [change.english_name for change in plan] == [
+        "Skirt",
+        "Skirt_1",
+        "Skirt_02",
+        "Pleated Skirt",
+        None,
+    ]
+    assert [change.maya_name for change in plan[:4]] == [
+        "Skirt",
+        "Skirt_1",
+        "Skirt_02",
+        "Pleated_Skirt",
+    ]
+
+
 def test_plan_overwrite_and_node_rename_are_independent():
     entries = [
         _entry("bone", "|root|jointA", "左腕", english="old", index=2),

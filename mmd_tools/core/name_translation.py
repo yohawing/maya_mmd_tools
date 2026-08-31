@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from mmd_tools.core.maya_name_utils import sanitize_unique_name
+
+
+_NUMBERED_TRANSLATION_SUFFIX = re.compile(r"^(?P<base>.+)(?P<suffix>_[0-9]+)$")
 
 
 class NameTranslationError(ValueError):
@@ -94,6 +98,21 @@ def _is_header(source: str, translated: str) -> bool:
     }
 
 
+def _resolve_translation(source_name: str, translations: Mapping[str, str]) -> Optional[str]:
+    """Resolve an exact translation or inherit one ``_<digits>`` suffix."""
+
+    exact = translations.get(source_name)
+    if exact is not None:
+        return exact
+    numbered = _NUMBERED_TRANSLATION_SUFFIX.fullmatch(source_name)
+    if numbered is None:
+        return None
+    base_translation = translations.get(numbered.group("base"))
+    if base_translation is None:
+        return None
+    return f"{base_translation}{numbered.group('suffix')}"
+
+
 def build_translation_plan(
     entries: Iterable[NameEntry],
     translations: Mapping[str, str],
@@ -115,7 +134,7 @@ def build_translation_plan(
     ordered_entries = sorted(entries, key=_entry_sort_key)
     plan: List[NameChange] = []
     for entry in ordered_entries:
-        translated = translations.get(entry.source_name)
+        translated = _resolve_translation(entry.source_name, translations)
         english_name = None
         if set_english and translated and (overwrite or not entry.english_name):
             if translated != entry.english_name:

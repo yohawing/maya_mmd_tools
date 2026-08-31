@@ -53,9 +53,10 @@ def test_build_translation_preview_details_reports_dictionary_coverage(monkeypat
     dictionary.write_text("左腕,left arm\n", encoding="utf-8")
     entries = (
         _entry("bone", "|root|left", "左腕"),
+        _entry("bone", "|root|left2", "左腕_1"),
         _entry("bone", "|root|right", "右腕", english="Right Arm"),
     )
-    cmds = SimpleNamespace(ls=lambda **_kwargs: ["|root", "|root|left", "|root|right"])
+    cmds = SimpleNamespace(ls=lambda **_kwargs: ["|root", "|root|left", "|root|left2", "|root|right"])
     monkeypatch.setattr(name_translation_dialog, "resolve_model_root", lambda *_a, **_k: "|root")
     monkeypatch.setattr(name_translation_dialog, "collect_name_entries", lambda *_a, **_k: entries)
 
@@ -64,11 +65,11 @@ def test_build_translation_preview_details_reports_dictionary_coverage(monkeypat
         cmds_module=cmds,
     )
 
-    assert preview.total == 2
-    assert preview.matched == 1
+    assert preview.total == 3
+    assert preview.matched == 2
     assert preview.missing == 1
     assert preview.already_english == 1
-    assert len(preview.plan) == 1
+    assert len(preview.plan) == 2
 
 
 def test_validate_preview_targets_rejects_stale_nodes():
