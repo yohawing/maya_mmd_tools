@@ -18,6 +18,7 @@
 
 #include "mmdFastLoad.h"
 #include "MmdRenderQueue.h"
+#include "MmdTextureAlphaClassifier.h"
 #include "MmdRenderShape.h"
 #include "MmdUvSeamWeldPlan.h"
 
@@ -29,6 +30,7 @@
 #include <maya/MFnDagNode.h>
 #include <maya/MFnIntArrayData.h>
 #include <maya/MFnMesh.h>
+#include <maya/MImage.h>
 #include <maya/MFnSet.h>
 #include <maya/MFnTransform.h>
 #include <maya/MFnTypedAttribute.h>
@@ -249,6 +251,18 @@ float materialDiffuseAlpha(const json& material)
     return material["diffuse"][3].get<float>();
 }
 
+std::string materialTransparencyMode(const json& material)
+{
+    for (const char* key : {"transparencyMode", "alphaMode", "transparency"}) {
+        if (!material.is_object() || !material.contains(key) ||
+            !material[key].is_string()) {
+            continue;
+        }
+        return material[key].get<std::string>();
+    }
+    return {};
+}
+
 std::array<float, 3> materialDiffuseColor(const json& material)
 {
     std::array<float, 3> color = {1.0F, 1.0F, 1.0F};
@@ -455,6 +469,47 @@ std::filesystem::path nativeModelDirectory(const std::string& modelPath)
     } catch (const std::filesystem::filesystem_error&) {
         return {};
     }
+}
+
+struct DecodedTextureAlpha {
+    std::size_t width = 0U;
+    std::size_t height = 0U;
+    std::vector<std::uint8_t> alpha;
+};
+
+const DecodedTextureAlpha* loadTextureAlpha(
+    const std::string& path,
+    std::unordered_map<std::string, DecodedTextureAlpha>& cache)
+{
+    const auto cached = cache.find(path);
+    if (cached != cache.end()) {
+        return cached->second.alpha.empty() ? nullptr : &cached->second;
+    }
+
+    DecodedTextureAlpha decoded;
+    MString mayaPath;
+    mayaPath.setUTF8(path.c_str());
+    MImage image;
+    unsigned int width = 0U;
+    unsigned int height = 0U;
+    if (image.readFromFile(mayaPath, MImage::kByte) &&
+        image.getSize(width, height) && width > 0U && height > 0U) {
+        const unsigned char* pixels = image.pixels();
+        const std::size_t pixelCount =
+            static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        if (pixels && pixelCount <=
+                          std::numeric_limits<std::size_t>::max() / 4U) {
+            decoded.width = width;
+            decoded.height = height;
+            decoded.alpha.resize(pixelCount);
+            for (std::size_t index = 0U; index < pixelCount; ++index) {
+                decoded.alpha[index] = pixels[index * 4U + 3U];
+            }
+        }
+    }
+    const auto inserted = cache.emplace(path, std::move(decoded));
+    return inserted.first->second.alpha.empty() ? nullptr
+                                                 : &inserted.first->second;
 }
 
 std::string quoteMelName(const std::string& name)
@@ -1533,13 +1588,10 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
         if (materials && originalMaterialIndex < materials->size()) {
             const json& material = (*materials)[originalMaterialIndex];
             populateNativeMaterial(material, modelDirectory, input);
-            // The normal native viewport route intentionally keeps every
-            // material in the opaque pass.  Mixing only some PMX materials
-            // into Maya's transparent queue produces unstable body/outline
-            // ordering on real character models.  Authored alpha remains a
-            // shader input, so the opaque technique can still clip alpha-zero
-            // texels without enabling partial blending.
-            input.transparencyMode = "opaque";
+            // Keep the authored PMX mode when present.  An empty mode falls
+            // back to diffuse alpha in the queue classifier, so materials
+            // with alpha below one enter the native translucent pass.
+            input.transparencyMode = materialTransparencyMode(material);
         }
         queueInputs.push_back(std::move(input));
     }
@@ -1603,6 +1655,27 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
             submeshSourceIndices[i].push_back(
                 static_cast<uint32_t>(local));
         }
+    }
+    // Classify texture alpha once during import, using only texels covered by
+    // each material's UV triangles.  This is intentionally outside the VP2
+    // frame/update path: soft-alpha textures (for example hair shadows) must
+    // use the translucent technique even when authored diffuse alpha is 1.
+    std::unordered_map<std::string, DecodedTextureAlpha> alphaCache;
+    for (size_t i = 0; i < meshCount; ++i) {
+        mmd::MmdRenderQueueInput& input = queueInputs[i];
+        if (!input.transparencyMode.empty() || input.diffuseAlpha < 0.999F ||
+            input.mainTexturePath.empty()) {
+            continue;
+        }
+        const DecodedTextureAlpha* decoded =
+            loadTextureAlpha(input.mainTexturePath, alphaCache);
+        if (!decoded) {
+            continue;
+        }
+        input.transparencyMode = mmd::mmdTextureAlphaModeName(
+            mmd::classifyMmdTextureAlpha(
+                decoded->alpha, decoded->width, decoded->height,
+                submeshUvs[i], submeshIndices[i]));
     }
     releaseSplit();
 
