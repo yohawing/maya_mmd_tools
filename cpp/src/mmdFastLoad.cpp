@@ -19,6 +19,7 @@
 #include "mmdFastLoad.h"
 #include "MmdRenderQueue.h"
 #include "MmdRenderShape.h"
+#include "MmdUvSeamWeldPlan.h"
 
 #include <maya/MArgDatabase.h>
 #include <maya/MDagModifier.h>
@@ -26,8 +27,10 @@
 #include <maya/MFloatArray.h>
 #include <maya/MFnDependencyNode.h>
 #include <maya/MFnDagNode.h>
+#include <maya/MFnIntArrayData.h>
 #include <maya/MFnMesh.h>
 #include <maya/MFnTransform.h>
+#include <maya/MFnTypedAttribute.h>
 #include <maya/MGlobal.h>
 #include <maya/MIntArray.h>
 #include <maya/MPointArray.h>
@@ -573,13 +576,17 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
                     const std::vector<float>&    uvs,
                     const std::vector<uint32_t>& indices,
                     double                       scale,
-                    const MString&               desiredTransformName)
+                    const MString&               desiredTransformName,
+                    const std::vector<uint32_t>* cornerSourceIndices = nullptr)
 {
     BuiltMesh result;
 
     const size_t vertCount  = positions.size() / 3;
     const size_t indexCount = indices.size();
     if (vertCount == 0 || indexCount == 0) {
+        return result;
+    }
+    if (cornerSourceIndices && cornerSourceIndices->size() != indexCount) {
         return result;
     }
 
@@ -630,10 +637,14 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
         for (unsigned int corner = 0; corner < 3U; ++corner) {
             const unsigned int connectIndex = faceId * 3U + corner;
             const int vertexId = result.polygonConnects[connectIndex];
-            if (vertexId < 0 || static_cast<size_t>(vertexId) >= normalCount) {
+            const size_t sourceIndex = cornerSourceIndices
+                ? static_cast<size_t>((*cornerSourceIndices)[
+                    (connectIndex / 3U) * 3U + 2U - (connectIndex % 3U)])
+                : static_cast<size_t>(vertexId);
+            if (vertexId < 0 || sourceIndex >= normalCount) {
                 continue;
             }
-            const size_t normalIndex = static_cast<size_t>(vertexId);
+            const size_t normalIndex = sourceIndex;
             const double x = static_cast<double>(normals[normalIndex * 3]);
             const double y = static_cast<double>(normals[normalIndex * 3 + 1]);
             const double z = static_cast<double>(normals[normalIndex * 3 + 2]);
@@ -668,7 +679,8 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
     result.meshName = meshFn.name();
 
     // ---- UVs (V-flip) ----
-    if (uvs.size() >= vertCount * 2) {
+    const size_t sourceUvCount = cornerSourceIndices ? uvs.size() / 2U : vertCount;
+    if (uvs.size() >= sourceUvCount * 2U && sourceUvCount > 0U) {
         MString uvSetName("map1");
         // MFnMesh::create() already creates an empty map1 on a fresh mesh.
         // Recreating it makes Maya silently allocate map11, leaving the
@@ -696,8 +708,8 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
         std::map<std::pair<double, double>, int> uvByValue;
         MFloatArray uArr;
         MFloatArray vArr;
-        std::vector<int> sourceUvIds(vertCount, 0);
-        for (size_t i = 0; i < vertCount; ++i) {
+        std::vector<int> sourceUvIds(sourceUvCount, 0);
+        for (size_t i = 0; i < sourceUvCount; ++i) {
             const double u = static_cast<double>(uvs[i * 2]);
             const double v = 1.0 - static_cast<double>(uvs[i * 2 + 1]);
             const auto key = std::make_pair(u, v);
@@ -719,15 +731,142 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
         uvConnects.setLength(static_cast<unsigned int>(triCount * 3));
         for (unsigned int t = 0; t < triCount; ++t) {
             const unsigned int base = t * 3;
-            uvConnects[base]     = sourceUvIds[indices[base + 2]];
-            uvConnects[base + 1] = sourceUvIds[indices[base + 1]];
-            uvConnects[base + 2] = sourceUvIds[indices[base]];
+            const uint32_t source0 = cornerSourceIndices ? (*cornerSourceIndices)[base] : indices[base];
+            const uint32_t source1 = cornerSourceIndices ? (*cornerSourceIndices)[base + 1U] : indices[base + 1U];
+            const uint32_t source2 = cornerSourceIndices ? (*cornerSourceIndices)[base + 2U] : indices[base + 2U];
+            if (source0 >= sourceUvCount || source1 >= sourceUvCount || source2 >= sourceUvCount) {
+                return result;
+            }
+            uvConnects[base]     = sourceUvIds[source2];
+            uvConnects[base + 1] = sourceUvIds[source1];
+            uvConnects[base + 2] = sourceUvIds[source0];
         }
         meshFn.assignUVs(uvCounts, uvConnects, &uvSetName);
     }
 
     result.ok = true;
     return result;
+}
+
+struct WeldedFastLoadGeometry {
+    MmdUvSeamWeldPlan plan;
+    std::vector<float> positions;
+    std::vector<uint32_t> indices;
+};
+
+bool buildWeldedFastLoadGeometry(const uint8_t* data, size_t len,
+                                 const std::vector<float>& sourcePositions,
+                                 const std::vector<uint32_t>& sourceIndices,
+                                 WeldedFastLoadGeometry& welded)
+{
+    if (!data || len == 0U || sourcePositions.size() % 3U != 0U ||
+        sourceIndices.empty() || sourceIndices.size() % 3U != 0U) {
+        return false;
+    }
+    const size_t sourceCount = sourcePositions.size() / 3U;
+    if (sourceCount > std::numeric_limits<uint32_t>::max()) return false;
+    std::vector<uint8_t> bytes(data, data + len);
+    MmdUvSeamWeldGeometry geometry;
+    if (!loadMmdUvSeamWeldGeometry(bytes, geometry) ||
+        geometry.positions.size() != sourcePositions.size() ||
+        geometry.positions != sourcePositions) {
+        return false;
+    }
+    std::vector<uint32_t> identitySources(sourceCount);
+    std::vector<int> sourceToOldLocal(sourceCount);
+    for (size_t i = 0; i < sourceCount; ++i) {
+        identitySources[i] = static_cast<uint32_t>(i);
+        sourceToOldLocal[i] = static_cast<int>(i);
+    }
+    std::vector<int> faceCounts(sourceIndices.size() / 3U, 3);
+    std::vector<int> reversedConnects(sourceIndices.size());
+    for (size_t i = 0; i < sourceIndices.size(); ++i) {
+        if (sourceIndices[i] >= sourceCount) return false;
+    }
+    for (size_t triangle = 0; triangle < faceCounts.size(); ++triangle) {
+        const size_t base = triangle * 3U;
+        reversedConnects[base] = static_cast<int>(sourceIndices[base + 2U]);
+        reversedConnects[base + 1U] = static_cast<int>(sourceIndices[base + 1U]);
+        reversedConnects[base + 2U] = static_cast<int>(sourceIndices[base]);
+    }
+    if (!buildMmdUvSeamWeldPlan(geometry, identitySources, sourceToOldLocal,
+                                faceCounts, reversedConnects, welded.plan) ||
+        welded.plan.sourceToLocal.size() != sourceCount ||
+        welded.plan.localToSource.size() != welded.plan.vertexCount ||
+        welded.plan.remappedPolygonConnects.size() != sourceIndices.size()) {
+        return false;
+    }
+    welded.positions.resize(static_cast<size_t>(welded.plan.vertexCount) * 3U);
+    for (size_t local = 0; local < welded.plan.localToSource.size(); ++local) {
+        const uint32_t source = welded.plan.localToSource[local];
+        if (source >= sourceCount || welded.plan.sourceToLocal[source] < 0 ||
+            static_cast<uint32_t>(welded.plan.sourceToLocal[source]) != local) {
+            return false;
+        }
+        std::copy_n(sourcePositions.begin() + static_cast<std::ptrdiff_t>(source * 3U),
+                    3U, welded.positions.begin() + static_cast<std::ptrdiff_t>(local * 3U));
+    }
+    welded.indices.resize(sourceIndices.size());
+    for (size_t triangle = 0; triangle < faceCounts.size(); ++triangle) {
+        const size_t base = triangle * 3U;
+        welded.indices[base] = static_cast<uint32_t>(welded.plan.remappedPolygonConnects[base + 2U]);
+        welded.indices[base + 1U] = static_cast<uint32_t>(welded.plan.remappedPolygonConnects[base + 1U]);
+        welded.indices[base + 2U] = static_cast<uint32_t>(welded.plan.remappedPolygonConnects[base]);
+    }
+    return true;
+}
+
+bool makeSourceToLocalMap(const MmdUvSeamWeldPlan& plan,
+                          std::unordered_map<uint32_t, uint32_t>& mapping)
+{
+    mapping.clear();
+    mapping.reserve(plan.sourceToLocal.size());
+    for (size_t source = 0; source < plan.sourceToLocal.size(); ++source) {
+        const int local = plan.sourceToLocal[source];
+        if (local < 0 || static_cast<uint32_t>(local) >= plan.vertexCount) {
+            return false;
+        }
+        mapping.emplace(static_cast<uint32_t>(source), static_cast<uint32_t>(local));
+    }
+    return mapping.size() == plan.sourceToLocal.size();
+}
+
+bool writeWeldProvenance(const MObject& transformObject,
+                         const MmdUvSeamWeldPlan& plan)
+{
+    MStatus status;
+    MFnDependencyNode dependency(transformObject, &status);
+    if (!status) return false;
+    const auto writeArray = [&dependency](const char* name,
+                                          const std::vector<uint32_t>& values) {
+        MStatus plugStatus;
+        MPlug plug = dependency.findPlug(name, true, &plugStatus);
+        if (!plugStatus) {
+            MFnTypedAttribute attribute;
+            MObject attributeObject = attribute.create(name, name, MFnData::kIntArray,
+                                                       MObject::kNullObj, &plugStatus);
+            if (!plugStatus || !dependency.addAttribute(attributeObject)) return false;
+            plug = dependency.findPlug(name, true, &plugStatus);
+            if (!plugStatus) return false;
+        }
+        MIntArray ints;
+        ints.setLength(static_cast<unsigned int>(values.size()));
+        for (size_t i = 0; i < values.size(); ++i) {
+            if (values[i] > static_cast<uint32_t>(std::numeric_limits<int>::max())) return false;
+            ints[static_cast<unsigned int>(i)] = static_cast<int>(values[i]);
+        }
+        MFnIntArrayData arrayData;
+        MObject dataObject = arrayData.create(ints, &plugStatus);
+        return plugStatus && plug.setValue(dataObject);
+    };
+    std::vector<uint32_t> sourceToLocal(plan.sourceToLocal.size());
+    for (size_t source = 0; source < plan.sourceToLocal.size(); ++source) {
+        const int local = plan.sourceToLocal[source];
+        if (local < 0) return false;
+        sourceToLocal[source] = static_cast<uint32_t>(local);
+    }
+    return writeArray("mmd_source_vertex_indices", plan.localToSource) &&
+           writeArray("mmd_source_to_local_indices", sourceToLocal);
 }
 
 /**
@@ -770,14 +909,49 @@ unsigned int buildVertexMorphBlendShapes(
             continue;
         }
 
+        // Aggregate repeated source offsets first, then apply each welded
+        // local exactly once. Equivalent source vertices have identical
+        // morph signatures by weld construction; a different accumulated
+        // delta is rejected rather than doubled.
+        std::unordered_map<uint32_t, std::array<double, 3>> sourceDeltas;
+        bool malformed = false;
+        for (const json& off : *offsetsIt) {
+            if (!off.is_object()) { malformed = true; break; }
+            const uint32_t pmxVertex = off.value("vertexIndex", 0u);
+            auto posIt = off.find("position");
+            if (posIt == off.end() || !posIt->is_array() || posIt->size() < 3) {
+                malformed = true;
+                break;
+            }
+            const double dx = (*posIt)[0].get<double>();
+            const double dy = (*posIt)[1].get<double>();
+            const double dz = (*posIt)[2].get<double>();
+            if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(dz)) {
+                malformed = true;
+                break;
+            }
+            std::array<double, 3>& accumulated = sourceDeltas[pmxVertex];
+            accumulated[0] += dx;
+            accumulated[1] += dy;
+            accumulated[2] += dz;
+            if (!std::isfinite(accumulated[0]) || !std::isfinite(accumulated[1]) ||
+                !std::isfinite(accumulated[2])) {
+                malformed = true;
+                break;
+            }
+        }
+        if (malformed) {
+            MGlobal::displayWarning("[mmdFastLoad] Skipping malformed vertex morph.");
+            continue;
+        }
+
         // Apply offsets onto a copy of the base points.
         MPointArray targetPoints(basePoints);
         bool touched = false;
-        for (const json& off : *offsetsIt) {
-            if (!off.is_object()) {
-                continue;
-            }
-            const uint32_t pmxVertex = off.value("vertexIndex", 0u);
+        std::unordered_map<uint32_t, std::array<double, 3>> localDeltas;
+        bool conflictingMapping = false;
+        for (const auto& sourceDelta : sourceDeltas) {
+            const uint32_t pmxVertex = sourceDelta.first;
             uint32_t localVertex = pmxVertex;
             if (globalToLocal) {
                 auto it = globalToLocal->find(pmxVertex);
@@ -787,15 +961,26 @@ unsigned int buildVertexMorphBlendShapes(
                 localVertex = it->second;
             }
             if (localVertex >= targetPoints.length()) {
-                continue;
+                conflictingMapping = true;
+                break;
             }
-            auto posIt = off.find("position");
-            if (posIt == off.end() || !posIt->is_array() || posIt->size() < 3) {
-                continue;
+            const std::array<double, 3>& delta = sourceDelta.second;
+            const auto inserted = localDeltas.emplace(localVertex, delta);
+            if (!inserted.second && inserted.first->second != delta) {
+                conflictingMapping = true;
+                break;
             }
-            const double dx = (*posIt)[0].get<double>();
-            const double dy = (*posIt)[1].get<double>();
-            const double dz = (*posIt)[2].get<double>();
+        }
+        if (conflictingMapping) {
+            MGlobal::displayWarning("[mmdFastLoad] Skipping vertex morph with conflicting weld mapping.");
+            continue;
+        }
+        for (const auto& localDelta : localDeltas) {
+            const uint32_t localVertex = localDelta.first;
+            const std::array<double, 3>& delta = localDelta.second;
+            const double dx = delta[0];
+            const double dy = delta[1];
+            const double dz = delta[2];
             targetPoints[localVertex].x += dx * scale;
             targetPoints[localVertex].y += dy * scale;
             targetPoints[localVertex].z += -dz * scale;
@@ -968,10 +1153,32 @@ MStatus MmdFastLoad::loadSingle(const std::string& safeName,
         return MS::kFailure;
     }
 
-    BuiltMesh mesh = buildMesh(positions, normals, uvs, indices, scale_,
-                               MString((safeName + "_fast").c_str()));
+    WeldedFastLoadGeometry welded;
+    if (!buildWeldedFastLoadGeometry(data, len, positions, indices, welded)) {
+        MGlobal::displayError("[mmdFastLoad] Failed to build complete UV-seam weld plan.");
+        return MS::kFailure;
+    }
+    std::unordered_map<uint32_t, uint32_t> sourceToLocal;
+    if (enableMorphs_ && !makeSourceToLocalMap(welded.plan, sourceToLocal)) {
+        MGlobal::displayError("[mmdFastLoad] Incomplete UV-seam weld morph mapping.");
+        return MS::kFailure;
+    }
+
+    BuiltMesh mesh = buildMesh(welded.positions, normals, uvs, welded.indices, scale_,
+                               MString((safeName + "_fast").c_str()), &indices);
     if (!mesh.ok) {
         MGlobal::displayError("[mmdFastLoad] MFnMesh::create failed.");
+        return MS::kFailure;
+    }
+    MSelectionList provenanceSelection;
+    MObject provenanceTransform;
+    if (!provenanceSelection.add(mesh.transformName) ||
+        !provenanceSelection.getDependNode(0, provenanceTransform) ||
+        !writeWeldProvenance(provenanceTransform, welded.plan)) {
+        MGlobal::displayError("[mmdFastLoad] Failed to persist UV-seam weld provenance.");
+        MDagModifier cleanup;
+        cleanup.deleteNode(provenanceTransform);
+        cleanup.doIt();
         return MS::kFailure;
     }
 
@@ -982,7 +1189,8 @@ MStatus MmdFastLoad::loadSingle(const std::string& safeName,
         if (nonGeo.is_object() && nonGeo.contains("morphs")) {
             const unsigned int created = buildVertexMorphBlendShapes(
                 nonGeo["morphs"], mesh.transformName, mesh.points,
-                mesh.polygonCounts, mesh.polygonConnects, scale_, nullptr);
+                mesh.polygonCounts, mesh.polygonConnects, scale_,
+                &sourceToLocal);
             if (created > 0) {
                 MGlobal::displayInfo(
                     MString("[mmdFastLoad] Created vertex morph targets: ") +
@@ -1226,6 +1434,15 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
         static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
         return failBeforeMutation("whole-model vertex count exceeds mapping range");
     }
+    WeldedFastLoadGeometry welded;
+    if (!buildWeldedFastLoadGeometry(data, len, sourcePositions, sourceIndices,
+                                     welded)) {
+        return failBeforeMutation("whole-model UV-seam weld plan is incomplete");
+    }
+    std::unordered_map<uint32_t, uint32_t> sourceToLocal;
+    if (enableMorphs_ && !makeSourceToLocalMap(welded.plan, sourceToLocal)) {
+        return failBeforeMutation("whole-model UV-seam weld morph mapping is incomplete");
+    }
 
     json manifest = parseJsonBufferAndFree(
         mmd_runtime_pmx_material_split_manifest_json(split));
@@ -1356,8 +1573,12 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
                 sourceIndex > std::numeric_limits<uint32_t>::max()) {
                 return failBeforeMutation("manifest source mapping index is outside source vertices");
             }
+            const int local = welded.plan.sourceToLocal[static_cast<size_t>(sourceIndex)];
+            if (local < 0 || static_cast<uint32_t>(local) >= welded.plan.vertexCount) {
+                return failBeforeMutation("manifest source mapping has no welded local vertex");
+            }
             submeshSourceIndices[i].push_back(
-                static_cast<uint32_t>(sourceIndex));
+                static_cast<uint32_t>(local));
         }
     }
     releaseSplit();
@@ -1398,8 +1619,8 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
     // The source mesh is the ordinary Maya DG owner.  Its blendShape targets
     // are therefore created before the proxy connection is made.
     BuiltMesh sourceMesh = buildMesh(
-        sourcePositions, sourceNormals, sourceUvs, sourceIndices, scale_,
-        MString((safeName + "_fast").c_str()));
+        welded.positions, sourceNormals, sourceUvs, welded.indices, scale_,
+        MString((safeName + "_fast").c_str()), &sourceIndices);
     if (!sourceMesh.ok) {
         MGlobal::displayError("[mmdFastLoad] Failed to build VP2 source mesh.");
         deleteRootByName(sourceMesh.transformName);
@@ -1414,6 +1635,11 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
         MGlobal::displayError(
             "[mmdFastLoad] Failed to resolve VP2 source transform.");
         deleteRootByName(sourceMesh.transformName);
+        return MS::kFailure;
+    }
+    if (!writeWeldProvenance(sourceTransformObject, welded.plan)) {
+        MGlobal::displayError("[mmdFastLoad] Failed to persist VP2 UV-seam weld provenance.");
+        deleteRoot(sourceTransformObject);
         return MS::kFailure;
     }
     sourceSelection.clear();
@@ -1435,7 +1661,7 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
             buildVertexMorphBlendShapes(
                 *morphs, sourceMesh.transformName, sourceMesh.points,
                 sourceMesh.polygonCounts, sourceMesh.polygonConnects, scale_,
-                nullptr);
+                &sourceToLocal);
         }
     }
 
