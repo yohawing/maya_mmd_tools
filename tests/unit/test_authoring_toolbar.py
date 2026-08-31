@@ -203,7 +203,7 @@ def test_disabled_reason_retranslates_and_display_add_actions_fail_closed(qapp):
         translator.set_language(original)
 
 
-def test_english_ui_hides_original_pmx_name_fields(qapp):
+def test_original_pmx_name_fields_remain_visible_in_english_ui(qapp):
     from mmd_tools.ui.tabs.bone_tab import BoneTab
     from mmd_tools.ui.tabs.display_pane_tab import DisplayPaneTab
     from mmd_tools.ui.tabs.info_tab import InfoTab
@@ -228,7 +228,7 @@ def test_english_ui_hides_original_pmx_name_fields(qapp):
             tabs[5].rigid_name_edit,
             tabs[5].joint_name_edit,
         )
-        assert all(widget.isHidden() for widget in original_widgets)
+        assert all(not widget.isHidden() for widget in original_widgets)
 
         translator.set_language("ja")
         for tab in tabs:

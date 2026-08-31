@@ -40,10 +40,10 @@ def preferred_pmx_display_name(
     return japanese or english or fallback_text or unnamed
 
 
-def original_pmx_fields_visible(language: str) -> bool:
-    """Return whether original Japanese metadata fields belong in normal UI."""
+def original_pmx_fields_visible(_language: str) -> bool:
+    """Keep authoritative original PMX metadata editable in every UI language."""
 
-    return language != "en"
+    return True
 
 
 __all__ = ["original_pmx_fields_visible", "preferred_pmx_display_name"]
