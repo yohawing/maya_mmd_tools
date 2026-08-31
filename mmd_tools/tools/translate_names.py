@@ -9,6 +9,7 @@ by name.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
 from mmd_tools.services.scene_model_service import SceneModelService
@@ -40,6 +41,12 @@ _SOURCE_ATTRIBUTES = {
 MENU_ITEM_ID = "MMDTranslateNamesMenuItem"
 MENU_ITEM_NAME = MENU_ITEM_ID
 MENU_LABEL = "Translate MMD Names"
+DEFAULT_TRANSLATION_DICTIONARY_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "config"
+    / "name_translation_presets"
+    / "mmd_standard_names.csv"
+)
 
 
 @dataclass(frozen=True)
@@ -238,6 +245,7 @@ class NameTranslationDialog:
         self.model_label.setObjectName("modelLabel")
         self.dictionary_edit = QLineEdit(self._dialog)
         self.dictionary_edit.setObjectName("dictionaryPathEdit")
+        self.dictionary_edit.setText(str(DEFAULT_TRANSLATION_DICTIONARY_PATH))
         self.browse_button = QPushButton("Browse…", self._dialog)
         self.browse_button.setObjectName("browseButton")
         self.overwrite_checkbox = QCheckBox("Overwrite existing EnglishName", self._dialog)

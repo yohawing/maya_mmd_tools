@@ -81,7 +81,7 @@ def test_shipped_standard_name_preset_has_strict_two_column_nonempty_rows():
     with path.open("r", encoding="utf-8", newline="") as stream:
         rows = list(csv.reader(stream))
 
-    assert rows[0] == ["日本語", "英語"]
+    assert rows[0] == ["Japanese", "English"]
     data_rows = rows[1:]
     assert all(len(row) == 2 and all(cell.strip() for cell in row) for row in data_rows)
     assert len({row[0] for row in data_rows}) == len(data_rows)

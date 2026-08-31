@@ -233,6 +233,8 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
         cmds_module=cmds,
         on_applied=on_applied,
     )
+    assert dialog.dictionary_edit.text() == str(name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH)
+    assert name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH.is_file()
     assert not dialog.apply_button.isEnabled()
     assert dialog.apply() is None
     assert not apply_plan.called
