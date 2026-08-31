@@ -254,7 +254,57 @@ def _compare(python: dict[str, Any], cpp: dict[str, Any]) -> list[dict[str, Any]
     empty("no-cpp-temporary-target-dags", "cpp", cpp["targetDags"])
     exact("dag-type-counts", python["dagTypeCounts"], cpp["dagTypeCounts"])
     exact("dag-hierarchy", python["dag"], cpp["dag"])
-    exact("mesh-topology-materials", python["meshes"], cpp["meshes"])
+    def mesh_fields(meshes: list[dict[str, Any]], *fields: str) -> list[dict[str, Any]]:
+        return sorted(
+            ({field: mesh[field] for field in fields} for mesh in meshes),
+            key=lambda item: json.dumps(item, sort_keys=True),
+        )
+
+    exact(
+        "mesh-paths",
+        [mesh["path"] for mesh in python["meshes"]],
+        [mesh["path"] for mesh in cpp["meshes"]],
+    )
+
+    exact(
+        "mesh-vertex-count",
+        mesh_fields(python["meshes"], "vertices"),
+        mesh_fields(cpp["meshes"], "vertices"),
+    )
+    exact(
+        "mesh-edge-face-topology",
+        mesh_fields(python["meshes"], "edges", "faces"),
+        mesh_fields(cpp["meshes"], "edges", "faces"),
+    )
+    exact(
+        "mesh-uv-count",
+        mesh_fields(python["meshes"], "uvs"),
+        mesh_fields(cpp["meshes"], "uvs"),
+    )
+    exact(
+        "mesh-normal-validity",
+        mesh_fields(
+            python["meshes"],
+            "zeroLengthVertexNormals",
+            "zeroLengthVertexNormalIndices",
+            "zeroLengthVertexNormalFaceCorners",
+            "zeroLengthUnweightedVertexNormalIndices",
+            "nonFiniteVertexNormals",
+        ),
+        mesh_fields(
+            cpp["meshes"],
+            "zeroLengthVertexNormals",
+            "zeroLengthVertexNormalIndices",
+            "zeroLengthVertexNormalFaceCorners",
+            "zeroLengthUnweightedVertexNormalIndices",
+            "nonFiniteVertexNormals",
+        ),
+    )
+    exact(
+        "mesh-material-contract",
+        mesh_fields(python["meshes"], "intermediate", "shadingGroups", "shaders"),
+        mesh_fields(cpp["meshes"], "intermediate", "shadingGroups", "shaders"),
+    )
     exact("blendshape-contract", python["blendShapes"], cpp["blendShapes"])
     exact("skin-cluster-contract", python["skinClusters"], cpp["skinClusters"])
     exact("joint-hierarchy", python["joints"], cpp["joints"])

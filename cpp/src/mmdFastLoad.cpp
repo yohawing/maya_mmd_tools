@@ -50,6 +50,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -689,11 +690,27 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
         }
         meshFn.setCurrentUVSetName(uvSetName);
 
-        MFloatArray uArr(static_cast<unsigned int>(vertCount));
-        MFloatArray vArr(static_cast<unsigned int>(vertCount));
+        // Match the Python mesh converter: UV identities are independent of
+        // geometric vertex identities and use exact (u, 1-v) value pairs.
+        // Keep the first occurrence so the face-corner IDs are deterministic.
+        std::map<std::pair<double, double>, int> uvByValue;
+        MFloatArray uArr;
+        MFloatArray vArr;
+        std::vector<int> sourceUvIds(vertCount, 0);
         for (size_t i = 0; i < vertCount; ++i) {
-            uArr[static_cast<unsigned int>(i)] = uvs[i * 2];
-            vArr[static_cast<unsigned int>(i)] = 1.0f - uvs[i * 2 + 1];
+            const double u = static_cast<double>(uvs[i * 2]);
+            const double v = 1.0 - static_cast<double>(uvs[i * 2 + 1]);
+            const auto key = std::make_pair(u, v);
+            auto found = uvByValue.find(key);
+            if (found == uvByValue.end()) {
+                const int uvId = static_cast<int>(uArr.length());
+                uvByValue.emplace(key, uvId);
+                uArr.append(static_cast<float>(u));
+                vArr.append(static_cast<float>(v));
+                sourceUvIds[i] = uvId;
+            } else {
+                sourceUvIds[i] = found->second;
+            }
         }
         meshFn.setUVs(uArr, vArr, &uvSetName);
 
@@ -702,9 +719,9 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
         uvConnects.setLength(static_cast<unsigned int>(triCount * 3));
         for (unsigned int t = 0; t < triCount; ++t) {
             const unsigned int base = t * 3;
-            uvConnects[base]     = static_cast<int>(indices[base + 2]);
-            uvConnects[base + 1] = static_cast<int>(indices[base + 1]);
-            uvConnects[base + 2] = static_cast<int>(indices[base]);
+            uvConnects[base]     = sourceUvIds[indices[base + 2]];
+            uvConnects[base + 1] = sourceUvIds[indices[base + 1]];
+            uvConnects[base + 2] = sourceUvIds[indices[base]];
         }
         meshFn.assignUVs(uvCounts, uvConnects, &uvSetName);
     }
