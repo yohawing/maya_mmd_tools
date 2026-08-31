@@ -147,8 +147,19 @@ def main() -> int:
         if not single or len(single) != 2:
             raise RuntimeError(f"single mmdFastLoad returned unexpected result: {single!r}")
         single_transform, single_mesh = single
-        if cmds.polyEvaluate(single_mesh, vertex=True) != 1822 or cmds.polyEvaluate(single_mesh, face=True) != 3516:
+        local_vertex_count = int(cmds.polyEvaluate(single_mesh, vertex=True))
+        if local_vertex_count != 1814 or cmds.polyEvaluate(single_mesh, face=True) != 3516:
             raise RuntimeError("single mmdFastLoad fixture counts changed")
+        local_to_source = cmds.getAttr(
+            f"{single_transform}.mmd_source_vertex_indices"
+        ) or []
+        source_to_local = cmds.getAttr(
+            f"{single_transform}.mmd_source_to_local_indices"
+        ) or []
+        if len(local_to_source) != local_vertex_count or len(source_to_local) != 1822:
+            raise RuntimeError("single mmdFastLoad weld provenance counts changed")
+        if any(int(local) < 0 or int(local) >= local_vertex_count for local in source_to_local):
+            raise RuntimeError("single mmdFastLoad source-to-local mapping is invalid")
         single_mesh_fn = _mesh_fn(om, single_mesh)
         _assert_locked_normals(
             om,

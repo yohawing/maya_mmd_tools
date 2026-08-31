@@ -498,6 +498,8 @@ class TestFastSkeletonSkin(unittest.TestCase):
         cmds.group.return_value = "skeleton_group1"
         cmds.skinCluster.return_value = ["skinCluster1"]
         cmds.objExists.return_value = True
+        cmds.polyEvaluate.return_value = 1
+        cmds.listRelatives.return_value = ["meshTransform1"]
         # New joints do not have authored metadata before the importer writes it.
         # MagicMock's default return value is truthy, which would make the
         # immutable bind-translate helper incorrectly treat the attribute as
@@ -551,6 +553,7 @@ class TestFastSkeletonSkin(unittest.TestCase):
         self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
 
         cmds = self._make_cmds_mock()
+        cmds.polyEvaluate.return_value = 2
 
         with patch(
             "mmd_tools.io.cpp_fast_importer.maya_mesh_utils.has_materially_different_authored_normals",
@@ -612,6 +615,85 @@ class TestFastSkeletonSkin(unittest.TestCase):
                 [1.0, 0.0],
             ],
         )
+
+    def test_skeleton_skin_remaps_welded_vertices_to_source_rows(self):
+        """A welded FastLoad mesh uses its local-to-PMX provenance for skin rows."""
+        mock_parsed = MagicMock()
+        mock_parsed.metadata_json = json.dumps({"bones": [{
+            "name": "center", "parentIndex": -1, "position": [0.0, 0.0, 0.0],
+        }]})
+        mock_parsed.skin_indices = [(0, 0, 0, 0)] * 3
+        mock_parsed.skin_weights = [
+            (0.1, 0.0, 0.0, 0.0),
+            (0.2, 0.0, 0.0, 0.0),
+            (0.7, 0.0, 0.0, 0.0),
+        ]
+        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
+
+        cmds = self._make_cmds_mock()
+        cmds.polyEvaluate.return_value = 2
+        cmds.attributeQuery.side_effect = lambda attribute, node=None, **_kwargs: (
+            attribute == "mmd_source_vertex_indices" and node == "meshTransform1"
+        )
+        cmds.getAttr.side_effect = lambda attribute: (
+            [2, 0] if attribute == "meshTransform1.mmd_source_vertex_indices" else [(0, 0, 0)]
+        )
+
+        _apply_fast_skeleton_skin("model.pmx", "mesh1", "root1", "my_model", cmds)
+
+        self.mock_apply_weights.assert_called_once_with(
+            "skinCluster1", "mesh1", [[0.7], [0.1]]
+        )
+
+    def test_skeleton_skin_allows_identity_only_for_equal_count_legacy_mesh(self):
+        """Old un-welded plug-ins use identity rows when their count matches."""
+        mock_parsed = MagicMock()
+        mock_parsed.metadata_json = json.dumps({"bones": [{
+            "name": "center", "parentIndex": -1, "position": [0.0, 0.0, 0.0],
+        }]})
+        mock_parsed.skin_indices = [(0, 0, 0, 0), (0, 0, 0, 0)]
+        mock_parsed.skin_weights = [(0.25, 0.0, 0.0, 0.0), (0.75, 0.0, 0.0, 0.0)]
+        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
+
+        cmds = self._make_cmds_mock()
+        cmds.polyEvaluate.return_value = 2
+
+        _apply_fast_skeleton_skin("model.pmx", "mesh1", "root1", "my_model", cmds)
+
+        self.mock_apply_weights.assert_called_once_with(
+            "skinCluster1", "mesh1", [[0.25], [0.75]]
+        )
+
+    def test_skeleton_skin_rejects_bad_or_missing_provenance_before_joint_creation(self):
+        """A mismatched mesh cannot leave a partial FastLoad skeleton behind."""
+        mock_parsed = MagicMock()
+        mock_parsed.metadata_json = json.dumps({"bones": [{
+            "name": "center", "parentIndex": -1, "position": [0.0, 0.0, 0.0],
+        }]})
+        mock_parsed.skin_indices = [(0, 0, 0, 0), (0, 0, 0, 0)]
+        mock_parsed.skin_weights = [(1.0, 0.0, 0.0, 0.0)] * 2
+        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
+
+        cases = {
+            "missing": (3, False, None),
+            "incomplete": (2, True, [0]),
+            "out_of_range": (2, True, [0, 2]),
+        }
+        for name, (vertex_count, has_attr, source_rows) in cases.items():
+            with self.subTest(name=name):
+                cmds = self._make_cmds_mock()
+                cmds.polyEvaluate.return_value = vertex_count
+                cmds.attributeQuery.side_effect = lambda attribute, node=None, **_kwargs: (
+                    has_attr and attribute == "mmd_source_vertex_indices"
+                )
+                if source_rows is not None:
+                    cmds.getAttr.return_value = source_rows
+
+                _apply_fast_skeleton_skin("model.pmx", "mesh1", "root1", "my_model", cmds)
+
+                cmds.group.assert_not_called()
+                cmds.joint.assert_not_called()
+                cmds.skinCluster.assert_not_called()
 
     def test_fast_import_scale_is_applied_to_basic_skeleton(self):
         """Fast mesh and skeleton imports must share the requested scale."""
@@ -925,10 +1007,9 @@ class TestFastSkeletonSkin(unittest.TestCase):
             "model.pmx", "mesh1", "root1", "my_model", cmds
         )
 
-        # Joints + group still created
-        self.assertEqual(cmds.joint.call_count, 1)
-        cmds.group.assert_called_once()
-        # But skinCluster should NOT be called
+        # Mesh/provenance validation happens before any partial skeleton.
+        cmds.joint.assert_not_called()
+        cmds.group.assert_not_called()
         cmds.skinCluster.assert_not_called()
 
 

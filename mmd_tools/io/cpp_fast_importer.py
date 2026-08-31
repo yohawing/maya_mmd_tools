@@ -15,6 +15,7 @@ Candidate plugin paths follow the same layout as
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -807,6 +808,16 @@ def _apply_fast_skeleton_skin(
         logger.debug("No bones in metadata; skipping skeleton/skin")
         return
 
+    remapped_skin = _resolve_fast_skin_rows(
+        mesh_node, skin_indices, skin_weights, cmds_module
+    )
+    if remapped_skin is None:
+        # Do this before creating the skeleton group or any joints.  A mesh
+        # whose local vertices cannot be related to its PMX rows would create
+        # a plausible-looking, but unusable partial rig.
+        return
+    skin_indices, skin_weights = remapped_skin
+
     # ---- build unique bone/joint names ----
     joint_names: list[str] = []
     used_names: set[str] = _scene_name_set(cmds_module)
@@ -946,6 +957,155 @@ def _apply_fast_skeleton_skin(
         maya_mesh_utils.apply_vertex_weights(skin_cluster, mesh_node, weights_list)
     except Exception as exc:
         logger.debug("Failed to apply vertex weights: %s", exc)
+
+
+def _resolve_fast_skin_rows(
+    mesh_node: str,
+    source_skin_indices: list[tuple[int, int, int, int]],
+    source_skin_weights: list[tuple[float, float, float, float]],
+    cmds_module,
+) -> Optional[tuple[list[tuple[int, int, int, int]], list[tuple[float, float, float, float]]]]:
+    """Return skin rows in Maya-local vertex order, or fail before mutation.
+
+    FastLoad welds PMX vertices and stores the representative PMX row for each
+    resulting Maya vertex on the mesh transform.  Older plug-ins did not write
+    that provenance; they remain compatible only when their vertex count is
+    exactly the PMX skin-row count.
+    """
+    if len(source_skin_indices) != len(source_skin_weights):
+        logger.warning(
+            "FastLoad skin data is inconsistent (%d index rows, %d weight rows); "
+            "skipping skeleton before scene mutation",
+            len(source_skin_indices),
+            len(source_skin_weights),
+        )
+        return None
+    if not source_skin_indices:
+        logger.warning("FastLoad has no skin rows; skipping skeleton before scene mutation")
+        return None
+    if any(len(indices) != 4 for indices in source_skin_indices) or any(
+        len(weights) != 4 for weights in source_skin_weights
+    ):
+        logger.warning(
+            "FastLoad skin rows must contain exactly four influences; "
+            "skipping skeleton before scene mutation"
+        )
+        return None
+
+    try:
+        local_vertex_count = int(cmds_module.polyEvaluate(mesh_node, vertex=True))
+    except Exception as exc:
+        logger.warning(
+            "Could not query FastLoad mesh vertex count for %s (%s); "
+            "skipping skeleton before scene mutation",
+            mesh_node,
+            exc,
+        )
+        return None
+    if local_vertex_count < 0:
+        logger.warning(
+            "FastLoad mesh %s has invalid vertex count %d; skipping skeleton before scene mutation",
+            mesh_node,
+            local_vertex_count,
+        )
+        return None
+
+    try:
+        parents = cmds_module.listRelatives(mesh_node, parent=True, fullPath=True) or []
+    except Exception:
+        parents = []
+    provenance_node = str(parents[0]) if parents else mesh_node
+    attr_name = f"{provenance_node}.mmd_source_vertex_indices"
+    try:
+        has_provenance = bool(
+            cmds_module.attributeQuery(
+                "mmd_source_vertex_indices", node=provenance_node, exists=True
+            )
+        )
+    except Exception:
+        has_provenance = False
+
+    if not has_provenance:
+        if local_vertex_count != len(source_skin_indices):
+            logger.warning(
+                "FastLoad mesh %s has %d local vertices but %d PMX skin rows and no "
+                "mmd_source_vertex_indices provenance; skipping skeleton before scene mutation",
+                mesh_node,
+                local_vertex_count,
+                len(source_skin_indices),
+            )
+            return None
+        return list(source_skin_indices), list(source_skin_weights)
+
+    try:
+        local_to_source = cmds_module.getAttr(attr_name)
+    except Exception as exc:
+        logger.warning(
+            "Could not read FastLoad provenance %s (%s); skipping skeleton before scene mutation",
+            attr_name,
+            exc,
+        )
+        return None
+    if not isinstance(local_to_source, (list, tuple)):
+        logger.warning(
+            "FastLoad provenance %s is not an integer array; skipping skeleton before scene mutation",
+            attr_name,
+        )
+        return None
+    if len(local_to_source) != local_vertex_count:
+        logger.warning(
+            "FastLoad provenance %s has %d rows for %d local vertices; "
+            "skipping skeleton before scene mutation",
+            attr_name,
+            len(local_to_source),
+            local_vertex_count,
+        )
+        return None
+
+    source_row_count = len(source_skin_indices)
+    resolved_sources: list[int] = []
+    for local_index, source_value in enumerate(local_to_source):
+        if isinstance(source_value, bool) or not isinstance(source_value, (int, float)):
+            logger.warning(
+                "FastLoad provenance %s[%d] is not a finite integer; "
+                "skipping skeleton before scene mutation",
+                attr_name,
+                local_index,
+            )
+            return None
+        numeric_source = float(source_value)
+        if not math.isfinite(numeric_source) or not numeric_source.is_integer():
+            logger.warning(
+                "FastLoad provenance %s[%d] is not a finite integer; "
+                "skipping skeleton before scene mutation",
+                attr_name,
+                local_index,
+            )
+            return None
+        source_index = int(numeric_source)
+        if source_index < 0 or source_index >= source_row_count:
+            logger.warning(
+                "FastLoad provenance %s[%d]=%d is outside %d PMX skin rows; "
+                "skipping skeleton before scene mutation",
+                attr_name,
+                local_index,
+                source_index,
+                source_row_count,
+            )
+            return None
+        resolved_sources.append(source_index)
+    if len(set(resolved_sources)) != len(resolved_sources):
+        logger.warning(
+            "FastLoad provenance %s contains duplicate source rows; "
+            "skipping skeleton before scene mutation",
+            attr_name,
+        )
+        return None
+
+    return (
+        [source_skin_indices[source] for source in resolved_sources],
+        [source_skin_weights[source] for source in resolved_sources],
+    )
 
 
 def _tag_fast_joint_metadata(
