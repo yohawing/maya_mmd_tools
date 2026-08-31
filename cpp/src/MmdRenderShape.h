@@ -192,6 +192,8 @@ public:
     void clearMaterialBindingDiagnostics();
     void recordRenderItemWitness(
         const std::vector<mmd::MmdRenderQueueEntry>& entries);
+    /** Record a fallback reason and return true only when it changed. */
+    bool recordRenderFallbackReason(const std::string& reason);
     void recordMaterialBindingDiagnostic(
         const MaterialBindingDiagnostic& diagnostic);
     void recordGeometryWitness(std::size_t vertexCount,
@@ -216,6 +218,7 @@ private:
     std::size_t geometryWitnessVertexCount_ = 0U;
     std::size_t geometryWitnessIndexCount_ = 0U;
     std::string geometryWitnessDescriptorSummary_;
+    std::string renderFallbackReason_;
     std::vector<MaterialBindingDiagnostic> materialBindingDiagnostics_;
 };
 
@@ -223,7 +226,8 @@ private:
  * Diagnostic command for commandPort/GUI smoke.
  *
  * ``mmdRenderWitness -node <shape>`` returns ``pending`` until the custom
- * geometry override has created its render items, then returns the pass order.
+ * geometry override has created its render items, a transient ``failed``
+ * reason when it falls back, then the pass order after recovery.
  * Add ``-json true`` for deterministic structured per-item material-binding
  * diagnostics while preserving the human-readable result by default.
  */

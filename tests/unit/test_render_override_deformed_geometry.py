@@ -68,6 +68,41 @@ def test_proxy_ready_is_published_only_after_committed_geometry():
     assert "shape_->clearRenderItemWitness();" in populate
 
 
+def test_render_shape_reports_transient_fallback_reason():
+    header = SHAPE_HEADER.read_text(encoding="utf-8")
+    source = SHAPE_SOURCE.read_text(encoding="utf-8")
+
+    assert "bool recordRenderFallbackReason(const std::string& reason);" in header
+    assert "std::string renderFallbackReason_;" in header
+    assert 'return "failed reason=" + renderFallbackReason_;' in source
+    assert 'jsonEscape(status) << ",\\\"fallbackReason\\\":"' in source
+    assert "renderFallbackReason_.clear();" in source
+
+    clear = source[
+        source.index("void MmdRenderShape::clearRenderItemWitness") : source.index(
+            "void MmdRenderShape::clearMaterialBindingDiagnostics"
+        )
+    ]
+    assert "renderFallbackReason_" not in clear
+
+    success = source[
+        source.index("void MmdRenderShape::recordRenderItemWitness") : source.index(
+            "bool MmdRenderShape::recordRenderFallbackReason"
+        )
+    ]
+    assert "renderFallbackReason_.clear();" in success
+
+    failure = source[
+        source.index("bool MmdRenderShape::recordRenderFallbackReason") : source.index(
+            "void MmdRenderShape::recordMaterialBindingDiagnostic"
+        )
+    ]
+    assert "clearRenderItemWitness();" in failure
+    assert "const bool changed = renderFallbackReason_ != reason;" in failure
+    assert "renderFallbackReason_ = reason;" in failure
+    assert "return changed;" in failure
+
+
 def test_wireframe_item_uses_mesh_object_selection_without_component_mapping():
     shape = SHAPE_SOURCE.read_text(encoding="utf-8")
     override = OVERRIDE_SOURCE.read_text(encoding="utf-8")
@@ -91,6 +126,7 @@ def test_update_dg_reads_evaluated_mesh_and_fails_closed():
     assert "getVertexNormals(true, normals, MSpace::kObject)" in shape
     assert "source mapping index exceeds input mesh vertex count" in shape
     assert "geometryValid_ = false;" in shape
+    assert "recordRenderFallbackReason(reason);" in shape
     assert "staticPositions_" in shape
     assert "staticNormals_" in shape
     assert "geometry_.positions = std::move(nextPositions);" in shape
@@ -105,6 +141,15 @@ def test_update_dg_reads_evaluated_mesh_and_fails_closed():
     assert "shape_->useStaticGeometry();" in update_dg
     assert "disableItems(list);" in override
     assert "if (!shape_->hasValidGeometry())" in override
+
+    evaluated_update = shape[
+        shape.index("bool MmdRenderShape::updateEvaluatedMesh") : shape.index(
+            "void MmdRenderShape::useStaticGeometry"
+        )
+    ]
+    assert "recordRenderFallbackReason(reason);" in evaluated_update
+    assert "if (reasonChanged)" in evaluated_update
+    assert "input mesh contains a zero-length normal" in evaluated_update
 
 
 def test_static_geometry_path_keeps_queue_streams_unchanged():

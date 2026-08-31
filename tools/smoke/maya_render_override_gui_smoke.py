@@ -77,6 +77,7 @@ def run_probe(log_path: str, report_path: str, out_dir: str, model: str,
               vp2_backend: str = "dx11") -> None:
     """Execute the GUI-only side through commandPort and always emit JSON."""
     import maya.cmds as cmds
+    from mmd_tools.io.cpp_fast_importer import _require_dx11_for_vp2_ownership
 
     log_file, report_file, output_dir = Path(log_path), Path(report_path), Path(out_dir)
     report: dict[str, Any] = {
@@ -98,8 +99,17 @@ def run_probe(log_path: str, report_path: str, out_dir: str, model: str,
         if vp2_backend == "dx11":
             if "DirectX V.11" not in device and "DirectX11" not in device:
                 raise RuntimeError(f"DX11 VP2 device required, got: {device}")
+            _require_dx11_for_vp2_ownership(cmds)
+            report["vp2Preflight"] = "accepted"
         elif "OpenGL" not in device:
             raise RuntimeError(f"OpenGL VP2 device required, got: {device}")
+        else:
+            try:
+                _require_dx11_for_vp2_ownership(cmds)
+            except RuntimeError as exc:
+                report["vp2Preflight"] = str(exc)
+            else:
+                raise RuntimeError("OpenGL VP2 preflight did not reject the device")
 
         result = cmds.mmdFastLoad(
             file=str(Path(model).resolve()), name="render_override_gui_smoke",
@@ -171,6 +181,10 @@ def run_probe(log_path: str, report_path: str, out_dir: str, model: str,
         else:
             report["checks"].update({
                 "openGL": True,
+                "pythonVp2PreflightRejected": (
+                    "requires DirectX 11" in report["vp2Preflight"]
+                    and "restart Maya" in report["vp2Preflight"]
+                ),
                 "nativeDrawSkippedOnUnsupportedApi": not witness.startswith("ready"),
                 "sourceVisibleOnUnsupportedApi": not source_hidden,
             })

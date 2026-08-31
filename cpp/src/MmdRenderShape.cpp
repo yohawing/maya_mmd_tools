@@ -627,14 +627,16 @@ bool MmdRenderShape::setMaterialSplitGeometry(
 bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
 {
     auto reject = [this](const std::string& reason) {
-        MGlobal::displayError(
-            MString("[mmdRenderShape] Evaluated mesh rejected: ") +
-            reason.c_str());
+        const bool reasonChanged = recordRenderFallbackReason(reason);
+        if (reasonChanged) {
+            MGlobal::displayError(
+                MString("[mmdRenderShape] Evaluated mesh rejected: ") +
+                reason.c_str());
+        }
         // Keep the previous streams intact, but make them unavailable to the
         // override until a later DG update supplies a valid mesh (or the
         // input is disconnected and static geometry is explicitly restored).
         geometryValid_ = false;
-        clearRenderItemWitness();
         clearMaterialBindingDiagnostics();
         return false;
     };
@@ -963,6 +965,15 @@ void MmdRenderShape::recordRenderItemWitness(
 {
     renderItemWitnessEntries_ = entries;
     renderItemWitnessValid_ = true;
+    renderFallbackReason_.clear();
+}
+
+bool MmdRenderShape::recordRenderFallbackReason(const std::string& reason)
+{
+    const bool changed = renderFallbackReason_ != reason;
+    clearRenderItemWitness();
+    renderFallbackReason_ = reason;
+    return changed;
 }
 
 void MmdRenderShape::recordMaterialBindingDiagnostic(
@@ -984,6 +995,9 @@ void MmdRenderShape::recordGeometryWitness(std::size_t vertexCount,
 std::string MmdRenderShape::renderItemWitness() const
 {
     if (!renderItemWitnessValid_) {
+        if (!renderFallbackReason_.empty()) {
+            return "failed reason=" + renderFallbackReason_;
+        }
         return "pending";
     }
 
@@ -1012,9 +1026,13 @@ std::string MmdRenderShape::renderItemWitness() const
 std::string MmdRenderShape::materialBindingDiagnosticsJson() const
 {
     std::ostringstream stream;
+    const char* status = renderItemWitnessValid_
+                             ? "ready"
+                             : (renderFallbackReason_.empty() ? "pending"
+                                                              : "failed");
     stream << "{\"version\":1,\"status\":"
-           << jsonEscape(renderItemWitnessValid_ ? "ready" : "pending")
-           << ",\"items\":[";
+           << jsonEscape(status) << ",\"fallbackReason\":"
+           << jsonEscape(renderFallbackReason_) << ",\"items\":[";
     for (std::size_t index = 0; index < materialBindingDiagnostics_.size();
          ++index) {
         if (index != 0U) {

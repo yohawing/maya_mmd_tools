@@ -522,8 +522,12 @@ void MmdRenderGeometryOverride::updateRenderItems(
     MTextureManager* textureManager =
         renderer ? renderer->getTextureManager() : nullptr;
     if (!shaderManager) {
-        MGlobal::displayWarning(
-            "[mmdRenderOverride] Maya shader manager is unavailable.");
+        if (shape_->recordRenderFallbackReason(
+                "Maya shader manager is unavailable")) {
+            MGlobal::displayError(
+                "[mmdRenderOverride] Maya shader manager is unavailable. "
+                "Showing the gray source-mesh fallback.");
+        }
         shape_->clearRenderItemWitness();
         return;
     }
@@ -535,6 +539,12 @@ void MmdRenderGeometryOverride::updateRenderItems(
             list, renderItemName(queueGeometry, queueIndex, false, true),
             MGeometry::kWireframe, MRenderItem::NonMaterialSceneItem);
         if (!wireItem) {
+            if (shape_->recordRenderFallbackReason(
+                    "could not create a native wireframe render item")) {
+                MGlobal::displayError(
+                    "[mmdRenderOverride] Could not create a native wireframe "
+                    "render item. Showing the gray source-mesh fallback.");
+            }
             return false;
         }
         if (!wireShader_) {
@@ -542,8 +552,12 @@ void MmdRenderGeometryOverride::updateRenderItems(
                 MShaderManager::k3dSolidShader);
         }
         if (!wireShader_ || !wireItem->setShader(wireShader_)) {
-            MGlobal::displayWarning(
-                "[mmdRenderOverride] Native wireframe shader is unavailable.");
+            if (shape_->recordRenderFallbackReason(
+                    "native wireframe shader is unavailable")) {
+                MGlobal::displayError(
+                    "[mmdRenderOverride] Native wireframe shader is unavailable. "
+                    "Showing the gray source-mesh fallback.");
+            }
             return false;
         }
         // Object picking uses Maya's ordinary mesh mask.  No component
@@ -635,6 +649,14 @@ void MmdRenderGeometryOverride::updateRenderItems(
             itemType);
         if (!item) {
             shape_->recordMaterialBindingDiagnostic(diagnostic);
+            if (shape_->recordRenderFallbackReason(
+                    "could not create material render item " +
+                    diagnostic.renderItemName)) {
+                MGlobal::displayError(
+                    MString("[mmdRenderOverride] Could not create material render item ") +
+                    diagnostic.renderItemName.c_str() +
+                    ". Showing the gray source-mesh fallback.");
+            }
             return false;
         }
         MHWRender::MShaderInstance* materialShader = nullptr;
@@ -654,9 +676,14 @@ void MmdRenderGeometryOverride::updateRenderItems(
         }
         if (!materialShader) {
             shape_->recordMaterialBindingDiagnostic(diagnostic);
-            MGlobal::displayWarning(
-                MString("[mmdRenderOverride] Native MMD shader is unavailable: ") +
-                technique + " path=" + shaderPath.c_str());
+            if (shape_->recordRenderFallbackReason(
+                    "native MMD shader is unavailable: " +
+                    std::string(technique) + " path=" + shaderPath)) {
+                MGlobal::displayError(
+                    MString("[mmdRenderOverride] Native MMD shader is unavailable: ") +
+                    technique + " path=" + shaderPath.c_str() +
+                    ". Showing the gray source-mesh fallback.");
+            }
             disableItems(list);
             shape_->clearRenderItemWitness();
             return false;
@@ -667,9 +694,13 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.parameterBindingSuccess = parameterBindingSuccess;
         if (!parameterBindingSuccess) {
             shape_->recordMaterialBindingDiagnostic(diagnostic);
-            MGlobal::displayWarning(
-                MString("[mmdRenderOverride] Failed to bind material parameters to ") +
-                item->name());
+            if (shape_->recordRenderFallbackReason(
+                    "failed to bind material parameters to " +
+                    std::string(item->name().asChar()))) {
+                MGlobal::displayError(
+                    MString("[mmdRenderOverride] Failed to bind material parameters to ") +
+                    item->name() + ". Showing the gray source-mesh fallback.");
+            }
             disableItems(list);
             shape_->clearRenderItemWitness();
             return false;
@@ -678,9 +709,13 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.bindingSuccess = diagnostic.shaderAssignmentSuccess;
         shape_->recordMaterialBindingDiagnostic(diagnostic);
         if (!diagnostic.shaderAssignmentSuccess) {
-            MGlobal::displayWarning(
-                MString("[mmdRenderOverride] Failed to bind material shader to ") +
-                item->name());
+            if (shape_->recordRenderFallbackReason(
+                    "failed to bind material shader to " +
+                    std::string(item->name().asChar()))) {
+                MGlobal::displayError(
+                    MString("[mmdRenderOverride] Failed to bind material shader to ") +
+                    item->name() + ". Showing the gray source-mesh fallback.");
+            }
             disableItems(list);
             shape_->clearRenderItemWitness();
             return false;
@@ -774,9 +809,12 @@ void MmdRenderGeometryOverride::populateGeometry(
     const MHWRender::MVertexBufferDescriptorList& descriptors =
         requirements.vertexRequirements();
     auto failClosed = [&](const char* reason) {
-        MGlobal::displayError(
-            MString("[mmdRenderOverride] Geometry population failed: ") +
-            reason);
+        if (shape_->recordRenderFallbackReason(
+                std::string("geometry population failed: ") + reason)) {
+            MGlobal::displayError(
+                MString("[mmdRenderOverride] Geometry population failed: ") +
+                reason);
+        }
         disableItems(renderItems);
         shape_->clearRenderItemWitness();
     };
@@ -950,8 +988,11 @@ void MmdRenderGeometryOverride::populateGeometry(
     // fail closed when geometry population is skipped or fails.
     shape_->recordRenderItemWitness(geometry.renderQueue);
     if (!shape_->setProxyReady(true)) {
-        MGlobal::displayError(
-            "[mmdRenderOverride] Could not publish source visibility state.");
+        if (shape_->recordRenderFallbackReason(
+                "could not publish source visibility state")) {
+            MGlobal::displayError(
+                "[mmdRenderOverride] Could not publish source visibility state.");
+        }
         disableItems(renderItems);
         shape_->clearRenderItemWitness();
     }

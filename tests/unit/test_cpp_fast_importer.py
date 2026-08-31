@@ -247,6 +247,36 @@ class TestCppFastImportRouting(unittest.TestCase):
             },
         )
 
+    @patch(
+        "mmd_tools.io.mmd_importer.fast_import",
+        side_effect=RuntimeError(
+            "C++ VP2 RenderOverride requires DirectX 11; restart Maya"
+        ),
+    )
+    def test_native_vp2_device_error_reaches_the_ui_import_boundary(
+        self,
+        mock_fast: MagicMock,
+    ):
+        """The actionable device reason must survive importer error wrapping."""
+        options = {
+            "scale": 1.0,
+            "use_cpp_fast_load": True,
+            "use_cpp_vp2_ownership": True,
+        }
+
+        with self.assertRaisesRegex(
+            MMDImportException,
+            r"requires DirectX 11; restart Maya",
+        ):
+            import_mmd_file("model.pmx", options=options)
+
+        mock_fast.assert_called_once()
+        self.assertEqual(
+            options["profile"]["native_import"]["reason"],
+            "fast importer error: C++ VP2 RenderOverride requires DirectX 11; "
+            "restart Maya",
+        )
+
     @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
     @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
     def test_native_vp2_request_with_fast_load_disabled_is_fail_closed(
@@ -1329,6 +1359,110 @@ class TestFastMorphMetadata(unittest.TestCase):
             vp2Ownership=True,
         )
         root_metadata.assert_called_once()
+
+    @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
+    @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
+    def test_vp2_ownership_rejects_confirmed_opengl_before_fast_load(
+        self,
+        _setup,
+        candidates,
+    ):
+        """OpenGL must explain the required preference instead of showing clay."""
+        import sys
+
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+        candidates.return_value = [plugin_path]
+        cmds_mod = sys.modules["maya.cmds"]
+        with patch.object(Path, "exists", return_value=True), patch.object(
+            cmds_mod, "loadPlugin", create=True
+        ), patch.object(
+            cmds_mod,
+            "ogs",
+            create=True,
+            return_value="API : OpenGL V.4.6",
+        ), patch.object(
+            cmds_mod,
+            "mmdFastLoad",
+            create=True,
+        ) as fast_load:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"requires DirectX 11.*Display > Viewport 2\.0.*restart Maya",
+            ):
+                fast_import("model.pmx", vp2_ownership=True)
+
+        fast_load.assert_not_called()
+
+    @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
+    @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
+    def test_vp2_ownership_rejects_any_confirmed_non_dx11_api(
+        self,
+        _setup,
+        candidates,
+    ):
+        """A confirmed Metal device must not fall through to a gray proxy."""
+        import sys
+
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+        candidates.return_value = [plugin_path]
+        cmds_mod = sys.modules["maya.cmds"]
+        for device_info in (
+            ["Adapter : Apple GPU", "API : Metal"],
+            "API: Metal",
+            ["Adapter supports DX11 translation", "API : Metal"],
+        ):
+            with self.subTest(device_info=device_info), patch.object(
+                Path, "exists", return_value=True
+            ), patch.object(
+                cmds_mod, "loadPlugin", create=True
+            ), patch.object(
+                cmds_mod, "ogs", create=True, return_value=device_info
+            ), patch.object(
+                cmds_mod, "mmdFastLoad", create=True
+            ) as fast_load:
+                with self.assertRaisesRegex(
+                    RuntimeError, r"requires DirectX 11.*Metal"
+                ):
+                    fast_import("model.pmx", vp2_ownership=True)
+
+            fast_load.assert_not_called()
+
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_root_metadata")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials")
+    @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
+    @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
+    def test_normal_fast_load_is_not_rejected_on_opengl(
+        self,
+        _setup,
+        candidates,
+        basic_materials,
+        root_metadata,
+    ):
+        """The device guard applies only to explicit RenderOverride ownership."""
+        import sys
+
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+        candidates.return_value = [plugin_path]
+        basic_materials.return_value = None
+        cmds_mod = sys.modules["maya.cmds"]
+        with patch.object(Path, "exists", return_value=True), patch.object(
+            cmds_mod, "loadPlugin", create=True
+        ), patch.object(
+            cmds_mod,
+            "ogs",
+            create=True,
+            return_value="API : OpenGL V.4.6",
+        ) as ogs, patch.object(
+            cmds_mod,
+            "mmdFastLoad",
+            create=True,
+            return_value=["root", "mesh"],
+        ) as fast_load:
+            result = fast_import("model.pmx")
+
+        self.assertEqual(result, "root")
+        ogs.assert_not_called()
+        fast_load.assert_called_once()
 
     @patch("mmd_tools.io.cpp_fast_importer._apply_fast_root_metadata")
     @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials")

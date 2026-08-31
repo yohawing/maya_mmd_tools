@@ -99,6 +99,70 @@ def _setup_plugin_directory(plugin_dir: Path) -> None:
     cpp_plugin_locator.prepare_plugin_directory(plugin_dir / "mmd_tools_cpp.mll")
 
 
+def _require_dx11_for_vp2_ownership(cmds) -> None:
+    """Reject a confirmed OpenGL VP2 device before native ownership import.
+
+    ``mmdRenderShape`` currently owns draw data only on DirectX 11.  Unknown
+    device information is deliberately allowed so non-Maya test doubles and
+    Maya sessions where ``ogs`` is unavailable retain the existing behavior.
+    """
+    ogs = getattr(cmds, "ogs", None)
+    if not callable(ogs):
+        return
+
+    try:
+        raw = ogs(deviceInformation=True)
+    except Exception:
+        return
+
+    if isinstance(raw, str):
+        device_lines = raw.splitlines()
+    elif isinstance(raw, (list, tuple)) and all(
+        isinstance(part, str) for part in raw
+    ):
+        device_lines = [
+            line for part in raw for line in part.splitlines()
+        ]
+    else:
+        # In particular, do not interpret MagicMock string representations as
+        # real Maya device diagnostics.
+        return
+
+    api_line = next(
+        (
+            line.strip()
+            for line in device_lines
+            if line.strip().lower().replace(" ", "").startswith("api:")
+        ),
+        "",
+    )
+    api_lowered = api_line.lower()
+    if any(
+        token in api_lowered
+        for token in ("directx v.11", "directx11", "direct3d11", "dx11", "d3d11")
+    ):
+        return
+    device_text = " ".join(device_lines)
+    if api_line or any(
+        token in device_text.lower()
+        for token in (
+            "opengl",
+            "open gl",
+            "openglcore",
+            "glcore",
+            "core profile",
+            "virtualdevicegl",
+        )
+    ):
+        active_api = (api_line or "OpenGL").rstrip(".")
+        raise RuntimeError(
+            "C++ VP2 RenderOverride requires DirectX 11, but Maya is using "
+            f"{active_api}. "
+            "In Maya Preferences, open Display > Viewport 2.0, set Rendering "
+            "engine to DirectX 11, then restart Maya before importing the model."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -181,6 +245,9 @@ def fast_import(
             "cmds.mmdFastLoad not found after plugin load – falling back."
         )
         return None
+
+    if vp2_ownership:
+        _require_dx11_for_vp2_ownership(cmds)
 
     # --- run fast load ----------------------------------------------------
     try:

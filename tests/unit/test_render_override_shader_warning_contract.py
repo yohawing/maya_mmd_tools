@@ -1,4 +1,4 @@
-"""Contracts for non-fatal native material shader setup failures."""
+"""Contracts for visible native RenderOverride fallback diagnostics."""
 
 from pathlib import Path
 
@@ -12,20 +12,26 @@ SOURCE = (
 FAST_LOAD_SOURCE = SOURCE.with_name("mmdFastLoad.cpp")
 
 
-def test_shader_setup_failures_warn_without_becoming_import_errors() -> None:
-    """A created render shape must survive shader setup failures as a warning."""
+def test_shader_setup_failures_report_gray_fallback_as_errors() -> None:
+    """Fatal shader setup failures must explain the visible gray fallback."""
     source = SOURCE.read_text(encoding="utf-8")
     update_items = source[source.index("void MmdRenderGeometryOverride::updateRenderItems(") :]
     update_items = update_items[
         : update_items.index("void MmdRenderGeometryOverride::populateGeometry(")
     ]
 
-    assert "MGlobal::displayError(" not in update_items
-    assert update_items.count("MGlobal::displayWarning(") == 4
+    assert update_items.count("MGlobal::displayError(") == 7
+    assert "MGlobal::displayWarning(" not in update_items
     assert "Maya shader manager is unavailable." in update_items
+    assert "Could not create a native wireframe " in update_items
+    assert "render item. Showing the gray source-mesh fallback." in update_items
+    assert "Native wireframe shader is unavailable." in update_items
+    assert "Could not create material render item" in update_items
     assert "Native MMD shader is unavailable:" in update_items
     assert "Failed to bind material parameters to" in update_items
     assert "Failed to bind material shader to" in update_items
+    assert update_items.count("Showing the gray source-mesh fallback.") == 7
+    assert update_items.count("recordRenderFallbackReason(") == 7
 
 
 def test_geometry_population_failures_remain_errors() -> None:
