@@ -27,6 +27,20 @@ struct MmdUvSeamWeldGeometry {
     std::vector<std::vector<uint32_t>> morphSignatures;
 };
 
+// Optional parse counters for callers that expose loading diagnostics.
+// A successful load performs one geometry and one non-geometry PMX parse.
+struct MmdUvSeamWeldGeometryLoadDiagnostics {
+    unsigned int geometryParseCount = 0;
+    unsigned int nonGeometryParseCount = 0;
+};
+
+// Loads every Maya-independent payload that contributes to weld equivalence.
+// The PMX bytes are parsed once for geometry and once for sparse morph data.
+bool loadMmdUvSeamWeldGeometry(
+    const std::vector<uint8_t>& bytes,
+    MmdUvSeamWeldGeometry& geometry,
+    MmdUvSeamWeldGeometryLoadDiagnostics* diagnostics = nullptr);
+
 struct MmdUvSeamWeldPlan {
     std::vector<int> sourceToLocal;
     std::vector<uint32_t> localToSource;

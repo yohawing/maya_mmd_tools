@@ -35,24 +35,15 @@
 #include <maya/MStringArray.h>
 #include <maya/MVectorArray.h>
 
-#include "mmd_runtime.h"
-#include "third_party/json.hpp"
-
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cctype>
-#include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <fstream>
 #include <filesystem>
 #include <limits>
 #include <string>
-#include <unordered_map>
 #include <vector>
-
-using nlohmann::json;
 
 namespace {
 
@@ -97,236 +88,6 @@ std::vector<uint8_t> readBinaryFile(const std::string& path)
         return {};
     }
     return bytes;
-}
-
-std::vector<float> takeFloatBuffer(mmd_runtime_ffi_byte_buffer_t buffer)
-{
-    std::vector<float> result;
-    if (buffer.data && buffer.len >= sizeof(float)) {
-        const size_t count = buffer.len / sizeof(float);
-        result.resize(count);
-        std::memcpy(result.data(), buffer.data, count * sizeof(float));
-    }
-    mmd_runtime_byte_buffer_free(buffer);
-    return result;
-}
-
-std::vector<uint32_t> takeU32Buffer(mmd_runtime_ffi_byte_buffer_t buffer)
-{
-    std::vector<uint32_t> result;
-    if (buffer.data && buffer.len >= sizeof(uint32_t)) {
-        const size_t count = buffer.len / sizeof(uint32_t);
-        result.resize(count);
-        std::memcpy(result.data(), buffer.data, count * sizeof(uint32_t));
-    }
-    mmd_runtime_byte_buffer_free(buffer);
-    return result;
-}
-
-std::vector<uint8_t> takeU8Buffer(mmd_runtime_ffi_byte_buffer_t buffer)
-{
-    std::vector<uint8_t> result;
-    if (buffer.data && buffer.len > 0) {
-        result.assign(buffer.data, buffer.data + buffer.len);
-    }
-    mmd_runtime_byte_buffer_free(buffer);
-    return result;
-}
-
-json takeJsonBuffer(mmd_runtime_ffi_byte_buffer_t buffer)
-{
-    json result;
-    if (buffer.data && buffer.len > 0) {
-        const char* begin = reinterpret_cast<const char*>(buffer.data);
-        result = json::parse(begin, begin + buffer.len, nullptr, false);
-    }
-    mmd_runtime_byte_buffer_free(buffer);
-    return result;
-}
-
-void appendDoubleBits(std::vector<uint32_t>& words, double value)
-{
-    uint64_t bits = 0;
-    static_assert(sizeof(bits) == sizeof(value), "double and uint64_t must match");
-    std::memcpy(&bits, &value, sizeof(bits));
-    words.push_back(static_cast<uint32_t>(bits));
-    words.push_back(static_cast<uint32_t>(bits >> 32U));
-}
-
-bool buildMorphSignatures(const json& nonGeometry, size_t sourceCount,
-                          std::vector<std::vector<uint32_t>>& signatures)
-{
-    signatures.assign(sourceCount, {});
-    if (!nonGeometry.is_object() || !nonGeometry.contains("morphs") ||
-        !nonGeometry["morphs"].is_array()) {
-        return false;
-    }
-
-    const json& morphs = nonGeometry["morphs"];
-    for (size_t morphIndex = 0; morphIndex < morphs.size(); ++morphIndex) {
-        const json& morph = morphs[morphIndex];
-        if (!morph.is_object()) {
-            return false;
-        }
-
-        const std::string type = morph.value("type", std::string());
-        const char* offsetsField = nullptr;
-        const char* valueField = nullptr;
-        size_t componentCount = 0;
-        uint32_t morphKind = 0;
-        if (type == "vertex") {
-            offsetsField = "vertexOffsets";
-            valueField = "position";
-            componentCount = 3;
-            morphKind = 1;
-        } else if (type == "uv") {
-            offsetsField = "uvOffsets";
-            valueField = "uv";
-            componentCount = 4;
-            morphKind = 3;
-        } else if (type == "additionalUv") {
-            offsetsField = "additionalUvOffsets";
-            valueField = "uv";
-            componentCount = 4;
-            morphKind = 4;
-        } else {
-            continue;
-        }
-
-        const auto offsetsIt = morph.find(offsetsField);
-        if (offsetsIt == morph.end() || !offsetsIt->is_array()) {
-            return false;
-        }
-
-        std::unordered_map<uint32_t, std::array<double, 4>> accumulated;
-        std::unordered_map<uint32_t, uint32_t> additionalUvKinds;
-        for (const json& offset : *offsetsIt) {
-            if (!offset.is_object()) {
-                return false;
-            }
-            const auto sourceIt = offset.find("vertexIndex");
-            if (sourceIt == offset.end() || !sourceIt->is_number_integer()) {
-                return false;
-            }
-            const int64_t sourceValue = sourceIt->get<int64_t>();
-            if (sourceValue < 0 || static_cast<size_t>(sourceValue) >= sourceCount) {
-                return false;
-            }
-            const uint32_t sourceIndex = static_cast<uint32_t>(sourceValue);
-
-            uint32_t offsetKind = morphKind;
-            if (type == "additionalUv") {
-                const auto uvIndexIt = offset.find("uvIndex");
-                if (uvIndexIt == offset.end() || !uvIndexIt->is_number_integer()) {
-                    return false;
-                }
-                const int64_t uvIndex = uvIndexIt->get<int64_t>();
-                if (uvIndex < 0 || uvIndex > 3) {
-                    return false;
-                }
-                offsetKind += static_cast<uint32_t>(uvIndex);
-                const auto inserted = additionalUvKinds.emplace(sourceIndex, offsetKind);
-                if (!inserted.second && inserted.first->second != offsetKind) {
-                    return false;
-                }
-            }
-
-            const auto valuesIt = offset.find(valueField);
-            if (valuesIt == offset.end() || !valuesIt->is_array() ||
-                valuesIt->size() != componentCount) {
-                return false;
-            }
-            std::array<double, 4>& values = accumulated[sourceIndex];
-            for (size_t component = 0; component < componentCount; ++component) {
-                if (!(*valuesIt)[component].is_number()) {
-                    return false;
-                }
-                const double value = (*valuesIt)[component].get<double>();
-                if (!std::isfinite(value)) {
-                    return false;
-                }
-                values[component] += value;
-                if (!std::isfinite(values[component])) {
-                    return false;
-                }
-            }
-        }
-
-        for (const auto& entry : accumulated) {
-            const uint32_t sourceIndex = entry.first;
-            const std::array<double, 4>& values = entry.second;
-            bool nonZero = false;
-            for (size_t component = 0; component < componentCount; ++component) {
-                nonZero = nonZero || values[component] != 0.0;
-            }
-            if (!nonZero) {
-                continue;
-            }
-
-            std::vector<uint32_t>& signature = signatures[sourceIndex];
-            signature.push_back(0xC0FFEE02U);
-            signature.push_back(static_cast<uint32_t>(morphIndex));
-            signature.push_back(
-                type == "additionalUv" ? additionalUvKinds[sourceIndex] : morphKind);
-            signature.push_back(static_cast<uint32_t>(componentCount));
-            for (size_t component = 0; component < componentCount; ++component) {
-                const double normalized = values[component] == 0.0 ? 0.0 : values[component];
-                appendDoubleBits(signature, normalized);
-            }
-        }
-    }
-    return true;
-}
-
-bool loadRawGeometry(const std::vector<uint8_t>& bytes, RawGeometry& raw,
-                     WeldProfile* profile = nullptr)
-{
-    if (bytes.empty()) {
-        return false;
-    }
-
-    mmd_runtime_pmx_geometry_t* geometry =
-        mmd_runtime_pmx_geometry_create(bytes.data(), bytes.size());
-    if (profile) {
-        profile->geometryParseCount += 1U;
-    }
-    if (!geometry) {
-        return false;
-    }
-
-    raw.positions = takeFloatBuffer(mmd_runtime_pmx_geometry_positions_buffer(geometry));
-    raw.skinIndices = takeU32Buffer(mmd_runtime_pmx_geometry_skin_indices_buffer(geometry));
-    raw.skinWeights = takeFloatBuffer(mmd_runtime_pmx_geometry_skin_weights_buffer(geometry));
-    raw.edgeScale = takeFloatBuffer(mmd_runtime_pmx_geometry_edge_scale_buffer(geometry));
-    raw.sdefEnabled = takeU8Buffer(mmd_runtime_pmx_geometry_sdef_enabled_buffer(geometry));
-    raw.sdefC = takeFloatBuffer(mmd_runtime_pmx_geometry_sdef_c_buffer(geometry));
-    raw.sdefR0 = takeFloatBuffer(mmd_runtime_pmx_geometry_sdef_r0_buffer(geometry));
-    raw.sdefR1 = takeFloatBuffer(mmd_runtime_pmx_geometry_sdef_r1_buffer(geometry));
-    raw.sdefRw0 = takeFloatBuffer(mmd_runtime_pmx_geometry_sdef_rw0_buffer(geometry));
-    raw.sdefRw1 = takeFloatBuffer(mmd_runtime_pmx_geometry_sdef_rw1_buffer(geometry));
-    raw.qdefEnabled = takeU8Buffer(mmd_runtime_pmx_geometry_qdef_enabled_buffer(geometry));
-
-    const size_t additionalUvCount =
-        mmd_runtime_pmx_geometry_additional_uv_count(geometry);
-    raw.additionalUvs.reserve(additionalUvCount);
-    for (size_t i = 0; i < additionalUvCount; ++i) {
-        raw.additionalUvs.push_back(takeFloatBuffer(
-            mmd_runtime_pmx_geometry_additional_uvs_buffer(geometry, i)));
-    }
-
-    mmd_runtime_pmx_geometry_free(geometry);
-
-    if (raw.positions.empty()) {
-        return false;
-    }
-
-    const size_t sourceCount = raw.positions.size() / 3U;
-    if (profile) {
-        profile->nonGeometryParseCount += 1U;
-    }
-    const json nonGeometry = takeJsonBuffer(
-        mmd_runtime_parse_pmx_non_geometry_json(bytes.data(), bytes.size()));
-    return buildMorphSignatures(nonGeometry, sourceCount, raw.morphSignatures);
 }
 
 bool readSourceVertexIndices(const MObject& transform, size_t vertexCount,
@@ -1023,7 +784,10 @@ MStatus MmdWeldUvSeamVertices::doIt(const MArgList& args)
     const std::vector<uint8_t> bytes = readBinaryFile(pmxPath.asUTF8());
     weldProfile.pmxReadCount = 1U;
     RawGeometry raw;
-    const bool rawLoaded = loadRawGeometry(bytes, raw, &weldProfile);
+    MmdUvSeamWeldGeometryLoadDiagnostics loadDiagnostics;
+    const bool rawLoaded = loadMmdUvSeamWeldGeometry(bytes, raw, &loadDiagnostics);
+    weldProfile.geometryParseCount = loadDiagnostics.geometryParseCount;
+    weldProfile.nonGeometryParseCount = loadDiagnostics.nonGeometryParseCount;
     weldProfile.preparationSeconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - preparationStart).count();
 
