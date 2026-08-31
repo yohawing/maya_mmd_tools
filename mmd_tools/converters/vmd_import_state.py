@@ -21,6 +21,12 @@ from ..core.mmd_control_rig_motion import (
     control_rig_edit_ik_enabled_plugs_for_model,
     control_rig_edit_routes_for_joints,
 )
+from ..adapters.native_vmd_clear import (
+    NativeVmdClearAdapter,
+    NativeVmdClearPrepareError,
+    NativeVmdClearUnsupportedError,
+    NativeVmdClearUnavailableError,
+)
 
 _ATTR_VMD_BIND_TRANSLATE = "mmd_vmd_bind_translate"
 _CLEARABLE_PHYSICAL_ROUTE_TYPES = frozenset(
@@ -230,6 +236,30 @@ def clear_existing_motion(
     context = _resolve_import_state_context(converter_or_context)
     cleared = 0
     owned_motion_nodes = set()
+    # Native clearing is allowed only for the normal in-place clear.  The
+    # Control Rig transaction passes ``preserve_curve_nodes=True`` because it
+    # still owns the exact curve/connection-preserving path.
+    native_plugs = set() if not preserve_curve_nodes else None
+    native_clear_specs = []
+    native_unresolved = set()
+
+    def clear_preserved_attrs(node, attrs):
+        """Collect safe-route plugs, or keep the transaction's Python path."""
+        attrs = tuple(attrs)
+        if native_plugs is None:
+            return cut_keyable_attrs(
+                node,
+                attrs,
+                preserve_curve_nodes=True,
+            )
+        native_clear_specs.append((node, attrs))
+        return cut_keyable_attrs(
+            node,
+            attrs,
+            preserve_curve_nodes=True,
+            native_plugs=native_plugs,
+            native_unresolved=native_unresolved,
+        )
 
     owned_joints = root_owned_joints(target_model) if target_model else None
     target_joints = (
@@ -257,11 +287,7 @@ def clear_existing_motion(
         context.logger,
     ).items():
         owned_motion_nodes.add(node)
-        cleared += cut_keyable_attrs(
-            node,
-            tuple(sorted(attrs)),
-            preserve_curve_nodes=True,
-        )
+        cleared += clear_preserved_attrs(node, tuple(sorted(attrs)))
 
     # In CONTROL_OWNED/EDIT, authored VMD channels are redirected to the
     # controller curves.  Clear those curves as part of the same root-scoped
@@ -279,11 +305,7 @@ def clear_existing_motion(
             by_node.setdefault(target_node, set()).add(target_attr)
         for node, attrs in by_node.items():
             owned_motion_nodes.add(node)
-            cleared += cut_keyable_attrs(
-                node,
-                tuple(sorted(attrs)),
-                preserve_curve_nodes=True,
-            )
+            cleared += clear_preserved_attrs(node, tuple(sorted(attrs)))
 
     # IK visibility animation is authored on the Control Rig controller rather
     # than on the legacy solver.  Resolve only UUID-backed controls owned by
@@ -294,11 +316,7 @@ def clear_existing_motion(
         ):
             control, attribute = plug.rsplit(".", 1)
             owned_motion_nodes.add(control)
-            cleared += cut_keyable_attrs(
-                control,
-                (attribute,),
-                preserve_curve_nodes=True,
-            )
+            cleared += clear_preserved_attrs(control, (attribute,))
 
     for target_joint, info in context.collect_append_info().items():
         append_node = info.get("node")
@@ -326,7 +344,7 @@ def clear_existing_motion(
             # the key payload in the existing animCurves so the append node,
             # curve identity, and direct joint/root connections survive a
             # root-scoped re-import.
-            cleared += cut_keyable_attrs(
+            cleared += clear_preserved_attrs(
                 append_node,
                 (
                     "baseTranslateX",
@@ -336,7 +354,6 @@ def clear_existing_motion(
                     "baseRotateY",
                     "baseRotateZ",
                 ),
-                preserve_curve_nodes=True,
             )
 
     for ik_node in _ls_mmd_ccd_ik_nodes():
@@ -350,11 +367,7 @@ def clear_existing_motion(
             # solver node when it removes the last inputRotate curve.  Remove
             # keys through the existing animCurve nodes instead so solver
             # graph connections remain intact during a root-scoped clear.
-            cleared += cut_keyable_attrs(
-                ik_node,
-                ("enabled", "inputRotate"),
-                preserve_curve_nodes=True,
-            )
+            cleared += clear_preserved_attrs(ik_node, ("enabled", "inputRotate"))
 
     morph_nodes = set()
     for mapping_entry in context.morph_name_mapping.values():
@@ -370,12 +383,37 @@ def clear_existing_motion(
                 # delete an otherwise still-connected animCurve when it is
                 # the last key on the network node.  Keep the curve node and
                 # its downstream accumulator wiring intact for re-import.
+                cleared += clear_preserved_attrs(morph_node, (weight_attr,))
+                morph_nodes.add(morph_node)
+
+    if native_plugs is not None and native_clear_specs:
+        if native_unresolved:
+            # An ambiguous canonical path is a pre-mutation preparation
+            # failure.  Re-run the complete safe-route set through the proven
+            # Python MFnAnimCurve path so no route is silently omitted.
+            context.logger.debug(
+                "Native VMD clear skipped ambiguous plugs; using Python fallback"
+            )
+            for node, attrs in native_clear_specs:
                 cleared += cut_keyable_attrs(
-                    morph_node,
-                    (weight_attr,),
+                    node,
+                    attrs,
                     preserve_curve_nodes=True,
                 )
-                morph_nodes.add(morph_node)
+        elif native_plugs:
+            native_adapter = NativeVmdClearAdapter()
+            try:
+                native_adapter.clear(sorted(native_plugs))
+            except (
+                NativeVmdClearUnavailableError,
+                NativeVmdClearUnsupportedError,
+                NativeVmdClearPrepareError,
+            ) as exc:
+                context.logger.debug(
+                    "Native VMD clear unavailable before mutation; using Python fallback: %s",
+                    exc,
+                )
+                _clear_animation_curve_plugs(sorted(native_plugs))
 
     can_delete_layer = not target_model or _anim_layer_is_exclusively_owned_by(
         layer_name,
@@ -594,12 +632,52 @@ def _anim_layer_targets_morph_controller(layer_name: str) -> bool:
     return False
 
 
+def _canonical_animation_plug(node: str, attribute: str) -> Optional[str]:
+    """Resolve one node/attribute pair to an unambiguous Maya plug path."""
+    try:
+        matches = cmds.ls(node, long=True) or []
+    except Exception:
+        return None
+    if len(matches) != 1:
+        return None
+    try:
+        selection = om.MSelectionList()
+        selection.add(f"{matches[0]}.{attribute}")
+        plug = selection.getPlug(0)
+        canonical = plug.name()
+    except Exception:
+        return None
+    return str(canonical) if canonical else None
+
+
+def _clear_animation_curve_plugs(plugs) -> int:
+    """Remove all keys from canonical plugs while preserving curve nodes."""
+    removed = 0
+    for plug in plugs:
+        node, separator, attribute = str(plug).partition(".")
+        if not separator or not node or not attribute:
+            continue
+        for curve in _animation_curve_nodes_for_plug(node, attribute):
+            try:
+                selection = om.MSelectionList()
+                selection.add(curve)
+                curve_fn = oma.MFnAnimCurve(selection.getDependNode(0))
+                for index in reversed(range(curve_fn.numKeys)):
+                    curve_fn.remove(index)
+                    removed += 1
+            except Exception as exc:
+                _LOGGER.debug("Failed to clear animation curve %s: %s", curve, exc)
+    return removed
+
+
 def cut_keyable_attrs(
     node: str,
     attrs: Tuple[str, ...],
     *,
     preserve_curve_nodes: bool = False,
     detached_curve_nodes=None,
+    native_plugs=None,
+    native_unresolved=None,
 ) -> int:
     """Delete keys for existing attrs and return the number of attrs attempted."""
     if not node or not cmds.objExists(node):
@@ -612,6 +690,14 @@ def cut_keyable_attrs(
             continue
         try:
             for target_attr in _key_cut_attrs(node, attr):
+                if native_plugs is not None:
+                    canonical = _canonical_animation_plug(node, target_attr)
+                    if canonical is None:
+                        if native_unresolved is not None:
+                            native_unresolved.add((node, target_attr))
+                    else:
+                        native_plugs.add(canonical)
+                    continue
                 plug = f"{node}.{target_attr}"
                 curves = (
                     cmds.listConnections(
