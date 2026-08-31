@@ -773,19 +773,63 @@ def _apply_mayapy_warnings(report: Dict[str, Any], captured: Mapping[str, Any]) 
     _recompute_report_decision(report)
 
 
+def _safe_console_text(value: Any, stream: Any) -> str:
+    """Make bounded diagnostic text encodable by the destination console."""
+    text = _bounded_text(value, limit=_MAYAPY_OUTPUT_TAIL_LIMIT)
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+    except (LookupError, UnicodeError):
+        try:
+            return text.encode(encoding, errors="backslashreplace").decode(encoding, errors="replace")
+        except (LookupError, UnicodeError):
+            return text.encode("ascii", errors="backslashreplace").decode("ascii")
+    return text
+
+
+def _safe_console_print(value: Any, stream: Any) -> None:
+    """Best-effort bounded console output that never affects the probe gate."""
+    try:
+        print(_safe_console_text(value, stream), file=stream)
+        return
+    except Exception:
+        pass
+    try:
+        buffer = getattr(stream, "buffer", None)
+        if buffer is not None:
+            payload = str(value).encode("ascii", errors="backslashreplace")
+            buffer.write(payload + b"\n")
+            buffer.flush()
+    except Exception:
+        pass
+
+
 def _replay_mayapy_output(version: str, returncode: int, captured: Mapping[str, Any]) -> None:
-    """Print only captured warnings, or an error tail when Maya failed silently."""
-    warnings = list(captured.get("warnings") or ())
+    """Print captured diagnostics without allowing console encoding to abort the gate."""
+    try:
+        warnings = list(captured.get("warnings") or ())
+    except Exception:
+        warnings = []
     if warnings:
-        print(f"[vmd-clear-performance] Maya {version} captured warning lines:")
+        _safe_console_print(
+            f"[vmd-clear-performance] Maya {version} captured warning lines:", sys.stdout
+        )
         for entry in warnings:
-            print(f"  [{entry['source']}] {entry['warning']}")
+            try:
+                source = entry["source"]
+                warning = entry["warning"]
+            except Exception:
+                source = "mayapy_output"
+                warning = entry
+            _safe_console_print(f"  [{source}] {warning}", sys.stdout)
         if captured.get("warnings_truncated"):
-            print("  [mayapy_output] additional warning lines truncated")
+            _safe_console_print("  [mayapy_output] additional warning lines truncated", sys.stdout)
     if returncode:
         tail = str(captured.get("stderr_tail") or captured.get("stdout_tail") or "").strip()
         if tail:
-            print(f"[vmd-clear-performance] Maya {version} output tail:\n{tail}", file=sys.stderr)
+            _safe_console_print(
+                f"[vmd-clear-performance] Maya {version} output tail:\n{tail}", sys.stderr
+            )
 
 
 def _worker_options(config: Mapping[str, Any], root: str, clear: bool) -> Dict[str, Any]:
@@ -1339,7 +1383,6 @@ def run_host(args: argparse.Namespace) -> int:
                         "not_run": ["worker report missing"],
                     },
                 )
-            _replay_mayapy_output(str(version), returncode, captured_output)
         except subprocess.TimeoutExpired as exc:
             _write_json(
                 report_path,
@@ -1395,6 +1438,8 @@ def run_host(args: argparse.Namespace) -> int:
             )
             _write_json(report_path, worker_report)
             reports[str(version)] = worker_report
+        if returncode is not None:
+            _replay_mayapy_output(str(version), returncode, captured_output)
     git_provenance_end = _git_worktree_provenance()
     final_provenance_changed = _git_provenance_identity(git_provenance_start) != _git_provenance_identity(
         git_provenance_end

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -190,6 +191,26 @@ def test_mayapy_warning_lines_are_bounded_and_fail_the_threshold_closed():
     assert report["threshold_decision"]["decision"] == "no_proceed"
     assert report["threshold_decision"]["status"] == "fail"
     assert report["status"] == "fail"
+
+
+def test_replay_mayapy_output_is_safe_for_cp932_and_replacement_text(monkeypatch):
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="cp932", errors="strict")
+    monkeypatch.setattr(probe.sys, "stdout", stream)
+
+    probe._replay_mayapy_output(
+        "2024",
+        0,
+        {
+            "warnings": [
+                {"source": "mayapy_stderr", "warning": "bad replacement \ufffd and surrogate \udcff"}
+            ]
+        },
+    )
+    stream.flush()
+    output = stream.buffer.getvalue().decode("cp932")
+
+    assert r"\ufffd" in output
+    assert r"\udcff" in output
 
 
 def test_git_worktree_provenance_has_bounded_dirty_identity(monkeypatch):
