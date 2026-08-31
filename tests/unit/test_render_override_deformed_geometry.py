@@ -64,6 +64,20 @@ def test_proxy_ready_is_published_only_after_committed_geometry():
     assert "shape_->clearRenderItemWitness();" in populate
 
 
+def test_wireframe_item_uses_mesh_object_selection_without_component_mapping():
+    shape = SHAPE_SOURCE.read_text(encoding="utf-8")
+    override = OVERRIDE_SOURCE.read_text(encoding="utf-8")
+
+    assert '"_wire"' in override
+    assert "MGeometry::kWireframe" in override
+    assert "MShaderManager::k3dSolidShader" in override
+    assert "wireItem->setSelectionMask(" in override
+    assert "MSelectionMask::kSelectMeshes" in override
+    assert "No component" in override
+    assert "renderItemName(candidate, queueIndex, false, true)" in override
+    assert "MSelectionMask(MSelectionMask::kSelectMeshes)" in shape
+
+
 def test_update_dg_reads_evaluated_mesh_and_fails_closed():
     shape = SHAPE_SOURCE.read_text(encoding="utf-8")
     override = OVERRIDE_SOURCE.read_text(encoding="utf-8")

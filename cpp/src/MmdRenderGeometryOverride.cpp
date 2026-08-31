@@ -13,6 +13,7 @@
 #include <maya/MFnData.h>
 #include <maya/MGlobal.h>
 #include <maya/MPlug.h>
+#include <maya/MSelectionMask.h>
 #include <maya/MShaderManager.h>
 #include <maya/MTextureManager.h>
 #include <maya/MViewport2Renderer.h>
@@ -65,21 +66,25 @@ std::filesystem::path findBundledNativeShaderPath(const MString& loadPath)
 
 MString renderItemName(const MmdRenderShape::QueueGeometry& geometry,
                        std::size_t queueIndex,
-                       bool outline = false)
+                       bool outline = false,
+                       bool wireframe = false)
 {
     const std::string name =
         "mmdRenderQueue_" +
         std::string(mmd::mmdDrawPassName(geometry.entry.pass)) + "_m" +
         std::to_string(geometry.entry.materialIndex) + "_s" +
         std::to_string(geometry.entry.submeshIndex) + "_q" +
-        std::to_string(queueIndex) + (outline ? "_edge" : "");
+        std::to_string(queueIndex) + (outline ? "_edge" : "") +
+        (wireframe ? "_wire" : "");
     return MString(name.c_str());
 }
 
 MRenderItem* findOrCreateItem(MRenderItemList& list,
                               const MString& name,
                               MGeometry::DrawMode drawMode,
-                              MRenderItem::RenderItemType itemType)
+                              MRenderItem::RenderItemType itemType,
+                              MGeometry::Primitive primitive =
+                                  MGeometry::kTriangles)
 {
     int index = list.indexOf(name);
     if (index >= 0) {
@@ -96,7 +101,7 @@ MRenderItem* findOrCreateItem(MRenderItemList& list,
     }
     MRenderItem* item = nullptr;
     if (index < 0) {
-        item = MRenderItem::Create(name, itemType, MGeometry::kTriangles);
+        item = MRenderItem::Create(name, itemType, primitive);
         if (!item || !list.append(item)) {
             if (item) {
                 MRenderItem::Destroy(item);
@@ -381,6 +386,10 @@ MmdRenderGeometryOverride::~MmdRenderGeometryOverride()
     const MShaderManager* shaderManager =
         renderer ? renderer->getShaderManager() : nullptr;
     if (shaderManager) {
+        if (wireShader_) {
+            shaderManager->releaseShader(wireShader_);
+            wireShader_ = nullptr;
+        }
         for (const auto& shader : materialShaders_) {
             if (shader.second) {
                 const bool receiverShader =
@@ -516,6 +525,32 @@ void MmdRenderGeometryOverride::updateRenderItems(
     }
 
     const MmdRenderShape::GeometryData& geometry = shape_->geometry();
+    auto configureWireItem = [&](const MmdRenderShape::QueueGeometry& queueGeometry,
+                                 std::size_t queueIndex) {
+        MRenderItem* wireItem = findOrCreateItem(
+            list, renderItemName(queueGeometry, queueIndex, false, true),
+            MGeometry::kWireframe, MRenderItem::NonMaterialSceneItem);
+        if (!wireItem) {
+            return false;
+        }
+        if (!wireShader_) {
+            wireShader_ = shaderManager->getStockShader(
+                MShaderManager::k3dSolidShader);
+        }
+        if (!wireShader_ || !wireItem->setShader(wireShader_)) {
+            MGlobal::displayWarning(
+                "[mmdRenderOverride] Native wireframe shader is unavailable.");
+            return false;
+        }
+        // Object picking uses Maya's ordinary mesh mask.  No component
+        // mapping is supplied: the proxy deliberately supports object
+        // selection only until a stable source-component contract exists.
+        wireItem->setSelectionMask(
+            MSelectionMask(MSelectionMask::kSelectMeshes));
+        wireItem->castsShadows(false);
+        wireItem->receivesShadows(false);
+        return true;
+    };
     auto configureItem = [&](const MmdRenderShape::QueueGeometry& queueGeometry,
                              std::size_t queueIndex,
                              bool outline) {
@@ -681,6 +716,11 @@ void MmdRenderGeometryOverride::updateRenderItems(
          ++queueIndex) {
         const MmdRenderShape::QueueGeometry& queueGeometry =
             geometry.queueGeometry[queueIndex];
+        if (!configureWireItem(queueGeometry, queueIndex)) {
+            disableItems(list);
+            shape_->clearRenderItemWitness();
+            return;
+        }
         const bool effectiveTransparent =
             queueGeometry.entry.pass == mmd::MmdDrawPass::Transparent;
         const bool outline = queueGeometry.material.edgeDrawing &&
@@ -840,6 +880,9 @@ void MmdRenderGeometryOverride::populateGeometry(
             geometry.queueGeometry[queueIndex];
         queueGeometryByName.emplace(
             std::string(renderItemName(candidate, queueIndex).asChar()),
+            &candidate);
+        queueGeometryByName.emplace(
+            std::string(renderItemName(candidate, queueIndex, false, true).asChar()),
             &candidate);
         if (candidate.material.edgeDrawing && candidate.material.edgeSize > 0.0F &&
             candidate.material.edgeAlpha > 0.0F) {
