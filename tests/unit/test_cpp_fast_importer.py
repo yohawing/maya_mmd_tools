@@ -37,6 +37,8 @@ from mmd_tools.io.cpp_fast_importer import (
     _apply_fast_root_metadata,
     _allocate_fast_material_name,
     _create_standard_material,
+    _fast_model_scene_name,
+    _organize_fast_dag,
     _sanitize_node_name,
     fast_import,
 )
@@ -567,7 +569,7 @@ class TestFastSkeletonSkin(unittest.TestCase):
         # Skeleton group created
         cmds.group.assert_called_once_with(
             empty=True,
-            name="my_model_skeleton_fast",
+            name="Skeleton",
             parent="root1",
         )
 
@@ -1549,6 +1551,72 @@ class TestFastMorphMetadata(unittest.TestCase):
     @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native", side_effect=RuntimeError("parser unavailable"))
     def test_root_metadata_parser_exception_is_best_effort(self, _mock_parse_native):
         _apply_fast_root_metadata("model.pmx", "root", None, MagicMock())
+
+
+class TestFastDagOrganization(unittest.TestCase):
+    """Visible FastLoad model hierarchy stays at the Python importer boundary."""
+
+    class _Cmds:
+        def __init__(self):
+            self.calls = []
+
+        def ls(self, node, long=False):
+            self.calls.append(("ls", node, long))
+            return [f"|{node}"] if long else [node]
+
+        def group(self, **kwargs):
+            self.calls.append(("group", kwargs))
+            if kwargs.get("parent"):
+                return f"{kwargs['parent']}|{kwargs['name']}"
+            return kwargs["name"]
+
+        def setAttr(self, plug, value):
+            self.calls.append(("setAttr", plug, value))
+
+        def rename(self, node, name):
+            self.calls.append(("rename", node, name))
+            return name
+
+        def parent(self, node, parent, absolute=False):
+            self.calls.append(("parent", node, parent, absolute))
+            return [f"{parent}|{node}"]
+
+        def listRelatives(self, node, **kwargs):
+            self.calls.append(("listRelatives", node, kwargs))
+            return ["|Hero_Model_root|Geometry|Hero_Model_mesh|Hero_Model_meshShape"]
+
+    def test_organize_places_source_and_vp2_proxy_owner_under_geometry(self):
+        cmds = self._Cmds()
+        root, mesh = _organize_fast_dag(
+            "fast_source",
+            "fast_sourceShape",
+            {"metadata": {"name": "モデル", "englishName": "Hero Model"}},
+            "fallback",
+            cmds,
+        )
+
+        self.assertEqual(root, "Hero_Model_root")
+        self.assertEqual(mesh, "|Hero_Model_root|Geometry|Hero_Model_mesh|Hero_Model_meshShape")
+        self.assertIn(("group", {"empty": True, "name": "Hero_Model_root"}), cmds.calls)
+        self.assertIn(
+            ("group", {"empty": True, "name": "Geometry", "parent": "Hero_Model_root"}),
+            cmds.calls,
+        )
+        self.assertIn(("setAttr", "Hero_Model_root|Geometry.inheritsTransform", False), cmds.calls)
+        self.assertIn(("rename", "|fast_source", "Hero_Model_mesh"), cmds.calls)
+        self.assertIn(
+            ("parent", "Hero_Model_mesh", "Hero_Model_root|Geometry", True),
+            cmds.calls,
+        )
+
+    def test_scene_name_prefers_english_header_and_falls_back_to_command_name(self):
+        self.assertEqual(
+            _fast_model_scene_name(
+                {"metadata": {"name": "モデル", "englishName": "Hero Model"}}, "fallback"
+            ),
+            "Hero_Model",
+        )
+        self.assertEqual(_fast_model_scene_name(None, "fallback model"), "fallback_model")
 
 
 class TestCppFastImporterDebugLogging(unittest.TestCase):

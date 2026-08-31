@@ -33,6 +33,9 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_PARENT_INDEX,
     ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_PMX_SOFT_BODY_COUNT,
+    GEOMETRY_GROUP,
+    SCENE_ROOT_SUFFIX,
+    SKELETON_GROUP,
 )
 from mmd_tools.core import cpp_plugin_locator, maya_mesh_utils, maya_name_utils
 from mmd_tools.core.coordinate_transform import mmd_point_to_maya
@@ -254,6 +257,9 @@ def fast_import(
     mesh_node = str(result[1]) if len(result) >= 2 else None
 
     metadata = _apply_basic_materials(filepath, mesh_node, cmds) if mesh_node else None
+    transform_node, mesh_node = _organize_fast_dag(
+        transform_node, mesh_node, metadata, base_name, cmds, filepath=filepath
+    )
     _apply_fast_root_metadata(filepath, transform_node, metadata, cmds)
     try:
         from mmd_tools.core.model_registry import ensure_model_registry
@@ -275,6 +281,84 @@ def fast_import(
 
     logger.debug("Fast import succeeded: transform node = %s", transform_node)
     return transform_node
+
+
+def _organize_fast_dag(
+    source_transform: str,
+    source_mesh: Optional[str],
+    metadata: Optional[dict],
+    base_name: str,
+    cmds_module,
+    *,
+    filepath: Optional[str] = None,
+) -> tuple[str, Optional[str]]:
+    """Place a FastLoad mesh below the ordinary model/Geometry boundary.
+
+    ``mmdFastLoad`` deliberately creates just the source mesh transform so its
+    native command can own construction and undo.  The Python import contract,
+    however, exposes a model root with a direct ``Geometry`` child.  Add that
+    lightweight authoring boundary here, before root metadata and skeleton
+    post-processing run.  The mesh and optional ``mmdRenderShape`` remain
+    together because the proxy is a child shape of the source transform.
+
+    The command wrapper is also used by headless callers with deliberately
+    partial ``maya.cmds`` fakes.  If the returned transform cannot be resolved
+    to a real DAG node, preserve the historical result instead of making that
+    fallback path fail.
+    """
+    source_paths = cmds_module.ls(source_transform, long=True) or []
+    if not source_paths or not isinstance(source_paths[0], str):
+        return source_transform, source_mesh
+
+    model_name = _fast_model_scene_name(metadata, base_name, filepath=filepath)
+    root_group = cmds_module.group(
+        empty=True,
+        name=f"{model_name}{SCENE_ROOT_SUFFIX}",
+    )
+    geometry_group = cmds_module.group(
+        empty=True,
+        name=GEOMETRY_GROUP,
+        parent=root_group,
+    )
+    # This mirrors MeshConverter: Geometry is owned by the model root but
+    # does not inherit its transform a second time once skinning is present.
+    cmds_module.setAttr(f"{geometry_group}.inheritsTransform", False)
+
+    mesh_transform = cmds_module.rename(source_paths[0], f"{model_name}_mesh")
+    cmds_module.parent(mesh_transform, geometry_group, absolute=True)
+    mesh_shapes = cmds_module.listRelatives(
+        mesh_transform,
+        shapes=True,
+        noIntermediate=True,
+        type="mesh",
+        fullPath=True,
+    ) or []
+    mesh_shape = str(mesh_shapes[0]) if mesh_shapes and isinstance(mesh_shapes[0], str) else source_mesh
+    return str(root_group), mesh_shape
+
+
+def _fast_model_scene_name(
+    metadata: Optional[dict], fallback: str, *, filepath: Optional[str] = None
+) -> str:
+    """Return the same safe PMX header name used by the Python root builder."""
+    header = metadata.get("metadata") if isinstance(metadata, dict) else None
+    if isinstance(header, dict):
+        raw_name = header.get("englishName") or header.get("name")
+        if raw_name:
+            return maya_name_utils.sanitize_text(raw_name)
+    if filepath:
+        try:
+            pmx = parse_pmx_native(filepath)
+            header = getattr(pmx, "header", None)
+            raw_name = (
+                getattr(header, "model_name_english", "")
+                or getattr(header, "model_name", "")
+            )
+            if raw_name:
+                return maya_name_utils.sanitize_text(raw_name)
+        except Exception as exc:
+            logger.debug("Fast DAG header parse skipped: %s", exc)
+    return maya_name_utils.sanitize_text(fallback)
 
 
 def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> Optional[dict]:
@@ -833,7 +917,7 @@ def _apply_fast_skeleton_skin(
     # ---- create skeleton group ----
     skeleton_group = cmds_module.group(
         empty=True,
-        name=f"{base_name}_skeleton_fast",
+        name=SKELETON_GROUP,
         parent=root_group,
     )
 

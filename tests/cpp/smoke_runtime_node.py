@@ -1591,7 +1591,9 @@ def main() -> int:
         if not skins:
             raise RuntimeError("fast_import(mesh_only=False) did not create a skinCluster")
 
-        mesh_shapes = cmds.listRelatives(root, shapes=True, type="mesh") or []
+        mesh_shapes = cmds.listRelatives(
+            root, allDescendents=True, fullPath=True, type="mesh"
+        ) or []
         if not mesh_shapes:
             raise RuntimeError(f"fast_import(mesh_only=False) created no mesh shapes under {root}")
         weights = cmds.skinPercent(skins[0], f"{mesh_shapes[0]}.vtx[0]", query=True, value=True)
