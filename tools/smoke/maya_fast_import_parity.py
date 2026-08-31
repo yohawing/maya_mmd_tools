@@ -55,14 +55,50 @@ def _mesh_signature(cmds: Any, om: Any, root: str, mesh: str) -> dict[str, Any]:
     dag = selection.getDagPath(0)
     mesh_fn = om.MFnMesh(dag)
     normals = mesh_fn.getVertexNormals(True, om.MSpace.kObject)
+    unweighted_normals = mesh_fn.getVertexNormals(False, om.MSpace.kObject)
     zero_normals = 0
     non_finite_normals = 0
-    for normal in normals:
+    zero_normal_indices: list[int] = []
+    for vertex_id, normal in enumerate(normals):
         length = math.sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
         if not math.isfinite(length):
             non_finite_normals += 1
         elif length <= 1.0e-12:
             zero_normals += 1
+            if len(zero_normal_indices) < 20:
+                zero_normal_indices.append(vertex_id)
+
+    zero_normal_face_corners: list[dict[str, Any]] = []
+    if zero_normal_indices:
+        for face_id in range(mesh_fn.numPolygons):
+            face_vertices = mesh_fn.getPolygonVertices(face_id)
+            for vertex_id in zero_normal_indices:
+                if vertex_id not in face_vertices:
+                    continue
+                normal = mesh_fn.getFaceVertexNormal(face_id, vertex_id, om.MSpace.kObject)
+                polygon_normal = mesh_fn.getPolygonNormal(face_id, om.MSpace.kObject)
+                zero_normal_face_corners.append(
+                    {
+                        "face": face_id,
+                        "vertex": vertex_id,
+                        "faceVertices": [int(value) for value in face_vertices],
+                        "normal": [float(normal.x), float(normal.y), float(normal.z)],
+                        "polygonNormal": [
+                            float(polygon_normal.x),
+                            float(polygon_normal.y),
+                            float(polygon_normal.z),
+                        ],
+                    }
+                )
+
+    zero_unweighted_normal_indices = [
+        vertex_id
+        for vertex_id, normal in enumerate(unweighted_normals)
+        if math.isfinite(normal.x)
+        and math.isfinite(normal.y)
+        and math.isfinite(normal.z)
+        and math.sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z) <= 1.0e-12
+    ][:20]
 
     shading_groups = sorted(
         str(value).split(":")[-1]
@@ -88,6 +124,9 @@ def _mesh_signature(cmds: Any, om: Any, root: str, mesh: str) -> dict[str, Any]:
         "faces": int(cmds.polyEvaluate(mesh, face=True) or 0),
         "uvs": int(cmds.polyEvaluate(mesh, uv=True) or 0),
         "zeroLengthVertexNormals": zero_normals,
+        "zeroLengthVertexNormalIndices": zero_normal_indices,
+        "zeroLengthVertexNormalFaceCorners": zero_normal_face_corners,
+        "zeroLengthUnweightedVertexNormalIndices": zero_unweighted_normal_indices,
         "nonFiniteVertexNormals": non_finite_normals,
         "intermediate": bool(cmds.getAttr(f"{mesh}.intermediateObject")),
         "shadingGroups": shading_groups,

@@ -71,6 +71,20 @@ def _assert_locked_normals(om, mesh_fn, expected_vertex_normal=None) -> None:
             )
 
 
+def _assert_vertex_normals_are_finite_and_nonzero(om, mesh_fn) -> None:
+    """Reject invalid vertex normals after FastLoad authored-normal assignment."""
+    vertex_normals = mesh_fn.getVertexNormals(True, om.MSpace.kObject)
+    if len(vertex_normals) == 0:
+        raise RuntimeError("mmdFastLoad mesh has no vertex normals")
+    for vertex_id, normal in enumerate(vertex_normals):
+        components = (float(normal.x), float(normal.y), float(normal.z))
+        length = math.sqrt(sum(component * component for component in components))
+        if not math.isfinite(length) or length <= 1.0e-12:
+            raise RuntimeError(
+                f"mmdFastLoad vertex normal {vertex_id} is not finite and non-zero: {components!r}"
+            )
+
+
 def main() -> int:
     """Run the single- and material-split authored-normal smoke checks."""
     import maya.cmds as cmds
@@ -92,11 +106,13 @@ def main() -> int:
         single_transform, single_mesh = single
         if cmds.polyEvaluate(single_mesh, vertex=True) != 1822 or cmds.polyEvaluate(single_mesh, face=True) != 3516:
             raise RuntimeError("single mmdFastLoad fixture counts changed")
+        single_mesh_fn = _mesh_fn(om, single_mesh)
         _assert_locked_normals(
             om,
-            _mesh_fn(om, single_mesh),
+            single_mesh_fn,
             expected_vertex_normal=(0, (-0.1534272, -0.3778850, -0.9130514)),
         )
+        _assert_vertex_normals_are_finite_and_nonzero(om, single_mesh_fn)
         cmds.undo()
         if cmds.objExists(single_transform):
             raise RuntimeError("single mmdFastLoad undo did not delete the transform")
@@ -119,6 +135,7 @@ def main() -> int:
                 raise RuntimeError(f"split mmdFastLoad fixture counts changed: {mesh}")
             mesh_fn = _mesh_fn(om, mesh)
             _assert_locked_normals(om, mesh_fn)
+            _assert_vertex_normals_are_finite_and_nonzero(om, mesh_fn)
             normals = mesh_fn.getNormals(om.MSpace.kObject)
             average_z = sum(float(normal.z) for normal in normals) / len(normals)
             if not math.isclose(abs(average_z), 1.0, rel_tol=0.0, abs_tol=1.0e-4):

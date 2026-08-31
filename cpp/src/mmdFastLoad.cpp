@@ -617,26 +617,38 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
     }
 
     // ---- Authored normals: (x, y, z) -> (x, y, -z), no position scale ----
-    // Invalid or missing entries are intentionally omitted so Maya keeps its
-    // geometric fallback for those vertices without poisoning valid entries.
+    // Assign every authored normal to its reversed-winding face corner.  A
+    // shared geometric vertex may retain distinct authored normals per face.
+    // Invalid entries are intentionally omitted so Maya keeps its geometric
+    // fallback for those corners without poisoning valid entries.
     MVectorArray authoredNormals;
+    MIntArray    authoredFaceIds;
     MIntArray    authoredVertexIds;
     const size_t normalCount = normals.size() / 3U;
-    const size_t assignCount = std::min(vertCount, normalCount);
-    for (size_t i = 0; i < assignCount; ++i) {
-        const double x = static_cast<double>(normals[i * 3]);
-        const double y = static_cast<double>(normals[i * 3 + 1]);
-        const double z = static_cast<double>(normals[i * 3 + 2]);
-        const double length = std::sqrt(x * x + y * y + z * z);
-        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
-            !std::isfinite(length) || length <= 0.0) {
-            continue;
+    for (unsigned int faceId = 0; faceId < triCount; ++faceId) {
+        for (unsigned int corner = 0; corner < 3U; ++corner) {
+            const unsigned int connectIndex = faceId * 3U + corner;
+            const int vertexId = result.polygonConnects[connectIndex];
+            if (vertexId < 0 || static_cast<size_t>(vertexId) >= normalCount) {
+                continue;
+            }
+            const size_t normalIndex = static_cast<size_t>(vertexId);
+            const double x = static_cast<double>(normals[normalIndex * 3]);
+            const double y = static_cast<double>(normals[normalIndex * 3 + 1]);
+            const double z = static_cast<double>(normals[normalIndex * 3 + 2]);
+            const double length = std::sqrt(x * x + y * y + z * z);
+            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
+                !std::isfinite(length) || length <= 0.0) {
+                continue;
+            }
+            authoredNormals.append(MVector(x / length, y / length, -z / length));
+            authoredFaceIds.append(static_cast<int>(faceId));
+            authoredVertexIds.append(vertexId);
         }
-        authoredNormals.append(MVector(x / length, y / length, -z / length));
-        authoredVertexIds.append(static_cast<int>(i));
     }
-    if (authoredVertexIds.length() > 0) {
-        meshFn.setVertexNormals(authoredNormals, authoredVertexIds, MSpace::kObject);
+    if (authoredFaceIds.length() > 0) {
+        meshFn.setFaceVertexNormals(
+            authoredNormals, authoredFaceIds, authoredVertexIds, MSpace::kObject);
     }
 
     MDagPath dagPath;
