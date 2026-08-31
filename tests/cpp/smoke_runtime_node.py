@@ -486,6 +486,41 @@ def main() -> int:
 
         print(f"OK: mmdFastLoad created {vertex_count} vertices / {face_count} faces and undo succeeded")
 
+        vp2_result = cmds.mmdFastLoad(
+            f=str(FAST_LOAD_MODEL),
+            n="mmt_fast_vp2_smoke",
+            s=1.0,
+            vp2Ownership=True,
+        )
+        if not vp2_result or len(vp2_result) != 3:
+            raise RuntimeError(
+                f"mmdFastLoad(vp2Ownership=True) returned unexpected result: {vp2_result!r}"
+            )
+        vp2_transform, vp2_source_mesh, vp2_render_shape = vp2_result
+        if cmds.nodeType(vp2_source_mesh) != "mesh":
+            raise RuntimeError(f"VP2 source is not a Maya mesh: {vp2_source_mesh}")
+        if cmds.nodeType(vp2_render_shape) != "mmdRenderShape":
+            raise RuntimeError(f"VP2 proxy has wrong type: {vp2_render_shape}")
+        source_parent = cmds.listRelatives(vp2_source_mesh, parent=True, fullPath=True) or []
+        proxy_parent = cmds.listRelatives(vp2_render_shape, parent=True, fullPath=True) or []
+        if source_parent != proxy_parent or not source_parent:
+            raise RuntimeError(
+                f"VP2 source/proxy are not sibling shapes: source={source_parent}, proxy={proxy_parent}"
+            )
+        if not cmds.isConnected(
+            f"{vp2_source_mesh}.outMesh",
+            f"{vp2_render_shape}.inputMesh",
+        ):
+            raise RuntimeError(
+                "VP2 proxy input is not driven by source outMesh"
+            )
+        cmds.undo()
+        if cmds.objExists(vp2_transform):
+            raise RuntimeError(
+                f"mmdFastLoad(vp2Ownership=True) undo did not delete root: {vp2_transform}"
+            )
+        print("OK: VP2 fast load created source/proxy siblings, connected inputMesh, and undid atomically")
+
         morph_result = cmds.mmdFastLoad(f=str(FAST_LOAD_MORPH_MODEL), n="mmd_fast_morph_smoke", s=1.0, mo=True)
         if not morph_result or len(morph_result) != 2:
             raise RuntimeError(f"mmdFastLoad morph smoke returned unexpected result: {morph_result!r}")

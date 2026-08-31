@@ -128,9 +128,9 @@ def fast_import(
         fast path.
     vp2_ownership:
         If True, asks the C++ command to create the opt-in ``mmdRenderShape``
-        and let the VP2 geometry override own the draw data. This is a
-        mesh-display path; it does not create a Maya mesh for skeleton or
-        blendShape post-processing.
+        alongside an ordinary source mesh and let the VP2 geometry override
+        own the draw data. Material, morph, and skeleton post-processing use
+        that source mesh while the proxy stays render-only.
 
     Returns
     -------
@@ -209,7 +209,46 @@ def fast_import(
         )
         return None
 
-    # result is [transform, mesh]  (smoke_runtime_node.py convention)
+    def _cleanup_vp2_result_root() -> None:
+        """Best-effort cleanup for a VP2 result that fails its ABI contract."""
+        try:
+            cmds.delete(str(result[0]))
+        except Exception as exc:
+            # The contract rejection is still the primary outcome; cleanup
+            # failures must not mask it or turn fallback into an exception.
+            logger.debug("Failed to clean up rejected VP2 root: %s", exc)
+
+    if vp2_ownership:
+        if len(result) != 3:
+            logger.debug(
+                "VP2 mmdFastLoad returned %d nodes; expected [root, sourceMesh, renderShape]",
+                len(result),
+            )
+            if result:
+                _cleanup_vp2_result_root()
+            return None
+        render_shape_node = str(result[2])
+        try:
+            render_shape_type = cmds.nodeType(render_shape_node)
+        except Exception as exc:
+            logger.debug(
+                "VP2 render shape node lookup failed for %s: %s",
+                render_shape_node,
+                exc,
+            )
+            _cleanup_vp2_result_root()
+            return None
+        if render_shape_type != "mmdRenderShape":
+            logger.debug(
+                "VP2 mmdFastLoad returned %s as render shape (expected mmdRenderShape)",
+                render_shape_type,
+            )
+            _cleanup_vp2_result_root()
+            return None
+
+    # Normal result is [transform, mesh].  VP2 uses [transform, sourceMesh,
+    # renderShape], so all existing post-processing continues to target the
+    # second element in both routes.
     transform_node = str(result[0])
     mesh_node = str(result[1]) if len(result) >= 2 else None
 

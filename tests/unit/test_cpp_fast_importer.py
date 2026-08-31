@@ -1224,14 +1224,19 @@ class TestFastMorphMetadata(unittest.TestCase):
         candidates.return_value = [plugin_path]
         basic_materials.return_value = None
         cmds_mod = sys.modules["maya.cmds"]
+        cmds_mod.nodeType = MagicMock(return_value="mmdRenderShape")
         with patch.object(Path, "exists", return_value=True), patch.object(
             cmds_mod, "loadPlugin", create=True
         ) as load_plugin, patch.object(
-            cmds_mod, "mmdFastLoad", create=True, return_value=["root"]
+            cmds_mod,
+            "mmdFastLoad",
+            create=True,
+            return_value=["root", "sourceMesh", "renderShape"],
         ) as fast_load:
             result = fast_import("model.pmx", vp2_ownership=True)
 
         self.assertEqual(result, "root")
+        cmds_mod.nodeType.assert_called_once_with("renderShape")
         load_plugin.assert_called_once()
         fast_load.assert_called_once_with(
             f="model.pmx",
@@ -1241,6 +1246,124 @@ class TestFastMorphMetadata(unittest.TestCase):
             vp2Ownership=True,
         )
         root_metadata.assert_called_once()
+
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_root_metadata")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials")
+    @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
+    @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
+    def test_vp2_rejects_legacy_two_item_plugin_result(
+        self,
+        _setup,
+        candidates,
+        basic_materials,
+        root_metadata,
+    ):
+        """An older plugin must not be accepted for an explicit VP2 request."""
+        import sys
+
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+        candidates.return_value = [plugin_path]
+        cmds_mod = sys.modules["maya.cmds"]
+        cmds_mod.delete = MagicMock()
+        with patch.object(Path, "exists", return_value=True), patch.object(
+            cmds_mod, "loadPlugin", create=True
+        ), patch.object(
+            cmds_mod, "mmdFastLoad", create=True, return_value=["root", "mesh"]
+        ) as fast_load:
+            result = fast_import("model.pmx", vp2_ownership=True)
+
+        self.assertIsNone(result)
+        fast_load.assert_called_once()
+        cmds_mod.delete.assert_called_once_with("root")
+        basic_materials.assert_not_called()
+        root_metadata.assert_not_called()
+
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_root_metadata")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials")
+    @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
+    @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
+    def test_vp2_rejects_non_render_shape_result_and_cleans_root(
+        self,
+        _setup,
+        candidates,
+        basic_materials,
+        root_metadata,
+    ):
+        """A wrong proxy node type is rejected and the created root is removed."""
+        import sys
+
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+        candidates.return_value = [plugin_path]
+        cmds_mod = sys.modules["maya.cmds"]
+        cmds_mod.nodeType = MagicMock(return_value="mesh")
+        cmds_mod.delete = MagicMock()
+        with patch.object(Path, "exists", return_value=True), patch.object(
+            cmds_mod, "loadPlugin", create=True
+        ), patch.object(
+            cmds_mod,
+            "mmdFastLoad",
+            create=True,
+            return_value=["root", "sourceMesh", "wrongShape"],
+        ) as fast_load:
+            result = fast_import("model.pmx", vp2_ownership=True)
+
+        self.assertIsNone(result)
+        fast_load.assert_called_once()
+        cmds_mod.delete.assert_called_once_with("root")
+        basic_materials.assert_not_called()
+        root_metadata.assert_not_called()
+
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_skeleton_skin")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_morph_metadata")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_root_metadata")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials")
+    @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
+    @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
+    def test_vp2_post_processing_targets_source_mesh(
+        self,
+        _setup,
+        candidates,
+        basic_materials,
+        root_metadata,
+        morph_metadata,
+        skeleton_skin,
+    ):
+        """Materials, morph metadata, and skinning use the source mesh item."""
+        import sys
+
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+        candidates.return_value = [plugin_path]
+        basic_materials.return_value = {"materials": []}
+        cmds_mod = sys.modules["maya.cmds"]
+        cmds_mod.nodeType = MagicMock(return_value="mmdRenderShape")
+        with patch.object(Path, "exists", return_value=True), patch.object(
+            cmds_mod, "loadPlugin", create=True
+        ), patch.object(
+            cmds_mod,
+            "mmdFastLoad",
+            create=True,
+            return_value=["root", "sourceMesh", "renderShape"],
+        ):
+            result = fast_import(
+                "model.pmx",
+                base_name="demo",
+                mesh_only=False,
+                include_morphs=True,
+                vp2_ownership=True,
+            )
+
+        self.assertEqual(result, "root")
+        basic_materials.assert_called_once_with("model.pmx", "sourceMesh", cmds_mod)
+        root_metadata.assert_called_once()
+        morph_metadata.assert_called_once_with("model.pmx", "sourceMesh", cmds_mod)
+        skeleton_skin.assert_called_once_with(
+            "model.pmx",
+            "sourceMesh",
+            "root",
+            "demo",
+            cmds_mod,
+            scale=1.0,
+        )
 
     def test_standard_material_preserves_raw_names(self):
         cmds = MagicMock()
