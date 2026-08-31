@@ -259,23 +259,30 @@ class NameTranslationDialog:
         self.overwrite_checkbox.setObjectName("overwriteCheckBox")
         self.rename_checkbox = QCheckBox("Also rename Maya nodes", self._dialog)
         self.rename_checkbox.setObjectName("renameNodesCheckBox")
+        self.rename_checkbox.setToolTip(
+            "When enabled, Maya Outliner node names are changed to safe unique names. "
+            "Original PMX names are preserved."
+        )
         self.original_checkbox = QCheckBox("Show original PMX names", self._dialog)
         self.original_checkbox.setObjectName("showOriginalNamesCheckBox")
-        self.rename_note_label = QLabel(
-            "Maya Outliner names stay unchanged unless node renaming is enabled.",
-            self._dialog,
-        )
-        self.rename_note_label.setObjectName("renameNodesNoteLabel")
         self.preview_text = QTextEdit(self._dialog)
         self.preview_text.setObjectName("previewText")
         self.preview_text.setReadOnly(True)
         self.preview_text.setMinimumHeight(240)
         self.status_label = QLabel("Choose a CSV, then click Preview.", self._dialog)
         self.status_label.setObjectName("statusLabel")
+        self.apply_note_label = QLabel(
+            "Apply is enabled after Preview finds one or more changes.",
+            self._dialog,
+        )
+        self.apply_note_label.setObjectName("applyNoteLabel")
         self.preview_button = QPushButton("Preview", self._dialog)
         self.preview_button.setObjectName("previewButton")
         self.apply_button = QPushButton("Apply", self._dialog)
         self.apply_button.setObjectName("applyButton")
+        self.apply_button.setToolTip(
+            "Run Preview first. Apply is enabled when changes are found."
+        )
         self.cancel_button = QPushButton("Cancel", self._dialog)
         self.cancel_button.setObjectName("cancelButton")
         self.apply_button.setEnabled(False)
@@ -290,7 +297,6 @@ class NameTranslationDialog:
         form.addRow("Dictionary CSV", dictionary_row)
         form.addRow(self.overwrite_checkbox)
         form.addRow(self.rename_checkbox)
-        form.addRow(self.rename_note_label)
         form.addRow(self.original_checkbox)
 
         buttons = QHBoxLayout()
@@ -302,6 +308,7 @@ class NameTranslationDialog:
         layout.addLayout(form)
         layout.addWidget(self.preview_text)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.apply_note_label)
         layout.addLayout(buttons)
 
         self.browse_button.clicked.connect(self._choose_dictionary)
@@ -360,6 +367,9 @@ class NameTranslationDialog:
         self._preview_root = None
         self._preview_state = None
         self.apply_button.setEnabled(False)
+        self.apply_button.setToolTip(
+            "Run Preview first. Apply is enabled when changes are found."
+        )
 
     def _render_preview(self, *_args):
         plan = self._preview_plan
@@ -399,7 +409,14 @@ class NameTranslationDialog:
                 f"{details.missing} missing; {details.already_english} already named; "
                 f"{len(details.plan)} change(s)."
             )
-            self.apply_button.setEnabled(bool(details.plan))
+            has_changes = bool(details.plan)
+            self.apply_button.setEnabled(has_changes)
+            if has_changes:
+                self.apply_button.setToolTip(
+                    f"Apply {len(details.plan)} previewed change(s)."
+                )
+            else:
+                self.apply_button.setToolTip("Preview found no changes to apply.")
             return details.plan
         except Exception as exc:
             self.preview_text.clear()

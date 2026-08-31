@@ -106,10 +106,11 @@ class _Widget:
         self.clicked = _Signal()
         self.textChanged = _Signal()
         self.stateChanged = _Signal()
-        self._text = ""
+        self._text = str(_args[0]) if _args and isinstance(_args[0], str) else ""
         self._enabled = True
         self._checked = False
         self._plain_text = ""
+        self._tooltip = ""
 
     def setObjectName(self, value):
         self.object_name = value
@@ -128,6 +129,12 @@ class _Widget:
 
     def setDefault(self, _value):
         pass
+
+    def setToolTip(self, value):
+        self._tooltip = str(value)
+
+    def toolTip(self):
+        return self._tooltip
 
     def setText(self, value):
         self._text = str(value)
@@ -240,6 +247,16 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
     assert dialog.dictionary_edit.text() == str(name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH)
     assert name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH.is_file()
     assert dialog._dialog.modal is False
+    assert dialog.apply_note_label.text() == (
+        "Apply is enabled after Preview finds one or more changes."
+    )
+    assert dialog.apply_button.toolTip() == (
+        "Run Preview first. Apply is enabled when changes are found."
+    )
+    assert dialog.rename_checkbox.toolTip() == (
+        "When enabled, Maya Outliner node names are changed to safe unique names. "
+        "Original PMX names are preserved."
+    )
     custom_dictionary = tmp_path / "custom.csv"
     dialog.dictionary_edit.setText(str(custom_dictionary))
     dialog.csv_folder_button.clicked.emit()
@@ -251,6 +268,7 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
     dialog.dictionary_edit.setText("names.csv")
     assert dialog.preview() == (change,)
     assert dialog.apply_button.isEnabled()
+    assert dialog.apply_button.toolTip() == "Apply 1 previewed change(s)."
     dialog.cancel_button.clicked.emit()
     assert not apply_plan.called
 
