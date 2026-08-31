@@ -186,6 +186,54 @@ def test_exact_only_disables_suffix_inheritance_but_keeps_exact_match():
     assert [change.translated_name for change in plan] == [None, "Left Skirt Panel"]
 
 
+@pytest.mark.parametrize(
+    ("source_name", "expected"),
+    (
+        ("スカート_A1", "Skirt_A1"),
+        ("スカート_a_B2", "Skirt_a_B2"),
+        ("スカートL", None),
+        ("スカート__L", None),
+        ("スカート_L-1", None),
+        ("スカート_左", None),
+        ("スカート_Ｌ", None),
+        ("スカート_１２", None),
+    ),
+)
+def test_ascii_suffix_inheritance_has_explicit_boundaries(source_name, expected):
+    plan = build_translation_plan(
+        [_entry("material", "|root|material", source_name)],
+        {"スカート": "Skirt"},
+    )
+
+    assert plan[0].translated_name == expected
+
+
+def test_inherited_translation_is_sanitized_only_for_the_maya_node_name():
+    plan = build_translation_plan(
+        [_entry("material", "|root|material", "スカート_L")],
+        {"スカート": "123 Skirt:"},
+        rename_nodes=True,
+        used_names={"Skirt_L_123"},
+    )
+
+    assert plan[0].translated_name == "123 Skirt:_L"
+    assert plan[0].english_name == "123 Skirt:_L"
+    assert plan[0].maya_name == "Skirt_L_123_1"
+
+
+def test_exact_only_translation_does_not_disable_explicit_node_sanitizing():
+    plan = build_translation_plan(
+        [_entry("material", "|root|material", "スカート_L")],
+        {"スカート": "Skirt"},
+        exact_only=True,
+        rename_nodes=True,
+    )
+
+    assert plan[0].translated_name is None
+    assert plan[0].english_name is None
+    assert plan[0].maya_name == "skirt_l"
+
+
 def test_cli_forwards_exact_only_to_core_run(monkeypatch):
     calls = []
 
