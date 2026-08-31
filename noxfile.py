@@ -1895,16 +1895,32 @@ def fast_import_parity(session: nox.Session) -> None:
     if not plugin.is_file():
         session.error(f"C++ plugin missing: {plugin}")
     mayapy = _mayapy(maya_version)
+    input_path = (
+        ROOT
+        / "build"
+        / "reports"
+        / "fast-import-parity"
+        / f"maya{maya_version}-input.json"
+    )
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_text(
+        json.dumps(
+            {
+                "model": str(Path(model).resolve()),
+                "plugin": str(plugin.resolve()),
+                "report": str(Path(report).resolve()),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     _run_mayapy_probe(
         session,
         mayapy,
         "tools/smoke/maya_fast_import_parity.py",
-        [
-            "--model", str(model),
-            "--plugin", str(plugin),
-            "--report", str(report),
-        ],
-        {"--model", "--plugin", "--report"},
+        ["--input-json", str(input_path)],
+        {"--input-json"},
         utf8=True,
     )
 

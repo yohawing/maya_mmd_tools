@@ -235,11 +235,20 @@ def _compare(python: dict[str, Any], cpp: dict[str, Any]) -> list[dict[str, Any]
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", type=Path, default=ROOT / "tests" / "data" / "test_morph_model.pmx")
-    parser.add_argument("--plugin", type=Path, required=True)
-    parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--input-json", type=Path)
+    parser.add_argument("--model", type=Path)
+    parser.add_argument("--plugin", type=Path)
+    parser.add_argument("--report", type=Path)
     parser.add_argument("--scale", type=float, default=1.0)
     args = parser.parse_args()
+    if args.input_json:
+        document = json.loads(args.input_json.read_text(encoding="utf-8"))
+        args.model = Path(document["model"])
+        args.plugin = Path(document["plugin"])
+        args.report = Path(document["report"])
+        args.scale = float(document.get("scale", args.scale))
+    if args.model is None or args.plugin is None or args.report is None:
+        parser.error("provide --input-json or all of --model/--plugin/--report")
     report: dict[str, Any] = {
         "schemaVersion": 1,
         "status": "red",
