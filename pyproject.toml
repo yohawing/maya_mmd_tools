@@ -28,6 +28,7 @@ dev = [
 mmd_tools = [
     "config/mmd_control_rig_curve_shapes.json",
     "config/model_templates/*.json",
+    "config/name_translation_presets/*.csv",
     "ui/assets/animator_toolset/*.png",
     "ui/assets/animator_toolset/*.svg",
     "ui/assets/morph_types/*.svg",

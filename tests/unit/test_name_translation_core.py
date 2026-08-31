@@ -1,6 +1,7 @@
 """Maya-independent tests for the MMD name translation tool."""
 
 import csv
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -52,6 +53,44 @@ def test_dictionary_rejects_malformed_rows_empty_cells_and_duplicates(tmp_path):
         path.write_text(contents, encoding="utf-8")
         with pytest.raises(NameTranslationError):
             load_translation_dictionary(str(path))
+
+
+def test_shipped_standard_name_preset_is_loadable_and_broad():
+    path = Path(__file__).parents[2] / "mmd_tools" / "config" / "name_translation_presets" / "mmd_standard_names.csv"
+
+    assert path.is_file()
+    translations = load_translation_dictionary(str(path))
+
+    assert len(translations) >= 200
+    assert translations["センター"] == "Center"
+    assert translations["左腕"] == "Left Arm"
+    assert translations["左足ＩＫ"] == "Left Leg IK"
+    assert translations["左足IK"] == "Left Leg IK"
+    assert translations["左親指０"] == "Left Thumb 0"
+    assert translations["前髪"] == "Bangs"
+    assert translations["顔"] == "Face"
+    assert translations["スカート"] == "Skirt"
+    assert translations["まばたき"] == "Blink"
+    assert translations["眉上"] == "Brows Up"
+    assert translations["口開き"] == "Mouth Open"
+
+
+def test_shipped_standard_name_preset_has_strict_two_column_nonempty_rows():
+    path = Path(__file__).parents[2] / "mmd_tools" / "config" / "name_translation_presets" / "mmd_standard_names.csv"
+
+    with path.open("r", encoding="utf-8", newline="") as stream:
+        rows = list(csv.reader(stream))
+
+    assert rows[0] == ["日本語", "英語"]
+    data_rows = rows[1:]
+    assert all(len(row) == 2 and all(cell.strip() for cell in row) for row in data_rows)
+    assert len({row[0] for row in data_rows}) == len(data_rows)
+
+
+def test_shipped_standard_name_preset_is_listed_as_package_data():
+    project = Path(__file__).parents[2] / "pyproject.toml"
+
+    assert '"config/name_translation_presets/*.csv"' in project.read_text(encoding="utf-8")
 
 
 def test_plan_updates_only_empty_english_names_without_sanitizing_english_name():

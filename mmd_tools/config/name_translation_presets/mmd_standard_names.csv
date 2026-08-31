@@ -1,0 +1,252 @@
+日本語,英語
+全ての親,Master
+マスター,Master
+操作中心,Operation Center
+センター,Center
+グルーブ,Groove
+腰,Waist
+下半身,Lower Body
+上半身,Upper Body
+上半身2,Upper Body 2
+上半身２,Upper Body 2
+首,Neck
+頭,Head
+両目,Both Eyes
+左目,Left Eye
+右目,Right Eye
+左目先,Left Eye Tip
+右目先,Right Eye Tip
+左肩,Left Shoulder
+右肩,Right Shoulder
+左肩P,Left Shoulder Parent
+右肩P,Right Shoulder Parent
+左肩C,Left Shoulder Child
+右肩C,Right Shoulder Child
+左腕,Left Arm
+右腕,Right Arm
+左ひじ,Left Elbow
+左肘,Left Elbow
+右ひじ,Right Elbow
+右肘,Right Elbow
+左手首,Left Wrist
+右手首,Right Wrist
+左腕捩,Left Arm Twist
+左腕捻,Left Arm Twist
+右腕捩,Right Arm Twist
+右腕捻,Right Arm Twist
+左腕捩1,Left Arm Twist 1
+左腕捩2,Left Arm Twist 2
+左腕捩3,Left Arm Twist 3
+右腕捩1,Right Arm Twist 1
+右腕捩2,Right Arm Twist 2
+右腕捩3,Right Arm Twist 3
+左手捩,Left Hand Twist
+左手捻,Left Hand Twist
+右手捩,Right Hand Twist
+右手捻,Right Hand Twist
+左手捩1,Left Hand Twist 1
+左手捩2,Left Hand Twist 2
+左手捩3,Left Hand Twist 3
+右手捩1,Right Hand Twist 1
+右手捩2,Right Hand Twist 2
+右手捩3,Right Hand Twist 3
+左足,Left Leg
+右足,Right Leg
+左ひざ,Left Knee
+左膝,Left Knee
+右ひざ,Right Knee
+右膝,Right Knee
+左足首,Left Ankle
+右足首,Right Ankle
+左足ＩＫ,Left Leg IK
+左足IK,Left Leg IK
+右足ＩＫ,Right Leg IK
+右足IK,Right Leg IK
+左つま先,Left Toe
+右つま先,Right Toe
+左つま先ＩＫ,Left Toe IK
+左つま先IK,Left Toe IK
+右つま先ＩＫ,Right Toe IK
+右つま先IK,Right Toe IK
+足ＩＫ親,Leg IK Parent
+足IK親,Leg IK Parent
+左足ＩＫ親,Left Leg IK Parent
+左足IK親,Left Leg IK Parent
+右足ＩＫ親,Right Leg IK Parent
+右足IK親,Right Leg IK Parent
+足先ＥＸ,Toe EX
+足先EX,Toe EX
+左足先EX,Left Toe EX
+右足先EX,Right Toe EX
+左足D,Left Leg D
+右足D,Right Leg D
+左親指０,Left Thumb 0
+左親指0,Left Thumb 0
+左親指１,Left Thumb 1
+左親指1,Left Thumb 1
+左親指２,Left Thumb 2
+左親指2,Left Thumb 2
+左親指先,Left Thumb Tip
+右親指０,Right Thumb 0
+右親指0,Right Thumb 0
+右親指１,Right Thumb 1
+右親指1,Right Thumb 1
+右親指２,Right Thumb 2
+右親指2,Right Thumb 2
+右親指先,Right Thumb Tip
+左人指１,Left Index 1
+左人指1,Left Index 1
+左人差指１,Left Index 1
+左人差指1,Left Index 1
+左人指２,Left Index 2
+左人指2,Left Index 2
+左人差指２,Left Index 2
+左人差指2,Left Index 2
+左人指３,Left Index 3
+左人指3,Left Index 3
+左人差指３,Left Index 3
+左人差指3,Left Index 3
+左人指先,Left Index Tip
+左人差指先,Left Index Tip
+右人指１,Right Index 1
+右人指1,Right Index 1
+右人差指１,Right Index 1
+右人差指1,Right Index 1
+右人指２,Right Index 2
+右人指2,Right Index 2
+右人差指２,Right Index 2
+右人差指2,Right Index 2
+右人指３,Right Index 3
+右人指3,Right Index 3
+右人差指３,Right Index 3
+右人差指3,Right Index 3
+右人指先,Right Index Tip
+右人差指先,Right Index Tip
+左中指１,Left Middle Finger 1
+左中指1,Left Middle Finger 1
+左中指２,Left Middle Finger 2
+左中指2,Left Middle Finger 2
+左中指３,Left Middle Finger 3
+左中指3,Left Middle Finger 3
+左中指先,Left Middle Finger Tip
+右中指１,Right Middle Finger 1
+右中指1,Right Middle Finger 1
+右中指２,Right Middle Finger 2
+右中指2,Right Middle Finger 2
+右中指３,Right Middle Finger 3
+右中指3,Right Middle Finger 3
+右中指先,Right Middle Finger Tip
+左薬指１,Left Ring Finger 1
+左薬指1,Left Ring Finger 1
+左薬指２,Left Ring Finger 2
+左薬指2,Left Ring Finger 2
+左薬指３,Left Ring Finger 3
+左薬指3,Left Ring Finger 3
+左薬指先,Left Ring Finger Tip
+右薬指１,Right Ring Finger 1
+右薬指1,Right Ring Finger 1
+右薬指２,Right Ring Finger 2
+右薬指2,Right Ring Finger 2
+右薬指３,Right Ring Finger 3
+右薬指3,Right Ring Finger 3
+右薬指先,Right Ring Finger Tip
+左小指１,Left Little Finger 1
+左小指1,Left Little Finger 1
+左小指２,Left Little Finger 2
+左小指2,Left Little Finger 2
+左小指３,Left Little Finger 3
+左小指3,Left Little Finger 3
+左小指先,Left Little Finger Tip
+右小指１,Right Little Finger 1
+右小指1,Right Little Finger 1
+右小指２,Right Little Finger 2
+右小指2,Right Little Finger 2
+右小指３,Right Little Finger 3
+右小指3,Right Little Finger 3
+右小指先,Right Little Finger Tip
+胸,Chest
+左胸,Left Breast
+右胸,Right Breast
+胸先,Chest Tip
+鼻,Nose
+口,Mouth
+あご,Chin
+顎,Chin
+舌,Tongue
+舌1,Tongue 1
+舌2,Tongue 2
+髪,Hair
+前髪,Bangs
+後髪,Back Hair
+左髪,Left Hair
+右髪,Right Hair
+髪1,Hair 1
+髪2,Hair 2
+髪3,Hair 3
+顔,Face
+肌,Skin
+白目,Eye Whites
+まつ毛,Eyelashes
+服,Clothes
+スカート,Skirt
+靴,Shoes
+靴下,Socks
+ネクタイ,Necktie
+リボン,Ribbon
+シャツ,Shirt
+ブーツ,Boots
+メガネ,Glasses
+あ,A
+い,I
+う,U
+え,E
+お,O
+ん,N
+まばたき,Blink
+目閉じ,Eyes Closed
+目開き,Eyes Open
+ウィンク,Wink
+ウインク,Wink
+笑い,Smile
+にっこり,Happy Smile
+なごみ,Calm Eyes
+困る,Worried
+怒り,Angry
+哀しみ,Sad
+悲しい,Sad
+驚き,Surprised
+びっくり,Surprised
+真面目,Serious
+照れ,Blush
+涙,Tears
+目大,Eyes Wide
+目小,Eyes Narrow
+じと目,Half-Lidded Eyes
+上目遣い,Upward Gaze
+下目,Downward Gaze
+猫目,Cat Eyes
+ハイライト,Eye Highlights
+ハイライト消し,Remove Eye Highlights
+黒目,Pupils
+眉上,Brows Up
+眉下,Brows Down
+眉困,Worried Brows
+眉怒,Angry Brows
+眉,Brows
+口開き,Mouth Open
+口閉じ,Mouth Closed
+口角上げ,Smile
+口角下げ,Frown
+口横広げ,Mouth Wide
+口縦広げ,Mouth Tall
+口すぼめ,Pucker
+歯,Teeth
+歯茎,Gums
+舌出し,Tongue Out
+頬染め,Blush
+ほっぺ,Cheeks
+汗,Sweat
+青ざめ,Pale
+赤面,Blush
+ガーン,Shock
+えーん,Crying
