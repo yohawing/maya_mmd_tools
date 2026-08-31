@@ -10,10 +10,19 @@ from mmd_tools.core import maya_viewport_utils  # noqa: E402
 
 
 class _FakeCmds:
-    def __init__(self, focus_panel="modelPanel4", focus_type="modelPanel", model_panels=None):
+    def __init__(
+        self,
+        focus_panel="modelPanel4",
+        focus_type="modelPanel",
+        model_panels=None,
+        batch=False,
+        about_error=False,
+    ):
         self.focus_panel = focus_panel
         self.focus_type = focus_type
         self.model_panels = list(model_panels if model_panels is not None else ["modelPanel1"])
+        self.batch = batch
+        self.about_error = about_error
         self.model_editor_calls = []
 
     def getPanel(self, **kwargs):
@@ -23,6 +32,13 @@ class _FakeCmds:
             return self.focus_type
         if kwargs.get("type") == "modelPanel":
             return list(self.model_panels)
+        return None
+
+    def about(self, **kwargs):
+        if self.about_error:
+            raise RuntimeError("about unavailable")
+        if kwargs.get("batch"):
+            return self.batch
         return None
 
     def modelEditor(self, panel_name, **kwargs):
@@ -194,10 +210,47 @@ class TestMayaViewportUtils(unittest.TestCase):
     def test_set_viewport_backface_culling_returns_false_without_model_panel(self):
         fake_cmds = _FakeCmds(focus_panel="outlinerPanel1", focus_type="outlinerPanel", model_panels=[])
 
-        with patch.object(maya_viewport_utils, "cmds", fake_cmds):
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds), patch.object(
+            maya_viewport_utils.logger, "warning"
+        ) as warning:
             self.assertFalse(maya_viewport_utils.set_viewport_backface_culling(False))
 
         self.assertEqual(fake_cmds.model_editor_calls, [])
+        warning.assert_called_once_with("No model panels found")
+
+    def test_set_viewport_backface_culling_is_debug_only_without_model_panel_in_batch(self):
+        fake_cmds = _FakeCmds(
+            focus_panel="outlinerPanel1",
+            focus_type="outlinerPanel",
+            model_panels=[],
+            batch=True,
+        )
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds), patch.object(
+            maya_viewport_utils.logger, "warning"
+        ) as warning, patch.object(maya_viewport_utils.logger, "debug") as debug:
+            self.assertFalse(maya_viewport_utils.set_viewport_backface_culling(False))
+
+        warning.assert_not_called()
+        debug.assert_called_once_with("No model panels found in Maya batch mode")
+
+    def test_set_viewport_backface_culling_warns_when_batch_mode_query_fails(self):
+        fake_cmds = _FakeCmds(
+            focus_panel="outlinerPanel1",
+            focus_type="outlinerPanel",
+            model_panels=[],
+            about_error=True,
+        )
+
+        with patch.object(maya_viewport_utils, "cmds", fake_cmds), patch.object(
+            maya_viewport_utils.logger, "warning"
+        ) as warning:
+            self.assertFalse(maya_viewport_utils.set_viewport_backface_culling(False))
+
+        warning.assert_called_once_with(
+            "Could not determine Maya batch mode; no model panels found",
+            exc_info=True,
+        )
 
     def test_setup_mmd_color_management_sets_supported_mmd_view_settings(self):
         fake_cmds = _FakeColorManagementCmds()
