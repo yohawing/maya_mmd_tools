@@ -210,7 +210,7 @@ def clear_existing_motion(
     preserve_curve_nodes: bool = False,
     detached_curve_nodes=None,
     authored_routes: Optional[Dict[str, dict]] = None,
-) -> None:
+) -> bool:
     """Delete all existing character motion keys for the target model.
 
     When ``target_model`` is explicit, every joint below that model root is
@@ -222,6 +222,10 @@ def clear_existing_motion(
     ``preserve_curve_nodes`` is used by the Control Rig preflight transaction
     to retain legacy animCurve identity for exact rollback.  Such curves are
     detached after their keys are removed and are deleted on successful commit.
+
+    Returns:
+        True only when an exclusively target-owned morph-controller layer was
+        retained for the immediate replacement import.
     """
     context = _resolve_import_state_context(converter_or_context)
     cleared = 0
@@ -377,13 +381,16 @@ def clear_existing_motion(
         layer_name,
         owned_motion_nodes,
     )
-    if cmds.objExists(layer_name) and can_delete_layer:
+    retains_morph_controller = bool(
+        target_model and can_delete_layer and _anim_layer_targets_morph_controller(layer_name)
+    )
+    if cmds.objExists(layer_name) and can_delete_layer and not retains_morph_controller:
         try:
             cmds.delete(layer_name)
             cleared += 1
         except Exception as exc:
             context.logger.debug(f"failed to delete existing animLayer {layer_name}: {exc}")
-    elif cmds.objExists(layer_name):
+    elif cmds.objExists(layer_name) and not can_delete_layer:
         context.logger.warning(
             "Preserving shared/unowned animation layer during root-scoped VMD clear: %s",
             layer_name,
@@ -399,6 +406,7 @@ def clear_existing_motion(
         len(target_joints),
         len(morph_nodes),
     )
+    return retains_morph_controller
 
 
 def _capture_fallback_rest_translates(joints, logger) -> Dict[str, Tuple[float, float, float]]:
@@ -570,6 +578,20 @@ def _anim_layer_is_exclusively_owned_by(layer_name: str, owned_nodes) -> bool:
         if not _nodes_are_exclusively_owned([node], owned_long_names):
             return False
     return True
+
+
+def _anim_layer_targets_morph_controller(layer_name: str) -> bool:
+    """Return whether deleting a layer would delete an MMD morph controller."""
+    if not cmds.objExists(layer_name):
+        return False
+    for attribute in cmds.animLayer(layer_name, query=True, attribute=True) or []:
+        node = str(attribute).split(".", 1)[0]
+        try:
+            if cmds.nodeType(node) == "mmdMorphController":
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def cut_keyable_attrs(

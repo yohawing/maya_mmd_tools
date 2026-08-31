@@ -235,6 +235,7 @@ class VmdConverter:
         self.use_vmd_rotation_time_curve = False
         self._rotation_time_curve_records: List[Dict[str, Any]] = []
         self.anim_layer = None  # 現在のアニメーションレイヤー名
+        self._reuse_cleared_anim_layer = False
         self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
         self.import_camera_animation = True
         self.import_light_animation = True
@@ -572,6 +573,7 @@ class VmdConverter:
         if not target_model:
             self.logger.error("VMD model motion requires an explicit target model")
             return False
+        self._reuse_cleared_anim_layer = False
         if create_mmd_control_rig and bake_mode:
             self._record_profile_warning(
                 profile,
@@ -798,7 +800,18 @@ class VmdConverter:
             # アニメーションレイヤーの作成
             if use_animation_layers_for_import:
                 with vmd_profile.scope("anim_layer_create"):
-                    self.anim_layer = cmds.animLayer(import_context.layer_name, override=False, weight=1.0)
+                    if (
+                        self._reuse_cleared_anim_layer
+                        and cmds.objExists(import_context.layer_name)
+                        and cmds.nodeType(import_context.layer_name) == "animLayer"
+                    ):
+                        self.anim_layer = import_context.layer_name
+                    else:
+                        self.anim_layer = cmds.animLayer(
+                            import_context.layer_name,
+                            override=False,
+                            weight=1.0,
+                        )
             else:
                 self.anim_layer = None
 
@@ -2597,7 +2610,7 @@ class VmdConverter:
                 authored_routes = self._build_legacy_bone_key_routes()
             except Exception as exc:
                 self.logger.debug("Failed to build VMD clear routes: %s", exc)
-        clear_existing_motion(
+        self._reuse_cleared_anim_layer = bool(clear_existing_motion(
             self._import_state_context(),
             layer_name,
             target_namespace,
@@ -2605,7 +2618,7 @@ class VmdConverter:
             preserve_curve_nodes=preserve_curve_nodes,
             detached_curve_nodes=detached_curve_nodes,
             authored_routes=authored_routes,
-        )
+        ))
         return detached_curve_nodes
 
     def _clear_existing_camera_motion(self) -> None:
