@@ -24,7 +24,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <atomic>
 #include <string>
 #include <vector>
 
@@ -39,6 +38,9 @@ public:
     // unconnected while the static VP2 witness is used; a later authoring
     // path can connect a standard mesh without changing the render queue.
     static MObject aInputMesh;
+    // Internal, non-persistent DG input.  VP2 publishes readiness here so
+    // Maya dirties and reevaluates the connected visibility output.
+    static MObject aProxyReady;
     // Transient output driving the ordinary source mesh visibility.  It is
     // true until a proxy has valid DG data and committed VP2 buffers.
     static MObject aSourceVisibility;
@@ -208,7 +210,6 @@ private:
     MBoundingBox staticBoundingBox_;
     bool geometryValid_ = true;
     bool evaluatedGeometryActive_ = false;
-    std::atomic<bool> proxyReady_{false};
     bool renderItemWitnessValid_ = false;
     std::vector<mmd::MmdRenderQueueEntry> renderItemWitnessEntries_;
     bool geometryWitnessValid_ = false;

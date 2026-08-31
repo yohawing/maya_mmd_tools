@@ -28,15 +28,19 @@ def test_proxy_readiness_is_a_nonpersistent_dg_output():
     override = OVERRIDE_SOURCE.read_text(encoding="utf-8")
 
     assert "static MObject aSourceVisibility;" in header
+    assert "static MObject aProxyReady;" in header
+    assert '"proxyReady", "pr", MFnNumericData::kBoolean, false' in source
     assert '"sourceVisibility", "sv", MFnNumericData::kBoolean, true' in source
     assert "numericAttribute.setStorable(false);" in source
-    assert "numericAttribute.setCached(false);" in source
     assert "numericAttribute.setWritable(false);" in source
-    assert "output.setBool(!proxyReady_.load(std::memory_order_acquire));" in source
+    assert "numericAttribute.setHidden(true);" in source
+    assert "attributeAffects(aProxyReady, aSourceVisibility);" in source
+    assert "output.setBool(!proxyReady);" in source
     assert "must be deleted before plugin unload" in source
 
     readiness_helper = source[source.index("bool MmdRenderShape::setProxyReady") :]
-    assert "proxyReady_.store(nextReady, std::memory_order_release);" in readiness_helper
+    assert "MPlug readiness(thisMObject(), aProxyReady);" in readiness_helper
+    assert "readiness.setBool(nextReady)" in readiness_helper
     assert "sourceVisibility.setBool" not in readiness_helper
 
     cleanup = override[override.index("void MmdRenderGeometryOverride::cleanUp()") :]

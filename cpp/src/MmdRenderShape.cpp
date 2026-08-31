@@ -173,6 +173,7 @@ const MString MmdRenderShape::drawDbClassification(
     kMmdRenderShapeClassification);
 const MString MmdRenderShape::drawRegistrantId(kMmdRenderShapeRegistrantId);
 MObject MmdRenderShape::aInputMesh;
+MObject MmdRenderShape::aProxyReady;
 MObject MmdRenderShape::aSourceVisibility;
 
 MmdRenderShape::MmdRenderShape() = default;
@@ -201,6 +202,24 @@ MStatus MmdRenderShape::initialize()
     }
 
     MFnNumericAttribute numericAttribute;
+    aProxyReady = numericAttribute.create(
+        "proxyReady", "pr", MFnNumericData::kBoolean, false, &status);
+    if (!status) {
+        return status;
+    }
+    // This input belongs exclusively to the shape lifecycle.  It is not
+    // serialized, keyed, or exposed to authoring UI; a reopened scene starts
+    // source-visible until VP2 commits current buffers again.
+    numericAttribute.setWritable(true);
+    numericAttribute.setReadable(true);
+    numericAttribute.setStorable(false);
+    numericAttribute.setKeyable(false);
+    numericAttribute.setHidden(true);
+    status = addAttribute(aProxyReady);
+    if (!status) {
+        return status;
+    }
+
     aSourceVisibility = numericAttribute.create(
         "sourceVisibility", "sv", MFnNumericData::kBoolean, true, &status);
     if (!status) {
@@ -208,20 +227,19 @@ MStatus MmdRenderShape::initialize()
     }
     // This is a transient source-control output.  It is intentionally not
     // storable, so a saved scene always reopens source-visible by default.
-    // The VP2 override may run outside the DG evaluation path.  It therefore
-    // only updates an atomic readiness flag; this non-cached output is
-    // evaluated by compute() on Maya's normal DG path when source visibility
-    // is requested.  Do not write this plug directly from VP2 callbacks.
+    // This output is evaluated by Maya's normal DG path from aProxyReady.
+    // The lifecycle helper never writes the user-owned source visibility
+    // destination directly.
     numericAttribute.setWritable(false);
     numericAttribute.setReadable(true);
     numericAttribute.setStorable(false);
-    numericAttribute.setCached(false);
     numericAttribute.setKeyable(false);
     status = addAttribute(aSourceVisibility);
     if (!status) {
         return status;
     }
     attributeAffects(aInputMesh, aSourceVisibility);
+    attributeAffects(aProxyReady, aSourceVisibility);
     return MS::kSuccess;
 }
 
@@ -243,7 +261,11 @@ MStatus MmdRenderShape::compute(const MPlug& plug, MDataBlock& data)
     if (!status) {
         return status;
     }
-    output.setBool(!proxyReady_.load(std::memory_order_acquire));
+    const bool proxyReady = data.inputValue(aProxyReady, &status).asBool();
+    if (!status) {
+        return status;
+    }
+    output.setBool(!proxyReady);
     output.setClean();
     return MS::kSuccess;
 }
@@ -352,11 +374,24 @@ bool MmdRenderShape::setProxyReady(bool ready)
 {
     const bool nextReady = ready && geometryValid_ && geometryWitnessValid_ &&
                            renderItemWitnessValid_;
-    if (aSourceVisibility.isNull()) {
-        proxyReady_.store(false, std::memory_order_release);
+    if (aProxyReady.isNull() || aSourceVisibility.isNull()) {
         return false;
     }
-    proxyReady_.store(nextReady, std::memory_order_release);
+    // supportsEvaluationManagerParallelUpdate() is false, so this lifecycle
+    // transition is made on Maya's serial VP2/DG boundary.  Updating the
+    // hidden input dirties aSourceVisibility through attributeAffects.
+    MPlug readiness(thisMObject(), aProxyReady);
+    if (readiness.isNull()) {
+        return false;
+    }
+    MStatus status;
+    const bool currentReady = readiness.asBool(&status);
+    if (!status) {
+        return false;
+    }
+    if (currentReady != nextReady && !readiness.setBool(nextReady)) {
+        return false;
+    }
     return true;
 }
 

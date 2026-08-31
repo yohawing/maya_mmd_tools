@@ -1870,6 +1870,17 @@ def render_override_native_ui_gallery(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_render_override_gui_smoke(session: nox.Session) -> None:
+    """Run the real Maya GUI/DX11 VP2 render-shape compatibility smoke."""
+    session.run(
+        sys.executable,
+        "tools/smoke/maya_render_override_gui_smoke.py",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def shader_visual_semantic_gate(session: nox.Session) -> None:
     """Guard DX11 outline-color leakage and disappearing hair geometry."""
     _run_shader_visual_semantic_gate(
