@@ -849,6 +849,18 @@ unsigned int buildVertexMorphBlendShapes(
                      quoteMelName(blendShapeNode + ".w[" + std::to_string(created) + "]"))
                         .c_str()),
             false, false);
+        // Maya stores the target delta on the blendShape deformer when the
+        // target is attached. Keeping the temporary mesh afterward only
+        // pollutes the user-visible DAG and diverges from the Python importer.
+        const MStatus deleteStatus = MGlobal::executeCommand(
+            MString(("delete " + quoteMelName(targetName)).c_str()),
+            false, false);
+        if (!deleteStatus) {
+            MGlobal::displayError(
+                MString("[mmdFastLoad] Failed to remove temporary morph target: ") +
+                targetName.c_str());
+            return created;
+        }
         ++created;
     }
 

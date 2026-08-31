@@ -569,13 +569,40 @@ def main() -> int:
         morph_result = cmds.mmdFastLoad(f=str(FAST_LOAD_MORPH_MODEL), n="mmd_fast_morph_smoke", s=1.0, mo=True)
         if not morph_result or len(morph_result) != 2:
             raise RuntimeError(f"mmdFastLoad morph smoke returned unexpected result: {morph_result!r}")
-        morph_transform, _morph_mesh = morph_result
+        morph_transform, morph_mesh = morph_result
         blend_shapes = cmds.ls(type="blendShape") or []
         if not blend_shapes:
             raise RuntimeError("mmdFastLoad(morphs=True) did not create a blendShape")
         weight_count = cmds.blendShape(blend_shapes[0], query=True, weightCount=True) or 0
         if int(weight_count) <= 0:
             raise RuntimeError(f"mmdFastLoad(morphs=True) blendShape has no weights: {blend_shapes[0]}")
+        retained_targets = [
+            str(node)
+            for node in (cmds.ls(type="transform", long=True) or [])
+            if "_target" in str(node)
+        ]
+        if retained_targets:
+            raise RuntimeError(
+                f"mmdFastLoad retained temporary morph target DAG nodes: {retained_targets!r}"
+            )
+        vertex_count = int(cmds.polyEvaluate(morph_mesh, vertex=True) or 0)
+        before_morph = [
+            tuple(cmds.pointPosition(f"{morph_mesh}.vtx[{index}]", local=True))
+            for index in range(vertex_count)
+        ]
+        cmds.setAttr(f"{blend_shapes[0]}.w[0]", 1.0)
+        after_morph = [
+            tuple(cmds.pointPosition(f"{morph_mesh}.vtx[{index}]", local=True))
+            for index in range(vertex_count)
+        ]
+        cmds.setAttr(f"{blend_shapes[0]}.w[0]", 0.0)
+        if not any(
+            any(abs(after[axis] - before[axis]) > 1.0e-7 for axis in range(3))
+            for before, after in zip(before_morph, after_morph)
+        ):
+            raise RuntimeError(
+                "mmdFastLoad blendShape no longer deforms the mesh after target cleanup"
+            )
         cmds.delete(morph_transform)
         print(f"OK: mmdFastLoad(morphs=True) created {int(weight_count)} vertex morph target(s)")
 
