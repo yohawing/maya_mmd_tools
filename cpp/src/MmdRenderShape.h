@@ -218,6 +218,12 @@ private:
     std::size_t geometryWitnessVertexCount_ = 0U;
     std::size_t geometryWitnessIndexCount_ = 0U;
     std::string geometryWitnessDescriptorSummary_;
+    // Number of source vertices whose invalid evaluated normals were repaired
+    // for the current DG update.  This is diagnostic-only state; the repair
+    // is applied to the transient VP2 streams and never mutates the source
+    // Maya mesh.
+    std::size_t evaluatedNormalRepairCount_ = 0U;
+    std::size_t evaluatedNormalStaticFallbackCount_ = 0U;
     std::string renderFallbackReason_;
     std::vector<MaterialBindingDiagnostic> materialBindingDiagnostics_;
 };

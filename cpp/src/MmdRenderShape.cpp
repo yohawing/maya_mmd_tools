@@ -13,12 +13,14 @@
 #include <maya/MFnTypedAttribute.h>
 #include <maya/MFloatVectorArray.h>
 #include <maya/MGlobal.h>
+#include <maya/MIntArray.h>
 #include <maya/MItDependencyNodes.h>
 #include <maya/MPointArray.h>
 #include <maya/MPoint.h>
 #include <maya/MPlug.h>
 #include <maya/MSelectionList.h>
 #include <maya/MSyntax.h>
+#include <maya/MVector.h>
 #include <maya/MViewport2Renderer.h>
 
 #include <algorithm>
@@ -62,6 +64,24 @@ bool hasFiniteMaterial(const mmd::MmdRenderQueueInput& input)
            finiteColor(input.specularColor) &&
            finiteColor(input.ambientColor) &&
            finiteColor(input.edgeColor);
+}
+
+bool hasFinitePoint(const MPoint& point)
+{
+    return std::isfinite(point.x) && std::isfinite(point.y) &&
+           std::isfinite(point.z) && std::isfinite(point.w);
+}
+
+bool hasFiniteVector(const MVector& vector)
+{
+    return std::isfinite(vector.x) && std::isfinite(vector.y) &&
+           std::isfinite(vector.z);
+}
+
+bool hasFiniteVector(const MFloatVector& vector)
+{
+    return std::isfinite(vector.x) && std::isfinite(vector.y) &&
+           std::isfinite(vector.z);
 }
 
 std::string jsonEscape(const std::string& value)
@@ -619,6 +639,8 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     staticBoundingBox_ = nextBounds;
     geometryValid_ = true;
     evaluatedGeometryActive_ = false;
+    evaluatedNormalRepairCount_ = 0U;
+    evaluatedNormalStaticFallbackCount_ = 0U;
     clearRenderItemWitness();
     clearMaterialBindingDiagnostics();
     return true;
@@ -637,6 +659,8 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
         // override until a later DG update supplies a valid mesh (or the
         // input is disconnected and static geometry is explicitly restored).
         geometryValid_ = false;
+        evaluatedNormalRepairCount_ = 0U;
+        evaluatedNormalStaticFallbackCount_ = 0U;
         clearMaterialBindingDiagnostics();
         return false;
     };
@@ -681,49 +705,81 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
         return reject("input mesh vertex/normal count does not match source topology");
     }
 
+    // Maya can expose a zero or non-finite vertex normal for a degenerate
+    // evaluated face.  Keep authored/evaluated normals whenever they are
+    // usable, but repair only the affected source vertices from the current
+    // evaluated triangle positions before rejecting the whole mesh.  The
+    // repair vectors stay empty on the normal path so ordinary frames do not
+    // allocate a second mesh-sized buffer or perform a second full scan.
     std::vector<float> nextPositions;
     std::vector<float> nextNormals;
     nextPositions.reserve(renderVertexCount * 3U);
     nextNormals.reserve(renderVertexCount * 3U);
     MBoundingBox nextBounds;
     bool hasBounds = false;
-    for (const uint32_t sourceIndex : geometry_.sourceVertexIndices) {
+    std::vector<uint32_t> normalRepairSources;
+    std::vector<std::pair<std::size_t, uint32_t>> normalRepairRenderVertices;
+    for (std::size_t renderVertex = 0U;
+         renderVertex < geometry_.sourceVertexIndices.size();
+         ++renderVertex) {
+        const uint32_t sourceIndex =
+            geometry_.sourceVertexIndices[renderVertex];
         if (sourceIndex >= points.length()) {
             return reject("source mapping index exceeds input mesh vertex count");
         }
 
         const MPoint& point = points[sourceIndex];
-        const MFloatVector& normal = normals[sourceIndex];
-        if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
-            !std::isfinite(point.z) || !std::isfinite(point.w) ||
-            !std::isfinite(normal.x) || !std::isfinite(normal.y) ||
-            !std::isfinite(normal.z)) {
-            return reject("input mesh contains a non-finite position or normal");
+        const MFloatVector& inputNormal = normals[sourceIndex];
+        if (!hasFinitePoint(point)) {
+            return reject("input mesh contains a non-finite position");
         }
 
-        const double normalLength =
-            std::sqrt(normal.x * normal.x + normal.y * normal.y +
-                      normal.z * normal.z);
-        if (!std::isfinite(normalLength) || normalLength <= 0.0) {
-            return reject("input mesh contains a zero-length normal");
+        const bool normalFinite = hasFiniteVector(inputNormal);
+        const double inputNormalLength =
+            normalFinite
+                ? std::sqrt(static_cast<double>(inputNormal.x) * inputNormal.x +
+                            static_cast<double>(inputNormal.y) * inputNormal.y +
+                            static_cast<double>(inputNormal.z) * inputNormal.z)
+                : 0.0;
+        const bool needsRepair =
+            !normalFinite || !std::isfinite(inputNormalLength) ||
+            inputNormalLength <= 0.0;
+        if (needsRepair) {
+            if (std::find(normalRepairSources.begin(),
+                          normalRepairSources.end(),
+                          sourceIndex) == normalRepairSources.end()) {
+                normalRepairSources.push_back(sourceIndex);
+            }
+            normalRepairRenderVertices.emplace_back(renderVertex, sourceIndex);
+            nextNormals.push_back(0.0F);
+            nextNormals.push_back(0.0F);
+            nextNormals.push_back(0.0F);
+        } else {
+            const float nx = static_cast<float>(inputNormal.x /
+                                                 inputNormalLength);
+            const float ny = static_cast<float>(inputNormal.y /
+                                                 inputNormalLength);
+            const float nz = static_cast<float>(inputNormal.z /
+                                                 inputNormalLength);
+            if (!std::isfinite(nx) || !std::isfinite(ny) ||
+                !std::isfinite(nz)) {
+                return reject("evaluated mesh values overflow float streams");
+            }
+            nextNormals.push_back(nx);
+            nextNormals.push_back(ny);
+            nextNormals.push_back(nz);
         }
+
         const float px = static_cast<float>(point.x);
         const float py = static_cast<float>(point.y);
         const float pz = static_cast<float>(point.z);
-        const float nx = static_cast<float>(normal.x / normalLength);
-        const float ny = static_cast<float>(normal.y / normalLength);
-        const float nz = static_cast<float>(normal.z / normalLength);
         if (!std::isfinite(px) || !std::isfinite(py) ||
-            !std::isfinite(pz) || !std::isfinite(nx) ||
-            !std::isfinite(ny) || !std::isfinite(nz)) {
+            !std::isfinite(pz)) {
             return reject("evaluated mesh values overflow float streams");
         }
         nextPositions.push_back(px);
         nextPositions.push_back(py);
         nextPositions.push_back(pz);
-        nextNormals.push_back(nx);
-        nextNormals.push_back(ny);
-        nextNormals.push_back(nz);
 
         if (!hasBounds) {
             nextBounds = MBoundingBox(point, point);
@@ -731,6 +787,140 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
         } else {
             nextBounds.expand(point);
         }
+    }
+
+    const std::size_t normalRepairCount = normalRepairSources.size();
+    std::vector<MVector> recomputedNormals;
+    std::vector<MVector> staticFallbackNormals;
+    std::vector<unsigned char> staticFallbackAvailable;
+    if (normalRepairCount > 0U) {
+        MIntArray triangleCounts;
+        MIntArray triangleVertices;
+        if (!meshFn.getTriangles(triangleCounts, triangleVertices)) {
+            return reject("could not read evaluated topology for normal repair");
+        }
+
+        recomputedNormals.assign(points.length(), MVector::zero);
+        std::size_t triangleVertexOffset = 0U;
+        for (unsigned int polygon = 0U; polygon < triangleCounts.length();
+             ++polygon) {
+            const int triangleCount = triangleCounts[polygon];
+            if (triangleCount < 0) {
+                return reject("evaluated topology contains a negative triangle count");
+            }
+            const std::size_t triangleVertexCount =
+                static_cast<std::size_t>(triangleCount) * 3U;
+            if (triangleVertexOffset > triangleVertices.length() ||
+                triangleVertexCount >
+                    static_cast<std::size_t>(triangleVertices.length()) -
+                        triangleVertexOffset) {
+                return reject("evaluated topology has truncated triangle data");
+            }
+
+            for (int triangle = 0; triangle < triangleCount; ++triangle) {
+                const int first = triangleVertices[triangleVertexOffset++];
+                const int second = triangleVertices[triangleVertexOffset++];
+                const int third = triangleVertices[triangleVertexOffset++];
+                if (first < 0 || second < 0 || third < 0 ||
+                    static_cast<std::size_t>(first) >= points.length() ||
+                    static_cast<std::size_t>(second) >= points.length() ||
+                    static_cast<std::size_t>(third) >= points.length()) {
+                    return reject(
+                        "evaluated topology contains an invalid triangle index");
+                }
+
+                const MPoint& firstPoint = points[static_cast<unsigned int>(first)];
+                const MPoint& secondPoint =
+                    points[static_cast<unsigned int>(second)];
+                const MPoint& thirdPoint = points[static_cast<unsigned int>(third)];
+                const MVector faceNormal =
+                    (MVector(secondPoint) - MVector(firstPoint)) ^
+                    (MVector(thirdPoint) - MVector(firstPoint));
+                const double faceLength = faceNormal.length();
+                if (!hasFiniteVector(faceNormal) || !std::isfinite(faceLength) ||
+                    faceLength <= 0.0) {
+                    // A fully collapsed triangle has no geometric normal and
+                    // must not poison the normals accumulated from its
+                    // neighboring non-degenerate triangles.
+                    continue;
+                }
+                recomputedNormals[static_cast<unsigned int>(first)] += faceNormal;
+                recomputedNormals[static_cast<unsigned int>(second)] += faceNormal;
+                recomputedNormals[static_cast<unsigned int>(third)] += faceNormal;
+            }
+        }
+
+        // A vertex that is completely collapsed has no geometric normal to
+        // recover.  Reuse its immutable authored/static stream in that rare
+        // case; this keeps the proxy drawable without mutating the evaluated
+        // Maya mesh.  The fallback is still reported separately below.
+        staticFallbackNormals.assign(points.length(), MVector::zero);
+        staticFallbackAvailable.assign(points.length(), 0U);
+        if (staticNormals_.size() ==
+            geometry_.sourceVertexIndices.size() * 3U) {
+            for (std::size_t renderVertex = 0U;
+                 renderVertex < geometry_.sourceVertexIndices.size();
+                 ++renderVertex) {
+                const uint32_t sourceIndex =
+                    geometry_.sourceVertexIndices[renderVertex];
+                if (staticFallbackAvailable[sourceIndex] != 0U) {
+                    continue;
+                }
+                const std::size_t offset = renderVertex * 3U;
+                const MVector candidate(
+                    static_cast<double>(staticNormals_[offset]),
+                    static_cast<double>(staticNormals_[offset + 1U]),
+                    static_cast<double>(staticNormals_[offset + 2U]));
+                const double candidateLength = candidate.length();
+                if (hasFiniteVector(candidate) &&
+                    std::isfinite(candidateLength) && candidateLength > 0.0) {
+                    staticFallbackNormals[sourceIndex] = candidate;
+                    staticFallbackAvailable[sourceIndex] = 1U;
+                }
+            }
+        }
+    }
+
+    std::size_t staticFallbackCount = 0U;
+    std::vector<uint32_t> staticFallbackSources;
+    for (const auto& repairVertex : normalRepairRenderVertices) {
+        const std::size_t renderVertex = repairVertex.first;
+        const uint32_t sourceIndex = repairVertex.second;
+        MVector normal = recomputedNormals[sourceIndex];
+        const double recomputedLength = normal.length();
+        if (!hasFiniteVector(normal) || !std::isfinite(recomputedLength) ||
+            recomputedLength <= 0.0) {
+            if (sourceIndex >= staticFallbackAvailable.size() ||
+                staticFallbackAvailable[sourceIndex] == 0U) {
+                return reject("normal repair failed for source vertex " +
+                              std::to_string(sourceIndex));
+            }
+            normal = staticFallbackNormals[sourceIndex];
+            if (std::find(staticFallbackSources.begin(),
+                          staticFallbackSources.end(),
+                          sourceIndex) == staticFallbackSources.end()) {
+                staticFallbackSources.push_back(sourceIndex);
+                ++staticFallbackCount;
+            }
+        }
+        const double normalLength = normal.length();
+        if (!hasFiniteVector(normal) || !std::isfinite(normalLength) ||
+            normalLength <= 0.0) {
+            return reject("normal repair failed for source vertex " +
+                          std::to_string(sourceIndex));
+        }
+
+        const float nx = static_cast<float>(normal.x / normalLength);
+        const float ny = static_cast<float>(normal.y / normalLength);
+        const float nz = static_cast<float>(normal.z / normalLength);
+        if (!std::isfinite(nx) || !std::isfinite(ny) ||
+            !std::isfinite(nz)) {
+            return reject("evaluated mesh values overflow float streams");
+        }
+        const std::size_t normalOffset = renderVertex * 3U;
+        nextNormals[normalOffset] = nx;
+        nextNormals[normalOffset + 1U] = ny;
+        nextNormals[normalOffset + 2U] = nz;
     }
 
     if (!hasBounds || nextPositions.size() != geometry_.positions.size() ||
@@ -745,6 +935,19 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
     boundingBox_ = nextBounds;
     geometryValid_ = true;
     evaluatedGeometryActive_ = true;
+    if (normalRepairCount != evaluatedNormalRepairCount_ ||
+        staticFallbackCount != evaluatedNormalStaticFallbackCount_) {
+        if (normalRepairCount > 0U) {
+            std::ostringstream warning;
+            warning << "[mmdRenderShape] Repaired " << normalRepairCount
+                    << " invalid evaluated mesh normal(s) (geometric="
+                    << (normalRepairCount - staticFallbackCount)
+                    << ", staticFallback=" << staticFallbackCount << ").";
+            MGlobal::displayWarning(MString(warning.str().c_str()));
+        }
+        evaluatedNormalRepairCount_ = normalRepairCount;
+        evaluatedNormalStaticFallbackCount_ = staticFallbackCount;
+    }
     clearRenderItemWitness();
     clearMaterialBindingDiagnostics();
     return true;
@@ -762,6 +965,8 @@ void MmdRenderShape::useStaticGeometry()
         boundingBox_ = staticBoundingBox_;
         geometryValid_ = true;
         evaluatedGeometryActive_ = false;
+        evaluatedNormalRepairCount_ = 0U;
+        evaluatedNormalStaticFallbackCount_ = 0U;
         clearRenderItemWitness();
         clearMaterialBindingDiagnostics();
     }
@@ -1017,6 +1222,9 @@ std::string MmdRenderShape::renderItemWitness() const
         if (!geometryWitnessDescriptorSummary_.empty()) {
             stream << ",streams=" << geometryWitnessDescriptorSummary_;
         }
+        stream << ",repairedNormals=" << evaluatedNormalRepairCount_;
+        stream << ",staticNormalFallbacks="
+               << evaluatedNormalStaticFallbackCount_;
     } else {
         stream << " geometry=pending";
     }
