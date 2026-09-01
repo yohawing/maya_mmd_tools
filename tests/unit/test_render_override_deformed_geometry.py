@@ -124,8 +124,8 @@ def test_update_dg_reads_evaluated_mesh_and_fails_closed():
     assert "bool MmdRenderShape::updateEvaluatedMesh" in shape
     assert "getPoints(points, MSpace::kObject)" in shape
     assert "getVertexNormals(true, normals, MSpace::kObject)" in shape
-    assert "getTriangles(triangleCounts, triangleVertices)" in shape
-    assert "normalRepairSources" in shape
+    assert "getVertexNormals(false, recalculatedNormals, MSpace::kObject)" in shape
+    assert "normalRepairRenderVertices" in shape
     assert "Repaired " in shape
     assert "normal repair failed for source vertex" in shape
     assert "source mapping index exceeds input mesh vertex count" in shape
@@ -154,7 +154,8 @@ def test_update_dg_reads_evaluated_mesh_and_fails_closed():
     assert "recordRenderFallbackReason(reason);" in evaluated_update
     assert "if (reasonChanged)" in evaluated_update
     assert "normalRepairCount > 0U" in evaluated_update
-    assert "evaluated topology contains an invalid triangle index" in evaluated_update
+    assert "recalculatedNormalsReady" in evaluated_update
+    assert "getTriangles(" not in evaluated_update
     assert "input mesh contains a zero-length normal" not in evaluated_update
     assert "repairedNormals=" in shape
     assert "staticNormalFallbacks=" in shape
