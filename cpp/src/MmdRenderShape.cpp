@@ -699,9 +699,9 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
 
     // Maya can expose a zero or non-finite vertex normal for a degenerate
     // evaluated face.  Keep authored/evaluated normals whenever they are
-    // usable.  Only when an invalid normal is found do we ask Maya for its
-    // unweighted recalculation; completely degenerate slots use the immutable
-    // static stream.  The repair list stays empty on the normal path.
+    // usable.  Invalid slots use the immutable import-time stream instead of
+    // triggering another normal calculation during every DG update.  The
+    // repair list stays empty on the normal path.
     std::vector<float> nextPositions;
     std::vector<float> nextNormals;
     nextPositions.reserve(renderVertexCount * 3U);
@@ -775,42 +775,20 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
     }
 
     const std::size_t normalRepairCount = normalRepairRenderVertices.size();
-    MFloatVectorArray recalculatedNormals;
-    const bool recalculatedNormalsReady =
-        normalRepairCount > 0U &&
-        meshFn.getVertexNormals(false, recalculatedNormals, MSpace::kObject) &&
-        recalculatedNormals.length() == points.length();
-
     std::size_t staticFallbackCount = 0U;
     for (const auto& repairVertex : normalRepairRenderVertices) {
         const std::size_t renderVertex = repairVertex.first;
         const uint32_t sourceIndex = repairVertex.second;
-        MFloatVector normal(0.0F, 0.0F, 0.0F);
-        bool useStaticFallback = true;
-        if (recalculatedNormalsReady) {
-            normal = recalculatedNormals[sourceIndex];
-            const double recalculatedLength =
-                std::sqrt(static_cast<double>(normal.x) * normal.x +
-                          static_cast<double>(normal.y) * normal.y +
-                          static_cast<double>(normal.z) * normal.z);
-            useStaticFallback =
-                !hasFiniteVector(normal) || !std::isfinite(recalculatedLength) ||
-                recalculatedLength <= 0.0;
+        if (staticNormals_.size() != geometry_.sourceVertexIndices.size() * 3U) {
+            return reject("normal repair failed for source vertex " +
+                          std::to_string(sourceIndex));
         }
-
-        if (useStaticFallback) {
-            if (staticNormals_.size() !=
-                geometry_.sourceVertexIndices.size() * 3U) {
-                return reject("normal repair failed for source vertex " +
-                              std::to_string(sourceIndex));
-            }
-            const std::size_t staticOffset = renderVertex * 3U;
-            normal = MFloatVector(
-                staticNormals_[staticOffset],
-                staticNormals_[staticOffset + 1U],
-                staticNormals_[staticOffset + 2U]);
-            ++staticFallbackCount;
-        }
+        const std::size_t staticOffset = renderVertex * 3U;
+        const MFloatVector normal(
+            staticNormals_[staticOffset],
+            staticNormals_[staticOffset + 1U],
+            staticNormals_[staticOffset + 2U]);
+        ++staticFallbackCount;
 
         const double normalLength =
             std::sqrt(static_cast<double>(normal.x) * normal.x +
@@ -852,9 +830,8 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
         if (normalRepairCount > 0U) {
             std::ostringstream warning;
             warning << "[mmdRenderShape] Repaired " << normalRepairCount
-                    << " invalid evaluated mesh normal(s) (geometric="
-                    << (normalRepairCount - staticFallbackCount)
-                    << ", staticFallback=" << staticFallbackCount << ").";
+                    << " invalid evaluated mesh normal(s) with "
+                    << staticFallbackCount << " import-time static fallback(s).";
             MGlobal::displayWarning(MString(warning.str().c_str()));
         }
         evaluatedNormalRepairCount_ = normalRepairCount;
