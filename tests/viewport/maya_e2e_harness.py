@@ -14,6 +14,19 @@ from tests.common import maya_commandport
 LOG_POLL_INTERVAL = 0.5
 
 
+def _print_log_line(line: str) -> None:
+    """Stream one log line without letting a narrow Windows console abort E2E."""
+
+    try:
+        print(line, end="")
+    except UnicodeEncodeError:
+        # Escape the complete line rather than retrying the console's partial
+        # code page.  This keeps the fallback portable across cp932 and other
+        # narrow Windows streams while preserving the UTF-8 report on disk.
+        safe_line = line.encode("ascii", errors="backslashreplace").decode("ascii")
+        print(safe_line, end="")
+
+
 def monitor_result(
     log_path: Path,
     report_path: Path,
@@ -37,7 +50,7 @@ def monitor_result(
             if not line:
                 time.sleep(LOG_POLL_INTERVAL)
                 continue
-            print(line, end="")
+            _print_log_line(line)
             if verify_status and line.strip().startswith("RESULT_JSON:"):
                 result = json.loads(line.split("RESULT_JSON:", 1)[1].strip())
             if marker in line:

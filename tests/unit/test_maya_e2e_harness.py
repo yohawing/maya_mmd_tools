@@ -1,6 +1,7 @@
 """Focused tests for the shared Maya commandPort E2E host harness."""
 
 import json
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,19 @@ from tests.viewport import maya_e2e_harness as harness
 
 
 class TestMayaE2EHarness(unittest.TestCase):
+    def test_monitor_escapes_log_lines_for_cp932_console(self):
+        class Cp932Console(io.StringIO):
+            encoding = "cp932"
+
+            def write(self, value):
+                value.encode(self.encoding)
+                return super().write(value)
+
+        console = Cp932Console()
+        with mock.patch.object(harness.sys, "stdout", console):
+            harness._print_log_line("model=珈乐\\n")
+        self.assertEqual("model=\\u73c8\\u4e50\\n", console.getvalue())
+
     def test_monitor_reads_marker_and_report(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
