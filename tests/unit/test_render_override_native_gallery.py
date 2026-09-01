@@ -76,6 +76,103 @@ def test_material_binding_diagnostics_parse_valid_json_and_preserve_fields():
     assert item["mainTextureAcquired"] is False
     assert item["mainTextureBindingSuccess"] is False
     assert item["bindingSuccess"] is True
+    summary = diagnostics["summary"]
+    assert summary["status"] == "degraded"
+    assert summary["missingTextureCount"] == 1
+    assert summary["issues"][0]["reason"] == "texture_path_empty"
+
+
+def test_material_binding_diagnostics_summary_distinguishes_bind_failure(tmp_path):
+    texture_path = tmp_path / "diffuse.png"
+    texture_path.write_bytes(b"fixture")
+    diagnostics = vp2._summarize_material_binding_diagnostics(
+        {
+            "version": 1,
+            "status": "ready",
+            "fallbackReason": "",
+            "items": [
+                {
+                    "queueIndex": 4,
+                    "materialIndex": 7,
+                    "submeshIndex": 9,
+                    "renderItemName": "mmdRenderQueue_Opaque_m7_s9_q4",
+                    "mainTexturePath": str(texture_path),
+                    "mainTextureRequested": True,
+                    "mainTextureAcquired": True,
+                    "mainTextureBindingSuccess": False,
+                    "bindingSuccess": False,
+                }
+            ],
+        }
+    )
+
+    summary = diagnostics["summary"]
+    assert summary["status"] == "failed"
+    assert summary["textureBindingFailureCount"] == 1
+    assert summary["itemsWithIssues"] == 1
+    texture_issue = next(
+        issue for issue in summary["issues"] if issue["category"] == "texture"
+    )
+    assert texture_issue["reason"] == "texture_binding_failed"
+    assert texture_issue["severity"] == "error"
+    assert texture_issue["materialIndex"] == 7
+    assert summary["textureBindings"][0]["pathExists"] is True
+
+
+def test_material_binding_diagnostics_summary_classifies_missing_file(tmp_path):
+    diagnostics = vp2._summarize_material_binding_diagnostics(
+        {
+            "status": "ready",
+            "items": [
+                {
+                    "materialIndex": 3,
+                    "mainTexturePath": str(tmp_path / "missing.png"),
+                    "mainTextureRequested": True,
+                    "mainTextureAcquired": False,
+                    "mainTextureBindingSuccess": False,
+                    "bindingSuccess": True,
+                }
+            ],
+        }
+    )
+
+    summary = diagnostics["summary"]
+    assert summary["status"] == "degraded"
+    assert summary["missingTextureCount"] == 1
+    assert summary["issues"][0]["reason"] == "file_not_found"
+    assert summary["textureBindings"][0]["status"] == "requested_unavailable"
+
+
+def test_material_binding_diagnostics_summary_surfaces_fallback_reason():
+    diagnostics = vp2._summarize_material_binding_diagnostics(
+        {
+            "version": 1,
+            "status": "failed",
+            "fallbackReason": "failed to bind material shader to item0",
+            "items": [],
+        }
+    )
+
+    summary = diagnostics["summary"]
+    assert summary["status"] == "failed"
+    assert summary["fallbackReason"] == "failed to bind material shader to item0"
+    assert summary["issues"][-1]["category"] == "fallback"
+    assert summary["issues"][-1]["reason"] == summary["fallbackReason"]
+
+
+def test_material_binding_diagnostics_ready_accepts_optional_texture_degradation():
+    assert vp2._material_binding_diagnostics_ready(
+        {"status": "ready", "summary": {"status": "ok"}}
+    )
+    assert vp2._material_binding_diagnostics_ready(
+        {"status": "ready", "summary": {"status": "degraded"}}
+    )
+    assert not vp2._material_binding_diagnostics_ready(
+        {"status": "ready", "summary": {"status": "failed"}}
+    )
+    assert not vp2._material_binding_diagnostics_ready(
+        {"status": "unavailable", "summary": {"status": "failed"}}
+    )
 
 
 def test_material_binding_diagnostics_retries_empty_and_invalid_results():
@@ -132,6 +229,19 @@ def test_material_binding_diagnostics_report_unavailable_and_invalid_results():
     )
     assert invalid["status"] == "invalid"
     assert invalid["items"] == []
+
+    class FailedCommands:
+        @staticmethod
+        def mmdRenderWitness(**_kwargs):
+            return '{"version":1,"status":"failed","fallbackReason":"shader unavailable","items":[]}'
+
+    failed = vp2._read_material_binding_diagnostics(
+        FailedCommands(), "shape", lambda _message: None, max_attempts=1
+    )
+    assert failed["status"] == "failed"
+    assert failed["fallbackReason"] == "shader unavailable"
+    assert failed["summary"]["status"] == "failed"
+    assert failed["summary"]["fallbackReason"] == "shader unavailable"
 
 
 def test_require_requested_plugin_rejects_different_canonical_binary(tmp_path):

@@ -63,6 +63,189 @@ _ORACLE_BACKGROUND = {
     "backgroundBottom": [1.0, 1.0, 1.0],
 }
 
+_MATERIAL_TEXTURE_SLOTS = (
+    ("mainTexture", "mainTexturePath", "mainTextureRequested", "mainTextureAcquired", "mainTextureBindingSuccess"),
+    ("sphereTexture", "sphereTexturePath", "sphereTextureRequested", "sphereTextureAcquired", "sphereTextureBindingSuccess"),
+    ("toonTexture", "toonTexturePath", "toonTextureRequested", "toonTextureAcquired", "toonTextureBindingSuccess"),
+)
+
+
+def _material_issue_location(item: dict[str, object]) -> dict[str, object]:
+    """Copy the queue/material identity used to locate a report issue."""
+    return {
+        key: item.get(key)
+        for key in ("queueIndex", "materialIndex", "submeshIndex", "renderItemName")
+        if key in item
+    }
+
+
+def _summarize_material_binding_diagnostics(
+    diagnostics: dict[str, object],
+) -> dict[str, object]:
+    """Add a small, actionable summary to the raw native material witness.
+
+    The C++ witness intentionally keeps the individual booleans and paths
+    stable.  This report-only layer turns those fields into explicit
+    ``bound``/``requested_unavailable``/``binding_failed`` states and records
+    why a gray fallback or a degraded optional texture path occurred.  It
+    performs no Maya API calls and is therefore outside the render hot path.
+    """
+    result = dict(diagnostics)
+    raw_items = diagnostics.get("items")
+    items = raw_items if isinstance(raw_items, list) else []
+    texture_bindings: list[dict[str, object]] = []
+    issues: list[dict[str, object]] = []
+    issue_item_indexes: set[int] = set()
+    requested_count = acquired_count = bound_count = 0
+    missing_count = binding_failure_count = 0
+
+    for item_index, raw_item in enumerate(items):
+        if not isinstance(raw_item, dict):
+            continue
+        location = _material_issue_location(raw_item)
+        item_issue = False
+        for slot, path_key, requested_key, acquired_key, binding_key in _MATERIAL_TEXTURE_SLOTS:
+            if not any(key in raw_item for key in (path_key, requested_key, acquired_key, binding_key)):
+                continue
+            path = raw_item.get(path_key)
+            path_text = path if isinstance(path, str) else ""
+            requested = bool(raw_item.get(requested_key))
+            acquired = bool(raw_item.get(acquired_key))
+            binding_success = bool(raw_item.get(binding_key))
+            try:
+                path_exists = Path(path_text).is_file() if path_text.strip() else None
+            except OSError:
+                path_exists = False
+            if requested:
+                requested_count += 1
+                acquired_count += int(acquired)
+                bound_count += int(acquired and binding_success)
+
+            status = "not_requested"
+            reason = None
+            severity = None
+            if requested and not acquired:
+                missing_count += 1
+                status = "requested_unavailable"
+                severity = "warning"
+                reason = (
+                    "texture_path_empty"
+                    if not path_text.strip()
+                    else "file_not_found"
+                    if path_exists is False
+                    else "texture_acquire_failed"
+                )
+            elif requested and acquired and not binding_success:
+                binding_failure_count += 1
+                status, reason, severity = "binding_failed", "texture_binding_failed", "error"
+            elif requested:
+                status = "bound"
+            texture_bindings.append(
+                {
+                    **location,
+                    "slot": slot,
+                    "path": path_text,
+                    "pathExists": path_exists,
+                    "requested": requested,
+                    "acquired": acquired,
+                    "bindingSuccess": binding_success,
+                    "status": status,
+                    "reason": reason,
+                }
+            )
+            if reason:
+                item_issue = True
+                issues.append(
+                    {
+                        **location,
+                        "category": "texture",
+                        "slot": slot,
+                        "path": path_text,
+                        "status": status,
+                        "reason": reason,
+                        "severity": severity or "warning",
+                    }
+                )
+
+        for field, reason in (
+            ("shaderAvailable", "shader_unavailable"),
+            ("parameterBindingSuccess", "parameter_binding_failed"),
+            ("shaderAssignmentSuccess", "shader_assignment_failed"),
+            ("bindingSuccess", "material_binding_failed"),
+        ):
+            if field in raw_item and not bool(raw_item.get(field)):
+                item_issue = True
+                issues.append(
+                    {
+                        **location,
+                        "category": "render_item",
+                        "slot": None,
+                        "path": "",
+                        "status": "failed",
+                        "reason": reason,
+                        "severity": "error",
+                    }
+                )
+                break
+        if item_issue:
+            issue_item_indexes.add(item_index)
+
+    diagnostic_status = str(diagnostics.get("status", "unavailable"))
+    fallback_reason = diagnostics.get("fallbackReason")
+    fallback_text = fallback_reason if isinstance(fallback_reason, str) else ""
+    if diagnostic_status != "ready":
+        issues.append(
+            {
+                "category": "diagnostics",
+                "slot": None,
+                "path": "",
+                "status": diagnostic_status,
+                "reason": str(
+                    diagnostics.get("error")
+                    or diagnostics.get("lastStatus")
+                    or f"diagnostic_status_{diagnostic_status}"
+                ),
+                "severity": "error",
+            }
+        )
+    if fallback_text:
+        issues.append(
+            {
+                "category": "fallback",
+                "slot": None,
+                "path": "",
+                "status": "failed",
+                "reason": fallback_text,
+                "severity": "error",
+            }
+        )
+
+    has_error = any(issue.get("severity") == "error" for issue in issues)
+    summary_status = "failed" if has_error else "degraded" if issues else "ok"
+    result["summary"] = {
+        "status": summary_status,
+        "fallbackReason": fallback_text,
+        "itemCount": sum(isinstance(item, dict) for item in items),
+        "itemsWithIssues": len(issue_item_indexes),
+        "textureSlotCount": len(texture_bindings),
+        "requestedTextureCount": requested_count,
+        "acquiredTextureCount": acquired_count,
+        "boundTextureCount": bound_count,
+        "missingTextureCount": missing_count,
+        "textureBindingFailureCount": binding_failure_count,
+        "textureBindings": texture_bindings,
+        "issues": issues,
+    }
+    return result
+
+
+def _material_binding_diagnostics_ready(diagnostics: object) -> bool:
+    """Return whether the report has a usable, non-fatal native witness."""
+    if not isinstance(diagnostics, dict) or diagnostics.get("status") != "ready":
+        return False
+    summary = diagnostics.get("summary")
+    return isinstance(summary, dict) and summary.get("status") in {"ok", "degraded"}
+
 
 def _wait_for_witness(cmds: Any, shape_name: str, log: Any) -> str:
     """Refresh VP2 until the native render-item witness is ready."""
@@ -117,7 +300,7 @@ def _read_material_binding_diagnostics(
             else:
                 items = parsed.get("items")
                 if parsed.get("status") == "ready" and isinstance(items, list) and items:
-                    return parsed
+                    return _summarize_material_binding_diagnostics(parsed)
                 last_pending = parsed
                 log(
                     "material binding diagnostics not ready "
@@ -141,23 +324,30 @@ def _read_material_binding_diagnostics(
 
     if last_pending is not None:
         pending_items = last_pending.get("items")
-        return {
-            "version": last_pending.get("version", 1),
-            "status": "timeout",
-            "items": pending_items if isinstance(pending_items, list) else [],
-            "lastStatus": last_pending.get("status"),
-            "attempts": attempts,
-        }
+        pending_status = last_pending.get("status")
+        return _summarize_material_binding_diagnostics(
+            {
+                "version": last_pending.get("version", 1),
+                "status": "failed" if pending_status == "failed" else "timeout",
+                "items": pending_items if isinstance(pending_items, list) else [],
+                "lastStatus": pending_status,
+                "fallbackReason": last_pending.get("fallbackReason", ""),
+                "error": last_pending.get("error", ""),
+                "attempts": attempts,
+            }
+        )
     if last_invalid is not None:
         last_invalid["attempts"] = attempts
-        return last_invalid
-    return {
-        "version": 1,
-        "status": "unavailable",
-        "items": [],
-        "attempts": attempts,
-        "error": last_error or "no diagnostic result",
-    }
+        return _summarize_material_binding_diagnostics(last_invalid)
+    return _summarize_material_binding_diagnostics(
+        {
+            "version": 1,
+            "status": "unavailable",
+            "items": [],
+            "attempts": attempts,
+            "error": last_error or "no diagnostic result",
+        }
+    )
 
 
 def _camera_vector(value: object, name: str) -> tuple[float, float, float]:
@@ -630,9 +820,21 @@ def run_probe(
 
         witness = _wait_for_witness(cmds, shape_name, log)
         report["witness"] = witness
-        report["materialBindingDiagnostics"] = _read_material_binding_diagnostics(
+        material_binding_diagnostics = _read_material_binding_diagnostics(
             cmds, shape_name, log
         )
+        report["materialBindingDiagnostics"] = material_binding_diagnostics
+        material_summary = material_binding_diagnostics.get("summary")
+        if isinstance(material_summary, dict):
+            issue_values = material_summary.get("issues", [])
+            issue_count = len(issue_values) if isinstance(issue_values, list) else 0
+            log(
+                "material binding summary: "
+                f"status={material_summary.get('status')} "
+                f"requested={material_summary.get('requestedTextureCount', 0)} "
+                f"bound={material_summary.get('boundTextureCount', 0)} "
+                f"issues={issue_count}"
+            )
 
         ordinary_meshes = [
             str(item) for item in (cmds.ls(type="mesh", long=True) or [])
@@ -779,6 +981,9 @@ def run_probe(
             report["checks"] = {
                 "customShapeCreated": True,
                 "drawPreparationReady": witness.startswith("ready"),
+                "materialBindingDiagnosticsReady": _material_binding_diagnostics_ready(
+                    material_binding_diagnostics
+                ),
                 "geometryBuffersPrepared": "geometry=vertices=" in witness
                 and ",indices=" in witness,
                 "captureCreated": capture.is_file() and capture.stat().st_size > 0,
@@ -793,6 +998,7 @@ def run_probe(
             }
             required_checks = [
                 "drawPreparationReady",
+                "materialBindingDiagnosticsReady",
                 "geometryBuffersPrepared",
                 "captureCreated",
                 "connectedSourceMeshPresent",
@@ -903,6 +1109,9 @@ def run_probe(
             ),
             "materialIndexOrderPrepared": expected_transparent_order in witness,
             "drawPreparationReady": witness.startswith("ready"),
+            "materialBindingDiagnosticsReady": _material_binding_diagnostics_ready(
+                material_binding_diagnostics
+            ),
             "geometryBuffersPrepared": "geometry=vertices=" in witness
             and ",indices=" in witness,
             "captureCreated": capture.is_file() and capture.stat().st_size > 0,
@@ -955,6 +1164,7 @@ def run_probe(
             raise RuntimeError(f"VP2 capture was empty: {capture}")
         required_checks = [
             "cameraMotionPreserved",
+            "materialBindingDiagnosticsReady",
             "queueUpdateReordered",
             "queueUpdateRestored",
             "cameraCaptureCreated",
