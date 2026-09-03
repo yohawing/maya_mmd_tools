@@ -399,9 +399,9 @@ def _normalize_topology(
 
 
 def _validate_binding_projection(value: MorphBindingProjection) -> None:
+    # PMX labels may be empty; index and binding identity identify the morph.
     if (
         not isinstance(value.raw_pmx_name, str)
-        or not value.raw_pmx_name
         or isinstance(value.global_morph_index, bool)
         or not isinstance(value.global_morph_index, int)
         or value.global_morph_index < 0

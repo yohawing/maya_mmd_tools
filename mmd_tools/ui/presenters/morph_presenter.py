@@ -22,8 +22,8 @@ from ...core.morph_authoring import (
     swap_adjacent_morphs,
 )
 from ...core.morph_read_projection import (
-    MorphAuthoringReadSnapshot,
     MorphProjectionRequest,
+    normalize_morph_authoring_snapshot,
     project_runtime_capabilities,
 )
 from ...core.morph_topology import MorphTopologyInspection
@@ -374,32 +374,13 @@ class MorphPresenter:
 
     def _consume_authoring_snapshot(self, root, snapshot):
         """Publish one root/generation-validated immutable projection."""
-        if not isinstance(snapshot, MorphAuthoringReadSnapshot):
-            raise TypeError("invalid morph authoring snapshot")
+        snapshot, _ = normalize_morph_authoring_snapshot(snapshot)
         projection = snapshot.projection
         if projection.root_identity != root and not self._root_alias_matches_projection(
             root,
             projection.root_identity,
         ):
             raise ValueError("morph authoring snapshot root identity is stale")
-        if snapshot.spec is None:
-            if any(morph.semantic_registered for morph in projection.morphs):
-                raise ValueError("runtime-only snapshot contains semantic morph entries")
-        else:
-            if any(not morph.semantic_registered for morph in projection.morphs):
-                raise ValueError("semantic snapshot contains runtime-only morph entries")
-            spec_identities = tuple(
-                (morph.index, morph.binding_identity, morph.name)
-                for morph in snapshot.spec.morphs
-            )
-            projection_identities = tuple(
-                (morph.global_morph_index, morph.binding_identity, morph.raw_pmx_name)
-                for morph in projection.morphs
-            )
-            if spec_identities != projection_identities:
-                raise ValueError("morph authoring snapshot semantic identity mismatch")
-        if not isinstance(snapshot.topology_inspection, MorphTopologyInspection):
-            raise TypeError("invalid morph topology inspection")
 
         self._authoring_spec = snapshot.spec
         self._authoring_spec_baseline = snapshot.spec

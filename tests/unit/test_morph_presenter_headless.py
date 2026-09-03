@@ -1,6 +1,7 @@
 """MorphPresenterのMaya非依存ロジックとadapter-routingを検証するテスト。"""
 
 import unittest
+from dataclasses import fields, make_dataclass
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -758,6 +759,38 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         coordinator.read_morph_authoring_snapshot.assert_called_once_with(TEST_MODEL)
         self.assertEqual(unused.calls, [])
+
+    def test_snapshot_from_another_reload_generation_keeps_morphs_visible(self):
+        snapshot = _snapshot(morphs=({"name": "笑い", "index": 7},))
+
+        def reloaded(value, **overrides):
+            current_type = type(value)
+            new_type = make_dataclass(
+                current_type.__name__,
+                [(field.name, field.type) for field in fields(value)],
+                frozen=True,
+            )
+            new_type.__module__ = current_type.__module__
+            new_type.__qualname__ = current_type.__qualname__
+            new_type.projection_schema_version = getattr(current_type, "projection_schema_version", None)
+            values = {field.name: getattr(value, field.name) for field in fields(value)}
+            return new_type(**dict(values, **overrides))
+
+        snapshot = reloaded(snapshot, topology_inspection=reloaded(snapshot.topology_inspection))
+        self.assertNotIsInstance(snapshot, MorphAuthoringReadSnapshot)
+        adapter = _FakeMayaAdapter()
+        adapter.existing.add(TEST_MODEL)
+        presenter, view, _, _ = _make_presenter(model=TEST_MODEL, adapter=adapter, snapshot=snapshot)
+        presenter.load_morphs()
+        self.assertEqual(presenter._loaded_model_root, TEST_MODEL)
+        self.assertEqual([item.text() for item in view.morph_list.items], ["7:V|smile"])
+
+    def test_snapshot_lookalike_is_rejected_before_publishing(self):
+        snapshot = _snapshot()
+        lookalike = SimpleNamespace(**{field.name: getattr(snapshot, field.name) for field in fields(snapshot)})
+        presenter, _, _, _ = _make_presenter()
+        with self.assertRaises(TypeError):
+            presenter._consume_authoring_snapshot(TEST_MODEL, lookalike)
 
     def test_stale_model_snapshot_is_rejected_before_hidden_targets_publish(self):
         adapter = _FakeMayaAdapter()

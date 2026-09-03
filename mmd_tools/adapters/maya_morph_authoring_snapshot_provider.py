@@ -7,7 +7,10 @@ from typing import Any, Sequence
 from mmd_tools.adapters.maya_morph_read_projection import MayaMorphReadProjectionAdapter
 from mmd_tools.adapters.maya_scene_metadata_backend import MayaSceneMetadataBackend
 from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME, ATTR_MMD_MODEL_NAME_EN
-from mmd_tools.core.morph_read_projection import MorphAuthoringReadSnapshot
+from mmd_tools.core.morph_read_projection import (
+    MorphAuthoringReadSnapshot,
+    normalize_morph_authoring_snapshot,
+)
 from mmd_tools.core.morph_topology import MorphTopologyInspection
 
 
@@ -31,8 +34,7 @@ class MayaMorphAuthoringSnapshotProvider:
                 ).read_runtime_only_projection(root),
                 topology_inspection=MorphTopologyInspection({}, {}, ()),
             )
-        if not isinstance(snapshot, MorphAuthoringReadSnapshot):
-            raise TypeError("invalid morph authoring snapshot")
+        snapshot, _ = normalize_morph_authoring_snapshot(snapshot)
         return snapshot
 
     def _has_mmd_model_marker(self, root: str) -> bool:
