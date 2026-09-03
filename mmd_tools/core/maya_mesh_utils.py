@@ -210,7 +210,10 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
 
     dag_path = om.MDagPath.getAPathTo(mesh_obj)
     transform_fn = om.MFnTransform(dag_path.transform())
-    transform_fn.setName(name)
+    # An absolute name also keeps Maya's automatic shape rename in this namespace.
+    namespace = cmds.namespaceInfo(currentNamespace=True, absoluteName=True)
+    absolute_name = name if name.startswith(":") else f"{namespace.rstrip(':')}:{name}"
+    transform_fn.setName(absolute_name)
     transform_name = transform_fn.fullPathName()
 
     cmds.sets(transform_name, edit=True, forceElement="initialShadingGroup")
