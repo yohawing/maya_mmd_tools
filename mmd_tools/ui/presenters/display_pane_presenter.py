@@ -17,7 +17,7 @@ from ...core.constants import (
 )
 from ...core.display_frame_metadata import display_frames_from_json, display_frames_to_json
 from ...core.logger import get_logger
-from ...core.name_display import preferred_pmx_display_name
+from ...core.name_display import morph_name_fallback, preferred_pmx_display_name
 from ..translations.translator import UITranslator
 from .list_presenter_helpers import format_indexed_name_label
 
@@ -407,7 +407,7 @@ class DisplayPanePresenter:
             name = preferred_pmx_display_name(
                 entry.get("name_jp"),
                 entry.get("name_en"),
-                fallback=f"Morph {index}",
+                fallback=lambda: morph_name_fallback(entry.get("name_jp"), index),
                 language=UITranslator.instance().get_language(),
             )
             result[f"{name} [{index}]"] = index

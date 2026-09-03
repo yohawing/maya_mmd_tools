@@ -845,9 +845,38 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter._display_all_morphs()
         self.assertEqual(
             [item.text() for item in view.morph_list.items],
-            ["4:V|Morph 4", "7:B|Morph 7", "-:M|Morph 2"],
+            ["4:V|HASH49cd6e0a_name", "7:B|HASH49cd6e0a_name", "-:M|HASH49cd6e0a_name"],
         )
         self.assertEqual([item.data(256) for item in view.morph_list.items], ["v", "b", "m"])
+
+    def test_english_morph_names_use_sanitizer_without_changing_metadata(self):
+        presenter, view, _ = self._load_snapshot_rows((
+            {"name": "笑い", "index": 0},
+            {"name": "頬", "index": 7},
+            {"name": "笑い", "name_english": "Custom Smile", "index": 8},
+            {"name": "", "index": 9},
+        ))
+        self.assertEqual(
+            [item.text() for item in view.morph_list.items],
+            ["0:V|smile", "7:V|cheek", "8:V|Custom Smile", "9:V|Morph [9]"],
+        )
+        self.assertEqual(presenter.morph_data["頬"]["name_jp"], "頬")
+        self.assertEqual(presenter.morph_data["頬"]["name_en"], "")
+
+    def test_unused_display_fallback_is_not_evaluated(self):
+        from mmd_tools.core.name_display import preferred_pmx_display_name
+
+        fallback = Mock(side_effect=AssertionError("unused sanitizer called"))
+        for name, english, language, expected in (
+            ("頬", "", "ja", "頬"),
+            ("頬", "Cheek", "en", "Cheek"),
+            ("cheek", "", "en", "cheek"),
+        ):
+            self.assertEqual(
+                preferred_pmx_display_name(name, english, language=language, fallback=fallback),
+                expected,
+            )
+        fallback.assert_not_called()
 
     def test_duplicate_blendshape_names_bind_by_weight_index_deterministically(self):
         presenter, _, _ = self._load_snapshot_rows((
@@ -972,7 +1001,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
                 ("|a", "smile_a", 0), ("|b", "smile_b", 0))},))
         presenter.current_morph = "笑顔"
         presenter.on_morph_slider_changed(65)
-        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|Morph 0"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|face"])
         self.assertEqual(len(presenter.morph_data["笑顔"]["blend_shape_targets"]), 2)
         self.assertIn(("set_attr", "controller.inputWeight[0]", 0.65), adapter.calls)
 
@@ -1110,7 +1139,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
                 ("|faceBlendShapeB", "smile_b", 3),
             )},
         ))
-        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|Morph 0"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["0:V|face"])
         self.assertEqual(presenter.morph_data["笑顔"]["blend_shape_targets"], [
             {"node": "|ns:faceBlendShapeA", "target": "smile_a", "weight_attr": "weight[0]"},
             {"node": "|faceBlendShapeB", "target": "smile_b", "weight_attr": "weight[3]"},

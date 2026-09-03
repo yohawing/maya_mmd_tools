@@ -259,6 +259,15 @@
     "鼻下": "nose_down"
   },
   "dictionary": [
+    ["初音ミク", "hatsune_miku"],
+    ["ミク", "miku"],
+    ["ツインテ", "twin_tail"],
+    ["ジャケット", "jacket"],
+    ["ベルト", "belt"],
+    ["そで", "sleeve"],
+    ["チェーン", "chain"],
+    ["頬", "cheek"],
+    ["鎖骨", "clavicle"],
     ["なし", "none", "无", "無"],
     ["全て", "all", "全部", "全部"],
     ["全ての親", "master", "主骨骼", "主骨骼"],

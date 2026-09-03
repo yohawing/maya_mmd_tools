@@ -7,6 +7,7 @@ from mmd_tools.adapters.maya_morph_authoring_snapshot_provider import (
     MayaMorphAuthoringSnapshotProvider,
 )
 from ...core.logger import get_logger
+from ...core.name_display import morph_name_fallback
 from ...core.morph_metadata_reader import (
     MORPH_TAB_GROUP_ORDER,
     PMX_TYPE_TO_UI_INDEX,
@@ -676,7 +677,7 @@ class MorphPresenter:
                     name,
                     data.get("name_en", ""),
                     prefix=f"{type_letter}|",
-                    fallback=f"Morph {fallback_index}",
+                    fallback=lambda: morph_name_fallback(data.get("name_jp"), fallback_index),
                 )
             )
             item.setData(Qt.UserRole, morph_key)
@@ -1102,7 +1103,7 @@ class MorphPresenter:
                 morph.name,
                 morph.name_english,
                 prefix=f"{type_letter}|",
-                fallback=f"Morph {morph.index}",
+                fallback=lambda: morph_name_fallback(morph.name, morph.index),
             )
         )
         item.setData(Qt.UserRole, key)
@@ -1308,7 +1309,7 @@ class MorphPresenter:
                                 data.get("name_jp") or key,
                                 data.get("name_en", ""),
                                 prefix=f"{_MORPH_TYPE_LETTERS.get(int(raw_type), '?')}|",
-                                fallback=f"Morph {data['index']}",
+                                fallback=lambda: morph_name_fallback(data.get("name_jp"), data["index"]),
                             )
                         )
                     break
@@ -1436,7 +1437,7 @@ class MorphPresenter:
                     result.name,
                     result.name_english,
                     prefix=f"{type_letter}|",
-                    fallback=f"Morph {index_text}",
+                    fallback=lambda: morph_name_fallback(result.name, index_text),
                 )
             )
             break
