@@ -751,11 +751,27 @@ class BoneConverter:
         ])
 
     def validate_pmx_local_axes(self, bones):
-        """Validate every LOCAL_AXIS descriptor before creating scene nodes."""
+        """Disable empty Local Axis declarations, then validate before scene creation.
+
+        Clear the flag on parsed bones so joint orientation, scene metadata and
+        downstream Control Rig/export agree. The source PMX file is unchanged.
+        """
         for index, bone in enumerate(bones):
             if not bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
                 continue
             try:
+                if (
+                    tuple(float(value) for value in bone.x_axis_direction) == (0.0, 0.0, 0.0)
+                    and tuple(float(value) for value in bone.z_axis_direction) == (0.0, 0.0, 0.0)
+                ):
+                    self.logger.warning(
+                        "Ignoring empty LOCAL_AXIS for bone[%d] %r: "
+                        "X and Z axes are both zero; importing without Local Axis",
+                        index,
+                        getattr(bone, "name", ""),
+                    )
+                    bone.bone_flag &= ~int(PmxBoneFlag.LOCAL_AXIS)
+                    continue
                 self._compute_pmx_world_rotation_matrix(bone)
             except (TypeError, ValueError) as exc:
                 name = getattr(bone, "name", "")
