@@ -5,6 +5,8 @@ import functools
 import time
 import maya.cmds as cmds
 
+from tests.common.test_timing import TestTimingRecorder
+
 
 _ATTACHED_FILE_MUTATION_FLAGS = frozenset(
     {
@@ -365,54 +367,9 @@ class _LifecycleTextTestResult(unittest.TextTestResult):
         super().stopTest(test)
 
 
-class _TestTimingRecorder:
-    """Collect per-test elapsed time without running tests a second time."""
 
-    _OUTCOME_PRIORITY = {
-        "not_run": 0,
-        "unknown": 1,
-        "success": 1,
-        "skipped": 2,
-        "expected_failure": 2,
-        "unexpected_success": 3,
-        "failure": 4,
-        "error": 5,
-    }
-
-    def __init__(self, test_ids):
-        self.tests = [
-            {"id": test_id, "status": "not_run", "elapsed_seconds": None}
-            for test_id in test_ids
-        ]
-        self._by_id = {entry["id"]: entry for entry in self.tests}
-        self._started = {}
-
-    def start_test(self, test):
-        self._started[id(test)] = time.perf_counter()
-
-    def record_outcome(self, test, outcome):
-        entry = self._by_id.get(test.id())
-        if entry is None:
-            entry = {"id": test.id(), "status": "not_run", "elapsed_seconds": None}
-            self.tests.append(entry)
-            self._by_id[test.id()] = entry
-        current = entry["status"]
-        if self._OUTCOME_PRIORITY.get(outcome, 1) >= self._OUTCOME_PRIORITY.get(current, 1):
-            entry["status"] = outcome
-
-    def outcome_for(self, test):
-        entry = self._by_id.get(test.id())
-        if entry is None or entry["status"] == "not_run":
-            return None
-        return entry["status"]
-
-    def finish_test(self, test, outcome=None):
-        if outcome is not None:
-            self.record_outcome(test, outcome)
-        started = self._started.pop(id(test), None)
-        entry = self._by_id.get(test.id())
-        if started is not None:
-            entry["elapsed_seconds"] = max(0.0, time.perf_counter() - started)
+# Keep the historical private import path used by existing GUI tests.
+_TestTimingRecorder = TestTimingRecorder
 
 
 def _iter_tests(suite):

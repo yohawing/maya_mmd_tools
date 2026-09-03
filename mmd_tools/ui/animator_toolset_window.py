@@ -163,6 +163,16 @@ class AnimatorToolsetWindow(QWidget):
         if callable(refresh):
             refresh()
 
+    def refresh_for_language_change(self) -> None:
+        """Rebuild presenter-owned labels after the application locale changes."""
+
+        if self._cleanup_done:
+            return
+        presenter = getattr(self, "animation_presenter", None)
+        refresh = getattr(presenter, "refresh_for_name_change", None)
+        if callable(refresh):
+            refresh()
+
     def _apply_floating_window_size(self) -> None:
         """Restore the saved size on Maya's floating Qt wrapper.
 

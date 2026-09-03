@@ -10,14 +10,15 @@ import maya.api.OpenMayaRender as omr
 
 from mmd_tools.core.collider_authoring import (
     connect_collider_authoring_follow,
-    connect_collider_authoring_transform,
     migrate_legacy_collider_authoring_pose,
     set_collider_authoring_pose,
 )
 
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
+from ...core.coordinate_transform import mmd_point_to_maya
 from ...core.logger import get_logger
+from ...core.name_display import preferred_pmx_display_name
 from ...core.model_registry import (
     REGISTRY_CATEGORY_PHYSICS,
     list_model_registry_members,
@@ -28,6 +29,7 @@ from ..translations import UITranslator
 from .list_presenter_helpers import (
     apply_list_filter,
     format_indexed_name_label,
+    maya_node_leaf_name,
     reload_for_current_model_change,
     select_existing_user_role_nodes,
 )
@@ -126,9 +128,26 @@ def _long_name(node):
     return matches[0] if matches else ""
 
 
-def _candidate_display(index, name_jp, name_en, node):
-    name = name_jp or node.rsplit("|", 1)[-1]
-    return f"{index}: {name}" + (f" [{name_en}]" if name_en else "")
+def _candidate_display(index, name_jp, name_en, node, prefix=""):
+    leaf = maya_node_leaf_name(node)
+    return format_indexed_name_label(
+        index,
+        name_jp,
+        name_en,
+        prefix=prefix,
+        fallback=leaf,
+    ).replace(":", ": ", 1)
+
+
+def _related_bone_display(name_jp, name_en, node):
+    """Return a locale-safe related-bone label for rigid-body list rows."""
+
+    return preferred_pmx_display_name(
+        name_jp,
+        name_en,
+        fallback=maya_node_leaf_name(node),
+        language=UITranslator.instance().get_language(),
+    )
 
 
 class PhysicsPresenter:
@@ -608,16 +627,18 @@ class PhysicsPresenter:
             name_en = _get_attr(shape, "nameEn", "") or ""
             group = max(0, min(15, int(_get_attr(shape, "collisionGroup", 0)))) + 1
             bone = _resolve_message_name(shape, "relatedBone")
-            bone_name = (
-                (_get_attr(bone, "mmd_bone_name", "") or "")
-                if bone else ""
-            )
-            if not bone_name and bone:
-                bone_name = bone.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
-            display = format_indexed_name_label(
+            bone_name = ""
+            if bone:
+                bone_name = _related_bone_display(
+                    _get_attr(bone, "mmd_bone_name", "") or "",
+                    _get_attr(bone, "mmd_bone_name_en", "") or "",
+                    bone,
+                )
+            display = _candidate_display(
                 index,
-                name_jp or ("" if name_en else transform.rsplit("|", 1)[-1]),
+                name_jp,
                 name_en,
+                transform,
                 prefix=f"G{group} ",
             )
             display += f" - [{bone_name or '-'}]"
@@ -633,10 +654,11 @@ class PhysicsPresenter:
             index = int(_get_attr(shape, "pmxIndex", -1))
             name_jp = _get_attr(shape, "nameJp", "") or ""
             name_en = _get_attr(shape, "nameEn", "") or ""
-            display = format_indexed_name_label(
+            display = _candidate_display(
                 index,
-                name_jp or ("" if name_en else transform.rsplit("|", 1)[-1]),
+                name_jp,
                 name_en,
+                transform,
             )
             item = QListWidgetItem(display)
             item.setData(Qt.UserRole, shape)
@@ -956,13 +978,11 @@ class PhysicsPresenter:
         transform = (cmds.listRelatives(shape, parent=True, fullPath=True) or [None])[0]
         if not transform:
             raise RuntimeError(f"Rigid body transform not found for {shape}")
-        display_scale = float(_get_attr(transform, "scaleX", 1.0))
         set_collider_authoring_pose(
             transform,
             shape,
             parsed.pmx_position,
             tuple(math.radians(value) for value in parsed.pmx_rotation_degrees),
-            display_scale,
         )
         _mark_geometry_draw_dirty(shape)
         try:
@@ -992,7 +1012,11 @@ class PhysicsPresenter:
         transform = (cmds.listRelatives(shape, parent=True, fullPath=True) or [None])[0]
         if not transform:
             raise RuntimeError(f"Physics joint transform not found for {shape}")
-        cmds.setAttr(f"{transform}.translate", *parsed.pmx_position, type="double3")
+        cmds.setAttr(
+            f"{transform}.translate",
+            *mmd_point_to_maya(parsed.pmx_position),
+            type="double3",
+        )
         for attr, values in (
             ("translationLimitMin", parsed.translation_limit_min),
             ("translationLimitMax", parsed.translation_limit_max),
@@ -1136,7 +1160,12 @@ class PhysicsPresenter:
         cmds.setAttr(f"{shape}.mass", 1.0)
         cmds.setAttr(f"{shape}.collisionGroup", 0)
         cmds.setAttr(f"{shape}.collisionMask", 0xFFFF)
-        connect_collider_authoring_transform(transform, shape)
+        set_collider_authoring_pose(
+            transform,
+            shape,
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+        )
         logger.info("Created rigid body '%s'", transform)
 
     def _create_joint(self, root):
@@ -1186,14 +1215,11 @@ class PhysicsPresenter:
                 cmds.setAttr(f"{shape}.{vec_attr}{axis}", val)
         position = tuple(_get_attr(source_shape, f"position{axis}", 0.0) for axis in "XYZ")
         rotation_degrees = tuple(_get_attr(source_shape, f"rotation{axis}", 0.0) for axis in "XYZ")
-        source_transform = (cmds.listRelatives(source_shape, parent=True, fullPath=True) or [None])[0]
-        display_scale = _get_attr(source_transform, "scaleX", 1.0) if source_transform else 1.0
         set_collider_authoring_pose(
             transform,
             shape,
             position,
             tuple(math.radians(value) for value in rotation_degrees),
-            display_scale,
         )
         bone_conn = cmds.listConnections(f"{source_shape}.relatedBone", source=True, destination=False) or []
         if bone_conn:
@@ -1229,6 +1255,13 @@ class PhysicsPresenter:
             for axis in ("X", "Y", "Z"):
                 val = _get_attr(source_shape, f"{vec_attr}{axis}", 0.0)
                 cmds.setAttr(f"{shape}.{vec_attr}{axis}", val)
+        cmds.setAttr(
+            f"{transform}.translate",
+            *mmd_point_to_maya(
+                tuple(_get_attr(shape, f"position{axis}", 0.0) for axis in "XYZ"),
+            ),
+            type="double3",
+        )
         for rb_attr in ("rigidBodyA", "rigidBodyB"):
             conn = cmds.listConnections(f"{source_shape}.{rb_attr}", source=True, destination=False) or []
             if conn:

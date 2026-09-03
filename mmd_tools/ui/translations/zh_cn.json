@@ -198,6 +198,7 @@
     "use_cpp_vp2_ownership": "使用原生 mmdRenderShape 的 VP2 RenderOverride。需要启用 C++ Fast Load，仅用于网格显示（实验性）"
   },
   "messages": {
+    "ready": "准备就绪",
     "vmd_bake_export_help": "导出动画前烘焙当前时间轴。启用范围时，仅评估指定范围。",
     "vpd_current_pose_help": "导出当前帧评估的当前模型姿势。",
     "import_success": "导入完成",
@@ -383,7 +384,6 @@
     "vmd_rotation_time_curve": "保留VMD旋转时间曲线（实验性）",
     "use_cpp_fast_load": "使用 C++ Fast Load（实验性）",
     "use_cpp_vp2_ownership": "使用 C++ VP2 RenderOverride（实验性）",
-    "apply_scale": "应用缩放",
     "new_file": "新建文件",
     "enable_ik": "启用IK",
     "invert_value": "反转值",
@@ -404,8 +404,6 @@
     "element_index": "索引",
     "import_scale": "导入缩放:",
     "root_bone_name": "根骨骼名称:",
-    "texture_search_path": "贴图搜索路径:",
-    "uv_set_name": "UV集名称:",
     "start_frame": "开始帧:",
     "vmd_fps": "帧率:",
     "format": "格式:",
@@ -475,7 +473,7 @@
     "name_english": "英文名称:",
     "shape": "形状:",
     "shape_size": "形状尺寸:",
-    "pmx_position": "原始 PMX 位置:",
+    "pmx_position": "PMX 位置:",
     "pmx_rotation_degrees": "原始 PMX 旋转角度:",
     "bodies": "刚体:",
     "physics_mode": "物理模式:",

@@ -89,6 +89,8 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
+        cls._default_fixture_scene_path = None
+        cls._default_fixture_root_uuid = None
         cls._previous_skip_shader_override = os.environ.get(
             "MMD_TOOLS_SKIP_SHADER_OVERRIDE"
         )
@@ -147,6 +149,33 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
             "import_physics": False,
         }
         options.update(extra_options)
+
+        if not extra_options:
+            fixture_path = self.__class__._default_fixture_scene_path
+            if fixture_path is None:
+                root = import_mmd_file(_PMX_PATH, options=options)
+                self.assertTrue(root)
+                root_nodes = cmds.ls(root, long=True) or []
+                self.assertEqual(len(root_nodes), 1)
+                root_uuid = cmds.ls(root_nodes[0], uuid=True) or []
+                self.assertEqual(len(root_uuid), 1)
+
+                fixture_path = self.get_temp_filename(
+                    "mmd_control_rig_default_fixture.ma"
+                )
+                cmds.file(rename=fixture_path)
+                cmds.file(save=True, type="mayaAscii", force=True)
+                self.__class__._default_fixture_scene_path = fixture_path
+                self.__class__._default_fixture_root_uuid = str(root_uuid[0])
+
+            cmds.file(fixture_path, open=True, force=True)
+            roots = cmds.ls(
+                self.__class__._default_fixture_root_uuid,
+                long=True,
+            ) or []
+            self.assertEqual(len(roots), 1)
+            return str(roots[0])
+
         root = import_mmd_file(_PMX_PATH, options=options)
         self.assertTrue(root)
         return root

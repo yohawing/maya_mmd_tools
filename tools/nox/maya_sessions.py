@@ -45,7 +45,11 @@ def run_cpp_plugin_smoke(
     if not mayapy_path.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy_path}")
 
-    env_values = {"MAYA_VERSION": version, "MMD_TOOLS_CPP_CONFIG": config}
+    env_values = {
+        "MAYA_VERSION": version,
+        "MAYA_SKIP_USERSETUP_PY": "1",
+        "MMD_TOOLS_CPP_CONFIG": config,
+    }
     if require_plugin:
         plugin = root / "plug-ins" / version / config / "mmd_tools_cpp.mll"
         if not plugin.exists():
@@ -62,6 +66,80 @@ def run_cpp_plugin_smoke(
             env=env,
             external=True,
         )
+
+
+def run_uv_weld_profile(
+    session,
+    *,
+    posargs: list[str],
+    option,
+    default_maya_version: str,
+    default_config: str,
+    root: Path,
+    mayapy,
+    mayapy_env,
+    mayapy_arg_path,
+    mayapy_script,
+) -> None:
+    """Profile native UV weld using an UTF-8 config for the PMX path."""
+    version = option(posargs, "--maya", default_maya_version)
+    config = option(posargs, "--config", default_config)
+    mode = option(posargs, "--mode", "batch")
+    separate = option(posargs, "--separate", "true").lower()
+    if separate not in {"true", "false"}:
+        session.error("--separate must be true or false")
+    compare = option(posargs, "--compare", "")
+    runs = int(option(posargs, "--runs", "3"))
+    warmup = int(option(posargs, "--warmup", "1"))
+    pmx = Path(option(posargs, "--pmx", str(root / "tests/data/mmt_test_model.pmx")))
+    output = Path(option(posargs, "--out", str(root / "build/reports/uv_weld_profile.json")))
+    if not pmx.is_file():
+        session.error(f"UV weld profile PMX not found: {pmx}")
+
+    mayapy_path = mayapy(version)
+    if not mayapy_path.exists():
+        session.error(f"mayapy not found for Maya {version}: {mayapy_path}")
+    plugin = root / "plug-ins" / version / config / "mmd_tools_cpp.mll"
+    if not plugin.exists():
+        session.error(
+            f"C++ plugin not found at {plugin}; run 'uvx nox -s cpp_build "
+            f"-- --maya {version} --config {config}' first."
+        )
+
+    config_path = output.with_name(output.stem + ".input.json")
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "pmx": str(pmx.resolve()),
+                "mode": mode,
+                "separate_meshes_by_material": separate == "true",
+                "runs": runs,
+                "warmup": warmup,
+                "compare": str(Path(compare).resolve()) if compare else "",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env = mayapy_env(
+        mayapy_path,
+        MAYA_VERSION=version,
+        MMD_TOOLS_CPP_CONFIG=config,
+        MMD_TOOLS_CPP_PLUGIN=mayapy_arg_path(mayapy_path, plugin),
+        MAYA_SKIP_USERSETUP_PY="1",
+    )
+    session.run(
+        str(mayapy_path),
+        mayapy_script(mayapy_path, "tools/probes/uv_weld_profile.py"),
+        "--config",
+        mayapy_arg_path(mayapy_path, config_path),
+        "--out",
+        mayapy_arg_path(mayapy_path, output),
+        env=env,
+        external=True,
+    )
 
 
 def run_yw_test_model_fixture_gate(
@@ -1268,13 +1346,13 @@ def run_import_scale_drift_e2e(
     mayapy_script,
     convert_mayapy_path_options,
 ) -> None:
-    """Run mayapy diagnostics for import scale and skin bind drift."""
+    """Run the mayapy import-scale acceptance oracle."""
     maya_version = option(posargs, "--maya", "2024")
     mayapy_path = mayapy(maya_version)
     passthrough: list[str] = []
     args = list(posargs)
     path_options = {"--model", "--log"}
-    value_options = path_options | {"--scale", "--expect", "--clean-threshold", "--drift-threshold", "--parser"}
+    value_options = path_options | {"--scale", "--expect", "--clean-threshold", "--linearity-tolerance", "--parser"}
     i = 0
     while i < len(args):
         if args[i] == "--maya" and i + 1 < len(args):
@@ -1289,7 +1367,12 @@ def run_import_scale_drift_e2e(
         str(mayapy_path),
         mayapy_script(mayapy_path, "tests/viewport/import_scale_drift_e2e.py"),
         *convert_mayapy_path_options(mayapy_path, passthrough, path_options),
-        env=mayapy_env(mayapy_path, preserve_pythonpath=True),
+        env=mayapy_env(
+            mayapy_path,
+            preserve_pythonpath=True,
+            MAYA_SKIP_USERSETUP_PY="1",
+            PYTHONIOENCODING="utf-8",
+        ),
         external=True,
     )
 

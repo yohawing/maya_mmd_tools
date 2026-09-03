@@ -19,6 +19,7 @@ from ..qt_compat import (
     QSlider,
 )
 from ..base_tab import BaseTab
+from ...core.name_display import original_pmx_fields_visible
 from ..components.authoring_toolbar import AuthoringToolbar
 
 
@@ -49,6 +50,9 @@ class MaterialTab(BaseTab):
         # Set initial state
         self._set_details_enabled(False)
         self._show_placeholder()
+        original_visible = original_pmx_fields_visible(self._translator.get_language())
+        self.material_name_jp_label.setVisible(original_visible)
+        self.material_jp_name_edit.setVisible(original_visible)
 
     def _create_material_list_section(self):
         """マテリアルリストセクションを作成"""
@@ -469,6 +473,9 @@ class MaterialTab(BaseTab):
         # Labels
         if hasattr(self, "material_name_jp_label"):
             self.material_name_jp_label.setText(self.tr("material_name_jp", "fields"))
+            original_visible = original_pmx_fields_visible(self._translator.get_language())
+            self.material_name_jp_label.setVisible(original_visible)
+            self.material_jp_name_edit.setVisible(original_visible)
         if hasattr(self, "material_name_en_label"):
             self.material_name_en_label.setText(self.tr("material_name_en", "fields"))
         if hasattr(self, "diffuse_color_label"):

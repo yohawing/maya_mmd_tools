@@ -13,6 +13,7 @@ from .vmd_bone_interpolation import (
     get_frame_number,
     parse_vmd_interpolation,
 )
+from .vmd_scene_keying import _anim_layer_curve_for_plug
 
 
 _MARKER_ATTR = "mmdVmdRotationTimeCurve"
@@ -220,8 +221,8 @@ def _resolve_quaternion_curves(
     """Resolve exactly one authored rotation curve per plug.
 
     Animation-layer plugs are driven by an ``animBlendNode`` rather than by
-    their authored curves directly.  Intersecting ``keyframe -name`` with the
-    selected layer keeps the lookup root- and layer-scoped.
+    their authored curves directly.  Resolve those curves through Maya's
+    layer-scoped ``findCurveForPlug`` query.
     """
     return _resolve_animation_curves(
         plugs,
@@ -242,24 +243,16 @@ def _resolve_animation_curves(
 
     if len(plugs) != required_count:
         raise RuntimeError(f"VMD rotation track requires {required_count} curve(s)")
-    layer_curves = None
-    if animation_layer:
-        layer_curves = set(
-            cmds.animLayer(animation_layer, query=True, animCurves=True) or []
-        )
     curves = []
     for plug in plugs:
-        if layer_curves is None:
+        if animation_layer:
+            curve = _anim_layer_curve_for_plug(plug, animation_layer)
+            candidates = [curve.name()] if curve is not None else []
+        else:
             incoming = cmds.listConnections(
                 plug, source=True, destination=False, plugs=True
             ) or []
             candidates = [str(source).split(".", 1)[0] for source in incoming]
-        else:
-            candidates = [
-                str(curve)
-                for curve in (cmds.keyframe(plug, query=True, name=True) or [])
-                if str(curve) in layer_curves
-            ]
         candidates = [
             curve
             for curve in dict.fromkeys(candidates)

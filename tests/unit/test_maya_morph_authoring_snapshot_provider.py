@@ -100,6 +100,6 @@ def test_provider_rejects_invalid_backend_result():
     try:
         provider.read_morph_authoring_snapshot("|root")
     except TypeError as exc:
-        assert str(exc) == "invalid morph authoring snapshot"
+        assert "morph authoring snapshot has an incompatible projection class" in str(exc)
     else:
         raise AssertionError("invalid backend result was accepted")

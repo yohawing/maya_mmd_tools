@@ -178,7 +178,13 @@ def _prepare_surface(window: Any, surface: Mapping[str, Any], widget: QWidget) -
     )
     _select_widget_path(window, widget)
     if tab == "import_export":
-        view.settings_service.set("ui.general.development_mode", True)
+        # Import Scale is a supported General setting in normal mode. Keep
+        # this surface on that mode so the matrix verifies the persisted value
+        # and import-request propagation on the public path.
+        view.settings_service.set(
+            "ui.general.development_mode",
+            surface["id"] != "import_export.scale",
+        )
         view._apply_dev_mode_visibility()
         if surface["id"] in {
             "import_export.native_physics_bake",

@@ -30,6 +30,7 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
 from mmd_tools.core.model_dag_descriptor import build_model_descriptors_from_dag
 from mmd_tools.core.physics_dag_descriptor import build_descriptors_from_dag
 from mmd_tools.core.physics_descriptor import build_descriptors_from_pmx
+from mmd_tools.core.coordinate_transform import mmd_point_to_maya
 from mmd_tools.converters.physics_scene_builder import build_physics_scene
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
@@ -50,13 +51,17 @@ def _plugin_loaded() -> bool:
         return False
 
 
-def _create_minimal_joints(bones) -> list[str]:
+def _create_minimal_joints(bones, scale=1.0) -> list[str]:
     """Create flat Maya joints at PMX bone rest positions."""
     joints = []
     for i, bone in enumerate(bones):
         name = f"bone_{i}"
         jnt = cmds.createNode("joint", name=name)
-        cmds.xform(jnt, worldSpace=True, translation=list(bone.position))
+        cmds.xform(
+            jnt,
+            worldSpace=True,
+            translation=list(mmd_point_to_maya(bone.position, scale)),
+        )
         joints.append(jnt)
     return joints
 
@@ -86,16 +91,17 @@ class TestPhysicsDagParity(MayaTestBase):
     def tearDownClass(cls):
         super().tearDownClass()
 
-    def _build_dag_scene(self):
+    def _build_dag_scene(self, scale=1.0):
         """Import physics DAG from parsed PMX into current scene."""
         root = cmds.group(empty=True, name="test_model_root")
-        maya_joints = _create_minimal_joints(self.pmx.bones)
+        maya_joints = _create_minimal_joints(self.pmx.bones, scale)
         rb_transforms, jt_transforms = build_physics_scene(
             rigid_bodies=self.pmx.rigid_bodies,
             joints=self.pmx.joints,
             bones=self.pmx.bones,
             maya_joints=maya_joints,
             root_group=root,
+            scale=scale,
         )
         return root, maya_joints, rb_transforms, jt_transforms
 
@@ -155,6 +161,64 @@ class TestPhysicsDagParity(MayaTestBase):
         for dag_joint, pmx_joint in zip(dag_desc_set.joints, valid_pmx_joints):
             self.assertEqual(dag_joint.rigidbody_a, pmx_joint.rigid_body_a_index)
             self.assertEqual(dag_joint.rigidbody_b, pmx_joint.rigid_body_b_index)
+
+    def test_scaled_dag_physics_descriptors_use_effective_linear_data_only(self):
+        scale = 0.5
+        root, maya_joints, rb_transforms, _ = self._build_dag_scene(scale=scale)
+        dag_desc_set = build_descriptors_from_dag(
+            root, bone_joints=maya_joints, bone_count=len(self.pmx.bones),
+        )
+
+        for dag_rb, pmx_rb in zip(dag_desc_set.rigid_bodies, self.pmx_desc_set.rigid_bodies):
+            for component in range(3):
+                self.assertAlmostEqual(
+                    dag_rb.shape_size[component], pmx_rb.shape_size[component] * scale,
+                )
+                self.assertAlmostEqual(
+                    dag_rb.position_xyz[component], pmx_rb.position_xyz[component] * scale,
+                )
+                self.assertAlmostEqual(
+                    dag_rb.body_from_bone_position_xyz[component],
+                    pmx_rb.body_from_bone_position_xyz[component] * scale,
+                )
+                self.assertAlmostEqual(
+                    dag_rb.bone_from_body_position_xyz[component],
+                    pmx_rb.bone_from_body_position_xyz[component] * scale,
+                )
+            for component in range(3):
+                self.assertAlmostEqual(
+                    dag_rb.rotation_euler_xyz[component], pmx_rb.rotation_euler_xyz[component],
+                )
+
+        valid_pmx_joints = [
+            joint for joint in self.pmx.joints
+            if joint.rigid_body_a_index >= 0 and joint.rigid_body_b_index >= 0
+        ]
+        for dag_joint, pmx_joint in zip(dag_desc_set.joints, valid_pmx_joints):
+            for component in range(3):
+                self.assertAlmostEqual(
+                    dag_joint.position_xyz[component], pmx_joint.position[component] * scale,
+                )
+                self.assertAlmostEqual(
+                    dag_joint.translation_lower_limit_xyz[component],
+                    pmx_joint.translation_limit_min[component] * scale,
+                )
+                self.assertAlmostEqual(
+                    dag_joint.translation_upper_limit_xyz[component],
+                    pmx_joint.translation_limit_max[component] * scale,
+                )
+                self.assertAlmostEqual(
+                    dag_joint.spring_translation_factor_xyz[component],
+                    pmx_joint.spring_translation[component],
+                )
+
+        shape = cmds.listRelatives(
+            rb_transforms[0], shapes=True, type="mmdRigidBodyShape"
+        )[0]
+        self.assertEqual(
+            tuple(cmds.getAttr(f"{shape}.shapeSize")[0]),
+            tuple(value * scale for value in self.pmx.rigid_bodies[0].size),
+        )
 
     def test_missing_rigid_body_reference_fails_closed(self):
         root, maya_joints, _rb_transforms, jt_transforms = self._build_dag_scene()
@@ -348,6 +412,70 @@ class TestPhysicsDagParity(MayaTestBase):
             pmx_instance.free()
             dag_model.free()
             pmx_model.free()
+
+    @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
+    def test_scaled_import_native_physics_world_preserves_character_scale(self):
+        """Physics reset must keep the imported character scale."""
+        from mmd_tools.io.pmx_importer import import_pmx_file
+        from mmd_tools.core.physics_solver import _collect_bone_joints
+
+        scale = 0.5
+        root = import_pmx_file(
+            self.pmx,
+            str(FIXTURE_PATH),
+            scale=scale,
+            options={"import_physics": True, "create_mmd_shaders": False},
+        )
+        self.assertTrue(root)
+        bone_joints = _collect_bone_joints(root)
+        dag_physics = build_descriptors_from_dag(
+            root, bone_joints=bone_joints, bone_count=len(bone_joints),
+        )
+        dag_model_desc = build_model_descriptors_from_dag(root)
+        dag_world = MmdRuntimePhysicsWorld.from_descriptors(
+            dag_physics.rigid_bodies, dag_physics.joints,
+        )
+        dag_model = MmdRuntimeModel.from_descriptors(dag_model_desc)
+        dag_instance = MmdRuntimeInstance.for_model(dag_model)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        pmx_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
+        pmx_instance = MmdRuntimeInstance.for_model(pmx_model)
+        self.assertIsNotNone(dag_world)
+        self.assertIsNotNone(dag_model)
+        self.assertIsNotNone(dag_instance)
+        self.assertIsNotNone(pmx_world)
+        self.assertIsNotNone(pmx_model)
+        self.assertIsNotNone(pmx_instance)
+        try:
+            self.assertTrue(dag_instance.evaluate_rest_pose())
+            self.assertTrue(pmx_instance.evaluate_rest_pose())
+            self.assertIsNotNone(dag_world.reset(dag_instance))
+            self.assertIsNotNone(pmx_world.reset(pmx_instance))
+            dag_states = dag_world.copy_rigidbody_states()
+            pmx_states = pmx_world.copy_rigidbody_states()
+            self.assertEqual(len(dag_states), len(pmx_states))
+            for body_index, ((dag_pos, dag_rot), (pmx_pos, pmx_rot)) in enumerate(
+                zip(dag_states, pmx_states)
+            ):
+                for component in range(3):
+                    self.assertAlmostEqual(
+                        dag_pos[component], pmx_pos[component] * scale,
+                        delta=0.005,
+                        msg=f"body[{body_index}] scaled position[{component}]",
+                    )
+                for component in range(4):
+                    self.assertAlmostEqual(
+                        dag_rot[component], pmx_rot[component],
+                        delta=0.005,
+                        msg=f"body[{body_index}] rotation[{component}]",
+                    )
+        finally:
+            dag_instance.free()
+            dag_model.free()
+            dag_world.free()
+            pmx_instance.free()
+            pmx_model.free()
+            pmx_world.free()
 
     @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
     def test_dag_world_rigidbody_count_matches_pmx_world(self):

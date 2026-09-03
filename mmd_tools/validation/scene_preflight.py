@@ -296,22 +296,6 @@ class ScenePreflight:
                     )
                 )
 
-        if "scale" in options or "apply_scale" in options:
-            scale_value = options.get("scale", 1.0)
-            try:
-                scale = float(scale_value)
-            except (TypeError, ValueError, OverflowError):
-                scale = 0.0
-            if not math.isfinite(scale) or scale <= 0.0:
-                issues.append(
-                    _issue(
-                        "EXPORT_OPTIONS_INVALID",
-                        "scale",
-                        "export scale must be a finite positive number",
-                        details={"actual_value": repr(scale_value)},
-                    )
-                )
-
         output_path_text = str(options.get("file_path") or "")
         output_path = Path(output_path_text)
         expected_extension = export_format if export_format in SUPPORTED_FORMATS else None
@@ -443,7 +427,6 @@ class ScenePreflight:
             "scene_revision": str(scene_revision) if scene_revision is not None else None,
             "frame_range": list(frame_range) if frame_range is not None else None,
             "frame_step": options.get("frame_step", 1),
-            "apply_scale": bool(options.get("apply_scale", True)),
             "output_path": str(output_path) if str(options.get("file_path") or "").strip() else None,
         }
         return ScenePreflightResult(

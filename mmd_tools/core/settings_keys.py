@@ -8,8 +8,6 @@ IMPORT_MODEL_CREATE_MMD_SHADERS = "import.model.create_mmd_shaders"
 IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL = "import.model.separate_meshes_by_material"
 IMPORT_MODEL_AUTO_RESOLVE_TEXTURES = "import.model.auto_resolve_textures"
 IMPORT_MODEL_DISABLE_BACKFACE_CULLING = "import.model.disable_backface_culling"
-IMPORT_MODEL_UV_SET_NAME = "import.model.uv_set_name"
-IMPORT_MODEL_TEXTURE_SEARCH_PATH = "import.model.texture_search_path"
 IMPORT_MODEL_SHOW_TEXTURE_ISSUE_DIALOG = "import.model.show_texture_issue_dialog"
 IMPORT_MODEL_MMD_SHADER_BACKEND = "import.model.mmd_shader_backend"
 IMPORT_MODEL_CREATE_MMD_CONTROL_RIG = "import.model.create_mmd_control_rig"
@@ -53,7 +51,6 @@ IMPORT_LIGHT_CREATE_CONTROLLER = "import.light.create_controller"
 IMPORT_VIEW_SETUP_COLOR_MANAGEMENT = "import.view.setup_color_management"
 IMPORT_VIEW_SETUP_TRANSPARENCY = "import.view.setup_transparency"
 
-EXPORT_GENERAL_APPLY_SCALE = "export.general.apply_scale"
 EXPORT_MOTION_STRATEGY = "export.motion.strategy"
 EXPORT_MOTION_USE_FRAME_RANGE = "export.motion.use_frame_range"
 EXPORT_MOTION_START_FRAME = "export.motion.start_frame"
@@ -79,8 +76,6 @@ MODEL_OPTION_TO_SETTINGS_KEY = {
     "separate_meshes_by_material": IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL,
     "auto_resolve_textures": IMPORT_MODEL_AUTO_RESOLVE_TEXTURES,
     "disable_backface_culling": IMPORT_MODEL_DISABLE_BACKFACE_CULLING,
-    "uv_set_name": IMPORT_MODEL_UV_SET_NAME,
-    "texture_search_path": IMPORT_MODEL_TEXTURE_SEARCH_PATH,
     "add_semi_standard_bones": IMPORT_RIG_ADD_SEMI_STANDARD_BONES,
     "import_morphs": IMPORT_MORPH_IMPORT_MORPHS,
     "translate_names": IMPORT_NAMING_TRANSLATE_NAMES,

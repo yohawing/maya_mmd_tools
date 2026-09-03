@@ -715,6 +715,7 @@ class MayaMorphReadProjectionAdapter:
             root,
             allDescendents=True,
             type="mesh",
+            fullPath=True,
         ) or ()
         shapes = self._require_sequence(shapes, "owned mesh descendants")
         canonical_meshes: List[str] = []

@@ -139,6 +139,30 @@ class TestColliderAuthoringTransform(MayaTestBase):
                 cmds.isConnected(f"{shape}.{shape_attr}", f"{transform}.{transform_attr}")
             )
 
+    def test_bound_collider_keeps_import_scale_in_world_geometry(self):
+        scale = 0.5
+        model = cmds.createNode("transform", name="scaledColliderModel")
+        bone = cmds.createNode("joint", name="scaledColliderBone", parent=model)
+        transform = cmds.createNode("transform", name="scaledCollider", parent=model)
+        shape = cmds.createNode(
+            "mmdRigidBodyShape", name="scaledColliderShape", parent=transform
+        )
+        cmds.setAttr(f"{shape}.shapeSize", 2.0, 4.0, 6.0, type="double3")
+        position = (1.0, 2.0, 3.0)
+        set_collider_authoring_pose(
+            transform, shape, position, (0.0, 0.0, 0.0), scale
+        )
+        cmds.connectAttr(f"{bone}.message", f"{shape}.relatedBone")
+        self.assertTrue(connect_collider_authoring_follow(transform, shape))
+
+        world_matrix = cmds.xform(transform, query=True, worldSpace=True, matrix=True)
+        self.assertAlmostEqual(world_matrix[0], scale, places=10)
+        self.assertAlmostEqual(world_matrix[5], scale, places=10)
+        self.assertAlmostEqual(world_matrix[10], scale, places=10)
+        self.assertListAlmostEqual(
+            cmds.getAttr(f"{shape}.shapeSize")[0], (2.0, 4.0, 6.0)
+        )
+
     def test_display_rotation_matches_independent_z_reflection_matrix_oracle(self):
         rotations = (
             (0.37, 0.0, 0.0),

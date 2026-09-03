@@ -12,55 +12,11 @@ import maya.api.OpenMaya as om
 from mmd_tools.core.collider_authoring import (
     connect_collider_authoring_transform,
 )
-from mmd_tools.core.physics_form_validation import PhysicsFormValidationError
 from mmd_tools.core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
 from mmd_tools.converters.physics_export_collector import collect_physics_from_scene
-from mmd_tools.ui.presenters.physics_presenter import PhysicsPresenter, UITranslator
+from mmd_tools.ui.presenters.physics_presenter import PhysicsPresenter
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.maya_coordinate_oracle import reflected_mmd_euler_matrix
-
-
-class _Translator:
-    def translate(self, key, category):
-        return {
-            ("mass", "fields"): "Mass:",
-            ("translation_limit_min", "fields"): "Translation Min:",
-            ("physics_validation_minimum", "messages"): "must be at least {minimum}",
-            ("physics_validation_maximum", "messages"): "must be at most {maximum}",
-            ("physics_validation_error", "messages"): "{field}: {reason}",
-        }[(key, category)]
-
-
-class TestPhysicsValidationUI(unittest.TestCase):
-    def test_localized_error_is_emitted_to_status_bar_and_script_editor(self):
-        status_messages = []
-        presenter = object.__new__(PhysicsPresenter)
-        presenter.app_state = SimpleNamespace(emit_status=status_messages.append)
-        error = PhysicsFormValidationError("mass", "physics_validation_minimum", minimum=0.0)
-
-        with patch.object(UITranslator, "instance", return_value=_Translator()), patch.object(cmds, "warning") as warning:
-            message = presenter._report_validation_error(error)
-
-        self.assertEqual(message, "Mass: must be at least 0.0")
-        self.assertEqual(status_messages, [message])
-        warning.assert_called_once_with(message)
-
-    def test_componentwise_limit_error_uses_existing_localized_maximum_message(self):
-        status_messages = []
-        presenter = object.__new__(PhysicsPresenter)
-        presenter.app_state = SimpleNamespace(emit_status=status_messages.append)
-        error = PhysicsFormValidationError(
-            "translation_limit_min",
-            "physics_validation_maximum",
-            maximum=0.0,
-        )
-
-        with patch.object(UITranslator, "instance", return_value=_Translator()), patch.object(cmds, "warning") as warning:
-            message = presenter._report_validation_error(error)
-
-        self.assertEqual(message, "Translation Min: must be at most 0.0")
-        self.assertEqual(status_messages, [message])
-        warning.assert_called_once_with(message)
 
 
 class _FakeButton:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Iterable, Optional, Sequence
 
+from ...core.name_display import preferred_pmx_display_name
 from ..translations import UITranslator
 
 
@@ -31,8 +32,19 @@ def format_indexed_node_label(
     node: object,
     name_en: object = "",
 ) -> str:
-    """Format a Material/Bone list label using a namespace-free Maya leaf."""
+    """Format a Material/Bone label without exposing Japanese in English UI."""
     leaf = maya_node_leaf_name(node)
+    language = UITranslator.instance().get_language()
+    if language == "en":
+        primary = preferred_pmx_display_name(
+            name_jp,
+            name_en,
+            fallback=leaf,
+            language=language,
+        )
+        leaf_suffix = f" ({leaf})" if leaf.isascii() and leaf != primary else ""
+        return f"{index}:{primary}{leaf_suffix}"
+
     label = f"{index}:{name_jp}（{leaf}）" if name_jp else f"{index}:（{leaf}）"
     if name_en:
         label += f" [{name_en}]"
@@ -44,13 +56,28 @@ def format_indexed_name_label(
     name_jp: object,
     name_en: object = "",
     prefix: str = "",
+    fallback: object = "",
+    used_names: Optional[set[str]] = None,
 ) -> str:
     """Format a non-node PMX list entry consistently with Bone/Material lists."""
     japanese = str(name_jp or "")
     english = str(name_en or "")
-    primary = japanese or english or "(unnamed)"
+    language = UITranslator.instance().get_language()
+    primary = preferred_pmx_display_name(
+        japanese,
+        english,
+        fallback=fallback,
+        language=language,
+    )
+    if language == "en" and used_names is not None:
+        base = primary
+        suffix = 1
+        while primary in used_names:
+            primary = f"{base}_{suffix}"
+            suffix += 1
+        used_names.add(primary)
     label = f"{index}:{prefix}{primary}"
-    if japanese and english:
+    if language != "en" and japanese and english:
         label += f" [{english}]"
     return label
 

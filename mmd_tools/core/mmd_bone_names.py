@@ -181,7 +181,13 @@ def convert_mmd_bone_name_to_ascii(name: str | None) -> str | None:
         index += 1
         while index < len(normalized) and not _starts_known_token_or_ascii(normalized, index):
             index += 1
-        parts.append(_hash_unknown_token(normalized[unknown_start:index]))
+        unknown = normalized[unknown_start:index]
+        # Keep standard bone tokens authoritative, but honor the shared
+        # sanitizer dictionary before hashing a model-specific token.
+        translated = (converter.exact_match or {}).get(unknown)
+        if translated is None:
+            translated = converter.unicode_to_ascii.get(unknown)
+        parts.append(translated if translated is not None else _hash_unknown_token(unknown))
 
     result = "_".join(part for part in parts if part)
     return converter.maya_safe_name(re.sub(r"_+", "_", result).strip("_"))

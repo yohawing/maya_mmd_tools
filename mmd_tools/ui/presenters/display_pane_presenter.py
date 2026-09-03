@@ -11,11 +11,13 @@ from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.constants import (
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_NAME,
+    ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_MORPH_DATA,
 )
 from ...core.display_frame_metadata import display_frames_from_json, display_frames_to_json
 from ...core.logger import get_logger
+from ...core.name_display import morph_name_fallback, preferred_pmx_display_name
 from ..translations.translator import UITranslator
 from .list_presenter_helpers import format_indexed_name_label
 
@@ -366,9 +368,20 @@ class DisplayPanePresenter:
                 if not self.maya_adapter.attribute_exists(ATTR_MMD_BONE_INDEX, joint):
                     continue
                 index = int(self.maya_adapter.get_attr(f"{joint}.{ATTR_MMD_BONE_INDEX}"))
-                name = joint.rsplit("|", 1)[-1]
+                leaf = joint.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+                name = leaf
+                name_jp = ""
+                name_en = ""
                 if self.maya_adapter.attribute_exists(ATTR_MMD_BONE_NAME, joint):
-                    name = self.maya_adapter.get_attr(f"{joint}.{ATTR_MMD_BONE_NAME}") or name
+                    name_jp = self.maya_adapter.get_attr(f"{joint}.{ATTR_MMD_BONE_NAME}") or ""
+                if self.maya_adapter.attribute_exists(ATTR_MMD_BONE_NAME_EN, joint):
+                    name_en = self.maya_adapter.get_attr(f"{joint}.{ATTR_MMD_BONE_NAME_EN}") or ""
+                name = preferred_pmx_display_name(
+                    name_jp,
+                    name_en,
+                    fallback=leaf,
+                    language=UITranslator.instance().get_language(),
+                )
                 result[f"{name} [{index}]"] = index
             except Exception:
                 continue
@@ -391,7 +404,12 @@ class DisplayPanePresenter:
                 continue
             if index < 0:
                 continue
-            name = str(entry.get("name_jp") or entry.get("name_en") or f"Morph {index}")
+            name = preferred_pmx_display_name(
+                entry.get("name_jp"),
+                entry.get("name_en"),
+                fallback=lambda: morph_name_fallback(entry.get("name_jp"), index),
+                language=UITranslator.instance().get_language(),
+            )
             result[f"{name} [{index}]"] = index
         return dict(sorted(result.items(), key=lambda item: item[1]))
 
@@ -487,6 +505,7 @@ class DisplayPanePresenter:
             frame["name"],
             frame["name_english"],
             prefix=prefix,
+            fallback=f"Display Frame {index}",
         )
 
     def _valid_frame_row(self, row: int) -> bool:

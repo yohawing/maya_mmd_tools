@@ -2,7 +2,7 @@
 
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
 from tests.common.maya_stub import install_headless_ui_stubs
@@ -116,6 +116,15 @@ class _FakeLabel:
 
     def setAlignment(self, _):
         pass
+
+
+class _FakeMorphRow:
+    def __init__(self, plugs):
+        self.plugs = tuple(plugs)
+        self.selected = False
+
+    def set_selected(self, selected):
+        self.selected = bool(selected)
 
 
 class _FakeTreeItem:
@@ -449,6 +458,7 @@ class _FakeAdapter:
         self._node_types: dict[str, str] = {}
         self._long_paths = dict(long_paths or {})
         self._ls_long_calls = 0
+        self._list_relatives_calls = []
         self._transforms: dict[str, tuple[list, list]] = {}
         self._undo_chunks: list[str] = []
 
@@ -473,6 +483,7 @@ class _FakeAdapter:
         return resolved
 
     def list_relatives(self, node, **kwargs):
+        self._list_relatives_calls.append((node, kwargs))
         if kwargs.get("parent"):
             return [node.rsplit("|", 1)[0] or node]
         if kwargs.get("children") and kwargs.get("type") == "transform":
@@ -632,6 +643,18 @@ class TestAnimationPresenter(unittest.TestCase):
         presenter, view, _, _ = self._make()
         self.assertEqual(view.display_frame_tree.topLevelItemCount(), 0)
 
+    def test_model_joint_queries_request_full_dag_paths(self):
+        presenter, _, _, adapter = self._make(joints={0: "center"})
+
+        self.assertEqual(presenter._build_bone_index_map("|test_model"), {0: "center"})
+        self.assertEqual(presenter._build_bone_name_map("|test_model"), {})
+        self.assertEqual(
+            [kwargs["fullPath"] for _node, kwargs in adapter._list_relatives_calls
+            if kwargs.get("type") == "joint" and kwargs.get("allDescendents")
+        ],
+            [True, True],
+        )
+
     def test_model_change_populates_tree(self):
         joints = {0: "center", 3: "upper_body", 4: "neck"}
         presenter, view, app_state, _ = self._make(
@@ -654,6 +677,17 @@ class TestAnimationPresenter(unittest.TestCase):
 
         self.assertEqual(app_state.cache_clear_count, 1)
         reload_model.assert_called_once_with("test_model")
+
+    def test_name_change_rebuilds_picker_without_scene_refresh(self):
+        presenter, _, app_state, _ = self._make(model_root="test_model")
+        app_state.refresh_model_list = MagicMock()
+
+        with patch.object(presenter, "_reload_for_model") as reload_model:
+            presenter.refresh_for_name_change()
+
+        reload_model.assert_called_once_with("test_model")
+        app_state.refresh_model_list.assert_not_called()
+        self.assertEqual(app_state.cache_clear_count, 0)
 
     def test_scene_change_drops_same_path_control_authority_on_metadata_failure(self):
         presenter, _, _, _ = self._make(model_root="test_model")
@@ -817,21 +851,29 @@ class TestAnimationPresenter(unittest.TestCase):
         group = view.display_frame_tree.topLevelItem(0)
         self.assertEqual(group.childCount(), 2)
 
-    def test_special_flag_group_count(self):
-        joints = {0: "center"}
-        presenter, view, _, _ = self._make(
-            joints=joints,
-            display_json=SAMPLE_FRAMES_JSON,
-            model_root="test_model",
-        )
+    def test_english_special_flag_group_names(self):
+        from mmd_tools.ui.translations import UITranslator
 
-        special = [
-            view.display_frame_tree.topLevelItem(i)
-            for i in range(view.display_frame_tree.topLevelItemCount())
-        ]
-        self.assertEqual(view.display_frame_tree.topLevelItemCount(), 3)
-        self.assertIn("Root", special[0].text(0))
-        self.assertIn("表情", special[1].text(0))
+        translator = UITranslator.instance()
+        previous = translator.get_language()
+        translator.set_language("en")
+        joints = {0: "center"}
+        try:
+            _presenter, view, _, _ = self._make(
+                joints=joints,
+                display_json=SAMPLE_FRAMES_JSON,
+                model_root="test_model",
+            )
+
+            special = [
+                view.display_frame_tree.topLevelItem(i)
+                for i in range(view.display_frame_tree.topLevelItemCount())
+            ]
+            self.assertEqual(view.display_frame_tree.topLevelItemCount(), 3)
+            self.assertIn("Root", special[0].text(0))
+            self.assertIn("Exp", special[1].text(0))
+        finally:
+            translator.set_language(previous)
 
     def test_item_display_text_strips_namespace_and_path(self):
         joints = {0: "|root|ns:center_jnt"}
@@ -849,26 +891,81 @@ class TestAnimationPresenter(unittest.TestCase):
         child = view.display_frame_tree.topLevelItem(0).child(0)
         self.assertEqual(child.text(0), "center_jnt")
 
-    def test_display_uses_japanese_bone_and_morph_metadata_names(self):
-        with patch(
-            "mmd_tools.ui.presenters.animation_presenter"
-            ".AnimationPresenter._populate_morph_groups"
-        ):
-            _presenter, view, _, _ = self._make(
-                joints={0: "|root|ns:center_jnt"},
-                bone_names={"|root|ns:center_jnt": "センター"},
-                display_json=SAMPLE_FRAMES_JSON,
-                morph_data=[
-                    {"index": 0, "name_jp": "笑い", "name_en": "Smile", "panel": 2, "type": 1},
-                    {"index": 1, "name_jp": "まばたき", "name_en": "Blink", "panel": 2, "type": 1},
-                ],
-                model_root="test_model",
-            )
+    def test_english_display_hides_japanese_bone_and_morph_metadata_names(self):
+        from mmd_tools.ui.translations import UITranslator
 
-        self.assertEqual(view.display_frame_tree.topLevelItem(0).child(0).text(0), "センター")
-        expressions = view.display_frame_tree.topLevelItem(1)
-        self.assertEqual(expressions.child(0).text(0), "笑い")
-        self.assertEqual(expressions.child(1).text(0), "まばたき")
+        translator = UITranslator.instance()
+        previous = translator.get_language()
+        translator.set_language("en")
+        try:
+            with patch(
+                "mmd_tools.ui.presenters.animation_presenter"
+                ".AnimationPresenter._populate_morph_groups"
+            ):
+                _presenter, view, _, _ = self._make(
+                    joints={0: "|root|ns:center_jnt"},
+                    bone_names={"|root|ns:center_jnt": "センター"},
+                    display_json=SAMPLE_FRAMES_JSON,
+                    morph_data=[
+                        {"index": 0, "name_jp": "笑い", "name_en": "Smile", "panel": 2, "type": 1},
+                        {"index": 1, "name_jp": "まばたき", "name_en": "Blink", "panel": 2, "type": 1},
+                    ],
+                    model_root="test_model",
+                )
+
+            self.assertEqual(
+                view.display_frame_tree.topLevelItem(0).child(0).text(0),
+                "center_jnt",
+            )
+            expressions = view.display_frame_tree.topLevelItem(1)
+            self.assertEqual(expressions.child(0).text(0), "Smile")
+            self.assertEqual(expressions.child(1).text(0), "Blink")
+        finally:
+            translator.set_language(previous)
+
+    def test_english_display_uses_unique_ascii_fallbacks_for_untranslated_items(self):
+        from mmd_tools.ui.translations import UITranslator
+
+        frames_json = json.dumps(
+            [
+                {
+                    "name": "表情一",
+                    "name_english": "",
+                    "special_flag": 0,
+                    "elements": [{"type": 1, "index": 0}],
+                },
+                {
+                    "name": "表情二",
+                    "name_english": "",
+                    "special_flag": 0,
+                    "elements": [{"type": 1, "index": 1}],
+                },
+            ],
+            ensure_ascii=False,
+        )
+        translator = UITranslator.instance()
+        previous = translator.get_language()
+        translator.set_language("en")
+        try:
+            with patch(
+                "mmd_tools.ui.presenters.animation_presenter"
+                ".AnimationPresenter._populate_morph_groups"
+            ):
+                _presenter, view, _, _ = self._make(
+                    display_json=frames_json,
+                    morph_data=[
+                        {"index": 0, "name_jp": "そで", "name_en": "", "panel": 2, "type": 1},
+                        {"index": 1, "name_jp": "袖", "name_en": "", "panel": 2, "type": 1},
+                    ],
+                    model_root="test_model",
+                )
+
+            self.assertEqual(view.display_frame_tree.topLevelItem(0).text(0), "Display Frame 0")
+            self.assertEqual(view.display_frame_tree.topLevelItem(1).text(0), "Display Frame 1")
+            self.assertEqual(view.display_frame_tree.topLevelItem(0).child(0).text(0), "sleeve [0]")
+            self.assertEqual(view.display_frame_tree.topLevelItem(1).child(0).text(0), "sleeve [1]")
+        finally:
+            translator.set_language(previous)
 
     def test_model_combo_updated_on_model_list_signal(self):
         presenter, view, app_state, _ = self._make()
@@ -1509,6 +1606,18 @@ class TestBodyPickerPresenter(unittest.TestCase):
 
         self.assertEqual(view.body_picker.region_tooltips["waist"], "腰")
 
+    def test_english_finger_tooltip_without_metadata_uses_ascii_region_id(self):
+        presenter, view, _, _adapter = self._make_with_bones()
+        view.current_language = lambda: "en"
+        presenter._picker_english_tooltips["finger"] = {}
+
+        presenter._retranslate_picker_bone_tooltips()
+
+        self.assertEqual(
+            view.finger_picker.region_tooltips["left_thumb_0"],
+            "left_thumb_0",
+        )
+
     def test_region_click_unmapped_bone(self):
         presenter, view, _, adapter = self._make_with_bones(bone_names={})
         presenter.on_body_region_clicked("head")
@@ -1792,6 +1901,57 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         self.assertEqual([morph.name for morph in morphs], ["LegacyBone"])
         self.assertEqual(presenter._network_morph_targets["LegacyBone"], ["legacyMorph.weight"])
 
+    def test_legacy_network_morph_selection_is_model_scoped_for_non_vertex_types(self):
+        presenter, _, _, adapter = self._make_with_morphs(model_root="modelA")
+        model_a_nodes = {
+            "modelA:boneMorph": ("bone", "LegacyBone"),
+            "modelA:materialMorph": ("material", "LegacyMaterial"),
+            "modelA:groupMorph": ("group", "LegacyGroup"),
+        }
+        all_nodes = {**model_a_nodes, "modelB:boneMorph": ("bone", "OtherBone")}
+        for node, (morph_type, name) in all_nodes.items():
+            adapter._attrs.update(
+                {
+                    (node, "mmd_morph_type"): morph_type,
+                    (node, "mmd_model_root"): True,
+                    (node, "mmd_morph_name"): name,
+                }
+            )
+        adapter._long_paths.update(
+            {
+                "modelA": "|modelA",
+                "|modelA": "|modelA",
+                "modelB": "|modelB",
+                "|modelB": "|modelB",
+            }
+        )
+        original_ls = adapter.ls
+        adapter.ls = lambda nodes=None, type=None, **kwargs: (
+            list(all_nodes)
+            if type == "network"
+            else original_ls(nodes, type=type, **kwargs)
+        )
+        original_connections = adapter.list_connections
+        adapter.list_connections = lambda node, **kwargs: (
+            ["modelA" if node.startswith("modelA:") else "modelB"]
+            if node.endswith(".mmd_model_root")
+            else original_connections(node, **kwargs)
+        )
+        morphs = []
+
+        presenter._collect_network_morph_targets("modelA", {}, morphs, set())
+
+        self.assertEqual(
+            {morph.name for morph in morphs},
+            {name for _morph_type, name in model_a_nodes.values()},
+        )
+        self.assertNotIn("OtherBone", presenter._network_morph_targets)
+        for node, (_morph_type, name) in model_a_nodes.items():
+            plug = f"{node}.weight"
+            presenter._morph_rows = {name: _FakeMorphRow((plug,))}
+            presenter._on_morph_row_activated(name)
+            self.assertEqual(adapter.selected, [plug])
+
     def test_clear_morph_tab(self):
         presenter, view, _, _ = self._make_with_morphs(
             blend_shapes=SAMPLE_BLEND_SHAPES,
@@ -1827,6 +1987,98 @@ class TestAnimationPresenterMorph(unittest.TestCase):
             adapter._set_attrs["morphController.inputWeight[19]"], 0.375
         )
         self.assertNotIn("blendShape1.weight[0]", adapter._set_attrs)
+
+    def test_controller_morph_row_selects_only_authoritative_plug(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        presenter._morph_controller = "morphController"
+        presenter._morph_indices["笑い"] = 19
+        row = _FakeMorphRow(("morphController.inputWeight[19]",))
+        presenter._morph_rows = {"笑い": row}
+        presenter._joint_for_rig_control = lambda node: None
+
+        presenter._on_morph_row_activated("笑い")
+
+        self.assertEqual(adapter.selected, ["morphController.inputWeight[19]"])
+        self.assertTrue(row.selected)
+
+    def test_controller_alias_selection_matches_canonical_row_plug(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        row = _FakeMorphRow(("morphController.inputWeight[19]",))
+        presenter._morph_rows = {"笑い": row}
+        presenter._joint_for_rig_control = lambda node: None
+        adapter.alias_attr = lambda node, query=False: (
+            ["Smile", "inputWeight[19]"] if node == "morphController" else []
+        )
+        adapter.selected = ["morphController.Smile"]
+
+        presenter._sync_picker_to_actual_selection()
+
+        self.assertTrue(row.selected)
+
+    def test_split_legacy_morph_row_selects_all_and_only_existing_plugs(self):
+        split_bs = {
+            "mesh_face": {
+                "bs_face": {
+                    "type": "blendShape",
+                    "morph_json": {"0": "笑い"},
+                }
+            },
+            "mesh_hair": {
+                "bs_hair": {
+                    "type": "blendShape",
+                    "morph_json": {"0": "笑い"},
+                }
+            },
+        }
+        presenter, _, _, adapter = self._make_with_morphs(blend_shapes=split_bs)
+        row = _FakeMorphRow(
+            ("bs_face.weight[0]", "bs_hair.weight[0]"),
+        )
+        presenter._morph_rows = {"笑い": row}
+        presenter._joint_for_rig_control = lambda node: None
+
+        presenter._on_morph_row_activated("笑い")
+
+        self.assertEqual(
+            adapter.selected,
+            ["bs_face.weight[0]", "bs_hair.weight[0]"],
+        )
+        self.assertTrue(row.selected)
+
+    def test_external_selection_clears_morph_highlight_without_changing_values(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        row = _FakeMorphRow(("blendShape1.weight[0]",))
+        row.value = 0.625
+        presenter._morph_rows = {"笑い": row}
+        presenter._joint_for_rig_control = lambda node: None
+        row.selected = True
+        adapter.selected = ["blendShape1.weight[0]", "unrelated.weight[3]"]
+
+        presenter._sync_picker_to_actual_selection()
+
+        self.assertFalse(row.selected)
+        self.assertEqual(row.value, 0.625)
+
+    def test_exact_morph_plug_set_highlights_one_row_only(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        first = _FakeMorphRow(("blendShape1.weight[0]",))
+        second = _FakeMorphRow(("blendShape1.weight[1]",))
+        presenter._morph_rows = {"笑い": first, "怒り": second}
+        presenter._joint_for_rig_control = lambda node: None
+        adapter.selected = ["blendShape1.weight[0]"]
+
+        presenter._sync_picker_to_actual_selection()
+
+        self.assertTrue(first.selected)
+        self.assertFalse(second.selected)
 
     def test_animation_state_distinguishes_current_key_and_interpolation(self):
         presenter, _, _, adapter = self._make_with_morphs(
@@ -1915,6 +2167,18 @@ class TestAnimationPresenterMorph(unittest.TestCase):
             app_state.current_model_changed.emit("")
         self.assertEqual(len(presenter._morph_targets), 0)
         self.assertEqual(len(presenter._morph_rows), 0)
+
+    def test_morph_tab_clear_removes_stale_row_selection(self):
+        presenter, _, _, _ = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        row = _FakeMorphRow(("blendShape1.weight[0]",))
+        row.selected = True
+        presenter._morph_rows = {"笑い": row}
+
+        presenter._clear_morph_tab()
+
+        self.assertFalse(row.selected)
 
     def test_split_morph_drives_all_nodes(self):
         split_bs = {

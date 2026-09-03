@@ -1,0 +1,822 @@
+Japanese,English
+全ての親,Master
+マスター,Master
+操作中心,Operation Center
+センター,Center
+グルーブ,Groove
+腰,Waist
+下半身,Lower Body
+上半身,Upper Body
+上半身2,Upper Body 2
+上半身２,Upper Body 2
+首,Neck
+頭,Head
+両目,Both Eyes
+左目,Left Eye
+右目,Right Eye
+左目先,Left Eye Tip
+右目先,Right Eye Tip
+左肩,Left Shoulder
+右肩,Right Shoulder
+左肩P,Left Shoulder Parent
+右肩P,Right Shoulder Parent
+左肩C,Left Shoulder Child
+右肩C,Right Shoulder Child
+左腕,Left Arm
+右腕,Right Arm
+左ひじ,Left Elbow
+左肘,Left Elbow
+右ひじ,Right Elbow
+右肘,Right Elbow
+左手首,Left Wrist
+右手首,Right Wrist
+左腕捩,Left Arm Twist
+左腕捻,Left Arm Twist
+右腕捩,Right Arm Twist
+右腕捻,Right Arm Twist
+左腕捩1,Left Arm Twist 1
+左腕捩2,Left Arm Twist 2
+左腕捩3,Left Arm Twist 3
+右腕捩1,Right Arm Twist 1
+右腕捩2,Right Arm Twist 2
+右腕捩3,Right Arm Twist 3
+左手捩,Left Hand Twist
+左手捻,Left Hand Twist
+右手捩,Right Hand Twist
+右手捻,Right Hand Twist
+左手捩1,Left Hand Twist 1
+左手捩2,Left Hand Twist 2
+左手捩3,Left Hand Twist 3
+右手捩1,Right Hand Twist 1
+右手捩2,Right Hand Twist 2
+右手捩3,Right Hand Twist 3
+左足,Left Leg
+右足,Right Leg
+左ひざ,Left Knee
+左膝,Left Knee
+右ひざ,Right Knee
+右膝,Right Knee
+左足首,Left Ankle
+右足首,Right Ankle
+左足ＩＫ,Left Leg IK
+左足IK,Left Leg IK
+右足ＩＫ,Right Leg IK
+右足IK,Right Leg IK
+左つま先,Left Toe
+右つま先,Right Toe
+左つま先ＩＫ,Left Toe IK
+左つま先IK,Left Toe IK
+右つま先ＩＫ,Right Toe IK
+右つま先IK,Right Toe IK
+足ＩＫ親,Leg IK Parent
+足IK親,Leg IK Parent
+左足ＩＫ親,Left Leg IK Parent
+左足IK親,Left Leg IK Parent
+右足ＩＫ親,Right Leg IK Parent
+右足IK親,Right Leg IK Parent
+足先ＥＸ,Toe EX
+足先EX,Toe EX
+左足先EX,Left Toe EX
+右足先EX,Right Toe EX
+左足D,Left Leg D
+右足D,Right Leg D
+左親指０,Left Thumb 0
+左親指0,Left Thumb 0
+左親指１,Left Thumb 1
+左親指1,Left Thumb 1
+左親指２,Left Thumb 2
+左親指2,Left Thumb 2
+左親指先,Left Thumb Tip
+右親指０,Right Thumb 0
+右親指0,Right Thumb 0
+右親指１,Right Thumb 1
+右親指1,Right Thumb 1
+右親指２,Right Thumb 2
+右親指2,Right Thumb 2
+右親指先,Right Thumb Tip
+左人指１,Left Index 1
+左人指1,Left Index 1
+左人差指１,Left Index 1
+左人差指1,Left Index 1
+左人指２,Left Index 2
+左人指2,Left Index 2
+左人差指２,Left Index 2
+左人差指2,Left Index 2
+左人指３,Left Index 3
+左人指3,Left Index 3
+左人差指３,Left Index 3
+左人差指3,Left Index 3
+左人指先,Left Index Tip
+左人差指先,Left Index Tip
+右人指１,Right Index 1
+右人指1,Right Index 1
+右人差指１,Right Index 1
+右人差指1,Right Index 1
+右人指２,Right Index 2
+右人指2,Right Index 2
+右人差指２,Right Index 2
+右人差指2,Right Index 2
+右人指３,Right Index 3
+右人指3,Right Index 3
+右人差指３,Right Index 3
+右人差指3,Right Index 3
+右人指先,Right Index Tip
+右人差指先,Right Index Tip
+左中指１,Left Middle Finger 1
+左中指1,Left Middle Finger 1
+左中指２,Left Middle Finger 2
+左中指2,Left Middle Finger 2
+左中指３,Left Middle Finger 3
+左中指3,Left Middle Finger 3
+左中指先,Left Middle Finger Tip
+右中指１,Right Middle Finger 1
+右中指1,Right Middle Finger 1
+右中指２,Right Middle Finger 2
+右中指2,Right Middle Finger 2
+右中指３,Right Middle Finger 3
+右中指3,Right Middle Finger 3
+右中指先,Right Middle Finger Tip
+左薬指１,Left Ring Finger 1
+左薬指1,Left Ring Finger 1
+左薬指２,Left Ring Finger 2
+左薬指2,Left Ring Finger 2
+左薬指３,Left Ring Finger 3
+左薬指3,Left Ring Finger 3
+左薬指先,Left Ring Finger Tip
+右薬指１,Right Ring Finger 1
+右薬指1,Right Ring Finger 1
+右薬指２,Right Ring Finger 2
+右薬指2,Right Ring Finger 2
+右薬指３,Right Ring Finger 3
+右薬指3,Right Ring Finger 3
+右薬指先,Right Ring Finger Tip
+左小指１,Left Little Finger 1
+左小指1,Left Little Finger 1
+左小指２,Left Little Finger 2
+左小指2,Left Little Finger 2
+左小指３,Left Little Finger 3
+左小指3,Left Little Finger 3
+左小指先,Left Little Finger Tip
+右小指１,Right Little Finger 1
+右小指1,Right Little Finger 1
+右小指２,Right Little Finger 2
+右小指2,Right Little Finger 2
+右小指３,Right Little Finger 3
+右小指3,Right Little Finger 3
+右小指先,Right Little Finger Tip
+胸,Chest
+左胸,Left Breast
+右胸,Right Breast
+胸先,Chest Tip
+鼻,Nose
+口,Mouth
+あご,Chin
+顎,Chin
+舌,Tongue
+舌1,Tongue 1
+舌2,Tongue 2
+髪,Hair
+前髪,Bangs
+後髪,Back Hair
+横髪,Side Hair
+左横髪,Left Side Hair
+右横髪,Right Side Hair
+左髪,Left Hair
+右髪,Right Hair
+髪親,Hair Parent
+前髪親,Bangs Parent
+後髪親,Back Hair Parent
+ツインテール,Twin Tail
+ポニーテール,Ponytail
+アホ毛,Ahoge
+もみあげ,Sideburns
+髪1,Hair 1
+髪2,Hair 2
+髪3,Hair 3
+顔,Face
+肌,Skin
+白目,Eye Whites
+まつ毛,Eyelashes
+服,Clothes
+スカート,Skirt
+左スカート,Left Skirt
+右スカート,Right Skirt
+前スカート,Front Skirt
+後スカート,Back Skirt
+スカート親,Skirt Parent
+靴,Shoes
+靴下,Socks
+ネクタイ,Necktie
+リボン,Ribbon
+シャツ,Shirt
+ブーツ,Boots
+メガネ,Glasses
+あ,A
+い,I
+う,U
+え,E
+お,O
+ん,N
+まばたき,Blink
+目閉じ,Eyes Closed
+目開き,Eyes Open
+ウィンク,Wink
+ウインク,Wink
+笑い,Smile
+にっこり,Happy Smile
+なごみ,Calm Eyes
+困る,Worried
+怒り,Angry
+哀しみ,Sad
+悲しい,Sad
+驚き,Surprised
+びっくり,Surprised
+真面目,Serious
+照れ,Blush
+涙,Tears
+目大,Eyes Wide
+目小,Eyes Narrow
+じと目,Half-Lidded Eyes
+上目遣い,Upward Gaze
+下目,Downward Gaze
+猫目,Cat Eyes
+ハイライト,Eye Highlights
+ハイライト消し,Remove Eye Highlights
+黒目,Pupils
+眉上,Brows Up
+眉下,Brows Down
+眉困,Worried Brows
+眉怒,Angry Brows
+眉,Brows
+口開き,Mouth Open
+口閉じ,Mouth Closed
+口角上げ,Smile
+口角下げ,Frown
+口横広げ,Mouth Wide
+口縦広げ,Mouth Tall
+口すぼめ,Pucker
+歯,Teeth
+歯茎,Gums
+舌出し,Tongue Out
+頬染め,Blush
+ほっぺ,Cheeks
+汗,Sweat
+青ざめ,Pale
+赤面,Blush
+ガーン,Shock
+えーん,Crying
+なし,None
+全て,All
+ボーン,Bone
+腕,Arm
+表情,Expression
+表情モーション,Expression Motion
+グループ,Group
+肩,Shoulder
+肩P,Shoulder P
+胸部,Chest
+腹,Abdomen
+お腹,Belly
+腰飾り,Waist Decoration
+ひじ,Elbow
+手,Hand
+手首,Wrist
+足,Leg
+ひざ,Knee
+足首,Ankle
+つま先,Toe
+足先,Toe
+目,Eye
+人差指,Index Finger
+親指,Thumb
+中指,Middle Finger
+薬指,Ring Finger
+小指,Little Finger
+骨盤,Pelvis
+もも,Thigh
+太もも,Thigh
+ｽｶｰﾄ,Skirt
+二重まぶた,Double Eyelid
+星目,Star Eyes
+ﾈｸﾀｲ,Necktie
+袖,Sleeve
+つま先ＩＫ,Toe IK
+ダミー,Dummy
+おっぱい,Breast
+頭飾り,Head Accessory
+目光,Eye Light
+左リボン,Left Ribbon
+右リボン,Right Ribbon
+左手持ちダミー,Left Hand Dummy
+右手持ちダミー,Right Hand Dummy
+体,Body
+髮,Hair
+耳,Ear
+爪,Fingernail
+牙,Fang
+尾,Tail
+帽,Hat
+帽子,Hat
+帽子非表示,Hide Hat
+金属,Metal
+胸親,Breast Parent
+腰キャンセル左,Waist Cancel Left
+腰キャンセル右,Waist Cancel Right
+左腕捩先,Left Arm Twist End
+右腕捩先,Right Arm Twist End
+左手捩先,Left Wrist Twist End
+右手捩先,Right Wrist Twist End
+左足IK先,Left Leg IK End
+右足IK先,Right Leg IK End
+左つま先IK先,Left Toe IK End
+右つま先IK先,Right Toe IK End
+左腕D,Left Arm D
+右腕D,Right Arm D
+左腕捩D,Left Arm Twist D
+右腕捩D,Right Arm Twist D
+左ひじD,Left Elbow D
+右ひじD,Right Elbow D
+左手首D,Left Wrist D
+右手首D,Right Wrist D
+左手捩D,Left Wrist Twist D
+右手捩D,Right Wrist Twist D
+左ひざD,Left Knee D
+右ひざD,Right Knee D
+左足首D,Left Ankle D
+右足首D,Right Ankle D
+向き,Direction
+補助,Assist
+調整,Adjust
+抽出,Extract
+軸,Axis
+光消,Highlight Off
+呼吸,Breathing
+深呼吸,Deep Breath
+ぐるぐる,Dizzy
+たくらむ,Scheming
+はぁと,Heart
+むすっ,Annoyed
+やや驚く,Slightly Surprised
+イライラ,Irritated
+キラキラ,Sparkle
+グルグル,Dizzy
+コッチミンナ,Don't Look At Me
+デフォ,Default
+ニカッ,Grin
+ニッ,Grin
+ハイライト←,Highlight Left
+ハイライト↑,Highlight Up
+ハイライト→,Highlight Right
+ハイライト↓,Highlight Down
+ハイライト下,Highlight Down
+ハイライト拡大,Expand Highlights
+ハイライト除去,Remove Highlights
+ハート,Heart
+ベルト,Belt
+マジメ,Serious
+上がる,Raised
+下がる,Lowered
+下まぶた,Lower Eyelid
+下瞼上げ,Raise Lower Eyelid
+下瞼上げ右,Raise Lower Eyelid Right
+下瞼上げ左,Raise Lower Eyelid Left
+不機嫌,Cranky
+前進,Forward
+叫び,Shout
+嘲笑,Sneer
+平行,Flat Brows
+平行右,Flat Brows Right
+平行左,Flat Brows Left
+影化,Shadow
+後退,Backward
+怒,Angry
+怒る,Angry
+怒る右,Angry Right
+怒る左,Angry Left
+悲しむ,Sad
+見開き,Eyes Wide
+見開く,Eyes Wide
+驚く,Surprised
+驚く右,Surprised Right
+驚く左,Surprised Left
+笑,Smile
+絶望,Despair
+眇める,Squint
+照れ斜線,Blush Lines
+照れ消,Remove Blush
+青ざめる,Pale
+高さ調整,Height Adjust
+鼻上,Nose Up
+鼻下,Nose Down
+にやり,Grin
+ワ,Wa
+ω,Omega
+てへぺろ,Tehepero
+ぺろっ,Tongue Out
+口横狭め,Mouth Narrow
+舌広げ,Tongue Spread
+喜び,Joy
+怒り目,Angry Eyes
+眼角,Eye Corner
+下眼上,Lower Eye Up
+にこり,Gentle Smile
+恥ずかしい,Shy
+瞳小,Small Pupils
+ジト目,Stare
+ハイライト消,Highlight Off
+カジュアルスラックス,Casual Slacks
+シャトルーズグリーン,Chartreuse Green
+エメラルドグリーン,Emerald Green
+オリエンタルブルー,Oriental Blue
+キャロットオレンジ,Carrot Orange
+ゴールデンイエロー,Golden Yellow
+チャイニーズレッド,Chinese Red
+ネープルスイエロー,Naples Yellow
+ビリヤードグリーン,Billiard Green
+ピーコックグリーン,Peacock Green
+フォレストグリーン,Forest Green
+マラカイトグリーン,Malachite Green
+マンダリンオレンジ,Mandarin Orange
+ミッドナイトブルー,Midnight Blue
+アイビーグリーン,Ivy Green
+アタッチメント用,Attachment
+アップルグリーン,Apple Green
+イエローオーカー,Yellow Ocher
+オリーブグリーン,Olive Green
+カナリーイエロー,Canary Yellow
+カフスチョーカー,Cuff Choker
+クリームイエロー,Cream Yellow
+コチニールレッド,Cochineal Red
+コバルトグリーン,Cobalt Green
+サングラスレンズ,Sunglasses Lens
+セルリアンブルー,Cerulean Blue
+ターコイズブルー,Turquoise Blue
+チャコールグレー,Charcoal Grey
+バーントアンバー,Burnt Umber
+バーントシェンナ,Burnt Sienna
+ピーコックブルー,Peacock Blue
+プルシアンブルー,Prussian Blue
+ちょうネクタイ,Bow Tie
+アイアンブルー,Iron Blue
+アタッチメント,Attachment
+アッシュグレー,Ash Grey
+アルファベット,Alphabet
+ウルトラマリン,Ultramarine Blue
+エクルベージュ,Ecru Beige
+オリーブドラブ,Olive Drab
+オールドローズ,Old Rose
+ガーターブーツ,Garter Boots
+クロムイエロー,Chrome Yellow
+グラスグリーン,Grass Green
+ココアブラウン,Cocoa Brown
+コバルトブルー,Cobalt Blue
+コーラルレッド,Coral Red
+サックスブルー,Saxe Blue
+サングラスリム,Sunglasses Rim
+サーモンピンク,Salmon Pink
+シグナルレッド,Signal Red
+シルバーグレー,Silver Grey
+ジョンブリアン,Jaune Brillant
+スチールグレー,Steel Grey
+スノーホワイト,Snow White
+スレートグレー,Slate Grey
+チェリーピンク,Cherry Pink
+ティアドロップ,Teardrop
+ネイビーブルー,Navy Blue
+バーガンディー,Burgundy
+ヘリオトロープ,Heliotrope
+ホリゾンブルー,Horizon Blue
+ボトルグリーン,Bottle Green
+マリーゴールド,Marigold
+ミントグリーン,Mint Green
+ライムグリーン,Lime Green
+ランプブラック,Lamp Black
+リーフグリーン,Leaf Green
+レモンイエロー,Lemon Yellow
+アプリコット,Apricot
+ウインク２右,Wink 2 Right
+オレンジいろ,Orange
+カフスボタン,Cufflink Button
+カーディガン,Cardigan
+コスチューム,Costume
+シェルピンク,Shell Pink
+シーグリーン,Sea Green
+スカイグレー,Sky Grey
+スカイブルー,Sky Blue
+スカーレット,Scarlet
+ストッキング,Stockings
+ストロベリー,Strawberry
+チョコレート,Chocolate
+ティアドップ,Teardrop
+トマトレッド,Tomato Red
+ナイルブルー,Nile Blue
+ネールピンク,Nail Pink
+ノースリーブ,Sleeveless
+ハイライト無,No Highlights
+バイオレット,Violet
+バニーイヤー,Bunny Ears
+バーミリオン,Vermilion
+パールグレー,Pearl Grey
+ヘッドセット,Headset
+ベビーピンク,Baby Pink
+ベビーブルー,Baby Blue
+ポピーレッド,Poppy Red
+マリンブルー,Marine Blue
+ルビーレッド,Ruby Red
+レインコート,Raincoat
+ローアンバー,Raw Umber
+ローシェンナ,Raw Sienna
+ローズグレー,Rose Grey
+ローズピンク,Rose Pink
+ローズレッド,Rose Red
+ワインレッド,Wine Red
+睫毛シンプル,Simple Eyelashes
+酔っ払いの目,Drunken Eyes
+首回りボタン,Neck Button
+T-シャツ,T-shirt
+かっしょく,Brown
+ねじり閉じ,Twist Closed
+はんズボン,Short Pants
+ぽっちゃり,Chubby
+アイボリー,Ivory
+イヤリング,Earring
+ウインク右,Wink Right
+ウインク２,Wink 2
+オレンジ色,Orange
+オーキッド,Orchid
+カジュアル,Casual
+カーマイン,Carmine
+クリスタル,Crystals
+サポーター,Supporter
+サングラス,Sunglasses
+ジャケット,Jacket
+ストライプ,Stripes
+スニーカー,Sneakers
+スラックス,Slacks
+テラコッタ,Terracotta
+トレーナー,Sweatshirt
+ネックレス,Necklace
+ハイヒール,High Heel Shoes
+バタフライ,Butterfly
+ヒヤシンス,Hyacinth
+ビリジアン,Viridian
+ヘッドギア,Headgear
+ベルト通し,Belt Loops
+ボタンの中,Inner Button
+ライラック,Lilac
+ラベンダー,Lavender
+レオタード,Leotard
+ローライズ,Low Rise
+ワイシャツ,Shirt
+ワンピース,Dress
+下唇を噛む,Bite Lower Lip
+眉間にしわ,Wrinkles Between Eyebrows
+蝶ネクタイ,Bow Tie
+足指きゅっ,Toes Bend
+足指曲げる,Toes Bend
+かわぐつ,Leather Shoes
+くつした,Socks
+こんいろ,Navy Blue
+しかめる,Frown
+すぼめる,Shrink
+そでぐち,Cuff
+ちゃいろ,Brown
+てぶくろ,Gloves
+とびいろ,Reddish Brown
+ねこみみ,Cat Ears
+はいいろ,Grey
+ひかえめ,Smaller
+ひらひら,Flutter
+ふともも,Thigh
+ほっそり,Slender Body
+むっちり,Wider Body
+むらさき,Purple
+アンバー,Amber
+アーマー,Armor
+イエロー,Yellow
+インナー,Inner
+ウエスト,Waist
+エプロン,Apron
+オリーブ,Olive
+オレンジ,Orange
+オーバー,Overcoat
+カラバリ,Color Variations
+ガーター,Garter
+キャップ,Cap
+グリーン,Green
+サンダル,Sandals
+ショーツ,Shorts
+ショート,Short
+シンプル,Simple
+ジーンズ,Jeans
+スカーフ,Scarf
+スタンド,Stand
+スフィア,Sphere
+スライム,Slime
+スリッパ,Slippers
+セーター,Sweater
+セーラー,Sailor
+ソックス,Socks
+チェーン,Chain
+チョッキ,Vest
+トランプ,Cards
+ヌルテカ,Oiled
+バックル,Buckle
+パジャマ,Pajamas
+パンジー,Pansy
+パンスト,Pantyhose
+パープル,Purple
+ブラウス,Blouse
+ブラウン,Brown
+ブラック,Black
+ブレザー,Blazer
+ブロンズ,Bronze
+ブロンド,Blond
+ブローチ,Brooch
+ベージュ,Beige
+ホワイト,White
+ボルドー,Bordeaux
+マゼンタ,Magenta
+マフラー,Scarf
+マルーン,Maroon
+メジャー,Measuring Tape
+モニター,Monitor
+モミアゲ,Sideburn
+リベット,Rivet
+三つ編み,Braid
+上睫毛短,Upper Eyelashes
+下唇噛む,Bite Lower Lip
+下睫毛短,Lower Eyelashes
+不透明な,Opaque
+先端丸め,Rounded Tips
+先端尖り,Pointed Tips
+力アップ,Power Up
+半ズボン,Short Pants
+反射下げ,Reduce Reflection
+口内後退,Inner Mouth Go Back
+垂れ防止,Prevent Sagging
+大きな目,Big Eyes
+怒り漫符,Anger Symbol
+明度変化,Brightness Change
+明度変更,Change Brightness
+服色調整,Costume Color
+照り返す,Reflect
+眉尻下げ,Lower Brows
+足指そり,Toes Bend
+足指曲げ,Toes Bend
+鎖移動用,Chain Movement
+首の長さ,Neck Length
+髪色調整,Hair Color
+黒目拡大,Dilate Pupils
+あほ毛,Ahoge
+いふく,Clothes
+うるる,Cry
+うわぎ,Coat
+おさげ,Pigtail
+がおー,Roar
+がーん,Gloom
+きいろ,Yellow
+きもの,Kimono
+くわっ,Open Eyes Wide
+せびろ,Suit
+ちゃり,Bicycle
+てへっ,Tehe
+とほほ,Tears
+なめる,Lick
+にしし,Grin
+にしわ,Wrinkle
+にひひ,Grin
+ねじり,Twist
+ぱんつ,Pants
+ひいろ,Scarlet
+ふにゃ,Sleepy
+ぷくー,Puff Cheeks
+ぼうし,Hat
+ぽちゃ,Chubby
+まつげ,Eyelash
+みどり,Green
+めがね,Glasses
+ゆかた,Summer Kimono
+ゆびわ,Ring
+りぼん,Ribbon
+アヒル,Duck
+イヒヒ,Giggle
+エッジ,Edge
+カタナ,Katana Sword
+カバー,Cover
+カフス,Cuff
+カラー,Color
+カーキ,Khaki
+キリッ,Sharp
+グレー,Grey
+コルク,Cork
+コート,Coat
+コード,Cord
+サイズ,Size
+シアン,Cyan
+シーム,Seam
+ジップ,Zip
+スノー,Snow
+スーツ,Suit
+ズボン,Trousers
+セット,Set
+セピア,Sepia
+タイツ,Tights
+ダーク,Dark
+テール,Tail
+ドレス,Dress
+ニヤリ,Grin
+ハの字,Eyebrows Slant
+ハトメ,Shoelace Holes
+バック,Back
+バッジ,Badge
+バニー,Bunny
+バンド,Band
+パッド,Pad
+パンツ,Pants
+パーツ,Part
+ヒップ,Hip
+ヒール,Heel
+ピアス,Earring
+ピンク,Pink
+ピーチ,Peach
+ファー,Fur
+フォグ,Fog
+フリル,Frill
+ブリム,Brim
+ブルー,Blue
+ヘアー,Hair
+ボタン,Button
+ボディ,Body
+ボトム,Bottom
+マイク,Microphone
+マント,Cloak
+マーク,Mark
+メイス,Mace
+メタル,Metal
+モーフ,Morph
+モーブ,Mauve
+ライズ,Rise
+ライト,Light
+ライン,Line
+リング,Ring
+ルビー,Ruby
+レッド,Red
+ローズ,Rose
+上げて,Raise
+上唇上,Raise Upper Lip
+上唇下,Lower Upper Lip
+下あご,Chin
+下唇上,Raise Lower Lip
+下唇下,Lower Lower Lip
+下瞼上,Lower Eyelids Go Up
+先細り,Tapered
+口の中,Inner Mouth
+口角拡,Widen Mouth
+向日葵,Sunflower
+後下髪,Back Lower Hair
+悲しみ,Sad
+拡大し,Expand
+明度変,Change Brightness
+止め具,Fasteners
+水かき,Webbing
+注連縄,Sacred Shrine Rope
+淡紅色,Pink
+燕尾服,Swallow Tail Coat
+睫毛短,Eyelashes
+移動用,Move
+細める,Tighten
+絆創膏,Bandage
+緑寄り,Green
+耳移動,Ear Movement
+色変え,Change Color
+色変化,Color Change
+色変更,Change Color
+衣料品,Clothing
+調整用,Adjustment
+足指伸,Toes Bend
+足首伸,Ankle Bend
+鎖移動,Chain Movement
+青寄り,Blue
+非透過,Opaque
+面荒さ,Roughness
+物理,Physics
+材質,Material
+くち下,Mouth Down
+くち上,Mouth Up
+へ,He
+▲,Triangle
+∧,Caret
+□,Square
+はわわ,Hawawa
+クール,Cool
+ｷﾘｯ,Sharp
+はぅ,Hau
+はちゅめ,Hachu Eye
+はちゅ目,Hachu Eye
+上,Up
+下,Down
+HL消し,Highlight Off
+瞼前,Eyelid Forward
+フラット,Flat
+にこ,Smile

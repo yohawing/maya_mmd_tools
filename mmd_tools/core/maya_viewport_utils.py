@@ -111,7 +111,18 @@ def set_viewport_backface_culling(enabled=True, panel_name=None) -> bool:
                 if panels:
                     panel_name = panels[0]
                 else:
-                    logger.warning("No model panels found")
+                    try:
+                        is_batch = bool(cmds.about(batch=True))
+                    except Exception:
+                        logger.warning(
+                            "Could not determine Maya batch mode; no model panels found",
+                            exc_info=True,
+                        )
+                    else:
+                        if is_batch:
+                            logger.debug("No model panels found in Maya batch mode")
+                        else:
+                            logger.warning("No model panels found")
                     return False
 
         cmds.modelEditor(panel_name, edit=True, backfaceCulling=enabled)

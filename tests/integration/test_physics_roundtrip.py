@@ -13,6 +13,7 @@ import maya.api.OpenMaya as om
 
 from tests.common.maya_test_base import MayaTestBase
 
+from mmd_tools.actions.export_model_action import ExportModelAction, ExportModelRequest
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
 from mmd_tools.core.coordinate_transform import mmd_point_to_maya
@@ -669,10 +670,10 @@ class TestPhysicsRoundTrip(MayaTestBase):
         self.assertListAlmostEqual(collected_body["position"], source.position)
         self.assertListAlmostEqual(collected_body["rotation"], source.rotation)
 
-    def test_nondefault_import_scale_applies_only_to_collider_display_dag(self):
-        display_scale = 2.5
+    def test_nondefault_import_scale_bakes_effective_collider_scene_values(self):
+        import_scale = 2.5
         source_pmx = parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
-        root = self._import_fixture(scale=display_scale)
+        root = self._import_fixture(scale=import_scale)
         presenter = self._presenter(root)
         physics_group = presenter._find_child(root, PHYSICS_GROUP)
         rb_group = presenter._find_child(physics_group, RIGID_BODIES_GROUP)
@@ -680,7 +681,7 @@ class TestPhysicsRoundTrip(MayaTestBase):
 
         for transform, shape in rigid_pairs:
             source = source_pmx.rigid_bodies[cmds.getAttr(f"{shape}.pmxIndex")]
-            expected_position = mmd_point_to_maya(source.position, display_scale)
+            expected_position = mmd_point_to_maya(source.position, import_scale)
             bones = cmds.listConnections(
                 f"{shape}.relatedBone", source=True, destination=False, type="joint"
             ) or []
@@ -712,9 +713,242 @@ class TestPhysicsRoundTrip(MayaTestBase):
             )
             self.assertListAlmostEqual(
                 cmds.getAttr(f"{transform}.scale")[0],
-                (display_scale, display_scale, display_scale),
+                (1.0, 1.0, 1.0),
             )
-            self.assertListAlmostEqual(cmds.getAttr(f"{shape}.position")[0], source.position)
+            self.assertListAlmostEqual(
+                cmds.getAttr(f"{shape}.position")[0],
+                tuple(value * import_scale for value in source.position),
+            )
+            self.assertListAlmostEqual(
+                cmds.getAttr(f"{shape}.shapeSize")[0],
+                tuple(value * import_scale for value in source.size),
+            )
+
+    def test_import_scale_bakes_effective_joint_spatial_metadata(self):
+        """Joint spatial values are scaled once while spring coefficients stay unchanged."""
+        scale = 0.5
+        source_data = _build_synthetic_supported_full_dict("physics_import_scale")
+        source_joint = source_data["joints"][0]
+        source_joint.update(
+            {
+                "position": [1.25, -2.5, 3.75],
+                "translation_limit_min": [-0.4, -0.6, -0.8],
+                "translation_limit_max": [0.5, 0.7, 0.9],
+                "spring_translation": [11.0, 22.0, 33.0],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "physics_import_scale.pmx"
+            PmxExporter().export_pmx_model(str(source_path), source_data)
+            source_pmx = parse_pmx_file(str(source_path), use_native_pmx_parse=False)
+            root = self._import_fixture(source_path, scale=scale)
+
+            presenter = self._presenter(root)
+            physics_group = presenter._find_child(root, PHYSICS_GROUP)
+            constraints_group = presenter._find_child(physics_group, CONSTRAINTS_GROUP)
+            joint_transform, joint_shape = next(
+                (transform, shape)
+                for transform, shape in presenter._find_shapes(
+                    constraints_group, "mmdPhysicsJointShape"
+                )
+                if cmds.getAttr(f"{shape}.pmxIndex") == 0
+            )
+
+            source = source_pmx.joints[0]
+            for attr, source_values in (
+                ("position", source.position),
+                ("translationLimitMin", source.translation_limit_min),
+                ("translationLimitMax", source.translation_limit_max),
+            ):
+                self.assertListAlmostEqual(
+                    cmds.getAttr(f"{joint_shape}.{attr}")[0],
+                    tuple(value * scale for value in source_values),
+                    places=5,
+                    msg=f"effective PMX joint metadata {attr}",
+                )
+            self.assertListAlmostEqual(
+                cmds.getAttr(f"{joint_shape}.springTranslation")[0],
+                source.spring_translation,
+                places=5,
+                msg="joint spring translation coefficient",
+            )
+            self.assertListAlmostEqual(
+                cmds.xform(joint_transform, query=True, worldSpace=True, translation=True),
+                mmd_point_to_maya(source.position, scale),
+                places=5,
+                msg="joint Maya-space transform translation",
+            )
+
+    def test_import_scale_survives_pmx_export_for_bones_morphs_and_physics(self):
+        """Export keeps every imported spatial PMX field at its visible size."""
+        scale = 0.5
+        source_data = _build_synthetic_supported_full_dict("export_import_scale")
+        source_data["rigid_bodies"][0].update(
+            {"size": [1.1, 1.2, 1.3], "position": [0.2, -0.4, 0.6]}
+        )
+        source_data["joints"][0].update(
+            {
+                "position": [0.4, -0.5, 0.7],
+                "translation_limit_min": [-0.1, -0.2, -0.3],
+                "translation_limit_max": [0.2, 0.3, 0.4],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "export_import_scale_source.pmx"
+            export_path = Path(temp_dir) / "export_import_scale_output.pmx"
+            PmxExporter().export_pmx_model(str(source_path), source_data)
+            source = parse_pmx_file(str(source_path), use_native_pmx_parse=False)
+
+            root = self._import_fixture(source_path, scale=scale)
+            result = ExportModelAction().execute(
+                ExportModelRequest(
+                    file_path=str(export_path),
+                    options={
+                        "export_format": "pmx",
+                        "target_model": root,
+                    },
+                )
+            )
+            self.assertTrue(result.succeeded, result.status_message)
+            exported = parse_pmx_file(str(export_path), use_native_pmx_parse=False)
+
+            for actual, expected in zip(exported.vertices, source.vertices):
+                self.assertListAlmostEqual(
+                    actual.position,
+                    [value * scale for value in expected.position],
+                    places=5,
+                    msg="vertex position",
+                )
+            for actual, expected in zip(exported.bones, source.bones):
+                self.assertListAlmostEqual(
+                    actual.position,
+                    [value * scale for value in expected.position],
+                    places=5,
+                    msg=f"bone {actual.name} position",
+                )
+                self.assertListAlmostEqual(
+                    actual.connect_position_offset,
+                    [value * scale for value in expected.connect_position_offset],
+                    places=5,
+                    msg=f"bone {actual.name} tail offset",
+                )
+
+            source_vertex_morph = next(
+                morph for morph in source.morphs if morph.morph_type == PmxMorphType.VertexMorph
+            )
+            exported_vertex_morph = next(
+                morph for morph in exported.morphs if morph.morph_type == PmxMorphType.VertexMorph
+            )
+            for actual, expected in zip(
+                exported_vertex_morph.offsets, source_vertex_morph.offsets
+            ):
+                self.assertListAlmostEqual(
+                    actual["position_offset"],
+                    [value * scale for value in expected["position_offset"]],
+                    places=5,
+                    msg="vertex morph offset",
+                )
+
+            source_bone_morph = next(
+                morph for morph in source.morphs if morph.morph_type == PmxMorphType.BoneMorph
+            )
+            exported_bone_morph = next(
+                morph for morph in exported.morphs if morph.morph_type == PmxMorphType.BoneMorph
+            )
+            for actual, expected in zip(
+                exported_bone_morph.offsets, source_bone_morph.offsets
+            ):
+                self.assertListAlmostEqual(
+                    actual["translation"],
+                    [value * scale for value in expected["translation"]],
+                    places=5,
+                    msg="bone morph translation",
+                )
+
+            source_rigid = source.rigid_bodies[0]
+            exported_rigid = exported.rigid_bodies[0]
+            for field in ("size", "position"):
+                self.assertListAlmostEqual(
+                    getattr(exported_rigid, field),
+                    [value * scale for value in getattr(source_rigid, field)],
+                    places=5,
+                    msg=f"rigid body {field}",
+                )
+
+            source_joint = source.joints[0]
+            exported_joint = exported.joints[0]
+            for field in (
+                "position",
+                "translation_limit_min",
+                "translation_limit_max",
+            ):
+                self.assertListAlmostEqual(
+                    getattr(exported_joint, field),
+                    [value * scale for value in getattr(source_joint, field)],
+                    places=5,
+                    msg=f"joint {field}",
+                )
+
+    def test_scale_1_5_physics_export_survives_fresh_scene_reimport(self):
+        scale = 1.5
+        source = parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_path = Path(temp_dir) / "physics_scale_1_5.pmx"
+            root = self._import_fixture(scale=scale)
+            result = ExportModelAction().execute(
+                ExportModelRequest(
+                    file_path=str(export_path),
+                    options={"export_format": "pmx", "target_model": root},
+                )
+            )
+            self.assertTrue(result.succeeded, result.status_message)
+            exported = parse_pmx_file(str(export_path), use_native_pmx_parse=False)
+
+            self.assertEqual(len(exported.rigid_bodies), len(source.rigid_bodies))
+            for actual, expected in zip(exported.rigid_bodies, source.rigid_bodies):
+                self.assertListAlmostEqual(
+                    actual.size, [value * scale for value in expected.size], places=5
+                )
+                self.assertListAlmostEqual(
+                    actual.position,
+                    [value * scale for value in expected.position],
+                    places=5,
+                )
+            self.assertEqual(len(exported.joints), len(source.joints))
+            for actual, expected in zip(exported.joints, source.joints):
+                for field in (
+                    "position",
+                    "translation_limit_min",
+                    "translation_limit_max",
+                ):
+                    self.assertListAlmostEqual(
+                        getattr(actual, field),
+                        [value * scale for value in getattr(expected, field)],
+                        places=5,
+                    )
+
+            cmds.file(new=True, force=True)
+            fresh_root = self._import_fixture(export_path)
+            fresh = ExportSceneCollector().collect_from_model_root(fresh_root)
+            self.assertEqual(len(fresh["rigid_bodies"]), len(exported.rigid_bodies))
+            for actual, expected in zip(fresh["rigid_bodies"], exported.rigid_bodies):
+                self.assertListAlmostEqual(actual["size"], expected.size, places=5)
+                self.assertListAlmostEqual(actual["position"], expected.position, places=5)
+            self.assertEqual(len(fresh["joints"]), len(exported.joints))
+            for actual, expected in zip(fresh["joints"], exported.joints):
+                self.assertListAlmostEqual(actual["position"], expected.position, places=5)
+                self.assertListAlmostEqual(
+                    actual["translation_limit_min"],
+                    expected.translation_limit_min,
+                    places=5,
+                )
+                self.assertListAlmostEqual(
+                    actual["translation_limit_max"],
+                    expected.translation_limit_max,
+                    places=5,
+                )
 
     def test_vertex_morph_and_physics_survive_collector_roundtrip(self):
         """A deleted-target PMX morph and every Physics field survive scene collection."""

@@ -278,7 +278,6 @@ def install_mmd_menu():
         "MMD Tools",
         "MMD Editor",
         "Repair Texture Paths",
-        "Translate MMD Names",
         "Tools",
         "Animator Toolset",
         "コントロールリグを管理",
@@ -303,6 +302,14 @@ def install_mmd_menu():
         parent="MMD",
     )
     cmds.menuItem(
+        "MMDToolsSubMenu",
+        label="Tools",
+        subMenu=True,
+        parent="MMD",
+        postMenuCommand=_populate_mmd_tools_menu,
+    )
+    _populate_mmd_tools_menu()
+    cmds.menuItem(
         "MMDAnimatorToolsetMenuItem",
         label="Animator Toolset",
         command=lambda *args: open_animator_toolset(dockable=True),
@@ -324,18 +331,48 @@ def install_mmd_menu():
     )
 
 
+def _populate_mmd_tools_menu(*_args):
+    """Populate the Tools submenu when opened, including after startup UI rebuilds."""
+    from mmd_tools.tools import install_tool_plugins
+
+    cmds.menu("MMDToolsSubMenu", edit=True, deleteAllItems=True)
+    install_tool_plugins(
+        "MMDToolsSubMenu",
+        cmds_module=cmds,
+        on_applied=_refresh_tool_ui,
+        on_error=om.MGlobal.displayWarning,
+    )
+
+
 def uninstall_mmd_menu():
     """Uninstall the MMD menu from Maya."""
     if cmds.menu("MMD", exists=True):
         cmds.deleteUI("MMD", menu=True)
 
 
-def _run_mmd_name_translation():
-    """Dispatch the explicit name-translation tool entry point."""
+def _refresh_tool_ui(_changes=()):
+    """Refresh each open MMD Tools view after a tool mutates model metadata."""
 
-    from mmd_tools.tools import translate_names
+    app_states = []
+    for window in (_main_window, _animator_toolset_window):
+        state = getattr(window, "app_state", None) if window is not None else None
+        if state is not None and all(state is not existing for existing in app_states):
+            app_states.append(state)
+    manager_state = (
+        getattr(_control_rig_manager_window, "_app_state", None)
+        if _control_rig_manager_window is not None
+        else None
+    )
+    if manager_state is not None and all(manager_state is not existing for existing in app_states):
+        app_states.append(manager_state)
 
-    return translate_names.run()
+    for state in app_states:
+        state.refresh_model_list(explicit=True)
+
+    if _animator_toolset_window is not None:
+        _animator_toolset_window.refresh_for_language_change()
+    if _control_rig_manager_window is not None:
+        _control_rig_manager_window.refresh()
 
 
 def _node_type_registered(type_name: str) -> bool:

@@ -18,6 +18,7 @@ from .components.header_widget import HeaderWidget
 from .application_state import ApplicationState
 from ..core import settings_keys as setting_keys
 from ..core.logger import get_logger, install_maya_script_editor_handler
+from ..core.name_display import preferred_pmx_display_name
 from ..services.settings_service import SettingsService
 from .tabs.import_export_tab import ImportExportTab
 from .presenters.import_export_presenter import ImportExportPresenter
@@ -37,6 +38,7 @@ from .tabs.physics_tab import PhysicsTab
 from .presenters.physics_presenter import PhysicsPresenter
 from .tabs.settings_tab import SettingsTab
 from .presenters.settings_presenter import SettingsPresenter
+from .translations import UITranslator
 
 logger = get_logger(__name__)
 
@@ -59,6 +61,9 @@ class MainWindow(QMainWindow):
         # アプリケーション状態管理
         self.app_state = ApplicationState()
         self.settings_service = SettingsService()
+        UITranslator.instance().set_language(
+            self.settings_service.get(setting_keys.UI_GENERAL_LANGUAGE, "ja")
+        )
         self.authoring_composition = self._create_authoring_composition()
 
         # 中央ウィジェットの設定
@@ -189,7 +194,10 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(version_label)
 
         # 初期メッセージ
-        self.status_bar.showMessage("準備完了", 2000)
+        self.status_bar.showMessage(
+            UITranslator.instance().translate("ready", "messages", default="Ready"),
+            2000,
+        )
 
     def show_status_message(self, message):
         """ステータスメッセージを表示"""
@@ -255,11 +263,21 @@ class MainWindow(QMainWindow):
             # モデル情報を取得
             info = self.app_state.get_model_info(model_root)
             if info:
-                # 表示名を優先、なければモデルルート名を使用
-                model_name = info.get("display_name", model_root)
+                model_name = preferred_pmx_display_name(
+                    info.get("name_jp"),
+                    info.get("name_en"),
+                    fallback=str(model_root).rsplit("|", 1)[-1],
+                    language=UITranslator.instance().get_language(),
+                )
                 self.setWindowTitle(f"{base_title} - {model_name}")
             else:
-                self.setWindowTitle(f"{base_title} - {model_root}")
+                model_name = preferred_pmx_display_name(
+                    "",
+                    "",
+                    fallback=str(model_root).rsplit("|", 1)[-1],
+                    language=UITranslator.instance().get_language(),
+                )
+                self.setWindowTitle(f"{base_title} - {model_name}")
         else:
             self.setWindowTitle(base_title)
 
@@ -343,12 +361,13 @@ class MainWindow(QMainWindow):
         translator.set_language(current_language)
 
         # Import Tab
-        import_export_tab = ImportExportTab()
+        import_export_tab = ImportExportTab(settings_service=self.settings_service)
         self.import_export_tab = import_export_tab
         self.import_export_presenter = ImportExportPresenter(
             import_export_tab,
             self.app_state,
             create_model_action=self._create_model_action(),
+            settings_service=self.settings_service,
         )
         self.tab_widget.addTab(import_export_tab, translator.translate("file_io", "tabs"))
 
@@ -532,6 +551,11 @@ class MainWindow(QMainWindow):
             self.header_widget.retranslateUi()
 
         self.retranslateUi()
+        # Locale-dependent PMX names are presenter data, not static Qt text.
+        # Reuse the normal read-only refresh transaction so the Header and the
+        # currently visible authoring list are rebuilt immediately; hidden
+        # tabs retain their generation-based lazy refresh behaviour.
+        self.app_state.refresh_model_list(explicit=True)
 
     def retranslateUi(self):
         """メインウィンドウのUIテキストを再翻訳"""

@@ -10,6 +10,7 @@ import maya.cmds as cmds
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_registered_sparse import RegisteredSparseBoneFrame
 from mmd_tools.converters.vmd_rotation_time_curve import (
+    _resolve_quaternion_curves,
     apply_vmd_rotation_time_curve,
     apply_vmd_scalar_rotation_time_curve,
     capture_vmd_rotation_time_curve_snapshot,
@@ -33,6 +34,41 @@ def _interpolation_bytes(rotation=(13, 102, 38, 127)) -> bytes:
 
 
 class TestVmdRotationTimeCurve(MayaTestBase):
+    def test_anim_layer_resolution_uses_the_layer_owned_curve(self):
+        """Layer resolution must not depend on keyframe name traversal."""
+        cmds.namespace(add="Potez_Pautaine")
+        control = cmds.createNode(
+            "transform",
+            name="Potez_Pautaine:Center_vmdAuthoring",
+        )
+        layer = cmds.animLayer("VMD_Motion_issue_162", override=False, weight=1.0)
+        plugs = [f"{control}.rotate{axis}" for axis in "XYZ"]
+        expected = []
+        for index, plug in enumerate(plugs):
+            cmds.animLayer(layer, edit=True, attribute=plug)
+            cmds.setKeyframe(
+                control,
+                attribute=plug.rsplit(".", 1)[-1],
+                time=0,
+                value=float(index),
+                animLayer=layer,
+            )
+            resolved = cmds.animLayer(layer, query=True, findCurveForPlug=plug) or []
+            self.assertEqual(len(resolved), 1)
+            expected.append(resolved[0])
+
+        with patch(
+            "mmd_tools.converters.vmd_rotation_time_curve.cmds.keyframe",
+            return_value=[],
+        ):
+            curves = _resolve_quaternion_curves(
+                plugs,
+                animation_layer=layer,
+                require_quaternion=False,
+            )
+
+        self.assertEqual(curves, expected)
+
     def _quaternion_control(self):
         control = cmds.createNode("transform", name="vmd_rotation_time_control")
         values = {"X": (179.0, -179.0), "Y": (20.0, -15.0), "Z": (-25.0, 30.0)}

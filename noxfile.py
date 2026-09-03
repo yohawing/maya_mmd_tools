@@ -49,7 +49,6 @@ from tools.nox.native import (  # noqa: E402
     _cpp_build_dir as _common_cpp_build_dir,
     _cpp_smoke_exe as _common_cpp_smoke_exe,
     _find_vsdevcmd as _common_find_vsdevcmd,
-    _is_expected_environment_import_failure as _common_is_expected_environment_import_failure,
     _maya_devkit_root as _common_maya_devkit_root,
     _run_cli_smoke as _common_run_cli_smoke,
     _run_in_vs_dev_cmd as _common_run_in_vs_dev_cmd,
@@ -126,6 +125,7 @@ from tools.nox.maya_sessions import (  # noqa: E402
     run_native_physics_bake as _run_native_physics_bake,
     run_pmx_roundtrip as _run_pmx_roundtrip,
     run_user_roundtrip_smoke as _run_user_roundtrip_smoke,
+    run_uv_weld_profile as _run_uv_weld_profile,
     run_physics_solver_cycle_probe as _run_physics_solver_cycle_probe,
     run_root_move_ik_target_probe as _run_root_move_ik_target_probe,
     run_root_move_skin_parity_probe as _run_root_move_skin_parity_probe,
@@ -539,17 +539,15 @@ def _write_release_gate_reports(
     *,
     run_id: str | None = None,
     timestamp: str | None = None,
+    duration_sec: float | None = None,
 ) -> tuple[Path, Path]:
     """Write release-gate Markdown and JSON summaries."""
-    if run_id is None and timestamp is None:
+    if run_id is None and timestamp is None and duration_sec is None:
         return _common_write_release_gate_reports(ROOT, results, quick)
-    return _common_write_release_gate_reports(
-        ROOT,
-        results,
-        quick,
-        run_id=run_id,
-        timestamp=timestamp,
-    )
+    report_options = {"run_id": run_id, "timestamp": timestamp}
+    if duration_sec is not None:
+        report_options["duration_sec"] = duration_sec
+    return _common_write_release_gate_reports(ROOT, results, quick, **report_options)
 
 
 def _normalize_local_gate_report(
@@ -785,11 +783,6 @@ def _run_cli_smoke(
     return _common_run_cli_smoke(session, ROOT, version, config, manifest, case, limit)
 
 
-def _is_expected_environment_import_failure(stderr: str) -> bool:
-    """Return whether the final exception is an allowlisted missing environment module."""
-    return _common_is_expected_environment_import_failure(stderr)
-
-
 @nox.session(venv_backend="none")
 def ci_unit(session: nox.Session) -> None:
     """Run pure-python unit tests without mayapy.
@@ -798,11 +791,10 @@ def ci_unit(session: nox.Session) -> None:
     without Maya, so any new tests added to tests/unit are automatically
     included — no manual listing required.
 
-    A test file is included when it can be imported successfully in a
-    pytest-enabled ``uvx`` probe (i.e. it has no transitive dependency on an
-    allowlisted environment-only module). Files that fail for one of those
-    expected dependencies are skipped with a notice; other import failures
-    abort the session.
+    A single pytest-enabled ``uvx`` runner resolves the importable subset. It
+    probes each module in a fresh child interpreter, so a transitive dependency
+    on an allowlisted environment-only module is skipped without contaminating
+    other probes; other import failures abort the session.
 
     Examples:
         uvx nox -s ci_unit
@@ -810,9 +802,6 @@ def ci_unit(session: nox.Session) -> None:
     _run_ci_unit(
         session,
         root=ROOT,
-        run_process=subprocess.run,
-        glob_files=Path.glob,
-        is_expected_environment_import_failure=_is_expected_environment_import_failure,
         run_logged_subprocess=_run_logged_subprocess,
     )
 
@@ -1307,6 +1296,23 @@ def uv_weld_smoke(session: nox.Session) -> None:
         mayapy_script=_mayapy_script,
         scripts=("tests/cpp/focused_uv_weld.py",),
         require_plugin=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def uv_weld_profile(session: nox.Session) -> None:
+    """Profile material-split UV weld preparation and application costs."""
+    _run_uv_weld_profile(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
     )
 
 
@@ -2059,6 +2065,7 @@ def release_gate(session: nox.Session) -> None:
 
     Examples:
         uvx nox -s release_gate -- --quick
+        uvx nox -s release_gate -- --jobs 2
         uvx nox -s release_gate -- --maya 2024
         uvx nox -s release_gate -- --with-cpp
         uvx nox -s release_gate -- --with-cpp --cpp-maya 2024 --cpp-maya 2026 --cpp-config Release

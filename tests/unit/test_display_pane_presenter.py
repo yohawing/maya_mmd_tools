@@ -232,6 +232,9 @@ class _Coordinator:
 
 class TestDisplayPanePresenter(unittest.TestCase):
     def setUp(self):
+        self.translator = UITranslator.instance()
+        self.previous_language = self.translator.get_language()
+        self.translator.set_language("ja")
         self.view = _View()
         self.app_state = _AppState()
         self.adapter = _Adapter()
@@ -251,6 +254,9 @@ class TestDisplayPanePresenter(unittest.TestCase):
         )
         self.presenter.refresh()
 
+    def tearDown(self):
+        self.translator.set_language(self.previous_language)
+
     def test_refresh_loads_metadata_and_resolves_items(self):
         self.assertEqual([frame["name"] for frame in self.presenter.frames], ["Root", "表情", "操作"])
         self.assertEqual(len(self.view.frame_list.items), 3)
@@ -260,6 +266,39 @@ class TestDisplayPanePresenter(unittest.TestCase):
         )
         self.assertTrue(self.view.enabled)
         self.assertEqual(len(self.view.item_table.rows), 1)
+
+    def test_english_refresh_uses_english_names_without_japanese_fallback(self):
+        self.translator.set_language("en")
+        self.presenter.refresh()
+
+        self.assertEqual(
+            [item.value for item in self.view.frame_list.items],
+            ["0:★ Root", "1:★ Facial", "2:Controls"],
+        )
+        self.assertEqual(sorted(self.presenter._morph_choices), ["Smile [2]"])
+        self.assertEqual(
+            sorted(self.presenter._bone_choices),
+            ["(unnamed) [0]", "(unnamed) [1]"],
+        )
+
+    def test_english_untranslated_frame_uses_stable_ascii_fallback(self):
+        self.translator.set_language("en")
+
+        self.assertEqual(
+            self.presenter._frame_label(
+                {"name": "操作", "name_english": "", "special_flag": False},
+                4,
+            ),
+            "4:Display Frame 4",
+        )
+
+    def test_english_morph_choices_use_sanitized_name_when_english_is_empty(self):
+        self.translator.set_language("en")
+        self.adapter.attrs["model_root.mmdMorphData"] = json.dumps(
+            [{"name_jp": "頬", "name_en": "", "index": 7}], ensure_ascii=False
+        )
+        self.presenter.refresh()
+        self.assertEqual(self.presenter._morph_choices, {"cheek [7]": 7})
 
     def test_edit_add_move_and_delete_regular_frame(self):
         self.view.frame_list.setCurrentRow(2)

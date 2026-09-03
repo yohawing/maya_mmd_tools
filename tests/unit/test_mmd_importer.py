@@ -20,8 +20,6 @@ _ALL_KEYS = (
     "import.model.separate_meshes_by_material",
     "import.model.auto_resolve_textures",
     "import.model.disable_backface_culling",
-    "import.model.uv_set_name",
-    "import.model.texture_search_path",
     "import.rig.add_semi_standard_bones",
     "import.morph.import_morphs",
     "import.naming.translate_names",
@@ -40,7 +38,6 @@ class TestScopedSettingsOverride(unittest.TestCase):
         settings.set("import.model.separate_meshes_by_material", True)
         settings.set("import.model.auto_resolve_textures", True)
         settings.set("import.model.disable_backface_culling", False)
-        settings.set("import.model.uv_set_name", "myUV")
         settings.set("import.rig.add_semi_standard_bones", True)
         settings.set("import.morph.import_morphs", True)
         settings.set("import.naming.translate_names", False)
@@ -49,8 +46,6 @@ class TestScopedSettingsOverride(unittest.TestCase):
             "separate_meshes_by_material": False,
             "auto_resolve_textures": False,
             "disable_backface_culling": True,
-            "uv_set_name": "map#",
-            "texture_search_path": "",
             "add_semi_standard_bones": False,
             "import_morphs": False,
             "translate_names": True,
@@ -60,8 +55,6 @@ class TestScopedSettingsOverride(unittest.TestCase):
             self.assertFalse(settings.get("import.model.separate_meshes_by_material"))
             self.assertFalse(settings.get("import.model.auto_resolve_textures"))
             self.assertTrue(settings.get("import.model.disable_backface_culling"))
-            self.assertEqual(settings.get("import.model.uv_set_name"), "map#")
-            self.assertEqual(settings.get("import.model.texture_search_path"), "")
             self.assertFalse(settings.get("import.rig.add_semi_standard_bones"))
             self.assertFalse(settings.get("import.morph.import_morphs"))
             self.assertTrue(settings.get("import.naming.translate_names"))
@@ -107,10 +100,10 @@ class TestScopedSettingsOverride(unittest.TestCase):
             self.assertTrue(settings.get("import.rig.add_semi_standard_bones"))
 
     def test_empty_options_changes_nothing(self):
-        settings.set("import.model.uv_set_name", "customUV")
+        settings.set("import.general.scale_factor", 2.5)
 
         with _scoped_settings_override({}):
-            self.assertEqual(settings.get("import.model.uv_set_name"), "customUV")
+            self.assertEqual(settings.get("import.general.scale_factor"), 2.5)
 
     def test_unknown_option_keys_are_ignored(self):
         options = {"nonexistent_key": "value", "another_unknown": 42}
@@ -176,7 +169,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
     def tearDown(self):
         settings.set("import.general.scale_factor", self._saved_scale)
 
-    def _assert_model_import_scale(self, extension, importer_patch, expected_scale, **kwargs):
+    def _assert_import_scale_forwarded(self, extension, importer_patch, expected_scale, **kwargs):
         parsed_data = object()
 
         with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
@@ -190,7 +183,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
     def test_explicit_scale_argument_overrides_options_and_settings_for_pmx(self):
         settings.set("import.general.scale_factor", 3.0)
 
-        self._assert_model_import_scale(
+        self._assert_import_scale_forwarded(
             ".pmx",
             "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
             2.0,
@@ -201,7 +194,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
     def test_explicit_scale_argument_overrides_options_and_settings_for_pmd(self):
         settings.set("import.general.scale_factor", 3.0)
 
-        self._assert_model_import_scale(
+        self._assert_import_scale_forwarded(
             ".pmd",
             "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
             2.0,
@@ -217,7 +210,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
             (".pmd", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
         ):
             with self.subTest(extension=extension):
-                self._assert_model_import_scale(
+                self._assert_import_scale_forwarded(
                     extension,
                     importer_patch,
                     4.0,
@@ -225,7 +218,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
                 )
 
     def test_policy_scale_is_used_when_no_explicit_scale_is_given(self):
-        """No scale= / options.scale → mode-aware policy (normal mode forces 1.0)."""
+        """No scale= / options.scale uses the persisted scale in every mode."""
         self._saved_dev = settings.get("ui.general.development_mode", False)
         try:
             settings.set("import.general.scale_factor", 3.0)
@@ -236,10 +229,10 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
                 (".pmd", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
             ):
                 with self.subTest(extension=extension, mode="normal"):
-                    self._assert_model_import_scale(
+                    self._assert_import_scale_forwarded(
                         extension,
                         importer_patch,
-                        1.0,
+                        3.0,
                         options={},
                     )
 
@@ -249,7 +242,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
                 (".pmd", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
             ):
                 with self.subTest(extension=extension, mode="dev"):
-                    self._assert_model_import_scale(
+                    self._assert_import_scale_forwarded(
                         extension,
                         importer_patch,
                         3.0,
@@ -263,7 +256,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
         try:
             settings.set("ui.general.development_mode", False)
             settings.set("import.general.scale_factor", 9.0)
-            self._assert_model_import_scale(
+            self._assert_import_scale_forwarded(
                 ".pmx",
                 "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
                 2.0,

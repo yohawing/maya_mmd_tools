@@ -26,8 +26,6 @@ class _FakeSettingsStore:
                     "separate_meshes_by_material": True,
                     "auto_resolve_textures": True,
                     "disable_backface_culling": False,
-                    "uv_set_name": "customUV",
-                    "texture_search_path": "/textures",
                     "show_texture_issue_dialog": False,
                 },
                 "physics": {"import_physics": False},
@@ -53,7 +51,7 @@ class _FakeSettingsStore:
                     "use_native_physics_bake": True,
                 },
             },
-            "export": {"general": {"apply_scale": False}},
+            "export": {"general": {}},
             "logging": {"enabled": False, "level": "ERROR", "log_file_path": "custom.log"},
             "ui": {"general": {"development_mode": False, "language": "en"}},
             "internal": {"ignored": True},
@@ -164,6 +162,7 @@ class TestSettingsServiceJson(unittest.TestCase):
         self.assertEqual(set(data), {"import", "export", "logging", "ui"})
         self.assertNotIn("internal", data)
         self.assertNotIn("export_format", data["export"].get("general", {}))
+        self.assertNotIn("apply_scale", data["export"].get("general", {}))
 
     def test_write_and_import_settings_json(self):
         path = "settings.json"
@@ -207,7 +206,7 @@ class TestSettingsServiceJson(unittest.TestCase):
         self.assertFalse(self.service.get("import.model.create_mmd_control_rig"))
         self.assertIsNone(self.service.get("import.animation.create_mmd_control_rig"))
 
-    def test_import_settings_drops_legacy_export_format(self):
+    def test_import_settings_drops_legacy_export_options(self):
         self.service.import_settings_data(
             {"export": {"general": {"export_format": "pmd", "apply_scale": False}}}
         )
@@ -217,8 +216,7 @@ class TestSettingsServiceJson(unittest.TestCase):
             ("export.general.export_format", "pmd"),
             self.store.set_calls,
         )
-        self.assertFalse(self.service.get("export.general.apply_scale"))
-
+        self.assertNotIn("apply_scale", self.store.data["export"]["general"])
 
 class TestSettingsServiceImportOptions(unittest.TestCase):
     def setUp(self):
@@ -229,8 +227,8 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(self.service.is_development_mode())
         self.assertEqual(self.service.get("import.general.scale_factor"), 2.0)
 
-        self.assertEqual(self.service.resolve_import_scale(), 1.0)
-        # Persisted development value must not be overwritten.
+        self.assertEqual(self.service.resolve_import_scale(), 2.0)
+        # The normal-mode UI uses and persists the same scale owner.
         self.assertEqual(self.service.get("import.general.scale_factor"), 2.0)
 
     def test_resolve_import_scale_returns_persisted_value_in_dev_mode(self):
@@ -241,7 +239,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
     def test_build_pmx_import_options_applies_normal_mode_overrides(self):
         options = self.service.build_pmx_import_options(custom_namespace="ns")
 
-        self.assertEqual(options["scale"], 1.0)
+        self.assertEqual(options["scale"], 2.0)
         self.assertTrue(options["use_namespace"])
         self.assertEqual(options["custom_namespace"], "ns")
         self.assertTrue(options["import_models"])
@@ -256,8 +254,6 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertNotIn("auto_classify_transparency", options)
         self.assertTrue(options["auto_resolve_textures"])
         self.assertTrue(options["disable_backface_culling"])
-        self.assertEqual(options["uv_set_name"], "map#")
-        self.assertEqual(options["texture_search_path"], "")
         self.assertFalse(options["add_semi_standard_bones"])
         self.assertTrue(options["translate_names"])
         self.assertNotIn("setup_rig", options)
@@ -287,8 +283,6 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertNotIn("auto_classify_transparency", options)
         self.assertTrue(options["auto_resolve_textures"])
         self.assertFalse(options["disable_backface_culling"])
-        self.assertEqual(options["uv_set_name"], "customUV")
-        self.assertEqual(options["texture_search_path"], "/textures")
         self.assertTrue(options["add_semi_standard_bones"])
         self.assertFalse(options["translate_names"])
         self.assertTrue(options["use_cpp_fast_load"])

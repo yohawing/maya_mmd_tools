@@ -6,9 +6,7 @@ from maya import cmds
 from maya.api import OpenMaya as om
 from maya.api import OpenMayaAnim as oma
 
-from mmd_tools.core import settings_keys as setting_keys
 from mmd_tools.core.logger import get_logger
-from mmd_tools.core.settings import settings
 
 logger = get_logger(__name__)
 
@@ -183,12 +181,12 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
                 mesh_fn.setFaceVertexNormals(normal_array, normal_face_ids, normal_vertex_ids)
 
     if uvs and face_uv_connects:
-        uv_set_name = settings.get(setting_keys.IMPORT_MODEL_UV_SET_NAME).replace("#", "1")
+        uv_set_name = "map1"
         # MFnMesh.create() already provides an empty ``map1`` set.  Calling
         # createUVSet("map1") again makes Maya silently create ``map11``;
         # TEXCOORD0 still reads the current empty ``map1`` and DX11 textures
-        # therefore sample a constant texel.  Reuse the requested set when it
-        # exists and make the imported set current for hardware shaders.
+        # therefore sample a constant texel.  Reuse Maya's existing canonical
+        # set and make it current for hardware shaders.
         if uv_set_name not in mesh_fn.getUVSetNames():
             mesh_fn.createUVSet(uv_set_name)
         mesh_fn.setCurrentUVSetName(uv_set_name)
@@ -212,7 +210,10 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
 
     dag_path = om.MDagPath.getAPathTo(mesh_obj)
     transform_fn = om.MFnTransform(dag_path.transform())
-    transform_fn.setName(name)
+    # An absolute name also keeps Maya's automatic shape rename in this namespace.
+    namespace = cmds.namespaceInfo(currentNamespace=True, absoluteName=True)
+    absolute_name = name if name.startswith(":") else f"{namespace.rstrip(':')}:{name}"
+    transform_fn.setName(absolute_name)
     transform_name = transform_fn.fullPathName()
 
     cmds.sets(transform_name, edit=True, forceElement="initialShadingGroup")

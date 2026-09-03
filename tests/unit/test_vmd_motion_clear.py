@@ -81,6 +81,265 @@ class TestVmdMotionClear(MayaTestBase):
         self.assertFalse(cmds.objExists(layer))
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateY"), 0.0, places=4)
 
+    def test_clear_existing_motion_clears_physical_and_redirected_authoring_routes(self):
+        """Clear and rollback only validated upstream VMD destinations."""
+        root = cmds.group(empty=True, name="clear_authored_routes_root")
+        cmds.select(clear=True)
+        joint = cmds.joint(name="clear_authored_routes_joint")
+        cmds.parent(joint, root)
+        physical = cmds.createNode("transform", name="clear_authored_routes_physical")
+        proxy = cmds.createNode("transform", name="clear_authored_routes_proxy")
+        foreign = cmds.createNode("transform", name="clear_authored_routes_foreign")
+        for node in (physical, proxy, foreign):
+            cmds.setKeyframe(node, attribute="translateX", time=4, value=3.0)
+
+        context = VmdImportStateContext(
+            logger=self.converter.logger,
+            bone_name_mapping={"center": joint},
+            bone_bind_poses={},
+            morph_name_mapping={},
+            collect_append_info=lambda: {},
+            iter_morph_mappings=self.converter._iter_morph_mappings,
+            set_refresh_suspended=self.converter._set_vmd_import_refresh_suspended,
+        )
+        authored_routes = {
+            joint: {
+                "attr_targets": {
+                    "translateX": (physical, "translateX"),
+                    "translateY": (foreign, "translateX"),
+                }
+            }
+        }
+        self.converter.bone_name_mapping = {"center": joint}
+        node_type = cmds.nodeType
+
+        def authored_node_type(node):
+            if str(node) == physical:
+                return "mmdBoneMorphAccum"
+            return node_type(node)
+
+        with patch(
+            "mmd_tools.converters.vmd_import_state.resolve_redirected_authoring_proxy",
+            return_value=({"translateX": (proxy, "translateX")}, True),
+        ), patch(
+            "mmd_tools.converters.vmd_import_state.cmds.nodeType",
+            side_effect=authored_node_type,
+        ):
+            snapshot = self.converter._capture_mmd_control_rig_scene_snapshot(
+                root,
+                None,
+                authored_routes=authored_routes,
+            )
+            clear_existing_motion(
+                context,
+                "missing_layer",
+                target_model=root,
+                authored_routes=authored_routes,
+            )
+
+        self.assertIsNone(cmds.keyframe(physical, attribute="translateX", query=True))
+        self.assertIsNone(cmds.keyframe(proxy, attribute="translateX", query=True))
+        self.assertEqual(
+            cmds.keyframe(foreign, attribute="translateX", query=True, timeChange=True),
+            [4.0],
+        )
+        self.assertIsNone(self.converter._restore_mmd_control_rig_scene_snapshot(snapshot))
+        self.assertEqual(
+            cmds.keyframe(physical, attribute="translateX", query=True, timeChange=True),
+            [4.0],
+        )
+        self.assertEqual(
+            cmds.keyframe(proxy, attribute="translateX", query=True, timeChange=True),
+            [4.0],
+        )
+
+    def test_converter_reuses_legacy_key_routes_for_motion_clear(self):
+        routes = {"joint": {"attr_targets": {"translateX": ("proxy", "inputX")}}}
+        with patch.object(
+            self.converter,
+            "_build_legacy_bone_key_routes",
+        ) as build_routes, patch(
+            "mmd_tools.converters.vmd_converter.clear_existing_motion"
+        ) as clear:
+            self.converter._clear_existing_motion(
+                "VMD_Motion",
+                target_namespace="character",
+                target_model="|character|model",
+                authored_routes=routes,
+            )
+
+        build_routes.assert_not_called()
+        self.assertEqual(clear.call_args.kwargs["authored_routes"], routes)
+
+    def test_clear_existing_motion_clears_owned_morph_controller_only(self):
+        """正式な morph controller のキーを対象モデルだけ消去する。"""
+        root_a = cmds.group(empty=True, name="clear_morph_model_a")
+        root_b = cmds.group(empty=True, name="clear_morph_model_b")
+        controller_a = cmds.createNode("mmdMorphController", name="clear_morph_controller_a")
+        controller_b = cmds.createNode("mmdMorphController", name="clear_morph_controller_b")
+        for root, controller in ((root_a, controller_a), (root_b, controller_b)):
+            cmds.addAttr(root, longName="mmd_morph_controller", attributeType="message")
+            cmds.connectAttr(f"{controller}.message", f"{root}.mmd_morph_controller")
+            cmds.setKeyframe(controller, attribute="inputWeight[0]", time=12, value=0.75)
+
+        self.converter.morph_name_mapping = {
+            "smile": (controller_b, "inputWeight[0]", "smile")
+        }
+        layer = cmds.animLayer("VMD_Motion_morph_controller_clear", override=False, weight=1.0)
+
+        clear_existing_motion(
+            self._import_state_context(),
+            layer,
+            target_namespace=None,
+            target_model=root_b,
+        )
+
+        self.assertEqual(
+            cmds.keyframe(controller_a, attribute="inputWeight[0]", query=True, timeChange=True),
+            [12.0],
+        )
+        self.assertIsNone(
+            cmds.keyframe(controller_b, attribute="inputWeight[0]", query=True, timeChange=True)
+        )
+
+    def test_clear_existing_motion_preserves_morph_controller_anim_layer_for_reimport(self):
+        """Clearing a controller layer must retain its root ownership graph."""
+        root = cmds.group(empty=True, name="clear_morph_layer_model")
+        foreign_root = cmds.group(empty=True, name="clear_morph_layer_foreign_model")
+        controller = cmds.createNode("mmdMorphController", name="clear_morph_layer_controller")
+        foreign_controller = cmds.createNode(
+            "mmdMorphController", name="clear_morph_layer_foreign_controller"
+        )
+        for model_root, morph_controller in (
+            (root, controller),
+            (foreign_root, foreign_controller),
+        ):
+            cmds.addAttr(model_root, longName="mmd_morph_controller", attributeType="message")
+            cmds.connectAttr(
+                f"{morph_controller}.message",
+                f"{model_root}.mmd_morph_controller",
+            )
+
+        layer = cmds.animLayer("VMD_Motion_morph_controller_layer", override=False, weight=1.0)
+        samples = {"inputWeight[0]": [(1.0, 0.25), (8.0, 0.75)]}
+        self.assertTrue(self.converter._batch_key_scalar_channels(controller, samples, layer))
+        cmds.setKeyframe(foreign_controller, attribute="inputWeight[0]", time=4, value=0.5)
+        ownership_before = cmds.listConnections(
+            f"{root}.mmd_morph_controller",
+            source=True,
+            destination=False,
+            plugs=True,
+        )
+        self.assertEqual(ownership_before, [f"{controller}.message"])
+
+        self.converter.morph_name_mapping = {
+            "smile": (controller, "inputWeight[0]", "smile"),
+        }
+        clear_existing_motion(
+            self._import_state_context(),
+            layer,
+            target_namespace=None,
+            target_model=root,
+        )
+
+        self.assertTrue(cmds.objExists(controller))
+        self.assertEqual(
+            cmds.listConnections(
+                f"{root}.mmd_morph_controller",
+                source=True,
+                destination=False,
+                plugs=True,
+            ),
+            ownership_before,
+        )
+        self.assertTrue(cmds.objExists(layer))
+        self.assertIsNone(
+            cmds.keyframe(controller, attribute="inputWeight[0]", query=True, timeChange=True)
+        )
+        self.assertEqual(
+            cmds.keyframe(foreign_controller, attribute="inputWeight[0]", query=True, timeChange=True),
+            [4.0],
+        )
+        self.assertTrue(self.converter._batch_key_scalar_channels(controller, samples, layer))
+        self.assertEqual(
+            cmds.keyframe(controller, attribute="inputWeight[0]", query=True, timeChange=True),
+            [1.0, 8.0],
+        )
+
+        vmd_data = type("VmdDataStub", (), {})()
+        vmd_data.bone_frames = [_bone_frame("unmapped", 3, (0.0, 0.0, 0.0))]
+        vmd_data.morph_frames = []
+        vmd_data.camera_frames = []
+        vmd_data.light_frames = []
+        vmd_data.ik_show_hide_frames = []
+        with patch.object(self.converter, "_build_name_mappings"), patch.object(
+            self.converter,
+            "_convert_bone_animation",
+            return_value=True,
+        ):
+            self.assertTrue(
+                self.converter.convert(
+                    vmd_data,
+                    clear_existing_motion=True,
+                    target_model=root,
+                    layer_name=layer,
+                )
+            )
+        self.assertEqual(self.converter.anim_layer, layer)
+        self.assertFalse(cmds.objExists(f"{layer}1"))
+
+    def test_clear_existing_motion_does_not_reuse_shared_morph_controller_layer(self):
+        """A foreign layer member makes the replacement import create a new layer."""
+        root = cmds.group(empty=True, name="clear_shared_morph_layer_model")
+        controller = cmds.createNode("mmdMorphController", name="clear_shared_morph_layer_controller")
+        cmds.addAttr(root, longName="mmd_morph_controller", attributeType="message")
+        cmds.connectAttr(f"{controller}.message", f"{root}.mmd_morph_controller")
+        layer = cmds.animLayer("VMD_Motion_shared_morph_layer", override=False, weight=1.0)
+        samples = {"inputWeight[0]": [(1.0, 0.25), (8.0, 0.75)]}
+        self.assertTrue(self.converter._batch_key_scalar_channels(controller, samples, layer))
+        foreign = cmds.createNode("transform", name="clear_shared_morph_layer_foreign")
+        cmds.animLayer(layer, edit=True, attribute=f"{foreign}.translateX")
+        cmds.setKeyframe(foreign, attribute="translateX", time=5, value=6.0, animLayer=layer)
+        foreign_curve_uuids = [
+            cmds.ls(curve, uuid=True)[0]
+            for curve in (cmds.keyframe(f"{foreign}.translateX", query=True, name=True) or [])
+        ]
+        self.assertTrue(foreign_curve_uuids)
+
+        self.converter.morph_name_mapping = {
+            "smile": (controller, "inputWeight[0]", "smile"),
+        }
+        vmd_data = type("VmdDataStub", (), {})()
+        vmd_data.bone_frames = [_bone_frame("unmapped", 3, (0.0, 0.0, 0.0))]
+        vmd_data.morph_frames = []
+        vmd_data.camera_frames = []
+        vmd_data.light_frames = []
+        vmd_data.ik_show_hide_frames = []
+        with patch.object(self.converter, "_build_name_mappings"), patch.object(
+            self.converter,
+            "_convert_bone_animation",
+            return_value=True,
+        ):
+            self.assertTrue(
+                self.converter.convert(
+                    vmd_data,
+                    clear_existing_motion=True,
+                    target_model=root,
+                    layer_name=layer,
+                )
+            )
+
+        self.assertTrue(cmds.objExists(layer))
+        self.assertEqual(
+            [
+                cmds.ls(curve, uuid=True)[0]
+                for curve in (cmds.keyframe(f"{foreign}.translateX", query=True, name=True) or [])
+            ],
+            foreign_curve_uuids,
+        )
+        self.assertEqual(self.converter.anim_layer, f"{layer}1")
+        self.assertTrue(cmds.objExists(f"{layer}1"))
+
     def test_clear_existing_motion_restores_bind_pose_for_accurate_reimport(self):
         """cutKey 後にジョイントが rest position に戻り、後続の bind pose 記録が正確になる。"""
         joint = cmds.joint(name="clear_restore_bind_joint")
@@ -520,3 +779,58 @@ class TestVmdMotionClear(MayaTestBase):
 
         self.assertNotIn(1.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
         self.assertIn(8.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
+
+    def test_convert_clear_existing_motion_removes_tracks_omitted_by_next_vmd(self):
+        """A two-import replacement must remove tracks absent from the second VMD."""
+        target_model = cmds.group(empty=True, name="clear_two_import_model_root")
+        cmds.select(clear=True)
+        center = cmds.joint(name="clear_two_import_center")
+        cmds.addAttr(center, longName=ATTR_MMD_BONE_NAME, dataType="string")
+        cmds.setAttr(f"{center}.{ATTR_MMD_BONE_NAME}", "センター", type="string")
+        cmds.select(clear=True)
+        upper = cmds.joint(name="clear_two_import_upper")
+        cmds.addAttr(upper, longName=ATTR_MMD_BONE_NAME, dataType="string")
+        cmds.setAttr(f"{upper}.{ATTR_MMD_BONE_NAME}", "上半身", type="string")
+        cmds.parent(center, upper, target_model)
+
+        motion_a = type("VmdDataStub", (), {})()
+        motion_a.bone_frames = [
+            _bone_frame("センター", 4, (3.0, 0.0, 0.0)),
+            _bone_frame("上半身", 4, (0.0, 1.0, 0.0)),
+        ]
+        motion_a.morph_frames = []
+        motion_a.camera_frames = []
+        motion_a.light_frames = []
+        motion_a.ik_show_hide_frames = []
+
+        motion_b = type("VmdDataStub", (), {})()
+        motion_b.bone_frames = [_bone_frame("上半身", 9, (0.0, 2.0, 0.0))]
+        motion_b.morph_frames = []
+        motion_b.camera_frames = []
+        motion_b.light_frames = []
+        motion_b.ik_show_hide_frames = []
+
+        def compiled_frames(**kwargs):
+            return tuple(kwargs["source_bone_frames"]), {}
+
+        with patch.object(
+            self.converter,
+            "_compiled_registered_sparse_frames",
+            side_effect=compiled_frames,
+        ):
+            self.assertTrue(self.converter.convert(motion_a, target_model=target_model))
+            self.assertTrue(
+                self.converter.convert(
+                    motion_b,
+                    clear_existing_motion=True,
+                    target_model=target_model,
+                )
+            )
+
+        self.assertIsNone(
+            cmds.keyframe(center, attribute="translateX", query=True, timeChange=True)
+        )
+        self.assertEqual(
+            cmds.keyframe(upper, attribute="translateY", query=True, timeChange=True),
+            [9.0],
+        )

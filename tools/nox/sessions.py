@@ -156,57 +156,10 @@ def run_ci_unit(
     session,
     *,
     root: Path,
-    run_process,
-    glob_files,
-    is_expected_environment_import_failure,
     run_logged_subprocess,
 ) -> None:
-    """Run importable pure-Python unit modules and retain the test log."""
-    unit_dir = root / "tests" / "unit"
-    importable: list[str] = []
-    skipped: list[str] = []
-
-    for py_file in sorted(glob_files(unit_dir, "test_*.py")):
-        module_name = f"tests.unit.{py_file.stem}"
-        probe = run_process(
-            [
-                "uvx",
-                "--with",
-                "pytest",
-                "--",
-                "python",
-                "-c",
-                f"import {module_name}",
-            ],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if probe.returncode == 0:
-            importable.append(module_name)
-            continue
-        stderr = probe.stderr or ""
-        if is_expected_environment_import_failure(stderr):
-            skipped.append(py_file.name)
-        else:
-            session.error(
-                f"ci_unit: {py_file.name} failed to import for a non-environment reason; "
-                "update _EXPECTED_ENVIRONMENT_MODULE_PREFIXES only for an intentional dependency:\n"
-                + stderr.strip()[-2000:]
-            )
-
-    if skipped:
-        session.log(
-            f"Skipping {len(skipped)} test file(s) that require environment-only dependencies: "
-            + ", ".join(skipped)
-        )
-
-    if not importable:
-        session.error("No importable pure-python unit tests found in tests/unit/")
-
-    session.log(f"Running {len(importable)} pure-python unit test module(s)")
-    command = ["uvx", "--with", "pytest", "--", "python", "-m", "pytest", "--pyargs", *importable]
+    """Run the isolated ci_unit resolver and retain its single full log."""
+    command = ["uvx", "--with", "pytest", "--", "python", "-m", "tools.nox.ci_unit_runner"]
     returncode, log_path, (_, repeated_warnings) = run_logged_subprocess(
         command,
         log_path=root / "build" / "reports" / "ci_unit_tests.log",

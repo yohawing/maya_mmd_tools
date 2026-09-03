@@ -39,11 +39,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -57,6 +59,16 @@ constexpr const char* kSourceVertexAttribute = "mmd_source_vertex_indices";
 constexpr const char* kSourceToLocalAttribute = "mmd_source_to_local_indices";
 constexpr const char* kSourceToLocalCapability = "sourceToLocalV1";
 constexpr const char* kMorphEquivalentCapability = "morphEquivalentV1";
+constexpr const char* kBatchCapability = "batchV1";
+constexpr const char* kProfileCapability = "profileV1";
+
+struct WeldProfile {
+    double preparationSeconds = 0.0;
+    double applicationSeconds = 0.0;
+    unsigned int pmxReadCount = 0;
+    unsigned int geometryParseCount = 0;
+    unsigned int nonGeometryParseCount = 0;
+};
 
 struct UvSetData {
     MString     name;
@@ -105,7 +117,7 @@ struct WeldKeyHash {
 
 std::vector<uint8_t> readBinaryFile(const std::string& path)
 {
-    std::ifstream stream(path, std::ios::binary | std::ios::ate);
+    std::ifstream stream(std::filesystem::u8path(path), std::ios::binary | std::ios::ate);
     if (!stream) {
         return {};
     }
@@ -352,7 +364,8 @@ void appendU8(WeldKey& key, uint32_t marker, const std::vector<uint8_t>& values,
     }
 }
 
-bool loadRawGeometry(const std::vector<uint8_t>& bytes, RawGeometry& raw)
+bool loadRawGeometry(const std::vector<uint8_t>& bytes, RawGeometry& raw,
+                     WeldProfile* profile = nullptr)
 {
     if (bytes.empty()) {
         return false;
@@ -360,6 +373,9 @@ bool loadRawGeometry(const std::vector<uint8_t>& bytes, RawGeometry& raw)
 
     mmd_runtime_pmx_geometry_t* geometry =
         mmd_runtime_pmx_geometry_create(bytes.data(), bytes.size());
+    if (profile) {
+        profile->geometryParseCount += 1U;
+    }
     if (!geometry) {
         return false;
     }
@@ -391,6 +407,9 @@ bool loadRawGeometry(const std::vector<uint8_t>& bytes, RawGeometry& raw)
     }
 
     const size_t sourceCount = raw.positions.size() / 3U;
+    if (profile) {
+        profile->nonGeometryParseCount += 1U;
+    }
     const json nonGeometry = takeJsonBuffer(
         mmd_runtime_parse_pmx_non_geometry_json(bytes.data(), bytes.size()));
     return buildMorphSignatures(nonGeometry, sourceCount, raw.morphSignatures);
@@ -442,22 +461,25 @@ bool readSourceVertexIndices(const MObject& transform, size_t vertexCount,
     MPlug plug = dependencyFn.findPlug(kSourceVertexAttribute, true, &status);
     if (status && !plug.isNull()) {
         const MObject dataObject = plug.asMObject(&status);
-        if (status && !dataObject.isNull()) {
-            MFnIntArrayData dataFn(dataObject, &status);
-            if (status) {
-                MIntArray values = dataFn.array(&status);
-                if (status && values.length() == vertexCount) {
-                    sourceIndices.reserve(vertexCount);
-                    for (unsigned int i = 0; i < values.length(); ++i) {
-                        if (values[i] < 0) {
-                            return false;
-                        }
-                        sourceIndices.push_back(static_cast<uint32_t>(values[i]));
-                    }
-                    return true;
-                }
-            }
+        if (!status || dataObject.isNull()) {
+            return false;
         }
+        MFnIntArrayData dataFn(dataObject, &status);
+        if (!status) {
+            return false;
+        }
+        MIntArray values = dataFn.array(&status);
+        if (!status || values.length() != vertexCount) {
+            return false;
+        }
+        sourceIndices.reserve(vertexCount);
+        for (unsigned int i = 0; i < values.length(); ++i) {
+            if (values[i] < 0) {
+                return false;
+            }
+            sourceIndices.push_back(static_cast<uint32_t>(values[i]));
+        }
+        return true;
     }
 
     sourceIndices.resize(vertexCount);
@@ -673,8 +695,96 @@ bool transferShaders(const MObjectArray& shaders, const MIntArray& shaderIndices
     return true;
 }
 
-MStatus weldMesh(const MString& meshName, const MString& pmxPath,
-                 unsigned int& oldVertexCount, unsigned int& newVertexCount)
+MStatus validateWeldMesh(const MString& meshName, const RawGeometry& raw)
+{
+    MSelectionList selection;
+    MStatus status = selection.add(meshName);
+    if (!status || selection.length() == 0U) {
+        return MS::kFailure;
+    }
+
+    MDagPath meshPath;
+    status = selection.getDagPath(0, meshPath);
+    if (!status) {
+        return status;
+    }
+    if (meshPath.node().hasFn(MFn::kTransform)) {
+        status = meshPath.extendToShape();
+        if (!status) {
+            return status;
+        }
+    }
+    if (!meshPath.node().hasFn(MFn::kMesh)) {
+        return MS::kFailure;
+    }
+
+    MFnMesh meshFn(meshPath, &status);
+    if (!status) {
+        return status;
+    }
+    MObject transformObject = meshPath.transform(&status);
+    if (!status) {
+        return status;
+    }
+
+    MPointArray points;
+    MIntArray faceCounts;
+    MIntArray polygonConnects;
+    if (!meshFn.getPoints(points, MSpace::kObject) ||
+        !meshFn.getVertices(faceCounts, polygonConnects)) {
+        return MS::kFailure;
+    }
+    if (points.length() == 0U || faceCounts.length() == 0U) {
+        return MS::kSuccess;
+    }
+
+    size_t polygonCursor = 0;
+    for (unsigned int face = 0; face < faceCounts.length(); ++face) {
+        const int count = faceCounts[face];
+        if (count < 0 || polygonCursor + static_cast<size_t>(count) > polygonConnects.length()) {
+            return MS::kFailure;
+        }
+        for (int local = 0; local < count; ++local) {
+            const int vertex = polygonConnects[static_cast<unsigned int>(polygonCursor + local)];
+            if (vertex < 0 || vertex >= static_cast<int>(points.length())) {
+                return MS::kFailure;
+            }
+        }
+        polygonCursor += static_cast<size_t>(count);
+    }
+    if (polygonCursor != polygonConnects.length()) {
+        return MS::kFailure;
+    }
+
+    std::vector<uint32_t> sourceIndices;
+    if (!readSourceVertexIndices(transformObject, points.length(), sourceIndices)) {
+        return MS::kFailure;
+    }
+    const size_t sourceCount = raw.positions.size() / 3U;
+    for (uint32_t sourceIndex : sourceIndices) {
+        if (sourceIndex >= sourceCount) {
+            return MS::kFailure;
+        }
+    }
+    std::vector<int> sourceToOldLocal;
+    if (!readSourceToLocalIndices(
+            transformObject, sourceCount, points.length(), sourceToOldLocal)) {
+        return MS::kFailure;
+    }
+    std::vector<UvSetData> uvSets;
+    if (!collectUvSets(meshFn, uvSets)) {
+        return MS::kFailure;
+    }
+    std::vector<MVector> faceVertexNormals;
+    if (!collectFaceVertexNormals(meshFn, faceCounts, faceVertexNormals)) {
+        return MS::kFailure;
+    }
+    return MS::kSuccess;
+}
+
+MStatus weldMesh(const MString& meshName, const RawGeometry& raw,
+                 unsigned int& oldVertexCount, unsigned int& newVertexCount,
+                 bool failOnNoOp = false)
 {
     MSelectionList selection;
     MStatus status = selection.add(meshName);
@@ -723,26 +833,19 @@ MStatus weldMesh(const MString& meshName, const MString& pmxPath,
         return MS::kSuccess;
     }
 
-    const std::vector<uint8_t> bytes = readBinaryFile(pmxPath.asChar());
-    RawGeometry raw;
-    if (!loadRawGeometry(bytes, raw)) {
-        MGlobal::displayWarning(
-            "[mmdWeldUvSeamVertices] PMX geometry could not be read; keeping original topology.");
-        return MS::kSuccess;
-    }
     const size_t sourceCount = raw.positions.size() / 3U;
 
     std::vector<uint32_t> sourceIndices;
     if (!readSourceVertexIndices(transformObject, oldVertexCount, sourceIndices)) {
         MGlobal::displayWarning(
             "[mmdWeldUvSeamVertices] Source-vertex mapping is invalid; keeping original topology.");
-        return MS::kSuccess;
+        return failOnNoOp ? MS::kFailure : MS::kSuccess;
     }
     for (uint32_t sourceIndex : sourceIndices) {
         if (sourceIndex >= sourceCount) {
             MGlobal::displayWarning(
                 "[mmdWeldUvSeamVertices] Source-vertex mapping is out of range; keeping original topology.");
-            return MS::kSuccess;
+            return failOnNoOp ? MS::kFailure : MS::kSuccess;
         }
     }
     std::vector<int> sourceToOldLocal;
@@ -750,7 +853,7 @@ MStatus weldMesh(const MString& meshName, const MString& pmxPath,
             transformObject, sourceCount, oldVertexCount, sourceToOldLocal)) {
         MGlobal::displayWarning(
             "[mmdWeldUvSeamVertices] Source-to-local mapping is invalid; keeping original topology.");
-        return MS::kSuccess;
+        return failOnNoOp ? MS::kFailure : MS::kSuccess;
     }
     if (sourceToOldLocal.empty()) {
         sourceToOldLocal.assign(sourceCount, -1);
@@ -829,7 +932,11 @@ MStatus weldMesh(const MString& meshName, const MString& pmxPath,
         if (!writeSourceToLocalIndices(transformObject, sourceToNewLocal)) {
             MGlobal::displayWarning(
                 "[mmdWeldUvSeamVertices] Failed to write source-to-local mapping; keeping original topology.");
+            return failOnNoOp ? MS::kFailure : MS::kSuccess;
         }
+        // A valid mesh with no mergeable UV seam is a successful no-op.  The
+        // batch contract reserves failure for invalid input or an operation
+        // that could not preserve the mesh attributes.
         return MS::kSuccess;
     }
 
@@ -837,7 +944,7 @@ MStatus weldMesh(const MString& meshName, const MString& pmxPath,
     if (!collectUvSets(meshFn, uvSets)) {
         MGlobal::displayWarning(
             "[mmdWeldUvSeamVertices] UV data could not be read; keeping original topology.");
-        return MS::kSuccess;
+        return failOnNoOp ? MS::kFailure : MS::kSuccess;
     }
     MStatus currentUvStatus;
     const MString currentUvSetName = meshFn.currentUVSetName(&currentUvStatus);
@@ -846,7 +953,7 @@ MStatus weldMesh(const MString& meshName, const MString& pmxPath,
     if (!collectFaceVertexNormals(meshFn, faceCounts, faceVertexNormals)) {
         MGlobal::displayWarning(
             "[mmdWeldUvSeamVertices] Face-vertex normals could not be read; keeping original topology.");
-        return MS::kSuccess;
+        return failOnNoOp ? MS::kFailure : MS::kSuccess;
     }
 
     MObjectArray shaders;
@@ -1007,13 +1114,20 @@ MSyntax MmdWeldUvSeamVertices::newSyntax()
     syntax.addFlag("-m", "-mesh", MSyntax::kString);
     syntax.addFlag("-f", "-file", MSyntax::kString);
     syntax.addFlag("-qc", "-queryCapabilities", MSyntax::kBoolean);
+    syntax.addFlag("-b", "-batch", MSyntax::kBoolean);
+    syntax.addFlag("-p", "-profile", MSyntax::kBoolean);
+    syntax.makeFlagMultiUse("-m");
     syntax.enableEdit(false);
     return syntax;
 }
 
 MStatus MmdWeldUvSeamVertices::doIt(const MArgList& args)
 {
-    MArgDatabase argData(newSyntax(), args);
+    MStatus parseStatus;
+    MArgDatabase argData(newSyntax(), args, &parseStatus);
+    if (!parseStatus) {
+        return parseStatus;
+    }
     if (argData.isFlagSet("-qc")) {
         bool queryCapabilities = false;
         const MStatus queryStatus = argData.getFlagArgument("-qc", 0, queryCapabilities);
@@ -1025,6 +1139,8 @@ MStatus MmdWeldUvSeamVertices::doIt(const MArgList& args)
         MStringArray capabilities;
         capabilities.append(kSourceToLocalCapability);
         capabilities.append(kMorphEquivalentCapability);
+        capabilities.append(kBatchCapability);
+        capabilities.append(kProfileCapability);
         setResult(capabilities);
         return MS::kSuccess;
     }
@@ -1034,27 +1150,142 @@ MStatus MmdWeldUvSeamVertices::doIt(const MArgList& args)
         return MS::kFailure;
     }
 
-    const MString meshName = argData.flagArgumentString("-m", 0);
+    bool batch = false;
+    if (argData.isFlagSet("-b")) {
+        const MStatus batchStatus = argData.getFlagArgument("-b", 0, batch);
+        if (!batchStatus || !batch) {
+            MGlobal::displayError(
+                "[mmdWeldUvSeamVertices] -batch requires true.");
+            return MS::kFailure;
+        }
+    }
+    bool profileRequested = false;
+    if (argData.isFlagSet("-p")) {
+        const MStatus profileStatus = argData.getFlagArgument("-p", 0, profileRequested);
+        if (!profileStatus || !profileRequested) {
+            MGlobal::displayError(
+                "[mmdWeldUvSeamVertices] -profile requires true.");
+            return MS::kFailure;
+        }
+    }
     const MString pmxPath = argData.flagArgumentString("-f", 0);
-    unsigned int oldVertexCount = 0;
-    unsigned int newVertexCount = 0;
-    const MStatus status = weldMesh(meshName, pmxPath, oldVertexCount, newVertexCount);
-    if (!status) {
-        return status;
+    MStringArray meshNames;
+    if (batch) {
+        const unsigned int meshUseCount = argData.numberOfFlagUses("-m");
+        for (unsigned int use = 0; use < meshUseCount; ++use) {
+            MArgList meshArgs;
+            if (!argData.getFlagArgumentList("-m", use, meshArgs) ||
+                meshArgs.length() != 1U) {
+                MGlobal::displayError(
+                    "[mmdWeldUvSeamVertices] Each -mesh use needs one transform.");
+                return MS::kFailure;
+            }
+            meshNames.append(meshArgs.asString(0));
+        }
+        if (meshNames.length() == 0U) {
+            MGlobal::displayError(
+                "[mmdWeldUvSeamVertices] -batch requires at least one -mesh.");
+            return MS::kFailure;
+        }
+    } else {
+        meshNames.append(argData.flagArgumentString("-m", 0));
     }
 
+    WeldProfile weldProfile;
+    const auto preparationStart = std::chrono::steady_clock::now();
+    const std::vector<uint8_t> bytes = readBinaryFile(pmxPath.asUTF8());
+    weldProfile.pmxReadCount = 1U;
+    RawGeometry raw;
+    const bool rawLoaded = loadRawGeometry(bytes, raw, &weldProfile);
+    weldProfile.preparationSeconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - preparationStart).count();
+
     MStringArray result;
-    result.append(meshName);
-    result.append(MString(std::to_string(oldVertexCount).c_str()));
-    result.append(MString(std::to_string(newVertexCount).c_str()));
-    setResult(result);
-    if (newVertexCount < oldVertexCount) {
-        MGlobal::displayInfo(
-            MString("[mmdWeldUvSeamVertices] Welded ") +
-            std::to_string(oldVertexCount - newVertexCount).c_str() +
-            " UV-seam vertex slots.");
+    std::vector<MStatus> preflightStatuses;
+    bool allPreflightSucceeded = rawLoaded;
+    if (batch) {
+        preflightStatuses.resize(meshNames.length(), MS::kFailure);
+        if (rawLoaded) {
+            for (unsigned int meshIndex = 0; meshIndex < meshNames.length(); ++meshIndex) {
+                preflightStatuses[meshIndex] = validateWeldMesh(meshNames[meshIndex], raw);
+                allPreflightSucceeded = allPreflightSucceeded &&
+                    preflightStatuses[meshIndex] == MS::kSuccess;
+                if (!preflightStatuses[meshIndex]) {
+                    MGlobal::displayError(
+                        MString("[mmdWeldUvSeamVertices] Batch preflight failed for ") +
+                        meshNames[meshIndex]);
+                }
+            }
+        }
     }
-    return MS::kSuccess;
+    bool allSucceeded = rawLoaded && (!batch || allPreflightSucceeded);
+    for (unsigned int meshIndex = 0; meshIndex < meshNames.length(); ++meshIndex) {
+        const MString& meshName = meshNames[meshIndex];
+        unsigned int oldVertexCount = 0;
+        unsigned int newVertexCount = 0;
+        const auto applicationStart = std::chrono::steady_clock::now();
+        const bool canApply = !batch ||
+            (rawLoaded && allPreflightSucceeded &&
+             preflightStatuses[meshIndex] == MS::kSuccess);
+        const MStatus status = canApply
+            ? weldMesh(meshName, raw, oldVertexCount, newVertexCount, batch)
+            : MS::kFailure;
+        weldProfile.applicationSeconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - applicationStart).count();
+        const bool succeeded = status == MS::kSuccess;
+        allSucceeded = allSucceeded && succeeded;
+
+        if (batch) {
+            const char* batchStatus = succeeded
+                ? "ok"
+                : (!rawLoaded || preflightStatuses[meshIndex] != MS::kSuccess
+                    ? "preflight_failed"
+                    : "blocked");
+            result.append(meshName);
+            result.append(batchStatus);
+            result.append(MString(std::to_string(oldVertexCount).c_str()));
+            result.append(MString(std::to_string(newVertexCount).c_str()));
+        } else if (!succeeded) {
+            return status;
+        } else {
+            result.append(meshName);
+            result.append(MString(std::to_string(oldVertexCount).c_str()));
+            result.append(MString(std::to_string(newVertexCount).c_str()));
+            if (profileRequested) {
+                result.append(MString(std::to_string(weldProfile.preparationSeconds).c_str()));
+                result.append(MString(std::to_string(weldProfile.applicationSeconds).c_str()));
+                result.append(MString(std::to_string(weldProfile.pmxReadCount).c_str()));
+                result.append(MString(std::to_string(weldProfile.geometryParseCount).c_str()));
+                result.append(MString(std::to_string(weldProfile.nonGeometryParseCount).c_str()));
+            }
+            setResult(result);
+            if (newVertexCount < oldVertexCount) {
+                MGlobal::displayInfo(
+                    MString("[mmdWeldUvSeamVertices] Welded ") +
+                    std::to_string(oldVertexCount - newVertexCount).c_str() +
+                    " UV-seam vertex slots.");
+            }
+            return MS::kSuccess;
+        }
+    }
+
+    if (batch) {
+        result.append("__profile__");
+        result.append(MString(std::to_string(weldProfile.preparationSeconds).c_str()));
+        result.append(MString(std::to_string(weldProfile.applicationSeconds).c_str()));
+        result.append(MString(std::to_string(weldProfile.pmxReadCount).c_str()));
+        result.append(MString(std::to_string(weldProfile.geometryParseCount).c_str()));
+        result.append(MString(std::to_string(weldProfile.nonGeometryParseCount).c_str()));
+        setResult(result);
+        if (!allSucceeded) {
+            MGlobal::displayError(
+                "[mmdWeldUvSeamVertices] One or more batch mesh welds failed.");
+        }
+        // Keep the per-mesh status in the result so the Python importer can
+        // fail closed while preserving a diagnostic record for every target.
+        return MS::kSuccess;
+    }
+    return MS::kFailure;
 }
 
 bool MmdWeldUvSeamVertices::isUndoable() const

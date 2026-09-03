@@ -129,7 +129,6 @@ class TestExportTabOutputPathResolution(unittest.TestCase):
         page.pane = pane
         page.export_format = "pmx" if pane == owner.MODEL_PANE else "vmd"
         page.output_path_edit = _FakeLineEdit(text)
-        page.apply_scale_check = _FakeCheck(True)
         page.light_export_check = _FakeCheck(False)
         page.frame_range_check = _FakeCheck(False)
         page.frame_start_spin = _FakeSpinBox(0)
@@ -157,6 +156,7 @@ class TestExportTabOutputPathResolution(unittest.TestCase):
             motion_request = motion_page.build_request("model_ROOT")
 
             self.assertEqual(model_request.file_path, str(root / "typed-motion.pmx"))
+            self.assertNotIn("apply_scale", model_request.options)
             self.assertEqual(
                 motion_request.file_path,
                 str(root / "sub" / "typed-model.vmd"),
@@ -275,89 +275,23 @@ class TestImportExportTabDevModeVisibility(unittest.TestCase):
 
     def test_dev_only_controls_follow_development_mode(self):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
-        scale_row = _FakeWidget()
         cpp_rig_nodes_check = _FakeWidget()
         motion_scale_row = _FakeWidget()
-        tab._dev_only_widgets = [scale_row, cpp_rig_nodes_check, motion_scale_row]
-        tab.scale_spin = _FakeSpinBox(value=2.5)
+        tab._dev_only_widgets = [cpp_rig_nodes_check, motion_scale_row]
         tab.settings_service = _FakeSettingsService(
             {
                 "ui.general.development_mode": False,
-                "import.general.scale_factor": 2.5,
             }
         )
 
         import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
-        self.assertFalse(scale_row.visible)
         self.assertFalse(cpp_rig_nodes_check.visible)
         self.assertFalse(motion_scale_row.visible)
 
         tab.settings_service.set("ui.general.development_mode", True)
         import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
-        self.assertTrue(scale_row.visible)
         self.assertTrue(cpp_rig_nodes_check.visible)
         self.assertTrue(motion_scale_row.visible)
-    def test_normal_mode_hides_scale_row_and_displays_one_without_writing_settings(self):
-        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
-        scale_row = _FakeWidget()
-        tab._dev_only_widgets = [scale_row]
-        tab.scale_spin = _FakeSpinBox(value=2.5)
-        tab.settings_service = _FakeSettingsService(
-            {
-                "ui.general.development_mode": False,
-                "import.general.scale_factor": 2.5,
-            }
-        )
-
-        import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
-
-        self.assertFalse(scale_row.visible)
-        self.assertEqual(tab.scale_spin.value, 1.0)
-        self.assertIn((1.0, True), tab.scale_spin.set_value_calls)
-        self.assertEqual(tab.settings_service.get("import.general.scale_factor"), 2.5)
-
-    def test_dev_mode_restores_persisted_scale_into_spin(self):
-        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
-        scale_row = _FakeWidget()
-        tab._dev_only_widgets = [scale_row]
-        tab.scale_spin = _FakeSpinBox(value=1.0)
-        tab.settings_service = _FakeSettingsService(
-            {
-                "ui.general.development_mode": True,
-                "import.general.scale_factor": 2.5,
-            }
-        )
-
-        import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
-
-        self.assertTrue(scale_row.visible)
-        self.assertEqual(tab.scale_spin.value, 2.5)
-        self.assertEqual(tab.settings_service.get("import.general.scale_factor"), 2.5)
-
-    def test_sync_import_scale_control_does_not_emit_value_changed_writes(self):
-        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
-        tab.scale_spin = _FakeSpinBox(value=3.0)
-        tab.settings_service = _FakeSettingsService(
-            {
-                "ui.general.development_mode": False,
-                "import.general.scale_factor": 3.0,
-            }
-        )
-        writes = []
-        original_set = tab.settings_service.set
-
-        def tracking_set(key, value):
-            writes.append((key, value))
-            original_set(key, value)
-
-        tab.settings_service.set = tracking_set
-
-        import_export_tab.ImportExportTab._sync_import_scale_control(tab, is_dev=False)
-
-        self.assertEqual(tab.scale_spin.value, 1.0)
-        self.assertEqual(writes, [])
-        self.assertEqual(tab.settings_service.get("import.general.scale_factor"), 3.0)
-
 
 class TestImportExportTabNativePhysicsBakeVisibility(unittest.TestCase):
     def test_native_physics_bake_control_follows_motion_bake(self):
@@ -618,15 +552,14 @@ class TestNormalModeVisibilitySourceInspection(unittest.TestCase):
     def setUp(self):
         self.source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
 
-    def test_physics_group_is_not_in_dev_only_widgets(self):
-        self.assertIn("self.physics_group", self.source)
+    def test_physics_control_is_not_in_dev_only_widgets(self):
         lines = self.source.splitlines()
         in_dev_only = False
         found = False
         for line in lines:
             if "_dev_only_widgets" in line and "[" in line:
                 in_dev_only = True
-            if in_dev_only and "self.physics_group" in line:
+            if in_dev_only and "self.import_physics_check" in line:
                 found = True
                 break
             if in_dev_only and "]" in line:

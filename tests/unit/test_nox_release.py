@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -21,10 +23,382 @@ except ModuleNotFoundError:
 
 import noxfile
 from tools.nox import release
-from tools.nox.release_sessions import run_flip_report, run_golden_oracle, run_release_camera_motion_oracle
+from tools.nox.release_sessions import (
+    _run_release_gate_tier2_parallel,
+    run_flip_report,
+    run_golden_oracle,
+    run_release_camera_motion_oracle,
+    run_release_gate,
+)
 
 
 class NoxReleaseTest(unittest.TestCase):
+    def _run_minimal_release_gate(self, posargs, tier2_commands, run_command):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            visual_manifest = root / "render.json"
+            visual_manifest.write_text("{}", encoding="utf-8")
+            report_calls = []
+
+            class Session:
+                def __init__(self):
+                    self.logs = []
+
+                def log(self, message):
+                    self.logs.append(message)
+
+                def error(self, message):
+                    raise RuntimeError(message)
+
+            session = Session()
+
+            def record_callable(name, _func, results):
+                results.append(
+                    {
+                        "name": name,
+                        "command": [],
+                        "status": "pass",
+                        "returncode": 0,
+                        "duration_sec": 0.0,
+                    }
+                )
+
+            def record_report(results, quick, **kwargs):
+                report_calls.append((list(results), quick, kwargs))
+                return root / "release_gate.md", root / "release_gate.json"
+
+            run_release_gate(
+                session,
+                posargs=posargs,
+                option=noxfile._option,
+                options=noxfile._options,
+                has_flag=noxfile._has_flag,
+                root=root,
+                default_maya_version="2024",
+                default_cpp_config="Debug",
+                default_cpp_versions=("2024",),
+                release_maya_versions=("2024", "2025"),
+                viewport_matrix=(),
+                default_visual_manifest=str(visual_manifest),
+                release_visual_ports={},
+                release_visual_cases=lambda _backend: (),
+                new_release_gate_run=lambda: ("run", "timestamp"),
+                release_gate_pin_check=lambda: None,
+                release_gate_version_check=lambda: None,
+                release_gate_tier0_commands=lambda: (),
+                release_gate_tier1_commands=lambda **_kwargs: (),
+                release_gate_tier2_commands=lambda **_kwargs: tier2_commands,
+                release_gate_tier3_commands=lambda **_kwargs: (),
+                run_release_gate_callable=record_callable,
+                run_release_gate_command=run_command,
+                write_release_gate_reports=record_report,
+                release_gate_failure_label=lambda result: str(result["name"]),
+                format_test_summary=lambda *_args, **_kwargs: "summary",
+                environment={},
+            )
+            return report_calls
+
+    def test_release_gate_default_and_jobs_one_are_sequential(self):
+        commands = [
+            (f"tier2:{step}-{version}", [step, version])
+            for version in ("2024", "2025")
+            for step in ("cpp-debug-prerequisite", "mayapy-unit", "mayapy-integration")
+        ]
+        commands.extend(
+            [
+                ("tier2:generated-pmx-glsl-dx11-diff", ["diff"]),
+                ("tier2:bundled-native-smoke", ["bundled-native-smoke"]),
+            ]
+        )
+        for posargs in ([], ["--jobs", "1"]):
+            calls = []
+
+            def run_command(name, command, local_results, **_kwargs):
+                calls.append(name)
+                local_results.append(
+                    {"name": name, "status": "pass", "duration_sec": 0.0, "command": command}
+                )
+
+            report_calls = self._run_minimal_release_gate(posargs, commands, run_command)
+            self.assertEqual(calls, [name for name, _command in commands])
+            self.assertEqual(
+                [result["name"] for result in report_calls[0][0]],
+                ["tier0:mmd-anim-pin", "tier0:version-markers", *calls],
+            )
+            self.assertIn("duration_sec", report_calls[0][2])
+
+    def test_tier2_parallel_lanes_overlap_and_merge_in_declaration_order(self):
+        versions = ("2024", "2025", "2026")
+        commands = [
+            (f"tier2:{step}-{version}", [step, version])
+            for version in versions
+            for step in ("cpp-debug-prerequisite", "mayapy-unit", "mayapy-integration")
+        ]
+        commands.append(("tier2:serial", ["serial"]))
+        barrier = threading.Barrier(2)
+        lock = threading.Lock()
+        active = 0
+        max_active = 0
+        calls_by_version = {version: [] for version in versions}
+
+        def run_command(name, command, local_results, **_kwargs):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+                for version in versions:
+                    if name.endswith(f"-{version}"):
+                        calls_by_version[version].append(name)
+                        break
+            if name.endswith("cpp-debug-prerequisite-2024") or name.endswith("cpp-debug-prerequisite-2025"):
+                barrier.wait(timeout=2)
+            time.sleep(0.005)
+            local_results.append(
+                {"name": name, "status": "pass", "duration_sec": 0.005, "command": command}
+            )
+            with lock:
+                active -= 1
+
+        results = _run_release_gate_tier2_parallel(
+            commands,
+            versions,
+            run_command,
+            verbose=False,
+        )
+
+        self.assertGreaterEqual(max_active, 2)
+        for version in versions:
+            self.assertEqual(
+                calls_by_version[version],
+                [
+                    f"tier2:cpp-debug-prerequisite-{version}",
+                    f"tier2:mayapy-unit-{version}",
+                    f"tier2:mayapy-integration-{version}",
+                ],
+            )
+        self.assertEqual([result["name"] for result in results], [name for name, _ in commands])
+
+    def test_tier2_parallel_keeps_running_after_lane_failure(self):
+        versions = ("2024", "2025")
+        commands = [
+            (f"tier2:{step}-{version}", [step, version])
+            for version in versions
+            for step in ("cpp-debug-prerequisite", "mayapy-unit", "mayapy-integration")
+        ]
+        seen = []
+
+        def run_command(name, command, local_results, **_kwargs):
+            seen.append(name)
+            local_results.append(
+                {
+                    "name": name,
+                    "status": "fail" if name == "tier2:mayapy-unit-2024" else "pass",
+                    "duration_sec": 0.0,
+                    "command": command,
+                }
+            )
+
+        results = _run_release_gate_tier2_parallel(commands, versions, run_command, verbose=False)
+
+        self.assertEqual({result["name"] for result in results}, set(seen))
+        self.assertEqual(len(results), len(commands))
+        self.assertEqual(results[1]["status"], "fail")
+        self.assertIn("tier2:mayapy-integration-2024", seen)
+        self.assertIn("tier2:mayapy-integration-2025", seen)
+
+    def test_tier2_parallel_groups_respect_viewport_visual_barriers(self):
+        versions = ("2024", "2025")
+        commands = [
+            (f"tier2:{step}-{version}", [step, version])
+            for version in versions
+            for step in ("cpp-debug-prerequisite", "mayapy-unit", "mayapy-integration")
+        ]
+        commands.extend(
+            [
+                ("tier2:viewport-glsl-2025", ["viewport", "2025"]),
+                ("tier2:viewport-dx11-2026", ["viewport", "2026"]),
+                ("tier2:generated-pmx-visual-glsl-2025", ["visual", "2025"]),
+                ("tier2:generated-pmx-visual-dx11-2026", ["visual", "2026"]),
+                ("tier2:generated-pmx-glsl-dx11-diff", ["diff"]),
+                ("tier2:serial-first", ["serial", "first"]),
+                ("tier2:serial-second", ["serial", "second"]),
+            ]
+        )
+        viewport_barrier = threading.Barrier(2)
+        visual_barrier = threading.Barrier(2)
+        viewport_done = threading.Event()
+        visual_done = threading.Event()
+        lock = threading.Lock()
+        active = 0
+        peak_active = 0
+        active_by_version = {}
+        completed_viewports = 0
+        completed_visuals = 0
+        serial_calls = []
+
+        def run_command(name, command, local_results, **_kwargs):
+            nonlocal active, peak_active, completed_viewports, completed_visuals
+            version = name.rsplit("-", 1)[-1] if name.startswith("tier2:viewport-") or name.startswith("tier2:generated-pmx-visual-") else None
+            with lock:
+                active += 1
+                peak_active = max(peak_active, active)
+                if version is not None:
+                    active_by_version[version] = active_by_version.get(version, 0) + 1
+                    self.assertLessEqual(active_by_version[version], 1)
+            try:
+                if name.startswith("tier2:viewport-"):
+                    self.assertFalse(visual_done.is_set())
+                    viewport_barrier.wait(timeout=2)
+                    with lock:
+                        completed_viewports += 1
+                        if completed_viewports == 2:
+                            viewport_done.set()
+                elif name.startswith("tier2:generated-pmx-visual-"):
+                    self.assertTrue(viewport_done.is_set())
+                    visual_barrier.wait(timeout=2)
+                    with lock:
+                        completed_visuals += 1
+                        if completed_visuals == 2:
+                            visual_done.set()
+                elif name == "tier2:generated-pmx-glsl-dx11-diff":
+                    self.assertTrue(visual_done.is_set())
+                    local_results.append(
+                        {"name": name, "status": "pass", "duration_sec": 0.0, "command": command}
+                    )
+                    return
+                elif name.startswith("tier2:serial-"):
+                    self.assertEqual(active, 1)
+                    serial_calls.append(name)
+                local_results.append(
+                    {
+                        "name": name,
+                        "status": "fail" if name == "tier2:generated-pmx-visual-glsl-2025" else "pass",
+                        "duration_sec": 0.0,
+                        "command": command,
+                    }
+                )
+            finally:
+                with lock:
+                    if version is not None:
+                        active_by_version[version] -= 1
+                    active -= 1
+
+        results = _run_release_gate_tier2_parallel(commands, versions, run_command, verbose=False)
+
+        self.assertEqual([result["name"] for result in results], [name for name, _ in commands])
+        self.assertEqual(peak_active, 2)
+        self.assertEqual(serial_calls, ["tier2:serial-first", "tier2:serial-second"])
+        self.assertEqual(results[8]["status"], "fail")
+        self.assertTrue(visual_done.is_set())
+        self.assertEqual(completed_visuals, 2)
+
+    def test_tier2_parallel_visual_diff_pair_waits_before_native_physics(self):
+        commands = [
+            ("tier2:generated-pmx-visual-glsl-2025", ["visual", "2025"]),
+            ("tier2:generated-pmx-visual-dx11-2026", ["visual", "2026"]),
+            ("tier2:generated-pmx-glsl-dx11-diff", ["diff"]),
+            ("tier2:bundled-native-smoke", ["bundled-native-smoke"]),
+            ("tier2:native-physics-release-gate", ["native-physics-release-gate"]),
+            ("tier2:pmx-roundtrip-v0_4", ["pmx-roundtrip"]),
+        ]
+        visual_barrier = threading.Barrier(2)
+        pair_barrier = threading.Barrier(2)
+        visuals_done = threading.Event()
+        pair_done = threading.Event()
+        native_done = threading.Event()
+        lock = threading.Lock()
+        active = 0
+        peak_active = 0
+        completed_visuals = 0
+        completed_pair = 0
+        seen = []
+
+        def run_command(name, command, local_results, **_kwargs):
+            nonlocal active, peak_active, completed_visuals, completed_pair
+            with lock:
+                active += 1
+                peak_active = max(peak_active, active)
+                seen.append(name)
+            try:
+                if name.startswith("tier2:generated-pmx-visual-"):
+                    visual_barrier.wait(timeout=2)
+                    with lock:
+                        completed_visuals += 1
+                        if completed_visuals == 2:
+                            visuals_done.set()
+                elif name in {
+                    "tier2:generated-pmx-glsl-dx11-diff",
+                    "tier2:bundled-native-smoke",
+                }:
+                    self.assertTrue(visuals_done.is_set())
+                    pair_barrier.wait(timeout=2)
+                    with lock:
+                        completed_pair += 1
+                        if completed_pair == 2:
+                            pair_done.set()
+                elif name == "tier2:native-physics-release-gate":
+                    self.assertTrue(pair_done.is_set())
+                    native_done.set()
+                elif name == "tier2:pmx-roundtrip-v0_4":
+                    self.assertTrue(native_done.is_set())
+                local_results.append(
+                    {
+                        "name": name,
+                        "status": "fail" if name == "tier2:generated-pmx-glsl-dx11-diff" else "pass",
+                        "duration_sec": 0.0,
+                        "command": command,
+                    }
+                )
+            finally:
+                with lock:
+                    active -= 1
+
+        results = _run_release_gate_tier2_parallel(commands, (), run_command, verbose=False)
+
+        self.assertEqual(peak_active, 2)
+        self.assertEqual(completed_visuals, 2)
+        self.assertEqual(completed_pair, 2)
+        self.assertTrue(visuals_done.is_set())
+        self.assertTrue(pair_done.is_set())
+        self.assertTrue(native_done.is_set())
+        self.assertEqual(len(results), len(commands))
+        self.assertEqual([result["name"] for result in results], [name for name, _ in commands])
+        self.assertEqual(results[2]["status"], "fail")
+        self.assertGreater(seen.index("tier2:generated-pmx-glsl-dx11-diff"), seen.index("tier2:generated-pmx-visual-dx11-2026"))
+        self.assertGreater(seen.index("tier2:bundled-native-smoke"), seen.index("tier2:generated-pmx-visual-glsl-2025"))
+
+    def test_release_gate_rejects_invalid_jobs(self):
+        session = types.SimpleNamespace(posargs=["--quick", "--jobs", "3"])
+        with self.assertRaisesRegex(ValueError, "--jobs must be 1 or 2"):
+            run_release_gate(
+                session,
+                posargs=session.posargs,
+                option=noxfile._option,
+                options=noxfile._options,
+                has_flag=noxfile._has_flag,
+                root=Path("F:/repo"),
+                default_maya_version="2024",
+                default_cpp_config="Debug",
+                default_cpp_versions=("2024",),
+                release_maya_versions=("2024",),
+                viewport_matrix=(),
+                default_visual_manifest="missing.json",
+                release_visual_ports={},
+                release_visual_cases=lambda _backend: (),
+                new_release_gate_run=lambda: ("run", "timestamp"),
+                release_gate_pin_check=lambda: None,
+                release_gate_version_check=lambda: None,
+                release_gate_tier0_commands=lambda: (),
+                release_gate_tier1_commands=lambda **_kwargs: (),
+                release_gate_tier2_commands=lambda **_kwargs: (),
+                release_gate_tier3_commands=lambda **_kwargs: (),
+                run_release_gate_callable=lambda *_args, **_kwargs: None,
+                run_release_gate_command=lambda *_args, **_kwargs: None,
+                write_release_gate_reports=lambda *_args, **_kwargs: (Path("md"), Path("json")),
+                release_gate_failure_label=lambda _result: "failure",
+                format_test_summary=lambda *_args, **_kwargs: "summary",
+            )
+
     def test_release_camera_oracle_missing_manifest_is_optional_by_default(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -127,13 +501,17 @@ class NoxReleaseTest(unittest.TestCase):
                 {"name": "unit", "status": "pass", "duration_sec": 1.0, "command": ["unit"]},
                 {"name": "optional", "status": "skip", "duration_sec": 0.0, "command": ["optional"]},
             ]
-            markdown_path, json_path = release._write_release_gate_reports(root, results, quick=False)
+            markdown_path, json_path = release._write_release_gate_reports(
+                root, results, quick=False, duration_sec=12.3456
+            )
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["status"], "pass")
             self.assertEqual(payload["summary"], {"pass": 1, "fail": 0, "skip": 1})
             self.assertRegex(payload["run_id"], r"^\d{8}T\d{12}Z-[0-9a-f]{8}$")
             self.assertTrue(payload["timestamp"].endswith("+00:00"))
             self.assertEqual(payload["log_dir"], str(root / "build" / "reports" / "release_gate"))
+            self.assertEqual(payload["duration_sec"], 12.346)
+            self.assertIn("Duration (seconds): 12.346", markdown_path.read_text(encoding="utf-8"))
             self.assertIn("pass=1, fail=0, skip=1", markdown_path.read_text(encoding="utf-8"))
 
             local_report = root / "local.json"

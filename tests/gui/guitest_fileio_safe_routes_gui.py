@@ -18,7 +18,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
-    ATTR_MMD_IMPORT_SCALE,
     ATTR_MMD_MATERIAL,
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
@@ -187,7 +186,6 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
             ATTR_MMD_MODEL_NAME_EN,
             ATTR_MMD_COMMENT,
             ATTR_MMD_COMMENT_EN,
-            ATTR_MMD_IMPORT_SCALE,
             ATTR_MMD_DISPLAY_FRAMES_JSON,
             ATTR_MMD_TEXTURE_TABLE_JSON,
         ):
@@ -196,7 +194,6 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
         self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_MODEL_NAME_EN}"), source.header.model_name_english)
         self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_COMMENT}"), source.header.comment)
         self.assertEqual(cmds.getAttr(f"{root}.{ATTR_MMD_COMMENT_EN}"), source.header.comment_english)
-        self.assertAlmostEqual(cmds.getAttr(f"{root}.{ATTR_MMD_IMPORT_SCALE}"), 1.0)
 
         meshes = cmds.listRelatives(root, allDescendents=True, type="mesh", fullPath=True) or []
         joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
@@ -492,6 +489,84 @@ class TestFileIOSafeRoutesGUI(GuiTestBase):
             history_spy,
             view.unified_history_list,
         )
+
+    def test_clear_existing_motion_checkbox_removes_stale_keys_through_real_button(self):
+        """The production checkbox must reach the VMD action and replace old motion."""
+        root = self._import_model_from_button()
+        view = self.window.import_export_tab
+        view.import_category_stack.setCurrentIndex(1)
+        view.vmd_path_edit.setText(str(self.vmd_path))
+
+        self._arm_modal_watchdog()
+        view.import_vmd_button.click()
+        joints = cmds.listRelatives(
+            root,
+            allDescendents=True,
+            type="joint",
+            fullPath=True,
+        ) or []
+        self.assertTrue(joints)
+        self._drain_until(
+            lambda: any(_key_count(joint) > 0 for joint in joints),
+            description="initial VMD animation keys",
+        )
+        self._stop_modal_watchdog()
+
+        animated_joint = next(joint for joint in joints if _key_count(joint) > 0)
+        max_frame = max(
+            frame.frame_number
+            for frame in VmdData().parse_file(str(self.vmd_path)).bone_frames
+        )
+        stale_frame = float(max_frame + 40)
+        cmds.animLayer("BaseAnimation", edit=True, selected=True)
+        cmds.setKeyframe(
+            animated_joint,
+            attribute="translateX",
+            time=stale_frame,
+            value=17.0,
+        )
+        self.assertGreater(
+            int(
+                cmds.keyframe(
+                    f"{animated_joint}.translateX",
+                    query=True,
+                    time=(stale_frame, stale_frame),
+                    keyframeCount=True,
+                )
+                or 0
+            ),
+            0,
+        )
+
+        view.clear_existing_motion_check.setChecked(True)
+        QApplication.processEvents()
+        self.assertIs(
+            view.settings_service,
+            self.window.import_export_presenter.settings_service,
+        )
+        self.assertTrue(
+            self.window.import_export_presenter._build_vmd_import_options(root)[
+                "clear_existing_motion"
+            ]
+        )
+
+        self._arm_modal_watchdog()
+        view.import_vmd_button.click()
+        self._drain_until(
+            lambda: not int(
+                cmds.keyframe(
+                    f"{animated_joint}.translateX",
+                    query=True,
+                    time=(stale_frame, stale_frame),
+                    keyframeCount=True,
+                )
+                or 0
+            ),
+            description="stale motion key removal",
+        )
+        self._stop_modal_watchdog()
+
+        self.assertGreater(_key_count(animated_joint), 0)
 
 
 if __name__ == "__main__":

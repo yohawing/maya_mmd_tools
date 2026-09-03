@@ -106,8 +106,33 @@ def _network_is_owned_by_root(node: str, target_model: str) -> bool:
     return bool(connected_root_names) and connected_root_names.issubset(_long_names([target_model]))
 
 
+def _morph_controller_is_owned_by_root(node: str, target_model: str) -> bool:
+    """Return True when the controller is linked only to the target model root."""
+    if not cmds.attributeQuery("mmd_morph_controller", node=target_model, exists=True):
+        return False
+
+    controllers = cmds.listConnections(
+        f"{target_model}.mmd_morph_controller", source=True, destination=False
+    ) or []
+    if len(controllers) != 1 or _long_names(controllers) != _long_names([node]):
+        return False
+
+    owner_plugs = [
+        plug
+        for plug in (
+            cmds.listConnections(
+                f"{node}.message", source=False, destination=True, plugs=True
+            )
+            or []
+        )
+        if plug.rsplit(".", 1)[-1].split("[", 1)[0] == "mmd_morph_controller"
+    ]
+    owner_roots = _long_names(plug.rsplit(".", 1)[0] for plug in owner_plugs)
+    return bool(owner_roots) and owner_roots == _long_names([target_model])
+
+
 def morph_node_is_owned_by_root(node: str, target_model: str) -> bool:
-    """Prove blendShape/network morph ownership for destructive operations."""
+    """Prove morph-node ownership for destructive operations."""
     if not node or not target_model or not cmds.objExists(node) or not cmds.objExists(target_model):
         return False
     node_type = cmds.nodeType(node)
@@ -119,6 +144,8 @@ def morph_node_is_owned_by_root(node: str, target_model: str) -> bool:
         )
     if node_type == "network":
         return _network_is_owned_by_root(node, target_model)
+    if node_type == "mmdMorphController":
+        return _morph_controller_is_owned_by_root(node, target_model)
     return False
 
 

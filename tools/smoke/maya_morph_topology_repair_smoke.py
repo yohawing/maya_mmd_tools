@@ -29,7 +29,7 @@ def _morph(name: str, index: int, morph_type: str, offsets: list) -> str:
     _long(node, "mmd_morph_panel", 4)
     attr = {
         "group": "mmd_group_morph_offsets_json",
-        "bone": "mmd_bone_morph_offsets_raw_json",
+        "bone": "mmd_bone_morph_offsets_json",
     }[morph_type]
     _string(node, attr, json.dumps(offsets, separators=(",", ":")))
     return node

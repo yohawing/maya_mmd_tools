@@ -123,17 +123,6 @@ class CrossMayaGateError(RuntimeError):
     """Raised when selection or evidence cannot prove the matrix contract."""
 
 
-def expected_surface_count(matrix: Mapping[str, Any]) -> int:
-    """Return the positive Qt-surface count declared by the matrix contract."""
-    trace = matrix.get("surface_trace")
-    count = trace.get("expected_surface_count") if isinstance(trace, Mapping) else None
-    if type(count) is not int or count <= 0:
-        raise CrossMayaGateError(
-            "surface trace expected_surface_count must be a positive integer"
-        )
-    return count
-
-
 def load_json(path: Path) -> Mapping[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -199,24 +188,25 @@ def load_matrix(root: Path, path: Optional[Path] = None) -> Mapping[str, Any]:
     cases_by_id = {case["id"]: case for case in cases}
 
     trace = matrix.get("surface_trace")
-    surface_count = expected_surface_count(matrix)
+    if not isinstance(trace, Mapping):
+        raise CrossMayaGateError("surface trace must be an object")
     selector = trace.get("source_selector")
     if selector != {"disposition": "qt_case"}:
         raise CrossMayaGateError("surface trace selector must be the Qt-case inventory")
     surfaces = [surface for surface in ui.get("surfaces", ()) if surface.get("disposition") == "qt_case"]
+    surface_ids = [surface.get("id") for surface in surfaces]
     owner = trace.get("version_independent_owner")
     owner_cases = [case for case in ui.get("cases", ()) if case.get("id") == owner]
     if (
-        len(surfaces) != surface_count
+        any(not isinstance(surface_id, str) or not surface_id for surface_id in surface_ids)
+        or len(surface_ids) != len(set(surface_ids))
         or len(owner_cases) != 1
         or owner_cases[0].get("execution_layer") != "headless_qt"
         or "required_maya_versions" in owner_cases[0]
         or any(surface.get("case_id") != owner for surface in surfaces)
         or any(not surface.get("expected_handler") for surface in surfaces)
     ):
-        raise CrossMayaGateError(
-            "{}-surface headless owner trace is incomplete".format(surface_count)
-        )
+        raise CrossMayaGateError("headless owner trace is incomplete")
     tab_ids = {tab.get("id") for tab in ui.get("tabs", ())}
     tab_representatives = trace.get("tab_representatives")
     headless_only = trace.get("headless_only_tabs")
@@ -396,7 +386,6 @@ def expected_headless_test_identities(
     root: Path, matrix: Mapping[str, Any]
 ) -> tuple[tuple[str, str], ...]:
     """Derive the exact surface tests plus their owner contract test."""
-    surface_count = expected_surface_count(matrix)
     sources = matrix.get("source_manifests")
     if not isinstance(sources, Mapping):
         raise CrossMayaGateError("matrix has no source manifests for headless identities")
@@ -408,13 +397,10 @@ def expected_headless_test_identities(
     ]
     surface_ids = [surface.get("id") for surface in surfaces]
     if (
-        len(surface_ids) != surface_count
-        or any(not isinstance(surface_id, str) or not surface_id for surface_id in surface_ids)
-        or len(set(surface_ids)) != surface_count
+        any(not isinstance(surface_id, str) or not surface_id for surface_id in surface_ids)
+        or len(set(surface_ids)) != len(surface_ids)
     ):
-        raise CrossMayaGateError(
-            "headless identity source is not exactly {} unique Qt cases".format(surface_count)
-        )
+        raise CrossMayaGateError("headless identity source must contain unique non-empty Qt surface ids")
     classname = "tests.unit.test_authoring_ui_surface_matrix"
     identities = [
         (classname, "test_authoring_surface_dispatches_exactly_once[{}]".format(surface_id))

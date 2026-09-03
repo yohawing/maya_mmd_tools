@@ -11,6 +11,7 @@ Phase 1 以降:
 from __future__ import annotations
 
 import math
+import struct
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -65,6 +66,7 @@ from .vmd_import_state import (
     clear_existing_camera_motion,
     clear_existing_light_motion,
     clear_existing_motion,
+    collect_clearable_authoring_attrs,
     record_bind_poses,
     restore_anim_layer_selection,
     restore_import_scene_updates,
@@ -131,6 +133,7 @@ from .vmd_runtime_scene_apply import (
 from .vmd_runtime_sources import (
     resolve_runtime_bake_sources,
     resolve_runtime_pmx_bytes_and_morph_names,
+    scale_vmd_bone_translation_bytes,
     should_use_mmd_runtime_bake,
 )
 from .vmd_runtime_world_bake import bake_bone_poses_from_world_matrices, convert_mmd_world_matrix_to_maya
@@ -232,6 +235,7 @@ class VmdConverter:
         self.use_vmd_rotation_time_curve = False
         self._rotation_time_curve_records: List[Dict[str, Any]] = []
         self.anim_layer = None  # 現在のアニメーションレイヤー名
+        self._reuse_cleared_anim_layer = False
         self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
         self.import_camera_animation = True
         self.import_light_animation = True
@@ -569,6 +573,7 @@ class VmdConverter:
         if not target_model:
             self.logger.error("VMD model motion requires an explicit target model")
             return False
+        self._reuse_cleared_anim_layer = False
         if create_mmd_control_rig and bake_mode:
             self._record_profile_warning(
                 profile,
@@ -683,6 +688,7 @@ class VmdConverter:
         anim_layer_selection = None
         undo_was_enabled = True
         refresh_suspended = False
+        legacy_bone_key_routes = None
         import_context = self._import_context(
             vmd_data=vmd_data,
             target_namespace=target_namespace,
@@ -758,10 +764,15 @@ class VmdConverter:
                     and control_rig_transaction.get("motion_cleared")
                 )
             ):
+                try:
+                    legacy_bone_key_routes = self._build_legacy_bone_key_routes()
+                except Exception:
+                    self.logger.debug("Failed to build VMD clear routes", exc_info=True)
                 self._clear_existing_motion(
                     import_context.layer_name,
                     import_context.target_namespace,
                     target_model=import_context.target_model,
+                    authored_routes=legacy_bone_key_routes,
                 )
 
             # ボーンの初期位置を記録
@@ -789,7 +800,18 @@ class VmdConverter:
             # アニメーションレイヤーの作成
             if use_animation_layers_for_import:
                 with vmd_profile.scope("anim_layer_create"):
-                    self.anim_layer = cmds.animLayer(import_context.layer_name, override=False, weight=1.0)
+                    if (
+                        self._reuse_cleared_anim_layer
+                        and cmds.objExists(import_context.layer_name)
+                        and cmds.nodeType(import_context.layer_name) == "animLayer"
+                    ):
+                        self.anim_layer = import_context.layer_name
+                    else:
+                        self.anim_layer = cmds.animLayer(
+                            import_context.layer_name,
+                            override=False,
+                            weight=1.0,
+                        )
             else:
                 self.anim_layer = None
 
@@ -948,7 +970,10 @@ class VmdConverter:
                             # hide a new partial-write error.
                             self._failed_bones.clear()
                             try:
-                                bone_success = self._convert_bone_animation(bone_frames)
+                                bone_success = self._convert_bone_animation(
+                                    bone_frames,
+                                    key_routes=legacy_bone_key_routes,
+                                )
                             except Exception as exc:
                                 failed_after = set(self._failed_bones)
                                 self._failed_bones.update(failed_before)
@@ -1658,6 +1683,7 @@ class VmdConverter:
         prior_rotation_time_curve_snapshot = capture_vmd_rotation_time_curve_snapshot(
             metadata
         )
+        outgoing_authored_routes = None
 
         # Capture the scene channels which a mixed VMD import can mutate before
         # the rig transition or ``clear_existing_motion`` runs.  The control
@@ -1672,10 +1698,20 @@ class VmdConverter:
                 # remains best-effort here so a mapping diagnostic does not
                 # mask the original preflight error.
                 self.logger.debug("Failed to refresh mappings before scene snapshot", exc_info=True)
+        if (
+            clear_existing_motion
+            and vmd_data is not None
+            and self._detect_vmd_motion_kind(vmd_data) in {"model", "mixed"}
+        ):
+            try:
+                outgoing_authored_routes = self._build_legacy_bone_key_routes()
+            except Exception:
+                self.logger.debug("Failed to build outgoing VMD routes", exc_info=True)
         scene_snapshot = self._capture_mmd_control_rig_scene_snapshot(
             target_model,
             vmd_data,
             target_namespace=target_namespace,
+            authored_routes=outgoing_authored_routes,
         )
         created = False
         entered_here = False
@@ -1705,6 +1741,7 @@ class VmdConverter:
                 target_namespace,
                 target_model=target_model,
                 preserve_curve_nodes=True,
+                authored_routes=outgoing_authored_routes,
             )
             transaction_detached_curve_nodes.extend(detached_curve_nodes or [])
 
@@ -1986,6 +2023,7 @@ class VmdConverter:
         vmd_data,
         *,
         target_namespace: Optional[str] = None,
+        authored_routes: Optional[Dict[str, dict]] = None,
     ) -> Dict[str, object]:
         """Capture mixed-import scene state before any destructive mutation.
 
@@ -2019,18 +2057,37 @@ class VmdConverter:
             self.logger.debug("Failed to capture VMD scene timeline", exc_info=True)
 
         nodes = set()
+        target_joints = {
+            str(node) for node in self.bone_name_mapping.values() if node
+        }
         explicit_attrs_by_node = {}
         explicit_only_nodes = set()
-        nodes.update(str(node) for node in self.bone_name_mapping.values() if node)
+        nodes.update(target_joints)
         if target_model and cmds.objExists(target_model):
             nodes.add(str(target_model))
-            nodes.update(
+            descendants = {
                 str(node)
                 for node in (
                     cmds.listRelatives(target_model, allDescendents=True, fullPath=True) or []
                 )
                 if cmds.nodeType(node) == "joint"
-            )
+            }
+            target_joints.update(descendants)
+            if cmds.nodeType(target_model) == "joint":
+                target_joints.add(str(target_model))
+            nodes.update(target_joints)
+
+        # Non-DAG physical authoring inputs and persisted proxies are outside
+        # the model hierarchy, so include their exact cleared plugs in the
+        # existing Control Rig rollback snapshot.
+        for node, attrs in collect_clearable_authoring_attrs(
+            authored_routes,
+            target_joints,
+            self.logger,
+        ).items():
+            nodes.add(node)
+            explicit_only_nodes.add(node)
+            explicit_attrs_by_node.setdefault(node, set()).update(attrs)
 
         # Legacy IK fallback writes the solver's enabled state directly.  Its
         # node is not a DAG descendant, so include the target-owned solver and
@@ -2544,17 +2601,24 @@ class VmdConverter:
         target_model: Optional[str] = None,
         *,
         preserve_curve_nodes: bool = False,
+        authored_routes: Optional[Dict[str, dict]] = None,
     ) -> list:
         """対象モデルに残っている既存 VMD motion keys/layer を削除する。"""
         detached_curve_nodes = []
-        clear_existing_motion(
+        if authored_routes is None:
+            try:
+                authored_routes = self._build_legacy_bone_key_routes()
+            except Exception as exc:
+                self.logger.debug("Failed to build VMD clear routes: %s", exc)
+        self._reuse_cleared_anim_layer = bool(clear_existing_motion(
             self._import_state_context(),
             layer_name,
             target_namespace,
             target_model=target_model,
             preserve_curve_nodes=preserve_curve_nodes,
             detached_curve_nodes=detached_curve_nodes,
-        )
+            authored_routes=authored_routes,
+        ))
         return detached_curve_nodes
 
     def _clear_existing_camera_motion(self) -> None:
@@ -2854,19 +2918,54 @@ class VmdConverter:
             registration_profile["status"] = "failed"
             registration_profile["reason"] = reason
 
-        # モデル・クリップ・インスタンス作成
-        model = MmdRuntimeModel.from_pmx_bytes(resolved_pmx_bytes)
-        if model is None:
+        try:
+            runtime_vmd_bytes = scale_vmd_bone_translation_bytes(
+                vmd_bytes,
+                self.motion_scale,
+            )
+        except (ValueError, TypeError, OverflowError, struct.error):
+            _registration_failed("vmd_translation_scale_failed")
+            self.logger.error("Failed to scale VMD bone translation tracks", exc_info=True)
+            return False
+
+        # The PMX-backed model owns the name maps required to register VMD
+        # tracks.  Evaluation uses a fresh DAG descriptor model when a Maya
+        # target is present, so the model's stored effective values are used.
+        registration_model = MmdRuntimeModel.from_pmx_bytes(resolved_pmx_bytes)
+        if registration_model is None:
             _registration_failed("model_create_failed")
             self.logger.error("Failed to create MmdRuntimeModel")
             return False
 
-        clip = MmdRuntimeClip.from_vmd_bytes_for_model(model, vmd_bytes)
+        clip = MmdRuntimeClip.from_vmd_bytes_for_model(
+            registration_model, runtime_vmd_bytes
+        )
         if clip is None:
             _registration_failed("registered_clip_create_failed")
             self.logger.error("Failed to create MmdRuntimeClip")
-            model.free()
+            registration_model.free()
             return False
+
+        model = registration_model
+        if target_model:
+            try:
+                from mmd_tools.core.model_dag_descriptor import (
+                    build_model_descriptors_from_dag,
+                )
+
+                model_descriptors = build_model_descriptors_from_dag(target_model)
+                model = MmdRuntimeModel.from_descriptors(model_descriptors)
+            except Exception:
+                model = None
+                self.logger.error(
+                    "Failed to create scaled runtime model from Maya DAG",
+                    exc_info=True,
+                )
+            if model is None:
+                _registration_failed("scene_model_create_failed")
+                clip.free()
+                registration_model.free()
+                return False
 
         instance = MmdRuntimeInstance.for_model(model)
         if instance is None:
@@ -2874,6 +2973,8 @@ class VmdConverter:
             self.logger.error("Failed to create MmdRuntimeInstance")
             clip.free()
             model.free()
+            if registration_model is not model:
+                registration_model.free()
             return False
 
         physics_world = None
@@ -2919,7 +3020,40 @@ class VmdConverter:
                         physics_routing["feature_flags"],
                     )
                 else:
-                    physics_world = MmdRuntimePhysicsWorld.from_pmx_bytes(resolved_pmx_bytes)
+                    if target_model:
+                        try:
+                            from mmd_tools.core.physics_dag_descriptor import (
+                                build_descriptors_from_dag,
+                            )
+
+                            from mmd_tools.core.physics_solver import (
+                                _collect_bone_joints,
+                            )
+
+                            bone_joints = _collect_bone_joints(target_model)
+                            bone_count = len(bone_joints)
+                            physics_descriptors = build_descriptors_from_dag(
+                                target_model,
+                                bone_joints=bone_joints,
+                                bone_count=bone_count,
+                            )
+                            if physics_descriptors.validation_errors:
+                                raise ValueError("physics descriptor validation failed")
+                            physics_world = MmdRuntimePhysicsWorld.from_descriptors(
+                                physics_descriptors.rigid_bodies,
+                                physics_descriptors.joints,
+                            )
+                        except Exception:
+                            physics_world = None
+                            self.logger.warning(
+                                "Scaled native physics world could not be created from Maya DAG; "
+                                "falling back to non-physics runtime batch",
+                                exc_info=True,
+                            )
+                    else:
+                        physics_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
+                            resolved_pmx_bytes
+                        )
                     if physics_world is None:
                         physics_routing["reason"] = "physics_world_create_failed"
                         self.logger.warning(
@@ -3103,6 +3237,8 @@ class VmdConverter:
             instance.free()
             clip.free()
             model.free()
+            if registration_model is not model:
+                registration_model.free()
 
     def _get_animation_frame_range(self, vmd_data: VmdData):
         """VMDデータからアニメーションのフレーム範囲を取得"""
@@ -3521,7 +3657,12 @@ class VmdConverter:
         """
         setup_timeline(self._timeline_context(), vmd_data)
 
-    def _convert_bone_animation(self, bone_frames: List) -> bool:
+    def _convert_bone_animation(
+        self,
+        bone_frames: List,
+        *,
+        key_routes: Optional[Dict[str, dict]] = None,
+    ) -> bool:
         """ボーンアニメーションを変換
 
         Args:
@@ -3530,7 +3671,11 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        return convert_bone_animation(self._bone_animation_context(), bone_frames)
+        return convert_bone_animation(
+            self._bone_animation_context(),
+            bone_frames,
+            key_routes=key_routes,
+        )
 
     @staticmethod
     def _collect_ik_link_joints() -> dict:

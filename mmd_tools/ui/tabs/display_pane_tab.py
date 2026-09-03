@@ -1,6 +1,7 @@
 """PMX表示枠をモデル単位で編集するメインUIタブ。"""
 
 from ..base_tab import BaseTab
+from ...core.name_display import original_pmx_fields_visible
 from ..components.authoring_toolbar import AuthoringToolbar
 from ..qt_compat import (
     QCheckBox,
@@ -177,6 +178,9 @@ class DisplayPaneTab(BaseTab):
         self.items_group.setTitle(self.tr("display_frame_items", "groups"))
         self.name_jp_label.setText(self.tr("display_frame_name_jp", "fields"))
         self.name_en_label.setText(self.tr("display_frame_name_en", "fields"))
+        original_visible = original_pmx_fields_visible(self._translator.get_language())
+        self.name_jp_label.setVisible(original_visible)
+        self.name_jp_edit.setVisible(original_visible)
         self.special_frame_check.setText(self.tr("special_display_frame", "fields"))
         self.item_table.setHorizontalHeaderLabels(
             [

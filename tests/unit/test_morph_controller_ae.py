@@ -53,25 +53,58 @@ class _Cmds:
 
 
 def test_build_shows_semantic_names_and_binds_full_input_plugs(monkeypatch) -> None:
+    from mmd_tools.ui.translations import UITranslator
+
+    translator = UITranslator.instance()
+    previous = translator.get_language()
+    translator.set_language("en")
     cmds = _Cmds()
     monkeypatch.setattr(morph_controller_ae, "cmds", cmds)
 
-    controls = morph_controller_ae._build_weight_controls("controller")
+    try:
+        controls = morph_controller_ae._build_weight_controls("controller")
+    finally:
+        translator.set_language(previous)
 
     assert controls == [None, None]
     assert cmds.sliders == [
         {
             "attribute": "controller.inputWeight[3]",
-            "label": "ボーン表示名",
+            "label": "boneMorph",
             "minValue": 0.0,
             "maxValue": 1.0,
             "precision": 3,
         },
         {
             "attribute": "controller.inputWeight[8]",
-            "label": "頂点表示名",
+            "label": "faceBS[2]",
             "minValue": 0.0,
             "maxValue": 1.0,
             "precision": 3,
         },
     ]
+
+
+def test_english_build_rejects_non_ascii_alias_fallback(monkeypatch) -> None:
+    from mmd_tools.ui.translations import UITranslator
+
+    class NonAsciiAliasCmds(_Cmds):
+        def listConnections(self, _plug, **_kwargs):  # noqa: N802
+            return []
+
+        def aliasAttr(self, _plug, query=False):  # noqa: N802
+            assert query
+            return "笑顔"
+
+    translator = UITranslator.instance()
+    previous = translator.get_language()
+    translator.set_language("en")
+    cmds = NonAsciiAliasCmds()
+    monkeypatch.setattr(morph_controller_ae, "cmds", cmds)
+
+    try:
+        morph_controller_ae._build_weight_controls("controller")
+    finally:
+        translator.set_language(previous)
+
+    assert [slider["label"] for slider in cmds.sliders] == ["Morph 3", "Morph 8"]

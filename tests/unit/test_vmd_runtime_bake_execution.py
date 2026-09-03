@@ -1,6 +1,7 @@
 """VMD runtime bake execution path tests."""
 
 import ctypes
+import struct
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -9,12 +10,32 @@ from mmd_tools.converters.vmd_converter import VmdConverter
 from tests.common.maya_test_base import MayaTestBase
 
 
+def _single_bone_vmd_bytes(position=(2.0, 4.0, 6.0)):
+    return (
+        b"\0" * 50
+        + struct.pack("<I", 1)
+        + b"\0" * 15
+        + struct.pack("<I", 0)
+        + struct.pack("<fff", *position)
+        + b"\0" * (16 + 64)
+        + struct.pack("<I", 0)
+    )
+
+
 class TestVmdRuntimeBakeExecution(MayaTestBase):
     """Runtime bake batch/fallback execution behavior."""
 
     def setUp(self):
         super().setUp()
         self.converter = VmdConverter()
+
+    def test_runtime_clip_scaler_changes_only_bone_translation(self):
+        source = _single_bone_vmd_bytes()
+        scaled = vmd_converter_module.scale_vmd_bone_translation_bytes(source, 0.5)
+
+        self.assertEqual(struct.unpack_from("<fff", scaled, 73), (1.0, 2.0, 3.0))
+        self.assertEqual(scaled[:73], source[:73])
+        self.assertEqual(scaled[85:], source[85:])
 
     def test_runtime_bake_uses_batch_evaluation_when_available(self):
         """batch ABI がある runtime では per-frame 評価へ落ちずに cache を構築する。"""
@@ -499,7 +520,7 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
         ) as apply_cache:
             result = self.converter._convert_using_mmd_runtime(
                 VmdDataLike(),
-                vmd_bytes=b"vmd",
+                vmd_bytes=b"\0" * 50 + struct.pack("<I", 0),
                 pmx_bytes=b"pmx",
                 pmx_path="",
             )
@@ -536,20 +557,43 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
             light_frames = []
 
         class FakeModel:
+            registration = None
+            evaluation = None
+
+            def __init__(self, source):
+                self.source = source
+                self.free_calls = 0
+
             @classmethod
             def from_pmx_bytes(cls, _pmx_bytes):
-                return cls()
+                cls.registration = cls("pmx")
+                return cls.registration
+
+            @classmethod
+            def from_descriptors(cls, descriptors):
+                cls.evaluation = cls(descriptors)
+                return cls.evaluation
 
             def free(self):
-                pass
+                self.free_calls += 1
 
         class FakeClip:
+            registration_model = None
+            runtime_bytes = None
+            last = None
+
+            def __init__(self):
+                self.free_calls = 0
+
             @classmethod
-            def from_vmd_bytes_for_model(cls, _model, _vmd_bytes):
-                return cls()
+            def from_vmd_bytes_for_model(cls, model, vmd_bytes):
+                cls.registration_model = model
+                cls.runtime_bytes = vmd_bytes
+                cls.last = cls()
+                return cls.last
 
             def free(self):
-                pass
+                self.free_calls += 1
 
         class BatchResult:
             frame_count = 5
@@ -561,12 +605,14 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
         class FakeInstance:
             last = None
 
-            def __init__(self):
+            def __init__(self, model):
+                self.model = model
                 self.batch_calls = []
+                self.free_calls = 0
 
             @classmethod
-            def for_model(cls, _model):
-                cls.last = cls()
+            def for_model(cls, model):
+                cls.last = cls(model)
                 return cls.last
 
             def evaluate_clip_frame_batch(self, *_args, **_kwargs):
@@ -574,7 +620,7 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
                 raise AssertionError("non-physics batch must not run when physics bake succeeds")
 
             def free(self):
-                pass
+                self.free_calls += 1
 
         class FakePhysicsWorld:
             last = None
@@ -584,9 +630,13 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
                 self.bake_calls = []
 
             @classmethod
-            def from_pmx_bytes(cls, pmx_bytes):
+            def from_pmx_bytes(cls, _pmx_bytes):
+                raise AssertionError("scaled Maya targets must not use raw PMX physics")
+
+            @classmethod
+            def from_descriptors(cls, rigid_bodies, joints):
                 self = cls()
-                self.pmx_bytes = pmx_bytes
+                self.descriptors = (rigid_bodies, joints)
                 cls.last = self
                 return self
 
@@ -631,9 +681,17 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
             apply_calls.append(list(baked_frames))
 
         self.converter.fps = 60.0
+        self.converter.motion_scale = 1.5
         self.converter.bone_index_to_joint = {}
         self.converter.bone_name_to_index = {}
         profile = {}
+        model_descriptors = SimpleNamespace(bones=["scaled-bone"])
+        physics_descriptors = SimpleNamespace(
+            rigid_bodies=["scaled-rigid"],
+            joints=["scaled-joint"],
+            validation_errors=[],
+        )
+        vmd_bytes = _single_bone_vmd_bytes()
         with patch.object(vmd_converter_module, "MmdRuntimeModel", FakeModel), patch.object(
             vmd_converter_module,
             "MmdRuntimeClip",
@@ -658,17 +716,46 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
             vmd_converter_module,
             "apply_runtime_channel_arrays_to_scene_with_undo_disabled",
             side_effect=capture_apply,
+        ), patch(
+            "mmd_tools.core.model_dag_descriptor.build_model_descriptors_from_dag",
+            return_value=model_descriptors,
+        ) as build_model_descriptors, patch(
+            "mmd_tools.core.physics_dag_descriptor.build_descriptors_from_dag",
+            return_value=physics_descriptors,
+        ) as build_physics_descriptors, patch(
+            "mmd_tools.core.physics_solver._collect_bone_joints",
+            return_value=["|joint0", "|joint1"],
+        ), patch.object(
+            vmd_converter_module,
+            "store_runtime_registration_provenance",
+            return_value=True,
         ):
             result = self.converter._convert_using_mmd_runtime(
                 VmdDataLike(),
-                vmd_bytes=b"vmd",
+                vmd_bytes=vmd_bytes,
                 pmx_bytes=b"pmx-bytes",
                 pmx_path="",
                 use_native_physics_bake=True,
                 profile=profile,
+                target_model="|scaledRoot",
             )
 
         self.assertTrue(result)
+        self.assertIs(FakeClip.registration_model, FakeModel.registration)
+        self.assertEqual(
+            struct.unpack_from("<fff", FakeClip.runtime_bytes, 73),
+            (3.0, 6.0, 9.0),
+        )
+        self.assertIs(FakeInstance.last.model, FakeModel.evaluation)
+        self.assertIs(FakeModel.evaluation.source, model_descriptors)
+        build_model_descriptors.assert_called_once_with("|scaledRoot")
+        build_physics_descriptors.assert_called_once_with(
+            "|scaledRoot", bone_joints=["|joint0", "|joint1"], bone_count=2
+        )
+        self.assertEqual(
+            FakePhysicsWorld.last.descriptors,
+            (physics_descriptors.rigid_bodies, physics_descriptors.joints),
+        )
         self.assertEqual(len(FakePhysicsWorld.last.bake_calls), 1)
         bake_call = FakePhysicsWorld.last.bake_calls[0]
         self.assertEqual(bake_call["start_frame"], 0.0)
@@ -678,6 +765,10 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
         self.assertEqual(FakeInstance.last.batch_calls, [])
         self.assertEqual(apply_calls[0], [0.0, 1.0, 2.0, 3.0, 4.0])
         self.assertEqual(FakePhysicsWorld.free_calls, 1)
+        self.assertEqual(FakeInstance.last.free_calls, 1)
+        self.assertEqual(FakeClip.last.free_calls, 1)
+        self.assertEqual(FakeModel.evaluation.free_calls, 1)
+        self.assertEqual(FakeModel.registration.free_calls, 1)
         routing = profile["vmd_converter"]["native_physics_bake"]
         self.assertTrue(routing["requested"])
         self.assertTrue(routing["used"])

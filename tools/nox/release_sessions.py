@@ -6,7 +6,9 @@ import json
 import os
 import sys
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import perf_counter
 
 
 def run_native_physics_release_gate(
@@ -20,7 +22,7 @@ def run_native_physics_release_gate(
     maya_process_path,
     python_executable: str = sys.executable,
 ) -> None:
-    """Run the bundled native physics route twice and compare deterministic output."""
+    """Run the bundled collision test and compare two deterministic physics runs."""
     maya_version = "2024"
     mayapy_path = mayapy(maya_version)
     pmx = (root / "tests/data/physics/test_hair_physics.pmx").resolve()
@@ -45,6 +47,14 @@ def run_native_physics_release_gate(
         MMD_ANIM_FFI_PATH=str(ffi),
         MAYA_SKIP_USERSETUP_PY="1",
         MMD_TOOLS_SKIP_SHADER_OVERRIDE="1",
+    )
+    collision_env = os.environ.copy()
+    collision_env["MMD_ANIM_FFI_PATH"] = str(ffi)
+    session.run(
+        python_executable,
+        str(root / "tests/release/test_native_physics_collision.py"),
+        env=collision_env,
+        external=True,
     )
     for report in run_reports:
         session.run(
@@ -328,6 +338,140 @@ def run_release_camera_motion_oracle(
         session.error("Camera motion release gate failed; reports: " + ", ".join(failed_reports))
 
 
+def _run_release_gate_tier2_parallel(
+    tier2_commands: list[tuple[str, list[str]]],
+    release_maya_versions: tuple[str, ...],
+    run_release_gate_command,
+    *,
+    verbose: bool,
+) -> list[dict[str, object]]:
+    """Run independent Tier 2 groups concurrently and restore declaration order."""
+    lane_commands: list[list[tuple[int, str, list[str]]]] = []
+    lane_indexes: set[int] = set()
+    for maya_version in release_maya_versions:
+        lane_names = {
+            f"tier2:cpp-debug-prerequisite-{maya_version}",
+            f"tier2:mayapy-unit-{maya_version}",
+            f"tier2:mayapy-integration-{maya_version}",
+        }
+        lane = [
+            (index, name, command)
+            for index, (name, command) in enumerate(tier2_commands)
+            if name in lane_names
+        ]
+        if lane:
+            lane_commands.append(lane)
+            lane_indexes.update(index for index, _name, _command in lane)
+
+    def run_lane(lane: list[tuple[int, str, list[str]]]) -> list[dict[str, object]]:
+        local_results: list[dict[str, object]] = []
+        for _index, name, command in lane:
+            run_release_gate_command(name, command, local_results, verbose=verbose)
+        if len(local_results) != len(lane):
+            raise RuntimeError("Tier 2 Maya lane did not produce one result per command")
+        return local_results
+
+    lane_results: list[tuple[list[tuple[int, str, list[str]]], list[dict[str, object]]]] = []
+    if lane_commands:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(run_lane, lane) for lane in lane_commands]
+            for lane, future in zip(lane_commands, futures):
+                lane_results.append((lane, future.result()))
+
+    ordered_results: list[dict[str, object] | None] = [None] * len(tier2_commands)
+    for lane, local_results in lane_results:
+        for (index, _name, _command), result in zip(lane, local_results):
+            ordered_results[index] = result
+
+    def run_one(index: int, name: str, command: list[str]) -> tuple[int, dict[str, object]]:
+        local_results: list[dict[str, object]] = []
+        run_release_gate_command(name, command, local_results, verbose=verbose)
+        if len(local_results) != 1:
+            raise RuntimeError(f"Tier 2 command did not produce one result: {name}")
+        return index, local_results[0]
+
+    def group_key(name: str) -> str:
+        if name.startswith("tier2:viewport-") or name.startswith("tier2:generated-pmx-visual-"):
+            return name.rsplit("-", 1)[-1]
+        return name
+
+    def generated_visual_diff_pair_end(index: int, name: str) -> int | None:
+        """Return the end of the exact visual-diff and bundled-smoke pair."""
+        if name != "tier2:generated-pmx-glsl-dx11-diff":
+            return None
+        pair_end = index + 1
+        if pair_end >= len(tier2_commands) or pair_end in lane_indexes:
+            return None
+        if tier2_commands[pair_end][0] != "tier2:bundled-native-smoke":
+            return None
+        return pair_end + 1
+
+    def run_group(group: list[tuple[int, str, list[str]]]) -> None:
+        """Run a contiguous independent group in safe batches of at most two."""
+        batches: list[list[tuple[int, str, list[str]]]] = [[]]
+        for entry in group:
+            _index, name, _command = entry
+            current = batches[-1]
+            if len(current) >= 2 or group_key(name) in {group_key(item[1]) for item in current}:
+                current = []
+                batches.append(current)
+            current.append(entry)
+
+        for batch in batches:
+            if len(batch) == 1:
+                command_index, name, command = batch[0]
+                result_index, result = run_one(command_index, name, command)
+                ordered_results[result_index] = result
+                continue
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(run_one, *entry) for entry in batch]
+                for future in futures:
+                    result_index, result = future.result()
+                    ordered_results[result_index] = result
+
+    index = 0
+    while index < len(tier2_commands):
+        if index in lane_indexes:
+            index += 1
+            continue
+        name, command = tier2_commands[index]
+        visual_diff_pair_end = generated_visual_diff_pair_end(index, name)
+        if visual_diff_pair_end is not None:
+            run_group(
+                [
+                    (command_index, group_name, group_command)
+                    for command_index, (group_name, group_command) in enumerate(
+                        tier2_commands[index:visual_diff_pair_end], start=index
+                    )
+                ]
+            )
+            index = visual_diff_pair_end
+            continue
+        if name.startswith("tier2:viewport-") or name.startswith("tier2:generated-pmx-visual-"):
+            group_start = index
+            prefix = "tier2:viewport-" if name.startswith("tier2:viewport-") else "tier2:generated-pmx-visual-"
+            index += 1
+            while index < len(tier2_commands) and index not in lane_indexes:
+                next_name, _next_command = tier2_commands[index]
+                if not next_name.startswith(prefix):
+                    break
+                index += 1
+            run_group(
+                [
+                    (command_index, group_name, group_command)
+                    for command_index, (group_name, group_command) in enumerate(
+                        tier2_commands[group_start:index], start=group_start
+                    )
+                ]
+            )
+            continue
+        result_index, result = run_one(index, name, command)
+        ordered_results[result_index] = result
+        index += 1
+
+    return [result for result in ordered_results if result is not None]
+
+
 def run_release_gate(
     session,
     *,
@@ -359,9 +503,17 @@ def run_release_gate(
     environment=None,
 ) -> None:
     """Run release verification tiers with keep-going reporting."""
+    started = perf_counter()
     run_id, run_timestamp = new_release_gate_run()
     args = list(posargs)
     quick = has_flag(args, "--quick")
+    jobs_text = option(args, "--jobs", "1")
+    try:
+        jobs = int(jobs_text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("--jobs must be 1 or 2") from exc
+    if jobs not in (1, 2):
+        raise ValueError("--jobs must be 1 or 2")
     version = option(args, "--maya", default_maya_version)
     cpp_versions = options(args, "--cpp-maya") or list(default_cpp_versions)
     cpp_config = option(args, "--cpp-config", default_cpp_config)
@@ -387,11 +539,13 @@ def run_release_gate(
     if not quick:
         run_release_gate_callable("tier0:mmd-anim-pin", release_gate_pin_check, results)
         if results[-1]["status"] == "fail":
+            duration_sec = perf_counter() - started
             md_path, json_path = write_release_gate_reports(
                 results,
                 quick,
                 run_id=run_id,
                 timestamp=run_timestamp,
+                duration_sec=duration_sec,
             )
             session.log(f"Release gate report: {md_path}")
             session.log(f"Release gate JSON: {json_path}")
@@ -423,7 +577,7 @@ def run_release_gate(
                 ),
                 results,
             )
-        for name, command in release_gate_tier2_commands(
+        tier2_commands = release_gate_tier2_commands(
             version=version,
             cpp_versions=cpp_versions,
             cpp_config=cpp_config,
@@ -434,8 +588,19 @@ def run_release_gate(
             visual_cases=release_visual_cases,
             include_cpp=has_flag(args, "--with-cpp"),
             verbose=verbose,
-        ):
-            run_release_gate_command(name, command, results, verbose=verbose)
+        )
+        if jobs == 1:
+            for name, command in tier2_commands:
+                run_release_gate_command(name, command, results, verbose=verbose)
+        else:
+            results.extend(
+                _run_release_gate_tier2_parallel(
+                    tier2_commands,
+                    release_maya_versions,
+                    run_release_gate_command,
+                    verbose=verbose,
+                )
+            )
 
         for name, command, result_report in release_gate_tier3_commands(
             root=root,
@@ -455,11 +620,13 @@ def run_release_gate(
                 verbose=verbose,
             )
 
+    duration_sec = perf_counter() - started
     md_path, json_path = write_release_gate_reports(
         results,
         quick,
         run_id=run_id,
         timestamp=run_timestamp,
+        duration_sec=duration_sec,
     )
     counts = {
         status: sum(result["status"] == status for result in results)
@@ -472,7 +639,7 @@ def run_release_gate(
             passed=counts["pass"],
             skipped=counts["skip"],
             failed=counts["fail"],
-            duration_sec=sum(float(result["duration_sec"]) for result in results),
+            duration_sec=duration_sec,
         )
     )
     session.log(f"Release gate report: {md_path}")

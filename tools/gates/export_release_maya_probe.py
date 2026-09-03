@@ -71,10 +71,8 @@ MORPH_TYPE_NAMES = {
     9: "flip",
 }
 MORPH_OFFSET_ATTRIBUTES = {
-    # Bone offsets must retain their original PMX-space values here.  The
-    # regular attribute carries importer-scale-adjusted translations for the
-    # runtime, while this provenance attribute is the export-facing payload.
-    "bone": "mmd_bone_morph_offsets_raw_json",
+    # Bone offsets are stored once in effective PMX units for runtime and export.
+    "bone": "mmd_bone_morph_offsets_json",
     "group": "mmd_group_morph_offsets_json",
     "material": "mmd_material_morph_offsets_json",
     "uv": "mmd_uv_morph_offsets_json",

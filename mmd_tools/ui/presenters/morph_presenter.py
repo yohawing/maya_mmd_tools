@@ -7,6 +7,7 @@ from mmd_tools.adapters.maya_morph_authoring_snapshot_provider import (
     MayaMorphAuthoringSnapshotProvider,
 )
 from ...core.logger import get_logger
+from ...core.name_display import morph_name_fallback
 from ...core.morph_metadata_reader import (
     MORPH_TAB_GROUP_ORDER,
     PMX_TYPE_TO_UI_INDEX,
@@ -21,8 +22,8 @@ from ...core.morph_authoring import (
     swap_adjacent_morphs,
 )
 from ...core.morph_read_projection import (
-    MorphAuthoringReadSnapshot,
     MorphProjectionRequest,
+    normalize_morph_authoring_snapshot,
     project_runtime_capabilities,
 )
 from ...core.morph_topology import MorphTopologyInspection
@@ -373,32 +374,13 @@ class MorphPresenter:
 
     def _consume_authoring_snapshot(self, root, snapshot):
         """Publish one root/generation-validated immutable projection."""
-        if not isinstance(snapshot, MorphAuthoringReadSnapshot):
-            raise TypeError("invalid morph authoring snapshot")
+        snapshot, _ = normalize_morph_authoring_snapshot(snapshot)
         projection = snapshot.projection
         if projection.root_identity != root and not self._root_alias_matches_projection(
             root,
             projection.root_identity,
         ):
             raise ValueError("morph authoring snapshot root identity is stale")
-        if snapshot.spec is None:
-            if any(morph.semantic_registered for morph in projection.morphs):
-                raise ValueError("runtime-only snapshot contains semantic morph entries")
-        else:
-            if any(not morph.semantic_registered for morph in projection.morphs):
-                raise ValueError("semantic snapshot contains runtime-only morph entries")
-            spec_identities = tuple(
-                (morph.index, morph.binding_identity, morph.name)
-                for morph in snapshot.spec.morphs
-            )
-            projection_identities = tuple(
-                (morph.global_morph_index, morph.binding_identity, morph.raw_pmx_name)
-                for morph in projection.morphs
-            )
-            if spec_identities != projection_identities:
-                raise ValueError("morph authoring snapshot semantic identity mismatch")
-        if not isinstance(snapshot.topology_inspection, MorphTopologyInspection):
-            raise TypeError("invalid morph topology inspection")
 
         self._authoring_spec = snapshot.spec
         self._authoring_spec_baseline = snapshot.spec
@@ -648,8 +630,11 @@ class MorphPresenter:
         """全てのモーフを表示"""
         self._display_morphs(self.morph_data)
 
-    def _display_morphs(self, morph_keys):
-        """安定キーを保持し、PMX global index 順でモーフを表示する。"""
+    def _morph_row_labels(self):
+        """Allocate display labels across all morphs in stable PMX order."""
+        labels = {}
+        used_names = set()
+
         def sort_key(morph_key):
             try:
                 index = int(self.morph_data[morph_key].get("index", -1))
@@ -657,7 +642,7 @@ class MorphPresenter:
                 index = -1
             return (index < 0, index if index >= 0 else 0, morph_key)
 
-        for morph_key in sorted(morph_keys, key=sort_key):
+        for fallback_order, morph_key in enumerate(sorted(self.morph_data, key=sort_key)):
             data = self.morph_data[morph_key]
             try:
                 index = int(data.get("index", -1))
@@ -669,16 +654,29 @@ class MorphPresenter:
             type_letter = _MORPH_TYPE_LETTERS.get(int(raw_type), "?")
             name = data.get("name_jp") or morph_key
             index_text = str(index) if index >= 0 else "-"
-            item = QListWidgetItem(
-                format_indexed_name_label(
-                    index_text,
-                    name,
-                    data.get("name_en", ""),
-                    prefix=f"{type_letter}|",
-                )
+            fallback_index = index if index >= 0 else fallback_order
+            labels[morph_key] = format_indexed_name_label(
+                index_text, name, data.get("name_en", ""), prefix=f"{type_letter}|",
+                fallback=lambda: morph_name_fallback(data.get("name_jp"), fallback_index),
+                used_names=used_names,
             )
-            item.setData(Qt.UserRole, morph_key)
-            self.view.morph_list.addItem(item)
+        return labels
+
+    def _display_morphs(self, morph_keys):
+        """Display stable keys without changing suffixes when filtering."""
+        for key, label in self._morph_row_labels().items():
+            if key in morph_keys:
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, key)
+                self.view.morph_list.addItem(item)
+
+    def _refresh_morph_row_labels(self):
+        """Refresh labels in place after edits/reordering, retaining selection."""
+        labels = self._morph_row_labels()
+        for row in range(self.view.morph_list.count()):
+            item = self.view.morph_list.item(row)
+            if item is not None and item.data(Qt.UserRole) in labels:
+                item.setText(labels[item.data(Qt.UserRole)])
 
     def on_morph_selected(self, current, previous):
         """モーフが選択されたときの処理"""
@@ -1087,23 +1085,10 @@ class MorphPresenter:
                 morphs=(*self._authoring_spec.morphs, morph),
             )
         self._morphs_by_index[morph.index] = self.morph_data[key]
-        type_letter = _MORPH_TYPE_LETTERS.get(
-            next(
-                (value for value, name in PMX_MORPH_TYPE_NAMES.items() if name == morph.morph_type),
-                1,
-            ),
-            "?",
-        )
-        item = QListWidgetItem(
-            format_indexed_name_label(
-                str(morph.index),
-                morph.name,
-                morph.name_english,
-                prefix=f"{type_letter}|",
-            )
-        )
+        item = QListWidgetItem(self._morph_row_labels()[key])
         item.setData(Qt.UserRole, key)
         self.view.morph_list.addItem(item)
+        self._refresh_morph_row_labels()
         self.view.morph_list.setCurrentItem(item)
         self.current_morph = key
 
@@ -1128,7 +1113,12 @@ class MorphPresenter:
         root = self.app_state.current_model_root
         try:
             candidates = tuple(
-                self.maya_adapter.list_relatives(root, allDescendents=True, type="mesh")
+                self.maya_adapter.list_relatives(
+                    root,
+                    allDescendents=True,
+                    type="mesh",
+                    fullPath=True,
+                )
                 if root
                 else ()
             )
@@ -1284,25 +1274,7 @@ class MorphPresenter:
             widget.items[row_a], widget.items[row_b] = widget.items[row_b], widget.items[row_a]
         else:
             raise ValueError("morph list does not support local row swaps")
-        for key in (first_key, second_key):
-            for row in range(widget.count()):
-                item = widget.item(row)
-                if item is not None and item.data(Qt.UserRole) == key:
-                    data = self.morph_data[key]
-                    raw_type = data.get("type", 0)
-                    if not data.get("_pmx_type_raw"):
-                        raw_type = UI_INDEX_TO_PMX_TYPE.get(int(raw_type), 1)
-                    setter = getattr(item, "setText", None)
-                    if callable(setter):
-                        setter(
-                            format_indexed_name_label(
-                                str(data["index"]),
-                                data.get("name_jp") or key,
-                                data.get("name_en", ""),
-                                prefix=f"{_MORPH_TYPE_LETTERS.get(int(raw_type), '?')}|",
-                            )
-                        )
-                    break
+        self._refresh_morph_row_labels()
 
     def _selected_work_offset_index(self):
         combo = getattr(self.view, "work_offset_combo", None)
@@ -1415,21 +1387,7 @@ class MorphPresenter:
                 "offsets": result.to_mapping()["offsets"],
             }
         )
-        type_letter = _MORPH_TYPE_LETTERS.get(int(data.get("type", 0)), "?")
-        index_text = str(result.index)
-        for row in range(self.view.morph_list.count()):
-            item = self.view.morph_list.item(row)
-            if item.data(Qt.UserRole) != key:
-                continue
-            item.setText(
-                format_indexed_name_label(
-                    index_text,
-                    result.name,
-                    result.name_english,
-                    prefix=f"{type_letter}|",
-                )
-            )
-            break
+        self._refresh_morph_row_labels()
         self._authoring_morphs_by_index[result.index] = result
 
     def _emit_authoring_error(self, message):

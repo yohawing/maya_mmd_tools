@@ -540,10 +540,9 @@ class FakeBoneApi:
         self.events: list[str] = []
         self.fail_register = False
 
-    def capture_rest_position(self, _root: str, joint: str, scale: float, _adapter: Any) -> tuple[float, ...]:
+    def capture_rest_position(self, _root: str, joint: str, _adapter: Any) -> tuple[float, ...]:
         self.events.append("capture")
         assert joint in {"|root|spare", "|root|newJoint"}
-        assert scale == 2.0
         return (2.0, 3.0, 4.0)
 
     def apply_bone_value_patch(
@@ -687,7 +686,6 @@ def _coordinator() -> tuple[
         FakeCmds(),
         bone_api=bones,
         morph_authoring=morphs,
-        model_scale_resolver=lambda _root: 2.0,
     )
     return coordinator, backend, materials, bones
 
@@ -1280,7 +1278,7 @@ def test_replace_bone_updates_semantics_and_world_position_in_one_transaction() 
     result = coordinator.replace_bone("|root", replacement, (2.0, 4.0, -6.0))
 
     assert result.bones[1].name == "edited"
-    assert result.bones[1].rest_position == (1.0, 2.0, 3.0)
+    assert result.bones[1].rest_position == (2.0, 4.0, 6.0)
     assert coordinator._cmds.positions["|root|spare"] == (2.0, 4.0, -6.0)
     _assert_one_successful_transaction(backend)
 
@@ -1316,16 +1314,6 @@ def test_replace_bone_semantic_preserves_rest_tail_and_does_not_xform() -> None:
     assert backend.rebase_count == 0
     assert backend.events == ["begin:bone_value", "commit:bone_value"]
     assert backend.rollback_count == 0
-
-
-@pytest.mark.parametrize("invalid_scale", [True, 0.0, float("nan"), float("inf")])
-def test_capture_rest_rejects_invalid_model_scale_before_write(invalid_scale: Any) -> None:
-    coordinator, backend, _, _ = _coordinator()
-    coordinator._model_scale_resolver = lambda _root: invalid_scale
-
-    with pytest.raises(MayaModelAuthoringCoordinatorError, match="must be positive"):
-        coordinator.capture_rest("|root", 1, "|root|spare")
-    assert backend.begin_count == 0
 
 
 def test_morph_crud_uses_injected_structural_writer_and_canonical_binding() -> None:
