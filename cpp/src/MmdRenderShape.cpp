@@ -883,11 +883,12 @@ bool MmdRenderShape::updateMaterialAlpha(std::size_t materialIndex,
             continue;
         }
         input.diffuseAlpha = clampedAlpha;
-        const bool explicitlyCutout =
-            mmd::classifyMmdDrawPass(input.transparencyMode, 1.0F) ==
-            mmd::MmdDrawPass::Cutout;
-        if (!explicitlyCutout) {
-            input.transparencyMode = clampedAlpha < 0.999F ? "blend" : "opaque";
+        // Preserve blend/cutout selected by the material or texture alpha.
+        // Otherwise let the effective diffuse alpha classify the queue;
+        // writing "blend" here would make a temporary fade permanent.
+        if (mmd::classifyMmdDrawPass(input.transparencyMode, 1.0F) ==
+            mmd::MmdDrawPass::Opaque) {
+            input.transparencyMode.clear();
         }
         found = true;
     }

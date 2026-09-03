@@ -74,7 +74,7 @@ def _surface_hit(panel: str) -> list[str]:
 
 def run_probe(log_path: str, report_path: str, out_dir: str, model: str,
               plugin: str, width: int = 640, height: int = 480,
-              vp2_backend: str = "dx11") -> None:
+              vp2_backend: str = "dx11", texture_alpha_roundtrip: bool = False) -> None:
     """Execute the GUI-only side through commandPort and always emit JSON."""
     import maya.cmds as cmds
     from mmd_tools.io.cpp_fast_importer import _require_dx11_for_vp2_ownership
@@ -148,6 +148,39 @@ def run_probe(log_path: str, report_path: str, out_dir: str, model: str,
         shaded = capture_view(cmds, output_dir / "render_override_gui_shaded.png",
                               panel, width, height)
 
+        if texture_alpha_roundtrip:
+            from tools.render_override.render_override_vp2_ownership_e2e import (
+                _read_material_binding_diagnostics,
+            )
+
+            initial = _read_material_binding_diagnostics(cmds, shape, log)
+            candidates = [item for item in initial["items"]
+                          if not item["outline"] and item["pass"] == "Transparent"
+                          and item["diffuseAlpha"] == 1.0 and item["mainTextureAcquired"]]
+            if not candidates:
+                raise RuntimeError("fixture needs a textured transparent material with alpha 1")
+            material_index = candidates[0]["materialIndex"]
+            samples = []
+            report["textureAlphaRoundtrip"] = samples
+            for alpha in (0.4, 1.0):
+                cmds.mmdRenderQueueUpdate(node=shape, materialIndex=material_index, alpha=alpha)
+                current_witness = _wait_ready(cmds, shape, log)
+                current = _read_material_binding_diagnostics(cmds, shape, log)
+                bodies = [item for item in current["items"]
+                          if not item["outline"] and item["materialIndex"] == material_index]
+                image_path = capture_view(
+                    cmds, output_dir / f"texture_alpha_{alpha:.1f}.png", panel, width, height)
+                samples.append({"alpha": alpha, "witness": current_witness,
+                                "items": bodies, "capture": str(image_path)})
+                if not current_witness.startswith("ready") or not bodies or not all(
+                    item["pass"] == "Transparent" and item["effectiveTransparent"]
+                    and abs(item["diffuseAlpha"] - alpha) < 1e-6
+                    and item["bindingSuccess"] and item["mainTextureAcquired"]
+                    for item in bodies
+                ):
+                    raise RuntimeError(f"texture transparency lost after alpha={alpha}")
+            report["checks"]["textureAlphaRoundtrip"] = True
+
         cmds.modelEditor(panel, edit=True, displayAppearance="wireframe")
         cmds.refresh(force=True)
         wire = capture_view(cmds, output_dir / "render_override_gui_wire.png",
@@ -165,13 +198,13 @@ def run_probe(log_path: str, report_path: str, out_dir: str, model: str,
             "surfaceHitSelection": picked,
             "componentSelection": "not-supported",
         })
-        report["checks"] = {
+        report["checks"].update({
             "requestedVp2Device": True,
             "proxyInputConnected": True,
             "smoothCapture": shaded.is_file() and shaded.stat().st_size > 0,
             "wireCapture": wire.is_file() and wire.stat().st_size > 0,
             "objectHitTest": object_hit,
-        }
+        })
         if vp2_backend == "dx11":
             report["checks"].update({
                 "dx11": True,
@@ -212,7 +245,11 @@ def main() -> int:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--vp2-device", choices=("dx11", "glcore"), default="dx11")
+    parser.add_argument("--texture-alpha-roundtrip", action="store_true",
+                        help="Require texture-driven blend to survive diffuse alpha 0.4 -> 1.")
     args = parser.parse_args()
+    if args.texture_alpha_roundtrip and args.vp2_device != "dx11":
+        parser.error("--texture-alpha-roundtrip requires DX11")
     if not args.model.is_file():
         parser.error(f"model does not exist: {args.model}")
     plugin = args.plugin or ROOT / "plug-ins" / str(args.maya) / "Debug" / "mmd_tools_cpp.mll"
@@ -224,7 +261,7 @@ def main() -> int:
         "from tools.smoke.maya_render_override_gui_smoke import run_probe\n"
         f"run_probe({str(log_path)!r}, {str(report_path)!r}, {str(out)!r}, "
         f"{str(args.model.resolve())!r}, {str(plugin.resolve())!r}, {args.width}, {args.height}, "
-        f"{args.vp2_device!r})\n"
+        f"{args.vp2_device!r}, {args.texture_alpha_roundtrip!r})\n"
     )
     report = run_maya_e2e(
         project_root=ROOT, version=str(args.maya), out_dir=out, port=args.port,
@@ -232,7 +269,9 @@ def main() -> int:
         command=command, marker=MARKER, send_label="<render-override-gui-smoke>",
         stale_paths=(log_path, report_path, out / "render_override_gui_shaded.png",
                      out / "render_override_gui_shaded.0000.png", out / "render_override_gui_wire.png",
-                     out / "render_override_gui_wire.0000.png"),
+                     out / "render_override_gui_wire.0000.png",
+                     *(out / f"texture_alpha_{alpha}{suffix}.png"
+                       for alpha in ("0.4", "1.0") for suffix in ("", ".0000"))),
         port_error=f"commandPort :{args.port} is already open; choose another --port",
         report_error=f"GUI smoke report missing: {report_path}", log_ready=LOGGER,
         warn_detached=True,
