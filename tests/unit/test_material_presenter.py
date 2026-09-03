@@ -489,19 +489,6 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.list_connections.assert_not_called()
         self.mock_maya_adapter.sets.assert_not_called()
 
-    def test_en_placeholder_displays_original_derived_name_with_existing_node(self):
-        presenter, coordinator = self._make_authoring_presenter()
-        coordinator.read_material_list_projection.return_value = self._list_projection(
-            "|model_root",
-            (0, "model:en_4", "目", "en",
-             MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0)),
-        )
-        presenter.load_materials()
-        item = self.mock_view.material_list.addItem.call_args.args[0]
-        self.assertEqual(item.text(), "1:eyes (en_4)")
-        self.assertEqual(item.data(Qt.UserRole), "model:en_4")
-        self.assertEqual(coordinator.read_material_list_projection.return_value.items[0].semantic.name_english, "en")
-
     def test_load_materials_survives_stale_presenter_projection_class_reference(self):
         self.mock_app_state.current_model_root = "|model_root"
         self.mock_maya_adapter.object_exists.return_value = True

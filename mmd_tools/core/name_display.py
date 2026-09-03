@@ -1,7 +1,7 @@
 """Locale-aware display policy for bilingual PMX names.
 
 The Japanese PMX name remains authoritative metadata.  This module only
-chooses display labels/naming candidates and never changes stored names or Maya node
+chooses a user-facing label and never changes the stored names or Maya node
 identity.
 """
 
@@ -15,17 +15,6 @@ def _clean(value: object) -> str:
 def _ascii_candidate(value: object) -> str:
     text = _clean(value)
     return text if text and text.isascii() else ""
-
-
-def material_english_name(name_jp: object, name_en: object) -> str:
-    """Replace PMX's literal 'en' placeholder for naming/display only."""
-    english = _clean(name_en)
-    japanese = _clean(name_jp)
-    if english.casefold() == "en" and japanese:
-        from .maya_name_utils import sanitize_text
-
-        return sanitize_text(japanese)
-    return english
 
 
 def preferred_pmx_display_name(
@@ -72,4 +61,4 @@ def morph_name_fallback(name: object, index: object, *, include_index: bool = Fa
     return f"{sanitized} [{index}]" if include_index else sanitized
 
 
-__all__ = ["material_english_name", "morph_name_fallback", "original_pmx_fields_visible", "preferred_pmx_display_name"]
+__all__ = ["morph_name_fallback", "original_pmx_fields_visible", "preferred_pmx_display_name"]

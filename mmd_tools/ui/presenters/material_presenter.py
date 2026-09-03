@@ -9,7 +9,6 @@ from typing import Protocol
 
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
-from ...core.name_display import material_english_name
 from ...core.model_authoring_spec import MmdMaterialSpec, MmdModelAuthoringSpec
 from ...core.material_read_projection import (
     MaterialDetailProjection,
@@ -254,7 +253,7 @@ class MaterialPresenter:
                     semantic.index + 1,
                     semantic.name,
                     semantic.binding_identity,
-                    material_english_name(semantic.name, semantic.name_english),
+                    semantic.name_english,
                 )
 
                 item = QListWidgetItem(display_text)
@@ -990,7 +989,7 @@ class MaterialPresenter:
                     material.index + 1,
                     material.name,
                     binding_identity,
-                    material_english_name(material.name, material.name_english),
+                    material.name_english,
                 )
             )
             break
