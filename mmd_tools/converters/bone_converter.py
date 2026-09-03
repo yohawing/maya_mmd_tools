@@ -706,7 +706,8 @@ class BoneConverter:
                     continue
                 influence_index = influence_index_by_bone.get(joint_index)
                 if influence_index is not None:
-                    flat_weights[row_start + influence_index] = weight
+                    # PMX slots can reference the same bone more than once.
+                    flat_weights[row_start + influence_index] += weight
         self._add_profile_time("weight_pack_sec", weight_pack_start)
 
         set_weights_start = time.perf_counter()

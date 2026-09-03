@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import Mock, patch
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
+import maya.api.OpenMayaAnim as oma
 
 from mmd_tools.converters.bone_converter import BoneConverter
 from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
@@ -602,11 +603,11 @@ class TestBoneConverterMaya(unittest.TestCase):
 
     @patch("mmd_tools.converters.bone_converter.maya_mesh_utils.apply_vertex_weights")
     def test_apply_pmx_vertex_weights_packs_only_selected_influences(self, mock_apply_weights):
-        """PMX bone indexをsubset skinClusterのinfluence indexへ写像する。"""
+        """重複PMX boneを合算し、subset influenceへ写像してfallbackにも渡す。"""
         pmx_data = Mock()
         vertex = Mock(weight_transform_type=2)
-        vertex.bone_indices = [3, 1, 4, 2]
-        vertex.bone_weights = [0.75, 0.25, 0.0, 0.0]
+        vertex.bone_indices = [3, 1, 3, 3]
+        vertex.bone_weights = [0.5, 0.25, 0.125, 0.125]
         pmx_data.vertices = [vertex, vertex, vertex]
 
         self.converter._apply_pmx_vertex_weights(
@@ -622,6 +623,42 @@ class TestBoneConverterMaya(unittest.TestCase):
             mock_apply_weights.call_args[0][2],
             [[0.25, 0.75], [0.25, 0.75], [0.25, 0.75]],
         )
+
+    def test_duplicate_pmx_weights_are_summed_in_real_skin_cluster(self):
+        """BDEF2/BDEF4 duplicate slots retain their total through the Maya API."""
+        joints = []
+        for index in range(4):
+            cmds.select(clear=True)
+            joints.append(cmds.joint(name=f"weight_joint_{index}"))
+        skin = self.converter._create_skin_cluster([joints[1], joints[3]], self.test_mesh)
+        bdef2 = Mock(weight_transform_type=1, bone_indices=[1, 1], bone_weights=[0.3])
+        bdef4 = Mock(
+            weight_transform_type=2,
+            bone_indices=[3, 1, 3, 3],
+            bone_weights=[0.5, 0.25, 0.125, 0.125],
+        )
+        data = Mock(vertices=[bdef2, bdef4] * 4)
+
+        self.converter._apply_pmx_vertex_weights(
+            data, joints, skin, self.test_mesh, influence_bone_indices=[1, 3],
+        )
+
+        selection = om.MSelectionList()
+        selection.add(skin)
+        skin_fn = oma.MFnSkinCluster(selection.getDependNode(0))
+        selection = om.MSelectionList()
+        selection.add(self.test_mesh)
+        mesh_path = selection.getDagPath(0)
+        component_fn = om.MFnSingleIndexedComponent()
+        component = component_fn.create(om.MFn.kMeshVertComponent)
+        component_fn.addElements(list(range(8)))
+        weights, influence_count = skin_fn.getWeights(mesh_path, component)
+        self.assertEqual(influence_count, 2)
+        # Raw read-back also catches BDEF2 loss hidden by post-normalization.
+        for vertex_index, expected in enumerate([(1.0, 0.0), (0.25, 0.75)] * 4):
+            actual = weights[vertex_index * 2 : vertex_index * 2 + 2]
+            for value, target in zip(actual, expected):
+                self.assertAlmostEqual(value, target)
 
     @patch("mmd_tools.converters.bone_converter.RigConverter")
     def test_convert_pmx_bones_integration(self, mock_rig_converter_class):
