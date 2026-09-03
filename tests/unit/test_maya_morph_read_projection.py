@@ -184,6 +184,38 @@ def test_collects_multi_mesh_and_duplicate_raw_names_by_global_index():
     assert projection.binding_for_index(3).preview_plugs == ("faceA.weight[3]",)
 
 
+def test_same_named_meshes_keep_full_paths_and_model_ownership(monkeypatch):
+    maya = FakeMayaAdapter()
+    owned = ("|root|partA|ns:meshShape", "|root|partB|ns:meshShape")
+    foreign = "|otherRoot|ns:meshShape"
+    maya.canonical["ns:meshShape"] = (*owned, foreign)
+    for path in (*owned, foreign):
+        maya.canonical[path] = (path,)
+    maya.histories = {
+        owned[0]: ["faceA"],
+        owned[1]: ["faceB"],
+        foreign: ["foreignBS"],
+    }
+
+    def list_relatives(root, **kwargs):
+        assert root == "|root"
+        return list(owned) if kwargs.get("fullPath") else ["ns:meshShape"] * 2
+
+    monkeypatch.setattr(maya, "list_relatives", list_relatives)
+
+    projection = _read(maya)
+
+    assert projection.owned_mesh_identities == owned
+    assert projection.owned_blend_shape_identities == ("faceA", "faceB")
+    assert projection.binding_for_index(2).preview_plugs == (
+        "faceA.weight[2]",
+        "faceB.weight[2]",
+    )
+    assert foreign not in {
+        call[1] for call in maya.calls if call[0] == "list_history"
+    }
+
+
 def test_scene_observations_are_cached_per_owned_node():
     maya = FakeMayaAdapter()
 
