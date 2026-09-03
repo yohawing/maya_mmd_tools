@@ -3,6 +3,7 @@ import struct
 from typing import BinaryIO
 
 from mmd_tools.core import utils
+from mmd_tools.core.name_display import material_english_name
 from mmd_tools.core.pmx_data.header import PmxEncoding
 
 
@@ -119,14 +120,12 @@ class PmxMaterial:
 
     def get_name(self) -> str:
         """
-        マテリアルの名前を取得します。英語名が設定されていればそれを返し、なければ日本語名を返す。
+        材質の命名用英語名を返す。仮名 en は日本語名から変換し、元データは保持する。
 
         Returns:
             str: マテリアルの名前
         """
-        if self.name_english and self.name_english != "":
-            return self.name_english
-        return self.name
+        return material_english_name(self.name, self.name_english) or self.name
 
     def write(self, f: BinaryIO) -> None:
         """
