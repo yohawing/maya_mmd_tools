@@ -308,6 +308,11 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         items = {}
 
         def menu(*args, **kwargs):
+            if kwargs.get("deleteAllItems"):
+                for name in list(items):
+                    if items[name].get("parent") == args[0]:
+                        items.pop(name)
+                return None
             if kwargs.get("exists"):
                 return bool(items) if args and args[0] == "MMD" else False
             if kwargs.get("query"):
@@ -337,6 +342,15 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             name for name, data in items.items() if data.get("label") == "Translate MMD Names"
         ]
         self.assertEqual(translation_items, ["MMDTranslateNamesMenuItem"])
+
+        # Maya startup/menu rebuilding may leave the submenu without children.
+        items.pop("MMDTranslateNamesMenuItem")
+        on_open = items["MMDToolsSubMenu"]["postMenuCommand"]
+        on_open()
+        on_open()
+        self.assertIn("MMDTranslateNamesMenuItem", items)
+        self.assertEqual(items["MMDTranslateNamesMenuItem"]["parent"], "MMDToolsSubMenu")
+        self.assertIn("MMDToolsMenuItem", items)
 
     def test_control_rig_manager_menu_opens_the_shared_manager(self):
         self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (

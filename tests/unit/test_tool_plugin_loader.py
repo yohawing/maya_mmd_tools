@@ -20,7 +20,7 @@ def test_install_discovers_tool_script_and_preserves_fixed_menu_id() -> None:
     )
 
     assert installed == ("MMDTranslateNamesMenuItem",)
-    call = cmds.menuItem.call_args
+    call = cmds.menuItem.call_args_list[0]
     assert call.args == ("MMDTranslateNamesMenuItem",)
     assert call.kwargs["label"] == "Translate MMD Names"
     assert call.kwargs["parent"] == "MMDToolsSubMenu"
@@ -38,7 +38,7 @@ def test_menu_registration_does_not_require_scene_display_service(monkeypatch):
     cmds = SimpleNamespace(menuItem=MagicMock())
 
     assert install_tool_plugins("Tools", cmds_module=cmds) == ("MMDTranslateNamesMenuItem",)
-    assert cmds.menuItem.call_args.kwargs["parent"] == "Tools"
+    assert cmds.menuItem.call_args_list[0].kwargs["parent"] == "Tools"
 
 
 def test_import_failure_is_reported_and_other_tools_still_install(monkeypatch):
@@ -71,3 +71,12 @@ def test_import_failure_is_logged_without_error_callback(monkeypatch, caplog):
     assert install_tool_plugins("Tools", cmds_module=SimpleNamespace()) == ()
     assert "broken" in caplog.text
     assert "missing dependency" in caplog.text
+
+
+def test_missing_maya_menu_item_reports_registration_failure(monkeypatch):
+    name = "mmd_tools.tools.translate_names"
+    monkeypatch.setattr(tool_plugins, "_candidate_module_names", lambda: (name,))
+    cmds = SimpleNamespace(menuItem=MagicMock(return_value=False))
+    on_error = MagicMock()
+    assert install_tool_plugins("Tools", cmds_module=cmds, on_error=on_error) == ()
+    assert "Maya did not create menu item" in on_error.call_args.args[0]

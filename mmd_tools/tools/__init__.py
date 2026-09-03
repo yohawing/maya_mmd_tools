@@ -48,6 +48,8 @@ def install_tool_plugins(
                 cmds_module=cmds_module,
                 on_applied=on_applied,
             )
+            if not cmds_module.menuItem(menu_id, exists=True):
+                raise RuntimeError(f"Maya did not create menu item {menu_id!r}")
             installed.append(str(menu_id))
         except Exception as exc:
             message = f"MMD tool script failed to load ({module_name}): {type(exc).__name__}: {exc}"

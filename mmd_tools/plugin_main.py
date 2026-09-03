@@ -306,15 +306,9 @@ def install_mmd_menu():
         label="Tools",
         subMenu=True,
         parent="MMD",
+        postMenuCommand=_populate_mmd_tools_menu,
     )
-    from mmd_tools.tools import install_tool_plugins
-
-    install_tool_plugins(
-        "MMDToolsSubMenu",
-        cmds_module=cmds,
-        on_applied=_refresh_tool_ui,
-        on_error=om.MGlobal.displayWarning,
-    )
+    _populate_mmd_tools_menu()
     cmds.menuItem(
         "MMDAnimatorToolsetMenuItem",
         label="Animator Toolset",
@@ -334,6 +328,19 @@ def install_mmd_menu():
         parent="MMD",
         cmds_module=cmds,
         callback_dispatcher=_dispatch_humanik_action,
+    )
+
+
+def _populate_mmd_tools_menu(*_args):
+    """Populate the Tools submenu when opened, including after startup UI rebuilds."""
+    from mmd_tools.tools import install_tool_plugins
+
+    cmds.menu("MMDToolsSubMenu", edit=True, deleteAllItems=True)
+    install_tool_plugins(
+        "MMDToolsSubMenu",
+        cmds_module=cmds,
+        on_applied=_refresh_tool_ui,
+        on_error=om.MGlobal.displayWarning,
     )
 
 
