@@ -12,6 +12,9 @@ from importlib import import_module
 from pkgutil import iter_modules
 from typing import Callable, Optional, Tuple
 
+from mmd_tools.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 def _candidate_module_names() -> Tuple[str, ...]:
     return tuple(
@@ -19,22 +22,6 @@ def _candidate_module_names() -> Tuple[str, ...]:
         for module in sorted(iter_modules(__path__), key=lambda item: item.name)
         if not module.ispkg and not module.name.startswith("_")
     )
-
-
-def _iter_tool_plugins():
-    """Yield modules that opt into the menu in deterministic order."""
-
-    for module_name in _candidate_module_names():
-        try:
-            module = import_module(module_name)
-        except Exception:
-            continue
-        if (
-            str(getattr(module, "MENU_LABEL", "")).strip()
-            and str(getattr(module, "MENU_ITEM_ID", "")).strip()
-            and callable(getattr(module, "install_menu_item", None))
-        ):
-            yield module
 
 
 def install_tool_plugins(
@@ -47,18 +34,29 @@ def install_tool_plugins(
     """Discover and install tools without making the host know their names."""
 
     installed = []
-    for module in _iter_tool_plugins():
-        module_name = module.__name__
+    for module_name in _candidate_module_names():
         try:
+            module = import_module(module_name)
+            if not (
+                str(getattr(module, "MENU_LABEL", "")).strip()
+                and str(getattr(module, "MENU_ITEM_ID", "")).strip()
+                and callable(getattr(module, "install_menu_item", None))
+            ):
+                continue
             menu_id = module.install_menu_item(
                 parent=parent,
                 cmds_module=cmds_module,
                 on_applied=on_applied,
             )
+            if not cmds_module.menuItem(menu_id, exists=True):
+                raise RuntimeError(f"Maya did not create menu item {menu_id!r}")
             installed.append(str(menu_id))
         except Exception as exc:
+            message = f"MMD tool script failed to load ({module_name}): {type(exc).__name__}: {exc}"
             if callable(on_error):
-                on_error(f"MMD tool script failed to load ({module_name}): {exc}")
+                on_error(message)
+            else:
+                logger.warning(message, exc_info=True)
     return tuple(installed)
 
 

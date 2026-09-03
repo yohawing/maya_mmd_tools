@@ -82,6 +82,12 @@ class _List:
     def addItem(self, item):
         self.items.append(item)
 
+    def count(self):
+        return len(self.items)
+
+    def item(self, index):
+        return self.items[index]
+
     def setCurrentItem(self, item):
         self.current = item
 

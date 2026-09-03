@@ -30,7 +30,7 @@ def test_documented_mayapy_entry_point_delegates_to_core(monkeypatch):
     core_main.assert_called_once_with(["names.csv", "--dry-run"])
 
 
-def test_format_dialog_preview_is_english_first_and_hides_original_by_default():
+def test_format_dialog_preview_identifies_original_name_and_optional_target_details():
     plan = [
         SimpleNamespace(
             entry=_entry("bone", "|root|joint", "左腕", index=2),
@@ -40,11 +40,11 @@ def test_format_dialog_preview_is_english_first_and_hides_original_by_default():
     ]
 
     assert name_translation_dialog.format_dialog_preview(plan) == (
-        "bone[2]: EnglishName='left arm'; Maya node rename='left_arm'",
+        "[左腕] : Add EnglishName [left arm]; Rename Node [left_arm]",
     )
     assert name_translation_dialog.format_dialog_preview(plan, show_original=True) == (
-        "bone[2]: EnglishName='left arm'; Maya node rename='left_arm'; "
-        "OriginalPMXName='左腕'; MayaNode=|root|joint",
+        "[左腕] : Add EnglishName [left arm]; Rename Node [left_arm]; "
+        "bone[2]; MayaNode=|root|joint",
     )
 
 
@@ -66,8 +66,8 @@ def test_build_translation_preview_details_reports_dictionary_coverage(monkeypat
     )
 
     assert preview.total == 3
-    assert preview.matched == 2
-    assert preview.missing == 1
+    assert preview.matched == 3
+    assert preview.missing == 0
     assert preview.already_english == 1
     assert len(preview.plan) == 2
 
@@ -200,12 +200,11 @@ class _FakeDialog(_Widget):
 
 
 def _install_dialog_qt_stub(monkeypatch):
-    open_url = MagicMock(return_value=True)
+    browse = MagicMock(return_value=("", ""))
     qt = SimpleNamespace(
         QCheckBox=_Widget,
-        QDesktopServices=SimpleNamespace(openUrl=open_url),
         QDialog=_FakeDialog,
-        QFileDialog=SimpleNamespace(getOpenFileName=staticmethod(lambda *_args: ("", ""))),
+        QFileDialog=SimpleNamespace(getOpenFileName=browse),
         QFormLayout=_Widget,
         QHBoxLayout=_Widget,
         QLabel=_Widget,
@@ -213,15 +212,14 @@ def _install_dialog_qt_stub(monkeypatch):
         QMessageBox=SimpleNamespace(warning=staticmethod(lambda *_args: None)),
         QPushButton=_Widget,
         QTextEdit=_Widget,
-        QUrl=SimpleNamespace(fromLocalFile=staticmethod(lambda path: f"folder:{path}")),
         QVBoxLayout=_Widget,
     )
     monkeypatch.setitem(sys.modules, "mmd_tools.ui.qt_compat", qt)
-    return open_url
+    return browse
 
 
 def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatch, tmp_path):
-    open_url = _install_dialog_qt_stub(monkeypatch)
+    browse = _install_dialog_qt_stub(monkeypatch)
     entry = _entry("bone", "|root|joint", "左腕")
     change = name_translation_dialog.NameChange(entry, "left arm", "left arm", None)
     state = {"uuid": "uuid-1", "source": "左腕", "english": ""}
@@ -264,6 +262,8 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
     assert dialog.dictionary_edit.text() == str(name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH)
     assert name_translation_dialog.DEFAULT_TRANSLATION_DICTIONARY_PATH.is_file()
     assert dialog._dialog.modal is False
+    assert dialog.overwrite_checkbox.isChecked()
+    assert dialog.rename_checkbox.isChecked()
     assert dialog.apply_note_label.text() == (
         "Apply is enabled after Preview finds one or more changes."
     )
@@ -275,11 +275,13 @@ def test_dialog_requires_preview_before_apply_and_cancel_is_read_only(monkeypatc
         "Original PMX names are preserved."
     )
     assert dialog.exact_only_checkbox.text() == "Use exact CSV matches only"
-    assert "underscore suffix inheritance" in dialog.exact_only_checkbox.toolTip()
+    assert "sanitized names" in dialog.exact_only_checkbox.toolTip()
     custom_dictionary = tmp_path / "custom.csv"
     dialog.dictionary_edit.setText(str(custom_dictionary))
-    dialog.csv_folder_button.clicked.emit()
-    open_url.assert_called_once_with(f"folder:{tmp_path}")
+    dialog.browse_button.clicked.emit()
+    assert browse.call_args.args[2] == str(custom_dictionary)
+    assert dialog.dictionary_edit.text() == str(custom_dictionary)
+    assert "csv_folder_button" not in dialog.__dict__
     assert not dialog.apply_button.isEnabled()
     assert dialog.apply() is None
     assert not apply_plan.called
@@ -369,3 +371,13 @@ def test_dialog_rejects_stale_preview_before_apply(monkeypatch, field, value, me
     assert dialog.apply() is None
     apply_plan.assert_not_called()
     assert message in dialog.status_label.text()
+
+
+def test_duplicate_original_names_keep_target_identifiers_in_preview():
+    plan = [name_translation_dialog.NameChange(
+        _entry("bone", f"|root|joint{i}", "髪", index=i), "Hair", "Hair", None
+    ) for i in (1, 2)]
+    assert name_translation_dialog.format_dialog_preview(plan) == (
+        "[髪] (bone[1]) : Add EnglishName [Hair]",
+        "[髪] (bone[2]) : Add EnglishName [Hair]",
+    )

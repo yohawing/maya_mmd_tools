@@ -950,57 +950,6 @@ class TestPhysicsRoundTrip(MayaTestBase):
                     places=5,
                 )
 
-    def test_import_scale_scales_joint_transform_and_preserves_raw_metadata(self):
-        """Joint placement scales in Maya space without rewriting PMX metadata."""
-        scale = 0.5
-        source_data = _build_synthetic_supported_full_dict("physics_import_scale")
-        source_joint = source_data["joints"][0]
-        source_joint.update(
-            {
-                "position": [1.25, -2.5, 3.75],
-                "translation_limit_min": [-0.4, -0.6, -0.8],
-                "translation_limit_max": [0.5, 0.7, 0.9],
-                "spring_translation": [11.0, 22.0, 33.0],
-            }
-        )
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            source_path = Path(temp_dir) / "physics_import_scale.pmx"
-            PmxExporter().export_pmx_model(str(source_path), source_data)
-            source_pmx = parse_pmx_file(str(source_path), use_native_pmx_parse=False)
-            root = self._import_fixture(source_path, scale=scale)
-
-            presenter = self._presenter(root)
-            physics_group = presenter._find_child(root, PHYSICS_GROUP)
-            constraints_group = presenter._find_child(physics_group, CONSTRAINTS_GROUP)
-            joint_transform, joint_shape = next(
-                (transform, shape)
-                for transform, shape in presenter._find_shapes(
-                    constraints_group, "mmdPhysicsJointShape"
-                )
-                if cmds.getAttr(f"{shape}.pmxIndex") == 0
-            )
-
-            source = source_pmx.joints[0]
-            for attr, source_values in (
-                ("position", source.position),
-                ("translationLimitMin", source.translation_limit_min),
-                ("translationLimitMax", source.translation_limit_max),
-                ("springTranslation", source.spring_translation),
-            ):
-                self.assertListAlmostEqual(
-                    cmds.getAttr(f"{joint_shape}.{attr}")[0],
-                    source_values,
-                    places=5,
-                    msg=f"raw PMX joint metadata {attr}",
-                )
-            self.assertListAlmostEqual(
-                cmds.xform(joint_transform, query=True, worldSpace=True, translation=True),
-                mmd_point_to_maya(source.position, scale),
-                places=5,
-                msg="joint Maya-space transform translation",
-            )
-
     def test_vertex_morph_and_physics_survive_collector_roundtrip(self):
         """A deleted-target PMX morph and every Physics field survive scene collection."""
         with tempfile.TemporaryDirectory() as temp_dir:

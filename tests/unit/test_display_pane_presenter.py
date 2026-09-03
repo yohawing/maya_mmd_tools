@@ -292,6 +292,14 @@ class TestDisplayPanePresenter(unittest.TestCase):
             "4:Display Frame 4",
         )
 
+    def test_english_morph_choices_use_sanitized_name_when_english_is_empty(self):
+        self.translator.set_language("en")
+        self.adapter.attrs["model_root.mmdMorphData"] = json.dumps(
+            [{"name_jp": "頬", "name_en": "", "index": 7}], ensure_ascii=False
+        )
+        self.presenter.refresh()
+        self.assertEqual(self.presenter._morph_choices, {"cheek [7]": 7})
+
     def test_edit_add_move_and_delete_regular_frame(self):
         self.view.frame_list.setCurrentRow(2)
         self.view.name_jp_edit.setText("アクセサリ")

@@ -954,16 +954,16 @@ class TestAnimationPresenter(unittest.TestCase):
                 _presenter, view, _, _ = self._make(
                     display_json=frames_json,
                     morph_data=[
-                        {"index": 0, "name_jp": "笑い", "name_en": "", "panel": 2, "type": 1},
-                        {"index": 1, "name_jp": "怒り", "name_en": "", "panel": 2, "type": 1},
+                        {"index": 0, "name_jp": "そで", "name_en": "", "panel": 2, "type": 1},
+                        {"index": 1, "name_jp": "袖", "name_en": "", "panel": 2, "type": 1},
                     ],
                     model_root="test_model",
                 )
 
             self.assertEqual(view.display_frame_tree.topLevelItem(0).text(0), "Display Frame 0")
             self.assertEqual(view.display_frame_tree.topLevelItem(1).text(0), "Display Frame 1")
-            self.assertEqual(view.display_frame_tree.topLevelItem(0).child(0).text(0), "Morph 0")
-            self.assertEqual(view.display_frame_tree.topLevelItem(1).child(0).text(0), "Morph 1")
+            self.assertEqual(view.display_frame_tree.topLevelItem(0).child(0).text(0), "sleeve [0]")
+            self.assertEqual(view.display_frame_tree.topLevelItem(1).child(0).text(0), "sleeve [1]")
         finally:
             translator.set_language(previous)
 

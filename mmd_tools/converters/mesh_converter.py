@@ -9,6 +9,7 @@ from mmd_tools.core.settings import settings
 from mmd_tools.core import settings_keys as setting_keys
 from mmd_tools.core import maya_attribute_utils, maya_material_utils, maya_mesh_utils, maya_name_utils, maya_scene_utils, maya_viewport_utils
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.namespace_utils import NamespaceUtils
 from mmd_tools.core.texture_path_cache import (
     build_texture_path_diagnostics,
     build_texture_source_candidates,
@@ -1982,7 +1983,10 @@ class MeshConverter:
     def _parent_mesh_to_group(self, mesh_transform: str, parent_group: str) -> str:
         """Parent a freshly-created mesh and return its long DAG path."""
         mesh_uuid = self._created_world_mesh_uuid(mesh_transform)
-        parented = maya_scene_utils.parent_objects(mesh_transform, parent_group)
+        # Maya resolves collision-renamed nodes relative to the current namespace.
+        # Use root so an existing child namespace cannot capture the renamed mesh.
+        with NamespaceUtils.root_namespace_context():
+            parented = maya_scene_utils.parent_objects(mesh_transform, parent_group)
         fallback = parented[0] if parented else mesh_transform
         return self._resolve_mesh_long_path(mesh_uuid, fallback) or mesh_transform
 

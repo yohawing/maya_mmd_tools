@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-03
+
+### Added
+- Restored `MMD > Tools > Translate MMD Names` with a modeless CSV preview, a bundled standard-name dictionary, optional Maya node renaming, and a single undoable apply operation. Numbered and named suffixes can inherit dictionary translations, with an exact-match option.
+- Added Maya's keyframe hotkey support for the selected Animator Toolset morph, with a clearer selection highlight.
+
+### Changed
+- Prefer compatible native C++ DG nodes during startup, retaining the Python fallback when native loading is unavailable.
+- Batch UV-seam welding by material while preserving UV, morph, and skinning boundaries.
+- Simplified model import settings and removed the separate export scale option; model scale is applied consistently at import and export boundaries.
+- Expanded readable bone and morph name conversion and kept original PMX names available in the editor.
+
+### Fixed
+- Preserved model scale across fast import, VMD playback, physics authoring, and PMX export.
+- Made VMD motion replacement transactional and kept layer-owned morph and quaternion animation curves correctly associated during reimport.
+- Preserved full DAG paths and model namespaces when switching models, resolving morph meshes, and renaming colliding imported meshes.
+- Stabilized morph list refreshes and assigned unique English display labels in PMX order.
+- Refreshed discovered Tools menu entries when the submenu opens and reported discovery errors.
+
 ## [0.7.1] - 2026-08-28
 
 ### Added

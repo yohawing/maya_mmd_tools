@@ -7,6 +7,7 @@ from maya.api import OpenMaya as om
 
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.settings import settings
+from mmd_tools.core.namespace_utils import NamespaceUtils
 from mmd_tools.converters import mesh_converter as mesh_converter_module
 from mmd_tools.converters import MeshConverter
 from mmd_tools.core import maya_attribute_utils, maya_material_utils, maya_mesh_utils
@@ -63,6 +64,38 @@ class TestMeshConverter(MayaTestBase):
         cmds.file(new=True, force=True)
         # 一時ファイルをクリーンアップ
         self.fixture_provider.cleanup_temp_files()
+
+    def test_parent_same_named_meshes_preserves_namespace_with_existing_child(self):
+        """Maya's collision rename must not move meshes into an existing child namespace."""
+        converter = MeshConverter("")
+        with NamespaceUtils.namespace_context("asset"):
+            cmds.namespace(add=":asset:asset")
+            sentinel = cmds.createNode("network", name=":asset:asset:keep")
+            sentinel_uuid = cmds.ls(sentinel, uuid=True)
+            group = cmds.group(empty=True, name="Geometry")
+            meshes = []
+            for _ in range(3):
+                mesh = maya_mesh_utils.create_mesh_with_uvs(
+                    "mesh", [(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+                    [3], [0, 1, 2], [], [],
+                )
+                mesh_uuid = cmds.ls(mesh, uuid=True)
+                shape = cmds.listRelatives(mesh, shapes=True, fullPath=True)[0]
+                shape_uuid = cmds.ls(shape, uuid=True)
+
+                parented = converter._parent_mesh_to_group(mesh, group)
+
+                self.assertEqual(cmds.namespaceInfo(currentNamespace=True, absoluteName=True), ":asset")
+                self.assertEqual(cmds.ls(parented, uuid=True), mesh_uuid)
+                self.assertEqual(parented.rsplit("|", 1)[-1].count(":"), 1)
+                shape = cmds.listRelatives(parented, shapes=True, fullPath=True)[0]
+                self.assertEqual(cmds.ls(shape, uuid=True), shape_uuid)
+                self.assertEqual(shape.rsplit("|", 1)[-1].count(":"), 1)
+                self.assertEqual(cmds.polyEvaluate(shape, vertex=True), 3)
+                meshes.append(parented)
+
+            self.assertEqual(len(set(meshes)), 3)
+            self.assertEqual(cmds.ls(":asset:asset:keep", uuid=True), sentinel_uuid)
 
     def test_convert_pmx_mesh(self):
         """

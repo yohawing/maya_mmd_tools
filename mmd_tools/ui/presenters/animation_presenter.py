@@ -19,7 +19,7 @@ from ...core.display_frame_resolver import PickerGroup, resolve_display_frames
 from ...core.logger import get_logger
 from ...core.maya_identity import same_node_identity
 from ...core.mmd_bone_names import normalize_mmd_bone_name
-from ...core.name_display import preferred_pmx_display_name
+from ...core.name_display import morph_name_fallback, preferred_pmx_display_name
 from ...core.mmd_control_rig_builder import inspect_mmd_control_rig
 from ...core.morph_metadata_reader import (
     CategorizedMorphs,
@@ -1468,7 +1468,7 @@ class AnimationPresenter:
             index: preferred_pmx_display_name(
                 info.name,
                 info.name_english,
-                fallback=f"Morph {index}",
+                fallback=lambda: morph_name_fallback(info.name, index, include_index=True),
                 language=language,
             )
             for index, info in morph_metadata.items()
@@ -2317,7 +2317,7 @@ class AnimationPresenter:
                 display_name = preferred_pmx_display_name(
                     morph.name,
                     morph.name_english,
-                    fallback=f"Morph {morph.index}",
+                    fallback=lambda: morph_name_fallback(morph.name, morph.index, include_index=True),
                     language=language,
                 )
                 tooltip_parts = [display_name]

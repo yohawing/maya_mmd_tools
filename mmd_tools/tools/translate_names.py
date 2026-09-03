@@ -9,10 +9,10 @@ by name.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import Counter
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
-from mmd_tools.services.scene_model_service import SceneModelService
 from mmd_tools.core.name_translation import (
     NameChange,
     NameEntry,
@@ -112,23 +112,28 @@ def format_dialog_preview(
     *,
     show_original: bool = False,
 ) -> Tuple[str, ...]:
-    """Format English-first rows, revealing original metadata only on request."""
+    """Identify targets by their original names and spell out each operation."""
 
     lines = []
+    name_counts = Counter(change.entry.source_name for change in plan)
     for change in plan:
         entry = change.entry
         label = entry.kind
         if entry.index is not None:
             label = f"{label}[{entry.index}]"
-        details = [f"{label}:"]
+        target = f"[{entry.source_name or label}]"
+        if name_counts[entry.source_name] > 1:
+            target += f" ({label if entry.index is not None else entry.node})"
+        details = [f"{target} :"]
         if change.english_name is not None:
-            details.append(f"EnglishName={change.english_name!r}")
+            action = "Update" if entry.english_name else "Add"
+            details.append(f"{action} EnglishName [{change.english_name}]")
         else:
-            details.append("EnglishName=(unchanged)")
+            details.append("EnglishName [unchanged]")
         if change.maya_name is not None:
-            details.append(f"Maya node rename={change.maya_name!r}")
+            details.append(f"Rename Node [{change.maya_name}]")
         if show_original:
-            details.append(f"OriginalPMXName={entry.source_name!r}")
+            details.append(label)
             details.append(f"MayaNode={entry.node}")
         lines.append(" ".join(details[:2]) + ("; " + "; ".join(details[2:]) if len(details) > 2 else ""))
     return tuple(lines)
@@ -214,7 +219,6 @@ class NameTranslationDialog:
     def __init__(self, *, cmds_module=None, parent=None, on_applied=None):
         from mmd_tools.ui.qt_compat import (
             QCheckBox,
-            QDesktopServices,
             QDialog,
             QFileDialog,
             QFormLayout,
@@ -224,17 +228,14 @@ class NameTranslationDialog:
             QMessageBox,
             QPushButton,
             QTextEdit,
-            QUrl,
             QVBoxLayout,
         )
 
         # Keep the Qt imports local to the dialog entry point.  Importing the
         # Maya-independent translation core never requires PySide.
         self._qt = {
-            "QDesktopServices": QDesktopServices,
             "QFileDialog": QFileDialog,
             "QMessageBox": QMessageBox,
-            "QUrl": QUrl,
         }
         self._cmds = cmds_module
         self._preview_root = None
@@ -255,12 +256,12 @@ class NameTranslationDialog:
         self.dictionary_edit.setText(str(DEFAULT_TRANSLATION_DICTIONARY_PATH))
         self.browse_button = QPushButton("Browse…", self._dialog)
         self.browse_button.setObjectName("browseButton")
-        self.csv_folder_button = QPushButton("Open CSV Folder", self._dialog)
-        self.csv_folder_button.setObjectName("csvFolderButton")
         self.overwrite_checkbox = QCheckBox("Overwrite existing EnglishName", self._dialog)
         self.overwrite_checkbox.setObjectName("overwriteCheckBox")
+        self.overwrite_checkbox.setChecked(True)
         self.rename_checkbox = QCheckBox("Also rename Maya nodes", self._dialog)
         self.rename_checkbox.setObjectName("renameNodesCheckBox")
+        self.rename_checkbox.setChecked(True)
         self.rename_checkbox.setToolTip(
             "When enabled, Maya Outliner node names are changed to safe unique names. "
             "Original PMX names are preserved."
@@ -268,9 +269,9 @@ class NameTranslationDialog:
         self.exact_only_checkbox = QCheckBox("Use exact CSV matches only", self._dialog)
         self.exact_only_checkbox.setObjectName("exactOnlyCheckBox")
         self.exact_only_checkbox.setToolTip(
-            "When enabled, only exact CSV keys are translated; automatic underscore suffix inheritance is disabled."
+            "When enabled, only exact CSV keys are translated. Otherwise, CSV suffix matches and readable sanitized names are also used."
         )
-        self.original_checkbox = QCheckBox("Show original PMX names", self._dialog)
+        self.original_checkbox = QCheckBox("Show target details", self._dialog)
         self.original_checkbox.setObjectName("showOriginalNamesCheckBox")
         self.preview_text = QTextEdit(self._dialog)
         self.preview_text.setObjectName("previewText")
@@ -298,7 +299,6 @@ class NameTranslationDialog:
         dictionary_row = QHBoxLayout()
         dictionary_row.addWidget(self.dictionary_edit)
         dictionary_row.addWidget(self.browse_button)
-        dictionary_row.addWidget(self.csv_folder_button)
         form = QFormLayout()
         form.addRow(self.model_label)
         form.addRow("Dictionary CSV", dictionary_row)
@@ -320,7 +320,6 @@ class NameTranslationDialog:
         layout.addLayout(buttons)
 
         self.browse_button.clicked.connect(self._choose_dictionary)
-        self.csv_folder_button.clicked.connect(self._open_csv_folder)
         self.preview_button.clicked.connect(self.preview)
         self.apply_button.clicked.connect(self.apply)
         self.cancel_button.clicked.connect(self._dialog.reject)
@@ -331,6 +330,8 @@ class NameTranslationDialog:
         self.original_checkbox.stateChanged.connect(self._render_preview)
 
         try:
+            from mmd_tools.services.scene_model_service import SceneModelService
+
             self._model_root = resolve_model_root(cmds_module=self._cmds)
             display_name = SceneModelService(cmds_module=self._cmds).get_model_display_name(
                 self._model_root,
@@ -352,24 +353,15 @@ class NameTranslationDialog:
         return self._model_root
 
     def _choose_dictionary(self, *_args):
+        current = self.dictionary_edit.text().strip() or str(DEFAULT_TRANSLATION_DICTIONARY_PATH)
         path, _ = self._qt["QFileDialog"].getOpenFileName(
             self._dialog,
             "Select MMD name translation dictionary",
-            "",
+            str(Path(current).expanduser().resolve(strict=False)),
             "CSV files (*.csv);;All files (*)",
         )
         if path:
             self.dictionary_edit.setText(path)
-
-    def _open_csv_folder(self, *_args):
-        dictionary_path = self.dictionary_edit.text().strip()
-        if not dictionary_path:
-            self._report_error("Choose a translation dictionary CSV first.", show_dialog=True)
-            return
-        folder = Path(dictionary_path).expanduser().resolve(strict=False).parent
-        folder_url = self._qt["QUrl"].fromLocalFile(str(folder))
-        if not self._qt["QDesktopServices"].openUrl(folder_url):
-            self._report_error("Cannot open the dictionary CSV folder.", show_dialog=True)
 
     def _invalidate_preview(self, *_args):
         self._preview_plan = None
@@ -415,7 +407,7 @@ class NameTranslationDialog:
             self._render_preview()
             self.status_label.setText(
                 "Coverage: "
-                f"{details.matched}/{details.total} dictionary matches; "
+                f"{details.matched}/{details.total} names resolved; "
                 f"{details.missing} missing; {details.already_english} already named; "
                 f"{len(details.plan)} change(s)."
             )

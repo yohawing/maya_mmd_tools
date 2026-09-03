@@ -29,15 +29,19 @@ def preferred_pmx_display_name(
 
     English UI deliberately does not fall back to non-ASCII Japanese text.
     An ASCII original name or Maya leaf remains useful when EnglishName is
-    empty; otherwise a neutral placeholder keeps the UI readable.
+    empty; otherwise a neutral placeholder keeps the UI readable. A callable
+    fallback is evaluated only when neither stored name can be displayed.
     """
 
     japanese = _clean(name_jp)
     english = _clean(name_en)
-    fallback_text = _clean(fallback)
+    primary = (english or _ascii_candidate(japanese)) if language == "en" else (japanese or english)
+    if primary:
+        return primary
+    fallback_text = _clean(fallback() if callable(fallback) else fallback)
     if language == "en":
-        return english or _ascii_candidate(japanese) or _ascii_candidate(fallback_text) or unnamed
-    return japanese or english or fallback_text or unnamed
+        return _ascii_candidate(fallback_text) or unnamed
+    return fallback_text or unnamed
 
 
 def original_pmx_fields_visible(_language: str) -> bool:
@@ -46,4 +50,15 @@ def original_pmx_fields_visible(_language: str) -> bool:
     return True
 
 
-__all__ = ["original_pmx_fields_visible", "preferred_pmx_display_name"]
+def morph_name_fallback(name: object, index: object, *, include_index: bool = False) -> str:
+    """Use the import sanitizer for unnamed-in-English morphs, retaining metadata."""
+    from .unicode_converter import get_converter
+
+    original = _clean(name)
+    if not original:
+        return f"Morph {index}"
+    sanitized = get_converter().convert(original)
+    return f"{sanitized} [{index}]" if include_index else sanitized
+
+
+__all__ = ["morph_name_fallback", "original_pmx_fields_visible", "preferred_pmx_display_name"]
