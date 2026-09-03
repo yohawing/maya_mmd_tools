@@ -560,6 +560,7 @@ class TestControlRigImportPreflight(unittest.TestCase):
             None,
             target_model="|model",
             preserve_curve_nodes=True,
+            authored_routes={},
         )
         restore.assert_called_once_with(scene_snapshot)
         self.assertEqual(raised.exception.reason_code, "control_rig_edit_failed")

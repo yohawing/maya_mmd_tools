@@ -232,8 +232,9 @@ class TestVmdRuntimeLiveRig(MayaTestBase):
         vmd_data.light_frames = []
         vmd_data.ik_show_hide_frames = []
 
-        def assert_live_flag(_frames):
+        def assert_live_flag(_frames, *, key_routes):
             self.assertTrue(self.converter._current_import_live_rig_target)
+            self.assertIsNone(key_routes)
             return True
 
         with ExitStack() as stack:
