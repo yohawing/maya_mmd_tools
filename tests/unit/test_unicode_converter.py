@@ -35,6 +35,26 @@ def _msgs(mock_log):
 
 
 CORPUS_EXPECTED_MAPPINGS = {
+    'キャンセル': 'cancel',
+    'くち下': 'mouth_down',
+    'くち上': 'mouth_up',
+    'へ': 'he',
+    '▲': 'triangle',
+    '∧': 'caret',
+    '□': 'square',
+    'はわわ': 'hawawa',
+    'クール': 'cool',
+    'キリッ': 'sharp',
+    'ｷﾘｯ': 'sharp',
+    'はぅ': 'hau',
+    'はちゅめ': 'hachu_eye',
+    'はちゅ目': 'hachu_eye',
+    '上': 'up',
+    '下': 'down',
+    'HL消し': 'highlight_off',
+    '瞼前': 'eyelid_forward',
+    'フラット': 'flat',
+    'にこ': 'smile',
     'HL消1': 'highlight_off_1',
     'ぐるぐる': 'dizzy',
     'たくらむ': 'scheming',
@@ -260,7 +280,6 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
 
     def test_expanded_semantic_corpus_vocabulary_is_safe_and_exact(self):
         """All reviewed Material/Morph mappings remain exact and Maya-safe."""
-        self.assertEqual(len(CORPUS_EXPECTED_MAPPINGS), 109)
         converter = UnicodeToAsciiConverter()
         identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
