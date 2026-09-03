@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
-from mmd_tools.services.scene_model_service import SceneModelService
 from mmd_tools.core.name_translation import (
     NameChange,
     NameEntry,
@@ -331,6 +330,8 @@ class NameTranslationDialog:
         self.original_checkbox.stateChanged.connect(self._render_preview)
 
         try:
+            from mmd_tools.services.scene_model_service import SceneModelService
+
             self._model_root = resolve_model_root(cmds_module=self._cmds)
             display_name = SceneModelService(cmds_module=self._cmds).get_model_display_name(
                 self._model_root,
