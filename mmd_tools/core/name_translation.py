@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
-from mmd_tools.core.maya_name_utils import sanitize_unique_name
+from mmd_tools.core.maya_name_utils import sanitize_bone_name, sanitize_text, sanitize_unique_name
+from mmd_tools.core.unicode_converter import get_converter
 
 
 _TRANSLATION_SUFFIX_TOKEN = re.compile(r"^[A-Za-z0-9]+$")
@@ -145,10 +146,28 @@ def build_translation_plan(
     """
 
     allocated = set(used_names or set())
+    converter = get_converter()
+    known_tokens = set(converter.unicode_to_ascii) | set(converter.exact_match or {})
+    known_tokens.update(pair[0] for pair in (*converter.prefix_map, *converter.suffix_map))
+    # Generic sanitization can drop unknown characters. Only promote fully
+    # covered source names to EnglishName; node sanitization remains unchanged.
+    readable_source = re.compile(
+        "(?:" + "|".join(re.escape(token) for token in sorted(known_tokens, key=len, reverse=True) if token)
+        + r"|[A-Za-z0-9０-９_\s.\-])+"
+    )
     ordered_entries = sorted(entries, key=_entry_sort_key)
     plan: List[NameChange] = []
     for entry in ordered_entries:
         translated = _resolve_translation(entry.source_name, translations, exact_only=exact_only)
+        if translated is None and not exact_only and entry.source_name.strip():
+            sanitize = sanitize_bone_name if entry.kind == "bone" else sanitize_text
+            candidate = sanitize(entry.source_name)
+            if (
+                re.search(r"[A-Za-z0-9]", candidate)
+                and not re.search(r"(?:^|_)HASH[0-9a-f]{8}(?:_|$)", candidate)
+                and (entry.kind == "bone" or readable_source.fullmatch(entry.source_name))
+            ):
+                translated = candidate
         english_name = None
         if set_english and translated and (overwrite or not entry.english_name):
             if translated != entry.english_name:

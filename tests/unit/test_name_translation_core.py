@@ -8,6 +8,7 @@ import pytest
 
 from mmd_tools.core.name_translation import (
     NameEntry,
+    _resolve_translation,
     NameTranslationError,
     build_translation_plan,
     collect_name_entries,
@@ -143,7 +144,7 @@ def test_ascii_suffix_inherits_base_translation_with_exact_override():
         rename_nodes=True,
     )
 
-    assert [change.translated_name for change in plan] == [
+    assert [change.translated_name for change in plan[:8]] == [
         "Skirt",
         "Skirt_1",
         "Skirt_02",
@@ -152,12 +153,8 @@ def test_ascii_suffix_inherits_base_translation_with_exact_override():
         "Skirt_R",
         "Skirt_left",
         "Skirt_left_02",
-        None,
-        None,
-        None,
-        None,
     ]
-    assert [change.english_name for change in plan] == [
+    assert [change.english_name for change in plan[:8]] == [
         "Skirt",
         "Skirt_1",
         "Skirt_02",
@@ -166,10 +163,6 @@ def test_ascii_suffix_inherits_base_translation_with_exact_override():
         "Skirt_R",
         "Skirt_left",
         "Skirt_left_02",
-        None,
-        None,
-        None,
-        None,
     ]
     assert [change.maya_name for change in plan[:4]] == [
         "Skirt",
@@ -212,12 +205,7 @@ def test_exact_only_disables_suffix_inheritance_but_keeps_exact_match():
     ),
 )
 def test_ascii_suffix_inheritance_has_explicit_boundaries(source_name, expected):
-    plan = build_translation_plan(
-        [_entry("material", "|root|material", source_name)],
-        {"スカート": "Skirt"},
-    )
-
-    assert plan[0].translated_name == expected
+    assert _resolve_translation(source_name, {"スカート": "Skirt"}) == expected
 
 
 def test_inherited_translation_is_sanitized_only_for_the_maya_node_name():
@@ -282,14 +270,14 @@ def test_plan_overwrite_and_node_rename_are_independent():
 
 def test_untranslated_name_is_not_written_but_can_use_existing_safe_name_policy():
     plan = build_translation_plan(
-        [_entry("morph", "|root|morphNode", "表情", index=7)],
+        [_entry("morph", "|root|morphNode", "謎未知語", index=7)],
         {},
         rename_nodes=True,
     )
 
     assert plan[0].translated_name is None
     assert plan[0].english_name is None
-    assert plan[0].maya_name == "expression"
+    assert plan[0].maya_name.startswith("HASH")
 
 
 def test_model_root_never_enters_node_rename_path():
@@ -333,3 +321,23 @@ def test_collect_entries_includes_owned_physics_shapes_without_rename(monkeypatc
         ("rigid_body", 4, "nameEn"),
     ]
     assert all(not entry.rename_allowed for entry in entries)
+
+
+def test_readable_sanitizer_fills_english_names_unless_csv_only():
+    entries = [_entry("bone", "|root|hair", "右髪５"),
+               _entry("bone", "|root|unknown", "右謎未知語"),
+               _entry("morph", "|root|morph", "はちゅ目")]
+    plan = build_translation_plan(entries, {}, rename_nodes=True)
+    assert plan[0].english_name == plan[0].maya_name == "right_hair_5"
+    assert plan[1].translated_name is None
+    assert plan[1].english_name is None
+    assert plan[2].english_name == "hachu_eye"
+    assert all(p.english_name is None for p in build_translation_plan(entries, {}, exact_only=True))
+    assert build_translation_plan(entries[:1], {"右髪５": "Custom Hair"})[0].english_name == "Custom Hair"
+
+
+@pytest.mark.parametrize("source", ["!!!", "髪謎", "謎髪"])
+def test_partial_or_punctuation_sanitizer_is_not_written_as_english(source):
+    change = build_translation_plan([_entry("material", "|root|mat", source)], {}, rename_nodes=True)[0]
+    assert change.english_name is None
+    assert change.maya_name is not None
