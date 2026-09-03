@@ -57,6 +57,7 @@ def format_indexed_name_label(
     name_en: object = "",
     prefix: str = "",
     fallback: object = "",
+    used_names: Optional[set[str]] = None,
 ) -> str:
     """Format a non-node PMX list entry consistently with Bone/Material lists."""
     japanese = str(name_jp or "")
@@ -68,6 +69,13 @@ def format_indexed_name_label(
         fallback=fallback,
         language=language,
     )
+    if language == "en" and used_names is not None:
+        base = primary
+        suffix = 1
+        while primary in used_names:
+            primary = f"{base}_{suffix}"
+            suffix += 1
+        used_names.add(primary)
     label = f"{index}:{prefix}{primary}"
     if language != "en" and japanese and english:
         label += f" [{english}]"

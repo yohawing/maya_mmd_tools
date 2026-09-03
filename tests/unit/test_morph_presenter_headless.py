@@ -878,7 +878,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter._display_all_morphs()
         self.assertEqual(
             [item.text() for item in view.morph_list.items],
-            ["4:V|HASH49cd6e0a_name", "7:B|HASH49cd6e0a_name", "-:M|HASH49cd6e0a_name"],
+            ["4:V|HASH49cd6e0a_name", "7:B|HASH49cd6e0a_name_1", "-:M|HASH49cd6e0a_name_2"],
         )
         self.assertEqual([item.data(256) for item in view.morph_list.items], ["v", "b", "m"])
 
@@ -895,6 +895,22 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         )
         self.assertEqual(presenter.morph_data["頬"]["name_jp"], "頬")
         self.assertEqual(presenter.morph_data["頬"]["name_en"], "")
+
+    def test_sanitized_morph_collisions_are_stable_when_filtered_and_edited(self):
+        presenter, view, _ = self._load_snapshot_rows((
+            {"name": "キリッ", "index": 0},
+            {"name": "ｷﾘｯ", "index": 1},
+            {"name": "sharp_1", "name_english": "sharp_1", "index": 2},
+        ))
+        self.assertEqual([i.text() for i in view.morph_list.items],
+                         ["0:V|sharp", "1:V|sharp_1", "2:V|sharp_1_1"])
+        view.morph_list.clear()
+        presenter._display_morphs(["ｷﾘｯ"])
+        self.assertEqual(view.morph_list.items[0].text(), "1:V|sharp_1")
+        presenter.morph_data["キリッ"]["name_jp"] = "はわわ"
+        presenter._refresh_morph_row_labels()
+        self.assertEqual(view.morph_list.items[0].text(), "1:V|sharp")
+        self.assertEqual(presenter.morph_data["ｷﾘｯ"]["name_en"], "")
 
     def test_unused_display_fallback_is_not_evaluated(self):
         from mmd_tools.core.name_display import preferred_pmx_display_name
