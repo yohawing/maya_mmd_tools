@@ -490,6 +490,19 @@ class TestMmdBoneNameConversion(unittest.TestCase):
     def test_unknown_bone_name_tokens_are_hashed_without_dropping_known_tokens(self):
         self.assertEqual(convert_mmd_bone_name_to_ascii("左未知捩1"), "left_HASH1622dc9b_twist_1")
 
+    def test_bone_nodes_use_shared_dictionary_with_side_and_number_tokens(self):
+        cases = {
+            "初音ミク": "hatsune_miku", "ミク": "miku",
+            "ツインテA21_L": "twin_tail_a21_l", "ジャケット1": "jacket_1",
+            "ベルト": "belt", "スカート": "skirt", "そで": "sleeve",
+            "チェーン": "chain", "ﾈｸﾀｲ": "necktie", "頬": "cheek",
+            "髪": "hair", "鎖骨": "clavicle", "左頬": "left_cheek",
+            "右鎖骨": "right_clavicle",
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.assertEqual(maya_name_utils.sanitize_bone_name(source), expected)
+
     def test_frequent_local_asset_tokens_avoid_hash_fallback(self):
         test_cases = {
             "右腕捩軸": "right_arm_twist_axis",
