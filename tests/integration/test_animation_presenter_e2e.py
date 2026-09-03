@@ -345,7 +345,7 @@ class TestAnimationPresenterE2E(MayaTestBase):
             self.skipTest("First item has no resolved node")
 
         presenter.on_display_frame_item_clicked(child)
-        sel = cmds.ls(selection=True) or []
+        sel = cmds.ls(selection=True, long=True) or []
         self.assertIn(node_name, sel)
 
     def test_body_picker_region_selects_joint(self):
