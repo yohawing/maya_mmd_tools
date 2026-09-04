@@ -1870,6 +1870,62 @@ def render_override_native_ui_gallery(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_render_override_gui_smoke(session: nox.Session) -> None:
+    """Run the real Maya GUI/DX11 VP2 render-shape compatibility smoke."""
+    session.run(
+        sys.executable,
+        "tools/smoke/maya_render_override_gui_smoke.py",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def fast_import_parity(session: nox.Session) -> None:
+    """Compare Python PMX import with the C++ FastLoad VP2 scene contract."""
+    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
+    model = _option(session.posargs, "--model", "tests/data/test_morph_model.pmx")
+    report = _option(
+        session.posargs,
+        "--report",
+        f"build/reports/fast-import-parity/maya{maya_version}.json",
+    )
+    plugin = ROOT / "plug-ins" / maya_version / config / "mmd_tools_cpp.mll"
+    if not plugin.is_file():
+        session.error(f"C++ plugin missing: {plugin}")
+    mayapy = _mayapy(maya_version)
+    input_path = (
+        ROOT
+        / "build"
+        / "reports"
+        / "fast-import-parity"
+        / f"maya{maya_version}-input.json"
+    )
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_text(
+        json.dumps(
+            {
+                "model": str(Path(model).resolve()),
+                "plugin": str(plugin.resolve()),
+                "report": str(Path(report).resolve()),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tools/smoke/maya_fast_import_parity.py",
+        ["--input-json", str(input_path)],
+        {"--input-json"},
+        utf8=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def shader_visual_semantic_gate(session: nox.Session) -> None:
     """Guard DX11 outline-color leakage and disappearing hair geometry."""
     _run_shader_visual_semantic_gate(

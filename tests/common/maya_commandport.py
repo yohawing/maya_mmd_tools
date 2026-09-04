@@ -9,7 +9,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, Tuple
 
 try:
     from .maya_location import maya_binary
@@ -87,13 +87,19 @@ def _powershell_quote(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _run_powershell(script: str) -> str:
+def _run_powershell(script: str) -> Optional[str]:
     """Run a small read-only/validated PowerShell query on Windows."""
     if platform.system() != "Windows":
         return ""
     try:
         completed = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference = 'Stop'; " + script,
+            ],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -101,40 +107,77 @@ def _run_powershell(script: str) -> str:
             check=False,
         )
     except OSError:
-        return ""
+        return None
     if completed.returncode != 0:
-        return ""
+        return None
     return completed.stdout.strip()
+
+
+def _maya_script_matcher(commandport_script: Path) -> str:
+    """Return a PowerShell exact ``-script`` argument matcher."""
+    script_literal = _powershell_quote(str(commandport_script.resolve()))
+    return (
+        f"$needle = [IO.Path]::GetFullPath({script_literal}); "
+        "function Test-MayaScriptArgument([string]$line, [string]$target) { "
+        " $tokens = @([regex]::Matches($line, '(?:\"([^\"]*)\"|(\\S+))') "
+        " | ForEach-Object { if ($_.Groups[1].Success) { "
+        "$_.Groups[1].Value } else { $_.Groups[2].Value } }); "
+        " for ($index = 0; $index -lt $tokens.Count - 1; $index++) { "
+        " if ($tokens[$index] -ieq '-script') { "
+        " try { if ([IO.Path]::GetFullPath($tokens[$index + 1]) -ieq $target) "
+        " { return $true } } catch {} } } return $false }; "
+    )
 
 
 def _maya_process_query(commandport_script: Path, pid: Optional[int] = None) -> str:
     """Build an exact Maya process query for one generated commandport script."""
-    script_literal = _powershell_quote(str(commandport_script.resolve()))
     pid_clause = f"$_.ProcessId -eq {int(pid)} -and " if pid is not None else ""
     return (
-        f"$needle = {script_literal}; "
-        "Get-CimInstance Win32_Process | "
+        _maya_script_matcher(commandport_script)
+        + "Get-CimInstance Win32_Process | "
         "Where-Object { "
         f"{pid_clause}"
         "$_.Name -eq 'maya.exe' -and $_.CommandLine -and "
-        "([string]$_.CommandLine).ToLowerInvariant().Contains($needle.ToLowerInvariant()) "
+        "(Test-MayaScriptArgument ([string]$_.CommandLine) $needle) "
         "} | Select-Object -First 1 ProcessId,Name,CommandLine | "
         "ConvertTo-Json -Compress"
     )
+
+
+def _query_maya_process_id(
+    commandport_script: Path, pid: Optional[int] = None
+) -> Tuple[bool, Optional[int]]:
+    """Return ``(query_succeeded, matching_pid)`` for one exact script."""
+    output = _run_powershell(_maya_process_query(commandport_script, pid))
+    if output is None:
+        return False, None
+    if not output:
+        return True, None
+    try:
+        process: Any = json.loads(output)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False, None
+    records = process if isinstance(process, list) else [process]
+    for record in records:
+        if not isinstance(record, dict):
+            return False, None
+        try:
+            process_id = int(record["ProcessId"])
+        except (KeyError, TypeError, ValueError):
+            return False, None
+        if pid is None or process_id == int(pid):
+            return True, process_id
+    return True, None
 
 
 def find_maya_process_id(commandport_script: Path) -> Optional[int]:
     """Find the Maya PID whose command line owns this run's MEL script."""
     if platform.system() != "Windows":
         return None
-    output = _run_powershell(_maya_process_query(commandport_script))
-    if not output:
-        return None
-    try:
-        process = json.loads(output)
-        return int(process["ProcessId"])
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return None
+    query_succeeded, process_id = _query_maya_process_id(commandport_script)
+    if not query_succeeded:
+        raise RuntimeError(f"Could not query Maya process for {commandport_script}")
+    return process_id
 
 
 def wait_for_maya_process_id(commandport_script: Path, timeout: float) -> int:
@@ -150,41 +193,93 @@ def wait_for_maya_process_id(commandport_script: Path, timeout: float) -> int:
     raise TimeoutError(f"Timed out finding Maya process for {commandport_script}")
 
 
-def is_maya_process_for_script(process_id: int, commandport_script: Path) -> bool:
-    """Return whether *process_id* is still the exact run-owned Maya process."""
+def query_maya_process_for_script(
+    process_id: int, commandport_script: Path
+) -> Optional[bool]:
+    """Return ownership, or ``None`` when the process query is unavailable."""
     if platform.system() != "Windows":
         return False
-    output = _run_powershell(_maya_process_query(commandport_script, process_id))
-    return bool(output)
+    query_succeeded, matching_pid = _query_maya_process_id(
+        commandport_script, process_id
+    )
+    if not query_succeeded:
+        return None
+    return matching_pid == process_id
+
+
+def is_maya_process_for_script(process_id: int, commandport_script: Path) -> bool:
+    """Return whether *process_id* is still the exact run-owned Maya process."""
+    return query_maya_process_for_script(process_id, commandport_script) is True
 
 
 def wait_for_maya_process_exit(process_id: int, commandport_script: Path, timeout: float) -> bool:
     """Wait for the exact run-owned Maya process to exit."""
     start = time.time()
     while time.time() - start < timeout:
-        if not is_maya_process_for_script(process_id, commandport_script):
+        ownership = query_maya_process_for_script(process_id, commandport_script)
+        if ownership is None:
+            return False
+        if not ownership:
             return True
         time.sleep(0.25)
-    return not is_maya_process_for_script(process_id, commandport_script)
+    return query_maya_process_for_script(process_id, commandport_script) is False
 
 
 def terminate_maya_process(process_id: int, commandport_script: Path) -> bool:
     """Force-stop only a Maya process revalidated against this run's MEL path."""
-    if platform.system() != "Windows" or not is_maya_process_for_script(process_id, commandport_script):
+    if platform.system() != "Windows" or query_maya_process_for_script(
+        process_id, commandport_script
+    ) is not True:
         return False
-    script_literal = _powershell_quote(str(commandport_script.resolve()))
     script = (
-        f"$needle = {script_literal}; "
-        "$process = Get-CimInstance Win32_Process | "
+        _maya_script_matcher(commandport_script)
+        + "$process = Get-CimInstance Win32_Process | "
         "Where-Object { "
         f"$_.ProcessId -eq {int(process_id)} -and "
         "$_.Name -eq 'maya.exe' -and $_.CommandLine -and "
-        "([string]$_.CommandLine).ToLowerInvariant().Contains($needle.ToLowerInvariant()) "
+        "(Test-MayaScriptArgument ([string]$_.CommandLine) $needle) "
         "} | Select-Object -First 1 ProcessId; "
         "if ($null -ne $process) { Stop-Process -Id ([int]$process.ProcessId) -Force }"
     )
     _run_powershell(script)
-    return not is_maya_process_for_script(process_id, commandport_script)
+    return query_maya_process_for_script(process_id, commandport_script) is False
+
+
+def _commandport_listener_query(port: int) -> str:
+    """Build a PowerShell query for the TCP listener owning *port*."""
+    return (
+        "Get-NetTCPConnection -State Listen | "
+        f"Where-Object {{ $_.LocalPort -eq {int(port)} }} | "
+        "Select-Object -First 1 OwningProcess | "
+        "ConvertTo-Json -Compress"
+    )
+
+
+def find_commandport_listener_process_id(port: int) -> Optional[int]:
+    """Return the TCP listener PID, or ``None`` when the port is closed."""
+    if platform.system() != "Windows":
+        return None
+    output = _run_powershell(_commandport_listener_query(port))
+    if output is None:
+        raise RuntimeError(f"Could not query TCP listener for commandPort :{port}")
+    if not output:
+        return None
+    try:
+        listener: Any = json.loads(output)
+        if isinstance(listener, list):
+            listener = listener[0] if listener else None
+        if listener is None:
+            return None
+        if not isinstance(listener, dict):
+            raise ValueError("listener response is not an object")
+        return int(listener["OwningProcess"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, IndexError):
+        raise RuntimeError(f"Could not parse TCP listener for commandPort :{port}")
+
+
+def is_commandport_owned_by_process(port: int, process_id: int) -> bool:
+    """Return whether the verified TCP listener belongs to *process_id*."""
+    return find_commandport_listener_process_id(port) == int(process_id)
 
 
 def wait_for_port(port: int, timeout: float, process: Optional[subprocess.Popen] = None) -> None:

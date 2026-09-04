@@ -9,7 +9,15 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from maya import cmds
 
-from mmd_tools.core.constants import ATTR_MMD_MATERIAL_INDEX
+from mmd_tools.core.constants import (
+    ATTR_MMD_AMBIENT_COLOR,
+    ATTR_MMD_DIFFUSE_COLOR,
+    ATTR_MMD_EDGE_COLOR,
+    ATTR_MMD_EDGE_SIZE,
+    ATTR_MMD_MATERIAL_INDEX,
+    ATTR_MMD_SHININESS,
+    ATTR_MMD_SPECULAR_COLOR,
+)
 from mmd_tools.core.logger import get_logger
 from mmd_tools.converters.morph_runtime_common import (
     connect_if_needed as _connect_if_needed,
@@ -19,7 +27,10 @@ from mmd_tools.converters.morph_runtime_common import (
     same_source as _same_source,
 )
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
-from mmd_tools.converters.material_shader_parameters import hardware_morph_routes
+from mmd_tools.converters.material_shader_parameters import (
+    ATTR_MMD_EDGE_ALPHA,
+    hardware_morph_routes,
+)
 
 
 logger = get_logger(__name__)
@@ -205,6 +216,7 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
         "created": 0,
         "reused": 0,
         "contributions": 0,
+        "native_alpha": None,
         "skipped": [],
     }
     if not root_group or not cmds.objExists(root_group):
@@ -231,11 +243,11 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
         _remove_evaluator(shader, existing_by_shader[shader])
     if not contributions_by_shader:
         result["skipped"].append("no_material_morph_contributions")
-        return result
 
     # Detect VP2 API once per graph build; standard materials ignore it.
     vp2_api = detect_effective_vp2_draw_api()
 
+    evaluator_nodes_by_shader = {}
     for shader, contributions in contributions_by_shader.items():
         node = existing_by_shader.get(shader)
         if node and _is_valid_evaluator(node):
@@ -268,9 +280,358 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
                 result["success"] = False
                 result["skipped"].append(f"complete_route_failed:{shader}")
         result["evaluator_nodes"].append(node)
+        evaluator_nodes_by_shader[shader] = node
         result["contributions"] += len(contributions)
 
+    native_shapes = _collect_native_render_shapes(root_group)
+    if native_shapes:
+        native_results = []
+        for render_shape in native_shapes:
+            native_results.append(
+                bind_native_material_alpha(
+                    root_group,
+                    render_shape,
+                    shaders_by_index=shaders_by_index,
+                    evaluators_by_shader=evaluator_nodes_by_shader,
+                )
+            )
+        result["native_alpha"] = native_results[0] if len(native_results) == 1 else native_results
+        for native_result in native_results:
+            result["success"] = result["success"] and native_result["success"]
+            result["skipped"].extend(native_result.get("skipped", []))
+
     return result
+
+
+def bind_native_material_alpha(
+    root_group: str,
+    render_shape: str,
+    *,
+    shaders_by_index: Optional[Dict[int, str]] = None,
+    evaluators_by_shader: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Bind evaluator material values or restore authored values on a native VP2 shape.
+
+    The native VP2 path keeps standardSurface nodes as authored fallback
+    materials.  Its per-material alpha is therefore driven through the
+    existing ``mmdMaterialMorphEval`` result instead of routing the standard
+    shader's colour plug.  ``materialAlpha`` is indexed by the original PMX
+    material index, so material-split queue order cannot change the binding.
+
+    ``baseDiffuseA`` and the other evaluator bases are refreshed from authored
+    material metadata on every graph rebuild.  This deliberately avoids
+    reading evaluated native shape values, which would make a rebuild at a
+    non-zero morph weight capture the evaluated result as the new base.
+    """
+    result: Dict[str, Any] = {
+        "success": True,
+        "bindings": [],
+        "material_values": [],
+        "skipped": [],
+    }
+    if not root_group or not cmds.objExists(root_group):
+        result["success"] = False
+        result["skipped"].append("root_group_missing")
+        return result
+    if not render_shape or not cmds.objExists(render_shape):
+        result["success"] = False
+        result["skipped"].append("render_shape_missing")
+        return result
+    try:
+        has_material_alpha = cmds.attributeQuery(
+            "materialAlpha", node=render_shape, exists=True
+        )
+    except Exception:
+        has_material_alpha = False
+    if not has_material_alpha:
+        result["success"] = False
+        result["skipped"].append("material_alpha_unavailable")
+        return result
+
+    try:
+        has_material_values = cmds.attributeQuery(
+            "materialValues", node=render_shape, exists=True
+        )
+    except Exception:
+        has_material_values = False
+
+    if shaders_by_index is None:
+        shaders_by_index = _collect_shaders_by_material_index(root_group)
+    if evaluators_by_shader is None:
+        evaluators_by_shader = _collect_existing_evaluators()
+    for material_index, shader in sorted(shaders_by_index.items()):
+        evaluator = evaluators_by_shader.get(shader)
+        if evaluator and not _is_valid_evaluator(evaluator):
+            result["success"] = False
+            result["skipped"].append(f"invalid_evaluator:{material_index}:{evaluator}")
+            continue
+
+        base_alpha = _read_shader_base_alpha(
+            shader,
+            prefer_authored_metadata=True,
+        )
+        destination = f"{render_shape}.materialAlpha[{int(material_index)}]"
+        try:
+            if evaluator:
+                cmds.setAttr(f"{evaluator}.baseDiffuseA", float(base_alpha))
+                _connect_if_needed(
+                    f"{evaluator}.outputDiffuseAlpha",
+                    destination,
+                    force=True,
+                )
+            else:
+                cmds.setAttr(destination, float(base_alpha))
+        except Exception:
+            result["success"] = False
+            failure = "bind_failed" if evaluator else "reset_failed"
+            result["skipped"].append(f"{failure}:{material_index}:{shader}:{evaluator}")
+            logger.warning(
+                "Failed to %s native material alpha for %s (material %s)",
+                "bind" if evaluator else "restore",
+                shader,
+                material_index,
+                exc_info=True,
+            )
+            continue
+        result["bindings"].append(
+            {
+                "material_index": int(material_index),
+                "shader": shader,
+                "evaluator": evaluator,
+                "destination": destination,
+                "base_alpha": float(base_alpha),
+            }
+        )
+
+        if not has_material_values:
+            continue
+
+        authored = _native_authored_material_values(shader, base_alpha)
+        if authored is None:
+            result["skipped"].append(
+                f"material_values_skipped:authored_metadata_unavailable:{material_index}:{shader}"
+            )
+            continue
+
+        try:
+            value_bindings = {}
+            for route in hardware_morph_routes("dx11Shader"):
+                # DiffuseColorA is the separate indexed materialAlpha route.
+                if route.uniform == "DiffuseColorA":
+                    continue
+                values = _native_route_values(route, authored)
+                destinations = _native_material_value_plugs(
+                    render_shape,
+                    int(material_index),
+                    route.uniform,
+                    route.size,
+                )
+                if len(destinations) != route.size:
+                    raise RuntimeError(
+                        f"native material value arity mismatch: {render_shape}.{route.uniform}"
+                    )
+                if evaluator:
+                    if route.evaluator_base:
+                        bases = _native_evaluator_plugs(
+                            evaluator,
+                            route.evaluator_base,
+                            route.size,
+                            edge_alpha=route.uniform == "EdgeColorA",
+                        )
+                        if len(bases) != route.size:
+                            raise RuntimeError(
+                                f"evaluator base arity mismatch: {evaluator}.{route.evaluator_base}"
+                            )
+                        for base, value in zip(bases, values):
+                            cmds.setAttr(base, float(value))
+                    outputs = _native_evaluator_plugs(
+                        evaluator,
+                        route.evaluator_output,
+                        route.size,
+                        edge_alpha=route.uniform == "EdgeColorA",
+                    )
+                    if len(outputs) != route.size:
+                        raise RuntimeError(
+                            f"evaluator output arity mismatch: {evaluator}.{route.evaluator_output}"
+                        )
+                    for output, destination in zip(outputs, destinations):
+                        _connect_if_needed(output, destination, force=True)
+                else:
+                    for destination, value in zip(destinations, values):
+                        cmds.setAttr(destination, float(value))
+                value_bindings[route.uniform] = tuple(values)
+            result["material_values"].append(
+                {
+                    "material_index": int(material_index),
+                    "shader": shader,
+                    "evaluator": evaluator,
+                    "values": value_bindings,
+                }
+            )
+        except Exception:
+            result["success"] = False
+            result["skipped"].append(
+                f"material_values_failed:{material_index}:{shader}:{evaluator}"
+            )
+            logger.warning(
+                "Failed to %s native material values for %s (material %s)",
+                "bind" if evaluator else "restore",
+                shader,
+                material_index,
+                exc_info=True,
+            )
+    if not result["bindings"] and shaders_by_index:
+        result["success"] = False
+    return result
+
+
+def _native_authored_material_values(
+    shader: str, diffuse_alpha: float
+) -> Optional[Dict[str, Any]]:
+    """Read authored metadata, or return None when a required value is absent."""
+    diffuse_rgb = _read_shader_vector_metadata(shader, ATTR_MMD_DIFFUSE_COLOR, 3)
+    specular = _read_shader_vector_metadata(shader, ATTR_MMD_SPECULAR_COLOR, 3)
+    specular_power = _read_shader_scalar_metadata(shader, ATTR_MMD_SHININESS)
+    ambient = _read_shader_vector_metadata(shader, ATTR_MMD_AMBIENT_COLOR, 3)
+    edge_rgb = _read_shader_vector_metadata(shader, ATTR_MMD_EDGE_COLOR, 3)
+    edge_alpha = _read_shader_scalar_metadata(shader, ATTR_MMD_EDGE_ALPHA)
+    edge_size = _read_shader_scalar_metadata(shader, ATTR_MMD_EDGE_SIZE)
+    if any(
+        value is None
+        for value in (
+            diffuse_rgb,
+            specular,
+            specular_power,
+            ambient,
+            edge_rgb,
+            edge_alpha,
+            edge_size,
+        )
+    ):
+        return None
+
+    return {
+        "diffuse_rgb": diffuse_rgb,
+        "diffuse_alpha": float(diffuse_alpha),
+        "specular": specular,
+        "specular_power": specular_power,
+        "ambient": ambient,
+        "edge_color": (*edge_rgb, edge_alpha),
+        "edge_size": edge_size,
+        "texture_multiply": (1.0, 1.0, 1.0, 1.0),
+        "texture_add": (0.0, 0.0, 0.0, 0.0),
+        "sphere_texture_multiply": (1.0, 1.0, 1.0, 1.0),
+        "sphere_texture_add": (0.0, 0.0, 0.0, 0.0),
+        "toon_texture_multiply": (1.0, 1.0, 1.0, 1.0),
+        "toon_texture_add": (0.0, 0.0, 0.0, 0.0),
+    }
+
+
+def _read_shader_vector_metadata(
+    shader: str,
+    attr_name: str,
+    size: int,
+) -> Optional[Tuple[float, ...]]:
+    try:
+        if not cmds.attributeQuery(attr_name, node=shader, exists=True):
+            return None
+        value = cmds.getAttr(f"{shader}.{attr_name}")
+        while (
+            isinstance(value, (list, tuple))
+            and len(value) == 1
+            and isinstance(value[0], (list, tuple))
+        ):
+            value = value[0]
+        if not isinstance(value, (list, tuple)) or len(value) < size:
+            return None
+        return tuple(float(component) for component in value[:size])
+    except Exception:
+        return None
+
+
+def _read_shader_scalar_metadata(shader: str, attr_name: str) -> Optional[float]:
+    try:
+        if not cmds.attributeQuery(attr_name, node=shader, exists=True):
+            return None
+        return float(cmds.getAttr(f"{shader}.{attr_name}"))
+    except Exception:
+        return None
+
+
+def _native_route_values(route, authored: Dict[str, Any]) -> Tuple[float, ...]:
+    value = authored[route.semantic]
+    if route.semantic == "edge_color" and route.size == 1:
+        return (float(value[3]),)
+    if route.size == 1:
+        return (float(value),)
+    return tuple(float(component) for component in value[: route.size])
+
+
+def _native_material_value_plugs(
+    render_shape: str,
+    material_index: int,
+    uniform: str,
+    size: int,
+) -> List[str]:
+    parent = f"{render_shape}.materialValues[{material_index}].{uniform}"
+    if size == 1:
+        return [parent]
+    try:
+        children = cmds.attributeQuery(uniform, node=render_shape, listChildren=True) or []
+    except Exception:
+        children = []
+    if not isinstance(children, (list, tuple)):
+        children = []
+    if len(children) != size:
+        return []
+    return [f"{render_shape}.materialValues[{material_index}].{child}" for child in children]
+
+
+def _native_evaluator_plugs(
+    evaluator: str,
+    attr_name: str,
+    size: int,
+    *,
+    edge_alpha: bool = False,
+) -> List[str]:
+    leaves = _scalar_leaf_attrs(evaluator, attr_name, require_writable=False)
+    if edge_alpha and len(leaves) != 1:
+        leaves = _scalar_leaf_attrs(evaluator, "outputEdgeColor" if attr_name.startswith("output") else "baseEdgeColor", require_writable=False)
+        if len(leaves) >= 4:
+            leaves = leaves[3:4]
+    elif len(leaves) > size:
+        leaves = leaves[:size]
+    if len(leaves) != size:
+        return []
+    return [f"{evaluator}.{leaf}" for leaf in leaves]
+
+
+def _collect_native_render_shapes(root_group: str) -> List[str]:
+    """Find source-mesh-connected native VP2 shapes owned by *root_group*."""
+    try:
+        shapes = cmds.listRelatives(
+            root_group,
+            allDescendents=True,
+            type="mmdRenderShape",
+            fullPath=True,
+        ) or []
+    except Exception:
+        return []
+    if not isinstance(shapes, (list, tuple)):
+        return []
+
+    connected = []
+    for shape in shapes:
+        try:
+            if cmds.listConnections(
+                f"{shape}.inputMesh",
+                source=True,
+                destination=False,
+            ):
+                connected.append(str(shape))
+        except Exception:
+            continue
+    return connected
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +837,7 @@ def _remove_evaluator(shader: str, node: str) -> None:
                 if destination_type in {"double3", "float3"} and isinstance(value, (list, tuple)):
                     value = value[:3]
                 _set_plug_value(destination, value, destination_type)
+
     cmds.delete(node)
 
 
@@ -696,6 +1058,8 @@ def _scalar_leaf_attrs(
         try:
             children = cmds.attributeQuery(current, node=node, listChildren=True) or []
         except Exception:
+            children = []
+        if not isinstance(children, (list, tuple)):
             children = []
         if children:
             for child in children:
@@ -1193,9 +1557,17 @@ def _reroute_standard_surface_texture_gain(shader: str, node: str, shader_attr: 
     return True
 
 
-def _read_shader_base_alpha(shader: str) -> float:
+def _read_shader_base_alpha(
+    shader: str,
+    *,
+    prefer_authored_metadata: bool = False,
+) -> float:
     """Read an opacity-compatible alpha for evaluator initialization."""
-    scalar_candidates = ("DiffuseColorA",)
+    scalar_candidates = (
+        ("mmd_diffuse_alpha", "DiffuseColorA")
+        if prefer_authored_metadata
+        else ("DiffuseColorA",)
+    )
     for attr_name in scalar_candidates:
         try:
             if cmds.attributeQuery(attr_name, node=shader, exists=True):

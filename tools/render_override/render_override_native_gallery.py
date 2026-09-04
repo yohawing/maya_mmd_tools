@@ -19,6 +19,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,11 +40,16 @@ from tools.render_override.common import (  # noqa: E402
 from tools.render_override.render_override_visual_gate import (  # noqa: E402
     FLIP_THRESHOLDS,
     _default_flip_runner,
-    _threshold_evaluation,
+    _parse_roi_case_specs,
     _safe_case_dir_name,
+    _threshold_evaluation,
+    _threshold_gate_error,
     copy_png_as_rgb,
-    _write_html,
+    crop_png,
     load_manifest_cases,
+    normalize_roi,
+    parse_flip_metrics,
+    _write_html,
 )
 
 
@@ -73,7 +79,11 @@ def _clear_native_gallery(gallery_output: Path) -> int:
     for case_dir in cases_dir.iterdir():
         if case_dir.is_symlink() or not case_dir.is_dir():
             continue
-        for filename in ("native.png", "flip-error-native.png"):
+        for filename in (
+            "native.png",
+            "flip-error-native.png",
+            "flip-error-roi-native.png",
+        ):
             path = case_dir / filename
             if path.is_file() or path.is_symlink():
                 path.unlink()
@@ -84,22 +94,28 @@ def _clear_native_gallery(gallery_output: Path) -> int:
 def _publish_flip_error(
     case_dir: Path,
     flip_executable: Optional[str] = None,
+    *,
+    reference_name: str = "reference.png",
+    actual_name: str = "native.png",
+    work_dir_name: str = ".flip-native",
+    basename: str = "native",
+    retained_name: str = "flip-error-native.png",
 ) -> Dict[str, Any]:
-    """Create the retained Oracle-to-C++ FLIP error map for one gallery case."""
-    work_dir = case_dir / ".flip-native"
+    """Create a retained Oracle-to-C++ FLIP error map for one comparison."""
+    work_dir = case_dir / work_dir_name
     work_dir.mkdir(parents=True, exist_ok=True)
-    for filename in ("native.png", "native.txt"):
+    for filename in (basename + ".png", basename + ".txt"):
         stale = work_dir / filename
         if stale.is_file() or stale.is_symlink():
             stale.unlink()
     comparison = _default_flip_runner(
-        reference=case_dir / "reference.png",
-        actual=case_dir / "native.png",
+        reference=case_dir / reference_name,
+        actual=case_dir / actual_name,
         work_dir=work_dir,
-        basename="native",
+        basename=basename,
         flip_executable=flip_executable,
     )
-    retained = case_dir / "flip-error-native.png"
+    retained = case_dir / retained_name
     error_map_value = comparison.get("error_map_path")
     error_map = Path(str(error_map_value)) if error_map_value else None
     if error_map is not None and error_map.is_file():
@@ -152,6 +168,7 @@ def _run_native_case(
         "status": "fail",
         "model": str(model) if model else None,
         "oracle": str(oracle) if oracle else None,
+        "roi": case.get("roi"),
         "outputDir": str(case_dir),
         "port": port,
         "importRoute": "mmd_tools_ui_settings" if ui_import else "mmdFastLoad",
@@ -174,6 +191,14 @@ def _run_native_case(
     except (OSError, ValueError) as exc:
         result.update(status="skipped", reason=f"Oracle PNG is invalid: {exc}")
         return result
+    roi = case.get("roi")
+    if roi is not None:
+        try:
+            roi = normalize_roi(roi, width, height)
+        except (TypeError, ValueError) as exc:
+            result.update(status="fail", reason=f"invalid ROI: {exc}")
+            return result
+        result["roi"] = roi
 
     camera_path = case_dir / "camera.json"
     camera_path.write_text(
@@ -300,28 +325,124 @@ def _run_native_case(
     metrics = comparison.get("metrics") or {}
     threshold_evaluation = _threshold_evaluation(metrics, thresholds)
     comparison_status = str(comparison.get("status", "fail"))
+    full_error_map = gallery_case_dir / "flip-error-native.png"
+    full_comparison = {
+        "status": comparison_status,
+        "metrics": metrics,
+        "threshold": thresholds,
+        "thresholdEvaluation": threshold_evaluation,
+        "errorMap": str(full_error_map) if full_error_map.is_file() else None,
+        "command": comparison.get("command", []),
+        "returncode": comparison.get("returncode"),
+        "stdout": comparison.get("stdout", ""),
+        "stderr": comparison.get("stderr", ""),
+    }
+
+    roi_thresholds = FLIP_THRESHOLDS.get(feature, FLIP_THRESHOLDS["unclassified"])["roi"]
+    roi_comparison: Dict[str, Any] = {
+        "status": "unavailable",
+        "reason": "manifest case has no ROI contract"
+        if roi is None
+        else "full-frame FLIP comparison did not pass",
+        "metrics": parse_flip_metrics(""),
+        "threshold": roi_thresholds,
+        "thresholdEvaluation": None,
+        "errorMap": None,
+    }
+    if roi is not None and comparison_status == "pass":
+        roi_dir = gallery_case_dir / ".roi-native"
+        try:
+            roi_dir.mkdir(parents=True, exist_ok=True)
+            bounds = crop_png(
+                gallery_case_dir / "reference.png",
+                roi_dir / "reference.png",
+                roi,
+            )
+            actual_bounds = crop_png(
+                gallery_case_dir / "native.png",
+                roi_dir / "native.png",
+                roi,
+            )
+            if bounds != actual_bounds:
+                raise ValueError("reference and native ROI dimensions differ")
+            roi_flip = _publish_flip_error(
+                gallery_case_dir,
+                flip_executable=flip_executable,
+                reference_name=".roi-native/reference.png",
+                actual_name=".roi-native/native.png",
+                work_dir_name=".flip-roi-native",
+                basename="roi",
+                retained_name="flip-error-roi-native.png",
+            )
+            roi_metrics = roi_flip.get("metrics") or {}
+            roi_error_map = gallery_case_dir / "flip-error-roi-native.png"
+            roi_comparison = {
+                "status": str(roi_flip.get("status", "fail")),
+                "bounds": bounds,
+                "metrics": roi_metrics,
+                "threshold": roi_thresholds,
+                "thresholdEvaluation": _threshold_evaluation(
+                    roi_metrics, roi_thresholds
+                ),
+                "errorMap": str(roi_error_map) if roi_error_map.is_file() else None,
+                "command": roi_flip.get("command", []),
+                "returncode": roi_flip.get("returncode"),
+                "stdout": roi_flip.get("stdout", ""),
+                "stderr": roi_flip.get("stderr", ""),
+            }
+        except (OSError, TypeError, ValueError, zlib.error) as error:
+            roi_comparison = {
+                "status": "fail",
+                "reason": str(error),
+                "metrics": parse_flip_metrics(""),
+                "threshold": roi_thresholds,
+                "thresholdEvaluation": None,
+                "errorMap": None,
+            }
+
+    comparison_errors = []
     if comparison_status != "pass":
+        comparison_errors.append(
+            str(comparison.get("reason") or "FLIP full-frame report failed")
+        )
+    if roi is not None and comparison_status == "pass" and roi_comparison.get("status") != "pass":
+        comparison_errors.append(
+            str(roi_comparison.get("reason") or "FLIP ROI report failed")
+        )
+    threshold_errors = []
+    if enforce_flip_thresholds:
+        for scope, comparison_result in (
+            ("full-frame", full_comparison),
+            ("ROI", roi_comparison),
+        ):
+            threshold_error = _threshold_gate_error(scope, comparison_result)
+            if threshold_error:
+                threshold_errors.append(threshold_error)
+    if comparison_errors or threshold_errors:
         parity_status = "fail"
     elif enforce_flip_thresholds:
-        parity_status = "pass" if threshold_evaluation["status"] == "pass" else "fail"
+        parity_status = "pass"
     else:
         parity_status = "unreviewed"
+    result["full"] = full_comparison
+    result["roiComparison"] = roi_comparison
     result["parity"] = {
         "status": parity_status,
         "comparisonStatus": comparison_status,
         "metrics": metrics,
         "threshold": thresholds,
         "thresholdEvaluation": threshold_evaluation,
-        "errorMap": str(gallery_case_dir / "flip-error-native.png")
-        if (gallery_case_dir / "flip-error-native.png").is_file()
-        else None,
+        "errorMap": full_comparison["errorMap"],
     }
+    result_errors = comparison_errors + threshold_errors
     result.update(
-        status="pass",
+        status="fail" if result_errors else "pass",
         dimensions={"width": width, "height": height},
         nativeCapture=str(native_capture),
         galleryCaseDir=str(gallery_case_dir),
     )
+    if result_errors:
+        result["reason"] = "; ".join(result_errors)
     return result
 
 
@@ -369,6 +490,7 @@ def run_gallery(
     flip_executable: Optional[str] = None,
     ui_import: bool = True,
     enforce_flip_thresholds: bool = False,
+    roi_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Capture every selected case through the C++ route used by the UI."""
     manifest_path = manifest_path.resolve()
@@ -392,12 +514,28 @@ def run_gallery(
     if not plugin.is_file():
         raise FileNotFoundError(plugin)
     _, manifest_cases = load_manifest_cases(manifest_path)
+    manifest_case_names = {str(case["name"]) for case in manifest_cases}
+    unknown_roi_names = sorted(set(roi_overrides or {}) - manifest_case_names)
+    if unknown_roi_names:
+        raise ValueError(
+            "unknown ROI override case(s): %s" % ", ".join(unknown_roi_names)
+        )
     selected_set = set(selected_names or [])
     selected_cases = [
         case
         for case in manifest_cases
         if not selected_set or str(case["name"]) in selected_set
     ]
+    if roi_overrides:
+        selected_cases = [
+            {
+                **case,
+                "roi": dict(roi_overrides[case["name"]]),
+            }
+            if case["name"] in roi_overrides
+            else case
+            for case in selected_cases
+        ]
     removed_stale = _clear_native_gallery(gallery_output)
     results: List[Dict[str, Any]] = []
     attempt_index = 0
@@ -471,6 +609,7 @@ def run_gallery(
         "importRoute": "mmd_tools_ui_settings" if ui_import else "mmdFastLoad",
         "parityStatus": parity_status,
         "parityThresholdsEnforced": bool(enforce_flip_thresholds),
+        "roiOverrides": roi_overrides or {},
         "nativeColorManagement": color_management_states,
         "exitCode": 1
         if failed > 0
@@ -540,6 +679,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Capture only this case; repeat the option for a focused subset.",
     )
     parser.add_argument(
+        "--roi-case",
+        action="append",
+        dest="roi_cases",
+        default=[],
+        help="Attach a fixed pixel ROI to one case as CASE=x,y,width,height; repeatable.",
+    )
+    parser.add_argument(
         "--direct-fast-load",
         action="store_true",
         help="Use direct mmdFastLoad instead of the settings-backed UI import route.",
@@ -557,6 +703,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             parser.error("--manifest or GOLDEN_ORACLE_RENDER_MANIFEST is required")
         manifest = Path(manifest_value)
     try:
+        roi_overrides = _parse_roi_case_specs(args.roi_cases)
         summary = run_gallery(
             manifest_path=manifest,
             maya=str(args.maya),
@@ -569,6 +716,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             flip_executable=args.flip or None,
             ui_import=not args.direct_fast_load,
             enforce_flip_thresholds=args.enforce_flip_threshold,
+            roi_overrides=roi_overrides,
         )
     except (FileNotFoundError, ValueError) as exc:
         parser.error(str(exc))

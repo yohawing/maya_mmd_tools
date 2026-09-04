@@ -410,7 +410,9 @@ void resetCasterMatrixDiagnostics()
     gDiagnostics.cornersInClip = false;
 }
 
-bool buildCasterLightMatrix(const MSelectionList& selection)
+bool buildCasterLightMatrix(
+    const MSelectionList& selection,
+    MmdNativeCasterRenderOverride::FrameResources& resources)
 {
     MDagPath lightPath;
     unsigned int lightCount = 0U;
@@ -446,6 +448,28 @@ bool buildCasterLightMatrix(const MSelectionList& selection)
     }
     gDiagnostics.matrixSource = "tagged_mmd_light_minus_z";
     gDiagnostics.lightPath = lightPath.fullPathName().asUTF8();
+
+    MFnDependencyNode lightNode(lightPath.node());
+    MStatus attributeStatus;
+    const MPlug mode = lightNode.findPlug("mmd_self_shadow_mode", true,
+                                          &attributeStatus);
+    if (attributeStatus) {
+        resources.selfShadowMode = mode.asInt(&attributeStatus);
+        if (!attributeStatus || resources.selfShadowMode < 0 ||
+            resources.selfShadowMode > 2) {
+            gDiagnostics.error = "mmd_light self-shadow mode is invalid";
+            return false;
+        }
+    }
+    const MPlug distance = lightNode.findPlug("mmd_self_shadow_distance", true,
+                                              &attributeStatus);
+    if (attributeStatus) {
+        resources.selfShadowDistance = distance.asDouble(&attributeStatus);
+        if (!attributeStatus || !std::isfinite(resources.selfShadowDistance)) {
+            gDiagnostics.error = "mmd_light self-shadow distance is invalid";
+            return false;
+        }
+    }
 
     const MMatrix lightWorld = lightPath.inclusiveMatrix();
     const MPoint lightOrigin = MPoint(0.0, 0.0, 0.0, 1.0) * lightWorld;
@@ -1043,6 +1067,21 @@ bool MmdNativeCasterRenderOverride::updateReceiverShaderParameters(
     return true;
 }
 
+bool MmdNativeCasterRenderOverride::refreshReceiverShaderParameters(
+    MHWRender::MShaderInstance* shader)
+{
+    {
+        std::lock_guard<std::mutex> lock(gReceiverMutex);
+        if (!gOverrideSetup || gReceiverBindings.count(shader) == 0U) {
+            return true;
+        }
+    }
+    // Material updates reset native diagnostics. Restore the current caster
+    // frame only for a shader whose target assignment is already established,
+    // before MRenderItem publishes that shader again.
+    return updateReceiverShaderParameters(shader);
+}
+
 void MmdNativeCasterRenderOverride::registerReceiverShader(
     MHWRender::MShaderInstance* shader)
 {
@@ -1173,34 +1212,6 @@ bool MmdNativeCasterRenderOverride::acquireTargets()
     targetManager_ = targetManager;
     colorTarget_ = colorTarget;
     depthTarget_ = depthTarget;
-    if (colorTarget_) {
-        MHWRender::MRenderTargetDescription actualDescription;
-        colorTarget_->targetDescription(actualDescription);
-        gDiagnostics.colorTarget.width = actualDescription.width();
-        gDiagnostics.colorTarget.height = actualDescription.height();
-        gDiagnostics.colorTarget.multiSampleCount =
-            actualDescription.multiSampleCount();
-        gDiagnostics.colorTarget.arraySliceCount =
-            actualDescription.arraySliceCount();
-        gDiagnostics.colorTarget.format =
-            static_cast<int>(actualDescription.rasterFormat());
-        gDiagnostics.colorTarget.isCubeMap = actualDescription.isCubeMap();
-        gDiagnostics.colorTarget.name = actualDescription.name().asUTF8();
-    }
-    if (depthTarget_) {
-        MHWRender::MRenderTargetDescription actualDescription;
-        depthTarget_->targetDescription(actualDescription);
-        gDiagnostics.depthTarget.width = actualDescription.width();
-        gDiagnostics.depthTarget.height = actualDescription.height();
-        gDiagnostics.depthTarget.multiSampleCount =
-            actualDescription.multiSampleCount();
-        gDiagnostics.depthTarget.arraySliceCount =
-            actualDescription.arraySliceCount();
-        gDiagnostics.depthTarget.format =
-            static_cast<int>(actualDescription.rasterFormat());
-        gDiagnostics.depthTarget.isCubeMap = actualDescription.isCubeMap();
-        gDiagnostics.depthTarget.name = actualDescription.name().asUTF8();
-    }
     return true;
 }
 
@@ -1257,6 +1268,61 @@ void MmdNativeCasterRenderOverride::releaseShader()
     shaderManager_ = nullptr;
 }
 
+MStatus MmdNativeCasterRenderOverride::prepareFrameResources(
+    const MSelectionList& selection,
+    FrameResources& resources,
+    bool requireEnabledSelfShadow)
+{
+    resources = FrameResources();
+    resetCasterMatrixDiagnostics();
+    if (!buildCasterLightMatrix(selection, resources)) {
+        // A missing, ambiguous, or invalid light/selection is a soft
+        // unavailable state.  The native setup keeps Maya's standard scene.
+        return MS::kSuccess;
+    }
+    if (requireEnabledSelfShadow && resources.selfShadowMode == 0) {
+        return MS::kSuccess;
+    }
+
+    if (!colorTarget_ || !depthTarget_) {
+        if (!acquireTargets()) {
+            return MS::kFailure;
+        }
+    }
+
+    auto describeTarget = [](MHWRender::MRenderTarget* target,
+                             TargetDiagnostics& diagnostic) {
+        if (!target) {
+            return;
+        }
+        MHWRender::MRenderTargetDescription actualDescription;
+        target->targetDescription(actualDescription);
+        diagnostic.width = actualDescription.width();
+        diagnostic.height = actualDescription.height();
+        diagnostic.multiSampleCount = actualDescription.multiSampleCount();
+        diagnostic.arraySliceCount = actualDescription.arraySliceCount();
+        diagnostic.format = static_cast<int>(actualDescription.rasterFormat());
+        diagnostic.isCubeMap = actualDescription.isCubeMap();
+        diagnostic.name = actualDescription.name().asUTF8();
+    };
+    describeTarget(colorTarget_, gDiagnostics.colorTarget);
+    describeTarget(depthTarget_, gDiagnostics.depthTarget);
+    gDiagnostics.colorTargetAcquired = colorTarget_ != nullptr;
+    gDiagnostics.depthTargetAcquired = depthTarget_ != nullptr;
+    if (!colorTarget_ || !depthTarget_) {
+        gDiagnostics.error = "caster render target acquisition failed";
+        disableHardShadowForFailClosed();
+        return MS::kFailure;
+    }
+
+    resources.colorTarget = colorTarget_;
+    resources.depthTarget = depthTarget_;
+    resources.lightViewProjection = gCasterMatrix;
+    resources.depthBias = gDepthBias;
+    resources.ready = true;
+    return MS::kSuccess;
+}
+
 MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
 {
     (void)destination;
@@ -1305,7 +1371,15 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
     MSelectionList selection;
     gDiagnostics.selectionBuilt = buildCasterSelection(selection);
     gDiagnostics.selectedCount = static_cast<std::size_t>(selection.length());
-    if (!gDiagnostics.selectionBuilt || !buildCasterLightMatrix(selection)) {
+    FrameResources frameResources;
+    const MStatus frameStatus = gDiagnostics.selectionBuilt
+                                    ? prepareFrameResources(selection,
+                                                            frameResources)
+                                    : MS::kSuccess;
+    if (frameStatus != MS::kSuccess) {
+        return frameStatus;
+    }
+    if (!gDiagnostics.selectionBuilt || !frameResources.ready) {
         // Fail closed: leave Maya's standard scene operations intact and do
         // not insert a caster operation without a unique scene light and
         // finite selection bounds.
@@ -1314,40 +1388,6 @@ MStatus MmdNativeCasterRenderOverride::setup(const MString& destination)
         gDiagnostics.setup = false;
         return MS::kSuccess;
     }
-    // Keep the private target and caster shader alive across cleanup/setup
-    // cycles.  Body shader assignments borrow the exact target and cannot be
-    // safely cleared with an undocumented null assignment.
-    if (!colorTarget_ || !depthTarget_) {
-        if (!acquireTargets()) {
-            return MS::kFailure;
-        }
-    }
-
-    auto describeTarget = [](MHWRender::MRenderTarget* target,
-                             TargetDiagnostics& diagnostic) {
-        if (!target) {
-            return;
-        }
-        MHWRender::MRenderTargetDescription actualDescription;
-        target->targetDescription(actualDescription);
-        diagnostic.width = actualDescription.width();
-        diagnostic.height = actualDescription.height();
-        diagnostic.multiSampleCount = actualDescription.multiSampleCount();
-        diagnostic.arraySliceCount = actualDescription.arraySliceCount();
-        diagnostic.format = static_cast<int>(actualDescription.rasterFormat());
-        diagnostic.isCubeMap = actualDescription.isCubeMap();
-        diagnostic.name = actualDescription.name().asUTF8();
-    };
-    describeTarget(colorTarget_, gDiagnostics.colorTarget);
-    describeTarget(depthTarget_, gDiagnostics.depthTarget);
-    gDiagnostics.colorTargetAcquired = colorTarget_ != nullptr;
-    gDiagnostics.depthTargetAcquired = depthTarget_ != nullptr;
-    if (!colorTarget_ || !depthTarget_) {
-        gDiagnostics.error = "caster render target acquisition failed";
-        disableHardShadowForFailClosed();
-        return MS::kFailure;
-    }
-
     const MHWRender::MShaderManager* shaderManager =
         renderer ? renderer->getShaderManager() : nullptr;
     if (!shaderManager) {

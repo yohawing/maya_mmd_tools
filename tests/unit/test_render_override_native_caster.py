@@ -60,14 +60,14 @@ def test_geometry_override_registers_only_enabled_body_receivers() -> None:
     assert "if (!outline)" not in receiver_block
 
     cache_start = source.index("std::string nativeShaderCacheKey(")
-    cache_end = source.index("std::string nativeSharedToonPath", cache_start)
+    cache_end = source.index("}  // namespace", cache_start)
     cache_block = source[cache_start:cache_end]
     assert "geometry.material.materialIndex" in cache_block
 
     destructor_start = source.index("MmdRenderGeometryOverride::~")
     destructor_end = source.index("MHWRender::DrawAPI", destructor_start)
     destructor = source[destructor_start:destructor_end]
-    release_index = destructor.index("shaderManager->releaseShader")
+    release_index = destructor.index("shaderManager->releaseShader(shader.second)")
     assert destructor.index("beginReceiverShaderRetire") < release_index
     assert destructor.index("finishReceiverShaderRetire") > release_index
 
@@ -125,7 +125,7 @@ def test_native_caster_shader_stays_out_of_product_shader() -> None:
 
 
 def test_native_material_initializes_diagnostic_flags_off() -> None:
-    source = (CPP / "MmdRenderGeometryOverride.cpp").read_text(encoding="utf-8")
+    source = (CPP / "MmdNativeMaterial.cpp").read_text(encoding="utf-8")
 
     assert 'shader->setParameter("NativeCasterProbe", 0)' in source
     assert 'shader->setParameter("NativeCasterHardShadow", 0)' in source

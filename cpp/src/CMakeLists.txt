@@ -66,10 +66,13 @@ set(SOURCES
     mmdRuntimeNode.cpp
     mmdFastLoad.cpp
     MmdRenderQueue.cpp
+    MmdNativeMaterial.cpp
     MmdTextureAlphaClassifier.cpp
     MmdRenderShape.cpp
     MmdRenderGeometryOverride.cpp
+    MmdOrderedRenderOverride.cpp
     MmdRenderOverride.cpp
+    MmdUvSeamWeldPlan.cpp
     MmdWeldUvSeamVertices.cpp
     MmdAppendNode.cpp
     MmdCcdIkNode.cpp
@@ -87,10 +90,13 @@ set(HEADERS
     mmdRuntimeNode.h
     mmdFastLoad.h
     MmdRenderQueue.h
+    MmdNativeMaterial.h
     MmdTextureAlphaClassifier.h
     MmdRenderShape.h
     MmdRenderGeometryOverride.h
+    MmdOrderedRenderOverride.h
     MmdRenderOverride.h
+    MmdUvSeamWeldPlan.h
     MmdWeldUvSeamVertices.h
     MmdAppendNode.h
     MmdCcdIkNode.h
@@ -176,6 +182,8 @@ if(WIN32)
         OpenMayaRender.lib
         OpenMayaUI.lib
         Foundation.lib
+        d3d11.lib
+        d3dcompiler.lib
     )
     if(MMD_ANIM_FFI_LIB)
         target_link_libraries(mmd_tools_cpp PRIVATE ${MMD_ANIM_FFI_LIB})

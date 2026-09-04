@@ -57,6 +57,8 @@ private:
     MmdRenderShape* shape_ = nullptr;
     std::unordered_map<std::string, MHWRender::MShaderInstance*>
         materialShaders_;
+    // Shared stock shader for the wireframe-only compatibility items.
+    MHWRender::MShaderInstance* wireShader_ = nullptr;
     std::unordered_map<std::string, MHWRender::MTexture*> materialTextures_;
     std::unordered_set<MHWRender::MShaderInstance*> receiverShaders_;
 };

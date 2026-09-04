@@ -5,19 +5,25 @@
 
 #include "MmdRenderGeometryOverride.h"
 
+#include "MmdNativeMaterial.h"
+#include "MmdOrderedRenderOverride.h"
 #include "MmdRenderShape.h"
 #include "MmdRenderOverride.h"
 
+#include <maya/MDataHandle.h>
 #include <maya/MHWGeometry.h>
+#include <maya/MHWGeometryUtilities.h>
+#include <maya/MColor.h>
+#include <maya/MFnData.h>
 #include <maya/MGlobal.h>
+#include <maya/MPlug.h>
+#include <maya/MSelectionMask.h>
 #include <maya/MShaderManager.h>
 #include <maya/MTextureManager.h>
 #include <maya/MViewport2Renderer.h>
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdlib>
-#include <filesystem>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -28,55 +34,27 @@ namespace {
 
 using namespace MHWRender;
 
-std::filesystem::path gBundledNativeShaderPath;
-
-std::filesystem::path findBundledNativeShaderPath(const MString& loadPath)
-{
-    if (loadPath.length() == 0) {
-        return {};
-    }
-
-    try {
-        const std::filesystem::path pluginPath =
-            std::filesystem::u8path(loadPath.asUTF8());
-        std::filesystem::path directory = pluginPath.parent_path();
-        while (!directory.empty()) {
-            const std::filesystem::path candidate =
-                directory / "mmd_tools" / "shaders" / "MMDNativeShader.fx";
-            if (std::filesystem::is_regular_file(candidate)) {
-                return std::filesystem::absolute(candidate).lexically_normal();
-            }
-
-            const std::filesystem::path parent = directory.parent_path();
-            if (parent == directory) {
-                break;
-            }
-            directory = parent;
-        }
-    } catch (const std::filesystem::filesystem_error&) {
-        // Keep the legacy relative fallback.  The caller reports the shader
-        // lookup failure with the selected path.
-    }
-    return {};
-}
-
 MString renderItemName(const MmdRenderShape::QueueGeometry& geometry,
                        std::size_t queueIndex,
-                       bool outline = false)
+                       bool outline = false,
+                       bool wireframe = false)
 {
     const std::string name =
         "mmdRenderQueue_" +
         std::string(mmd::mmdDrawPassName(geometry.entry.pass)) + "_m" +
         std::to_string(geometry.entry.materialIndex) + "_s" +
         std::to_string(geometry.entry.submeshIndex) + "_q" +
-        std::to_string(queueIndex) + (outline ? "_edge" : "");
+        std::to_string(queueIndex) + (outline ? "_edge" : "") +
+        (wireframe ? "_wire" : "");
     return MString(name.c_str());
 }
 
 MRenderItem* findOrCreateItem(MRenderItemList& list,
                               const MString& name,
                               MGeometry::DrawMode drawMode,
-                              MRenderItem::RenderItemType itemType)
+                              MRenderItem::RenderItemType itemType,
+                              MGeometry::Primitive primitive =
+                                  MGeometry::kTriangles)
 {
     int index = list.indexOf(name);
     if (index >= 0) {
@@ -93,7 +71,7 @@ MRenderItem* findOrCreateItem(MRenderItemList& list,
     }
     MRenderItem* item = nullptr;
     if (index < 0) {
-        item = MRenderItem::Create(name, itemType, MGeometry::kTriangles);
+        item = MRenderItem::Create(name, itemType, primitive);
         if (!item || !list.append(item)) {
             if (item) {
                 MRenderItem::Destroy(item);
@@ -140,22 +118,6 @@ const char* nativeOutlineShaderTechnique(mmd::MmdDrawPass pass,
                               : "MMDNativeOutline");
 }
 
-std::string nativeShaderPath()
-{
-    const char* configured = std::getenv("MMD_TOOLS_NATIVE_SHADER_PATH");
-    if (configured && *configured) {
-        return configured;
-    }
-
-    if (!gBundledNativeShaderPath.empty()) {
-        return gBundledNativeShaderPath.u8string();
-    }
-
-    // Keep the relative fallback for direct command-line/plugin consumers
-    // that do not initialize the plug-in entry point through Maya.
-    return "mmd_tools/shaders/MMDNativeShader.fx";
-}
-
 std::string nativeShaderCacheKey(
     const MmdRenderShape::QueueGeometry& geometry,
     bool outline)
@@ -172,32 +134,11 @@ std::string nativeShaderCacheKey(
            (outline ? ":edge" : ":body");
 }
 
-std::string nativeSharedToonPath(int sharedToonIndex)
-{
-    if (sharedToonIndex < 0 || sharedToonIndex > 9) {
-        return {};
-    }
-
-    std::filesystem::path toonDirectory;
-    const char* configured = std::getenv("MMD_TOOLS_NATIVE_TOON_DIR");
-    if (configured && *configured) {
-        toonDirectory = std::filesystem::u8path(configured);
-    } else {
-        const std::filesystem::path shaderPath =
-            std::filesystem::u8path(nativeShaderPath());
-        toonDirectory = shaderPath.parent_path() / "toon_textures";
-    }
-    const std::string fileName =
-        std::string("toon") + (sharedToonIndex < 9 ? "0" : "") +
-        std::to_string(sharedToonIndex + 1) + ".bmp";
-    return (toonDirectory / fileName).lexically_normal().u8string();
-}
-
 }  // namespace
 
 void MmdRenderGeometryOverride::setPluginLoadPath(const MString& loadPath)
 {
-    gBundledNativeShaderPath = findBundledNativeShaderPath(loadPath);
+    mmd::setNativeMaterialPluginLoadPath(loadPath);
 }
 
 MHWRender::MTexture* MmdRenderGeometryOverride::acquireNativeTexture(
@@ -245,10 +186,11 @@ bool MmdRenderGeometryOverride::setNativeMaterialParameters(
     MHWRender::MTexture* sphereTexture =
         acquireNativeTexture(material.sphereTexturePath, textureManager);
     const std::string toonPath = material.toonTexturePath.empty()
-                                     ? nativeSharedToonPath(material.sharedToonIndex)
+                                     ? mmd::nativeMaterialSharedToonPath(material.sharedToonIndex)
                                      : material.toonTexturePath;
     MHWRender::MTexture* toonTexture =
         acquireNativeTexture(toonPath, textureManager);
+    const bool toonTextureRequested = !toonPath.empty();
 
     if (diagnostic) {
         diagnostic->mainTexturePath = material.mainTexturePath;
@@ -268,92 +210,14 @@ bool MmdRenderGeometryOverride::setNativeMaterialParameters(
         diagnostic->sphereMode = material.sphereMode;
     }
 
-    // Bind the scalar/color subset and texture switches explicitly so an
-    // effect instance never inherits authored values from another item.
-    const float lightDirection[3] = {-0.5F, -1.0F, -1.0F};
-    const float lightColor[3] = {0.6039216F, 0.6039216F, 0.6039216F};
-    const bool scalarBinding =
-        shader->setParameter("DiffuseColorRGB", material.diffuseColor.data()) &&
-        shader->setParameter("DiffuseColorA", material.diffuseAlpha) &&
-        shader->setParameter("Opacity", 1.0F) &&
-        shader->setParameter("SpecularColor", material.specularColor.data()) &&
-        shader->setParameter("Shininess", material.specularPower) &&
-        shader->setParameter("AmbientColor", material.ambientColor.data()) &&
-        shader->setParameter("EdgeColorRGB", material.edgeColor.data()) &&
-        shader->setParameter("EdgeColorA", material.edgeAlpha) &&
-        shader->setParameter("EdgeSize", material.edgeSize) &&
-        shader->setParameter("SphereMode", material.sphereMode) &&
-        shader->setParameter("HasMainTexture", 0) &&
-        shader->setParameter("HasSphereTexture", 0) &&
-        shader->setParameter("HasToonTexture", 0) &&
-        shader->setParameter("NativeCasterProbe", 0) &&
-        shader->setParameter("NativeCasterHardShadow", 0) &&
-        shader->setParameter(
-            "NativeCasterShadowBias",
-            MmdNativeCasterRenderOverride::kDefaultHardShadowBias) &&
-        shader->setParameter("UseShadows", false) &&
-        shader->setParameter("ShadowStrength", 1.0F) &&
-        shader->setParameter("ToonCoordinateOffset", 0.55F) &&
-        shader->setParameter("NativeSrgbOutput", 1) &&
-        shader->setParameter("MMDLightDirection", lightDirection) &&
-        shader->setParameter("MMDLightColor", lightColor);
-    if (diagnostic) {
-        diagnostic->scalarParameterBindingSuccess = scalarBinding;
-    }
-    if (!scalarBinding) {
-        return false;
-    }
-
-    // A requested-but-unavailable texture is a visible diagnostic failure but
-    // remains non-fatal, matching the existing fallback that draws without
-    // that optional texture.  A failed assignment to an acquired handle is
-    // still fatal as before.
-    bool mainTextureBinding = material.mainTexturePath.empty() || mainTexture;
-    if (mainTexture) {
-        MHWRender::MTextureAssignment assignment{mainTexture};
-        mainTextureBinding = shader->setParameter("MainTexture", assignment);
-    }
-    if (diagnostic) {
-        diagnostic->mainTextureBindingSuccess = mainTextureBinding;
-    }
-    if (!mainTextureBinding && mainTexture) {
-        return false;
-    }
-
-    bool sphereTextureBinding = material.sphereTexturePath.empty() || sphereTexture;
-    if (sphereTexture) {
-        MHWRender::MTextureAssignment assignment{sphereTexture};
-        sphereTextureBinding =
-            shader->setParameter("SphereTexture", assignment);
-    }
-    if (diagnostic) {
-        diagnostic->sphereTextureBindingSuccess = sphereTextureBinding;
-    }
-    if (!sphereTextureBinding && sphereTexture) {
-        return false;
-    }
-
-    bool toonTextureBinding = toonPath.empty() || toonTexture;
-    if (toonTexture) {
-        MHWRender::MTextureAssignment assignment{toonTexture};
-        toonTextureBinding = shader->setParameter("ToonTexture", assignment);
-    }
-    if (diagnostic) {
-        diagnostic->toonTextureBindingSuccess = toonTextureBinding;
-    }
-    if (!toonTextureBinding && toonTexture) {
-        return false;
-    }
-
-    const bool switchBinding =
-        shader->setParameter("HasMainTexture", mainTexture ? 1 : 0) &&
-        shader->setParameter("HasSphereTexture", sphereTexture ? 1 : 0) &&
-        shader->setParameter("HasToonTexture", toonTexture ? 1 : 0);
-    if (diagnostic) {
-        diagnostic->switchParameterBindingSuccess = switchBinding;
-        diagnostic->parameterBindingSuccess = switchBinding;
-    }
-    return switchBinding;
+    return mmd::bindNativeMaterialParameters(
+        shader,
+        material,
+        mainTexture,
+        sphereTexture,
+        toonTexture,
+        toonTextureRequested,
+        diagnostic);
 }
 
 MHWRender::MPxGeometryOverride* MmdRenderGeometryOverride::creator(
@@ -378,6 +242,10 @@ MmdRenderGeometryOverride::~MmdRenderGeometryOverride()
     const MShaderManager* shaderManager =
         renderer ? renderer->getShaderManager() : nullptr;
     if (shaderManager) {
+        if (wireShader_) {
+            shaderManager->releaseShader(wireShader_);
+            wireShader_ = nullptr;
+        }
         for (const auto& shader : materialShaders_) {
             if (shader.second) {
                 const bool receiverShader =
@@ -414,9 +282,13 @@ MmdRenderGeometryOverride::~MmdRenderGeometryOverride()
 
 MHWRender::DrawAPI MmdRenderGeometryOverride::supportedDrawAPIs() const
 {
-    return MHWRender::DrawAPI::kOpenGL |
-           MHWRender::DrawAPI::kDirectX11 |
-           MHWRender::DrawAPI::kOpenGLCoreProfile;
+    // MMDNativeShader.fx is an HLSL effect (technique11, Shader Model 5,
+    // BlendState/DepthStencilState).  Advertising either OpenGL API makes
+    // Maya feed that file to its GLSL compiler, producing a cascade of
+    // misleading FLOAT3_TYPE/state-definition errors.  Unsupported devices
+    // deliberately leave proxyReady false so the ordinary source mesh stays
+    // visible as the compatibility fallback.
+    return MHWRender::DrawAPI::kDirectX11;
 }
 
 bool MmdRenderGeometryOverride::hasUIDrawables() const
@@ -445,12 +317,49 @@ bool MmdRenderGeometryOverride::requiresUpdateRenderItems(
 
 void MmdRenderGeometryOverride::updateDG()
 {
-    // All witness data is populated before the shape is made visible.  No
-    // built-in mesh plugs are read here, preserving the ordinary importer.
+    if (!shape_) {
+        return;
+    }
+
+    shape_->updateEvaluatedMaterialAlpha();
+    shape_->updateEvaluatedMaterialValues();
+
+    MPlug inputPlug(shape_->thisMObject(), MmdRenderShape::aInputMesh);
+    if (inputPlug.isNull()) {
+        // A shape created by an older scene/plugin version may not expose the
+        // optional input.  Preserve its static geometry in that case.
+        shape_->useStaticGeometry();
+        return;
+    }
+
+    MStatus connectionStatus;
+    const bool connected = inputPlug.isConnected(&connectionStatus);
+    if (!connectionStatus) {
+        shape_->updateEvaluatedMesh(MObject::kNullObj);
+        return;
+    }
+
+    MStatus meshStatus;
+    const MDataHandle inputHandle = inputPlug.asMDataHandle(&meshStatus);
+    if (meshStatus && inputHandle.type() == MFnData::kMesh) {
+        const MObject meshObject = inputHandle.asMesh();
+        if (!meshObject.isNull()) {
+            shape_->updateEvaluatedMesh(meshObject);
+            return;
+        }
+    }
+
+    if (connected || !meshStatus) {
+        // A connected but unevaluable mesh is an input failure, not a request
+        // to silently keep stale render data visible.
+        shape_->updateEvaluatedMesh(MObject::kNullObj);
+    } else {
+        shape_->useStaticGeometry();
+    }
 }
 
 void MmdRenderGeometryOverride::updateRenderItems(
-    const MDagPath& /*path*/, MHWRender::MRenderItemList& list)
+    const MDagPath& path, MHWRender::MRenderItemList& list)
 {
     if (!shape_) {
         return;
@@ -462,20 +371,83 @@ void MmdRenderGeometryOverride::updateRenderItems(
     shape_->clearRenderItemWitness();
     shape_->clearMaterialBindingDiagnostics();
     disableItems(list);
+    if (!shape_->hasValidGeometry()) {
+        return;
+    }
 
     MRenderer* renderer = MRenderer::theRenderer();
+    const bool orderedActive =
+        renderer &&
+        renderer->activeRenderOverride() == MmdOrderedRenderOverride::overrideName();
     const MShaderManager* shaderManager =
         renderer ? renderer->getShaderManager() : nullptr;
     MTextureManager* textureManager =
         renderer ? renderer->getTextureManager() : nullptr;
     if (!shaderManager) {
-        MGlobal::displayWarning(
-            "[mmdRenderOverride] Maya shader manager is unavailable.");
+        if (shape_->recordRenderFallbackReason(
+                "Maya shader manager is unavailable")) {
+            MGlobal::displayError(
+                "[mmdRenderOverride] Maya shader manager is unavailable. "
+                "Showing the gray source-mesh fallback.");
+        }
         shape_->clearRenderItemWitness();
         return;
     }
 
+    std::vector<bool> mainTextureAvailability;
+    mainTextureAvailability.reserve(shape_->geometry().queueInputs.size());
+    for (const mmd::MmdRenderQueueInput& input :
+         shape_->geometry().queueInputs) {
+        mainTextureAvailability.push_back(
+            acquireNativeTexture(input.mainTexturePath, textureManager) !=
+            nullptr);
+    }
+    shape_->updateMainTextureAvailability(mainTextureAvailability);
     const MmdRenderShape::GeometryData& geometry = shape_->geometry();
+    auto configureWireItem = [&](const MmdRenderShape::QueueGeometry& queueGeometry,
+                                 std::size_t queueIndex) {
+        MRenderItem* wireItem = findOrCreateItem(
+            list, renderItemName(queueGeometry, queueIndex, false, true),
+            MGeometry::kWireframe, MRenderItem::NonMaterialSceneItem,
+            MGeometry::kLines);
+        if (!wireItem) {
+            if (shape_->recordRenderFallbackReason(
+                    "could not create a native wireframe render item")) {
+                MGlobal::displayError(
+                    "[mmdRenderOverride] Could not create a native wireframe "
+                    "render item. Showing the gray source-mesh fallback.");
+            }
+            return false;
+        }
+        if (!wireShader_) {
+            wireShader_ = shaderManager->getStockShader(
+                MShaderManager::k3dSolidShader);
+        }
+        const MColor wireColor = MGeometryUtilities::wireframeColor(path);
+        const float solidColor[4] = {
+            wireColor.r, wireColor.g, wireColor.b, wireColor.a};
+        if (!wireShader_ ||
+            wireShader_->setParameter("solidColor", solidColor) !=
+                MStatus::kSuccess ||
+            !wireItem->setShader(wireShader_)) {
+            if (shape_->recordRenderFallbackReason(
+                    "native wireframe shader is unavailable")) {
+                MGlobal::displayError(
+                    "[mmdRenderOverride] Native wireframe shader is unavailable. "
+                    "Showing the gray source-mesh fallback.");
+            }
+            return false;
+        }
+        // Object picking uses Maya's ordinary mesh mask.  No component
+        // mapping is supplied: the proxy deliberately supports object
+        // selection only until a stable source-component contract exists.
+        wireItem->setSelectionMask(
+            MSelectionMask(MSelectionMask::kSelectMeshes));
+        wireItem->depthPriority(MRenderItem::sActiveWireDepthPriority);
+        wireItem->castsShadows(false);
+        wireItem->receivesShadows(false);
+        return true;
+    };
     auto configureItem = [&](const MmdRenderShape::QueueGeometry& queueGeometry,
                              std::size_t queueIndex,
                              bool outline) {
@@ -503,6 +475,31 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.technique = technique;
         diagnostic.uvStreamAvailable = queueGeometry.uvStreamAvailable;
         diagnostic.diffuseAlpha = queueGeometry.material.diffuseAlpha;
+        diagnostic.materialValuesDiffuseColor =
+            queueGeometry.material.diffuseColor;
+        diagnostic.materialValuesSpecularColor =
+            queueGeometry.material.specularColor;
+        diagnostic.materialValuesShininess =
+            queueGeometry.material.specularPower;
+        diagnostic.materialValuesAmbientColor =
+            queueGeometry.material.ambientColor;
+        diagnostic.materialValuesEdgeColorRGB =
+            queueGeometry.material.edgeColor;
+        diagnostic.materialValuesEdgeColorA =
+            queueGeometry.material.edgeAlpha;
+        diagnostic.materialValuesEdgeSize = queueGeometry.material.edgeSize;
+        diagnostic.materialValuesMainTextureMultiply =
+            queueGeometry.material.mainTextureMultiply;
+        diagnostic.materialValuesMainTextureAdd =
+            queueGeometry.material.mainTextureAdd;
+        diagnostic.materialValuesSphereTextureMultiply =
+            queueGeometry.material.sphereTextureMultiply;
+        diagnostic.materialValuesSphereTextureAdd =
+            queueGeometry.material.sphereTextureAdd;
+        diagnostic.materialValuesToonTextureMultiply =
+            queueGeometry.material.toonTextureMultiply;
+        diagnostic.materialValuesToonTextureAdd =
+            queueGeometry.material.toonTextureAdd;
         diagnostic.selfShadowMap = queueGeometry.material.selfShadowMap;
         diagnostic.selfShadow = queueGeometry.material.selfShadow;
         diagnostic.textureAlphaBlend = effectiveTransparent;
@@ -510,7 +507,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.mainTexturePath = queueGeometry.material.mainTexturePath;
         diagnostic.sphereTexturePath = queueGeometry.material.sphereTexturePath;
         diagnostic.toonTexturePath = queueGeometry.material.toonTexturePath.empty()
-                                         ? nativeSharedToonPath(
+                                         ? mmd::nativeMaterialSharedToonPath(
                                                queueGeometry.material.sharedToonIndex)
                                          : queueGeometry.material.toonTexturePath;
         diagnostic.toonTextureSource =
@@ -535,7 +532,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
                                     queueGeometry.material.selfShadowMap &&
                                     !effectiveTransparent;
         const MRenderItem::RenderItemType itemType =
-            (casterEligible || effectiveTransparent)
+            (orderedActive || casterEligible || effectiveTransparent)
                 ? MRenderItem::MaterialSceneItem
                 : MRenderItem::NonMaterialSceneItem;
         diagnostic.casterEligible = casterEligible;
@@ -556,12 +553,20 @@ void MmdRenderGeometryOverride::updateRenderItems(
             itemType);
         if (!item) {
             shape_->recordMaterialBindingDiagnostic(diagnostic);
+            if (shape_->recordRenderFallbackReason(
+                    "could not create material render item " +
+                    diagnostic.renderItemName)) {
+                MGlobal::displayError(
+                    MString("[mmdRenderOverride] Could not create material render item ") +
+                    diagnostic.renderItemName.c_str() +
+                    ". Showing the gray source-mesh fallback.");
+            }
             return false;
         }
         MHWRender::MShaderInstance* materialShader = nullptr;
         const std::string shaderKey = nativeShaderCacheKey(
             queueGeometry, outline);
-        const std::string shaderPath = nativeShaderPath();
+        const std::string shaderPath = mmd::nativeMaterialShaderPath();
         const auto shaderIt = materialShaders_.find(shaderKey);
         if (shaderIt != materialShaders_.end()) {
             materialShader = shaderIt->second;
@@ -575,22 +580,34 @@ void MmdRenderGeometryOverride::updateRenderItems(
         }
         if (!materialShader) {
             shape_->recordMaterialBindingDiagnostic(diagnostic);
-            MGlobal::displayWarning(
-                MString("[mmdRenderOverride] Native MMD shader is unavailable: ") +
-                technique + " path=" + shaderPath.c_str());
+            if (shape_->recordRenderFallbackReason(
+                    "native MMD shader is unavailable: " +
+                    std::string(technique) + " path=" + shaderPath)) {
+                MGlobal::displayError(
+                    MString("[mmdRenderOverride] Native MMD shader is unavailable: ") +
+                    technique + " path=" + shaderPath.c_str() +
+                    ". Showing the gray source-mesh fallback.");
+            }
             disableItems(list);
             shape_->clearRenderItemWitness();
             return false;
         }
         diagnostic.shaderAvailable = true;
         const bool parameterBindingSuccess = setNativeMaterialParameters(
-            materialShader, queueGeometry.material, textureManager, &diagnostic);
+            materialShader, queueGeometry.material, textureManager, &diagnostic) &&
+            (outline || !queueGeometry.material.selfShadow ||
+             MmdNativeCasterRenderOverride::refreshReceiverShaderParameters(
+                 materialShader));
         diagnostic.parameterBindingSuccess = parameterBindingSuccess;
         if (!parameterBindingSuccess) {
             shape_->recordMaterialBindingDiagnostic(diagnostic);
-            MGlobal::displayWarning(
-                MString("[mmdRenderOverride] Failed to bind material parameters to ") +
-                item->name());
+            if (shape_->recordRenderFallbackReason(
+                    "failed to bind material parameters to " +
+                    std::string(item->name().asChar()))) {
+                MGlobal::displayError(
+                    MString("[mmdRenderOverride] Failed to bind material parameters to ") +
+                    item->name() + ". Showing the gray source-mesh fallback.");
+            }
             disableItems(list);
             shape_->clearRenderItemWitness();
             return false;
@@ -599,9 +616,13 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.bindingSuccess = diagnostic.shaderAssignmentSuccess;
         shape_->recordMaterialBindingDiagnostic(diagnostic);
         if (!diagnostic.shaderAssignmentSuccess) {
-            MGlobal::displayWarning(
-                MString("[mmdRenderOverride] Failed to bind material shader to ") +
-                item->name());
+            if (shape_->recordRenderFallbackReason(
+                    "failed to bind material shader to " +
+                    std::string(item->name().asChar()))) {
+                MGlobal::displayError(
+                    MString("[mmdRenderOverride] Failed to bind material shader to ") +
+                    item->name() + ". Showing the gray source-mesh fallback.");
+            }
             disableItems(list);
             shape_->clearRenderItemWitness();
             return false;
@@ -641,6 +662,11 @@ void MmdRenderGeometryOverride::updateRenderItems(
          ++queueIndex) {
         const MmdRenderShape::QueueGeometry& queueGeometry =
             geometry.queueGeometry[queueIndex];
+        if (!configureWireItem(queueGeometry, queueIndex)) {
+            disableItems(list);
+            shape_->clearRenderItemWitness();
+            return;
+        }
         const bool effectiveTransparent =
             queueGeometry.entry.pass == mmd::MmdDrawPass::Transparent;
         const bool outline = queueGeometry.material.edgeDrawing &&
@@ -677,6 +703,12 @@ void MmdRenderGeometryOverride::populateGeometry(
         return;
     }
 
+    if (!shape_->hasValidGeometry()) {
+        disableItems(renderItems);
+        shape_->clearRenderItemWitness();
+        return;
+    }
+
     const MmdRenderShape::GeometryData& geometry = shape_->geometry();
     const unsigned int vertexCount =
         static_cast<unsigned int>(geometry.positions.size() / 3U);
@@ -684,9 +716,12 @@ void MmdRenderGeometryOverride::populateGeometry(
     const MHWRender::MVertexBufferDescriptorList& descriptors =
         requirements.vertexRequirements();
     auto failClosed = [&](const char* reason) {
-        MGlobal::displayError(
-            MString("[mmdRenderOverride] Geometry population failed: ") +
-            reason);
+        if (shape_->recordRenderFallbackReason(
+                std::string("geometry population failed: ") + reason)) {
+            MGlobal::displayError(
+                MString("[mmdRenderOverride] Geometry population failed: ") +
+                reason);
+        }
         disableItems(renderItems);
         shape_->clearRenderItemWitness();
     };
@@ -795,6 +830,9 @@ void MmdRenderGeometryOverride::populateGeometry(
         queueGeometryByName.emplace(
             std::string(renderItemName(candidate, queueIndex).asChar()),
             &candidate);
+        queueGeometryByName.emplace(
+            std::string(renderItemName(candidate, queueIndex, false, true).asChar()),
+            &candidate);
         if (candidate.material.edgeDrawing && candidate.material.edgeSize > 0.0F &&
             candidate.material.edgeAlpha > 0.0F) {
             queueGeometryByName.emplace(
@@ -819,6 +857,19 @@ void MmdRenderGeometryOverride::populateGeometry(
             failClosed("render item has no valid index data");
             return;
         }
+        const bool wire =
+            item->primitive() == MHWRender::MGeometry::kLines;
+        if (wire && indices.size() % 3U != 0U) {
+            failClosed("wire render item has incomplete triangle index data");
+            return;
+        }
+        const std::size_t outputIndexCount =
+            wire ? (indices.size() / 3U) * 6U : indices.size();
+        if (outputIndexCount == 0U ||
+            outputIndexCount > std::numeric_limits<unsigned int>::max()) {
+            failClosed("render item index data is too large");
+            return;
+        }
         MHWRender::MIndexBuffer* indexBuffer =
             data.createIndexBuffer(MHWRender::MGeometry::kUnsignedInt32);
         if (!indexBuffer) {
@@ -827,21 +878,42 @@ void MmdRenderGeometryOverride::populateGeometry(
         }
         uint32_t* destination =
             static_cast<uint32_t*>(indexBuffer->acquire(
-                static_cast<unsigned int>(indices.size()), false));
+                static_cast<unsigned int>(outputIndexCount), false));
         if (!destination) {
             failClosed("could not acquire an index buffer");
             return;
         }
-        for (std::size_t index = 0; index < indices.size(); ++index) {
-            destination[index] =
-                queueGeometry->second->vertexOffset + indices[index];
+        if (wire) {
+            std::size_t outputIndex = 0U;
+            for (std::size_t index = 0; index < indices.size(); index += 3U) {
+                const uint32_t a = indices[index];
+                const uint32_t b = indices[index + 1U];
+                const uint32_t c = indices[index + 2U];
+                destination[outputIndex++] =
+                    queueGeometry->second->vertexOffset + a;
+                destination[outputIndex++] =
+                    queueGeometry->second->vertexOffset + b;
+                destination[outputIndex++] =
+                    queueGeometry->second->vertexOffset + b;
+                destination[outputIndex++] =
+                    queueGeometry->second->vertexOffset + c;
+                destination[outputIndex++] =
+                    queueGeometry->second->vertexOffset + c;
+                destination[outputIndex++] =
+                    queueGeometry->second->vertexOffset + a;
+            }
+        } else {
+            for (std::size_t index = 0; index < indices.size(); ++index) {
+                destination[index] =
+                    queueGeometry->second->vertexOffset + indices[index];
+            }
         }
         indexBuffer->commit(destination);
         if (!item->associateWithIndexBuffer(indexBuffer)) {
             failClosed("could not associate an index buffer");
             return;
         }
-        associatedIndexCount += indices.size();
+        associatedIndexCount += outputIndexCount;
     }
 
     if (!positionBufferCommitted || associatedIndexCount == 0U) {
@@ -856,6 +928,15 @@ void MmdRenderGeometryOverride::populateGeometry(
     // prepares item metadata; recording here makes the commandPort evidence
     // fail closed when geometry population is skipped or fails.
     shape_->recordRenderItemWitness(geometry.renderQueue);
+    if (!shape_->setProxyReady(true)) {
+        if (shape_->recordRenderFallbackReason(
+                "could not publish source visibility state")) {
+            MGlobal::displayError(
+                "[mmdRenderOverride] Could not publish source visibility state.");
+        }
+        disableItems(renderItems);
+        shape_->clearRenderItemWitness();
+    }
 }
 
 void MmdRenderGeometryOverride::cleanUp()

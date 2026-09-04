@@ -43,9 +43,31 @@ public:
     MStatus setup(const MString& destination) override;
     MStatus cleanup() override;
 
+    struct FrameResources {
+        // The matrix and bias are snapshots for one preparation call.  The
+        // targets are owned by this override and remain borrowed until the
+        // override releases them; cleanup may retain them while receiver
+        // assignments are still registered.  Callers must not release or
+        // retain ownership of these pointers.  Cached shader assignments keep
+        // the existing receiver registry retirement contract.
+        MHWRender::MRenderTarget* colorTarget = nullptr;
+        MHWRender::MRenderTarget* depthTarget = nullptr;
+        MMatrix lightViewProjection;
+        float depthBias = 0.0F;
+        int selfShadowMode = 0;
+        double selfShadowDistance = 0.0;
+        bool ready = false;
+    };
+
+    MStatus prepareFrameResources(const MSelectionList& selection,
+                                  FrameResources& resources,
+                                  bool requireEnabledSelfShadow = false);
+
     static void setPluginLoadPath(const MString& loadPath);
     static void markRegistered(bool registered);
     static void registerReceiverShader(MHWRender::MShaderInstance* shader);
+    // The caller owns the shader while refreshing it after material binding.
+    static bool refreshReceiverShaderParameters(MHWRender::MShaderInstance* shader);
     static bool beginReceiverShaderRetire(MHWRender::MShaderInstance* shader);
     static void finishReceiverShaderRetire(MHWRender::MShaderInstance* shader);
     static void setReceiverProbe(bool enabled);
@@ -63,7 +85,7 @@ private:
     void releaseShader();
     bool buildCasterSelection(MSelectionList& selection) const;
     bool bindReceiverShader(MHWRender::MShaderInstance* shader);
-    bool updateReceiverShaderParameters(MHWRender::MShaderInstance* shader);
+    static bool updateReceiverShaderParameters(MHWRender::MShaderInstance* shader);
 
     CasterSceneRender* casterOperation_ = nullptr;
     MHWRender::MRenderTargetManager* targetManager_ = nullptr;

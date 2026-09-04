@@ -14,6 +14,19 @@ from tests.common import maya_commandport
 LOG_POLL_INTERVAL = 0.5
 
 
+def _print_log_line(line: str) -> None:
+    """Stream one log line without letting a narrow Windows console abort E2E."""
+
+    try:
+        print(line, end="")
+    except UnicodeEncodeError:
+        # Escape the complete line rather than retrying the console's partial
+        # code page.  This keeps the fallback portable across cp932 and other
+        # narrow Windows streams while preserving the UTF-8 report on disk.
+        safe_line = line.encode("ascii", errors="backslashreplace").decode("ascii")
+        print(safe_line, end="")
+
+
 def monitor_result(
     log_path: Path,
     report_path: Path,
@@ -37,7 +50,7 @@ def monitor_result(
             if not line:
                 time.sleep(LOG_POLL_INTERVAL)
                 continue
-            print(line, end="")
+            _print_log_line(line)
             if verify_status and line.strip().startswith("RESULT_JSON:"):
                 result = json.loads(line.split("RESULT_JSON:", 1)[1].strip())
             if marker in line:
@@ -80,18 +93,29 @@ def run_maya_e2e(
     """Launch Maya with isolated preferences, run a probe, and close it."""
     maya_commandport.remove_stale_logs(stale_paths)
     proc = None
+    maya_process_id: int | None = None
     maya_owned = False
     profile_owned = False
     process_exited = False
     maya_app_dir = (out_dir / f"maya-app-{version}-{port}").resolve()
+    commandport_script = (out_dir / f"commandport_{port}.mel").resolve()
     try:
         if maya_commandport.is_port_open(port):
             raise RuntimeError(port_error or f"commandPort :{port} is already open")
+        if sys.platform == "win32":
+            existing_process_id = maya_commandport.find_maya_process_id(
+                commandport_script
+            )
+            if existing_process_id is not None:
+                raise RuntimeError(
+                    f"Maya process {existing_process_id} already owns {commandport_script}"
+                )
         shutil.rmtree(maya_app_dir, ignore_errors=True)
         profile_owned = True
         maya_commandport.seed_isolated_maya_profile(maya_app_dir, version, project_root)
         launch_env = dict(env_overrides or {})
         launch_env["MAYA_APP_DIR"] = str(maya_app_dir)
+        launch_deadline = time.time() + launch_timeout
         proc = maya_commandport.launch_maya(
             version=version,
             project_root=project_root,
@@ -103,12 +127,24 @@ def run_maya_e2e(
             env_overrides=launch_env,
         )
         maya_owned = True
-        maya_commandport.wait_for_port(port, timeout=launch_timeout, process=proc)
+        if sys.platform == "win32":
+            if proc is None:
+                maya_process_id = maya_commandport.wait_for_maya_process_id(
+                    commandport_script,
+                    timeout=max(0.0, launch_deadline - time.time()),
+                )
+            else:
+                maya_process_id = int(proc.pid)
+        maya_commandport.wait_for_port(
+            port,
+            timeout=max(0.0, launch_deadline - time.time()),
+            process=proc,
+        )
         if log_ready is not None:
             log_ready.info("fresh Maya commandPort :%d ready", port)
             if warn_detached and proc is None:
                 log_ready.warning(
-                    "Explorer launch is detached; commandPort ownership is guarded by the preflight only"
+                    "Explorer launch is detached; commandPort ownership is checked by its exact script PID and TCP listener"
                 )
         # Every commandPort probe gets the same process-level QSettings
         # boundary before its production UI imports or widget constructors.
@@ -123,6 +159,19 @@ def run_maya_e2e(
             "from tests.common.qsettings_isolation import activate_qsettings_isolation\n"
             "activate_qsettings_isolation()\n"
         )
+        if sys.platform == "win32":
+            if maya_process_id is None or maya_commandport.query_maya_process_for_script(
+                maya_process_id, commandport_script
+            ) is not True:
+                raise RuntimeError(
+                    f"Maya process ownership is not verified for {commandport_script}"
+                )
+            if not maya_commandport.is_commandport_owned_by_process(
+                port, maya_process_id
+            ):
+                raise RuntimeError(
+                    f"commandPort :{port} is not owned by Maya process {maya_process_id}"
+                )
         maya_commandport.send_python(
             port,
             settings_bootstrap + command,
@@ -138,18 +187,65 @@ def run_maya_e2e(
             report_error=report_error,
         )
     finally:
+        pending_error = sys.exc_info()[1]
         if maya_owned:
             try:
-                maya_commandport.quit_maya(port)
-                time.sleep(quit_delay)
+                detached_process_owned = True
+                detached_listener_owned = True
+                if proc is None and sys.platform == "win32":
+                    try:
+                        detached_process_owned = (
+                            maya_process_id is not None
+                            and maya_commandport.query_maya_process_for_script(
+                                maya_process_id, commandport_script
+                            ) is True
+                        )
+                    except Exception:
+                        detached_process_owned = False
+                    if detached_process_owned:
+                        try:
+                            detached_listener_owned = (
+                                maya_commandport.is_commandport_owned_by_process(
+                                    port, maya_process_id
+                                )
+                            )
+                        except Exception:
+                            detached_listener_owned = False
+                if detached_process_owned and detached_listener_owned:
+                    maya_commandport.quit_maya(port)
+                    time.sleep(quit_delay)
             finally:
                 try:
-                    if proc is None:
-                        maya_commandport.wait_for_port_close(port, timeout=30)
+                    if (
+                        proc is None
+                        and maya_process_id is not None
+                        and detached_process_owned
+                    ):
+                        try:
+                            process_exited = maya_commandport.wait_for_maya_process_exit(
+                                maya_process_id,
+                                commandport_script,
+                                timeout=30,
+                            )
+                        except Exception:
+                            process_exited = False
+                        if not process_exited and terminate_process:
+                            try:
+                                process_exited = maya_commandport.terminate_maya_process(
+                                    maya_process_id,
+                                    commandport_script,
+                                )
+                            except Exception:
+                                process_exited = False
+                    elif proc is None and sys.platform != "win32":
+                        try:
+                            maya_commandport.wait_for_port_close(port, timeout=30)
+                            process_exited = True
+                        except Exception:
+                            process_exited = False
+                    elif proc is not None and proc.poll() is not None:
                         process_exited = True
-                    elif proc.poll() is not None:
-                        process_exited = True
-                    elif terminate_process:
+                    elif proc is not None and terminate_process:
                         proc.terminate()
                         proc.wait(timeout=30)
                         process_exited = True
@@ -157,3 +253,7 @@ def run_maya_e2e(
                     maya_commandport.close_process_logs(proc)
         if profile_owned and (not maya_owned or process_exited):
             shutil.rmtree(maya_app_dir, ignore_errors=True)
+        if maya_owned and not process_exited and pending_error is None:
+            raise RuntimeError(
+                f"Maya process exit was not verified for {commandport_script}"
+            )

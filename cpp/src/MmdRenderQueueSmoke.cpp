@@ -160,13 +160,67 @@ int main()
         materialQueue[0].pass == mmd::MmdDrawPass::Transparent &&
         materialQueue[1].pass == mmd::MmdDrawPass::Transparent;
 
+    mmd::MmdRenderQueueInput textureFactorInput;
+    textureFactorInput.materialIndex = 11;
+    textureFactorInput.submeshIndex = 0;
+    textureFactorInput.transparencyMode = "opaque";
+    textureFactorInput.mainTexturePath = "opaque.png";
+    textureFactorInput.mainTextureAvailable = true;
+    const auto opaqueTextureQueue =
+        mmd::buildMmdRenderQueue({textureFactorInput});
+    textureFactorInput.mainTextureMultiply[3] = 0.85F;
+    const auto blendedTextureQueue =
+        mmd::buildMmdRenderQueue({textureFactorInput});
+    textureFactorInput.mainTextureMultiply[3] = 1.0F;
+    const auto restoredTextureQueue =
+        mmd::buildMmdRenderQueue({textureFactorInput});
+
+    mmd::MmdRenderQueueInput noTextureInput = textureFactorInput;
+    noTextureInput.mainTexturePath.clear();
+    noTextureInput.mainTextureAvailable = false;
+    noTextureInput.mainTextureMultiply[3] = 0.1F;
+    noTextureInput.mainTextureAdd[3] = 0.4F;
+    const auto noTextureQueue = mmd::buildMmdRenderQueue({noTextureInput});
+
+    mmd::MmdRenderQueueInput missingTextureInput = textureFactorInput;
+    missingTextureInput.mainTexturePath = "missing.png";
+    missingTextureInput.mainTextureAvailable = false;
+    missingTextureInput.mainTextureMultiply[3] = 0.1F;
+    const auto missingTextureQueue =
+        mmd::buildMmdRenderQueue({missingTextureInput});
+
+    mmd::MmdRenderQueueInput cutoutInput = textureFactorInput;
+    cutoutInput.transparencyMode = "cutout";
+    cutoutInput.mainTextureMultiply[3] = 0.1F;
+    const auto cutoutQueue = mmd::buildMmdRenderQueue({cutoutInput});
+    mmd::MmdRenderQueueInput blendInput = textureFactorInput;
+    blendInput.transparencyMode = "blend";
+    blendInput.mainTextureMultiply[3] = 1.0F;
+    const auto blendQueue = mmd::buildMmdRenderQueue({blendInput});
+    const bool textureFactorContract =
+        opaqueTextureQueue.size() == 1 &&
+        opaqueTextureQueue[0].pass == mmd::MmdDrawPass::Opaque &&
+        blendedTextureQueue.size() == 1 &&
+        blendedTextureQueue[0].pass == mmd::MmdDrawPass::Transparent &&
+        restoredTextureQueue.size() == 1 &&
+        restoredTextureQueue[0].pass == mmd::MmdDrawPass::Opaque &&
+        noTextureQueue.size() == 1 &&
+        noTextureQueue[0].pass == mmd::MmdDrawPass::Opaque &&
+        missingTextureQueue.size() == 1 &&
+        missingTextureQueue[0].pass == mmd::MmdDrawPass::Opaque &&
+        cutoutQueue.size() == 1 &&
+        cutoutQueue[0].pass == mmd::MmdDrawPass::Cutout &&
+        blendQueue.size() == 1 &&
+        blendQueue[0].pass == mmd::MmdDrawPass::Transparent;
+
     const bool correct = queue.size() == 5 &&
                          expectEntry(queue[0], mmd::MmdDrawPass::Opaque, 0, 1, 2) &&
                          expectEntry(queue[1], mmd::MmdDrawPass::Opaque, 2, 4, 4) &&
                          expectEntry(queue[2], mmd::MmdDrawPass::Cutout, 2, 2, 1) &&
                          expectEntry(queue[3], mmd::MmdDrawPass::Transparent, 1, 3, 3) &&
                          expectEntry(queue[4], mmd::MmdDrawPass::Transparent, 5, 0, 0);
-    if (!correct || !materialContract || !alphaContract) {
+    if (!correct || !materialContract || !alphaContract ||
+        !textureFactorContract) {
         std::cerr << "mmd render queue/material contract failed"
                   << " (alpha left=" << mmd::mmdTextureAlphaModeName(leftAlpha)
                   << ", right=" << mmd::mmdTextureAlphaModeName(rightAlpha)

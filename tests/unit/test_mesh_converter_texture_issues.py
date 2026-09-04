@@ -1171,13 +1171,16 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         glsl = (shader_dir / "MMDShader.ogsfx").read_text(encoding="utf-8")
 
         self.assertIn(
-            "saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb", dx11
+            "saturate(DiffuseColorRGB * MMDLightColor + AmbientColor)", dx11
         )
-        self.assertIn("toonColor = float3(1.0, 1.0, 1.0)", dx11)
-        self.assertNotIn("toonColor = rampCoord.xxx", dx11)
-        self.assertIn("float3 diffuse = surfaceColor * shadow", dx11)
-        self.assertIn("surfaceColor *= toonColor;", dx11)
-        self.assertNotIn("diffuse *= toonColor * shadow", dx11)
+        self.assertIn(
+            "output.baseColor = float4(", dx11
+        )
+        self.assertIn("float3 shadowColor = input.baseColor.rgb * texColor.rgb;", dx11)
+        self.assertIn("float3 MaterialToon", dx11)
+        self.assertIn("ToonSampler, float2(0.0f, 1.0f)", dx11)
+        self.assertIn("dot(input.worldNormal, lightDir) * 3.0f", dx11)
+        self.assertNotIn("ToonCoordinateOffset - NdotL", dx11)
         self.assertIn(
             "clamp(DiffuseColorRGB * lightColor + AmbientColor, 0.0, 1.0) * texColor.rgb",
             glsl,

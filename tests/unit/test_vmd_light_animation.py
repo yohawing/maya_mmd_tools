@@ -9,13 +9,18 @@ from unittest.mock import patch
 import maya.cmds as cmds
 
 import mmd_tools.converters.vmd_light_animation as vmd_light_animation_module
-from mmd_tools.converters.light_converter import create_mmd_light_controller
+from mmd_tools.converters.light_converter import (
+    MMD_SELF_SHADOW_DISTANCE_ATTR,
+    MMD_SELF_SHADOW_MODE_ATTR,
+    create_mmd_light_controller,
+)
 from mmd_tools.converters.vmd_context import VmdLightAnimationContext
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_light_animation import convert_light_animation
 from mmd_tools.core.constants import DEFAULT_LIGHT_NAME
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
+from mmd_tools.core.vmd_data.shadow_frame import VmdShadowFrame
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -24,6 +29,14 @@ def _light_frame(frame_number: int, position, color) -> VmdLightFrame:
     frame.frame_number = frame_number
     frame.position = position
     frame.color = color
+    return frame
+
+
+def _shadow_frame(frame_number: int, mode: int, distance: float) -> VmdShadowFrame:
+    frame = VmdShadowFrame()
+    frame.frame_number = frame_number
+    frame.mode = mode
+    frame.distance = distance
     return frame
 
 
@@ -177,6 +190,75 @@ class TestVmdLightAnimation(MayaTestBase):
         self.assertAlmostEqual(cmds.getAttr(f"{controller}.mmd_light_colorG"), 0.5, places=6)
         self.assertAlmostEqual(cmds.getAttr(f"{controller}.mmd_light_colorB"), 0.75, places=6)
 
+    def test_convert_self_shadow_animation_keys_mode_and_distance(self):
+        """Self-shadow mode is stepped while its raw distance stays linear."""
+        self.converter.use_animation_layers = False
+        controller = create_mmd_light_controller()
+        cmds.setKeyframe(controller, attribute="rotateX", time=0, value=15.0)
+        cmds.setKeyframe(controller, attribute="mmd_light_colorR", time=0, value=0.25)
+        frames = [_shadow_frame(0, 1, 3.0), _shadow_frame(10, 2, 7.0)]
+
+        with patch.object(
+            vmd_light_animation_module.cmds,
+            "keyTangent",
+            wraps=cmds.keyTangent,
+        ) as key_tangent:
+            self.assertTrue(self.converter._convert_self_shadow_animation(frames))
+
+        mode_plug = f"{controller}.{MMD_SELF_SHADOW_MODE_ATTR}"
+        distance_plug = f"{controller}.{MMD_SELF_SHADOW_DISTANCE_ATTR}"
+        edit_calls = [call for call in key_tangent.call_args_list if call.kwargs.get("edit")]
+        self.assertEqual(len(edit_calls), 1)
+        self.assertEqual(edit_calls[0].args[0].rsplit("|", 1)[-1], mode_plug.rsplit("|", 1)[-1])
+        self.assertEqual(cmds.keyframe(mode_plug, query=True, timeChange=True), [0.0, 10.0])
+        self.assertEqual(cmds.keyframe(distance_plug, query=True, timeChange=True), [0.0, 10.0])
+        mode_curve = cmds.listConnections(mode_plug, source=True, destination=False, type="animCurve")[0]
+        self.assertEqual(
+            cmds.keyTangent(mode_curve, query=True, outTangentType=True),
+            ["step", "step"],
+        )
+
+        cmds.currentTime(5, edit=True)
+        self.assertEqual(cmds.getAttr(mode_plug), 1)
+        self.assertAlmostEqual(cmds.getAttr(distance_plug), 5.0, places=6)
+        self.assertEqual(cmds.keyframe(f"{controller}.rotateX", query=True, timeChange=True), [0.0])
+        self.assertEqual(cmds.keyframe(f"{controller}.mmd_light_colorR", query=True, timeChange=True), [0.0])
+
+    def test_convert_self_shadow_animation_resolves_anim_layer_curve(self):
+        """Layered self-shadow keys use the layer curve for stepped tangents."""
+        controller = create_mmd_light_controller()
+        cmds.setAttr(f"{controller}.{MMD_SELF_SHADOW_MODE_ATTR}", 2)
+        cmds.setAttr(f"{controller}.{MMD_SELF_SHADOW_DISTANCE_ATTR}", 0.9)
+        self.converter.anim_layer = cmds.animLayer("shadow_layer", override=False, weight=1.0)
+        frames = [_shadow_frame(0, 1, 3.0), _shadow_frame(10, 2, 7.0)]
+
+        self.assertTrue(self.converter._convert_self_shadow_animation(frames))
+
+        mode_plug = f"{controller}.{MMD_SELF_SHADOW_MODE_ATTR}"
+        mode_curve = cmds.animLayer(
+            self.converter.anim_layer,
+            query=True,
+            findCurveForPlug=mode_plug,
+        )
+        if isinstance(mode_curve, (list, tuple)):
+            self.assertEqual(len(mode_curve), 1)
+            mode_curve = mode_curve[0]
+        self.assertTrue(mode_curve)
+        self.assertEqual(
+            cmds.keyTangent(mode_curve, query=True, outTangentType=True),
+            ["step", "step"],
+        )
+        layer_attrs = cmds.animLayer(self.converter.anim_layer, query=True, attribute=True) or []
+        controller_short = controller.rsplit("|", 1)[-1]
+        self.assertIn(f"{controller_short}.{MMD_SELF_SHADOW_MODE_ATTR}", layer_attrs)
+        self.assertIn(f"{controller_short}.{MMD_SELF_SHADOW_DISTANCE_ATTR}", layer_attrs)
+        cmds.currentTime(0, edit=True)
+        self.assertEqual(cmds.getAttr(mode_plug), 1)
+        self.assertAlmostEqual(cmds.getAttr(f"{controller}.{MMD_SELF_SHADOW_DISTANCE_ATTR}"), 3.0, places=6)
+        cmds.currentTime(5, edit=True)
+        self.assertEqual(cmds.getAttr(mode_plug), 1)
+        self.assertAlmostEqual(cmds.getAttr(f"{controller}.{MMD_SELF_SHADOW_DISTANCE_ATTR}"), 5.0, places=6)
+
     def test_clear_existing_light_motion_clears_controller_and_shape_color_keys(self):
         """Clearing light motion removes controller and legacy shape color keys."""
         controller = create_mmd_light_controller()
@@ -187,13 +269,36 @@ class TestVmdLightAnimation(MayaTestBase):
 
         cmds.setKeyframe(controller, attribute="rotateX", time=3, value=20.0)
         cmds.setKeyframe(controller, attribute="mmd_light_colorR", time=3, value=0.4)
+        cmds.setKeyframe(controller, attribute=MMD_SELF_SHADOW_MODE_ATTR, time=3, value=2)
+        cmds.setKeyframe(controller, attribute=MMD_SELF_SHADOW_DISTANCE_ATTR, time=3, value=8.0)
         cmds.setKeyframe(light_shape, attribute="colorR", time=3, value=0.8)
 
         self.converter._clear_existing_light_motion()
 
         self.assertIsNone(cmds.keyframe(controller, attribute="rotateX", query=True, timeChange=True))
         self.assertIsNone(cmds.keyframe(controller, attribute="mmd_light_colorR", query=True, timeChange=True))
+        self.assertIsNone(cmds.keyframe(controller, attribute=MMD_SELF_SHADOW_MODE_ATTR, query=True, timeChange=True))
+        self.assertIsNone(
+            cmds.keyframe(controller, attribute=MMD_SELF_SHADOW_DISTANCE_ATTR, query=True, timeChange=True)
+        )
         self.assertIsNone(cmds.keyframe(light_shape, attribute="colorR", query=True, timeChange=True))
+
+    def test_clear_existing_shadow_motion_preserves_light_keys(self):
+        """Shadow-only clearing preserves existing light direction and color keys."""
+        controller = create_mmd_light_controller()
+        cmds.setKeyframe(controller, attribute="rotateX", time=3, value=20.0)
+        cmds.setKeyframe(controller, attribute="mmd_light_colorR", time=3, value=0.4)
+        cmds.setKeyframe(controller, attribute=MMD_SELF_SHADOW_MODE_ATTR, time=3, value=2)
+        cmds.setKeyframe(controller, attribute=MMD_SELF_SHADOW_DISTANCE_ATTR, time=3, value=8.0)
+
+        self.converter._clear_existing_shadow_motion()
+
+        self.assertEqual(cmds.keyframe(controller, attribute="rotateX", query=True, timeChange=True), [3.0])
+        self.assertEqual(cmds.keyframe(controller, attribute="mmd_light_colorR", query=True, timeChange=True), [3.0])
+        self.assertIsNone(cmds.keyframe(controller, attribute=MMD_SELF_SHADOW_MODE_ATTR, query=True, timeChange=True))
+        self.assertIsNone(
+            cmds.keyframe(controller, attribute=MMD_SELF_SHADOW_DISTANCE_ATTR, query=True, timeChange=True)
+        )
 
     def test_convert_light_animation_via_convert(self):
         """convert() dispatches VMD light frames to light conversion."""

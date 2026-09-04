@@ -86,21 +86,40 @@ def _find_vsdevcmd() -> Path | None:
 
 
 def _run_in_vs_dev_cmd(session: Any, root: Path, command: list[str]) -> None:
-    """Run a Windows command after initializing Visual Studio C++ tools."""
+    """Run in an isolated UTF-8 console, optionally initializing VS tools."""
     vsdevcmd = _find_vsdevcmd()
-    if vsdevcmd is None or os.environ.get("MMD_TOOLS_SKIP_VSDEVCMD"):
-        session.run(*command, external=True)
-        return
-
     body = subprocess.list2cmdline(command)
-    session.log(f"Using Visual Studio developer environment: {vsdevcmd}")
+    setup = ""
+    if vsdevcmd is not None and not os.environ.get("MMD_TOOLS_SKIP_VSDEVCMD"):
+        session.log(f"Using Visual Studio developer environment: {vsdevcmd}")
+        setup = f'"{vsdevcmd}" -arch=x64 -host_arch=x64 >nul && '
+
+    # chcp changes a shared console, not a process-local setting. A hidden
+    # child console avoids changing the caller or racing another Nox build.
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startup.wShowWindow = subprocess.SW_HIDE
     result = subprocess.run(
-        f'"{vsdevcmd}" -arch=x64 -host_arch=x64 >nul && {body}',
+        f"{setup}chcp 65001 >nul && {body}",
         cwd=root,
         shell=True,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=subprocess.CREATE_NEW_CONSOLE,
+        startupinfo=startup,
     )
+    if result.stdout:
+        print(result.stdout, end="")
     if result.returncode != 0:
         session.error(f"Command failed with exit code {result.returncode}: {body}")
+
+
+def _utf8_build_stamp(root: Path, version: str) -> Path:
+    """Mark successful migration of compiler detection and object dependencies."""
+    return _cpp_build_dir(root, version) / "CMakeFiles" / "mmd-utf8-console-v1"
 
 
 def _cmake_configure(session: Any, root: Path, version: str, config: str) -> None:
@@ -120,6 +139,10 @@ def _cmake_configure(session: Any, root: Path, version: str, config: str) -> Non
         args.extend(["-G", "Ninja", f"-DCMAKE_BUILD_TYPE={config}"])
 
     if platform.system() == "Windows":
+        if not _utf8_build_stamp(root, version).is_file():
+            # CMake caches showIncludes detection. Changing the build console
+            # alone does not repair an existing incorrectly decoded prefix.
+            args.append("--fresh")
         _run_in_vs_dev_cmd(session, root, args)
     else:
         session.run(*args, external=True)
@@ -141,10 +164,17 @@ def _cmake_build(
         "--config",
         config,
     ]
-    if clean_first:
+    migrate_utf8 = platform.system() == "Windows" and not _utf8_build_stamp(root, version).is_file()
+    if clean_first or migrate_utf8:
         command.append("--clean-first")
     if platform.system() == "Windows":
         _run_in_vs_dev_cmd(session, root, command)
+        if migrate_utf8:
+            # Existing objects may have zero recorded dependencies. Rebuild
+            # them once and mark migration only after the build succeeds.
+            stamp = _utf8_build_stamp(root, version)
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            stamp.touch()
     else:
         session.run(*command, external=True)
 

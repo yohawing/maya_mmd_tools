@@ -5,11 +5,52 @@ from __future__ import annotations
 import math
 import os
 from pathlib import Path
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
 SINGLE_FIXTURE = ROOT / "tests" / "data" / "mmt_test_model.pmx"
 SPLIT_FIXTURE = ROOT / "tests" / "data" / "test_morph_model.pmx"
+
+
+def _assert_uv_dedup_and_face_corner_mapping(mesh_fn) -> None:
+    """Check Python's exact flipped-UV dedup and reversed corner contract."""
+    from mmd_tools.core.mmd_parser import parse_pmx_file
+
+    pmx = parse_pmx_file(str(SINGLE_FIXTURE), use_native_pmx_parse=False)
+    expected_uvs = []
+    uv_ids = {}
+    source_uv_ids = []
+    for vertex in pmx.vertices:
+        key = (float(vertex.uv[0]), 1.0 - float(vertex.uv[1]))
+        uv_id = uv_ids.get(key)
+        if uv_id is None:
+            uv_id = len(expected_uvs)
+            uv_ids[key] = uv_id
+            expected_uvs.append(key)
+        source_uv_ids.append(uv_id)
+
+    if len(expected_uvs) >= len(source_uv_ids):
+        raise RuntimeError("focused fixture does not contain duplicate flipped UV values")
+
+    actual_u, actual_v = mesh_fn.getUVs("map1")
+    if len(actual_u) != len(expected_uvs):
+        raise RuntimeError(
+            f"mmdFastLoad UV dedup count mismatch: actual={len(actual_u)}, "
+            f"expected={len(expected_uvs)}"
+        )
+    for uv_id, (expected_u, expected_v) in enumerate(expected_uvs):
+        if not math.isclose(float(actual_u[uv_id]), expected_u, rel_tol=0.0, abs_tol=1.0e-6):
+            raise RuntimeError(f"mmdFastLoad U value mismatch at {uv_id}")
+        if not math.isclose(float(actual_v[uv_id]), expected_v, rel_tol=0.0, abs_tol=1.0e-6):
+            raise RuntimeError(f"mmdFastLoad flipped V value mismatch at {uv_id}")
+
+    _, actual_ids = mesh_fn.getAssignedUVs("map1")
+    expected_ids = []
+    for face in pmx.faces:
+        expected_ids.extend(source_uv_ids[index] for index in reversed(face.indices))
+    if list(actual_ids) != expected_ids:
+        raise RuntimeError("mmdFastLoad UV face-corner IDs do not follow reversed winding")
 
 
 def _plugin_path() -> Path:
@@ -71,6 +112,20 @@ def _assert_locked_normals(om, mesh_fn, expected_vertex_normal=None) -> None:
             )
 
 
+def _assert_vertex_normals_are_finite_and_nonzero(om, mesh_fn) -> None:
+    """Reject invalid vertex normals after FastLoad authored-normal assignment."""
+    vertex_normals = mesh_fn.getVertexNormals(True, om.MSpace.kObject)
+    if len(vertex_normals) == 0:
+        raise RuntimeError("mmdFastLoad mesh has no vertex normals")
+    for vertex_id, normal in enumerate(vertex_normals):
+        components = (float(normal.x), float(normal.y), float(normal.z))
+        length = math.sqrt(sum(component * component for component in components))
+        if not math.isfinite(length) or length <= 1.0e-12:
+            raise RuntimeError(
+                f"mmdFastLoad vertex normal {vertex_id} is not finite and non-zero: {components!r}"
+            )
+
+
 def main() -> int:
     """Run the single- and material-split authored-normal smoke checks."""
     import maya.cmds as cmds
@@ -78,6 +133,8 @@ def main() -> int:
     from maya.api import OpenMaya as om
 
     plugin_path = _plugin_path()
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
     os.environ["PATH"] = str(plugin_path.parent) + os.pathsep + os.environ.get("PATH", "")
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(str(plugin_path.parent))
@@ -90,13 +147,27 @@ def main() -> int:
         if not single or len(single) != 2:
             raise RuntimeError(f"single mmdFastLoad returned unexpected result: {single!r}")
         single_transform, single_mesh = single
-        if cmds.polyEvaluate(single_mesh, vertex=True) != 1822 or cmds.polyEvaluate(single_mesh, face=True) != 3516:
+        local_vertex_count = int(cmds.polyEvaluate(single_mesh, vertex=True))
+        if local_vertex_count != 1814 or cmds.polyEvaluate(single_mesh, face=True) != 3516:
             raise RuntimeError("single mmdFastLoad fixture counts changed")
+        local_to_source = cmds.getAttr(
+            f"{single_transform}.mmd_source_vertex_indices"
+        ) or []
+        source_to_local = cmds.getAttr(
+            f"{single_transform}.mmd_source_to_local_indices"
+        ) or []
+        if len(local_to_source) != local_vertex_count or len(source_to_local) != 1822:
+            raise RuntimeError("single mmdFastLoad weld provenance counts changed")
+        if any(int(local) < 0 or int(local) >= local_vertex_count for local in source_to_local):
+            raise RuntimeError("single mmdFastLoad source-to-local mapping is invalid")
+        single_mesh_fn = _mesh_fn(om, single_mesh)
         _assert_locked_normals(
             om,
-            _mesh_fn(om, single_mesh),
+            single_mesh_fn,
             expected_vertex_normal=(0, (-0.1534272, -0.3778850, -0.9130514)),
         )
+        _assert_uv_dedup_and_face_corner_mapping(single_mesh_fn)
+        _assert_vertex_normals_are_finite_and_nonzero(om, single_mesh_fn)
         cmds.undo()
         if cmds.objExists(single_transform):
             raise RuntimeError("single mmdFastLoad undo did not delete the transform")
@@ -119,6 +190,7 @@ def main() -> int:
                 raise RuntimeError(f"split mmdFastLoad fixture counts changed: {mesh}")
             mesh_fn = _mesh_fn(om, mesh)
             _assert_locked_normals(om, mesh_fn)
+            _assert_vertex_normals_are_finite_and_nonzero(om, mesh_fn)
             normals = mesh_fn.getNormals(om.MSpace.kObject)
             average_z = sum(float(normal.z) for normal in normals) / len(normals)
             if not math.isclose(abs(average_z), 1.0, rel_tol=0.0, abs_tol=1.0e-4):

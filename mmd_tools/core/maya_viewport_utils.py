@@ -1,6 +1,7 @@
 """Viewport helpers for Maya panel state."""
 
 import math
+import os
 
 from maya import cmds
 
@@ -174,6 +175,46 @@ def setup_mmd_hardware_viewport() -> int:
         len(panels),
     )
     sync_dx11_shader_device_pixel_ratio(force=True)
+    return changed
+
+
+def setup_mmd_ordered_viewport() -> int:
+    """Select the available DX11 Ordered override after a VP2 ownership import.
+
+    Explicit opt-out and unsupported panels are left alone.  Panel failures
+    are reported without failing the completed model import.
+    """
+    if os.environ.get("MMD_TOOLS_CPP_ENABLE_ORDERED_RENDER") == "0":
+        logger.warning("MMD Ordered viewport setup skipped: explicit opt-out")
+        return 0
+
+    try:
+        from maya.api import OpenMayaRender as omr
+
+        if omr.MRenderer.drawAPI() != omr.MRenderer.kDirectX11:
+            logger.warning("MMD Ordered viewport setup requires DirectX 11; skipped")
+            return 0
+        panels = cmds.getPanel(type="modelPanel") or []
+    except Exception:
+        logger.warning("Could not query MMD Ordered viewport support; skipped", exc_info=True)
+        return 0
+
+    changed = 0
+    for panel_name in panels:
+        try:
+            if cmds.modelEditor(panel_name, query=True, rendererName=True) != "vp2Renderer":
+                logger.warning("MMD Ordered requires Viewport 2.0; skipping panel %s", panel_name)
+                continue
+            overrides = cmds.modelEditor(panel_name, query=True, rendererOverrideList=True) or []
+            if "mmdOrdered" not in overrides:
+                logger.warning("MMD Ordered override unavailable; skipping panel %s", panel_name)
+                continue
+            if cmds.modelEditor(panel_name, query=True, rendererOverrideName=True) == "mmdOrdered":
+                continue
+            cmds.modelEditor(panel_name, edit=True, rendererOverrideName="mmdOrdered")
+            changed += 1
+        except Exception:
+            logger.warning("Could not select MMD Ordered on panel %s", panel_name, exc_info=True)
     return changed
 
 

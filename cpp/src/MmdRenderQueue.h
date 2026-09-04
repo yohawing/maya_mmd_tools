@@ -41,10 +41,19 @@ struct MmdRenderQueueInput {
     std::array<float, 3> edgeColor = {0.0f, 0.0f, 0.0f};
     float edgeAlpha = 1.0f;
     float edgeSize = 0.0f;
+    std::array<float, 4> mainTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+    std::array<float, 4> mainTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
+    std::array<float, 4> sphereTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+    std::array<float, 4> sphereTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
+    std::array<float, 4> toonTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+    std::array<float, 4> toonTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
     bool edgeDrawing = false;
     int sphereMode = 0;
     int sharedToonIndex = -1;
     std::string mainTexturePath;
+    // Transient VP2 fact set from the texture manager's actual acquisition.
+    // It is intentionally false until the override has acquired the handle.
+    bool mainTextureAvailable = false;
     std::string sphereTexturePath;
     std::string toonTexturePath;
     bool doubleSided = false;
@@ -77,6 +86,9 @@ struct MmdRenderQueueEntry {
  */
 MmdDrawPass classifyMmdDrawPass(const std::string& transparencyMode,
                                 float diffuseAlpha);
+
+/** Classify one material, including the main-texture alpha factor when used. */
+MmdDrawPass classifyMmdDrawPass(const MmdRenderQueueInput& input);
 
 /** Return the stable diagnostic name for a pass bucket. */
 const char* mmdDrawPassName(MmdDrawPass pass);

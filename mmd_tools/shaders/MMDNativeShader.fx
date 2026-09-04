@@ -60,6 +60,9 @@ int NativeCasterHardShadow<
     float UIStep = 1;
 > = 0;
 
+// Product self-shadow state. Zero preserves the ordinary native material.
+int NativeSelfShadowMode<string UIWidget = "None";> = 0;
+
 // Normalized [0, 1] receiver comparison bias.  CasterDepthBias remains the
 // clip-Z offset used while rasterizing the private caster target; the helper
 // subtracts that offset before comparing the receiver depth.
@@ -98,6 +101,40 @@ float CasterPS(VS_OUTPUT input) : SV_TARGET
     return input.position.z;
 }
 
+float CasterCutoutPS(VS_OUTPUT input) : SV_TARGET
+{
+    float alpha = 1.0;
+    if (HasMainTexture != 0)
+    {
+        float2 uv = float2(input.texCoord0.x, 1.0 - input.texCoord0.y);
+        alpha = MainTexture.Sample(LinearSampler, uv).a;
+        alpha = alpha * MainTextureMultiply.a + MainTextureAdd.a;
+    }
+    clip(alpha * DiffuseColorA * Opacity - 0.003);
+    return input.position.z;
+}
+
+float EvaluateNativeSelfShadow(float3 worldPosition, out bool inside)
+{
+    float4 clipPosition = mul(float4(worldPosition, 1.0), CasterLightViewProjection);
+    inside = false;
+    if (clipPosition.w <= 1.0e-6)
+        return 1.0;
+    float3 ndc = clipPosition.xyz / clipPosition.w;
+    float2 uv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    if (any(uv < 0.0) || any(uv > 1.0) || ndc.z < 0.0 || ndc.z > 1.0)
+        return 1.0;
+    inside = true;
+    float depth = NativeCasterDepthTexture.SampleLevel(ShadowSampler, uv, 0).r;
+    if (depth >= 1.0 - 1.0e-6)
+        return 1.0;
+    float delta = max(ndc.z - (depth - CasterDepthBias), 0.0);
+    // Documented MMD receiver ramps; formal image parity still needs the
+    // independent mode/range oracle recorded in the reference matrix.
+    float ramp = NativeSelfShadowMode == 2 ? 8000.0 * uv.y : 1500.0;
+    return 1.0 - saturate(delta * ramp - 0.3);
+}
+
 // Compare a receiver's row-major caster projection against the same-frame
 // R32F target.  UV conversion is explicit (including Maya's top-origin Y),
 // sampling is point mip 0, and clear pixels are conservatively lit.
@@ -132,7 +169,16 @@ bool EvaluateNativeCasterHardShadow(float3 worldPosition, out bool occluded)
 float4 NativeMainPS(VS_OUTPUT input) : SV_TARGET
 {
     float opacity = 0.0f;
-    float3 litColor = ComputeMmdLitColor(input, opacity);
+    float3 litColor;
+    if (NativeSelfShadowMode != 0)
+    {
+        bool inside;
+        float visibility = EvaluateNativeSelfShadow(input.worldPosition, inside);
+        litColor = ComputeMmdLitColorWithSelfShadow(input, opacity, true,
+                                                   visibility, inside);
+    }
+    else
+        litColor = ComputeMmdLitColor(input, opacity);
 
     // Keep the normal native path byte-stable when the default-off probe is
     // disabled.  When enabled, sample only the exact same-frame caster target
@@ -301,6 +347,19 @@ technique11 MMDNativeCaster
         SetVertexShader(CompileShader(vs_5_0, CasterVS()));
         SetGeometryShader(NULL);
         SetPixelShader(CompileShader(ps_5_0, CasterPS()));
+        SetRasterizerState(CullNone);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+technique11 MMDNativeCasterCutout
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, CasterVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, CasterCutoutPS()));
         SetRasterizerState(CullNone);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EnableDepth, 0);
