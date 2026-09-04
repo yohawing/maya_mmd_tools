@@ -21,8 +21,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdlib>
-#include <filesystem>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -32,38 +30,6 @@
 namespace {
 
 using namespace MHWRender;
-
-std::filesystem::path gBundledNativeShaderPath;
-
-std::filesystem::path findBundledNativeShaderPath(const MString& loadPath)
-{
-    if (loadPath.length() == 0) {
-        return {};
-    }
-
-    try {
-        const std::filesystem::path pluginPath =
-            std::filesystem::u8path(loadPath.asUTF8());
-        std::filesystem::path directory = pluginPath.parent_path();
-        while (!directory.empty()) {
-            const std::filesystem::path candidate =
-                directory / "mmd_tools" / "shaders" / "MMDNativeShader.fx";
-            if (std::filesystem::is_regular_file(candidate)) {
-                return std::filesystem::absolute(candidate).lexically_normal();
-            }
-
-            const std::filesystem::path parent = directory.parent_path();
-            if (parent == directory) {
-                break;
-            }
-            directory = parent;
-        }
-    } catch (const std::filesystem::filesystem_error&) {
-        // Keep the legacy relative fallback.  The caller reports the shader
-        // lookup failure with the selected path.
-    }
-    return {};
-}
 
 MString renderItemName(const MmdRenderShape::QueueGeometry& geometry,
                        std::size_t queueIndex,
@@ -149,22 +115,6 @@ const char* nativeOutlineShaderTechnique(mmd::MmdDrawPass pass,
                               : "MMDNativeOutline");
 }
 
-std::string nativeShaderPath()
-{
-    const char* configured = std::getenv("MMD_TOOLS_NATIVE_SHADER_PATH");
-    if (configured && *configured) {
-        return configured;
-    }
-
-    if (!gBundledNativeShaderPath.empty()) {
-        return gBundledNativeShaderPath.u8string();
-    }
-
-    // Keep the relative fallback for direct command-line/plugin consumers
-    // that do not initialize the plug-in entry point through Maya.
-    return "mmd_tools/shaders/MMDNativeShader.fx";
-}
-
 std::string nativeShaderCacheKey(
     const MmdRenderShape::QueueGeometry& geometry,
     bool outline)
@@ -181,32 +131,11 @@ std::string nativeShaderCacheKey(
            (outline ? ":edge" : ":body");
 }
 
-std::string nativeSharedToonPath(int sharedToonIndex)
-{
-    if (sharedToonIndex < 0 || sharedToonIndex > 9) {
-        return {};
-    }
-
-    std::filesystem::path toonDirectory;
-    const char* configured = std::getenv("MMD_TOOLS_NATIVE_TOON_DIR");
-    if (configured && *configured) {
-        toonDirectory = std::filesystem::u8path(configured);
-    } else {
-        const std::filesystem::path shaderPath =
-            std::filesystem::u8path(nativeShaderPath());
-        toonDirectory = shaderPath.parent_path() / "toon_textures";
-    }
-    const std::string fileName =
-        std::string("toon") + (sharedToonIndex < 9 ? "0" : "") +
-        std::to_string(sharedToonIndex + 1) + ".bmp";
-    return (toonDirectory / fileName).lexically_normal().u8string();
-}
-
 }  // namespace
 
 void MmdRenderGeometryOverride::setPluginLoadPath(const MString& loadPath)
 {
-    gBundledNativeShaderPath = findBundledNativeShaderPath(loadPath);
+    mmd::setNativeMaterialPluginLoadPath(loadPath);
 }
 
 MHWRender::MTexture* MmdRenderGeometryOverride::acquireNativeTexture(
@@ -254,7 +183,7 @@ bool MmdRenderGeometryOverride::setNativeMaterialParameters(
     MHWRender::MTexture* sphereTexture =
         acquireNativeTexture(material.sphereTexturePath, textureManager);
     const std::string toonPath = material.toonTexturePath.empty()
-                                     ? nativeSharedToonPath(material.sharedToonIndex)
+                                     ? mmd::nativeMaterialSharedToonPath(material.sharedToonIndex)
                                      : material.toonTexturePath;
     MHWRender::MTexture* toonTexture =
         acquireNativeTexture(toonPath, textureManager);
@@ -564,7 +493,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.mainTexturePath = queueGeometry.material.mainTexturePath;
         diagnostic.sphereTexturePath = queueGeometry.material.sphereTexturePath;
         diagnostic.toonTexturePath = queueGeometry.material.toonTexturePath.empty()
-                                         ? nativeSharedToonPath(
+                                         ? mmd::nativeMaterialSharedToonPath(
                                                queueGeometry.material.sharedToonIndex)
                                          : queueGeometry.material.toonTexturePath;
         diagnostic.toonTextureSource =
@@ -623,7 +552,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
         MHWRender::MShaderInstance* materialShader = nullptr;
         const std::string shaderKey = nativeShaderCacheKey(
             queueGeometry, outline);
-        const std::string shaderPath = nativeShaderPath();
+        const std::string shaderPath = mmd::nativeMaterialShaderPath();
         const auto shaderIt = materialShaders_.find(shaderKey);
         if (shaderIt != materialShaders_.end()) {
             materialShader = shaderIt->second;

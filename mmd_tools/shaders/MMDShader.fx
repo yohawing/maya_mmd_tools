@@ -388,7 +388,7 @@ float3 ComputeMmdLitColor(VS_OUTPUT input, out float opacity)
 {
     // Normalize inputs
     float3 normal = normalize(input.worldNormal);
-    float3 viewDir = normalize(ViewPosition - input.worldPosition);
+    float3 viewDir = normalize(mul(float4(0.0,0.0,0.0,1.0), ViewInv).xyz - input.worldPosition);
     // The imported PMX normals already carry the Maya Z-mirror and the mesh
     // winding is reversed during conversion. Keep those authored normals for
     // the dot product; a view-facing flip would change corner normals on the

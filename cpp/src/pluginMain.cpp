@@ -29,6 +29,7 @@
 #include "MmdCcdIkNode.h"
 #include "MmdPhysicsBoneDriverNode.h"
 #include "MmdRenderGeometryOverride.h"
+#include "MmdOrderedRenderOverride.h"
 #include "MmdRenderOverride.h"
 #include "MmdRenderShape.h"
 #include "MmdAuthoringCommandSupport.h"
@@ -53,6 +54,8 @@ static bool sCppRegisteredMmdRenderQueueUpdateCommand = false;
 static bool sCppRegisteredMmdRenderQueueReindexCommand = false;
 static bool sCppRegisteredMmdNativeCasterOverride = false;
 static bool sCppRegisteredMmdNativeCasterWitnessCommand = false;
+static bool sCppRegisteredMmdOrderedOverride = false;
+static bool sCppRegisteredMmdOrderedWitnessCommand = false;
 static bool sCppRegisteredMmdAuthoringSetAttrsCommand = false;
 static bool sCppRegisteredMmdAuthoringMorphBindingQueryCommand = false;
 static bool sCppRegisteredMmdAuthoringMorphWeightCommand = false;
@@ -60,6 +63,7 @@ static bool sCppRegisteredMmdAuthoringMaterialValueCommand = false;
 static bool sCppRegisteredMmdAuthoringMaterialOutlineCommand = false;
 static bool sCppRegisteredMmdVmdBatchSamplerCommand = false;
 static MmdNativeCasterRenderOverride* sMmdNativeCasterOverride = nullptr;
+static MmdOrderedRenderOverride* sMmdOrderedOverride = nullptr;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
 {
@@ -72,6 +76,7 @@ MStatus initializePlugin(MObject obj)
     MStatus status;
     MFnPlugin plugin(obj, "yohawing", "0.7.2", "Any");
     MmdRenderGeometryOverride::setPluginLoadPath(plugin.loadPath());
+    MmdOrderedRenderOverride::setPluginLoadPath(plugin.loadPath());
     MmdNativeCasterRenderOverride::setPluginLoadPath(plugin.loadPath());
 
     const uint32_t runtimeAbi = mmd::RuntimeBridge::runtimeAbiVersion();
@@ -309,6 +314,48 @@ MStatus initializePlugin(MObject obj)
             "MHWRender::MRenderer unavailable; native caster override skipped.");
     }
 
+    // The ordered pass is an independent opt-in override.  It intentionally
+    // shares no renderer selection with the native caster; a later pass will
+    // combine their operations when the scene split contract is complete.
+    const char* enableOrderedRender =
+        std::getenv("MMD_TOOLS_CPP_ENABLE_ORDERED_RENDER");
+    if (!enableOrderedRender || std::string(enableOrderedRender) != "1") {
+        MGlobal::displayInfo("mmdOrdered override disabled by default.");
+    } else if (renderer) {
+        status = plugin.registerCommand(
+            "mmdOrderedRenderWitness",
+            MmdOrderedRenderWitnessCommand::creator,
+            MmdOrderedRenderWitnessCommand::newSyntax);
+        if (!status) {
+            MGlobal::displayWarning(
+                "mmdOrderedRenderWitness registration failed; capability skipped.");
+        } else {
+            sCppRegisteredMmdOrderedWitnessCommand = true;
+            sMmdOrderedOverride = new MmdOrderedRenderOverride();
+            status = renderer->registerOverride(sMmdOrderedOverride);
+            if (!status) {
+                MGlobal::displayWarning(
+                    "mmdOrdered override registration failed; capability skipped.");
+                delete sMmdOrderedOverride;
+                sMmdOrderedOverride = nullptr;
+                status = plugin.deregisterCommand("mmdOrderedRenderWitness");
+                if (!status) {
+                    MGlobal::displayError(
+                        "Failed to roll back mmdOrderedRenderWitness command; "
+                        "registration remains tracked.");
+                    return status;
+                }
+                sCppRegisteredMmdOrderedWitnessCommand = false;
+            } else {
+                sCppRegisteredMmdOrderedOverride = true;
+                MmdOrderedRenderOverride::markRegistered(true);
+            }
+        }
+    } else {
+        MGlobal::displayWarning(
+            "MHWRender::MRenderer unavailable; mmdOrdered override skipped.");
+    }
+
     status = plugin.registerCommand("mmdAuthoringSetAttrs",
                                     MmdAuthoringSetAttrsCommand::creator,
                                     MmdAuthoringSetAttrsCommand::newSyntax);
@@ -318,6 +365,29 @@ MStatus initializePlugin(MObject obj)
         // plug-in surface in Maya.
         bool cleanupSucceeded = true;
         MStatus cleanupStatus;
+        if (sCppRegisteredMmdOrderedOverride && renderer) {
+            cleanupStatus = renderer->deregisterOverride(sMmdOrderedOverride);
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdOrdered override; registration remains tracked.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdOrderedOverride = false;
+                MmdOrderedRenderOverride::markRegistered(false);
+                delete sMmdOrderedOverride;
+                sMmdOrderedOverride = nullptr;
+            }
+        }
+        if (sCppRegisteredMmdOrderedWitnessCommand) {
+            cleanupStatus = plugin.deregisterCommand("mmdOrderedRenderWitness");
+            if (!cleanupStatus) {
+                MGlobal::displayWarning(
+                    "Failed to roll back mmdOrderedRenderWitness command; registration remains tracked.");
+                cleanupSucceeded = false;
+            } else {
+                sCppRegisteredMmdOrderedWitnessCommand = false;
+            }
+        }
         if (sCppRegisteredMmdNativeCasterOverride && renderer) {
             cleanupStatus = renderer->deregisterOverride(sMmdNativeCasterOverride);
             if (!cleanupStatus) {
@@ -551,6 +621,31 @@ MStatus uninitializePlugin(MObject obj)
         status = plugin.deregisterCommand("mmdNativeCasterWitness");
         CHECK_MSTATUS_AND_RETURN_IT(status);
         sCppRegisteredMmdNativeCasterWitnessCommand = false;
+    }
+
+    if (sCppRegisteredMmdOrderedWitnessCommand) {
+        status = plugin.deregisterCommand("mmdOrderedRenderWitness");
+        if (!status) {
+            MGlobal::displayError(
+                "Failed to deregister mmdOrderedRenderWitness command.");
+            return status;
+        }
+        sCppRegisteredMmdOrderedWitnessCommand = false;
+    }
+
+    if (sCppRegisteredMmdOrderedOverride) {
+        MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer();
+        status = renderer ? renderer->deregisterOverride(sMmdOrderedOverride)
+                          : MS::kFailure;
+        if (!status) {
+            MGlobal::displayError(
+                "Failed to deregister mmdOrdered override; plugin remains loaded.");
+            return status;
+        }
+        sCppRegisteredMmdOrderedOverride = false;
+        MmdOrderedRenderOverride::markRegistered(false);
+        delete sMmdOrderedOverride;
+        sMmdOrderedOverride = nullptr;
     }
 
     if (sCppRegisteredMmdNativeCasterOverride) {

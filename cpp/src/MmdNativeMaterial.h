@@ -8,10 +8,17 @@
 #include <maya/MShaderManager.h>
 #include <maya/MTextureManager.h>
 
+#include <string>
+
 #include "MmdRenderQueue.h"
 #include "MmdRenderShape.h"
 
 namespace mmd {
+
+/** Resolve the product shader path configured by the plug-in. */
+void setNativeMaterialPluginLoadPath(const MString& loadPath);
+std::string nativeMaterialShaderPath();
+std::string nativeMaterialSharedToonPath(int sharedToonIndex);
 
 /**
  * Bind an already-resolved native material to one shader instance.

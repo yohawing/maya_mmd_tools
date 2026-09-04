@@ -60,7 +60,7 @@ def test_geometry_override_registers_only_enabled_body_receivers() -> None:
     assert "if (!outline)" not in receiver_block
 
     cache_start = source.index("std::string nativeShaderCacheKey(")
-    cache_end = source.index("std::string nativeSharedToonPath", cache_start)
+    cache_end = source.index("}  // namespace", cache_start)
     cache_block = source[cache_start:cache_end]
     assert "geometry.material.materialIndex" in cache_block
 

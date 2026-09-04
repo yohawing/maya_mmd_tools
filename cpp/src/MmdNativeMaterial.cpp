@@ -7,7 +7,85 @@
 
 #include "MmdRenderOverride.h"
 
+#include <maya/MGlobal.h>
+
+#include <cstdlib>
+#include <filesystem>
+
 namespace mmd {
+
+namespace {
+
+std::filesystem::path gBundledNativeShaderPath;
+
+std::filesystem::path findBundledNativeShaderPath(const MString& loadPath)
+{
+    if (loadPath.length() == 0) {
+        return {};
+    }
+
+    try {
+        const std::filesystem::path pluginPath =
+            std::filesystem::u8path(loadPath.asUTF8());
+        std::filesystem::path directory = pluginPath.parent_path();
+        while (!directory.empty()) {
+            const std::filesystem::path candidate =
+                directory / "mmd_tools" / "shaders" / "MMDNativeShader.fx";
+            if (std::filesystem::is_regular_file(candidate)) {
+                return std::filesystem::absolute(candidate).lexically_normal();
+            }
+
+            const std::filesystem::path parent = directory.parent_path();
+            if (parent == directory) {
+                break;
+            }
+            directory = parent;
+        }
+    } catch (const std::filesystem::filesystem_error&) {
+        // Keep the relative fallback for direct plug-in consumers.
+    }
+    return {};
+}
+
+}  // namespace
+
+void setNativeMaterialPluginLoadPath(const MString& loadPath)
+{
+    gBundledNativeShaderPath = findBundledNativeShaderPath(loadPath);
+}
+
+std::string nativeMaterialShaderPath()
+{
+    const char* configured = std::getenv("MMD_TOOLS_NATIVE_SHADER_PATH");
+    if (configured && *configured) {
+        return configured;
+    }
+    if (!gBundledNativeShaderPath.empty()) {
+        return gBundledNativeShaderPath.u8string();
+    }
+    return "mmd_tools/shaders/MMDNativeShader.fx";
+}
+
+std::string nativeMaterialSharedToonPath(int sharedToonIndex)
+{
+    if (sharedToonIndex < 0 || sharedToonIndex > 9) {
+        return {};
+    }
+
+    std::filesystem::path toonDirectory;
+    const char* configured = std::getenv("MMD_TOOLS_NATIVE_TOON_DIR");
+    if (configured && *configured) {
+        toonDirectory = std::filesystem::u8path(configured);
+    } else {
+        toonDirectory =
+            std::filesystem::u8path(nativeMaterialShaderPath()).parent_path() /
+            "toon_textures";
+    }
+    const std::string fileName =
+        std::string("toon") + (sharedToonIndex < 9 ? "0" : "") +
+        std::to_string(sharedToonIndex + 1) + ".bmp";
+    return (toonDirectory / fileName).lexically_normal().u8string();
+}
 
 bool bindNativeMaterialParameters(
     MHWRender::MShaderInstance* shader,
